@@ -5,7 +5,7 @@ Other imports ask the host, which answers with a [host module](#host-modules) or
 [`.py` file](#modules-from-files) from the working directory, and raise `ModuleNotFoundError` if it has neither.
 There is no `sys.path` or site-packages.
 
-`os.path` (also importable as `posixpath`) is the only submodule.
+`os.path` (also importable as `posixpath`) and `urllib.parse` are the only submodules.
 
 Every bundled import builds a fresh module object; there is no `sys.modules` cache, except for
 [modules from files](#modules-from-files).
@@ -49,6 +49,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `tomllib`       | [tomllib.md](tomllib.md)             |
 | `typing`        | [typing.md](typing.md)               |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)     |
+| `urllib`        | [urllib.md](urllib.md)               |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
@@ -66,7 +67,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `heapq`, `hmac`, `http`, `inspect`, `io`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
-`traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
+`traceback`, `unittest`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.
 
 `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` are
