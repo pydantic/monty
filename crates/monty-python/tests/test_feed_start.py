@@ -954,6 +954,80 @@ async def test_async_future_snapshot_resume_auto_rejection_preserves_manual_resu
             assert done.output == snapshot(42)
 
 
+async def test_async_future_snapshot_manual_resume_retires_spawned_coroutines():
+    # coroutines `resume_auto` spawned but `resume` answered by hand must not
+    # make a later `resume_auto` deliver their stale results
+    async def go() -> int:
+        return 5
+
+    code = 'import asyncio\nasync def main():\n    await asyncio.gather(go(), go())\n    return await later()\nasyncio.run(main())'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, external_lookup={'go': go})
+            while isinstance(snap, AsyncFunctionSnapshot):
+                snap = await snap.resume_auto()
+            assert isinstance(snap, AsyncFutureSnapshot)
+            later = await snap.resume({call_id: {'return_value': 7} for call_id in snap.pending_call_ids})
+            assert isinstance(later, AsyncFunctionSnapshot)
+            assert later.function_name == snapshot('later')
+            manual = await later.resume({'future': ...})
+            assert isinstance(manual, AsyncFutureSnapshot)
+            with pytest.raises(RuntimeError) as exc_info:
+                await manual.resume_auto()
+            assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+            done = await manual.resume({manual.pending_call_ids[0]: {'return_value': 42}})
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot(42)
+            assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_async_future_snapshot_partial_manual_resume_keeps_other_coroutines():
+    async def go(n: int) -> int:
+        return n * 10
+
+    code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(1), go(2))\nasyncio.run(main())'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, external_lookup={'go': go})
+            while isinstance(snap, AsyncFunctionSnapshot):
+                snap = await snap.resume_auto()
+            assert isinstance(snap, AsyncFutureSnapshot)
+            # call ids follow call order, so the lower one is `go(1)`
+            remaining = await snap.resume({min(snap.pending_call_ids): {'return_value': 7}})
+            assert isinstance(remaining, AsyncFutureSnapshot)
+            done = await remaining.resume_auto()
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot([7, 20])
+
+
+async def test_async_future_snapshot_resume_auto_leaves_manual_futures_pending():
+    async def go() -> int:
+        return 5
+
+    code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(), later())\nasyncio.run(main())'
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            snap: Any = await session.feed_start(code, external_lookup={'go': go})
+            later_id = None
+            while isinstance(snap, AsyncFunctionSnapshot):
+                if snap.function_name == 'later':
+                    later_id = snap.call_id
+                    snap = await snap.resume({'future': ...})
+                else:
+                    snap = await snap.resume_auto()
+            assert isinstance(snap, AsyncFutureSnapshot)
+            assert later_id is not None
+            manual = await snap.resume_auto()
+            assert isinstance(manual, AsyncFutureSnapshot)
+            assert manual.pending_call_ids == [later_id]
+            with pytest.raises(RuntimeError) as exc_info:
+                await manual.resume_auto()
+            assert str(exc_info.value) == snapshot('No pending async tasks but ResolveFutures requested')
+            done = await manual.resume({later_id: {'return_value': 42}})
+            assert isinstance(done, MontyComplete)
+            assert done.output == snapshot([5, 42])
+
+
 @pytest.mark.parametrize('competing_auto', [False, True])
 async def test_async_future_snapshot_resume_auto_claims_once(competing_auto: bool):
     release = asyncio.Event()

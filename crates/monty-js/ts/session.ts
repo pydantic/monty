@@ -1077,18 +1077,23 @@ class SnapshotDriver {
    * to the next snapshot. A handler that throws poisons the session.
    */
   async resumeAuto(turn: FunctionCallTurn | OsCallTurn | NameLookupTurn | ResolveFuturesTurn): Promise<Snapshot> {
+    // Ids answered by hand have no promise here; leave them pending for `resume([...])`.
+    const answered =
+      turn.kind === 'resolveFutures'
+        ? { ...turn, pendingCallIds: turn.pendingCallIds.filter((id) => this.answerer.futures.has(id)) }
+        : turn
     let next: NativeTurn
     try {
-      next = await this.answerer.answer(turn, this.onPrint)
+      next = await this.answerer.answer(answered, this.onPrint)
     } catch (err) {
       throw this.poison(err instanceof Error ? err : new Error(String(err)))
     }
     return this.advance(next)
   }
 
-  /** Whether host promises remain for automatic resolution. */
-  get hasPendingFutures(): boolean {
-    return this.answerer.futures.size > 0
+  /** Whether any id in `callIds` has a registered host promise to resolve it automatically. */
+  tracksAnyFuture(callIds: number[]): boolean {
+    return callIds.some((id) => this.answerer.futures.has(id))
   }
 
   // resume primitives — each runs one turn, then advances to the next snapshot
@@ -1364,14 +1369,15 @@ export class FutureSnapshot extends SingleUse {
 
   /**
    * Waits for registered host promises, delivers their outcomes, and returns
-   * the next snapshot. With no registered promises (e.g. after `loadSnapshot`),
-   * rejects without consuming the snapshot or invalidating the session;
-   * use `resume([...])` instead. Once automatic resolution starts, the snapshot
-   * is consumed even if it fails.
+   * the next snapshot. Ids with no registered promise (e.g. a call answered with
+   * `resumeFuture()`) stay pending for `resume([...])`. If no pending id has one
+   * (e.g. after `loadSnapshot`), rejects without consuming the snapshot or
+   * invalidating the session. Once automatic resolution starts, the snapshot is consumed even if it fails.
    */
   resumeAuto(): Promise<Snapshot> {
     this.ensureUnused()
-    if (this.turn.pendingCallIds.length > 0 && !this.driver.hasPendingFutures) {
+    const ids = this.turn.pendingCallIds
+    if (ids.length > 0 && !this.driver.tracksAnyFuture(ids)) {
       return Promise.reject(new Error('no pending host promises to resume; use resume([...])'))
     }
     this.claim()

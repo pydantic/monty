@@ -28,7 +28,6 @@
 //! `print_callback` — always execute in the host process.
 
 use std::{
-    collections::HashSet,
     future::{Future, ready},
     num::NonZeroU32,
     path::PathBuf,
@@ -64,14 +63,14 @@ use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
-    task::{JoinSet, block_in_place},
+    task::block_in_place,
     time::sleep as tokio_sleep,
 };
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
-        dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
+        CoroutineMode, Dispatched, FutureTasks, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        dispatch_module_coroutine, dispatch_system_sleep,
     },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
@@ -1515,9 +1514,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         instances,
     } = args;
     let lookup = ExternalLookup::new(py, names, &instances);
-    let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
     // Only system sleeps may create futures in the synchronous API.
-    let mut sleep_ids: HashSet<u32> = HashSet::new();
+    let mut sleeps = FutureTasks::default();
     let mut event = run_turn_sync(
         py,
         &checkout,
@@ -1565,11 +1563,11 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
                 ..
             } => match CoroutineMode::for_os_call(&function_name, allow_eager_await) {
                 CoroutineMode::Future => {
-                    sleep_ids.insert(call_id);
                     sleeps.spawn_on(
+                        call_id,
                         async move {
                             tokio_sleep(delay).await;
-                            (call_id, ExtFunctionResult::Return(MontyObject::none()))
+                            ExtFunctionResult::Return(MontyObject::none())
                         },
                         get_runtime().handle(),
                     );
@@ -1586,20 +1584,17 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             },
             // Unknown future IDs cannot be resolved by this loop.
             TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
-                if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
+                if let Some(id) = pending_call_ids.iter().find(|id| !sleeps.owes(**id)) {
                     discard_checkout_sync(py, &checkout);
                     return Err(PyRuntimeError::new_err(format!(
                         "internal error: pending future {id} is not one of the pool's own sleeps"
                     )));
                 }
-                let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
+                let results = py.detach(|| block_on_sync(sleeps.wait()))??;
                 TurnAnswer::Futures(
                     results
                         .into_iter()
-                        .map(|(id, r)| {
-                            sleep_ids.remove(&id);
-                            ext_to_resume(r).map(|r| (id, r))
-                        })
+                        .map(|(id, r)| ext_to_resume(r).map(|r| (id, r)))
                         .collect::<PyResult<_>>()?,
                 )
             }
@@ -1776,7 +1771,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         checkout,
         instances,
     } = args;
-    let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    let mut tasks = FutureTasks::default();
 
     let mut event = run_turn_async(
         &checkout,
@@ -1812,7 +1807,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 return Python::attach(|py| monty_to_py(py, &value, &instances));
             }
             TurnEvent::OsCall { .. } if module_call => {
-                match async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await {
+                match async_turn_answer(event, &names, &instances, &mut tasks, &callback_context, &native).await {
                     Ok(answer) => answer,
                     Err(err) => {
                         discard_checkout(&checkout).await;
@@ -1821,7 +1816,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 }
             }
             TurnEvent::ResolveFutures { .. } => {
-                let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
+                let resolved = tasks.wait().await.and_then(|results| {
                     results
                         .into_iter()
                         .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
@@ -1850,7 +1845,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 ..
             } => {
                 let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
-                dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut join_set), call_id).await?
+                dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut tasks), call_id).await?
             }
             // Mounts get first refusal, as in `drive_sync`.
             TurnEvent::OsCall {
@@ -1876,21 +1871,19 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                         OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
                         OsDispatch::Coroutine(coro) => {
                             let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
-                            dispatch_coroutine(coro, call_id, mode, &mut join_set, &instances)
+                            dispatch_coroutine(coro, call_id, mode, &mut tasks, &instances)
                         }
                     }
                 })?;
                 dispatched_answer(dispatched, call_id).await?
             }
-            event => {
-                match async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await {
-                    Ok(answer) => answer,
-                    Err(err) => {
-                        discard_checkout(&checkout).await;
-                        return Err(err);
-                    }
+            event => match async_turn_answer(event, &names, &instances, &mut tasks, &callback_context, &native).await {
+                Ok(answer) => answer,
+                Err(err) => {
+                    discard_checkout(&checkout).await;
+                    return Err(err);
                 }
-            }
+            },
         };
         event = run_turn_async(
             &checkout,
@@ -1920,7 +1913,7 @@ async fn async_turn_answer(
     event: TurnEvent,
     names: &HostNames,
     instances: &InstanceStore,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    tasks: &mut FutureTasks,
     callback_context: &CallbackContext,
     native: &opentelemetry::Context,
 ) -> PyResult<TurnAnswer> {
@@ -1940,7 +1933,7 @@ async fn async_turn_answer(
                 allow_eager_await,
                 names,
                 instances,
-                join_set,
+                tasks,
                 callback_context,
                 native,
             )
@@ -1961,7 +1954,7 @@ async fn async_turn_answer(
                 allow_eager_await,
                 names,
                 instances,
-                join_set,
+                tasks,
                 callback_context,
                 native,
             )
@@ -2003,7 +1996,7 @@ async fn answer_call(
     allow_eager_await: bool,
     names: &HostNames,
     instances: &InstanceStore,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    tasks: &mut FutureTasks,
     callback_context: &CallbackContext,
     native: &opentelemetry::Context,
 ) -> PyResult<TurnAnswer> {
@@ -2013,7 +2006,7 @@ async fn answer_call(
             CallResult::Sync(result) => Ok(Dispatched::Done(ext_to_resume(result)?)),
             CallResult::Coroutine(coro) => {
                 let mode = CoroutineMode::for_function_call(allow_eager_await);
-                dispatch_coroutine(coro, call_id, mode, join_set, instances)
+                dispatch_coroutine(coro, call_id, mode, tasks, instances)
             }
             CallResult::ModuleCoroutine { names, coros, then } => dispatch_module_coroutine(names, coros, then),
         }
@@ -2024,7 +2017,7 @@ async fn answer_call(
             Python::attach(|py| {
                 let _guard = callback_context.enter(py, native)?;
                 let mode = CoroutineMode::for_function_call(allow_eager_await);
-                settled.dispatch(py, call_id, mode, join_set, names, instances)
+                settled.dispatch(py, call_id, mode, tasks, names, instances)
             })?
         }
         other => other,

@@ -46,15 +46,15 @@ use pyo3::{
     types::{PyBytes, PyDict, PyTuple},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::sync::Mutex;
 
 #[cfg(test)]
 mod tests;
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
-        dispatch_module_coroutine, wait_for_futures,
+        CoroutineMode, Dispatched, FutureTasks, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        dispatch_module_coroutine,
     },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
@@ -98,10 +98,10 @@ pub(crate) struct DriveContext {
     os: Option<Py<PyAny>>,
     /// Pending coroutine externals spawned by async `resume_auto`, keyed by
     /// `call_id`. `Arc` so every `clone_ref`'d snapshot of one session shares a
-    /// single `JoinSet`; the `tokio` `Mutex` because `wait_for_futures` holds it
+    /// single set; the `tokio` `Mutex` because `FutureTasks::wait` holds it
     /// across `.await`. Unused (but harmlessly present) on sync sessions, where
     /// a coroutine external is a hard error.
-    pending_futures: Arc<Mutex<JoinSet<(u32, ExtFunctionResult)>>>,
+    pending_futures: Arc<Mutex<FutureTasks>>,
 }
 
 impl DriveContext {
@@ -122,7 +122,7 @@ impl DriveContext {
             trace_context,
             names,
             os,
-            pending_futures: Arc::new(Mutex::new(JoinSet::new())),
+            pending_futures: Arc::new(Mutex::new(FutureTasks::default())),
         }
     }
 
@@ -918,7 +918,7 @@ impl PyAsyncFunctionSnapshot {
                 if let Some(event) = mounted {
                     return Python::attach(|py| build_snapshot(py, ctx, event, true));
                 }
-                let mut join_set = ctx.pending_futures.lock().await;
+                let mut tasks = ctx.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
                     match dispatch_os_parts(
@@ -932,12 +932,12 @@ impl PyAsyncFunctionSnapshot {
                         OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
                         OsDispatch::Coroutine(coro) => {
                             let mode = CoroutineMode::for_os_call(&call.function_name, call.allow_eager_await);
-                            dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
+                            dispatch_coroutine(coro, call.call_id, mode, &mut tasks, &ctx.instances)
                         }
                     }
                 })
             } else {
-                let mut join_set = ctx.pending_futures.lock().await;
+                let mut tasks = ctx.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
                     let result = if module_call {
@@ -955,7 +955,7 @@ impl PyAsyncFunctionSnapshot {
                         CallResult::Sync(result) => Ok(Dispatched::Done(ext_result_to_resume(result))),
                         CallResult::Coroutine(coro) => {
                             let mode = CoroutineMode::for_function_call(call.allow_eager_await);
-                            dispatch_coroutine(coro, call.call_id, mode, &mut join_set, &ctx.instances)
+                            dispatch_coroutine(coro, call.call_id, mode, &mut tasks, &ctx.instances)
                         }
                         CallResult::ModuleCoroutine { names, coros, then } => {
                             dispatch_module_coroutine(names, coros, then)
@@ -968,11 +968,11 @@ impl PyAsyncFunctionSnapshot {
             let dispatched = match dispatched {
                 Ok(Dispatched::Module(pending)) => {
                     let settled = pending.settle().await;
-                    let mut join_set = ctx.pending_futures.lock().await;
+                    let mut tasks = ctx.pending_futures.lock().await;
                     Python::attach(|py| {
                         let _guard = context.enter(py, &native)?;
                         let mode = CoroutineMode::for_function_call(call.allow_eager_await);
-                        settled.dispatch(py, call.call_id, mode, &mut join_set, &ctx.names, &ctx.instances)
+                        settled.dispatch(py, call.call_id, mode, &mut tasks, &ctx.names, &ctx.instances)
                     })
                 }
                 other => other,
@@ -1354,40 +1354,46 @@ impl PyAsyncFutureSnapshot {
         self.0.pending_call_ids.clone()
     }
 
+    /// Delivers `results` by hand. Any coroutines `resume_auto` spawned for these
+    /// ids are retired, so a later `resume_auto` neither waits on nor delivers them.
     fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
+            ctx.pending_futures
+                .lock()
+                .await
+                .retire(resolved.iter().map(|(call_id, _)| *call_id));
             drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(resolved, p)))).await
         })
     }
 
     /// Waits for one or more of the coroutine externals spawned by earlier
     /// `resume_auto` calls to settle, delivers them, and drives to the next
-    /// snapshot. Raises if there are no pending coroutines to await — e.g. on a
-    /// snapshot restored via `load_snapshot`, whose spawned coroutines lived in
-    /// the previous process — without consuming it; resolve those manually.
+    /// snapshot. Raises without consuming the snapshot if none is still owed —
+    /// e.g. after `load_snapshot`, whose coroutines lived in the previous process,
+    /// or once `resume` answered them by hand; resolve those manually.
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let (ctx, mut join_set) = self.0.snapshot.claim_with(py, |ctx| {
-            let join_set = Arc::clone(&ctx.pending_futures)
+        let (ctx, mut tasks) = self.0.snapshot.claim_with(py, |ctx| {
+            let tasks = Arc::clone(&ctx.pending_futures)
                 .try_lock_owned()
                 .map_err(|_| PyRuntimeError::new_err("snapshot session is busy"))?;
-            if join_set.is_empty() {
+            if tasks.is_empty() {
                 Err(PyRuntimeError::new_err(
                     "No pending async tasks but ResolveFutures requested",
                 ))
             } else {
-                Ok(join_set)
+                Ok(tasks)
             }
         })?;
         future_into_py(py, async move {
-            let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
+            let resolved = tasks.wait().await.and_then(|results| {
                 results
                     .into_iter()
                     .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
                     .collect::<PyResult<Vec<_>>>()
             });
-            drop(join_set);
+            drop(tasks);
             let results = match resolved {
                 Ok(results) => results,
                 Err(err) => {

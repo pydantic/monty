@@ -375,7 +375,6 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     In Python and JavaScript, rejecting automatic resolution when no host coroutines or promises are registered leaves
     the snapshot and session available for manual resolution.
     Resolve them by hand with `resume({call_id: ...})` in Python or `resume([{callId, value}])` in JavaScript.
-    The same applies to a JavaScript future created with `resumeFuture()` when no host promises were registered.
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.
@@ -401,6 +400,8 @@ snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.
 Otherwise it is awaited concurrently: `resume_auto()` yields an [`AsyncFutureSnapshot`][pydantic_monty.AsyncFutureSnapshot] whose
 `resume_auto()` settles the pending coroutines.
+Calls answered by hand with `{'future': ...}` (`resumeFuture()` in JavaScript) are left pending: `resume_auto()` returns
+another future snapshot for them, to resolve with `resume(...)`.
 
 The sync [`FutureSnapshot.resume_auto()`][pydantic_monty.FutureSnapshot.resume_auto] always raises — a sync session cannot drive coroutine host functions.
 
