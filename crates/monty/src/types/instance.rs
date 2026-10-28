@@ -1,8 +1,11 @@
-use std::{borrow::Cow, fmt::Write};
+use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{
+    Dict, LazyHeapSet, PyTrait, Type, attribute_name_value,
+    instance_attrs::{AttrKey, InstanceAttrCursor, InstanceAttrs, class_layout},
+};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -13,8 +16,8 @@ use crate::{
     frozen::{FrozenFunction, FrozenFunctions},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead,
-        HeapReadMut, HeapReadOutput, heap_read_ref_as_field_mut,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut,
+        HeapReadOutput,
     },
     intern::Interns,
     modules::{
@@ -27,28 +30,55 @@ use crate::{
 
 /// An instance of a user-defined class.
 ///
-/// Holds a reference to its [`Class`](super::Class) (whose `HeapId` is the type
-/// identity used by `type()`/`isinstance`) and an `attrs` [`Dict`] — the instance
-/// `__dict__`. Attribute reads fall through to the class namespace for methods and
-/// class variables; attribute writes only ever touch `attrs`.
+/// Stores values in class-shared slots, falling back to a dictionary for dynamic layouts.
+/// Missing attributes fall through to the class namespace.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(from = "InstanceFields")]
 pub(crate) struct Instance {
     /// The class this is an instance of (a `HeapData::Class`).
     #[serde(rename = "C")]
     class: HeapId,
-    /// Instance attributes (`__dict__`).
-    #[serde(rename = "A")]
-    attrs: Dict,
+    /// Four values fit inline; names belong to the class layout.
+    #[serde(rename = "S")]
+    attrs: InstanceAttrs,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
     #[serde(rename = "U")]
     uuid: Option<MontyUuid>,
 }
 
+#[derive(serde::Deserialize)]
+struct InstanceFields {
+    #[serde(rename = "C")]
+    class: HeapId,
+    #[serde(rename = "S", default)]
+    attrs: InstanceAttrs,
+    // Earlier version-13 dumps stored the instance dictionary directly under A.
+    #[serde(rename = "A", default)]
+    legacy_attrs: Option<Dict>,
+    #[serde(rename = "U")]
+    uuid: Option<MontyUuid>,
+}
+
+impl From<InstanceFields> for Instance {
+    fn from(fields: InstanceFields) -> Self {
+        Self {
+            class: fields.class,
+            attrs: fields.legacy_attrs.map_or(fields.attrs, InstanceAttrs::Dict),
+            uuid: fields.uuid,
+        }
+    }
+}
+
 impl Instance {
-    /// Creates a new instance of `class` with the given initial attributes.
+    /// Creates an empty instance using its class's current storage mode.
     #[must_use]
-    pub fn new(class: HeapId, attrs: Dict) -> Self {
+    pub fn new(class: HeapId, heap: &Heap) -> Self {
+        let attrs = if class_layout(class, heap).dictionary() {
+            InstanceAttrs::Dict(Dict::new())
+        } else {
+            InstanceAttrs::default()
+        };
         Self {
             class,
             attrs,
@@ -75,10 +105,42 @@ impl Instance {
         self.class
     }
 
-    /// Returns a reference to the instance's attribute dict (`__dict__`).
-    #[must_use]
-    pub fn attrs(&self) -> &Dict {
-        &self.attrs
+    pub fn attrs<'a>(&'a self, heap: &'a Heap) -> impl Iterator<Item = (AttrKey<'a>, &'a Value)> {
+        self.attrs.iter(class_layout(self.class, heap))
+    }
+
+    pub fn attr_len(&self) -> usize {
+        self.attrs.len()
+    }
+
+    pub fn own_attr(&self, name: &EitherStr, heap: &Heap, interns: &Interns) -> Option<&Value> {
+        self.attrs.get(class_layout(self.class, heap), name, heap, interns)
+    }
+
+    pub fn clone_next_attr(&self, cursor: &mut InstanceAttrCursor, heap: &Heap) -> RunResult<Option<(Value, Value)>> {
+        if self.attr_len() != cursor.expected_len {
+            return Err(ExcType::runtime_error_dict_changed_size());
+        }
+        if let InstanceAttrs::Dict(dict) = &self.attrs {
+            if !cursor.dictionary {
+                // A deepcopy hook may have converted the source since the previous item.
+                for _ in 0..cursor.index {
+                    dict.skip_next_pair(&mut cursor.table)?;
+                }
+                cursor.dictionary = true;
+            }
+            return dict.clone_next_pair(&mut cursor.table, heap);
+        }
+        let pair = self
+            .attrs(heap)
+            .nth(cursor.index)
+            .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)));
+        cursor.index += 1;
+        Ok(pair)
+    }
+
+    pub fn for_each_attr_ref(&self, visit: impl FnMut(HeapId)) {
+        self.attrs.for_each_ref(visit);
     }
 }
 
@@ -133,16 +195,11 @@ impl<'h> HeapRead<'h, Instance> {
         let class_id = self.get(vm.heap).class();
         vm.heap.inc_ref(class_id);
         vm.heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, vm.heap))))
     }
 }
 
 impl<'h> HeapReadMut<'h, Instance> {
-    /// Borrows the inline attribute dictionary without exposing a replaceable handle.
-    pub(crate) fn attrs_mut(&self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
-        heap_read_ref_as_field_mut!(self, Instance, attrs)
-    }
-
     /// Sets an instance attribute, returning the previous value (if any) for the
     /// caller to drop. Takes ownership of both `name` and `value`.
     ///
@@ -170,7 +227,51 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.attrs_mut().set(name, value, vm)
+        let mut guard = DropGuard::new((name, value), vm);
+        let ((name, _), vm) = guard.as_parts_mut();
+        if !matches!(self.get(vm.heap).attrs, InstanceAttrs::Dict(_)) {
+            let id = match name {
+                Value::InternString(id) => Some(*id),
+                _ => vm.interns.get_string_id_by_name(name.to_str(vm)?),
+            };
+            let class_id = self.get(vm.heap).class;
+            let HeapReadOutput::Class(class) = vm.heap.read(class_id) else {
+                unreachable!()
+            };
+            let slot = class.get_mut(vm.heap).instance_layout_mut().admit(id);
+            if let Some(slot) = slot {
+                let ((name, value), vm) = guard.into_parts();
+                name.drop_with(vm);
+                return Ok(self.get_mut(vm.heap).attrs.set_slot(slot, value));
+            }
+
+            // Build the replacement before releasing any values held by this instance.
+            let pairs = self
+                .get(vm.heap)
+                .attrs(vm.heap)
+                .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                .collect::<Vec<_>>();
+            let mut dict_guard = DropGuard::new(Dict::new(), vm);
+            {
+                let (dict, vm) = dict_guard.as_parts_mut();
+                let pairs = pairs.into_iter();
+                crate::defer_drop_mut!(pairs, vm);
+                for (key, value) in pairs.by_ref() {
+                    dict.set(key, value, vm)?.drop_with(vm);
+                }
+            }
+            let (dict, vm) = dict_guard.into_parts();
+            let previous = mem::replace(&mut self.get_mut(vm.heap).attrs, InstanceAttrs::Dict(dict));
+            previous.drop_with(vm);
+        }
+        let ((name, value), vm) = guard.into_parts();
+        // Attribute names are strings, so dict insertion cannot execute Python or suspend.
+        let InstanceAttrs::Dict(mut dict) = mem::take(&mut self.get_mut(vm.heap).attrs) else {
+            unreachable!()
+        };
+        let result = dict.set(name, value, vm);
+        self.get_mut(vm.heap).attrs = InstanceAttrs::Dict(dict);
+        result
     }
 }
 
@@ -419,8 +520,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         // 1. An instance attribute shadows class methods; call it as-is (unbound).
         if let Some(callable) = self
             .get(vm.heap)
-            .attrs
-            .get_by_str(attr_str, vm.heap, vm.interns)
+            .own_attr(attr, vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap))
         {
             defer_drop!(callable, vm);
@@ -629,7 +729,7 @@ impl HeapItem for BoundMethod {
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
-    if let Some(value) = instance_attr(self_id, attr_str, vm) {
+    if let Some(value) = instance_attr_name(self_id, attr, vm) {
         Ok(CallResult::Value(value))
     } else {
         let class_id = instance_class(self_id, vm);
@@ -648,11 +748,19 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// exactly as `self.field` does, binding a function-valued class member as a
 /// [`BoundMethod`].
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
+    let name = vm
+        .interns
+        .get_string_id_by_name(attr)
+        .map_or_else(|| EitherStr::Heap(attr.to_owned()), EitherStr::Interned);
+    instance_attr_name(self_id, &name, vm)
+}
+
+fn instance_attr_name(self_id: HeapId, name: &EitherStr, vm: &VM<'_>) -> Option<Value> {
+    let attr = name.as_str(vm.interns);
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
             .get(vm.heap)
-            .attrs
-            .get_by_str(attr, vm.heap, vm.interns)
+            .own_attr(name, vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap))
     {
         return Some(value);

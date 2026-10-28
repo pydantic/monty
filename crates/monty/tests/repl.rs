@@ -3048,3 +3048,48 @@ fn repl_snippet_sources_survive_round_trip() {
     let second = feed_run_print(&mut repl, "second()").unwrap_err();
     assert_snapshot!("snippet_sources", format!("{first}\n\n{second}"));
 }
+
+#[test]
+fn shared_instance_layout_survives_dump_and_later_feeds() {
+    let (repl, _) = init_repl(
+        "class Record: pass\np = Record()\nq = Record()\np.a = [1]\np.b = 2\np.c = 3\np.d = 4\np.e = 5\np.f = 6\np.g = 7\np.h = 8\np.i = 9\nq.b = 20\nq.a = [10]",
+    );
+    let mut restored = round_trip_repl(&repl);
+    feed_run_print(
+        &mut restored,
+        "q.i = 90\np.j = 10\nassert p.i == 9 and q.i == 90\nassert not hasattr(q, 'j')",
+    )
+    .unwrap();
+    feed_run_print(
+        &mut restored,
+        "setattr(q, 'computed_' + str(123), [99])\nassert p.a == [1]\np.b = 22\nr = Record()\nr.a = 100",
+    )
+    .unwrap();
+    let mut restored = round_trip_repl(&restored);
+    feed_run_print(&mut restored, "assert p.b == 22 and q.b == 20 and r.a == 100\nassert getattr(q, 'computed_' + str(123)) == [99]\np.k = 11\nassert p.k == 11").unwrap();
+}
+
+#[test]
+fn instance_export_preserves_assignment_order() {
+    let (mut repl, _) =
+        init_repl("class Record: pass\np = Record()\nq = Record()\np.a = 1\np.b = 2\nq.b = 20\nq.a = 10");
+    let output = feed_run_print(&mut repl, "q").unwrap();
+    let names = output
+        .as_ref()
+        .pairs()
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| name.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["b", "a"]);
+    feed_run_print(&mut repl, "setattr(p, 'computed_' + str(123), 3)\nq.a = 11").unwrap();
+    let output = feed_run_print(&mut repl, "q").unwrap();
+    let names = output
+        .as_ref()
+        .pairs()
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| name.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["b", "a"]);
+}

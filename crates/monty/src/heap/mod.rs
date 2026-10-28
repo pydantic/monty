@@ -2033,16 +2033,9 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Instance(instance) => {
-            // An instance references its class plus its attribute dict's entries.
+            // Slot names are interned; dictionary storage also owns its keys.
             on_child(instance.class());
-            for (k, v) in instance.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
+            instance.for_each_attr_ref(&mut on_child);
         }
         HeapData::BoundMethod(bm) => {
             if let Value::Ref(id) = &bm.instance {

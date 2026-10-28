@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, Instance, InstanceAttrCursor, List, Module, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -387,25 +387,25 @@ pub(crate) fn deep_copy_attrs(
     let mut guard = DropGuard::new(Value::Ref(copy_id), vm);
     let (copy, vm) = guard.as_parts_mut();
     memo.insert(source, copy, vm)?;
-    let expected_len = attrs(source_id, vm).len();
+    let expected_len = attrs(source_id, vm).attr_len();
     // Preflighted whole, for the reason the dict copy is: the loop below
     // rejects a resize rather than following it, so this is the final width.
     vm.heap
         .tracker
         .check_allocation(expected_len.saturating_mul(2 * VALUE_SIZE))?;
     // `__dict__` is a dict, and CPython copies it by iterating it.
-    let mut cursor = TableCursor::new(expected_len);
+    let mut cursor = InstanceAttrCursor::new(expected_len);
     for index in 0.. {
         let (_, vm) = guard.as_parts_mut();
         vm.heap.tracker.check_time_every(index)?;
-        let Some((key, value)) = attrs(source_id, vm).clone_next_pair(&mut cursor, vm.heap)? else {
+        let Some((key, value)) = attrs(source_id, vm).clone_next_attr(&mut cursor, vm.heap)? else {
             break;
         };
         let (key_copy, value_copy) = deep_copy_pair(key, value, memo, vm)?;
         let HeapReadOutput::Instance(instance) = vm.heap.read(copy_id) else {
             unreachable!("caller allocated an instance")
         };
-        let replaced = instance.attrs_mut().set(key_copy, value_copy, vm)?;
+        let replaced = instance.set_attr_unchecked(key_copy, value_copy, vm)?;
         if let Some(replaced) = replaced {
             replaced.drop_with(vm);
         }
@@ -586,24 +586,24 @@ pub(crate) fn clone_items<'h>(
 /// Clones an instance's `__dict__` entries, polling and guarded for the reason
 /// [`clone_items`] is.
 fn clone_attrs(id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
-    let len = attrs(id, vm).len();
+    let len = attrs(id, vm).attr_len();
     vm.heap
         .tracker
         .check_allocation(len.saturating_mul(2).saturating_mul(VALUE_SIZE))?;
     let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
     let (pairs, vm) = guard.as_parts_mut();
     // One borrow for the whole snapshot, so no user code can run under it.
-    for (index, (key, value)) in attrs(id, vm).iter().enumerate() {
+    for (index, (key, value)) in attrs(id, vm).attrs(vm.heap).enumerate() {
         vm.heap.tracker.check_time_every(index)?;
         pairs.push((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)));
     }
     Ok(guard.into_inner())
 }
 
-/// Borrows an instance's attribute dict.
-fn attrs<'a>(id: HeapId, vm: &'a VM<'_>) -> &'a Dict {
+/// Borrows the instance while traversing its attributes.
+fn attrs<'a>(id: HeapId, vm: &'a VM<'_>) -> &'a Instance {
     match vm.heap.get(id) {
-        HeapData::Instance(instance) => instance.attrs(),
+        HeapData::Instance(instance) => instance,
         _ => unreachable!("caller checked the type"),
     }
 }
@@ -652,7 +652,7 @@ fn insert_attrs(id: HeapId, pairs: Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunR
         let HeapReadOutput::Instance(instance) = vm.heap.read(id) else {
             unreachable!("caller allocated an instance")
         };
-        let replaced = instance.attrs_mut().set(key, value, vm)?;
+        let replaced = instance.set_attr_unchecked(key, value, vm)?;
         if let Some(replaced) = replaced {
             replaced.drop_with(vm);
         }
