@@ -2,7 +2,7 @@
 
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
-use std::{env, future::ready, path::PathBuf, thread, time::Duration};
+use std::{env, future::ready, path::PathBuf, process::Command, sync::OnceLock, thread, time::Duration};
 
 use monty_pool::{Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
 use monty_types::{ExecutionClock, MontyObject, PrintStream, ResourceLimits};
@@ -12,22 +12,41 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 }
 
 fn worker() -> PathBuf {
-    env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join(format!("cpu-test-worker{}", env::consts::EXE_SUFFIX))
+    static WORKER: OnceLock<PathBuf> = OnceLock::new();
+    WORKER
+        .get_or_init(|| {
+            let executable = env::current_exe().unwrap();
+            let profile_dir = executable.parent().unwrap().parent().unwrap();
+            let path = profile_dir
+                .join("examples")
+                .join(format!("cpu-test-worker{}", env::consts::EXE_SUFFIX));
+            if !path.is_file() {
+                let profile = profile_dir.file_name().unwrap().to_str().unwrap();
+                let profile = if profile == "debug" { "dev" } else { profile };
+                let status = Command::new(env!("CARGO"))
+                    .args([
+                        "build",
+                        "-p",
+                        "monty-pool",
+                        "--example",
+                        "cpu-test-worker",
+                        "--profile",
+                        profile,
+                        "--target-dir",
+                    ])
+                    .arg(profile_dir.parent().unwrap())
+                    .status()
+                    .expect("build the CPU supervision fixture");
+                assert!(status.success(), "building the CPU supervision fixture failed");
+            }
+            assert!(path.is_file(), "CPU supervision fixture missing at {}", path.display());
+            path
+        })
+        .clone()
 }
 
 fn config() -> PoolConfig {
     let worker = worker();
-    assert!(
-        worker.is_file(),
-        "build the fixture with cargo build -p monty-pool --example cpu-test-worker"
-    );
     let mut config = PoolConfig::subprocess(worker);
     config.execution_clock = ExecutionClock::Cpu;
     config.min_processes = 0;

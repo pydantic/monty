@@ -208,7 +208,8 @@ CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 m
 Smaller remaining budgets shorten that interval.
 Execution boundaries take fresh samples. WebAssembly workers support wall time only.
 An unavailable or unusable VM CPU counter uses elapsed time for that window. The OS controls CPU counter accuracy and resolution.
-Native pool backstops use the selected clock and configured grace. CPU mode requires
-a finite `request_timeout` and uses an independent OS process counter.
-`request_timeout` is an independent, unscaled elapsed-time deadline.
-Older snapshots retain their recorded consumption.
+Native pool backstops use the selected clock and configured grace.
+CPU mode uses an independent OS process counter and requires a finite wall-clock `request_timeout`.
+Snapshots retain their clock and recorded consumption.
+Load them through a pool with the same execution clock.
+Snapshots without a clock use wall time.

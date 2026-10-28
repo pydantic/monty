@@ -56,8 +56,7 @@ Execution limits use wall time by default. Native CPU mode uses sampled thread C
 CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.
 They require a finite `PoolConfig::request_timeout` as a wall deadline.
 Remote deployments enable CPU enforcement in the server's local subprocess pool; WebSocket clients adopt its clock.
-See [resource limits](../resource-limits.md#time) for sampling, fallback, and snapshot behavior.
-See [CPU execution clocks](../resource-limits.md#cpu-execution-clock) for Linux, macOS and Windows support.
+See [resource limits](../resource-limits.md#time) for platform support, sampling, fallback, and snapshot compatibility.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
 takes the whole process down.
