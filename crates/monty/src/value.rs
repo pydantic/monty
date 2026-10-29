@@ -27,7 +27,7 @@ use crate::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
         decimal, host_class_type,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
+        instance::{class_defines, instance_getattr, instance_getattr_sync, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -1201,6 +1201,18 @@ impl Value {
         }
         let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
+    }
+
+    /// [`py_getattr`](Self::py_getattr) for `getattr()` and `hasattr()`: a
+    /// property getter on an instance runs to completion instead of pushing a
+    /// frame, so those builtins can turn its `AttributeError` into a default.
+    pub fn py_getattr_sync(&self, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        match self {
+            Self::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
+                instance_getattr_sync(*heap_id, attr, vm)
+            }
+            _ => self.py_getattr(attr, vm),
+        }
     }
 
     /// Sets an attribute, consuming `value` on both success and error.

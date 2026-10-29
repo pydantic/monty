@@ -11,9 +11,8 @@ use crate::bytecode::CallResult;
 /// Property descriptor for computed attributes (mirrors Python's descriptor
 /// protocol — accessing the property invokes its getter).
 ///
-/// Currently only supports zero-arg OS properties (e.g. `os.environ`).
-/// Future variants will likely add `Callable(FunctionId)` for `@property`
-/// and `External(StringId)` for external function getters.
+/// Only zero-arg OS properties on modules (e.g. `os.environ`). User-level
+/// `property` objects are heap [`Descriptor`](super::Descriptor)s instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Property {
     Os(ZeroArgOsProperty),

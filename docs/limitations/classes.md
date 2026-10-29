@@ -35,7 +35,8 @@ CPython-matching features: instance methods, `__init__` (full parameter
 shapes), instance and class attribute get/set (including `setattr(Foo, ...)`
 and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
-**class decorators** (`@deco class Foo`),
+**class decorators** (`@deco class Foo`), method decorators including
+`@property` (getter and setter), `@staticmethod` and `@classmethod`,
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
@@ -157,6 +158,35 @@ order and error wording, but with these divergences:
     `NotImplementedError` at compile time ("class member 'x' that shadows a
     captured variable of the same name from an enclosing scope") rather than
     miscompiling. Distinct names work fine.
+
+## Builtin descriptors
+
+`property`, `staticmethod` and `classmethod` bind as in CPython through instances and the class.
+They diverge as follows:
+
+- **Only a getter read as `obj.attr` can suspend.** It runs as a regular frame.
+    Setters, and getters reached through a call (`obj.attr(...)`), `getattr()` or `hasattr()`,
+    run to completion synchronously, so one that calls an external/OS function raises
+    `NotImplementedError` rather than yielding to the host.
+- **Deleters never run**: `del` is not supported (see [language.md](language.md)), so `fdel` and
+    `@x.deleter` are stored but unused.
+- **Error messages name the attribute**, where CPython names the property's `__name__` (its getter's
+    name). The two differ only when a property is bound under another name:
+    `x = property(lambda self: 1)` reports `property 'x' ...` here and `property '<lambda>' ...` in
+    CPython.
+- **`property.__doc__` is `None` unless `doc=` is given.** It falls back to the getter's docstring as in
+    CPython, but Monty functions have no `__doc__`.
+- **Missing attributes**: property objects have only `fget`, `fset`, `fdel`, `__doc__` and the
+    `getter`/`setter`/`deleter` methods; `staticmethod` and `classmethod` objects have only `__func__`
+    and `__wrapped__`. `__get__`, `__set__`, `__name__` and `__isabstractmethod__` raise
+    `AttributeError`.
+- **Writes that skip `property` setters**: `object.__setattr__` (and so a `@dataclass` `__init__`)
+    stores into the instance `__dict__` without calling the setter, where CPython calls it. The
+    synthesized dataclass `__repr__` / `__eq__` likewise skip a property's getter, reading the field
+    from the instance `__dict__` (or the property object itself when the `__dict__` lacks it).
+- **A `classmethod` dunder is not callable**: dunders other than `__enter__` / `__exit__` are invoked
+    as the bare class member, so `__repr__ = classmethod(...)` raises
+    `TypeError: 'classmethod' object is not callable`. A `staticmethod` dunder works.
 
 ## Crossing the host boundary (`pydantic_monty` / `@pydantic/monty`)
 
@@ -367,11 +397,11 @@ every construction request. Divergences:
     `type('Foo', (Bar,), {})` raises `TypeError`, see above).
 - Metaclasses, `__init_subclass__`, `__set_name__`, and any other
     metaclass-driven namespace customization.
-- `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
+- `__slots__`, and user-defined descriptors: a class attribute whose type
+    defines `__get__` / `__set__` / `__delete__` is returned and replaced as a
+    plain value. Only `property`, `staticmethod`, `classmethod` and functions
+    bind (see [Builtin descriptors](#builtin-descriptors) below).
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
-- Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
-    decorator on a `def` inside a class body (rejected at parse time). Decorators
-    on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
     are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
     latter with stringized values, see [typing.md](typing.md)). A class decorator

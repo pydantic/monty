@@ -98,12 +98,13 @@ fn method_default_walrus_returns_not_implemented_error() {
 }
 
 #[test]
-fn method_decorators_return_not_implemented_error() {
-    let err = get_parse_err("class Foo:\n    @staticmethod\n    def m(): pass");
+fn method_decorator_walrus_returns_not_implemented_error() {
+    // Method decorators evaluate in the class-body scope too.
+    let err = get_parse_err("class Foo:\n    @(d := staticmethod)\n    def m(): pass");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
-        @"The monty syntax parser does not yet support method decorators (classmethod/staticmethod/property)"
+        @"The monty syntax parser does not yet support assignment expressions (`:=`) in class bodies"
     );
 }
 

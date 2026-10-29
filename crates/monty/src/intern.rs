@@ -1156,6 +1156,12 @@ pub enum StaticStrings {
     FalseRepr,
     /// `fanout` parameter of `hashlib.blake2b()`.
     Fanout,
+    /// `property(fdel=...)` keyword and attribute.
+    Fdel,
+    /// `property(fget=...)` keyword and attribute.
+    Fget,
+    /// `property(fset=...)` keyword and attribute.
+    Fset,
     /// `dataclasses.field()` function, and the `Field` type name.
     Field,
     /// `namedtuple(field_names=...)` keyword argument.

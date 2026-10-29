@@ -13,11 +13,11 @@ any code runs.
     class-body statements other than `def`, a simple `name [: T] = <expr>`
     assignment, `pass`, or a docstring. There is no inheritance and no general
     dunder protocol. See [classes.md](classes.md).
-- **Decorators** (`@deco`) — supported on classes and on top-level or nested
-    `def`/`async def`, taking any callable in scope, evaluated in the enclosing
-    scope and applied bottom-up. Rejected at parse time on **methods**, so
-    `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
-    inside a class body are unavailable. See [classes.md](classes.md).
+- **Decorators** (`@deco`) — supported on classes, methods and top-level or
+    nested `def`/`async def`, taking any callable in scope, evaluated in the
+    enclosing scope and applied bottom-up. A walrus (`:=`) inside a method
+    decorator is rejected at parse time, as in other class-body expressions.
+    See [classes.md](classes.md).
 - **`async with` statements** — not yet supported.
 - **`yield` / `yield from` expressions** — no generator functions. Generator
     *expressions* (`(x for x in ...)`) parse but currently materialize to a

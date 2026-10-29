@@ -208,6 +208,8 @@ pub(crate) enum BuiltinType {
     DecimalSignalDict,
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    StaticMethod,
+    ClassMethod,
 }
 
 impl From<BuiltinType> for Type {
@@ -257,6 +259,8 @@ impl From<BuiltinType> for Type {
             BuiltinType::SpecialForm => Self::SpecialForm,
             BuiltinType::Path => Self::Path,
             BuiltinType::Property => Self::Property,
+            BuiltinType::StaticMethod => Self::StaticMethod,
+            BuiltinType::ClassMethod => Self::ClassMethod,
             BuiltinType::RePattern => Self::RePattern,
             BuiltinType::ReMatch => Self::ReMatch,
             BuiltinType::DirEntry => Self::DirEntry,
@@ -371,6 +375,8 @@ impl TryFrom<Type> for BuiltinType {
             Type::SpecialForm => Self::SpecialForm,
             Type::Path => Self::Path,
             Type::Property => Self::Property,
+            Type::StaticMethod => Self::StaticMethod,
+            Type::ClassMethod => Self::ClassMethod,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
             Type::DirEntry => Self::DirEntry,

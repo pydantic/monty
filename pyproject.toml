@@ -215,6 +215,9 @@ exclude = [
     "crates/monty/test_cases/refcount__generic_alias.py",
     "crates/monty/test_cases/typing__union.py",
     "crates/monty/test_cases/refcount__typing_union.py",
+    # deliberately misuses `property`/`staticmethod`/`classmethod` (wrong arity,
+    # read-only writes, calling a classmethod object) to pin their errors
+    "crates/monty/test_cases/class__descriptors.py",
     "scripts/startup_performance.py",
     "examples/web_scraper/example_code.py",
     # two starred targets in one assignment is the SyntaxError under test

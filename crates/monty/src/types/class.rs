@@ -2,7 +2,10 @@ use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{
+    Dict, LazyHeapSet, PyTrait, Type, attribute_name_value,
+    descriptor::{bind_class_member, call_class_member, is_property_value},
+};
 use crate::{
     args::ArgValues,
     boundary_uuid::create_uuid,
@@ -43,16 +46,23 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    /// Whether a `property` has ever been bound in `namespace`. Never cleared, so
+    /// it may be stale-true; instance reads skip the property check when false.
+    #[serde(default)]
+    has_property: bool,
 }
 
 impl Class {
     /// Creates a new class object from its name and member namespace.
+    ///
+    /// `has_property` must be true if any namespace value is a `property`.
     #[must_use]
-    pub fn new(name: EitherStr, namespace: Dict) -> Self {
+    pub fn new(name: EitherStr, namespace: Dict, has_property: bool) -> Self {
         Self {
             name,
             namespace,
             uuid: None,
+            has_property,
         }
     }
 
@@ -80,6 +90,12 @@ impl Class {
     pub fn namespace(&self) -> &Dict {
         &self.namespace
     }
+
+    /// Whether the namespace may hold a `property` (see the field).
+    #[must_use]
+    pub fn has_property(&self) -> bool {
+        self.has_property
+    }
 }
 
 impl<'h> HeapReadMut<'h, Class> {
@@ -94,6 +110,9 @@ impl<'h> HeapReadMut<'h, Class> {
     /// Existing instances observe the change immediately: instance attribute reads
     /// fall through to this namespace.
     pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if is_property_value(&value, vm) {
+            self.get_mut(vm.heap).has_property = true;
+        }
         self.namespace_mut().set(name, value, vm)
     }
 
@@ -186,9 +205,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
         }
-        // Otherwise look up a member (method or class variable) in the namespace.
+        // Otherwise look up a member in the namespace, unwrapping `staticmethod`
+        // and binding a `classmethod` to this class.
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
-            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+            Some(member) => Ok(Some(CallResult::Value(bind_class_member(member, self.id(), None, vm)))),
             None => Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
                 attr_str,
@@ -208,8 +228,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             defer_drop!(name_val, vm);
             return vm.call_function(name_val, args);
         }
-        // `Foo.method(args)` calls the raw (unbound) member with the given args —
-        // no `self` is inserted, the caller passes the instance explicitly.
+        // `Foo.method(args)` calls a plain function unbound — the caller passes the
+        // instance explicitly — while `staticmethod`/`classmethod` bind as usual.
         let member = self
             .get(vm.heap)
             .namespace
@@ -217,7 +237,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             .map(|v| v.clone_with_heap(vm.heap));
         if let Some(member) = member {
             defer_drop!(member, vm);
-            vm.call_function(member, args)
+            call_class_member(member, attr_str, self.id(), None, args, vm)
         } else {
             args.drop_with(vm);
             Err(ExcType::attribute_error_type(

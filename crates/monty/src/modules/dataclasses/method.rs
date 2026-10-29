@@ -557,7 +557,7 @@ fn store_fields(
         let replaced = if frozen {
             instance.set_attr_unchecked(name, value, vm)?
         } else {
-            instance.set_attr(name, value, vm)?
+            instance.set_attr(instance_id, name, value, vm)?
         };
         replaced.drop_with(vm);
     }

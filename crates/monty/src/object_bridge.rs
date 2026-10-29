@@ -770,6 +770,8 @@ impl MontyTypeExt for MontyType {
             Type::Union => Self::Union,
             Type::LruCacheWrapper => Self::LruCacheWrapper,
             Type::Random
+            | Type::StaticMethod
+            | Type::ClassMethod
             | Type::HashlibHash
             | Type::HashlibHashXof
             | Type::Blake2b

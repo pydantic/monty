@@ -102,3 +102,5 @@ Decimal 102
 DecimalContext 103
 DecimalSignalDict 104
 DecimalContextManager 105
+StaticMethod 106
+ClassMethod 107

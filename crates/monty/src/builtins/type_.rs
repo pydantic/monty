@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, PyTrait, descriptor::is_property_value},
     value::Value,
 };
 
@@ -181,9 +181,12 @@ fn create_class(
         ));
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
+    let has_property = namespace_dict.iter().any(|(_, value)| is_property_value(value, vm));
 
-    let class_id = vm
-        .heap
-        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));
+    let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
+        class_name,
+        namespace_dict,
+        has_property,
+    ))));
     Ok(Value::Ref(class_id))
 }

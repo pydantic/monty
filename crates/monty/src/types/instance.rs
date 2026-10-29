@@ -2,7 +2,13 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{
+    Dict, LazyHeapSet, PyTrait, Type, attribute_name_value,
+    descriptor::{
+        bind_class_member, call_class_member, is_method_value, is_property_value, property_get, property_get_sync,
+        property_set,
+    },
+};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -104,7 +110,7 @@ impl<'h> HeapObjectRead<'h, Instance> {
             if matches!(member, Value::None) {
                 Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
             } else {
-                call_member_bound(member, self.id(), ArgValues::Empty, vm)
+                call_class_member(member, "__iter__", class_id, Some(self.id()), ArgValues::Empty, vm)
             }
         } else {
             Err(ExcType::type_error_not_iterable(&self.py_type_name(vm)))
@@ -116,7 +122,7 @@ impl<'h> HeapObjectRead<'h, Instance> {
         let class_id = self.get(vm.heap).class();
         if let Some(member) = class_member(class_id, "__next__", vm) {
             defer_drop!(member, vm);
-            call_member_bound(member, self.id(), ArgValues::Empty, vm)
+            call_class_member(member, "__next__", class_id, Some(self.id()), ArgValues::Empty, vm)
         } else {
             Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
         }
@@ -147,15 +153,27 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// caller to drop. Takes ownership of both `name` and `value`.
     ///
     /// The entry point for an ordinary `obj.x = v`: it applies whatever the
-    /// class has to say about the write — today just the `__setattr__` a
-    /// `@dataclass(frozen=True)` generates — and is where a user `__setattr__`
+    /// class has to say about the write — `@dataclass(frozen=True)`, then a
+    /// `property` setter — and is where a class-level `__setattr__`
     /// hook would be dispatched once one is. The write itself is
-    /// [`set_attr_unchecked`](Self::set_attr_unchecked).
-    pub fn set_attr(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// [`set_attr_unchecked`](Self::set_attr_unchecked). `self_id` is this
+    /// instance's id, which a property setter receives as `self`.
+    pub fn set_attr(&self, self_id: HeapId, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let class_id = self.get(vm.heap).class();
         if let Some(exc) = dataclasses::frozen_assignment_error(class_id, &name, vm) {
             [name, value].drop_with(vm);
             return Err(exc);
+        }
+        // A property is a data descriptor: its setter takes the write instead of `__dict__`.
+        let property = name
+            .to_str_heap(vm.heap, vm.interns)
+            .ok()
+            .and_then(|attr| Some((class_property(class_id, attr, vm)?, attr.to_owned())));
+        if let Some((member, attr)) = property {
+            defer_drop!(member, vm);
+            name.drop_with(vm);
+            property_set(member, self_id, &attr, value, vm)?;
+            return Ok(None);
         }
         self.set_attr_unchecked(name, value, vm)
     }
@@ -306,7 +324,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let class_id = self.get(vm.heap).class();
         if let Some(member) = class_member(class_id, "__call__", vm) {
             defer_drop!(member, vm);
-            call_member_bound(member, self.id(), args, vm)
+            call_class_member(member, "__call__", class_id, Some(self.id()), args, vm)
         } else {
             args.drop_with(vm);
             Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
@@ -364,7 +382,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         let mut value_guard = DropGuard::new(value, vm);
         let name = attribute_name_value(name, value_guard.ctx());
         let (value, vm) = value_guard.into_parts();
-        let old_value = self.set_attr(name, value, vm)?;
+        let self_id = self.id();
+        let old_value = self.set_attr(self_id, name, value, vm)?;
         old_value.drop_with(vm);
         Ok(())
     }
@@ -415,8 +434,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
+        let class_id = self.get(vm.heap).class;
 
-        // 1. An instance attribute shadows class methods; call it as-is (unbound).
+        // 1. A property (a data descriptor) shadows the instance `__dict__`.
+        if let Some(member) = class_property(class_id, attr_str, vm) {
+            defer_drop!(member, vm);
+            return call_class_member(member, attr_str, class_id, Some(self.id()), args, vm);
+        }
+
+        // 2. An instance attribute shadows class methods; call it as-is (unbound).
         if let Some(callable) = self
             .get(vm.heap)
             .attrs
@@ -427,15 +453,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return vm.call_function(callable, args);
         }
 
-        // 2. A class member: bind `self` for methods, call data attributes as-is.
-        let class_id = self.get(vm.heap).class;
+        // 3. A class member, bound with CPython's descriptor semantics.
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return call_member_bound(member, self.id(), args, vm);
+            return call_class_member(member, attr_str, class_id, Some(self.id()), args, vm);
         }
 
-        // 3. `obj.__class__(...)` constructs a new instance — the callable form of
-        // the `obj.__class__` special attribute (see `instance_getattr` step 3).
+        // 4. `obj.__class__(...)` constructs a new instance — the callable form of
+        // the `obj.__class__` special attribute (see `instance_attr`).
         // Checked after the dict/namespace lookups so a same-named member wins.
         // The class value is a fresh owned ref (inc_ref) dropped by the guard once
         // `call_function` has borrowed it; `instantiate_class` takes its own ref
@@ -447,7 +472,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return vm.call_function(class_val, args);
         }
 
-        // 4. No such attribute.
+        // 5. No such attribute.
         args.drop_with(vm);
         Err(ExcType::attribute_error(
             class_name(class_id, vm.heap, vm.interns),
@@ -513,7 +538,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         // (`CallResult::FramePushed`), so — unlike `__repr__`/`__str__` — it
         // can suspend on external/OS calls; the frame's return value becomes
         // the `as` target via the normal `ReturnValue` push.
-        call_member_bound(enter, self.id(), ArgValues::Empty, vm)
+        call_class_member(enter, "__enter__", class_id, Some(self.id()), ArgValues::Empty, vm)
     }
 
     fn py_exit(&mut self, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
@@ -523,7 +548,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             // gates on `__exit__` being present at entry, and Monty has no `del`,
             // so the member cannot be removed mid-body. A reassignment (e.g. to a
             // non-callable like `None`) keeps the member present, so this branch
-            // is not taken — that case fails later in `call_member_bound` as a
+            // is not taken — that case fails later in `call_class_member` as a
             // `TypeError: 'NoneType' object is not callable`.
             return Err(ExcType::attribute_error(
                 class_name(class_id, vm.heap, vm.interns),
@@ -554,7 +579,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             args: vec![typ, val, Value::None],
             kwargs: KwargsValues::Empty,
         };
-        call_member_bound(exit, self.id(), args, vm)
+        call_class_member(exit, "__exit__", class_id, Some(self.id()), args, vm)
     }
 }
 
@@ -621,14 +646,35 @@ impl HeapItem for BoundMethod {
 
 /// Reads an instance attribute for `obj.attr` (the `LoadAttr` path).
 ///
-/// Mirrors Python's lookup order: the instance `__dict__` first, then the class
-/// namespace, then the `__class__` special case. A class method becomes a
-/// [`BoundMethod`] (binding `self`); a class variable is returned as-is. A missing
-/// attribute raises `AttributeError` with the real class name. Takes `self_id`
-/// (available at the `Value` level) because binding a method needs the instance's
-/// `HeapId`.
+/// Mirrors Python's lookup order: a class `property` first (it is a data
+/// descriptor, so its getter wins over the instance), then [`instance_attr`].
+/// A missing attribute raises `AttributeError` with the real class name. Takes
+/// `self_id` (available at the `Value` level) because binding needs the
+/// instance's `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
+    if let Some(member) = class_property(instance_class(self_id, vm), attr_str, vm) {
+        defer_drop!(member, vm);
+        return property_get(member, self_id, attr_str, vm);
+    }
+    instance_getattr_plain(self_id, attr_str, vm)
+}
+
+/// [`instance_getattr`] for `getattr()` and `hasattr()`, which must observe the
+/// getter's `AttributeError` to apply a default, so a property getter runs to
+/// completion here rather than as a pushed frame.
+pub(crate) fn instance_getattr_sync(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let attr_str = attr.as_str(vm.interns);
+    if let Some(member) = class_property(instance_class(self_id, vm), attr_str, vm) {
+        defer_drop!(member, vm);
+        return property_get_sync(member, self_id, attr_str, vm).map(CallResult::Value);
+    }
+    instance_getattr_plain(self_id, attr_str, vm)
+}
+
+/// The non-property half of [`instance_getattr`]: [`instance_attr`], or the
+/// `AttributeError` naming the class.
+fn instance_getattr_plain(self_id: HeapId, attr_str: &str, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if let Some(value) = instance_attr(self_id, attr_str, vm) {
         Ok(CallResult::Value(value))
     } else {
@@ -645,8 +691,9 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// `attr`, leaving the `AttributeError` to the caller.
 ///
 /// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
-/// exactly as `self.field` does, binding a function-valued class member as a
-/// [`BoundMethod`].
+/// exactly as `self.field` does. Class members bind through
+/// [`bind_class_member`]; a `property` is returned unevaluated, since running its
+/// getter needs a mutable VM (see `limitations/classes.md`).
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
@@ -658,17 +705,8 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
         return Some(value);
     }
     let class_id = instance_class(self_id, vm);
-    match class_member(class_id, attr, vm) {
-        // A class variable is returned as-is; a function binds `self`.
-        Some(member) if is_method_value(&member, vm) => {
-            vm.heap.inc_ref(self_id);
-            let bound = BoundMethod {
-                instance: Value::Ref(self_id),
-                func: member,
-            };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
-        }
-        Some(member) => Some(member),
+    match class_dunder(class_id, attr, vm) {
+        Some(member) => Some(bind_class_member(member, class_id, Some(self_id), vm)),
         // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
         // Last, so an explicit member of the same name wins, mirroring the
         // `__name__` handling on class objects.
@@ -729,7 +767,7 @@ fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'
 /// Calls a zero- or one-argument dunder using class-only lookup and descriptor binding.
 /// Returns `Ok(None)` if absent, consuming `arg` on every path.
 /// Runs synchronously via `evaluate_function`: external/OS calls cannot suspend,
-/// unlike `__call__` and `__enter__` via [`call_member_bound`].
+/// unlike `__call__` and `__enter__` via [`call_class_member`].
 pub(crate) fn instance_call_dunder_sync(
     self_id: HeapId,
     dunder: &'static str,
@@ -831,7 +869,7 @@ pub(crate) fn instance_call_copy_hook(
 fn call_dunder_member(self_id: HeapId, func: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(func, vm);
     // Only a plain function binds `self` as a descriptor (CPython's method
-    // lookup protocol, mirrored by `call_member_bound`); an already-bound
+    // lookup protocol, mirrored by `call_class_member`); an already-bound
     // method or other callable value is invoked without it.
     let args = if is_method_value(func, vm) {
         vm.heap.inc_ref(self_id);
@@ -876,10 +914,11 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
     matches!(class_dunder(class_id, dunder, vm), Some(member) if !matches!(member, Value::None))
 }
 
-/// Borrows a dunder out of `class_id`'s namespace, or `None` if absent.
+/// Borrows a member (usually a dunder) out of `class_id`'s namespace, or `None`
+/// if absent.
 ///
-/// Backs the existence checks above without the `clone_with_heap` that
-/// [`class_member`] pays to hand out an owned value. Callers needing to tell a
+/// Backs the existence checks above and [`instance_attr`] without the
+/// `clone_with_heap` that [`class_member`] pays to hand out an owned value. Callers needing to tell a
 /// `None` member apart from an absent one — CPython's `has_explicit_hash` does
 /// — want this rather than either check.
 pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
@@ -984,39 +1023,18 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
     }
 }
 
-/// Calls a class member with CPython's descriptor-binding semantics: a
-/// plain user-defined function binds `self` (prepended to `args`), while any
-/// other callable value is called as-is. Shared by `py_call_attr` and the
-/// context-manager and iterator hooks so special-method invocation and
-/// ordinary method calls dispatch identically.
-fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-    if is_method_value(member, vm) {
-        vm.heap.inc_ref(self_id);
-        vm.call_function(member, args.prepend(Value::Ref(self_id)))
-    } else {
-        vm.call_function(member, args)
-    }
-}
-
-/// Whether a value is a user-defined function (so it should bind `self` when
-/// accessed as a method). Class variables that are not functions are returned
-/// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::DefFunction(_) => true,
-        Value::Ref(id) => matches!(
-            vm.heap.get(*id),
-            // `functools.partial` and the `lru_cache` wrapper are descriptors in
-            // CPython 3.14 too, and bind the instance the same way: after the
-            // arguments they already carry. A `@dataclass`-generated method is a
-            // function in CPython.
-            HeapData::Closure(_)
-                | HeapData::FunctionDefaults(_)
-                | HeapData::Partial(_)
-                | HeapData::LruCache(_)
-                | HeapData::DataclassMethod(_)
-        ),
-        _ => false,
+/// Clones the `property` that `class_id` binds to `name`, if any.
+///
+/// Gated on [`Class::has_property`](super::Class::has_property) so the common
+/// `self.x` read, on a class without properties, costs no extra lookup.
+fn class_property(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
+    match vm.heap.get(class_id) {
+        HeapData::Class(class) if class.has_property() => class
+            .namespace()
+            .get_by_str(name, vm.heap, vm.interns)
+            .filter(|member| is_property_value(member, vm))
+            .map(|member| member.clone_with_heap(vm.heap)),
+        _ => None,
     }
 }
 
