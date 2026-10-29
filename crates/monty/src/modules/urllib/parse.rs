@@ -12,31 +12,15 @@ use std::{
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::exception_private::{ExcType, ExcTypeExt, RunError, RunResult};
+use crate::{
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    types::str::StringRepr,
+};
 
 /// Schemes whose relative references `urljoin` resolves against the base.
 const USES_RELATIVE: &[&str] = &[
-    "",
-    "ftp",
-    "http",
-    "gopher",
-    "nntp",
-    "imap",
-    "wais",
-    "file",
-    "https",
-    "shttp",
-    "mms",
-    "prospero",
-    "rtsp",
-    "rtsps",
-    "rtspu",
-    "sftp",
-    "svn",
-    "svn+ssh",
-    "ws",
-    "wss",
-    "itms-services",
+    "", "ftp", "http", "gopher", "nntp", "imap", "wais", "file", "https", "shttp", "mms", "prospero", "rtsp", "rtsps",
+    "rtspu", "sftp", "svn", "svn+ssh", "ws", "wss",
 ];
 
 /// Schemes that take a `//netloc` part.
@@ -251,12 +235,17 @@ pub(super) fn urljoin(base: &str, url: &str, allow_fragments: bool) -> RunResult
     } else {
         let mut segments = base_parts;
         segments.extend(r.path.split('/'));
-        // Drop empty interior segments, which would join as redundant slashes.
-        let last = segments.len() - 1;
-        let mut filtered = vec![segments[0]];
-        filtered.extend(segments[1..last].iter().copied().filter(|s| !s.is_empty()));
-        filtered.push(segments[last]);
-        filtered
+        // Drop empty interior segments, which would join as redundant slashes;
+        // a lone segment (`urljoin('a', 'b')`) has no interior.
+        if segments.len() > 1 {
+            let last = segments.len() - 1;
+            let mut filtered = vec![segments[0]];
+            filtered.extend(segments[1..last].iter().copied().filter(|s| !s.is_empty()));
+            filtered.push(segments[last]);
+            filtered
+        } else {
+            segments
+        }
     };
 
     let mut resolved: Vec<&str> = Vec::new();
@@ -332,7 +321,8 @@ pub(super) fn port(netloc: &str) -> RunResult<Option<i64>> {
     };
     if !port.bytes().all(|b| b.is_ascii_digit()) {
         return Err(ExcType::value_error(format!(
-            "Port could not be cast to integer value as '{port}'"
+            "Port could not be cast to integer value as {}",
+            StringRepr(port)
         )));
     }
     match port.parse::<i64>() {
@@ -344,9 +334,19 @@ pub(super) fn port(netloc: &str) -> RunResult<Option<i64>> {
 /// `quote_from_bytes`: percent-encodes every byte outside the always-safe set and
 /// `safe`, with upper-case hex digits. `safe` holds ASCII bytes only.
 pub(super) fn quote_bytes(bytes: &[u8], safe: &[u8]) -> String {
+    // A lookup table keeps a long `safe` from being rescanned for every byte.
+    let mut keep = [false; 128];
+    for &b in safe {
+        if let Some(slot) = keep.get_mut(usize::from(b)) {
+            *slot = true;
+        }
+    }
     let mut out = String::with_capacity(bytes.len());
     for &b in bytes {
-        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'~') || safe.contains(&b) {
+        if b.is_ascii_alphanumeric()
+            || matches!(b, b'_' | b'.' | b'-' | b'~')
+            || keep.get(usize::from(b)) == Some(&true)
+        {
             out.push(char::from(b));
         } else {
             // Writing to a `String` cannot fail.

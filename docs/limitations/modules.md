@@ -50,6 +50,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `typing`        | [typing.md](typing.md)               |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)     |
 | `urllib`        | [urllib.md](urllib.md)               |
+| `urllib.parse`  | [urllib.md](urllib.md)               |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`

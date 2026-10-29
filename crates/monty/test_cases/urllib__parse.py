@@ -239,6 +239,12 @@ for _call, _exc, _msg in [
     except _exc as e:
         assert str(e) == _msg
 
+# a lone segment and a scheme outside `uses_relative`
+assert urljoin('a', 'b') == 'b'
+assert urljoin('a/', 'b') == 'a/b'
+assert urljoin('itms-services://host/a', 'b') == 'b'
+assert urljoin('itms-services://host/a', '//other/b') == '//other/b'
+
 # === urldefrag ===
 assert urldefrag('http://x/y#f') == ('http://x/y', 'f')
 assert repr(urldefrag('http://x/y#f')) == "DefragResult(url='http://x/y', fragment='f')"
@@ -402,3 +408,48 @@ for _call, _exc, _msg in [
         assert False, 'expected an error'
     except _exc as e:
         assert str(e) == _msg
+
+# === results of another shape are not URL results ===
+from collections import namedtuple
+
+_Other = namedtuple('SplitResult', ['a'])
+try:
+    _Other(1).geturl()
+    assert False, 'expected AttributeError'
+except AttributeError as e:
+    assert str(e) == "'SplitResult' object has no attribute 'geturl'"
+assert urlsplit('x')._replace(netloc=None).path == 'x'
+try:
+    urlsplit('http://h/').geturl(x=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "SplitResult.geturl() got an unexpected keyword argument 'x'"
+try:
+    urlsplit("http://h:a'b/").port
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == '''Port could not be cast to integer value as "a'b"'''
+
+# === codec arguments follow str.encode / bytes.decode ===
+assert quote('/a b', safe=[47]) == '/a%20b'
+assert quote('/a b', safe=(47, 300, 32)) == '/a b'
+for _call, _exc, _msg in [
+    (lambda: unquote(b'%ff', encoding=None), TypeError, "decode() argument 'encoding' must be str, not None"),
+    (lambda: unquote(b'%ff', errors=None), TypeError, "decode() argument 'errors' must be str, not None"),
+    (lambda: unquote('%ff', 5), TypeError, "decode() argument 'encoding' must be str, not int"),
+    (lambda: quote(1, encoding='x'), TypeError, "quote() doesn't support 'encoding' for bytes"),
+    (lambda: quote('a', safe=['/']), TypeError, "'<' not supported between instances of 'str' and 'int'"),
+    (lambda: quote('a', safe=[1.5]), TypeError, "'float' object cannot be interpreted as an integer"),
+    (lambda: quote('a', safe=[-1]), ValueError, 'bytes must be in range(0, 256)'),
+]:
+    try:
+        _call()
+        assert False, 'expected an error'
+    except _exc as e:
+        assert str(e) == _msg
+assert unquote('%ff', encoding=None) == '\ufffd'
+assert parse_qsl(b'a=%ff', encoding='nope') == [(b'a', b'\xff')]
+# literal characters are kept; only the escapes go through the codec
+assert parse_qsl('a=\u00e9%c3%a9') == [('a', '\u00e9\u00e9')]
+assert parse_qsl('a=\u00e9%e9', encoding='ascii') == [('a', '\u00e9\ufffd')]
+assert parse_qs('a=1&b=2&a=3&c=4') == {'a': ['1', '3'], 'b': ['2'], 'c': ['4']}
