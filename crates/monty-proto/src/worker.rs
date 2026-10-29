@@ -26,13 +26,15 @@ use monty::{
     CheckedSource, Dump, MontyRepl, ReplProgress, ReplStartError, Session, SessionRef, dump,
     type_check_nesting_exception,
 };
+#[cfg(feature = "worker")]
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
-    PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID, ModuleStub,
+    MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter, PrintWriterCallback,
+    ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD, TypeCheckState, TypeCheckingConfig,
 };
+#[cfg(feature = "worker")]
+use monty_types::{CHECKER_MODULE_NAMES, SANDBOX_MODULE_NAMES, SourceRange};
 
 use super::{
     BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
@@ -40,6 +42,10 @@ use super::{
     named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
+
+/// Why a worker built with `worker-core` alone refuses a type-checked session.
+#[cfg(not(feature = "worker"))]
+const NO_TYPE_CHECKER: &str = "type checking is not built into this worker (monty-proto built with `worker-core`)";
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -191,6 +197,10 @@ enum SessionState {
     /// `ReplProgress::Complete` — completion ends the turn immediately.
     Suspended(Box<ReplProgress>),
     /// A feed awaiting host stubs before type checking.
+    #[cfg_attr(
+        not(feature = "worker"),
+        expect(dead_code, reason = "only a type-checked feed asks for stubs")
+    )]
     AwaitingStubs(Box<PendingFeed>),
 }
 
@@ -220,6 +230,7 @@ pub struct Child {
     /// diagnostics).
     script_name: String,
     /// Built by the first type-checked feed and dropped when the session resets.
+    #[cfg(feature = "worker")]
     type_checker: Option<TypeChecker>,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
@@ -238,6 +249,7 @@ impl Default for Child {
         Self {
             state: SessionState::Configured(None),
             script_name: String::new(),
+            #[cfg(feature = "worker")]
             type_checker: None,
             type_check: None,
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
@@ -461,6 +473,10 @@ impl Child {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            #[cfg(not(feature = "worker"))]
+            if configure.type_check {
+                return protocol_violation(NO_TYPE_CHECKER);
+            }
             // Reject invalid settings on the Configure turn.
             self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
                 None => OsPolicy::default(),
@@ -577,6 +593,7 @@ impl Child {
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
         let type_checked = !feed.skip_type_check && self.type_check.is_some();
+        #[cfg(feature = "worker")]
         if type_checked && let Some(state) = &mut self.type_check {
             let imports = scan_imports(&code);
             state.pending_snippet = Some(code.clone());
@@ -625,9 +642,14 @@ impl Child {
         repl: Box<MontyRepl>,
         checked: CheckedSource<'_>,
         inputs: NamedValues,
+        #[cfg_attr(
+            not(feature = "worker"),
+            expect(unused_variables, reason = "nothing to check without the checker")
+        )]
         type_checked: bool,
         sink: &mut dyn EventSink,
     ) -> pb::ChildEvent {
+        #[cfg(feature = "worker")]
         if type_checked && let Some(event) = self.type_check_feed(checked.code()) {
             self.state = SessionState::Ready(repl);
             self.discard_pending_snippet();
@@ -945,6 +967,10 @@ impl Child {
             module_stubs,
             mut state,
         } = restored;
+        #[cfg(not(feature = "worker"))]
+        if type_check.is_some() {
+            return protocol_violation(NO_TYPE_CHECKER);
+        }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
         match &mut state {
             Session::Idle(repl) => repl.tracker_mut().tighten_limits(&limits),
@@ -1068,6 +1094,7 @@ impl Child {
     }
 
     /// Checks against accumulated stubs and imports, returning an event on failure.
+    #[cfg(feature = "worker")]
     fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
         // `check_source` already ran the lexer scan, so only the AST walk is left.
@@ -1098,7 +1125,10 @@ impl Child {
     fn reset(&mut self) {
         self.state = SessionState::Configured(None);
         // Invalidating source files leaves Salsa caches and interned data allocated.
-        self.type_checker = None;
+        #[cfg(feature = "worker")]
+        {
+            self.type_checker = None;
+        }
         self.type_check = None;
         self.script_name = String::new();
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;

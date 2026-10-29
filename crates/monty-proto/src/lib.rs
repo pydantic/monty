@@ -18,7 +18,7 @@ mod requirement;
 #[doc(hidden)]
 pub mod test_util;
 mod wire;
-#[cfg(feature = "worker")]
+#[cfg(feature = "worker-core")]
 pub mod worker;
 
 /// Version of the wire schema this build speaks, sent in
