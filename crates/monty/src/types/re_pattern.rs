@@ -205,7 +205,13 @@ impl RePattern {
     ///
     /// The spans sit on the stack for patterns with up to seven groups, so a search
     /// allocates nothing beyond the match itself.
-    fn build_single_match(&self, text: &str, caps: &fancy_regex::Captures<'_>, subject: &Value, heap: &Heap) -> Value {
+    fn build_single_match(
+        &self,
+        text: &str,
+        caps: &fancy_regex::Captures<'_, str>,
+        subject: &Value,
+        heap: &Heap,
+    ) -> Value {
         let spans: SmallVec<[Option<(usize, usize)>; 8]> =
             caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect();
         self.build_match(text, &spans, subject, text.is_ascii(), heap)
@@ -440,7 +446,7 @@ impl RePattern {
 }
 
 /// Appends one match's byte spans to `spans`: the full match, then each group.
-fn push_spans(caps: &fancy_regex::Captures<'_>, spans: &mut Vec<Option<(usize, usize)>>) {
+fn push_spans(caps: &fancy_regex::Captures<'_, str>, spans: &mut Vec<Option<(usize, usize)>>) {
     spans.extend(caps.iter().map(|m| m.map(|m| (m.start(), m.end()))));
 }
 
@@ -788,11 +794,15 @@ fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<
     };
 
     let mut builder = RegexBuilder::new(&full_pattern);
+    builder.max_prog_size(MAX_PROG_SIZE);
     if let Some(limit) = delegate_size_limit {
         builder.delegate_size_limit(limit);
     }
     builder.build()
 }
+
+/// Cap on the backtracking VM's instructions; translated patterns grow it only linearly with their length.
+const MAX_PROG_SIZE: usize = 1_000_000;
 
 /// True when `err` is the delegated engine's exceeded-size-limit error: the
 /// pattern is valid, its compiled form just doesn't fit the requested cap.
