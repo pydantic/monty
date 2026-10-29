@@ -26,10 +26,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
+use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, decode_frame_with_budget, encode_framed_into,
     encode_to_capped_vec, pb,
@@ -57,6 +54,10 @@ use tokio_tungstenite::{
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
 use crate::{MontyTransport, PoolConfig, PoolError, WebSocketDisconnect};
+
+#[cfg(test)]
+#[path = "../tests/unit/websocket_worker.rs"]
+mod tests;
 
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -633,7 +634,7 @@ const WS_EVENT_CHANNEL_DEPTH: usize = 1;
 /// Reserving the slot before polling keeps the reader polling (and ponging)
 /// rather than blocked holding a frame.
 async fn read_ws_events(
-    mut read_half: SplitStream<WsStream>,
+    mut read_half: impl Stream<Item = Result<Message, WsError>> + Unpin,
     events: mpsc::Sender<Result<Bytes, FrameError>>,
     disconnect: Arc<OnceLock<WebSocketDisconnect>>,
 ) {

@@ -23,6 +23,10 @@ mod snapshot;
 mod telemetry;
 mod version;
 
+#[cfg(test)]
+#[path = "../tests/rust/disconnect.rs"]
+mod disconnect_tests;
+
 use std::sync::OnceLock;
 
 pub use exceptions::{
