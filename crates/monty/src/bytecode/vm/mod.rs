@@ -12,6 +12,8 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod module_cache;
+mod module_finder;
 mod namespace;
 mod pattern;
 mod recursion;
@@ -23,6 +25,8 @@ pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
 pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
+pub(crate) use module_cache::ModuleCache;
+pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameNamespace, function_namespace};
 use recursion::frame_recursion_depth;
@@ -349,13 +353,14 @@ pub struct CallFrame<'code> {
     /// `cleanup_frame_state`, or taken by `serialize` for a snapshot.
     namespace: Option<Box<FrameNamespace>>,
 
-    /// Whether this frame is a class `__init__` running for `Foo(...)`.
+    /// Whether this frame is a class `__init__` running for `Foo(...)`, or the
+    /// body of a module imported from a file.
     ///
     /// When `true`, the `ReturnValue` handler discards the frame's return value
-    /// (`__init__` returns `None`) and leaves the instance — pushed onto the
-    /// caller's operand stack before this frame was created — as the result of the
-    /// construction. Threaded through serialization (`SerializedFrame`) so a
-    /// suspended initializer resumes correctly.
+    /// (`None`) and leaves the instance or module — pushed onto the caller's
+    /// operand stack before this frame was created — as the result of the
+    /// construction or import. Threaded through serialization (`SerializedFrame`)
+    /// so a suspended initializer resumes correctly.
     is_initializer: bool,
 
     /// Module name for `LoadAttrImport` errors, set by `LoadModule`/`LoadSubmodule`.
@@ -591,7 +596,7 @@ pub struct SerializedFrame {
     #[serde(rename = "C")]
     call_offset: Option<u32>,
 
-    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    /// Whether this frame is a class `__init__` or an imported module body (see `CallFrame.is_initializer`).
     ///
     /// Unlike `should_return`, an initializer frame can legitimately be live
     /// across a suspend (an `__init__` that calls an external/OS function), so it
@@ -684,16 +689,28 @@ pub struct VMSnapshot {
     cwd: String,
     /// The session's `random` state at the pause.
     random: SessionRandom,
+    /// The session's file modules at the pause.
+    #[serde(default)]
+    modules: ModuleCache,
+}
+
+/// What an abandoned snapshot hands back to its REPL session: the state that
+/// outlives a snippet.
+pub(crate) struct AbandonedState {
+    pub globals: Vec<Value>,
+    pub cwd: String,
+    pub random: SessionRandom,
+    pub modules: ModuleCache,
 }
 
 impl VMSnapshot {
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the
-    /// globals, working directory and `random` generator so an abandoned REPL
-    /// snippet keeps its namespace, any `os.chdir` it made and any seed it
-    /// set. Mirrors `VM::drop`.
-    pub(crate) fn abandon(self, heap: &mut Heap) -> (Vec<Value>, String, SessionRandom) {
+    /// globals, working directory, `random` generator and file modules so an
+    /// abandoned REPL snippet keeps its namespace, any `os.chdir` it made, any
+    /// seed it set and any module it finished importing. Mirrors `VM::drop`.
+    pub(crate) fn abandon(self, heap: &mut Heap) -> AbandonedState {
         let Self {
             stack,
             globals,
@@ -704,6 +721,7 @@ impl VMSnapshot {
             pending_lookup_effect,
             cwd,
             random,
+            mut modules,
             ..
         } = self;
         HeapReader::with(heap, &mut (), |heap, ()| {
@@ -715,8 +733,15 @@ impl VMSnapshot {
                 frame.namespace.drop_with(heap);
             }
             scheduler.cleanup(heap);
+            // a module body interrupted here must run again at the next import
+            modules.remove_unfinished(heap);
         });
-        (globals, cwd, random)
+        AbandonedState {
+            globals,
+            cwd,
+            random,
+            modules,
+        }
     }
 
     /// Number of tasks the scheduler held when this snapshot was taken.
@@ -858,6 +883,9 @@ pub struct VM<'h> {
     /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
     pub(crate) random: SessionRandom,
 
+    /// Modules imported from files, preserved across snapshots and REPL feeds.
+    pub(crate) modules: ModuleCache,
+
     /// Working directory, `__file__` inputs and the assert-repr cap for this
     /// run. Rebuilt from the executor on restore, except the working
     /// directory, which travels in the snapshot because `os.chdir` may have
@@ -900,6 +928,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: SessionRandom::default(),
+            modules: ModuleCache::default(),
             env: program.vm_env(),
         }
     }
@@ -971,6 +1000,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: snapshot.random,
+            modules: snapshot.modules,
             env: {
                 let mut env = program.vm_env();
                 env.cwd = Cow::Owned(snapshot.cwd);
@@ -1027,6 +1057,7 @@ impl<'h> VM<'h> {
             // string), so a later `take_changed_cwd` on this VM stays honest.
             cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
             random: mem::take(&mut self.random),
+            modules: mem::take(&mut self.modules),
         }
     }
 
@@ -1978,7 +2009,9 @@ impl<'h> VM<'h> {
                             let instance = self.pop();
                             return Ok(FrameExit::Return(instance));
                         }
-                        // Instance already on the caller's stack — push nothing.
+                        // Instance (or imported module) already on the caller's
+                        // stack — push nothing.
+                        try_catch!(self, self.finish_module_init());
                     } else if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
@@ -2059,14 +2092,15 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a top-level built-in or suspends with [`OsFunctionCall::Import`].
-    /// The host's value becomes the module; `NotFound` raises `ModuleNotFoundError`.
+    /// Loads a top-level built-in or a cached file module, or suspends with
+    /// [`OsFunctionCall::Import`]: the host's value becomes the module, and a
+    /// host with no such module falls back to a `.py` file (see `module_finder`).
     /// `LoadSubmodule` resolves the remaining dotted components.
     fn load_module(&mut self, module_id: u16) -> CallResult {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
             Some(module) => CallResult::Value(Value::Ref(module.create(self))),
-            None => CallResult::OsCall(OsFunctionCall::Import(self.interns.get_str(name_id).to_owned())),
+            None => self.import_top_level(self.interns.get_str(name_id)),
         }
     }
 
@@ -2185,7 +2219,8 @@ impl<'h> VM<'h> {
             Some(
                 PendingEffect::Post(PostConversionEffect::DiscardResult | PostConversionEffect::SleepResult { .. })
                 | PendingEffect::Pre(_)
-                | PendingEffect::Scan(_),
+                | PendingEffect::Scan(_)
+                | PendingEffect::Import(_),
             )
             | None => Ok(Some(value)),
         };
@@ -2319,6 +2354,7 @@ impl<'h> VM<'h> {
                     };
                 }
                 PendingEffect::Scan(effect) => effect.release(self.heap),
+                PendingEffect::Import(_) => {}
                 // Hold no state or heap references — nothing to roll back.
                 PendingEffect::Pre(_)
                 | PendingEffect::Post(
@@ -2906,6 +2942,7 @@ impl Drop for VM<'_> {
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with(self.heap);
+        mem::take(&mut self.modules).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
     }
 }

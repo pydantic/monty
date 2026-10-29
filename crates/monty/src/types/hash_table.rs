@@ -201,8 +201,8 @@ impl<E: TableEntry> PyHashTable<E> {
     /// Overwrites the entry a probe found, returning the old one.
     ///
     /// The replacement must probe the same as what it displaces, since its
-    /// bucket stays where it is. A dict rewriting the value at an existing key
-    /// is the intended use.
+    /// bucket stays where it is. A cache storing a new result for an existing
+    /// key is the intended use.
     #[inline]
     #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
     pub(crate) fn replace(&mut self, slot: Slot, entry: E) -> E {
@@ -217,6 +217,19 @@ impl<E: TableEntry> PyHashTable<E> {
             "replace keeps the bucket, so the hash must match"
         );
         mem::replace(old, entry)
+    }
+
+    /// The entry a probe found, for rewriting in place.
+    ///
+    /// The entry must keep probing the same, since its bucket stays where it
+    /// is. A dict rebinding the value at an existing key is the intended use.
+    #[inline]
+    #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
+    pub(crate) fn entry_mut(&mut self, slot: Slot) -> &mut E {
+        self.entries
+            .get_mut(slot.0)
+            .filter(|e| e.is_live())
+            .expect(PROBE_SLOT_LIVE)
     }
 
     /// Removes the entry a probe found, returning it.

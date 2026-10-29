@@ -1,7 +1,7 @@
 //! Host-supplied results fed back into a suspended run:
 //! [`NameLookupResult`] and [`ExtFunctionResult`].
 
-use crate::{exceptions::MontyException, object::MontyObject};
+use crate::{exceptions::MontyException, import::ModuleFile, object::MontyObject};
 /// Result of a name lookup from the host.
 ///
 /// When the VM encounters an unresolved name (or a lazy attribute on a
@@ -57,6 +57,9 @@ pub enum ExtFunctionResult {
     Future(u32),
     /// Raises `NameError`, or `ModuleNotFoundError` for an `import` call.
     NotFound(String),
+    /// Answers an `import` call with the module's `.py` file, which the sandbox
+    /// runs as the module. Only valid for an import with a non-empty search path.
+    ModuleFile(ModuleFile),
 }
 
 impl From<MontyObject> for ExtFunctionResult {

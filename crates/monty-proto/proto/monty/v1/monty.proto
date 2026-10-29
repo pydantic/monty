@@ -532,7 +532,18 @@ message ExtFunctionResult {
     // calls, RuntimeError for the rest). Only valid answering an `OsCall`
     // suspension; the child computes it from its retained call payload.
     Unit not_handled = 5;
+    // The module's `.py` file, answering an `import` call with a non-empty
+    // `search_path`; the child runs it as the module.
+    ModuleFile module_file = 6;
   }
+}
+
+// A module's file found on an `import` call's search path.
+message ModuleFile {
+  // The virtual path it was read from.
+  string path = 1;
+  // The file's text.
+  string source = 2;
 }
 
 message FutureResult {
@@ -1047,9 +1058,12 @@ message OsCall {
     bool recurse_symlinks = 6;
   }
 
-  // The argument of `OsCall.import`.
+  // The arguments of `OsCall.import`.
   message Import {
+    // The dotted module name.
     string module = 1;
+    // Absolute virtual directories to search, in order, for the module's `.py` file.
+    repeated string search_path = 2;
   }
 
   // The argument of `OsCall.import_stubs`, in source order.

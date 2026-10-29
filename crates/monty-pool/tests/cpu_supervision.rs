@@ -9,7 +9,7 @@ mod build;
 
 use monty_pool::{Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::pb;
-use monty_types::{ExecutionClock, IMPORT_STUBS_CALL_ID, MontyObject, PrintStream, ResourceLimits};
+use monty_types::{ExecutionClock, IMPORT_STUBS_CALL_ID, ModuleFile, MontyObject, PrintStream, ResourceLimits};
 
 fn no_print(_: PrintStream, _: &str) -> PrintFuture {
     Box::pin(ready(()))
@@ -143,6 +143,18 @@ async fn raw_typing_errors_end_the_feed() {
                 ..
             }
         ));
+        let error = child
+            .resume(
+                ResumeValue::ModuleFile(ModuleFile {
+                    path: "/tools.py".to_owned(),
+                    source: "value = 42".to_owned(),
+                }),
+                &mut no_print,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PoolError::Protocol(ref message)
+            if message == "ModuleFile is only valid answering an import with a search path"));
         let resume = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
                 call_id: IMPORT_STUBS_CALL_ID,

@@ -17,7 +17,9 @@ use crate::{
     file_mode::FileMode,
     format::StringRepr,
     graph::{MontyGraph, MontyNode, NodeId},
+    import::ImportArgs,
     object::{CallArgs, MontyObject, MontyTimeZone},
+    results::ExtFunctionResult,
     scan::ScanArgs,
     unstable::{self, PushValue},
     virtual_path::normalize_virtual_path,
@@ -163,11 +165,13 @@ pub enum OsFunctionCall {
     AsyncSystemSleep(Duration),
 
     // ---- Host modules ------------------------------------------------------
-    /// Requests a missing module by top-level name. The host returns its value, an exception,
-    /// or `not_found` / `not_handled` to raise `ModuleNotFoundError`.
-    /// `from m import a` and `import m.sub` then load attributes from that value.
+    /// Requests a module the sandbox does not bundle: a top-level name, or a
+    /// submodule of a package imported from a file. The host returns a module
+    /// value, the module's [`ModuleFile`](crate::ModuleFile) from its search
+    /// path, an exception, or `not_found` / `not_handled` for `ModuleNotFoundError`.
+    /// A host module's own submodules are its attributes and are never requested.
     #[strum(serialize = "import")] // IMPORT_CALL
-    Import(String),
+    Import(ImportArgs),
     /// Requests stubs for previously unrequested top-level imports before type-checking a feed.
     /// The host returns a dict of dotted module paths to stub source (or `None`),
     /// or `not_found` / `not_handled` for no stubs.
@@ -236,7 +240,11 @@ impl OsFunctionCall {
             Self::Sleep(delay) | Self::SystemSleep(delay) | Self::AsyncSleep(delay) | Self::AsyncSystemSleep(delay) => {
                 single_arg(MontyNode::Float(delay.as_secs_f64()))
             }
-            Self::Import(name) => single_arg(MontyObject::string(name)),
+            Self::Import(a) => {
+                let mut call = single_arg(MontyObject::string(a.module));
+                call.push_arg(MontyObject::list(a.search_path.into_iter().map(MontyObject::string)));
+                call
+            }
             Self::ImportStubs(names) => single_arg(MontyObject::list(names.into_iter().map(MontyObject::string))),
         }
     }
@@ -403,15 +411,26 @@ impl OsFunctionCall {
         primary.into_iter().chain(dst)
     }
 
+    /// The answer when no handler accepted this call: `not_found` for an import,
+    /// which the sandbox raises as `ModuleNotFoundError`, else the
+    /// [`on_no_handler`](Self::on_no_handler) exception.
+    #[must_use]
+    pub fn no_handler_result(&self) -> ExtFunctionResult {
+        match self {
+            Self::Import(_) => ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()),
+            _ => ExtFunctionResult::Error(self.on_no_handler()),
+        }
+    }
+
     /// Exception to raise when no handler accepted this call: `PermissionError`
     /// for FS ops (with the path), `ModuleNotFoundError` for an import,
     /// `RuntimeError` for the other non-FS ops.
     #[must_use]
     pub fn on_no_handler(&self) -> MontyException {
-        if let Self::Import(name) = self {
+        if let Self::Import(a) = self {
             MontyException::new(
                 ExcType::ModuleNotFoundError,
-                Some(format!("No module named {}", StringRepr(name))),
+                Some(format!("No module named {}", StringRepr(&a.module))),
             )
         } else if let Some(path) = self.fs_primary_path() {
             let path = if path.is_empty() {

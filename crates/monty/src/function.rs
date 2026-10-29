@@ -161,13 +161,9 @@ impl Function {
         }
     }
 
-    /// Writes the Python repr() string for this function to a formatter.
+    /// Writes the Python repr() string for this function to a formatter, as
+    /// CPython does: `<function name at 0x...>`, with the name unquoted.
     pub fn py_repr_fmt<W: Write>(&self, f: &mut W, interns: &Interns, py_id: impl fmt::LowerHex) -> fmt::Result {
-        write!(
-            f,
-            "<function '{}' at 0x{:x}>",
-            interns.get_str(self.name.name_id),
-            py_id
-        )
+        write!(f, "<function {} at 0x{:x}>", interns.get_str(self.name.name_id), py_id)
     }
 }

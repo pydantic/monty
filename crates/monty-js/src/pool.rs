@@ -37,8 +37,8 @@ use monty_pool::{
 };
 use monty_types::{
     unstable::{self, NodeId},
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, NameLookupResult, NamedValues, PrintStream,
-    SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject, NameLookupResult,
+    NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -646,6 +646,51 @@ impl NativeSession {
         )
     }
 
+    /// Reads one candidate file of a pending `import` call through this
+    /// feed's mounts without resuming the worker. Resolves to
+    /// `{kind: 'moduleText', text}`, `{kind: 'moduleMissing'}`,
+    /// `{kind: 'moduleReadError', excType, message}`, or `{kind: 'notMounted'}`
+    /// when no mount covers `path`.
+    #[napi]
+    pub fn read_from_mounts<'env>(
+        &self,
+        env: &'env Env,
+        path: String,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, _| {
+                Box::pin(async move {
+                    match checkout.read_from_mounts(&path).await {
+                        Ok(ModuleRead::NotHandled) => TurnOutcome::NotMounted,
+                        Ok(read) => TurnOutcome::ModuleRead(read),
+                        Err(err) => TurnOutcome::from(StdResult::<TurnEvent, PoolError>::Err(err)),
+                    }
+                })
+            }),
+        )
+    }
+
+    /// Answers an `import` call with the module's file, found at `path` on
+    /// its search path; the sandbox runs `source` as the module.
+    #[napi]
+    pub fn resume_module_file<'env>(
+        &self,
+        env: &'env Env,
+        path: String,
+        source: String,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let file = ModuleFile { path, source };
+        self.run_turn(
+            env,
+            on_print,
+            outcome_fn(|checkout, on_print| Box::pin(checkout.resume(ResumeValue::ModuleFile(file), on_print))),
+        )
+    }
+
     /// Answers a `functionCall` suspension whose name has no handler: the
     /// sandbox raises `NameError`.
     #[napi]
@@ -1024,6 +1069,9 @@ enum TurnOutcome {
     /// The session's dump (or stored-record ID). Only produced by
     /// [`NativeSession::dump`].
     Dumped(Vec<u8>),
+    /// A mount's answer to reading an import's candidate file; never
+    /// [`ModuleRead::NotHandled`]. Only produced by [`NativeSession::read_from_mounts`].
+    ModuleRead(ModuleRead),
 }
 
 impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
@@ -1177,8 +1225,20 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         TurnOutcome::LoadedIdle => {
             obj.set("kind", "loaded")?;
         }
-        TurnOutcome::NotMounted => {
+        TurnOutcome::NotMounted | TurnOutcome::ModuleRead(ModuleRead::NotHandled) => {
             obj.set("kind", "notMounted")?;
+        }
+        TurnOutcome::ModuleRead(ModuleRead::Text(text)) => {
+            obj.set("kind", "moduleText")?;
+            obj.set("text", text)?;
+        }
+        TurnOutcome::ModuleRead(ModuleRead::Missing) => {
+            obj.set("kind", "moduleMissing")?;
+        }
+        TurnOutcome::ModuleRead(ModuleRead::Error(exc)) => {
+            obj.set("kind", "moduleReadError")?;
+            obj.set("excType", exc.exc_type().to_string())?;
+            obj.set("message", exc.message().unwrap_or_default())?;
         }
         TurnOutcome::Ok => {
             obj.set("kind", "ok")?;

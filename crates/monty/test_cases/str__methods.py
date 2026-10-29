@@ -225,6 +225,48 @@ assert 'hello'.endswith('he') == False
 assert 'hello'.endswith('') == True
 assert 'hello'.endswith('ell', 0, 4) == True
 
+# A start past the end, or past `end`, finds nothing, not even ''
+assert 'hello'.find('', 5) == 5
+assert 'hello'.find('', 6) == -1
+assert 'hello'.find('', 3, 2) == -1
+assert 'hello'.find('', 2**63) == -1
+assert 'hello'.rfind('', 6) == -1
+assert 'hello'.count('', 5) == 1
+assert 'hello'.count('', 6) == 0
+assert 'hello'.count('', -1, -2) == 0
+assert 'hello'.startswith('', 6) == False
+assert 'hello'.endswith('', 3, 2) == False
+assert 'hello'.endswith(('x', ''), 3, 2) == False
+for search in (lambda: 'hello'.index('', 6), lambda: 'hello'.rindex('', 3, 2)):
+    try:
+        search()
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == 'substring not found'
+# The affix is still checked
+try:
+    'hello'.startswith(1, 6)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'startswith first arg must be str or a tuple of str, not int'
+try:
+    'hello'.endswith(('', 1), 3, 2)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'tuple for endswith must only contain str, not int'
+# A bad start or end raises before anything is searched
+for search in (
+    lambda: 'hello'.rfind('l', 'x'),
+    lambda: 'hello'.index('l', None, 'x'),
+    lambda: 'hello'.rindex('l', 0, 'x'),
+    lambda: 'hello'.count('l', 'x'),
+):
+    try:
+        search()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'slice indices must be integers or None or have an __index__ method'
+
 # === Phase 4: Strip/trim methods ===
 
 # strip()

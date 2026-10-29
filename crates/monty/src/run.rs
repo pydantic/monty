@@ -749,9 +749,11 @@ impl Program {
                 // An import nobody serves is a missing module.
                 Ok(FrameExit::OsCall {
                     function_call: call @ OsFunctionCall::Import(_),
+                    effect,
                     ..
                 }) => {
-                    frame_exit_result = resume_with_result(vm, ExtFunctionResult::Error(call.on_no_handler()), None);
+                    vm.pending_effect = effect;
+                    frame_exit_result = resume_with_result(vm, call.no_handler_result(), None);
                 }
                 // Standard execution waits inline, excluding sleep from execution time.
                 Ok(FrameExit::OsCall {

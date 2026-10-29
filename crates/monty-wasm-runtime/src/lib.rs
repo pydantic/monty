@@ -473,6 +473,10 @@ fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
+        CallResult::ModuleFile(file) => pb::ext_function_result::Kind::ModuleFile(pb::ModuleFile {
+            path: file.path,
+            source: file.source,
+        }),
     };
     pb::ExtFunctionResult { kind: Some(kind) }
 }

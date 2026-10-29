@@ -205,6 +205,16 @@ export class WorkerTransport {
     return Promise.resolve({ kind: 'notMounted' })
   }
 
+  /** A wasm worker has no host filesystem mounts to read an import's file from. */
+  readFromMounts(_path: string, _onPrint: OnPrint): Promise<NotMountedTurn> {
+    return Promise.resolve({ kind: 'notMounted' })
+  }
+
+  /** Answers an `import` call with the module's file, which the sandbox runs. */
+  resumeModuleFile(path: string, source: string, onPrint: OnPrint): Promise<NativeTurn> {
+    return this.resumeCall({ tag: 'module-file', val: { path, source } }, onPrint)
+  }
+
   /** Registers the current call as an external future. */
   resumeFuture(onPrint: OnPrint): Promise<NativeTurn> {
     return this.resumeCall({ tag: 'pending-future', val: this.pendingCallId }, onPrint)

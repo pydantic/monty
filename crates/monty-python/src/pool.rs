@@ -81,6 +81,7 @@ use crate::{
         wire_call_arguments,
     },
     get_not_handled,
+    import_files::{find_import_file_async, find_import_file_sync, module_import_search},
     limits::extract_limits,
     mount::PyMountDir,
     os_policy::OsPolicyArg,
@@ -1558,15 +1559,24 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         let callback_guard = callback_context.enter(py, &native)?;
         // the host's modules answer their own OS calls, ahead of mounts and `os=`
         let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
+        let search = module_import_search(&event);
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
-            TurnEvent::OsCall { .. } if module_call => match sync_turn_answer(py, event, &lookup, &instances) {
-                Ok(answer) => answer,
-                Err(err) => {
-                    discard_checkout_sync(py, &checkout);
-                    return Err(err);
+            TurnEvent::OsCall { .. } if module_call => {
+                match sync_turn_answer(py, event, &lookup, &instances).and_then(|answer| match (answer, &search) {
+                    // no host module: the file search, `os=` then mounts
+                    (TurnAnswer::Call(ResumeValue::NotFound), Some(search)) => {
+                        find_import_file_sync(py, search, os.as_ref(), &instances, &checkout).map(TurnAnswer::Call)
+                    }
+                    (answer, _) => Ok(answer),
+                }) {
+                    Ok(answer) => answer,
+                    Err(err) => {
+                        discard_checkout_sync(py, &checkout);
+                        return Err(err);
+                    }
                 }
-            },
+            }
             // Immediate sleeps release the GIL; deferred async sleeps use tokio timers
             // so gathered sleeps overlap. Neither invokes the `os=` callback.
             TurnEvent::OsCall {
@@ -1819,12 +1829,25 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             .unwrap_or_default();
         // the host's modules answer their own OS calls, ahead of mounts and `os=`
         let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
+        let search = module_import_search(&event);
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
                 return Python::attach(|py| monty_to_py(py, &value, &instances));
             }
             TurnEvent::OsCall { .. } if module_call => {
-                match async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await {
+                let answer =
+                    async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await;
+                let answer = match (answer, &search) {
+                    // no host module: the file search, `os=` then mounts
+                    (Ok(TurnAnswer::Call(ResumeValue::NotFound)), Some(search)) => {
+                        let os = os.as_ref();
+                        find_import_file_async(search, os, &instances, &checkout, &callback_context, &native)
+                            .await
+                            .map(TurnAnswer::Call)
+                    }
+                    (answer, _) => answer,
+                };
+                match answer {
                     Ok(answer) => answer,
                     Err(err) => {
                         discard_checkout(&checkout).await;
@@ -2205,6 +2228,7 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
         ExtFunctionResult::Return(value) => Ok(ResumeValue::Return(value)),
         ExtFunctionResult::Error(exc) => Ok(ResumeValue::Error(exc)),
         ExtFunctionResult::NotFound(_) => Ok(ResumeValue::NotFound),
+        ExtFunctionResult::ModuleFile(file) => Ok(ResumeValue::ModuleFile(file)),
         // futures are handled explicitly by the async loop before this point
         ExtFunctionResult::Future(_) => Err(PyRuntimeError::new_err("unexpected future result")),
     }

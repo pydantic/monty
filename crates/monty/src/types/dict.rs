@@ -375,12 +375,12 @@ impl Dict {
             json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
         });
 
-        let entry = DictEntry { key, value, hash };
         if let Some(slot) = found {
-            let old_entry = self.table.replace(slot, entry);
-            old_entry.key.drop_with(vm);
-            Ok(Some(old_entry.value))
+            let old_value = mem::replace(&mut self.table.entry_mut(slot).value, value);
+            key.drop_with(vm);
+            Ok(Some(old_value))
         } else {
+            let entry = DictEntry { key, value, hash };
             if let Err(err) = self.table.check_growth(&vm.heap.tracker) {
                 entry.drop_with(vm);
                 return Err(err.into());
@@ -575,8 +575,8 @@ impl Dict {
     /// are NOT incremented here - the caller is responsible for ensuring the refcounts
     /// were already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
-    /// If the key already exists, replaces the old value and returns it (caller now
-    /// owns the old value and is responsible for its refcount).
+    /// If the key already exists, keeps the stored key, replaces the old value and
+    /// returns it (caller now owns the old value and is responsible for its refcount).
     /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
     /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
@@ -597,8 +597,8 @@ impl<'h> HeapReadMut<'h, Dict> {
     /// are NOT incremented here - the caller is responsible for ensuring the refcounts
     /// were already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
-    /// If the key already exists, replaces the old value and returns it (caller now
-    /// owns the old value and is responsible for its refcount).
+    /// If the key already exists, keeps the stored key, replaces the old value and
+    /// returns it (caller now owns the old value and is responsible for its refcount).
     /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
     /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -662,16 +662,18 @@ impl<'h> HeapReadMut<'h, Dict> {
             }
         };
 
-        let entry = DictEntry { key, value, hash };
         if let Some(slot) = found {
-            // Key exists, replace in place to preserve insertion order
-            let old_entry = self.get_mut(vm.heap).table.replace(slot, entry);
+            // Key exists: as in CPython, keep the stored key and its position and
+            // rebind only the value, so `d = {1: 'a'}; d[True] = 'b'` gives `{1: 'b'}`
+            let entry = self.get_mut(vm.heap).table.entry_mut(slot);
+            let old_value = mem::replace(&mut entry.value, value);
 
-            // Decrement refcount for old key (we're discarding it)
-            old_entry.key.drop_with(vm);
+            // Decrement refcount for the new key (the stored key is kept)
+            key.drop_with(vm);
             // Transfer ownership of the old value to caller (no clone needed)
-            Ok(Some(old_entry.value))
+            Ok(Some(old_value))
         } else {
+            let entry = DictEntry { key, value, hash };
             if growth == GrowthCheck::Preflight
                 && let Err(err) = self.get(vm.heap).table.check_growth(&vm.heap.tracker)
             {
@@ -1203,7 +1205,15 @@ impl<'h> HeapRead<'h, Dict> {
             .tracker
             .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
         let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
-        let order = counter_order(counts, vm)?;
+        // CPython's `Counter.__repr__` falls back to insertion order when the counts
+        // cannot be ordered: it catches the `TypeError` from `most_common()`.
+        let order = match counter_order(counts, vm) {
+            Ok(order) => order,
+            Err(RunError::Exc(raise)) if raise.exc.exc_type().is_subclass_of(ExcType::TypeError) => {
+                (0..pairs.len()).collect()
+            }
+            Err(err) => return Err(err),
+        };
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {

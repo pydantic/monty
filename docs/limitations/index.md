@@ -37,7 +37,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
     format specs and nested replacement fields
 - `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.sleep`
 - `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
-    see [modules.md](modules.md#host-modules)
+    see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
+    directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
 - Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
 
@@ -82,6 +83,7 @@ The following modules are present:
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `decimal`     | [decimal.md](decimal.md)         |
+| `fnmatch`     | [fnmatch.md](fnmatch.md)         |
 | `functools`   | [functools.md](functools.md)     |
 | `hashlib`     | [hashlib.md](hashlib.md)         |
 | `itertools`   | [itertools.md](itertools.md)     |
@@ -100,8 +102,8 @@ The following modules are present:
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
-`hashlib` and `tomllib` are the exceptions: `itertools` implements every name it exports, `hashlib` every guaranteed
-algorithm, and `tomllib` its whole three-name surface.
+`hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
+guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 

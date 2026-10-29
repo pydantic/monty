@@ -92,3 +92,10 @@ reveal_type(path.open('bw'))
 def reveal_dynamic_open(mode: str) -> None:
     reveal_type(open('/work/dynamic', mode))
     reveal_type(path.open(mode))
+
+
+# `fnmatch()` and `filter()`'s pattern take a path, which upstream typeshed does not allow
+import fnmatch  # noqa: E402
+
+reveal_type(fnmatch.fnmatch(path, '*.py'))
+reveal_type(fnmatch.filter(['a.py'], Path('*.py')))

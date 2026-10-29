@@ -946,7 +946,17 @@ fn load_restores_a_suspended_import() {
         panic!("expected the re-announced import");
     };
     let call_id = call.call_id;
-    assert!(matches!(call.call, Some(pb::os_call::Call::Import(pb::os_call::Import { module })) if module == "tools"));
+    let Some(pb::os_call::Call::Import(import)) = call.call else {
+        panic!("expected the re-announced import, got {:?}", call.call);
+    };
+    // the search path survives the dump: the working directory at the import
+    assert_eq!(
+        (
+            import.module.as_str(),
+            import.search_path.into_iter().collect::<Vec<_>>()
+        ),
+        ("tools", vec!["/".to_owned()])
+    );
 
     let tools = MontyObject::class_instance(
         MontyObject::class_type("tools", MontyUuid::from_u128(1), true, true, []),

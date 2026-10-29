@@ -837,7 +837,8 @@ Unknown keys, wrong types and malformed blocks are errors, and every key default
 
 - `call-external = true` to support calling external functions
 - `run-async = true` to support running async code
-- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both;
+    modules written there import on both sides (it is first on CPython's `sys.path`; write every file before the first import)
 - `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
 - `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
 - `gc-interval = <N>` to override the GC interval

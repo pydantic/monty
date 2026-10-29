@@ -793,6 +793,7 @@ fn ext_result(result: Option<&pb::ExtFunctionResult>) -> &'static str {
         Some(pb::ext_function_result::Kind::Future(_)) => "future",
         Some(pb::ext_function_result::Kind::NotFound(_)) => "not_found",
         Some(pb::ext_function_result::Kind::NotHandled(_)) => "not_handled",
+        Some(pb::ext_function_result::Kind::ModuleFile(_)) => "module_file",
         None => "missing",
     }
 }

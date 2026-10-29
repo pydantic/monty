@@ -616,6 +616,8 @@ impl Child {
                     && !CHECKER_MODULE_NAMES.contains(&name)
                     && !state.asked_modules.iter().any(|asked| asked == name)
             };
+            // TODO(site-packages): resolve modules imported from `.py` files against
+            // the same files the import reads, rather than only host stubs.
             if let Some(first) = imports.modules.iter().find(|module| unasked(&module.name)) {
                 let asked: Vec<String> = imports
                     .modules
@@ -698,6 +700,9 @@ impl Child {
             ExtFunctionResult::NotFound(_) => Vec::new(),
             ExtFunctionResult::Future(_) => {
                 return protocol_violation("import_stubs cannot be answered with a future");
+            }
+            ExtFunctionResult::ModuleFile(_) => {
+                return protocol_violation("import_stubs cannot be answered with a module file");
             }
             ExtFunctionResult::Error(exc) => {
                 let SessionState::AwaitingStubs(pending) =
@@ -789,7 +794,7 @@ impl Child {
                 let ReplProgress::OsCall(call) = progress.as_ref() else {
                     return protocol_violation("NotHandled is only valid answering a suspended OS call");
                 };
-                ExtFunctionResult::Error(call.function_call.on_no_handler())
+                call.function_call.no_handler_result()
             } else {
                 match ext_result_from_proto(wire_result, resume.values) {
                     Ok(result) => result,

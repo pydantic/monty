@@ -93,6 +93,28 @@ assert -datetime.timedelta(0) == datetime.timedelta(0)
 assert -datetime.timedelta(days=-1) == datetime.timedelta(days=1)
 assert datetime.timedelta(hours=1, minutes=30).total_seconds() == 5400.0
 
+# === arithmetic past the supported range raises OverflowError ===
+day = datetime.timedelta(days=1)
+tick = datetime.timedelta(microseconds=1)
+for compute, message in [
+    (lambda: datetime.date(9999, 12, 31) + day, 'date value out of range'),
+    (lambda: day + datetime.date(9999, 12, 31), 'date value out of range'),
+    (lambda: datetime.date(1, 1, 1) - day, 'date value out of range'),
+    (lambda: datetime.date(2020, 1, 1) - datetime.timedelta(days=999999999), 'date value out of range'),
+    (lambda: datetime.datetime(9999, 12, 31, 23, 59, 59, 999999) + tick, 'date value out of range'),
+    (lambda: tick + datetime.datetime(9999, 12, 31, 23, 59, 59, 999999), 'date value out of range'),
+    (lambda: datetime.datetime(1, 1, 1) - tick, 'date value out of range'),
+    (lambda: datetime.datetime(2020, 1, 1) - datetime.timedelta.max, 'date value out of range'),
+    (lambda: datetime.datetime(9999, 12, 31, 23, tzinfo=datetime.timezone.utc) + day, 'date value out of range'),
+    (lambda: datetime.timedelta.max + tick, 'days=1000000000; must have magnitude <= 999999999'),
+    (lambda: datetime.timedelta.min - tick, 'days=-1000000000; must have magnitude <= 999999999'),
+]:
+    try:
+        compute()
+        assert False, 'expected OverflowError'
+    except OverflowError as e:
+        assert str(e) == message
+
 # === aware/naive comparison and subtraction rules ===
 aware = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
 naive = datetime.datetime(2024, 1, 1, 12, 0, 0)

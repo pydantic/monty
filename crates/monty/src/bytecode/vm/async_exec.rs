@@ -916,6 +916,7 @@ impl<'h> VM<'h> {
                 ExtFunctionResult::NotFound(function_name) => {
                     self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
                 }
+                ExtFunctionResult::ModuleFile(_) => self.fail_future(call_id, ExcType::module_file_for_non_import()),
             }
         }
         Ok(())

@@ -696,7 +696,10 @@ class Monty:
                 `ExternalModule` or a zero-argument factory returning one, called
                 once per session when first needed. The mapping is read live and
                 each entry validated when first imported, so modules may be
-                added later.
+                added later. Non-bundled names the mapping lacks read the package
+                `<cwd>/name/__init__.py`, else `<cwd>/name.py`, through the `os`
+                handler and then the mounts, and run the file as sandbox code,
+                raising `ModuleNotFoundError` when neither exists.
         """
 
 @final

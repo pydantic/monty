@@ -6,9 +6,9 @@
 use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
-    GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange,
-    UrandomArgs, sleep_duration, unstable,
+    GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath,
+    MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ScanArgs,
+    SourceRange, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -116,7 +116,10 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AsyncSystemSleep(delay) => Call::AsyncSystemSleep(os_call::AsyncSleep {
             delay: delay.as_secs_f64(),
         }),
-        OsFunctionCall::Import(module) => Call::Import(os_call::Import { module }),
+        OsFunctionCall::Import(a) => Call::Import(os_call::Import {
+            module: a.module,
+            search_path: a.search_path.into(),
+        }),
         OsFunctionCall::ImportStubs(modules) => Call::ImportStubs(os_call::ImportStubs {
             modules: modules.into(),
         }),
@@ -191,7 +194,10 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AsyncSystemSleep(s) => {
                 Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
             }
-            os_call::Call::Import(i) => Self::Import(i.module),
+            os_call::Call::Import(i) => Self::Import(ImportArgs {
+                module: i.module,
+                search_path: i.search_path.into_iter().collect(),
+            }),
             os_call::Call::ImportStubs(i) => {
                 // the worker asks about each module once; a repeat would multiply the host's factory work
                 let modules: Vec<String> = i.modules.into_iter().collect();

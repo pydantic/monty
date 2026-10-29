@@ -882,40 +882,30 @@ fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
     vec![chrono_fmt]
 }
 
-/// `datetime + timedelta`
-pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
-    let chrono_delta = timedelta::chrono_delta(delta);
-
-    let next = if let Some(offset) = datetime.offset_seconds {
-        let utc = to_utc_naive(datetime)?;
-        let next_utc = utc.checked_add_signed(chrono_delta)?;
-        from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
-    } else {
-        let next_local = datetime.naive.checked_add_signed(chrono_delta)?;
-        from_local_naive(next_local)
-    };
-
-    let mut next = next?;
-    attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
-    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
+/// `datetime + timedelta`, raising CPython's `OverflowError` outside years 1 to 9999.
+pub(crate) fn py_add(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> RunResult<Value> {
+    offset_datetime(datetime, timedelta::chrono_delta(delta), heap)
 }
 
-/// `datetime - timedelta`
-pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> Option<Value> {
-    let chrono_delta = timedelta::chrono_delta(delta);
+/// `datetime - timedelta`, raising CPython's `OverflowError` outside years 1 to 9999.
+pub(crate) fn py_sub_timedelta(datetime: &DateTime, delta: &TimeDelta, heap: &mut Heap) -> RunResult<Value> {
+    // Negate the Chrono duration, not the Python `timedelta`, which would overflow for `timedelta.max`
+    offset_datetime(datetime, -timedelta::chrono_delta(delta), heap)
+}
 
+/// The datetime `delta` after `datetime`, or CPython's `OverflowError` outside years 1 to 9999.
+fn offset_datetime(datetime: &DateTime, delta: ChronoTimeDelta, heap: &mut Heap) -> RunResult<Value> {
     let next = if let Some(offset) = datetime.offset_seconds {
-        let utc = to_utc_naive(datetime)?;
-        let next_utc = utc.checked_sub_signed(chrono_delta)?;
-        from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone())
+        to_utc_naive(datetime)
+            .and_then(|utc| utc.checked_add_signed(delta))
+            .and_then(|next_utc| from_utc_naive_with_timezone_parts(next_utc, offset, datetime.timezone_name.clone()))
     } else {
-        let next_local = datetime.naive.checked_sub_signed(chrono_delta)?;
-        from_local_naive(next_local)
+        datetime.naive.checked_add_signed(delta).and_then(from_local_naive)
     };
 
-    let mut next = next?;
+    let mut next = next.ok_or_else(date::date_value_out_of_range)?;
     attach_or_allocate_tzinfo_ref(&mut next, datetime.tzinfo_ref, heap);
-    Some(Value::Ref(heap.allocate(HeapData::DateTime(next))))
+    Ok(Value::Ref(heap.allocate(HeapData::DateTime(next))))
 }
 
 /// `datetime - datetime` returns a timedelta with the difference.
@@ -1299,7 +1289,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         };
         let value = self.get(vm.heap).clone();
         let other = *other.get(vm.heap);
-        Ok(py_add(&value, &other, vm.heap))
+        py_add(&value, &other, vm.heap).map(Some)
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1312,7 +1302,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             Some(HeapReadOutput::TimeDelta(other)) => {
                 let value = self.get(vm.heap).clone();
                 let other = *other.get(vm.heap);
-                Ok(py_sub_timedelta(&value, &other, vm.heap))
+                py_sub_timedelta(&value, &other, vm.heap).map(Some)
             }
             _ => Ok(None),
         }

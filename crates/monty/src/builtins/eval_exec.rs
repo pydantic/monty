@@ -16,7 +16,7 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
-    parse::{CodeRange, parse_expression_with_interner, parse_module_with_filename_id},
+    parse::{CodeRange, ParseError, parse_expression_with_interner, parse_module_with_filename_id},
     prepare::{SnippetNames, prepare_snippet},
     types::{Type, py_trait::PyTrait},
     value::Value,
@@ -122,16 +122,32 @@ fn run_snippet(
     }
     let (names, namespace) = vm.snippet_namespace(globals, locals)?;
     let globals_len = vm.global_names.len();
-    let result = compile_and_push(builtin, source, names, namespace, vm);
+    let kind = match builtin {
+        Builtin::Eval => SnippetSource::Eval,
+        Builtin::Exec => SnippetSource::Exec,
+    };
+    let result = compile_and_push(kind, source, names, namespace, vm);
     if result.is_err() {
         vm.global_names.truncate(globals_len);
     }
     result
 }
 
+/// What runtime-compiled source is: it decides how the source parses, the
+/// filename its frames show and how its compile errors read.
+#[derive(Clone, Copy)]
+pub(crate) enum SnippetSource<'a> {
+    /// An `eval()` expression, shown as `<string>`.
+    Eval,
+    /// An `exec()` module body, shown as `<string>`.
+    Exec,
+    /// An imported `.py` file's module body, shown as its virtual `path`.
+    File { path: &'a str },
+}
+
 /// Compiles privately and publishes only after the snippet's frame is admitted.
-fn compile_and_push(
-    builtin: Builtin,
+pub(crate) fn compile_and_push(
+    kind: SnippetSource<'_>,
     source: &Arc<str>,
     names: SnippetNames,
     namespace: Box<FrameNamespace>,
@@ -140,13 +156,20 @@ fn compile_and_push(
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
     let mut overlay = CompileInterns::new(vm.interns);
-    let filename_id = overlay.add_eval_source(Arc::clone(source));
+    let filename_id = match kind {
+        SnippetSource::File { path } => overlay.add_file_source(Arc::from(path), Arc::clone(source)),
+        SnippetSource::Eval | SnippetSource::Exec => overlay.add_eval_source(Arc::clone(source)),
+    };
     let options = vm.env.options;
-    let nodes = match builtin {
-        Builtin::Exec => {
+    let compile_error = |e: ParseError| match kind {
+        SnippetSource::File { path } => e.into_file_run_error(path, source),
+        SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
+    };
+    let nodes = match kind {
+        SnippetSource::Exec | SnippetSource::File { .. } => {
             parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
         }
-        Builtin::Eval => {
+        SnippetSource::Eval => {
             let trimmed = source.trim_start();
             let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
             parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
@@ -154,7 +177,7 @@ fn compile_and_push(
                 .map_err(|e| e.shifted(skipped))
         }
     }
-    .map_err(|e| e.into_run_error(source))?;
+    .map_err(compile_error)?;
 
     let globals_by_name = names == SnippetNames::NameOverDict;
     let mut scratch = NameMap::new();
@@ -163,9 +186,12 @@ fn compile_and_push(
     } else {
         &mut *vm.global_names
     };
-    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(|e| e.into_run_error(source))?;
-    let code = Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name)
-        .map_err(|e| e.into_run_error(source))?;
+    let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(compile_error)?;
+    let code =
+        Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name).map_err(|e| match kind {
+            SnippetSource::File { path } => e.into_file_run_error(path, source),
+            SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
+        })?;
 
     let position = CodeRange {
         filename: filename_id,

@@ -433,9 +433,13 @@ impl VM<'_> {
             // This is where the caller invoked the function that's failing.
             let call_offset = this.current_frame().call_offset;
 
+            // A raising module body must not stay cached; checked before the pop.
+            let is_initializer = this.current_frame().is_initializer;
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let should_return = this.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && this.forget_failed_module();
 
             // Add caller frame info to traceback (if we have a call site).
             // Resolve the offset now — against the caller, which is the current
@@ -446,8 +450,8 @@ impl VM<'_> {
                 let pos = this.resolve_offset(off);
                 let frame_name = this.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }
@@ -465,7 +469,10 @@ impl VM<'_> {
             // Get the caller's call-site offset before popping frame
             let call_offset = self.current_frame().call_offset;
 
+            let is_initializer = self.current_frame().is_initializer;
             let should_return = self.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
+            let from_module_body = is_initializer && self.forget_failed_module();
 
             // Add caller frame info to traceback. Resolve the offset against the
             // caller, which is the current frame after the pop above.
@@ -475,8 +482,8 @@ impl VM<'_> {
                 let pos = self.resolve_offset(off);
                 let frame_name = self.current_frame_name();
                 match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
+                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
+                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name, from_module_body),
                     RunError::Internal(_) => {}
                 }
             }

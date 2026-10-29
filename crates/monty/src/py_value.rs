@@ -193,7 +193,7 @@ impl<'h> PyValue<'h> {
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
-            Self::Module(m) => Ok(write!(f, "<module '{}'>", m.get(vm.heap).name_str(vm.interns))?),
+            Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
             Self::Coroutine(coro) => {
                 let func = vm.interns.get_function(coro.get(vm.heap).func_id);
                 Ok(write!(f, "<coroutine object {}>", vm.interns.get_str(func.name.name_id))?)

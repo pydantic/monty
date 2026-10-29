@@ -226,7 +226,7 @@ fn coroutine_future(
 
 /// Schedules `coro` on the caller's event loop, under the task-locals the
 /// current `future_into_py` scope established.
-fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
+pub(crate) fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
     Python::attach(|py| {
         let locals = get_current_locals(py)?.copy_context(py)?;
         into_future_with_locals(&locals, coro.into_bound(py))

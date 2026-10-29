@@ -662,7 +662,7 @@ pub mod random_seed {
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ExtFunctionResult {
-    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4, 5, 6")]
     pub kind: ::core::option::Option<ext_function_result::Kind>,
 }
 /// Nested message and enum types in `ExtFunctionResult`.
@@ -690,7 +690,22 @@ pub mod ext_function_result {
         /// suspension; the child computes it from its retained call payload.
         #[prost(message, tag = "5")]
         NotHandled(super::Unit),
+        /// The module's `.py` file, answering an `import` call with a non-empty
+        /// `search_path`; the child runs it as the module.
+        #[prost(message, tag = "6")]
+        ModuleFile(super::ModuleFile),
     }
+}
+/// A module's file found on an `import` call's search path.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct ModuleFile {
+    /// The virtual path it was read from.
+    #[prost(string, tag = "1")]
+    pub path: crate::budgeted_prost::alloc::string::String,
+    /// The file's text.
+    #[prost(string, tag = "2")]
+    pub source: crate::budgeted_prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
@@ -1253,12 +1268,18 @@ pub mod os_call {
         #[prost(bool, tag = "6")]
         pub recurse_symlinks: bool,
     }
-    /// The argument of `OsCall.import`.
+    /// The arguments of `OsCall.import`.
     #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub struct Import {
+        /// The dotted module name.
         #[prost(string, tag = "1")]
         pub module: crate::budgeted_prost::alloc::string::String,
+        /// Absolute virtual directories to search, in order, for the module's `.py` file.
+        #[prost(string, repeated, tag = "2")]
+        pub search_path: crate::budgeted_prost::alloc::vec::Vec<
+            crate::budgeted_prost::alloc::string::String,
+        >,
     }
     /// The argument of `OsCall.import_stubs`, in source order.
     #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]

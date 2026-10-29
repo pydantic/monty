@@ -434,18 +434,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
-            Some(HeapReadOutput::Date(other)) => Ok(date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap)),
+            Some(HeapReadOutput::Date(other)) => {
+                date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap).map(Some)
+            }
             Some(HeapReadOutput::DateTime(other)) => {
                 let other = other.get(vm.heap).clone();
                 let value = *self.get(vm.heap);
-                Ok(datetime::py_add(&other, &value, vm.heap))
+                datetime::py_add(&other, &value, vm.heap).map(Some)
             }
             Some(HeapReadOutput::TimeDelta(other)) => {
-                let total = total_microseconds(self.get(vm.heap)).checked_add(total_microseconds(other.get(vm.heap)));
-                let Some(total) = total else { return Ok(None) };
-                let Ok(result) = from_total_microseconds(total) else {
-                    return Ok(None);
-                };
+                let total = total_microseconds(self.get(vm.heap)) + total_microseconds(other.get(vm.heap));
+                let result = from_total_microseconds(total)?;
                 Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
             }
             _ => Ok(None),
@@ -456,11 +455,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let total = total_microseconds(self.get(vm.heap)).checked_sub(total_microseconds(other.get(vm.heap)));
-        let Some(total) = total else { return Ok(None) };
-        let Ok(result) = from_total_microseconds(total) else {
-            return Ok(None);
-        };
+        let total = total_microseconds(self.get(vm.heap)) - total_microseconds(other.get(vm.heap));
+        let result = from_total_microseconds(total)?;
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result)))))
     }
 

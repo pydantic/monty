@@ -181,6 +181,9 @@ assert type(+Counter(a=1)).__name__ == 'Counter', 'unary plus returns a Counter'
 assert repr(Counter('aab')) == "Counter({'a': 2, 'b': 1})", 'repr in count-descending order'
 assert repr(Counter({'a': -1, 'b': 2})) == "Counter({'b': 2, 'a': -1})", 'repr orders by count, negatives last'
 assert repr(Counter()) == 'Counter()', 'empty repr'
+# Counts that cannot be ordered are shown in insertion order, as CPython's repr catches the TypeError
+assert repr(Counter({'a': 1, 'b': None})) == "Counter({'a': 1, 'b': None})"
+assert str(Counter({'b': 'x', 'a': 1})) == "Counter({'b': 'x', 'a': 1})"
 assert type(Counter()).__name__ == 'Counter', 'type name is Counter'
 assert isinstance(Counter(), dict), 'Counter is a dict subclass'
 

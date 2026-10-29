@@ -91,7 +91,7 @@ use crate::{
         List,
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
-        slice::{optional_sequence_bound, slice_collect_iterator},
+        slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_bytes},
 };
@@ -778,7 +778,11 @@ fn count_non_overlapping(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<
 /// Returns the number of non-overlapping occurrences of the subsequence.
 fn bytes_count<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` counts nothing: `b'abc'.count(b'', 2, 1) == 0`
+        return Ok(Value::Int(0));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let count = if sub.is_empty() {
@@ -797,7 +801,11 @@ fn bytes_count<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Returns the lowest index where the subsequence is found, or -1 if not found.
 fn bytes_find<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.find(b'', 4) == -1`
+        return Ok(Value::Int(-1));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -819,7 +827,11 @@ fn bytes_find<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<
 /// Like find(), but raises ValueError if the subsequence is not found.
 fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.index(b'', 4)` raises `ValueError`
+        return Err(ExcType::value_error_subsequence_not_found());
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -845,7 +857,11 @@ fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// if any of the prefixes match.
 fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (prefix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
+    let (prefix_arg, range) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` matches nothing: `b'abc'.startswith(b'', 4) == False`
+        return Ok(Value::Bool(false));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = match prefix_arg {
@@ -862,7 +878,11 @@ fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 /// if any of the suffixes match.
 fn bytes_endswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
+    let (suffix_arg, range) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` matches nothing: `b'abc'.endswith(b'', 4) == False`
+        return Ok(Value::Bool(false));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = match suffix_arg {
@@ -885,40 +905,27 @@ enum PrefixSuffixArg {
 
 /// Parses arguments for bytes.startswith/endswith methods.
 ///
-/// Returns (prefix/suffix_arg, start, end) where start and end are normalized indices.
+/// Returns the prefix/suffix_arg and the `(start, end)` range to match in, or
+/// `None` for a `start` past `end`, where nothing matches (see [`search_range`]).
 /// The prefix/suffix_arg can be a single bytes value or a tuple of bytes values.
-/// Guarantees `start <= end` to prevent slice panics.
 fn parse_bytes_prefix_suffix_args(
     method: &str,
     len: usize,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<(PrefixSuffixArg, usize, usize)> {
+) -> RunResult<(PrefixSuffixArg, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    let (prefix, start, end) = match pos.as_slice() {
-        [prefix_value] => {
+    match pos.as_slice() {
+        [prefix_value, bounds @ ..] if bounds.len() <= 2 => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            (prefix, 0, len)
+            let range = search_range(bounds.first(), bounds.get(1), len, vm)?;
+            Ok((prefix, range))
         }
-        [prefix_value, start_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            (prefix, start, len)
-        }
-        [prefix_value, start_value, end_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            let end = optional_sequence_bound(end_value, len, len, vm)?;
-            (prefix, start, end)
-        }
-        [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    };
-
-    // Ensure start <= end to prevent slice panics
-    Ok((prefix, start, end.max(start)))
+        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
+    }
 }
 
 /// Extracts bytes (or tuple of bytes) for startswith/endswith methods.
@@ -1000,38 +1007,29 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
 
 /// Parses arguments for bytes.find/count/index methods.
 ///
-/// Returns (sub_bytes, start, end) where start and end are normalized indices.
-/// Guarantees `start <= end` to prevent slice panics.
+/// Returns the subsequence and the `(start, end)` range to search, or `None`
+/// for a `start` past `end`, where nothing is found (see [`search_range`]).
 fn parse_bytes_sub_args(
     method: &str,
     len: usize,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<(Vec<u8>, usize, usize)> {
+) -> RunResult<(Vec<u8>, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
     // The bounds convert before `sub` is inspected, as in CPython, whose parser
     // runs the index converters and leaves the buffer check to the function body.
     // A raising `__index__` bound then costs no copy; `pos` keeps `sub` alive.
-    let (sub_value, start, end) = match pos.as_slice() {
-        [sub_value] => (sub_value, 0, len),
-        [sub_value, start_value] => {
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            (sub_value, start, len)
-        }
-        [sub_value, start_value, end_value] => {
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            let end = optional_sequence_bound(end_value, len, len, vm)?;
-            (sub_value, start, end)
+    let (sub_value, range) = match pos.as_slice() {
+        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
+            (sub_value, search_range(bounds.first(), bounds.get(1), len, vm)?)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
     let sub = extract_bytes_only(sub_value, vm)?.to_owned();
-
-    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    Ok((sub, start, end.max(start)))
+    Ok((sub, range))
 }
 
 // =============================================================================
@@ -1218,7 +1216,11 @@ fn bytes_istitle(bytes: &[u8]) -> bool {
 /// Returns the highest index where the subsequence is found, or -1 if not found.
 fn bytes_rfind<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.rfind(b'', 4) == -1`
+        return Ok(Value::Int(-1));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -1240,7 +1242,11 @@ fn bytes_rfind<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Like rfind(), but raises ValueError if the subsequence is not found.
 fn bytes_rindex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.rindex(b'', 4)` raises `ValueError`
+        return Err(ExcType::value_error_subsequence_not_found());
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {

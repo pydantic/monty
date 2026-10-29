@@ -1128,6 +1128,45 @@ except FileNotFoundError as e:
     assert monty_run(code, os=scan_tree()) == snapshot(("[Errno 2] No such file or directory: '/missing'", [], []))
 
 
+@pytest.mark.parametrize('via_monty', [False, True])
+def test_scan_below_file(monty_run: RunMonty, via_monty: bool):
+    fs = OSAccess([MemoryFile('/a', 'original')])
+    if via_monty:
+        code = """
+import os
+from pathlib import Path
+errors = []
+try:
+    os.scandir('/a/child')
+except NotADirectoryError as e:
+    errors.append(str(e))
+list(os.walk('/a/child', onerror=lambda e: errors.append(f'{type(e).__name__}: {e}')))
+(errors, list(Path('/a/child').glob('*')))
+"""
+        assert monty_run(code, os=fs) == snapshot(
+            (
+                [
+                    "[Errno 20] Not a directory: '/a/child'",
+                    "NotADirectoryError: [Errno 20] Not a directory: '/a/child'",
+                ],
+                [],
+            )
+        )
+    else:
+        with pytest.raises(NotADirectoryError) as exc_info:
+            fs.path_scan(P('/a/child'), max_depth=None, follow_symlinks=False)
+        assert str(exc_info.value) == snapshot("[Errno 20] Not a directory: '/a/child'")
+
+
+def test_path_scan_does_not_read_file():
+    read = Mock(side_effect=AssertionError('scan must not read file contents'))
+    fs = OSAccess([CallbackFile('/a', read=read, write=Mock())])
+    assert fs.path_scan(P('/a'), max_depth=None, follow_symlinks=False) == snapshot(
+        [ScanEntry(path='', is_dir=False, is_file=True, is_symlink=False)]
+    )
+    read.assert_not_called()
+
+
 class UnreadableOS(OSAccess):
     """Refuses to list one directory, as a permissions error would."""
 
@@ -1357,16 +1396,17 @@ s = Path('/test/file.txt').stat()
     assert result == snapshot((11, 0o644))
 
 
-def test_stat_file_custom_permissions(monty_run: RunMonty):
+@pytest.mark.parametrize('permissions', [0o755, 0o1755, 0o2755, 0o4755, 0o7755])
+def test_stat_file_custom_permissions(monty_run: RunMonty, permissions: int):
     """path_stat returns custom file permissions."""
-    fs = OSAccess([MemoryFile('/test/file.txt', content='hello', permissions=0o755)])
+    fs = OSAccess([MemoryFile('/test/file.txt', content='hello', permissions=permissions)])
     code = """
 from pathlib import Path
 s = Path('/test/file.txt').stat()
-s.st_mode & 0o777
+s.st_mode
 """
     result = monty_run(code, os=fs)
-    assert result == snapshot(0o755)
+    assert result == 0o100000 | permissions
 
 
 def test_stat_directory(monty_run: RunMonty):
@@ -1695,6 +1735,53 @@ def test_rename_directory_similar_prefix(monty_run: RunMonty, via_monty: bool):
     assert fs.path_exists(P('/a')) is False
     assert fs.path_read_text(P('/ab/moved/file.txt')) == 'data'
     assert fs.path_read_text(P('/ab/keep.txt')) == 'keep'
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+@pytest.mark.parametrize('child', ['/a/child', '/a/child/nested'])
+@pytest.mark.parametrize(
+    'operation', ['read_text', 'read_bytes', 'stat', 'iterdir', 'write_text', 'mkdir', 'unlink', 'rmdir', 'open']
+)
+def test_intermediate_file_error(monty_run: RunMonty, via_monty: bool, child: str, operation: str):
+    file = MemoryFile('/a', 'original')
+    fs = OSAccess([file])
+    args = {'write_text': "'new'", 'mkdir': 'parents=True', 'open': "'a'"}.get(operation, '')
+    if via_monty:
+        code = f'from pathlib import Path; Path({child!r}).{operation}({args})'
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            monty_run(code, os=fs)
+        assert str(exc_info.value) == f'NotADirectoryError: [Errno 20] Not a directory: {child!r}'
+    else:
+        kwargs: dict[str, Any] = {'parents': True, 'exist_ok': False} if operation == 'mkdir' else {}
+        positional = ['new'] if operation == 'write_text' else ['a'] if operation == 'open' else []
+        with pytest.raises(NotADirectoryError) as exc_info:
+            getattr(fs, 'path_' + operation)(P(child), *positional, **kwargs)
+        assert str(exc_info.value) == f'[Errno 20] Not a directory: {child!r}'
+    assert file.content == snapshot('original')
+    assert file.deleted == snapshot(False)
+    assert fs.path_exists(P(child)) == snapshot(False)
+    assert fs.path_is_file(P(child)) == snapshot(False)
+    assert fs.path_is_dir(P(child)) == snapshot(False)
+    if via_monty:
+        assert monty_run(
+            f'from pathlib import Path; p = Path({child!r}); (p.exists(), p.is_file(), p.is_dir())', os=fs
+        ) == snapshot((False, False, False))
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+@pytest.mark.parametrize('source, target', [('/a/child', '/b'), ('/b', '/a/child')])
+def test_rename_intermediate_file(monty_run: RunMonty, via_monty: bool, source: str, target: str):
+    files = [MemoryFile('/a', 'a'), MemoryFile('/b', 'b')]
+    fs = OSAccess(files)
+    with pytest.raises(MontyRuntimeError if via_monty else NotADirectoryError) as exc_info:
+        if via_monty:
+            monty_run(f'from pathlib import Path; Path({source!r}).rename({target!r})', os=fs)
+        else:
+            fs.path_rename(P(source), P(target))
+    prefix = 'NotADirectoryError: ' if via_monty else ''
+    assert str(exc_info.value) == prefix + "[Errno 20] Not a directory: '/a/child'"
+    assert fs.path_iterdir(P('/')) == snapshot([P('/a'), P('/b')])
+    assert [(f.path, f.content, f.deleted) for f in files] == snapshot([(P('/a'), 'a', False), (P('/b'), 'b', False)])
 
 
 # =============================================================================

@@ -95,6 +95,13 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &pb::os_call::Scan| &message.pattern,
     );
     check_repeated(
+        "monty.v1.OsCall.Import.search_path",
+        2,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::os_call::Import| &message.search_path,
+    );
+    check_repeated(
         "monty.v1.OsCall.ImportStubs.modules",
         1,
         WireType::LengthDelimited,

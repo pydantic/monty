@@ -68,6 +68,7 @@ nav:
       - csv: 'limitations/csv.md'
       - datetime: 'limitations/datetime.md'
       - decimal: 'limitations/decimal.md'
+      - fnmatch: 'limitations/fnmatch.md'
       - functools: 'limitations/functools.md'
       - hashlib: 'limitations/hashlib.md'
       - itertools: 'limitations/itertools.md'

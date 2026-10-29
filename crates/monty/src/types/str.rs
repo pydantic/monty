@@ -27,7 +27,7 @@ use crate::{
         LazyHeapSet, Type,
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
-        slice::{optional_sequence_bound, slice_collect_iterator},
+        slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_str},
 };
@@ -917,7 +917,11 @@ fn str_isdecimal(s: &str) -> bool {
 /// the slice s[start:end]. Returns -1 if sub is not found.
 fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
-    let (sub, start, end) = parse_search_args("str.find", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.find", str_len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `'abc'.find('', 4) == -1`
+        return Ok(Value::Int(-1));
+    };
     let s = s.get(vm.heap);
     let slice = slice_string(s, start, end);
     let result = match slice.find(&sub) {
@@ -937,7 +941,11 @@ fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
 /// the slice s[start:end]. Returns -1 if sub is not found.
 fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
-    let (sub, start, end) = parse_search_args("str.rfind", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.rfind", str_len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `'abc'.rfind('', 4) == -1`
+        return Ok(Value::Int(-1));
+    };
     let s = s.get(vm.heap);
     let slice = slice_string(s, start, end);
     let result = match slice.rfind(&sub) {
@@ -956,7 +964,11 @@ fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 /// Like find(), but raises ValueError when the substring is not found.
 fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
-    let (sub, start, end) = parse_search_args("str.index", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.index", str_len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `'abc'.index('', 4)` raises `ValueError`
+        return Err(ExcType::value_error_substring_not_found());
+    };
     let s = s.get(vm.heap);
     let slice = slice_string(s, start, end);
     match slice.find(&sub) {
@@ -974,7 +986,11 @@ fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 /// Like rfind(), but raises ValueError when the substring is not found.
 fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
-    let (sub, start, end) = parse_search_args("str.rindex", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.rindex", str_len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `'abc'.rindex('', 4)` raises `ValueError`
+        return Err(ExcType::value_error_substring_not_found());
+    };
     let s = s.get(vm.heap);
     let slice = slice_string(s, start, end);
     match slice.rfind(&sub) {
@@ -993,7 +1009,11 @@ fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
 /// the string s[start:end].
 fn str_count<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
-    let (sub, start, end) = parse_search_args("str.count", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.count", str_len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` counts nothing: `'abc'.count('', 2, 1) == 0`
+        return Ok(Value::Int(0));
+    };
     let s = s.get(vm.heap);
     let slice = slice_string(s, start, end);
     let count = if sub.is_empty() {
@@ -1045,13 +1065,9 @@ fn str_starts_ends_with<'h>(
     if rest.len() > 2 {
         return Err(ExcType::type_error_at_most(method, 3, pos.len()));
     }
-    let start = match rest.first() {
-        Some(value) => optional_sequence_bound(value, 0, str_len, vm)?,
-        None => 0,
-    };
-    let end = match rest.get(1) {
-        Some(value) => optional_sequence_bound(value, str_len, str_len, vm)?,
-        None => str_len,
+    let Some((start, end)) = search_range(rest.first(), rest.get(1), str_len, vm)? else {
+        // `start` past `end` matches nothing, but each affix is still type-checked
+        return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
     let slice = slice_string(s.get(vm.heap), start, end);
     Ok(Value::Bool(affix_matches(affix, slice, method, matcher, vm)?))
@@ -1110,32 +1126,23 @@ fn affix_matches(
     }
 }
 
-/// Parses arguments for search methods (find, rfind, index, rindex, count, startswith, endswith).
+/// Parses arguments for search methods (find, rfind, index, rindex, count).
 ///
-/// Returns (substring, start, end) where start and end are character indices.
+/// Returns the substring and the `(start, end)` character range to search, or
+/// `None` for a `start` past `end`, where nothing is found (see [`search_range`]).
 fn parse_search_args(
     method: &str,
     str_len: usize,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<(String, usize, usize)> {
+) -> RunResult<(String, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
     match pos.as_slice() {
-        [sub_value] => {
+        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
             let sub = extract_string_arg(sub_value, vm)?;
-            Ok((sub, 0, str_len))
-        }
-        [sub_value, start_value] => {
-            let sub = extract_string_arg(sub_value, vm)?;
-            let start = optional_sequence_bound(start_value, 0, str_len, vm)?;
-            Ok((sub, start, str_len))
-        }
-        [sub_value, start_value, end_value] => {
-            let sub = extract_string_arg(sub_value, vm)?;
-            let start = optional_sequence_bound(start_value, 0, str_len, vm)?;
-            let end = optional_sequence_bound(end_value, str_len, str_len, vm)?;
-            Ok((sub, start, end))
+            let range = search_range(bounds.first(), bounds.get(1), str_len, vm)?;
+            Ok((sub, range))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),

@@ -2,6 +2,7 @@ import asyncio
 import bisect
 import datetime
 import decimal
+import fnmatch
 import functools
 import hashlib
 import itertools
@@ -772,6 +773,14 @@ assert_type(bisect.bisect_left([(1, 'a')], 1, key=lambda row: row[0]), int)
 assert_type(bisect.insort_left([1, 2], 2), None)
 assert_type(bisect.insort_right([(1, 'a')], (2, 'b'), key=lambda row: row[0]), None)
 assert_type(bisect.insort([1, 2], 3), None)
+
+# === fnmatch ===
+
+assert_type(fnmatch.fnmatch('a.py', '*.py'), bool)
+assert_type(fnmatch.fnmatchcase(b'a.py', b'*.py'), bool)
+assert_type(fnmatch.filter(['a.py', 'b.txt'], '*.py'), list[str])
+assert_type(fnmatch.filter((b'a', b'b'), b'?'), list[bytes])
+assert_type(fnmatch.translate('*.py'), str)
 
 # === open ===
 # Upstream typeshed's signatures accept any argument value the runtime might accept.
