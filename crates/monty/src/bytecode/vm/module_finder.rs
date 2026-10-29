@@ -227,10 +227,15 @@ impl VM<'_> {
     }
 
     /// After a module body raises: forgets the module so the next import
-    /// retries the file. A no-op for an `__init__` frame.
-    pub(super) fn forget_failed_module(&mut self) {
-        if let Some((module, name)) = self.file_module_on_stack() {
-            self.modules.remove_failed(&name, module, self.heap);
+    /// retries the file, returning whether the frame was one. CPython shows
+    /// no carets under the `import` statement such an error unwinds through.
+    pub(super) fn forget_failed_module(&mut self) -> bool {
+        match self.file_module_on_stack() {
+            Some((module, name)) => {
+                self.modules.remove_failed(&name, module, self.heap);
+                true
+            }
+            None => false,
         }
     }
 
@@ -342,8 +347,12 @@ impl VM<'_> {
     }
 
     /// The file module on top of the operand stack, where an import pushes it
-    /// before running its body, with its dotted name.
+    /// before running its body, with its dotted name. Checked on every
+    /// `__init__` return too, so an empty cache answers before touching the heap.
     fn file_module_on_stack(&self) -> Option<(HeapId, String)> {
+        if self.modules.is_empty() {
+            return None;
+        }
         let id = self.stack.last()?.ref_id()?;
         match self.heap.get(id) {
             HeapData::Module(module) if module.namespace().is_some() => {

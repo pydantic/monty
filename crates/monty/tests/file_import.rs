@@ -265,7 +265,6 @@ fn an_error_in_a_module_shows_its_file_in_the_traceback() {
     Traceback (most recent call last):
       File "<python-input-0>", line 1, in <module>
         import bad
-        ~~~~~~~~~~
       File "/proj/bad.py", line 4, in <module>
         f()
         ~~~

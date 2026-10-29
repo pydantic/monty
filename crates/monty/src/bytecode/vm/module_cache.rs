@@ -26,6 +26,12 @@ struct CachedModule {
 }
 
 impl ModuleCache {
+    /// Whether no file module is cached: a session that never imported one
+    /// skips the module checks on every `__init__` return.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// An owned reference to the module cached as `name`.
     pub fn get(&self, name: &str, heap: &impl ContainsHeap) -> Option<Value> {
         self.0.get(name).map(|cached| {
