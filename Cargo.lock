@@ -2386,12 +2386,9 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "mach2"
-version = "0.5.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
-dependencies = [
- "libc",
-]
+checksum = "b0d28e293f2b8c9d2b2d1c0193bd3c1cbdc0d2cf396888dc01162f7cf9d6c3f3"
 
 [[package]]
 name = "manyhow"
@@ -2787,6 +2784,7 @@ dependencies = [
  "jiff",
  "minicbor-serde",
  "monty-macros",
+ "nix 0.31.3",
  "num-bigint",
  "num-traits",
  "ruff_python_stdlib",
@@ -2796,6 +2794,7 @@ dependencies = [
  "strum 0.27.2",
  "unicode-general-category",
  "web-time",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

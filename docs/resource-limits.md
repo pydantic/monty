@@ -109,7 +109,8 @@ CPU mode on Linux, macOS and Windows uses the executing thread's CPU counter.
 Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
 Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
 WebAssembly workers require wall mode because they have no thread CPU counter.
-If a native counter read fails or reverses, Monty conservatively charges elapsed time for that window.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
 
 Cooperative checks reuse a CPU sample for at most 1 ms of elapsed time.
 A smaller remaining budget shortens that interval when the execution window starts.
@@ -201,9 +202,9 @@ It stops measuring at each completion or suspension. Host callback time is outsi
 The existing feed and turn grace settings use CPU time in this mode.
 Feed consumption and grace do not renew on resume.
 
-GNU/Linux uses one-shot kernel timers after 5 ms. Other Linux targets, macOS and Windows poll every 5 ms.
+Linux, macOS and Windows poll every 5 ms during execution turns.
 CPU exhaustion kills and reaps the worker. The explicit wall deadline handles blocked workers.
-A supervisor clock or timer failure discards the worker instead of weakening enforcement.
+A supervisor clock failure discards the worker instead of weakening enforcement.
 OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.
 
 Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
@@ -211,10 +212,12 @@ Snapshots do not store protocol CPU or spent CPU grace separately.
 For WebSocket sessions, the server's pool or profile selects the clock beside the actual child.
 Clients do not select or override it. The server reports its clock with the configuration reply.
 The client uses that metadata to avoid deriving wall deadlines from CPU budgets.
-Use protocol 7 clients with CPU-mode server profiles for this noisy-neighbor protection.
-Protocol 5 and 6 clients ignore the clock metadata and can retain premature wall-time backstops under contention.
+Use clients that understand the clock metadata with CPU-mode server profiles for this noisy-neighbor protection.
+Older clients ignore this metadata and can retain premature wall-time backstops under contention.
 Default wall-mode servers remain compatible with those clients.
 A CPU-mode server requires a finite client `request_timeout`, independent of its own supervisor deadline.
+The WebSocket client default is 10 seconds. Choose this wall deadline for the expected budgets and scheduling delays.
+It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
 Local CPU pools require the child to acknowledge CPU mode before executing code.
 A WebSocket client cannot independently measure a remote process.

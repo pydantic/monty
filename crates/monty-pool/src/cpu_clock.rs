@@ -1,7 +1,5 @@
 //! OS CPU counters for one local child, independent of worker telemetry.
 
-#[cfg(target_os = "macos")]
-use std::mem;
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, OwnedHandle};
 use std::{io, time::Duration};
@@ -16,7 +14,7 @@ use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetProcessTime
 
 pub(crate) struct Clock {
     #[cfg(target_os = "linux")]
-    pub(crate) id: ClockId,
+    id: ClockId,
     #[cfg(target_os = "macos")]
     pid: i32,
     #[cfg(target_os = "macos")]
@@ -25,14 +23,12 @@ pub(crate) struct Clock {
     handle: OwnedHandle,
 }
 
-#[cfg_attr(
-    any(target_os = "macos", windows),
-    expect(
-        unsafe_code,
-        reason = "OS CPU APIs require FFI; buffers and owned handles are checked at this boundary"
-    )
-)]
 impl Clock {
+    // The checkout retains the child; final sampling is skipped after teardown removes it.
+    #[cfg_attr(
+        any(target_os = "macos", windows),
+        expect(unsafe_code, reason = "checked OS timebase and borrowed child handle")
+    )]
     pub(crate) fn new(child: &Child) -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         {
@@ -72,6 +68,10 @@ impl Clock {
         }
     }
 
+    #[cfg_attr(
+        any(target_os = "macos", windows),
+        expect(unsafe_code, reason = "checked OS CPU counters and initialized output buffers")
+    )]
     pub(crate) fn read(&self) -> io::Result<Duration> {
         #[cfg(target_os = "linux")]
         {
@@ -83,8 +83,19 @@ impl Clock {
         }
         #[cfg(target_os = "macos")]
         {
-            // SAFETY: this C struct contains only integers and integer arrays; zero initializes every field.
-            let mut usage: libc::rusage_info_v0 = unsafe { mem::zeroed() };
+            let mut usage = libc::rusage_info_v0 {
+                ri_uuid: [0; 16],
+                ri_user_time: 0,
+                ri_system_time: 0,
+                ri_pkg_idle_wkups: 0,
+                ri_interrupt_wkups: 0,
+                ri_pageins: 0,
+                ri_wired_size: 0,
+                ri_resident_size: 0,
+                ri_phys_footprint: 0,
+                ri_proc_start_abstime: 0,
+                ri_proc_exit_abstime: 0,
+            };
             // SAFETY: flavor V0 writes exactly rusage_info_v0. The buffer is aligned and lives through the call.
             let status = unsafe { libc::proc_pid_rusage(self.pid, libc::RUSAGE_INFO_V0, (&raw mut usage).cast()) };
             if status != 0 {

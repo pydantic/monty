@@ -1064,6 +1064,8 @@ class AsyncMontyWebsocket:
                 bounds the wait when a relay accepts the connection but never
                 produces a worker. CPU-mode servers require a finite value.
                 Pass `None` to wait indefinitely with wall-mode servers.
+                Under contention, this wall deadline can expire before a server
+                CPU budget. Choose it for the expected budgets and scheduling delays.
 
                 Note that `install_dependencies` is a turn too, so the default
                 10.0 is often too low for it — a real `uv pip install` can exceed

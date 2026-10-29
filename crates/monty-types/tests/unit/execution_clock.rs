@@ -6,6 +6,7 @@ use super::{ExecutionClock, ExecutionInstant};
 fn cached_sample_preserves_the_last_reported_duration() {
     let mut window = ExecutionInstant::now(ExecutionClock::Cpu, None);
     window.cpu = Some(Duration::ZERO);
+    window.thread = Some(thread::current().id());
     window.sample_interval = Duration::from_mins(1);
     window.last_elapsed = Duration::from_nanos(42);
     assert_eq!(window.elapsed(), Duration::from_nanos(42));
@@ -48,4 +49,10 @@ fn wall_mode_never_arms_the_cpu_counter() {
     thread::sleep(Duration::from_millis(10));
     assert!(window.elapsed_at_stop() >= Duration::from_millis(10));
     assert!(window.cpu.is_none());
+}
+
+#[test]
+fn clock_availability_matches_the_execution_feature() {
+    assert!(ExecutionClock::Wall.is_available());
+    assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(feature = "cpu-clock"));
 }

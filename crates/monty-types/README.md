@@ -36,6 +36,10 @@ implementation**.
 
 ## Who should depend on it
 
+The `monty` interpreter enables the `cpu-clock` feature for native CPU accounting.
+Host-only users do not need this feature or its platform CPU dependencies.
+`ExecutionClock::is_available()` reports whether the current thread can read the selected clock.
+
 Host-side crates that need these types without linking the interpreter —
 `monty-fs` (which services `OsFunctionCall`s locally via
 `MountTable::handle_os_call`), `monty-pool` (which talks to Monty workers

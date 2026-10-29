@@ -99,7 +99,7 @@ static RUN_DURATION: Instrument = Instrument {
 };
 
 /// Sandbox time of one execution turn. Subtracting it from [`RUN_DURATION`]
-/// leaves host and transport overhead, primarily suspension handling.
+/// leaves host and transport overhead. CPU mode also leaves descheduling and throttling.
 static RUN_EXECUTION: Instrument = Instrument {
     kind: MetricKind::Histogram,
     name: "monty.run.execution_time",

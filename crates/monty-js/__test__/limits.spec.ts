@@ -348,6 +348,10 @@ test('execution clock is fixed by the pool', async () => {
     for (const budget of [0.05, 0.1]) {
       await using session = await bounded.checkout({ limits: { maxFeedDurationSecs: budget } })
       t.is(await session.feedRun('sum(range(1000))'), 499_500)
+      const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass'), isRuntimeError)
+      t.is(error.exception.typeName, 'TimeoutError')
+      t.regex(error.display('msg'), new RegExp(`^feed time limit exceeded: \\d+(\\.\\d+)?ms > ${budget * 1000}ms$`))
+      t.is(await session.feedRun('1 + 1'), 2)
     }
   }
 })

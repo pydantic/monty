@@ -19,7 +19,6 @@ use tokio::{
 use crate::{
     PoolConfig, PoolError,
     checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, request},
-    cpu,
     worker::Worker,
 };
 
@@ -39,7 +38,6 @@ pub struct Pool {
 }
 
 pub(crate) struct PoolInner {
-    pub(crate) cpu_driver: Option<cpu::Driver>,
     pub(crate) config: PoolConfig,
     /// Guarded by a *synchronous* mutex: every critical section is short and
     /// await-free, and worker/checkout `Drop` impls must be able to release
@@ -82,20 +80,17 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
-        let cpu_driver = if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_websocket() {
-            if !cfg!(any(target_os = "linux", target_os = "macos", windows))
+        if config.execution_clock == ExecutionClock::Cpu
+            && !config.transport.is_websocket()
+            && (!cfg!(any(target_os = "linux", target_os = "macos", windows))
                 || config
                     .request_timeout
-                    .is_none_or(|limit| Instant::now().checked_add(limit).is_none())
-            {
-                return Err(PoolError::Spawn(
-                    "CPU execution clock requires a supported native subprocess and finite request_timeout".to_owned(),
-                ));
-            }
-            Some(cpu::Driver::new().map_err(|error| PoolError::Spawn(format!("starting CPU timer driver: {error}")))?)
-        } else {
-            None
-        };
+                    .is_none_or(|limit| Instant::now().checked_add(limit).is_none()))
+        {
+            return Err(PoolError::Spawn(
+                "CPU execution clock requires a supported native subprocess and finite request_timeout".to_owned(),
+            ));
+        }
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
@@ -109,7 +104,6 @@ impl Pool {
         let total = idle.len();
         let pool = Self {
             inner: Arc::new_cyclic(|this| PoolInner {
-                cpu_driver,
                 config,
                 state: Mutex::new(PoolState {
                     idle,

@@ -28,10 +28,10 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
-    PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
+    IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
+    SourceRange, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -474,8 +474,8 @@ impl Child {
                 let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
                     return protocol_violation("invalid execution_clock");
                 };
-                if clock == pb::ExecutionClock::Cpu && !cfg!(any(unix, windows)) {
-                    return protocol_violation("CPU execution clock requires a native worker");
+                if !ExecutionClock::from(clock).is_available() {
+                    return protocol_violation("CPU execution clock is unavailable");
                 }
             }
             // Reject invalid settings on the Configure turn.

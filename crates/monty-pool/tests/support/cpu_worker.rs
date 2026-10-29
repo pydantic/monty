@@ -13,10 +13,18 @@ fn main() {
     while let Some(request) = reader.read::<pb::ParentRequest>().unwrap() {
         let kind = request.kind.unwrap();
         let clock = match &kind {
+            pb::parent_request::Kind::Configure(config) if config.script_name == "legacy" => {
+                assert_eq!(
+                    config.protocol_version, 6,
+                    "legacy worker rejects newer protocol versions"
+                );
+                None
+            }
             pb::parent_request::Kind::Configure(config) => config.execution_clock,
             _ => None,
         };
         let event = match kind {
+            pb::parent_request::Kind::Feed(feed) if feed.code == "exit" => return,
             pb::parent_request::Kind::Feed(feed) if feed.code == "spin" => loop {
                 black_box(42);
             },

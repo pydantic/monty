@@ -3,8 +3,6 @@
 mod checkout;
 mod cpu;
 mod cpu_clock;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-mod cpu_timer;
 mod pool;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;

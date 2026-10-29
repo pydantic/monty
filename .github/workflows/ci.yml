@@ -504,7 +504,9 @@ jobs:
       # mount table never touches the interpreter heap).
       - run: cargo test -p monty-fs
       # monty-types holds the resource tracker, including the snapshot-restore limit caps.
-      - run: cargo test -p monty-types
+      - run: |
+          cargo test -p monty-types
+          cargo test -p monty-types --features cpu-clock --test execution_clock
       # The two race soaks are opt-in so a local `cargo test -p monty-fs` does
       # not pay ~5s for them, but they are regression guards on the
       # descriptor-relative open and the FIFO re-check, so CI must run them.

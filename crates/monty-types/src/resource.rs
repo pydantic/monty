@@ -154,6 +154,14 @@ pub enum ExecutionClock {
     Cpu,
 }
 
+impl ExecutionClock {
+    /// Whether this thread can read the selected clock. CPU reads require the `cpu-clock` feature.
+    #[must_use]
+    pub fn is_available(self) -> bool {
+        self == Self::Wall || execution_clock::thread_cpu().is_some()
+    }
+}
+
 /// Configuration for resource limits.
 ///
 /// The time/memory/GC limits are optional — set to `None` to disable — but

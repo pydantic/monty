@@ -1549,16 +1549,9 @@ impl Checkout {
         self.ensure_ready()?;
         let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         let monitor = self.cpu_monitor(request).await?;
-        let cpu_driver = self.pool.cpu_driver.clone();
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
-        let outcome = cpu::run(
-            monitor.as_ref(),
-            cpu_driver.as_ref(),
-            wall_deadline,
-            self.turn_io(request, &mut *on_print),
-        )
-        .await;
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io(request, &mut *on_print)).await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         match outcome {
@@ -1782,20 +1775,13 @@ impl Checkout {
             self.budget.begin_feed();
         }
         let monitor = self.cpu_monitor(request).await?;
-        let cpu_driver = self.pool.cpu_driver.clone();
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the duration
         // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.armed_deadline = deadline;
-        let outcome = cpu::run(
-            monitor.as_ref(),
-            cpu_driver.as_ref(),
-            wall_deadline,
-            self.turn_io_raw(request, on_event),
-        )
-        .await;
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io_raw(request, on_event)).await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         if is_load {

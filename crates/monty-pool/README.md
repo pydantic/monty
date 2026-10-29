@@ -156,29 +156,31 @@ pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
 ```
 
 CPU mode replaces budget-derived wall deadlines.
-GNU/Linux uses one-shot CPU timers after a 5 ms delay; shorter requests use boundary samples only.
-Other Linux targets, macOS and Windows poll every 5 ms.
+Linux, macOS and Windows poll every 5 ms during execution turns.
 The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
-The Linux watcher receives thread-directed signals without changing the caller's signal mask or process-wide handlers.
-Wall-only pools do not start this watcher.
+Idle workers and host waits do not incur periodic CPU reads.
 
 Live worker reports cannot spend or refund the supervisor's CPU allowance.
 Resuming preserves observed feed CPU and its single grace allowance. A new feed resets both.
 Host work between turns is outside the measurement window.
 CPU exhaustion returns `PoolError::CpuLimit`; the wall deadline returns `PoolError::Timeout`.
-Both kill and reap the worker. Clock or timer failures also discard it without weakening enforcement.
+Both kill and reap the worker. Clock failures also discard it without weakening enforcement.
 Both mechanisms require the host runtime to make progress.
 
 Snapshots store their clock. A load with another clock fails without consuming the configured session.
 Restore seeds consumption from trusted saved VM usage and takes a fresh OS baseline.
 Snapshots do not store protocol CPU or spent CPU grace separately.
-Clients use protocol version 7, so older workers reject the configuration instead of ignoring it.
+Local CPU pools reject workers that do not acknowledge the selected clock. Wall mode supports older workers.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
 WebSocket servers select the clock through their pool or profile and report it in the configuration reply.
 Clients adopt that clock for deadlines; CPU mode requires a finite client `request_timeout`.
-CPU profiles need protocol-7 clients to avoid premature wall backstops under contention.
-The server does not enforce this requirement; protocol-5/6 clients remain accepted.
+CPU profiles need clients that understand the clock metadata to avoid premature wall backstops under contention.
+The server does not enforce this requirement; older clients remain accepted.
 A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
 WebAssembly workers support wall mode only.
+
+The independent client `request_timeout` still bounds response latency under contention.
+Choose it for the expected CPU budgets and scheduling delays. CPU accounting does not extend this wall deadline.
 
 ## Observability
 
@@ -228,8 +230,8 @@ called function's name (under any outcome — a host lookup that is a callable r
 anything), an exception class and any path are all left out rather than becoming a time
 series each. The one name recorded is an os call's, which comes from the protocol's own
 fixed set. The subtraction worth knowing: `monty.run.duration` minus
-`monty.run.execution_time` is host and transport overhead, primarily time spent answering
-suspensions.
+`monty.run.execution_time` includes host and transport overhead. In CPU mode, the difference also
+includes descheduling and CPU throttling.
 
 Metric attributes deliberately never identify a pool. The worker up/down counters therefore
 total over all pools recording into the same host meter, and a dropped pool subtracts its

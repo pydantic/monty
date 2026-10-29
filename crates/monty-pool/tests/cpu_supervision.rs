@@ -51,6 +51,59 @@ fn limits(budget: u64) -> ReplConfig {
 }
 
 #[tokio::test]
+async fn legacy_workers_accept_wall_mode_and_refuse_cpu_mode_before_execution() {
+    for clock in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+        let mut config = config();
+        config.execution_clock = clock;
+        let pool = Pool::new(config).await.unwrap();
+        let result = pool
+            .checkout(&ReplConfig {
+                script_name: "legacy".to_owned(),
+                ..limits(100)
+            })
+            .await;
+        if clock == ExecutionClock::Wall {
+            let mut child = result.unwrap();
+            let event = child
+                .feed("complete", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap();
+            assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
+            child.finish().await.unwrap();
+        } else {
+            assert!(matches!(result, Err(PoolError::Protocol(ref message))
+                if message == "worker did not acknowledge the configured execution clock"));
+        }
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
+async fn child_exit_ends_monitoring_before_the_pool_replaces_it() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut child = pool.checkout(&limits(100)).await.unwrap();
+    let error = child
+        .feed("exit", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PoolError::Crashed { .. }), "{error:?}");
+    assert_eq!(child.pid(), None);
+    assert!(matches!(
+        child.feed("complete", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Finished)
+    ));
+    drop(child);
+    let mut replacement = pool.checkout(&limits(100)).await.unwrap();
+    let event = replacement
+        .feed("complete", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
+    replacement.finish().await.unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn healthy_child_and_unpolled_cpu_are_distinguished() {
     for budget in [50, 100] {
         let pool = Pool::new(config()).await.unwrap();

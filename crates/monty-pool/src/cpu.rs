@@ -2,32 +2,9 @@
 
 use std::{future::Future, io, pin::pin, time::Duration};
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-use tokio::time::sleep;
 use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout_at};
 
 use crate::cpu_clock::Clock;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-use crate::cpu_timer::Driver as KernelDriver;
-
-#[derive(Clone)]
-pub(crate) struct Driver {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    kernel: KernelDriver,
-}
-
-impl Driver {
-    #[cfg_attr(
-        not(all(target_os = "linux", target_env = "gnu")),
-        expect(clippy::unnecessary_wraps, reason = "the GNU timer constructor can fail")
-    )]
-    pub(crate) fn new() -> io::Result<Self> {
-        Ok(Self {
-            #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            kernel: KernelDriver::new()?,
-        })
-    }
-}
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -72,7 +49,6 @@ impl Monitor {
 /// Bounds either protocol path with independent CPU and wall limits. Cancellation drops the I/O future.
 pub(crate) async fn run<F: Future>(
     monitor: Option<&Monitor>,
-    driver: Option<&Driver>,
     deadline: Option<Instant>,
     future: F,
 ) -> Result<F::Output, Failure> {
@@ -82,7 +58,7 @@ pub(crate) async fn run<F: Future>(
         };
         monitor.check()?;
         let mut future = pin!(future);
-        let expiry = until_exhausted(monitor, driver);
+        let expiry = until_exhausted(monitor);
         let mut expiry = pin!(expiry);
         tokio::select! {
             biased;
@@ -96,25 +72,7 @@ pub(crate) async fn run<F: Future>(
     }
 }
 
-async fn until_exhausted(monitor: &Monitor, driver: Option<&Driver>) -> Result<(), Failure> {
-    #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    if let Some(driver) = driver {
-        // Short replies need only boundary samples, not cross-thread timer registration.
-        sleep(POLL_INTERVAL).await;
-        loop {
-            monitor.check()?;
-            let deadline = monitor
-                .started
-                .checked_add(monitor.limit)
-                .ok_or_else(|| Failure::Clock(io::Error::new(io::ErrorKind::InvalidInput, "CPU deadline overflow")))?;
-            driver
-                .kernel
-                .expired(monitor.clock.id, deadline)
-                .await
-                .map_err(Failure::Clock)?;
-        }
-    }
-    let _ = driver;
+async fn until_exhausted(monitor: &Monitor) -> Result<(), Failure> {
     let mut ticks = interval_at(Instant::now() + POLL_INTERVAL, POLL_INTERVAL);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {

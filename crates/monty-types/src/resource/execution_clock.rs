@@ -6,10 +6,15 @@ use std::time::Duration;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
-#[cfg(any(unix, windows))]
-use cpu_time::ThreadTime;
+#[cfg(all(feature = "cpu-clock", unix))]
+use nix::{libc::CLOCK_THREAD_CPUTIME_ID, time::ClockId};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
+#[cfg(all(feature = "cpu-clock", windows))]
+use windows_sys::Win32::{
+    Foundation::FILETIME,
+    System::Threading::{GetCurrentThread, GetThreadTimes},
+};
 
 use super::ExecutionClock;
 
@@ -79,12 +84,48 @@ impl ExecutionInstant {
 }
 
 /// Read an absolute counter without retaining a thread-bound handle in movable VM state.
-fn thread_cpu() -> Option<Duration> {
-    #[cfg(any(unix, windows))]
+#[cfg_attr(
+    all(feature = "cpu-clock", windows),
+    expect(
+        unsafe_code,
+        reason = "the current-thread pseudo-handle and separate initialized FILETIME outputs stay live"
+    )
+)]
+pub(super) fn thread_cpu() -> Option<Duration> {
+    #[cfg(all(feature = "cpu-clock", unix))]
     {
-        ThreadTime::try_now().ok().map(|time| time.as_duration())
+        let time = ClockId::from_raw(CLOCK_THREAD_CPUTIME_ID).now().ok()?;
+        Some(Duration::new(
+            time.tv_sec().try_into().ok()?,
+            time.tv_nsec().try_into().ok()?,
+        ))
     }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(all(feature = "cpu-clock", windows))]
+    {
+        let mut created = FILETIME::default();
+        let mut exited = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        // SAFETY: the pseudo-handle names this thread; each output is a separate live FILETIME.
+        let status = unsafe {
+            GetThreadTimes(
+                GetCurrentThread(),
+                &raw mut created,
+                &raw mut exited,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        };
+        if status == 0 {
+            return None;
+        }
+        let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+        ticks(kernel)
+            .checked_add(ticks(user))?
+            .checked_mul(100)
+            .map(Duration::from_nanos)
+    }
+    #[cfg(not(all(feature = "cpu-clock", any(unix, windows))))]
     {
         None
     }
