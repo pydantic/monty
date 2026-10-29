@@ -608,8 +608,8 @@ message Configure {
   // a websocket, say) learns what to downgrade to without a handshake.
   //
   // 0 means the parent declared nothing — either it predates this field or it
-  // is not a monty parent — and is always rejected. The protocol has no
-  // in-band negotiation, so an undeclared peer cannot be assumed compatible.
+  // is not a monty parent — and is always rejected. Optional allocation
+  // admission is acknowledged separately after version validation.
   uint32 protocol_version = 9;
   // How long the child may hold buffered `print()` output before emitting it
   // as a `Print` event, in milliseconds. Absent means the child's default
@@ -629,6 +629,22 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
+  // Direct receiver's canonical decode accounting. Version 7 children can
+  // acknowledge this offer. Relays need admission at each receiving hop.
+  optional ReceiverAllocationProfile receiver_allocation_profile = 14;
+}
+
+// Model 1 uses cumulative logical vector growth and exact canonical reservations.
+// Layout coefficients fit uint32 on supported targets. Cost arithmetic uses uint64.
+message ReceiverAllocationProfile {
+  uint32 model_version = 1;
+  uint64 max_decode_bytes = 2;
+  uint32 node_slot_bytes = 3;
+  uint32 reference_slot_bytes = 4;
+  uint32 class_box_bytes = 5;
+  uint32 string_slot_bytes = 6;
+  uint32 print_segment_slot_bytes = 7;
+  uint32 traceback_slot_bytes = 8;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -825,6 +841,8 @@ message ChildEvent {
   // reply's kind. Unset for ephemeral sessions or for remotes that don't
   // support persistence.
   optional bytes session_id = 28;
+  // Present only on a successful Configure reply that activates this model.
+  optional uint32 accepted_receiver_allocation_profile_version = 29;
 }
 
 enum PrintStream {

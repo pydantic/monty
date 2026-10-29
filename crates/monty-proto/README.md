@@ -41,9 +41,11 @@ for the schema and the protocol rules documented alongside it.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
   version a parent declares in `Configure`, and the range a child serves.
   Versioned independently of the monty package: peers on different releases
-  interoperate as long as their protocol versions overlap. There is no in-band
-  negotiation, so a child rejecting a version reports its range in the
-  `FatalError` for the parent to downgrade to, then exits non-zero.
+  interoperate as long as their protocol versions overlap.
+  A child rejects an unsupported version with `FatalError`, then exits.
+  Version 7 adds optional receiver allocation admission with an explicit acknowledgement.
+  Versions 5 and 6 remain served without this capability.
+  A version 7 host requires an upgraded child and does not retry with an older version.
   Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
   Snapshot compatibility is checked separately using the dump-format version.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
@@ -54,7 +56,10 @@ for the schema and the protocol rules documented alongside it.
 
 Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
 Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
-Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
+Host construction and cloning are unbudgeted.
+Fallible incremental insertion charges logical capacities of 4, 8, 16, and subsequent powers of two.
+These cumulative charges are independent of allocator excess capacity and apply again after clearing a vector.
+Canonical arena hints and packed reference runs reserve exact capacity once and use prepaid insertion.
 
 ## Values are special-cased for performance
 
@@ -103,6 +108,37 @@ The browser component validates semantic values while converting WIT arenas.
 A parent receiving an invalid frame discards the worker with a protocol error.
 A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
 and keeps the session.
+
+## Receiver allocation admission
+
+A direct receiver can offer `Configure.receiver_allocation_profile` with its effective budget and decoder layout coefficients.
+The six layout coefficients use unsigned 32-bit values, which cover the fixed type sizes on supported targets.
+The budget and checked cost arithmetic use unsigned 64-bit values.
+The pool builds this offer from the actual receiver implementation.
+The child activates model 1 only for version 7 requests with nonzero coefficients and a budget of at least 47 bytes.
+Only the successful Configure reply carries `accepted_receiver_allocation_profile_version = 1`.
+Absent, unsupported, invalid, or smaller offers leave this capability inactive.
+Reset clears the profile. A later Configure supplies a new offer.
+Load preserves the destination connection's profile. Dumps do not contain it.
+
+For an active profile, the child checks the final event's exact canonical decode charge before encoding.
+The calculation includes retained arena nodes, packed reference bytes, cumulative repeated-field growth, payloads, and final metadata.
+The internal estimator rejects arithmetic overflow.
+Accounting tests compare its result with the independent receiver charge.
+An excessive event becomes `RuntimeError("response exceeds host decode budget")` with no copied output or traceback.
+The fixed replacement charges 47 bytes and is checked before delivery.
+A completed feed retains its globals and committed type-check context.
+Rejected fresh suspensions return the REPL to Ready.
+An excessive Load reply leaves the previous configuration available for another Load.
+An excessive Dump reply preserves an existing suspension.
+Print frames are checked before delivery. Rejected prints raise a normal print exception and preserve earlier output order.
+Fatal errors remain fatal.
+
+This guarantee applies only when the receiver offers and the child acknowledges the same accounting model.
+Every received frame still undergoes normal allocation and semantic validation.
+A noncooperating child, malformed frame, transport failure, cancellation, or physical allocation failure can still end the session.
+A relay must admit each receiving hop after its final metadata changes.
+The child cannot certify modified frames, CPython workers, browser components, or external implementations.
 
 ## Worker state machine
 

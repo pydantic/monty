@@ -5,10 +5,12 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
+use std::io;
+
 use monty::{Dump, MIN_SUPPORTED_DUMP_VERSION, MontyRepl, ReplProgress, SessionRef, dump};
 use monty_proto::{
-    FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
-    worker::{Child, HandleOutcome, dispatch_frame},
+    FrameError, FrameReader, PROTOCOL_VERSION, WireArena, WireFunctionCall, named_values_to_proto, pb,
+    worker::{Child, EventSink, HandleOutcome, dispatch_frame},
     write_frame,
 };
 use monty_types::{
@@ -1009,4 +1011,651 @@ fn a_committed_import_carries_into_the_next_feed() {
     assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
     let (_, event) = feed(&mut child, "m.sqrt('4')");
     insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
+}
+
+/// Offers the real receiver model, with optional changes for negotiation tests.
+fn configure_profile(
+    child: &mut Child,
+    profile: Option<pb::ReceiverAllocationProfile>,
+    version: u32,
+    type_check: bool,
+) -> pb::ChildEvent {
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        protocol_version: version,
+        receiver_allocation_profile: profile,
+        type_check,
+        print_flush_interval_ms: Some(60_000),
+        ..Default::default()
+    }));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let mut reader = FrameReader::new(bytes.as_slice());
+    let event = reader.read().unwrap().unwrap();
+    assert!(reader.read::<pb::ChildEvent>().unwrap().is_none());
+    event
+}
+
+/// Uses the actual receiver budget on every frame, with exactly one final event.
+fn admitted_turn(child: &mut Child, kind: pb::parent_request::Kind, budget: usize) -> Vec<pb::ChildEvent> {
+    let request = frame_request(kind);
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let mut rest = bytes.as_slice();
+    let mut events = Vec::new();
+    while !rest.is_empty() {
+        let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+        events.push(monty_proto::decode_frame_with_budget::<pb::ChildEvent>(&rest[4..4 + len], budget).unwrap());
+        rest = &rest[4 + len..];
+    }
+    assert_ne!(events, []);
+    assert!(
+        events[..events.len() - 1]
+            .iter()
+            .all(|event| matches!(event.kind, Some(pb::child_event::Kind::Print(_))))
+    );
+    assert!(!matches!(
+        events.last().unwrap().kind,
+        Some(pb::child_event::Kind::Print(_))
+    ));
+    events
+}
+
+/// Builds a feed without input values so the reply alone determines admission.
+fn admission_feed(code: &str) -> pb::parent_request::Kind {
+    pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        cwd: "/".to_owned(),
+        ..Default::default()
+    })
+}
+
+/// Requires the bounded replacement rather than a transport or decoder error.
+fn assert_budget_replacement(event: &pb::ChildEvent) {
+    assert_budget_error(event);
+    let Some(pb::child_event::Kind::Error(error)) = &event.kind else {
+        unreachable!()
+    };
+    assert!(error.exception.as_ref().unwrap().traceback.is_empty());
+    assert!(event.restored_script_name.is_none());
+}
+
+/// Print failures may retain their ordinary traceback when the final error fits.
+fn assert_budget_error(event: &pb::ChildEvent) {
+    let Some(pb::child_event::Kind::Error(error)) = &event.kind else {
+        panic!("expected Error: {event:?}")
+    };
+    let exception = error.exception.as_ref().unwrap();
+    assert_eq!(exception.exc_type, "RuntimeError");
+    assert_eq!(
+        exception.message.as_deref(),
+        Some("response exceeds host decode budget")
+    );
+    assert!(exception.data.is_none());
+}
+
+/// Negotiation is explicit and independent of configuration consumption and resets.
+#[test]
+fn allocation_profiles_are_acknowledged_only_when_usable() {
+    let profile = monty_proto::receiver_allocation_profile(4096);
+    let mut unknown = profile;
+    unknown.model_version = 2;
+    let mut invalid = profile;
+    invalid.reference_slot_bytes = 0;
+    let mut huge = profile;
+    huge.max_decode_bytes = u64::MAX;
+    for (offer, version, active) in [
+        (Some(profile), PROTOCOL_VERSION, true),
+        (None, PROTOCOL_VERSION, false),
+        (Some(unknown), PROTOCOL_VERSION, false),
+        (Some(invalid), PROTOCOL_VERSION, false),
+        (Some(huge), PROTOCOL_VERSION, false),
+        (Some(profile), 6, false),
+        (Some(profile), 5, false),
+        (
+            Some(monty_proto::receiver_allocation_profile(46)),
+            PROTOCOL_VERSION,
+            false,
+        ),
+        (
+            Some(monty_proto::receiver_allocation_profile(0)),
+            PROTOCOL_VERSION,
+            false,
+        ),
+    ] {
+        let mut child = Child::default();
+        let event = configure_profile(&mut child, offer, version, false);
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
+        assert_eq!(event.accepted_receiver_allocation_profile_version, active.then_some(1));
+        let events = admitted_turn(&mut child, admission_feed("1"), 4096);
+        assert!(events[0].accepted_receiver_allocation_profile_version.is_none());
+        assert!(matches!(events[0].kind, Some(pb::child_event::Kind::Complete(_))));
+        let events = admitted_turn(&mut child, pb::parent_request::Kind::Reset(pb::Reset {}), 4096);
+        assert!(events[0].accepted_receiver_allocation_profile_version.is_none());
+        assert!(
+            configure_profile(&mut child, None, PROTOCOL_VERSION, false)
+                .accepted_receiver_allocation_profile_version
+                .is_none()
+        );
+        let events = admitted_turn(
+            &mut child,
+            admission_feed("list(range(128))"),
+            monty_proto::DEFAULT_MAX_DECODE_BYTES,
+        );
+        assert!(matches!(events[0].kind, Some(pb::child_event::Kind::Complete(_))));
+    }
+    let mut child = Child::default();
+    assert_eq!(
+        configure_profile(
+            &mut child,
+            Some(monty_proto::receiver_allocation_profile(47)),
+            PROTOCOL_VERSION,
+            false
+        )
+        .accepted_receiver_allocation_profile_version,
+        Some(1)
+    );
+    assert_budget_replacement(&admitted_turn(&mut child, admission_feed("1"), 47)[0]);
+}
+
+/// Exact-charge acceptance and one-byte rejection preserve committed globals.
+#[test]
+fn admitted_complete_boundary_preserves_the_repl() {
+    let values = MontyObject::list((0..16).map(MontyObject::int));
+    let complete: pb::Complete = values.into();
+    let event = pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::Complete(complete)),
+        ..Default::default()
+    };
+    let profile = monty_proto::receiver_allocation_profile(4096);
+    let charge = usize::try_from(monty_proto::canonical_event_decode_bytes(&event, &profile).unwrap()).unwrap();
+    for budget in [charge, charge - 1] {
+        let mut child = Child::default();
+        configure_profile(
+            &mut child,
+            Some(monty_proto::receiver_allocation_profile(budget)),
+            PROTOCOL_VERSION,
+            false,
+        );
+        admitted_turn(&mut child, admission_feed("kept = 41"), budget);
+        let events = admitted_turn(&mut child, admission_feed("list(range(16))"), budget);
+        if budget == charge {
+            assert_eq!(
+                expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+                MontyObject::list((0..16).map(MontyObject::int))
+            );
+        } else {
+            assert_budget_replacement(&events[0]);
+        }
+        let events = admitted_turn(&mut child, admission_feed("kept + 1"), budget);
+        assert_eq!(
+            expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+            MontyObject::int(42)
+        );
+    }
+}
+
+/// A rejected suspension never leaves an unannounced resume point in the child.
+#[test]
+fn allocation_rejection_recovers_fresh_suspensions_and_stub_requests() {
+    for (code, type_check) in [
+        ("missing_name_whose_length_exceeds_the_offered_allocation_budget", false),
+        ("import os\nos.getenv('x' * 200)", false),
+        ("import extraordinarily_long_module_name_for_stubs", true),
+    ] {
+        let mut child = Child::default();
+        let mut profile = monty_proto::receiver_allocation_profile(4096);
+        // A modeled receiver with expensive node and repeated-string slots.
+        profile.string_slot_bytes = 4096;
+        profile.node_slot_bytes = 4097;
+        if !type_check {
+            profile.max_decode_bytes = 47;
+        }
+        configure_profile(&mut child, Some(profile), PROTOCOL_VERSION, type_check);
+        let events = admitted_turn(
+            &mut child,
+            admission_feed(code),
+            usize::try_from(profile.max_decode_bytes).unwrap(),
+        );
+        assert_budget_replacement(&events[0]);
+        // A fresh Feed must be accepted as a state transition, even if its value is too large.
+        let events = admitted_turn(
+            &mut child,
+            admission_feed("1"),
+            usize::try_from(profile.max_decode_bytes).unwrap(),
+        );
+        assert_budget_replacement(&events[0]);
+    }
+}
+
+/// Final drain rejection must recover a suspension that was computed after the print.
+#[test]
+fn print_admission_and_final_drain_end_the_feed_once() {
+    for code in [
+        "kept = 41\nprint('x' * 700, end='')",
+        "kept = 41\nprint('x' * 700, end='')\nmissing_name",
+        "kept = 41\nprint('x' * 9000)",
+    ] {
+        let mut child = Child::default();
+        configure_profile(
+            &mut child,
+            Some(monty_proto::receiver_allocation_profile(512)),
+            PROTOCOL_VERSION,
+            false,
+        );
+        let events = admitted_turn(&mut child, admission_feed(code), 512);
+        assert_eq!(events.len(), 1);
+        assert_budget_error(&events[0]);
+        let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+        assert_eq!(
+            expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+            MontyObject::int(42)
+        );
+    }
+}
+
+/// Binds a host function without a preliminary name-lookup suspension.
+fn admission_call_feed(code: &str) -> pb::parent_request::Kind {
+    let (inputs, values) = named_values_to_proto(NamedValues::from(vec![(
+        "f".to_owned(),
+        MontyObject::function("f", None),
+    )]));
+    pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs,
+        values: Some(values),
+        cwd: "/".to_owned(),
+        ..Default::default()
+    })
+}
+
+/// A dump rejection preserves an existing suspension, including its argument loan.
+#[test]
+fn rejected_suspended_dump_keeps_the_call_resumable() {
+    let mut child = Child::default();
+    configure_profile(
+        &mut child,
+        Some(monty_proto::receiver_allocation_profile(512)),
+        PROTOCOL_VERSION,
+        false,
+    );
+    let events = admitted_turn(&mut child, admission_call_feed("kept = 41\nf(1)"), 512);
+    let Some(pb::child_event::Kind::FunctionCall(call)) = &events[0].kind else {
+        panic!("expected call: {events:?}")
+    };
+    let call_id = call.call_id;
+    assert_budget_replacement(&admitted_turn(&mut child, pb::parent_request::Kind::Dump(pb::Dump {}), 512)[0]);
+    let events = admitted_turn(
+        &mut child,
+        pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
+            }),
+            values: Some(arena(MontyObject::int(42))),
+        }),
+        512,
+    );
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+}
+
+/// Rejecting a function announcement or final drain leaves the REPL ready.
+#[test]
+fn rejected_function_payload_and_print_drain_restore_the_ready_repl() {
+    for code in ["kept = 41\nf('x' * 1000)", "kept = 41\nprint('x' * 700, end='')\nf(1)"] {
+        let mut child = Child::default();
+        configure_profile(
+            &mut child,
+            Some(monty_proto::receiver_allocation_profile(512)),
+            PROTOCOL_VERSION,
+            false,
+        );
+        let events = admitted_turn(&mut child, admission_call_feed(code), 512);
+        assert_eq!(events.len(), 1);
+        assert_budget_replacement(&events[0]);
+        let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+        assert_eq!(
+            expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+            MontyObject::int(42)
+        );
+    }
+}
+
+/// Keeps earlier prints in order while rejecting a later frame before its sink write.
+#[test]
+fn print_rejection_preserves_prior_delivered_output() {
+    let mut child = Child::default();
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        protocol_version: PROTOCOL_VERSION,
+        receiver_allocation_profile: Some(monty_proto::receiver_allocation_profile(512)),
+        print_flush_interval_ms: Some(0),
+        ..Default::default()
+    }));
+    dispatch_frame(&mut child, &request);
+    let events = admitted_turn(&mut child, admission_feed("print('prior')\nprint('x' * 700)"), 512);
+    assert_eq!(events.len(), 2);
+    let Some(pb::child_event::Kind::Print(print)) = &events[0].kind else {
+        panic!("expected print")
+    };
+    assert_eq!(print.segments.len(), 1);
+    assert_eq!(print.segments[0].text, "prior\n");
+    assert_budget_error(&events[1]);
+}
+
+/// An excessive restored envelope is refused before the previous configuration is consumed.
+#[test]
+fn rejected_loads_are_atomic_including_restored_script_metadata() {
+    let mut idle = Child::default();
+    create_repl(&mut idle);
+    feed(&mut idle, "kept = 41");
+    let (bytes, _) = dispatch_frame(&mut idle, &frame_request(pb::parent_request::Kind::Dump(pb::Dump {})));
+    let (_, pb::child_event::Kind::DumpResult(idle_dump)) = split_turn(&bytes) else {
+        panic!("expected dump")
+    };
+    for large_metadata in [false, true] {
+        let mut source = Child::default();
+        let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+            script_name: if large_metadata {
+                "s".repeat(600)
+            } else {
+                "main.py".to_owned()
+            },
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        }));
+        dispatch_frame(&mut source, &request);
+        let kind = if large_metadata {
+            admission_feed("kept = 41")
+        } else {
+            admission_call_feed("kept = 41\nf('x' * 1000)")
+        };
+        dispatch_frame(&mut source, &frame_request(kind));
+        let (bytes, _) = dispatch_frame(&mut source, &frame_request(pb::parent_request::Kind::Dump(pb::Dump {})));
+        let (_, pb::child_event::Kind::DumpResult(large_dump)) = split_turn(&bytes) else {
+            panic!("expected dump")
+        };
+        let mut child = Child::default();
+        configure_profile(
+            &mut child,
+            Some(monty_proto::receiver_allocation_profile(512)),
+            PROTOCOL_VERSION,
+            false,
+        );
+        let events = admitted_turn(
+            &mut child,
+            pb::parent_request::Kind::Load(pb::Load {
+                state: large_dump.state,
+            }),
+            512,
+        );
+        assert_budget_replacement(&events[0]);
+        let events = admitted_turn(
+            &mut child,
+            pb::parent_request::Kind::Load(pb::Load {
+                state: idle_dump.state.clone(),
+            }),
+            512,
+        );
+        assert!(matches!(events[0].kind, Some(pb::child_event::Kind::Ok(_))));
+        assert_eq!(events[0].restored_script_name.as_deref(), Some("main.py"));
+        let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+        assert_eq!(
+            expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+            MontyObject::int(42)
+        );
+        assert_budget_replacement(&admitted_turn(&mut child, admission_feed("'x' * 1000"), 512)[0]);
+    }
+}
+
+/// Abort reply replacement preserves its normal transition back to Ready.
+#[test]
+fn excessive_abort_reply_keeps_the_repl_ready() {
+    let mut child = Child::default();
+    configure_profile(
+        &mut child,
+        Some(monty_proto::receiver_allocation_profile(512)),
+        PROTOCOL_VERSION,
+        false,
+    );
+    admitted_turn(&mut child, admission_call_feed("kept = 41\nf(1)"), 512);
+    let events = admitted_turn(
+        &mut child,
+        pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+            exception: Some(pb::RaisedException {
+                exc_type: "RuntimeError".to_owned(),
+                message: Some("x".repeat(1000)),
+                ..Default::default()
+            }),
+        }),
+        512,
+    );
+    assert_budget_replacement(&events[0]);
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+}
+
+/// A futures announcement is admitted before its resume point becomes persistent.
+#[test]
+fn rejected_futures_announcement_recovers_the_ready_repl() {
+    let mut child = Child::default();
+    configure_profile(
+        &mut child,
+        Some(monty_proto::receiver_allocation_profile(512)),
+        PROTOCOL_VERSION,
+        false,
+    );
+    let code = "import asyncio\nkept = 41\nasync def main():\n    return await asyncio.gather(*[f() for _ in range(65)])\nasyncio.run(main())";
+    let mut events = admitted_turn(&mut child, admission_call_feed(code), 512);
+    for _ in 0..65 {
+        let Some(pb::child_event::Kind::FunctionCall(call)) = &events[0].kind else {
+            panic!("expected call: {events:?}")
+        };
+        events = admitted_turn(
+            &mut child,
+            pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+                call_id: call.call_id,
+                result: Some(pb::ExtFunctionResult {
+                    kind: Some(pb::ext_function_result::Kind::Future(call.call_id)),
+                }),
+                values: None,
+            }),
+            512,
+        );
+    }
+    assert_budget_replacement(&events[0]);
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+}
+
+/// Completion commits type-check context even when the returned value is rejected.
+#[test]
+fn rejected_complete_retains_committed_type_check_context() {
+    let mut child = Child::default();
+    configure_profile(
+        &mut child,
+        Some(monty_proto::receiver_allocation_profile(4096)),
+        PROTOCOL_VERSION,
+        true,
+    );
+    let events = admitted_turn(&mut child, admission_feed("kept: int = 41\nlist(range(100))"), 4096);
+    assert_budget_replacement(&events[0]);
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 4096);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+    let events = admitted_turn(&mut child, admission_feed("kept = 'wrong type'"), 4096);
+    assert!(matches!(events[0].kind, Some(pb::child_event::Kind::TypingError(_))));
+}
+
+/// A restored suspension retains the destination profile after its configuration is consumed.
+#[test]
+fn accepted_suspended_load_keeps_the_destination_profile() {
+    let mut source = Child::default();
+    create_repl(&mut source);
+    dispatch_frame(&mut source, &frame_request(admission_call_feed("kept = 41\nf(1)")));
+    let (bytes, _) = dispatch_frame(&mut source, &frame_request(pb::parent_request::Kind::Dump(pb::Dump {})));
+    let (_, pb::child_event::Kind::DumpResult(dump)) = split_turn(&bytes) else {
+        panic!("expected dump")
+    };
+    let mut child = Child::default();
+    configure_profile(
+        &mut child,
+        Some(monty_proto::receiver_allocation_profile(512)),
+        PROTOCOL_VERSION,
+        false,
+    );
+    let events = admitted_turn(
+        &mut child,
+        pb::parent_request::Kind::Load(pb::Load { state: dump.state }),
+        512,
+    );
+    let Some(pb::child_event::Kind::FunctionCall(call)) = &events[0].kind else {
+        panic!("expected restored call: {events:?}")
+    };
+    let events = admitted_turn(
+        &mut child,
+        pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: call.call_id,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
+            }),
+            values: Some(arena(MontyObject::string("x".repeat(1000)))),
+        }),
+        512,
+    );
+    assert_budget_replacement(&events[0]);
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+}
+
+/// A sink can fail once, so a later successful send must not hide the transport failure.
+struct FailingPrintSink {
+    sent: Vec<pb::ChildEvent>,
+}
+
+impl EventSink for FailingPrintSink {
+    fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
+        if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+            Err(FrameError::Io(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "print transport failed",
+            )))
+        } else {
+            self.sent.push(event.clone());
+            Ok(())
+        }
+    }
+}
+
+/// A print transport failure remains a transport error rather than a graceful budget rejection.
+#[test]
+fn print_transport_failure_is_not_classified_as_local_admission() {
+    let mut child = Child::default();
+    configure_profile(
+        &mut child,
+        Some(monty_proto::receiver_allocation_profile(4096)),
+        PROTOCOL_VERSION,
+        false,
+    );
+    let pb::parent_request::Kind::Feed(feed) = admission_feed("print('data')") else {
+        unreachable!()
+    };
+    let mut sink = FailingPrintSink { sent: Vec::new() };
+    let error = child
+        .handle(
+            pb::ParentRequest {
+                kind: Some(pb::parent_request::Kind::Feed(feed)),
+                trace_parent: None,
+            },
+            &mut sink,
+        )
+        .unwrap_err();
+    assert!(matches!(error, FrameError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe));
+    assert_eq!(sink.sent, []);
+}
+
+/// Uses line buffering so each completed line has its own admission decision.
+fn line_buffered_admission_child() -> Child {
+    let mut child = Child::default();
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        protocol_version: PROTOCOL_VERSION,
+        receiver_allocation_profile: Some(monty_proto::receiver_allocation_profile(512)),
+        print_flush_interval_ms: Some(0),
+        ..Default::default()
+    }));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    assert!(matches!(
+        decode_events(&bytes).as_slice(),
+        [pb::child_event::Kind::Ok(_)]
+    ));
+    child
+}
+
+/// The failed write's suffix must not escape through the final drain.
+#[test]
+fn multiline_print_rejection_discards_the_unsent_suffix() {
+    let mut child = line_buffered_admission_child();
+    let events = admitted_turn(
+        &mut child,
+        admission_feed("kept = 41\nprint('prior\\n' + 'x' * 700 + '\\ntail\\n', end='')"),
+        512,
+    );
+    assert_eq!(events.len(), 2);
+    let Some(pb::child_event::Kind::Print(print)) = &events[0].kind else {
+        panic!("expected prior output")
+    };
+    assert_eq!(print.segments.len(), 1);
+    assert_eq!(print.segments[0].text, "prior\n");
+    assert_budget_error(&events[1]);
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+}
+
+/// A caught print failure leaves a clean buffer for later valid output.
+#[test]
+fn caught_multiline_print_rejection_preserves_only_the_later_marker() {
+    let mut child = line_buffered_admission_child();
+    let code = "kept = 41\ntry:\n    print('prior\\n' + 'x' * 700 + '\\ntail\\n', end='')\nexcept RuntimeError:\n    print('caught')\nkept + 1";
+    let events = admitted_turn(&mut child, admission_feed(code), 512);
+    assert_eq!(events.len(), 3);
+    for (event, expected) in events[..2].iter().zip(["prior\n", "caught\n"]) {
+        let Some(pb::child_event::Kind::Print(print)) = &event.kind else {
+            panic!("expected streamed output")
+        };
+        assert_eq!(print.segments.len(), 1);
+        assert_eq!(print.segments[0].text, expected);
+    }
+    assert_eq!(
+        expect_complete(events.into_iter().last().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
+    let events = admitted_turn(&mut child, admission_feed("kept + 1"), 512);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        expect_complete(events.into_iter().next().unwrap().kind.unwrap()),
+        MontyObject::int(42)
+    );
 }

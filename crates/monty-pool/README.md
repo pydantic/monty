@@ -108,7 +108,13 @@ Invalid snapshots have no correctness or availability guarantees.
   that violates the protocol is discarded.
   `PoolConfig::max_decode_bytes` can lower the default 1 GiB per-frame decode
   budget. This excludes wire buffers and host-language conversion; it is not a
-  process-memory limit. Exhaustion discards the worker without replaying the request.
+  process-memory limit.
+  Direct subprocess connections offer the effective budget through protocol version 7 allocation admission.
+  A cooperating child rejects excessive replies with `PoolError::Runtime` and retains the session.
+  `Checkout::receiver_allocation_profile_version` reports the acknowledged model, or `None` when inactive.
+  WebSocket connections do not offer this capability because a relay can modify the final event.
+  Receiver exhaustion still discards a noncooperating worker without replaying the request.
+  Budgets below 47 bytes cannot activate the capability because the replacement error would not fit.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
   the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
   a fresh process, which with `min_processes > 0` the background refill has usually spawned

@@ -21,7 +21,7 @@ use num_bigint::{BigInt, Sign};
 use prost::{
     DecodeError, Message,
     bytes::{Buf, BufMut},
-    encoding::{DecodeContext, WireType, encode_key, encode_varint},
+    encoding::{DecodeContext, WireType, encode_key, encode_varint, encoded_len_varint},
 };
 
 include!("oracle/repeated_fields.rs");
@@ -186,7 +186,8 @@ fn budget_vectors_reject_growth_without_losing_elements() {
         assert_eq!(values.as_ptr(), pointer);
         assert_eq!(values.capacity(), 8);
         values.clear();
-        values.try_push(9).unwrap();
+        assert!(values.try_push(9).is_err());
+        assert!(values.is_empty());
         assert_eq!(values.as_ptr(), pointer);
         assert_eq!(decode_budget_remaining(), Some(0));
     });
@@ -888,4 +889,74 @@ fn caller_can_lower_the_frame_budget_without_affecting_the_next_decode() {
     assert!(decode_frame_with_budget::<pb::Print>(&wire, 0).is_err());
     assert!(decode_frame::<pb::Print>(&wire).is_ok());
     assert_eq!(decode_budget_remaining(), None);
+}
+
+/// Logical boundaries charge independently of retained excess capacity.
+#[test]
+fn logical_reservations_ignore_excess_capacity_and_charge_reuse() {
+    for capacity in [5, 6, 64] {
+        let storage = Vec::<u64>::with_capacity(capacity);
+        let mut values = BudgetVec::from(storage);
+        with_decode_budget(28 * size_of::<u64>(), || {
+            for value in 0..16 {
+                values.try_push(value).unwrap();
+            }
+            assert_eq!(decode_budget_remaining(), Some(0));
+        });
+        values.clear();
+        with_decode_budget(4 * size_of::<u64>(), || {
+            values.try_push(99).unwrap();
+            assert_eq!(decode_budget_remaining(), Some(0));
+        });
+        values.truncate(0);
+        with_decode_budget(0, || assert!(values.try_push(100).is_err()));
+    }
+}
+
+/// A full exact three-slot reservation grows safely without implicit push allocation.
+#[test]
+fn a_full_non_power_of_two_reservation_has_one_logical_growth_charge() {
+    let mut values = BudgetVec::from(vec![1u64, 2, 3]);
+    assert_eq!(values.capacity(), 3);
+    with_decode_budget(4 * size_of::<u64>(), || {
+        values.try_push(4).unwrap();
+        assert_eq!(decode_budget_remaining(), Some(0));
+    });
+    assert_eq!(values.as_slice(), &[1, 2, 3, 4]);
+    with_decode_budget(size_of::<[u64; 8]>(), || {
+        values.try_push(5).unwrap();
+        assert_eq!(decode_budget_remaining(), Some(0));
+    });
+}
+
+/// Packed varint byte reservations cover each u32 encoding boundary exactly.
+#[test]
+fn packed_reference_byte_boundaries_have_exact_charges() {
+    let ids = [0, 127, 128, 16_383, 16_384, 2_097_151, 2_097_152];
+    let wire = WireIndexes(ids.into_iter().map(NodeId).collect()).encode_to_vec();
+    let (decoded, charged) = measured_decode::<WireIndexes>(&wire);
+    assert_eq!(decoded.0.len(), ids.len());
+    assert_eq!(charged, 16 * 2 * size_of::<usize>());
+}
+
+/// Pair slots follow incremental growth, independent of odd varint-byte totals.
+#[test]
+fn pair_reference_varint_boundaries_do_not_round_as_packed_storage() {
+    for (key, value, bytes) in [(127, 128, 3), (16_383, 16_384, 5), (2_097_151, 2_097_152, 7)] {
+        let actual_bytes = encoded_len_varint(key) + encoded_len_varint(value);
+        assert_eq!(actual_bytes, bytes);
+        let pair = (
+            NodeId(u32::try_from(key).unwrap()),
+            NodeId(u32::try_from(value).unwrap()),
+        );
+        for count in [1, 4, 5, 8, 9, 16, 17] {
+            let wire = WireNodePairs(vec![pair; count].into()).encode_to_vec();
+            let (decoded, charged) = measured_decode::<WireNodePairs>(&wire);
+            assert_eq!(decoded.0.as_slice(), vec![pair; count].as_slice());
+            assert_eq!(
+                charged,
+                vector_charge::<(NodeId, NodeId)>(count) * (2 * size_of::<usize>() / size_of::<NodeId>())
+            );
+        }
+    }
 }

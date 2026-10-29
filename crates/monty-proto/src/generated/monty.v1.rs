@@ -806,8 +806,8 @@ pub struct Configure {
     /// a websocket, say) learns what to downgrade to without a handshake.
     ///
     /// 0 means the parent declared nothing — either it predates this field or it
-    /// is not a monty parent — and is always rejected. The protocol has no
-    /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
+    /// is not a monty parent — and is always rejected. Optional allocation
+    /// admission is acknowledged separately after version validation.
     #[prost(uint32, tag = "9")]
     pub protocol_version: u32,
     /// How long the child may hold buffered `print()` output before emitting it
@@ -832,6 +832,32 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// Direct receiver's canonical decode accounting. Version 7 children can
+    /// acknowledge this offer. Relays need admission at each receiving hop.
+    #[prost(message, optional, tag = "14")]
+    pub receiver_allocation_profile: ::core::option::Option<ReceiverAllocationProfile>,
+}
+/// Model 1 uses cumulative logical vector growth and exact canonical reservations.
+/// Layout coefficients fit uint32 on supported targets. Cost arithmetic uses uint64.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct ReceiverAllocationProfile {
+    #[prost(uint32, tag = "1")]
+    pub model_version: u32,
+    #[prost(uint64, tag = "2")]
+    pub max_decode_bytes: u64,
+    #[prost(uint32, tag = "3")]
+    pub node_slot_bytes: u32,
+    #[prost(uint32, tag = "4")]
+    pub reference_slot_bytes: u32,
+    #[prost(uint32, tag = "5")]
+    pub class_box_bytes: u32,
+    #[prost(uint32, tag = "6")]
+    pub string_slot_bytes: u32,
+    #[prost(uint32, tag = "7")]
+    pub print_segment_slot_bytes: u32,
+    #[prost(uint32, tag = "8")]
+    pub traceback_slot_bytes: u32,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1022,6 +1048,9 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
+    /// Present only on a successful Configure reply that activates this model.
+    #[prost(uint32, optional, tag = "29")]
+    pub accepted_receiver_allocation_profile_version: ::core::option::Option<u32>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }

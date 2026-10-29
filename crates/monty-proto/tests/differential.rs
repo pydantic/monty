@@ -18,7 +18,10 @@
 use std::time::Instant;
 
 use monty::{MontyRun, RunProgress};
-use monty_proto::{WireArena, WireFunctionCall, decode_frame, os_call_to_proto, pb};
+use monty_proto::{
+    DEFAULT_MAX_DECODE_BYTES, WireArena, WireFunctionCall, canonical_event_decode_bytes, decode_budget_remaining,
+    decode_frame, decode_frame_with_budget, os_call_to_proto, pb, receiver_allocation_profile, with_decode_budget,
+};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, GetenvArgs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, SourceRange,
@@ -1249,4 +1252,413 @@ fn repeated_position_fields_merge_like_the_oracle() {
     let expected = filename[..SourceRange::MAX_FILENAME_LEN].to_owned();
     assert_eq!(hand.position.map(|p| p.filename), Some(expected));
     assert!(started.elapsed().as_secs() < 5, "repeats amplified decode work");
+}
+
+/// Observes the real decoder's remaining budget independently of the sender formula.
+fn assert_canonical_charge(event: &pb::ChildEvent) {
+    let bytes = event.encode_to_vec();
+    let profile = receiver_allocation_profile(DEFAULT_MAX_DECODE_BYTES);
+    let predicted = usize::try_from(canonical_event_decode_bytes(event, &profile).unwrap()).unwrap();
+    let (decoded, actual) = with_decode_budget(DEFAULT_MAX_DECODE_BYTES, || {
+        let decoded = pb::ChildEvent::decode(bytes.as_slice()).unwrap();
+        (decoded, DEFAULT_MAX_DECODE_BYTES - decode_budget_remaining().unwrap())
+    });
+    assert_eq!(predicted, actual, "{event:?}");
+    assert_eq!(&decoded, event);
+    assert_eq!(
+        decode_frame_with_budget::<pb::ChildEvent>(&bytes, actual).unwrap(),
+        decoded
+    );
+    if actual > 0 {
+        assert!(decode_frame_with_budget::<pb::ChildEvent>(&bytes, actual - 1).is_err());
+    }
+}
+
+/// Covers every domain node, default payloads, sharing and retained unreachable nodes.
+#[test]
+fn canonical_node_charges_equal_independent_decoder_measurements() {
+    for graph in graphs() {
+        let root = u32::try_from(graph.nodes().len() - 1).unwrap();
+        assert_canonical_charge(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+                value: root,
+                values: Some(WireArena::new(graph)),
+            })),
+            ..Default::default()
+        });
+    }
+    for count in [0, 1, 4, 5, 8, 9, 16, 17, 127, 128, 16383, 16384] {
+        let mut graph = MontyGraph::new();
+        let ids: Vec<_> = (0..count).map(|value| graph.push(MontyNode::Int(value))).collect();
+        let root = graph.push(MontyNode::List(ids));
+        assert_canonical_charge(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+                value: root.0,
+                values: Some(WireArena::new(graph)),
+            })),
+            ..Default::default()
+        });
+    }
+    for count in [1, 4, 5, 8, 9, 16, 17] {
+        let graph = MontyGraph::from_nodes(vec![MontyNode::Int(0); count]).unwrap();
+        assert_canonical_charge(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+                value: u32::try_from(count - 1).unwrap(),
+                values: Some(WireArena::new(graph)),
+            })),
+            ..Default::default()
+        });
+        let value = MontyObject::named_tuple(
+            "Tuple",
+            vec!["field".to_owned(); count],
+            vec![MontyObject::int(0); count],
+        );
+        assert_canonical_charge(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Complete(value.into())),
+            ..Default::default()
+        });
+    }
+    let mut deep = MontyGraph::new();
+    let mut root = deep.push(MontyNode::None);
+    for _ in 0..10_000 {
+        root = deep.push(MontyNode::List(vec![root, root]));
+    }
+    assert_canonical_charge(&pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+            value: root.0,
+            values: Some(WireArena::new(deep)),
+        })),
+        ..Default::default()
+    });
+    for bytes in [0, 1, 7, 8, 9, 31, 32, 33, 39, 40, 41] {
+        for sign in [Sign::Plus, Sign::Minus] {
+            let value = BigInt::from_bytes_be(sign, &vec![1; bytes]);
+            let graph = unstable::into_graph_parts(MontyObject::bigint(value)).0;
+            assert_canonical_charge(&pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+                    value: 0,
+                    values: Some(WireArena::new(graph)),
+                })),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Receiver coefficients, rather than this sender's layout, determine admission.
+#[test]
+fn canonical_estimates_use_supplied_receiver_coefficients() {
+    let mut graph = MontyGraph::new();
+    let id = graph.push(MontyNode::Int(0));
+    let root = graph.push(MontyNode::List(vec![id; 16]));
+    let event = pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+            value: root.0,
+            values: Some(WireArena::new(graph)),
+        })),
+        ..Default::default()
+    };
+    let mut profile = receiver_allocation_profile(1024);
+    profile.node_slot_bytes = 91;
+    profile.reference_slot_bytes = 27;
+    assert_eq!(canonical_event_decode_bytes(&event, &profile), Some(2 * 91 + 16 * 27));
+    profile.node_slot_bytes = u32::MAX;
+    profile.reference_slot_bytes = u32::MAX;
+    assert_eq!(
+        canonical_event_decode_bytes(&event, &profile),
+        Some(18 * u64::from(u32::MAX))
+    );
+}
+
+/// Every child event and OS-call arm includes its final metadata and nested payloads.
+#[test]
+fn canonical_event_charges_equal_independent_decoder_measurements() {
+    for count in [0, 1, 4, 5, 8, 9, 16, 17] {
+        let mut kinds = vec![
+            pb::child_event::Kind::Print(pb::Print {
+                segments: vec![
+                    pb::PrintSegment {
+                        stream: 1,
+                        text: "out".to_owned()
+                    };
+                    count
+                ]
+                .into(),
+            }),
+            pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
+                pending_call_ids: (0..u32::try_from(count).unwrap()).collect(),
+                position: Some(position().into()),
+            }),
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("message".to_owned()),
+                    traceback: vec![
+                        pb::StackFrame {
+                            filename: "main.py".to_owned(),
+                            frame_name: Some("f".to_owned()),
+                            preview_line: Some("return value".to_owned()),
+                            ..Default::default()
+                        };
+                        count
+                    ]
+                    .into(),
+                    data: None,
+                }),
+            }),
+            pb::child_event::Kind::NameLookup(pb::NameLookup {
+                name: "attribute".to_owned(),
+                object_id: Some(oracle_uuid_for_profile()),
+                position: Some(position().into()),
+            }),
+            pb::child_event::Kind::TypingError(pb::TypingError {
+                diagnostics: "diagnostic".to_owned(),
+            }),
+            pb::child_event::Kind::DumpResult(pb::DumpResult {
+                state: vec![1; count].into(),
+            }),
+            pb::child_event::Kind::Ok(pb::Ok {}),
+            pb::child_event::Kind::FatalError(pb::FatalError {
+                message: "fatal".to_owned(),
+            }),
+            pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+                dump: Some(vec![2; count].into()),
+            }),
+        ];
+        let call = CallArgs::from((
+            vec![MontyObject::int(1); count],
+            (0..count)
+                .map(|i| (MontyObject::string(format!("k{i}")), MontyObject::int(2)))
+                .collect::<Vec<_>>(),
+        ));
+        kinds.push(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+            "f".to_owned(),
+            call,
+            1,
+            Some(MontyUuid::from_u128(1)),
+            false,
+            position(),
+        )));
+        let calls = allocation_os_calls(count);
+        for call in calls {
+            kinds.push(pb::child_event::Kind::OsCall(pb::OsCall {
+                call: Some(call),
+                position: Some(position().into()),
+                values: Some(WireArena::new(
+                    unstable::into_graph_parts(MontyObject::string("retained")).0,
+                )),
+                ..Default::default()
+            }));
+        }
+        for kind in kinds {
+            assert_canonical_charge(&pb::ChildEvent {
+                kind: Some(kind),
+                restored_script_name: Some("restored.py".to_owned()),
+                session_id: Some(vec![1; 16].into()),
+                accepted_receiver_allocation_profile_version: Some(1),
+                ..Default::default()
+            });
+        }
+    }
+    let data = [
+        pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
+            encoding: "utf-8".to_owned(),
+            reason: "reason".to_owned(),
+            object: Some(pb::unicode_error_data::Object::ObjectBytes(vec![255; 5].into())),
+            ..Default::default()
+        }),
+        pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
+            encoding: "ascii".to_owned(),
+            reason: "reason".to_owned(),
+            object: Some(pb::unicode_error_data::Object::ObjectStr("é".to_owned())),
+            ..Default::default()
+        }),
+        pb::exc_data::Kind::Json(pb::JsonErrorData {
+            msg: "invalid".to_owned(),
+            doc: Some("document".to_owned()),
+            ..Default::default()
+        }),
+    ];
+    for data in data {
+        assert_canonical_charge(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    data: Some(pb::ExcData { kind: Some(data) }),
+                    ..Default::default()
+                }),
+            })),
+            ..Default::default()
+        });
+    }
+}
+
+/// Constructs the UUID payload independently of the production UUID conversion.
+fn oracle_uuid_for_profile() -> pb::Uuid {
+    pb::Uuid {
+        data: vec![1; 16].into(),
+    }
+}
+
+/// Keeps the allocation-bearing contents of all OS-call arms visible in one corpus.
+fn allocation_os_calls(count: usize) -> Vec<pb::os_call::Call> {
+    vec![
+        pb::os_call::Call::Exists("/exists".to_owned()),
+        pb::os_call::Call::IsFile("/file".to_owned()),
+        pb::os_call::Call::IsDir("/dir".to_owned()),
+        pb::os_call::Call::IsSymlink("/link".to_owned()),
+        pb::os_call::Call::ReadText("/text".to_owned()),
+        pb::os_call::Call::ReadBytes("/bytes".to_owned()),
+        pb::os_call::Call::Stat("/stat".to_owned()),
+        pb::os_call::Call::Iterdir("/iter".to_owned()),
+        pb::os_call::Call::Resolve("/resolve".to_owned()),
+        pb::os_call::Call::Absolute("/absolute".to_owned()),
+        pb::os_call::Call::Unlink("/unlink".to_owned()),
+        pb::os_call::Call::Rmdir("/rmdir".to_owned()),
+        pb::os_call::Call::WriteText(pb::os_call::TextWrite {
+            path: "/text".to_owned(),
+            data: "text".to_owned(),
+        }),
+        pb::os_call::Call::AppendText(pb::os_call::TextWrite {
+            path: "/text".to_owned(),
+            data: "append".to_owned(),
+        }),
+        pb::os_call::Call::WriteBytes(pb::os_call::BytesWrite {
+            path: "/bytes".to_owned(),
+            data: vec![1; 9].into(),
+        }),
+        pb::os_call::Call::AppendBytes(pb::os_call::BytesWrite {
+            path: "/bytes".to_owned(),
+            data: vec![2; 9].into(),
+        }),
+        pb::os_call::Call::Open(pb::os_call::Open {
+            path: "/open".to_owned(),
+            mode: "rb".to_owned(),
+        }),
+        pb::os_call::Call::Mkdir(pb::os_call::Mkdir {
+            path: "/mkdir".to_owned(),
+            ..Default::default()
+        }),
+        pb::os_call::Call::Rename(pb::os_call::Rename {
+            src: "/src".to_owned(),
+            dst: "/dst".to_owned(),
+        }),
+        pb::os_call::Call::Getenv(pb::os_call::Getenv {
+            key: "KEY".to_owned(),
+            ..Default::default()
+        }),
+        pb::os_call::Call::GetEnviron(pb::Unit {}),
+        pb::os_call::Call::DateToday(pb::Unit {}),
+        pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
+            tz: Some(pb::TimeZone {
+                offset_seconds: 0,
+                name: Some("UTC".to_owned()),
+            }),
+        }),
+        pb::os_call::Call::Urandom(pb::os_call::Urandom { size: 7 }),
+        pb::os_call::Call::Time(pb::os_call::TimeCall {
+            caller: "time.time".to_owned(),
+        }),
+        pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds: 0.0 }),
+        pb::os_call::Call::AsyncSleep(pb::os_call::AsyncSleep { delay: 0.0 }),
+        pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds: 0.0 }),
+        pb::os_call::Call::AsyncSystemSleep(pb::os_call::AsyncSleep { delay: 0.0 }),
+        pb::os_call::Call::Import(pb::os_call::Import {
+            module: "tools".to_owned(),
+        }),
+        pb::os_call::Call::ImportStubs(pb::os_call::ImportStubs {
+            modules: vec!["tools".to_owned(); count].into(),
+        }),
+        pb::os_call::Call::Scan(pb::os_call::Scan {
+            path: "/scan".to_owned(),
+            pattern: vec!["*.py".to_owned(); count].into(),
+            ..Default::default()
+        }),
+    ]
+}
+
+/// The independent generated schema agrees on the negotiated profile and acknowledgement.
+#[test]
+fn allocation_profile_wire_fields_match_the_generated_oracle() {
+    let profile = receiver_allocation_profile(4096);
+    let oracle = oracle::ReceiverAllocationProfile {
+        model_version: profile.model_version,
+        max_decode_bytes: profile.max_decode_bytes,
+        node_slot_bytes: profile.node_slot_bytes,
+        reference_slot_bytes: profile.reference_slot_bytes,
+        class_box_bytes: profile.class_box_bytes,
+        string_slot_bytes: profile.string_slot_bytes,
+        print_segment_slot_bytes: profile.print_segment_slot_bytes,
+        traceback_slot_bytes: profile.traceback_slot_bytes,
+    };
+    assert_eq!(profile.encode_to_vec(), oracle.encode_to_vec());
+    let event = pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+        accepted_receiver_allocation_profile_version: Some(1),
+        ..Default::default()
+    };
+    let oracle = oracle::ChildEvent {
+        kind: Some(oracle::child_event::Kind::Ok(oracle::Ok {})),
+        accepted_receiver_allocation_profile_version: Some(1),
+        ..Default::default()
+    };
+    assert_eq!(event.encode_to_vec(), oracle.encode_to_vec());
+    assert_canonical_charge(&event);
+}
+
+#[test]
+fn allocation_profile_coefficient_limits_keep_varint_bytes_without_decode_allocations() {
+    for coefficient in [0, 1, u32::MAX] {
+        let profile = pb::ReceiverAllocationProfile {
+            node_slot_bytes: coefficient,
+            reference_slot_bytes: coefficient,
+            class_box_bytes: coefficient,
+            string_slot_bytes: coefficient,
+            print_segment_slot_bytes: coefficient,
+            traceback_slot_bytes: coefficient,
+            ..receiver_allocation_profile(4096)
+        };
+        let mut expected = Vec::new();
+        for (tag, value) in [
+            (1, u64::from(profile.model_version)),
+            (2, profile.max_decode_bytes),
+            (3, u64::from(coefficient)),
+            (4, u64::from(coefficient)),
+            (5, u64::from(coefficient)),
+            (6, u64::from(coefficient)),
+            (7, u64::from(coefficient)),
+            (8, u64::from(coefficient)),
+        ] {
+            if value != 0 {
+                encode_key(tag, WireType::Varint, &mut expected);
+                encode_varint(value, &mut expected);
+            }
+        }
+        assert_eq!(profile.encode_to_vec(), expected);
+        assert_eq!(
+            decode_frame_with_budget::<pb::ReceiverAllocationProfile>(&expected, 0).unwrap(),
+            profile
+        );
+    }
+}
+
+/// An odd combined varint length changes wire size without changing pair-slot charges.
+#[test]
+fn canonical_dictionary_pairs_cross_varint_widths_without_packed_rounding() {
+    let mut graph = MontyGraph::from_nodes(vec![MontyNode::Int(0); 129]).unwrap();
+    graph.nodes_mut()[127] = MontyNode::String("key".to_owned());
+    let root = graph.push(MontyNode::Dict(vec![(NodeId(127), NodeId(128))]));
+    let event = pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::Complete(pb::Complete {
+            value: root.0,
+            values: Some(WireArena::new(graph)),
+        })),
+        ..Default::default()
+    };
+    let profile = receiver_allocation_profile(DEFAULT_MAX_DECODE_BYTES);
+    assert_eq!(
+        canonical_event_decode_bytes(&event, &profile),
+        Some(130 * u64::from(profile.node_slot_bytes) + 3 + 8 * u64::from(profile.reference_slot_bytes))
+    );
+    assert_canonical_charge(&event);
 }

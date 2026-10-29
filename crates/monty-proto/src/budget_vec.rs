@@ -52,8 +52,7 @@ impl<T> BudgetVec<T> {
     /// Appends a decoded element, charging any required growth first.
     pub fn try_push(&mut self, value: T) -> Result<(), DecodeError> {
         self.try_reserve_slot()?;
-        self.0.push(value);
-        Ok(())
+        self.try_push_reserved(value)
     }
 
     /// Appends within already-reserved capacity, rejecting insertion rather than growing.
@@ -68,9 +67,40 @@ impl<T> BudgetVec<T> {
 
     /// Reserves the next slot before decoding a potentially expensive payload.
     pub(crate) fn try_reserve_slot(&mut self) -> Result<(), DecodeError> {
-        if self.0.len() == self.0.capacity() {
-            let capacity = self.0.capacity().checked_mul(2).ok_or_else(exhausted)?.max(4);
-            self.try_reserve_capacity(capacity)?;
+        self.try_reserve_slot_with_overhead(0)
+    }
+
+    /// Charges logical growth independently of allocator excess capacity.
+    pub(crate) fn try_reserve_slot_with_overhead(&mut self, overhead: usize) -> Result<(), DecodeError> {
+        let len = self.0.len();
+        let target = if len == 0 {
+            Some(4)
+        } else if len >= 4 && len.is_power_of_two() {
+            Some(len.checked_mul(2).ok_or_else(exhausted)?)
+        } else if len == self.0.capacity() {
+            Some(
+                len.checked_add(1)
+                    .and_then(usize::checked_next_power_of_two)
+                    .ok_or_else(exhausted)?
+                    .max(4),
+            )
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            let cost = size_of::<T>().checked_add(overhead).ok_or_else(exhausted)?;
+            charge(target.checked_mul(cost).ok_or_else(exhausted)?)?;
+            self.ensure_capacity(target)?;
+        }
+        Ok(())
+    }
+
+    /// Ensures prepaid storage without charging it a second time.
+    fn ensure_capacity(&mut self, capacity: usize) -> Result<(), DecodeError> {
+        if capacity > self.0.capacity() {
+            self.0
+                .try_reserve_exact(capacity - self.0.len())
+                .map_err(|_| exhausted())?;
         }
         Ok(())
     }
@@ -100,9 +130,7 @@ impl<T> BudgetVec<T> {
         if capacity > self.0.capacity() {
             let cost = size_of::<T>().checked_add(overhead).ok_or_else(exhausted)?;
             charge(capacity.checked_mul(cost).ok_or_else(exhausted)?)?;
-            self.0
-                .try_reserve_exact(capacity - self.0.len())
-                .map_err(|_| exhausted())?;
+            self.ensure_capacity(capacity)?;
         }
         Ok(())
     }

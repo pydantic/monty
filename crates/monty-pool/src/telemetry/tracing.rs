@@ -1185,6 +1185,7 @@ mod tests {
 
     fn event(kind: pb::child_event::Kind) -> pb::ChildEvent {
         pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(kind),
             total_execution_micros: 42,
             max_suspensions: None,
@@ -1334,6 +1335,7 @@ mod tests {
             state: vec![0; 8].into(),
         })));
         recorder.event(&pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
             max_suspensions: None,
@@ -1388,6 +1390,7 @@ mod tests {
             state: vec![].into(),
         })));
         recorder.event(&pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 42,
             max_suspensions: None,

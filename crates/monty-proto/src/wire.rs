@@ -84,9 +84,6 @@ impl From<MontyGraph> for WireArena {
     }
 }
 
-/// Smallest reservation the decoder makes when a vector starts growing.
-const MIN_VEC_CAPACITY: usize = 4;
-
 /// Fewest wire bytes one node occupies (entry key, length, kind key, empty
 /// `Unit` payload); caps how many nodes a `node_count` hint may reserve.
 const MIN_NODE_WIRE_BYTES: usize = 4;
@@ -128,9 +125,11 @@ impl Message for WireArena {
                 Ok(())
             }
             2 => {
-                // the node's payload was charged as it decoded; this charges its slot
                 let node = node_from_proto(merge_message(wire_type, buf, ctx)?)?;
-                self.0.try_push(node)
+                if self.0.len() == self.0.capacity() {
+                    self.0.try_reserve_slot()?;
+                }
+                self.0.try_push_reserved(node)
             }
             _ => skip_field(wire_type, tag, buf, ctx),
         }
@@ -978,7 +977,7 @@ fn merge_ids(
 /// into a pointer-sized container entry, often through a temporary vector, so
 /// the 4-byte [`NodeId`] alone would let a list of repeated references
 /// materialise at several times the budget.
-const REFERENCE_COST: usize = 2 * size_of::<usize>();
+pub(crate) const REFERENCE_COST: usize = 2 * size_of::<usize>();
 
 /// Budget charge for a reference-buffer slot, including host-container headroom.
 trait DecodeCost {
@@ -995,14 +994,7 @@ impl DecodeCost for (NodeId, NodeId) {
 
 /// Appends references, including host-container headroom in any growth charge.
 fn push_charged<T: DecodeCost>(vec: &mut BudgetVec<T>, item: T) -> Result<(), DecodeError> {
-    if vec.len() == vec.capacity() {
-        let new_capacity = vec
-            .capacity()
-            .checked_mul(2)
-            .ok_or_else(decode_budget::exhausted)?
-            .max(MIN_VEC_CAPACITY);
-        reserve_charged(vec, new_capacity - vec.len())?;
-    }
+    vec.try_reserve_slot_with_overhead(T::COST - size_of::<T>())?;
     vec.try_push_reserved(item)
 }
 

@@ -2,6 +2,7 @@
 
 use std::{ops::RangeInclusive, time::Duration};
 
+mod admission;
 mod budget_vec;
 #[doc(hidden)]
 pub mod budgeted_prost;
@@ -33,7 +34,8 @@ pub mod worker;
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
 /// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Version 7 adds acknowledged receiver allocation admission.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -93,6 +95,8 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
     }
 }
 
+#[doc(hidden)]
+pub use admission::{canonical_event_decode_bytes, receiver_allocation_profile};
 pub use budget_vec::BudgetVec;
 pub use convert::{
     ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,

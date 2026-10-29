@@ -39,7 +39,11 @@ use super::{
     WireFunctionCall, check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
     named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
-use crate::{convert::limits::micros_field, wire::uuid_to_pb};
+use crate::{
+    admission::{ALLOCATION_MODEL_VERSION, DECODE_BUDGET_ERROR, canonical_event_decode_bytes, recognized_profile},
+    convert::limits::micros_field,
+    wire::uuid_to_pb,
+};
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -231,6 +235,10 @@ pub struct Child {
     os_policy: OsPolicy,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
+    /// Negotiated delivery policy belongs to this connection, never to a dump.
+    receiver_allocation_profile: Option<pb::ReceiverAllocationProfile>,
+    /// Retains a print sink failure until handle can return its original transport error.
+    print_transport_error: Option<FrameError>,
 }
 
 impl Default for Child {
@@ -243,6 +251,8 @@ impl Default for Child {
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
             module_stubs: Vec::new(),
+            receiver_allocation_profile: None,
+            print_transport_error: None,
         }
     }
 }
@@ -296,8 +306,32 @@ impl Child {
                 return Ok(HandleOutcome::Shutdown);
             }
         };
-        self.stamp_session_budget(&mut event);
-        let sent = sink.send(&event);
+        // These replies were stamped and admitted before their state was stored.
+        let preadmitted = event.restored_script_name.is_some()
+            || matches!(
+                event.kind,
+                Some(
+                    pb::child_event::Kind::FunctionCall(_)
+                        | pb::child_event::Kind::OsCall(_)
+                        | pb::child_event::Kind::NameLookup(_)
+                        | pb::child_event::Kind::ResolveFutures(_)
+                )
+            );
+        let fatal = matches!(event.kind, Some(pb::child_event::Kind::FatalError(_)));
+        if !preadmitted {
+            self.stamp_session_budget(&mut event);
+            if let Err(rejection) = admit_event(&event, self.receiver_allocation_profile.as_ref()) {
+                event = if fatal {
+                    self.fatal_event(DECODE_BUDGET_ERROR)
+                } else {
+                    self.rejection_event(rejection, false)
+                };
+            }
+        }
+        let sent = match self.print_transport_error.take() {
+            Some(error) => Err(error),
+            None => sink.send(&event),
+        };
         // a suspension announcement was *lent* the payload it announces, so
         // take it back before anything can observe the stored suspension
         // without it — on the failed-send path too, since the session may yet
@@ -309,7 +343,49 @@ impl Child {
         if let Err(err) = sent {
             self.recover_send_error(&event, err, sink)?;
         }
-        Ok(HandleOutcome::Continue)
+        Ok(if fatal {
+            HandleOutcome::Fatal
+        } else {
+            HandleOutcome::Continue
+        })
+    }
+
+    /// Builds one bounded replacement without copying the rejected payload.
+    fn rejection_event(&self, rejection: EventRejection, suspension: bool) -> pb::ChildEvent {
+        let mut event = error_event(ExcType::RuntimeError, &rejection.message(suspension));
+        self.stamp_session_budget(&mut event);
+        if admit_event(&event, self.receiver_allocation_profile.as_ref()).is_err() {
+            event = error_event(ExcType::RuntimeError, DECODE_BUDGET_ERROR);
+            self.stamp_session_budget(&mut event);
+            admit_event(&event, self.receiver_allocation_profile.as_ref())
+                .expect("validated profiles admit the fixed replacement error");
+        }
+        event
+    }
+
+    /// Propagates final print failure after restoring a computed suspension's loan.
+    fn finish_print(&mut self, mut event: pb::ChildEvent, print: &mut ProtoPrint<'_>) -> pb::ChildEvent {
+        let drained = print.drain();
+        if let Some(error) = print.transport_error.take() {
+            self.print_transport_error = Some(error);
+            return event;
+        }
+        if let Err(error) = drained {
+            if let Err(error) = self.reclaim_suspension_payload(&mut event) {
+                return self.fatal_event(&format!("suspension payload could not be restored: {error}"));
+            }
+            if matches!(self.state, SessionState::Suspended(_)) {
+                let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None))
+                else {
+                    unreachable!("checked above");
+                };
+                self.state = SessionState::Ready(Box::new(progress.into_repl()));
+                self.discard_pending_snippet();
+            }
+            error_event_from(&error)
+        } else {
+            event
+        }
     }
 
     /// Moves a suspension announcement's payload back into the suspension it
@@ -393,6 +469,10 @@ impl Child {
         // fatal paths bypass `handle`, so stamp timing here to keep the
         // "every turn-ending event carries timing" contract intact
         self.stamp_session_budget(&mut event);
+        if admit_event(&event, self.receiver_allocation_profile.as_ref()).is_err() {
+            event = fatal_error_event(DECODE_BUDGET_ERROR);
+            self.stamp_session_budget(&mut event);
+        }
         event
     }
 
@@ -427,6 +507,9 @@ impl Child {
                     &format!("result frame of {len} bytes exceeds the maximum of {max} bytes"),
                 );
                 self.stamp_session_budget(&mut event);
+                if let Err(rejection) = admit_event(&event, self.receiver_allocation_profile.as_ref()) {
+                    event = self.rejection_event(rejection, false);
+                }
                 sink.send(&event)
             }
             other => Err(other),
@@ -473,8 +556,16 @@ impl Child {
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
+            self.receiver_allocation_profile = configure
+                .receiver_allocation_profile
+                .filter(|profile| configure.protocol_version >= 7 && recognized_profile(profile));
+            let mut event = ok_event();
+            event.accepted_receiver_allocation_profile_version = self
+                .receiver_allocation_profile
+                .as_ref()
+                .map(|_| ALLOCATION_MODEL_VERSION);
             self.state = SessionState::Configured(Some(Box::new(configure)));
-            ok_event()
+            event
         } else {
             protocol_violation("Configure while a session already exists")
         }
@@ -518,6 +609,7 @@ impl Child {
             persistence: _,
             // a relay's concern; the child has no profiles
             profile: _,
+            receiver_allocation_profile: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -600,18 +692,25 @@ impl Child {
                     first.range.end().to_u32(),
                 );
                 let ask = OsFunctionCall::ImportStubs(asked.clone());
+                let mut event = event(pb::child_event::Kind::OsCall(os_call_to_proto(
+                    IMPORT_STUBS_CALL_ID,
+                    ask,
+                    false,
+                    &position,
+                )));
+                stamp_budget(&mut event, repl.tracker());
+                if let Err(rejection) = admit_event(&event, self.receiver_allocation_profile.as_ref()) {
+                    self.state = SessionState::Ready(repl);
+                    self.discard_pending_snippet();
+                    return self.rejection_event(rejection, true);
+                }
                 self.state = SessionState::AwaitingStubs(Box::new(PendingFeed {
                     repl,
                     code,
                     inputs,
                     asked,
                 }));
-                return event(pb::child_event::Kind::OsCall(os_call_to_proto(
-                    IMPORT_STUBS_CALL_ID,
-                    ask,
-                    false,
-                    &position,
-                )));
+                return event;
             }
         }
         self.start_feed(repl, checked, inputs, type_checked, sink)
@@ -631,11 +730,10 @@ impl Child {
             self.discard_pending_snippet();
             return event;
         }
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.receiver_allocation_profile);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result);
-        print.drain();
-        event
+        self.finish_print(event, &mut print)
     }
 
     /// Records the stubs and starts the pending feed; an exception answer ends it before execution.
@@ -770,15 +868,14 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.receiver_allocation_profile);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             _ => unreachable!("checked above"),
         };
         let event = self.drive(outcome);
-        print.drain();
-        event
+        self.finish_print(event, &mut print)
     }
 
     /// Answers a suspended name lookup with the value (or absence) the parent
@@ -800,11 +897,10 @@ impl Child {
         let ReplProgress::NameLookup(lookup) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.receiver_allocation_profile);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome);
-        print.drain();
-        event
+        self.finish_print(event, &mut print)
     }
 
     /// Raises the parent's exception uncatchably at any pending suspension.
@@ -829,7 +925,7 @@ impl Child {
             SessionState::AwaitingStubs(pending) => return self.fail_pending_feed(*pending, &exc),
             _ => unreachable!("checked above"),
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.receiver_allocation_profile);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
@@ -838,8 +934,7 @@ impl Child {
             ReplProgress::Complete { .. } => unreachable!("checked above"),
         };
         let event = self.drive(outcome);
-        print.drain();
-        event
+        self.finish_print(event, &mut print)
     }
 
     /// Delivers settled futures to a `ResolveFutures` suspension, or one
@@ -868,7 +963,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(sink, self.print_flush_interval);
+        let mut print = ProtoPrint::new(sink, self.print_flush_interval, self.receiver_allocation_profile);
         let outcome = match (*progress, reply) {
             (ReplProgress::FunctionCall(call), FuturesReply::Eager(result)) => {
                 call.resume_eager(result, PrintWriter::Callback(&mut print))
@@ -882,8 +977,7 @@ impl Child {
             _ => unreachable!("reply shaped by the suspension above"),
         };
         let event = self.drive(outcome);
-        print.drain();
-        event
+        self.finish_print(event, &mut print)
     }
 
     /// Serializes the current session, and the metadata that lives outside it,
@@ -946,47 +1040,30 @@ impl Child {
             Session::Suspended(progress) => progress.tracker_mut().tighten_limits(&limits),
             Session::Running(_) => {}
         }
-        // In-process Rust producers can dump suspensions exceeding the wire size limit;
-        // check transport compatibility even though snapshot integrity is the host's responsibility.
-        let mut event = match state {
-            Session::Idle(repl) => {
-                self.state = SessionState::Ready(repl);
-                ok_event()
-            }
-            // the protocol only ever serves repl sessions; a `MontyRun`
-            // execution has no way to accept further feeds
-            Session::Running(_) => protocol_violation("dump holds a one-shot run, not a repl session"),
+        let (next_state, mut event) = match state {
+            Session::Idle(repl) => (SessionState::Ready(repl), ok_event()),
+            Session::Running(_) => return protocol_violation("dump holds a one-shot run, not a repl session"),
             Session::Suspended(progress) => match *progress {
-                // The public Rust dump API can serialize Complete, even though
-                // this worker only dumps idle or suspended sessions.
-                ReplProgress::Complete { repl, value } => {
-                    self.state = SessionState::Ready(Box::new(repl));
-                    complete_event(value)
-                }
+                ReplProgress::Complete { repl, value } => (SessionState::Ready(Box::new(repl)), complete_event(value)),
                 mut progress => {
-                    let mut event = suspension_event(&mut progress);
-                    // size-checked with the stamps `handle` sends it with
-                    stamp_budget(&mut event, progress.tracker());
-                    if let Some(message) = oversize_suspension_error_message(&event) {
-                        protocol_violation(&message)
-                    } else {
-                        self.state = SessionState::Suspended(Box::new(progress));
-                        event
-                    }
+                    let event = suspension_event(&mut progress);
+                    (SessionState::Suspended(Box::new(progress)), event)
                 }
             },
         };
-        // adopt the restored metadata only once the payload actually loaded
-        // (state is now Ready/Suspended) — a failed load leaves the child in
-        // its prior un-started state, re-loadable. Surface the adopted script
-        // name so the parent can report it without parsing the opaque dump.
-        if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
-            self.script_name = script_name;
-            // the dump's stubs, not this worker's `Configure`: the session was checked against them
-            self.module_stubs = module_stubs;
-            self.type_check = type_check;
-            event.restored_script_name = Some(self.script_name.clone());
+        event.restored_script_name = Some(script_name.clone());
+        match &next_state {
+            SessionState::Ready(repl) => stamp_budget(&mut event, repl.tracker()),
+            SessionState::Suspended(progress) => stamp_budget(&mut event, progress.tracker()),
+            _ => unreachable!("load only creates ready or suspended sessions"),
         }
+        if let Err(rejection) = admit_event(&event, self.receiver_allocation_profile.as_ref()) {
+            return self.rejection_event(rejection, true);
+        }
+        self.state = next_state;
+        self.script_name = script_name;
+        self.module_stubs = module_stubs;
+        self.type_check = type_check;
         event
     }
 
@@ -1017,34 +1094,17 @@ impl Child {
                 }
                 complete_event(value)
             }
-            Ok(ReplProgress::OsCall(mut call)) => {
-                let mut event = suspension_event_os_call(&mut call);
-                let progress = ReplProgress::OsCall(call);
-                // stamped before the size check, so the frame measured is
-                // the frame `handle` sends
-                stamp_budget(&mut event, progress.tracker());
-                if let Some(message) = oversize_suspension_error_message(&event) {
-                    self.abort_feed_with_runtime_error(progress.into_repl(), &message)
-                } else {
-                    self.state = SessionState::Suspended(Box::new(progress));
-                    event
-                }
-            }
-            Ok(ReplProgress::FunctionCall(mut call)) => {
-                let mut event = suspension_event_function_call(&mut call);
-                let progress = ReplProgress::FunctionCall(call);
-                stamp_budget(&mut event, progress.tracker());
-                if let Some(message) = oversize_suspension_error_message(&event) {
-                    self.abort_feed_with_runtime_error(progress.into_repl(), &message)
-                } else {
-                    self.state = SessionState::Suspended(Box::new(progress));
-                    event
-                }
-            }
             Ok(mut progress) => {
-                let event = suspension_event(&mut progress);
-                self.state = SessionState::Suspended(Box::new(progress));
-                event
+                let mut event = suspension_event(&mut progress);
+                stamp_budget(&mut event, progress.tracker());
+                if let Err(rejection) = admit_event(&event, self.receiver_allocation_profile.as_ref()) {
+                    self.state = SessionState::Ready(Box::new(progress.into_repl()));
+                    self.discard_pending_snippet();
+                    self.rejection_event(rejection, true)
+                } else {
+                    self.state = SessionState::Suspended(Box::new(progress));
+                    event
+                }
             }
             Err(err) => {
                 // Python-level failure: the session always survives
@@ -1053,13 +1113,6 @@ impl Child {
                 error_event_from(&err.error)
             }
         }
-    }
-
-    /// Ends the current feed with a runtime error while keeping the REPL usable.
-    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::ChildEvent {
-        self.state = SessionState::Ready(Box::new(repl));
-        self.discard_pending_snippet();
-        error_event(ExcType::RuntimeError, message)
     }
 
     /// Checks against accumulated stubs and imports, returning an event on failure.
@@ -1099,6 +1152,8 @@ impl Child {
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
+        self.receiver_allocation_profile = None;
+        self.print_transport_error = None;
     }
 }
 
@@ -1207,10 +1262,37 @@ fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
 ///
 /// The child turns this into a host-visible error before entering the
 /// suspension, because the parent cannot resume a call it never received.
-/// The event must already carry its session stamps (see [`stamp_budget`]).
-fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
-    exceeds_max_frame_len(event)
-        .map(|len| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
+/// A local rejection is distinct from a failed transport write.
+#[derive(Debug, Clone, Copy)]
+enum EventRejection {
+    DecodeBudget,
+    FrameTooLarge { len: u32 },
+}
+
+impl EventRejection {
+    /// Keeps the established wire-limit diagnostic when the receiver can admit it.
+    fn message(self, suspension: bool) -> String {
+        match self {
+            Self::DecodeBudget => DECODE_BUDGET_ERROR.to_owned(),
+            Self::FrameTooLarge { len } => {
+                let payload = if suspension { "argument" } else { "result" };
+                format!("{payload} frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes")
+            }
+        }
+    }
+}
+
+/// Checks the finalized envelope before encoding or committing a suspension or load.
+fn admit_event(event: &pb::ChildEvent, profile: Option<&pb::ReceiverAllocationProfile>) -> Result<(), EventRejection> {
+    if let Some(profile) = profile
+        && canonical_event_decode_bytes(event, profile).is_none_or(|cost| cost > profile.max_decode_bytes)
+    {
+        return Err(EventRejection::DecodeBudget);
+    }
+    if let Some(len) = exceeds_max_frame_len(event) {
+        return Err(EventRejection::FrameTooLarge { len });
+    }
+    Ok(())
 }
 
 /// Builds the suspension event for a `FunctionCall`, **moving** the
@@ -1256,8 +1338,7 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
 
 /// Builds the suspension event for a non-`Complete` progress state. Used on
 /// `Load` to re-announce a restored suspension; fresh suspensions go through
-/// `drive`, which adds the oversize check before delegating to the same
-/// per-variant builders.
+/// `drive`, which stamps and admits the event before storing the suspension.
 fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
     match progress {
         ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
@@ -1324,19 +1405,27 @@ struct ProtoPrint<'a> {
     interval: Duration,
     /// When the buffer stopped being empty; `None` while it is empty.
     buffered_since: Option<Instant>,
+    receiver_allocation_profile: Option<pb::ReceiverAllocationProfile>,
+    transport_error: Option<FrameError>,
 }
 
 impl<'a> ProtoPrint<'a> {
     /// Flush threshold for output that never reaches the interval.
     const FLUSH_BYTES: usize = 8 * 1024;
 
-    fn new(sink: &'a mut dyn EventSink, interval: Duration) -> Self {
+    fn new(
+        sink: &'a mut dyn EventSink,
+        interval: Duration,
+        receiver_allocation_profile: Option<pb::ReceiverAllocationProfile>,
+    ) -> Self {
         Self {
             segments: Vec::new(),
             buffered_bytes: 0,
             sink,
             interval,
             buffered_since: None,
+            receiver_allocation_profile,
+            transport_error: None,
         }
     }
 
@@ -1368,7 +1457,12 @@ impl<'a> ProtoPrint<'a> {
                 self.segments.remove(0);
             }
             self.buffered_bytes -= line.iter().map(|segment| segment.text.len()).sum::<usize>();
-            self.send(line)?;
+            if let Err(error) = self.send(line) {
+                self.segments.clear();
+                self.buffered_bytes = 0;
+                self.buffered_since = None;
+                return Err(error);
+            }
         }
         if self.segments.is_empty() {
             self.buffered_since = None;
@@ -1390,11 +1484,14 @@ impl<'a> ProtoPrint<'a> {
         let event = event(pb::child_event::Kind::Print(pb::Print {
             segments: segments.into(),
         }));
-        self.sink.send(&event).map_err(|err| {
-            MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!("failed to stream print output: {err}")),
-            )
+        admit_event(&event, self.receiver_allocation_profile.as_ref())
+            .map_err(|rejection| MontyException::new(ExcType::RuntimeError, Some(rejection.message(false))))?;
+        self.sink.send(&event).map_err(|error| {
+            let message = format!("failed to stream print output: {error}");
+            if self.transport_error.is_none() {
+                self.transport_error = Some(error);
+            }
+            MontyException::new(ExcType::RuntimeError, Some(message))
         })
     }
 
@@ -1429,10 +1526,9 @@ impl<'a> ProtoPrint<'a> {
     }
 
     /// Flushes whatever is buffered; called before every turn-ending event.
-    /// Errors are ignored — if the sink is broken the turn-ending write fails
-    /// anyway.
-    fn drain(&mut self) {
-        let _ = self.flush();
+    /// A local rejection must end the feed even when execution already completed.
+    fn drain(&mut self) -> Result<(), MontyException> {
+        self.flush()
     }
 
     /// Buffers `text`, extending the trailing segment while it is on the same

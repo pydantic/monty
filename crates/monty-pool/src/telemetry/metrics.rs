@@ -1100,6 +1100,7 @@ mod tests {
 
     fn event(kind: pb::child_event::Kind) -> pb::ChildEvent {
         pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(kind),
             total_execution_micros: 0,
             max_suspensions: None,
@@ -1329,6 +1330,7 @@ mod tests {
         for total in [100, 250] {
             metrics.begin_turn(&feed());
             metrics.event(&pb::ChildEvent {
+                accepted_receiver_allocation_profile_version: None,
                 kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
                 total_execution_micros: total,
                 max_suspensions: None,
@@ -1426,6 +1428,7 @@ mod tests {
             state: vec![].into(),
         })));
         metrics.event(&pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             total_execution_micros: 10_000_000,
             max_suspensions: None,
@@ -1438,6 +1441,7 @@ mod tests {
         });
         metrics.begin_turn(&feed());
         metrics.event(&pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_100,
             max_suspensions: None,
@@ -1466,6 +1470,7 @@ mod tests {
             state: vec![].into(),
         })));
         metrics.event(&pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(pb::child_event::Kind::NameLookup(pb::NameLookup {
                 name: "value".to_owned(),
                 object_id: None,
@@ -1493,6 +1498,7 @@ mod tests {
             NameLookupResult::from(MontyObject::int(1)).into(),
         )));
         metrics.event(&pb::ChildEvent {
+            accepted_receiver_allocation_profile_version: None,
             kind: Some(pb::child_event::Kind::Complete(pb::Complete { value: 0, values: None })),
             total_execution_micros: 10_000_050,
             max_suspensions: None,

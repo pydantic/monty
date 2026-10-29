@@ -175,7 +175,12 @@ See [the security model](../security.md#remote-workers) before using it.
 `PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for
 each protocol frame from a subprocess or WebSocket worker. Values above 1 GiB do not
 raise the ceiling. The budget excludes wire buffers and host-language conversion.
-Exhaustion discards the worker without replaying the request.
+A direct version 7 subprocess connection offers its effective receiver allocation profile.
+An acknowledged child rejects excessive replies with a runtime error and preserves the session.
+`Checkout::receiver_allocation_profile_version` reports the active model, or `None` when inactive.
+WebSocket connections do not offer this capability because a relay can change the final event.
+Absent or declined profiles, including budgets below 47 bytes, retain the existing receiver checks.
+Receiver exhaustion still discards the worker without replaying the request.
 
 ## The in-process interpreter
 

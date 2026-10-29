@@ -97,7 +97,7 @@ pub mod encoding {
                 values.try_reserve_slot()?;
                 let mut value = <$ty>::default();
                 merge(wire_type, &mut value, buf, ctx)?;
-                values.try_push(value)
+                values.try_push_reserved(value)
             }
         };
     }
@@ -198,7 +198,7 @@ pub mod encoding {
             values.try_reserve_slot()?;
             let mut value = Default::default();
             merge(wire_type, &mut value, buf, ctx)?;
-            values.try_push(value)
+            values.try_push_reserved(value)
         }
     }
 }

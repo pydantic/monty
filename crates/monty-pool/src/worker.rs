@@ -185,6 +185,14 @@ impl Worker {
         worker
     }
 
+    /// Offers admission only on a direct connection to the receiving host.
+    pub(crate) fn receiver_allocation_profile(&self) -> Option<pb::ReceiverAllocationProfile> {
+        match &self.kind {
+            WorkerKind::Subprocess(_) => Some(monty_proto::receiver_allocation_profile(self.max_decode_bytes)),
+            WorkerKind::WebSocket(_) => None,
+        }
+    }
+
     /// Spawns a local `monty subprocess` child with framed pipes.
     ///
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as

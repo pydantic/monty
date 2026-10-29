@@ -3272,24 +3272,120 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     session.finish().await.unwrap();
 }
 
-/// An oversized result discards the worker; the next checkout still succeeds.
+/// A cooperating child rejects an excessive result and retains this checkout.
 #[tokio::test]
-async fn a_host_decode_budget_rejects_a_subprocess_result() {
+async fn a_host_decode_budget_rejects_a_result_without_discarding_the_worker() {
     let mut config = config();
     config.max_decode_bytes = 4096;
     let pool = Pool::new(config).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let result = session.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
-    assert_eq!(expect_complete(result), MontyObject::int(42));
+    let worker_id = session.worker_id();
+    assert_eq!(session.receiver_allocation_profile_version(), Some(1));
+    session
+        .feed("kept = 41", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
     let error = session
         .feed("[0] * 100_000", vec![], vec![], false, &mut no_print)
         .await
         .unwrap_err();
-    assert!(matches!(error, PoolError::Protocol(_)));
-    assert!(session.worker_id().is_none());
-    drop(session);
+    let PoolError::Runtime(error) = error else {
+        panic!("expected Runtime: {error:?}")
+    };
+    assert_eq!(error.message(), Some("response exceeds host decode budget"));
+    assert_eq!(session.worker_id(), worker_id);
+    let result = session
+        .feed("kept + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(result), MontyObject::int(42));
+    session.finish().await.unwrap();
     let mut next = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_eq!(next.worker_id(), worker_id);
+    assert_eq!(next.receiver_allocation_profile_version(), Some(1));
     let result = next.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
     assert_eq!(expect_complete(result), MontyObject::int(42));
     next.finish().await.unwrap();
+}
+
+/// A forged acknowledgement never bypasses the real receiver's allocation limit.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_noncooperating_child_is_discarded_after_decode_budget_exhaustion() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ok = child_event(pb::child_event::Kind::Ok(pb::Ok {}));
+    ok.accepted_receiver_allocation_profile_version = Some(1);
+    let mut replies = framed(&ok);
+    replies.extend(framed(&child_event(pb::child_event::Kind::Complete(
+        MontyObject::list((0..100).map(MontyObject::int)).into(),
+    ))));
+    let path = dir.path().join("replies.bin");
+    fs::write(&path, replies).unwrap();
+    let fake = write_fake_monty(dir.path(), &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", path.display()));
+    let mut config = PoolConfig::subprocess(fake);
+    config.max_decode_bytes = 4096;
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_eq!(session.receiver_allocation_profile_version(), Some(1));
+    let error = session
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, PoolError::Protocol(_)));
+    assert!(session.worker_id().is_none());
+    assert!(matches!(
+        session.feed("1", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Finished)
+    ));
+}
+
+/// Raw turns receive the same validated budget error and retain the same checkout.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_admitted_raw_error_keeps_the_subprocess_checkout() {
+    let mut config = config();
+    config.max_decode_bytes = 4096;
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let worker = session.worker_id().expect("the checkout has a worker");
+    let request = |code: &str| pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.to_owned(),
+            cwd: "/".to_owned(),
+            ..Default::default()
+        })),
+        trace_parent: None,
+    };
+    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let event = session.turn_raw(&request("kept = 41"), &mut on_event).await.unwrap();
+    let Some(pb::child_event::Kind::Complete(complete)) = event.kind else {
+        panic!("expected assignment completion")
+    };
+    assert_eq!(MontyObject::try_from(complete).unwrap(), MontyObject::none());
+    assert_eq!(session.worker_id(), Some(worker));
+
+    let event = session
+        .turn_raw(&request("list(range(100))"), &mut on_event)
+        .await
+        .unwrap();
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected budget error")
+    };
+    let exception = error.exception.unwrap();
+    assert_eq!(exception.exc_type, "RuntimeError");
+    assert_eq!(
+        exception.message.as_deref(),
+        Some("response exceeds host decode budget")
+    );
+    assert!(exception.traceback.is_empty());
+    assert!(exception.data.is_none());
+    assert_eq!(session.worker_id(), Some(worker));
+
+    let event = session.turn_raw(&request("kept + 1"), &mut on_event).await.unwrap();
+    let Some(pb::child_event::Kind::Complete(complete)) = event.kind else {
+        panic!("expected sentinel completion")
+    };
+    assert_eq!(MontyObject::try_from(complete).unwrap(), MontyObject::int(42));
+    assert_eq!(session.worker_id(), Some(worker));
+    session.finish().await.unwrap();
 }

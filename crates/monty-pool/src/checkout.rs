@@ -431,6 +431,8 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
+    /// Capability acknowledged on this connection's Configure reply.
+    receiver_allocation_profile_version: Option<u32>,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
@@ -755,7 +757,7 @@ impl Checkout {
         repl: &ReplConfig,
         redial: Option<Redial>,
     ) -> Result<Self, PoolError> {
-        let request = configure_request(repl);
+        let request = configure_request(repl, worker.receiver_allocation_profile());
         let mut this = Self {
             worker: Some(worker),
             pool,
@@ -767,6 +769,7 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             session_id: None,
+            receiver_allocation_profile_version: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
             cwd_set: false,
@@ -1244,6 +1247,13 @@ impl Checkout {
         self.worker.as_ref().map(|worker| worker.id)
     }
 
+    /// The sender admission model acknowledged by this direct worker, if active.
+    /// Receiver validation still applies to every frame, including acknowledged peers.
+    #[must_use]
+    pub fn receiver_allocation_profile_version(&self) -> Option<u32> {
+        self.worker.as_ref().and(self.receiver_allocation_profile_version)
+    }
+
     /// OS process id of the worker, when it is a local subprocess (`None` for a
     /// remote WebSocket worker, or a finished checkout). Diagnostics/tests.
     pub fn pid(&self) -> Option<u32> {
@@ -1472,10 +1482,11 @@ impl Checkout {
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
-        let configure = configure_request(&redial.repl);
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
+        let configure = configure_request(&redial.repl, worker.receiver_allocation_profile());
+        self.receiver_allocation_profile_version = None;
         self.worker = Some(worker);
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
@@ -1696,6 +1707,16 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            if let Some(pb::parent_request::Kind::Configure(configure)) = &request.kind {
+                self.receiver_allocation_profile_version = configure
+                    .receiver_allocation_profile
+                    .as_ref()
+                    .filter(|profile| {
+                        event.accepted_receiver_allocation_profile_version == Some(profile.model_version)
+                            && matches!(event.kind, Some(pb::child_event::Kind::Ok(_)))
+                    })
+                    .map(|profile| profile.model_version);
+            }
             // Only a storing relay sets this, on its reply to `Configure` or
             // `Load`. Taken before the budget check: a re-announced suspension
             // over budget is aborted and dropped, but the session it names lives on.
@@ -2140,7 +2161,10 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
+fn configure_request(
+    repl: &ReplConfig,
+    receiver_allocation_profile: Option<pb::ReceiverAllocationProfile>,
+) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),
         limits: repl.limits.as_ref().map(Into::into),
@@ -2160,6 +2184,7 @@ fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
+        receiver_allocation_profile,
     }))
 }
 
