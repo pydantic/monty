@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Awaitable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Literal, NoReturn, final
+from typing import Any, Callable, Literal, final
 
 from opentelemetry.context import Context
 from typing_extensions import Self
@@ -1412,7 +1412,9 @@ class FunctionSnapshot:
         """Answer this call automatically, then return the next snapshot (or
         `MontyComplete`). Resumes at most once.
 
-        Imports and stub requests use the session's `external_modules`. Other OS calls
+        Imports and stub requests use the session's `external_modules`. A `'system'`
+        sleep is waited out here, as in `feed_run`; a gathered one is left for
+        `FutureSnapshot.resume_auto`. Other OS calls
         try mounts, then `os`, then Monty's unhandled default. External calls use
         `external_lookup`; missing names raise `NameError`. Coroutine results raise
         `RuntimeError`; use `AsyncMonty` for async externals."""
@@ -1481,10 +1483,13 @@ class FutureSnapshot:
         """Resume with settled results for one or more pending futures (by
         `call_id`); a future cannot resolve to another `future`."""
 
-    def resume_auto(self) -> NoReturn:
-        """Always raises `RuntimeError`: a sync session cannot drive coroutine
-        externals. Resolve the pending futures manually with `resume({...})`, or
-        use `AsyncMonty`. Does not consume the snapshot."""
+    def resume_auto(self) -> SyncSnapshot:
+        """Wait for the `'system'` sleeps earlier `resume_auto` calls spawned,
+        deliver them (skipping any already answered by a manual `resume`), and
+        return the next snapshot. With no sleep in flight this
+        raises `RuntimeError` without consuming the snapshot: a sync session cannot
+        drive coroutine externals, so resolve other pending futures manually with
+        `resume({...})`, or use `AsyncMonty`."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -1524,8 +1529,9 @@ class AsyncFunctionSnapshot:
     async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
     async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Awaits eligible coroutine calls directly. Other coroutines are spawned
-        and later settled by `AsyncFutureSnapshot.resume_auto`."""
+        """Awaits eligible coroutine calls and `'system'` sleeps directly. Other
+        coroutines and sleeps are spawned and later settled by
+        `AsyncFutureSnapshot.resume_auto`."""
 
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...
@@ -1571,9 +1577,10 @@ class AsyncFutureSnapshot:
 
     async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Wait for one or more coroutine externals spawned by earlier
-        `resume_auto` calls to settle, deliver them, and return the next
-        snapshot. Raises if there are no pending coroutines to await (e.g. a
+        """Wait for one or more coroutine externals or `'system'` sleeps spawned by
+        earlier `resume_auto` calls to settle, deliver them, and return the next
+        snapshot; results already answered by a manual `resume` are skipped.
+        Raises if there are no pending coroutines or sleeps to await (e.g. a
         snapshot restored via `load_snapshot`) without consuming the snapshot;
         resolve it manually with `resume({call_id: ...})`."""
 
