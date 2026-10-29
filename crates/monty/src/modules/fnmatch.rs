@@ -19,8 +19,8 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os_dispatch::{value_to_owned_bytes, value_to_owned_string},
-    types::{List, Module, Type, str::allocate_string},
+    os_dispatch::{value_as_bytes, value_as_path_str},
+    types::{List, Module, str::allocate_string},
     value::Value,
 };
 
@@ -130,9 +130,14 @@ fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 
     let mut out_guard = DropGuard::new(Vec::new(), vm);
     let (out, vm) = out_guard.as_parts_mut();
+    let mut seen = 0;
     while let Some(item) = iter.py_next(vm)? {
         let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
+        // The source may yield without running bytecode, and every name is copied,
+        // so the drain polls the limits itself as `list()` does.
+        vm.heap.tracker.check_memory_time_every(seen)?;
+        seen += 1;
         let name = Text::from_subject(item, vm)?;
         if matches(&tokens, &pattern_subject(&name, &pat)?.chars, &vm.heap.tracker)? {
             out.push(item_guard.into_inner());
@@ -172,11 +177,7 @@ struct Text {
 impl Text {
     /// `os.fspath(value)`: `str`, `bytes` or a path object, with `fspath`'s error.
     fn from_path_like(value: &Value, vm: &VM<'_>) -> RunResult<Self> {
-        Self::extract(value, vm).ok_or_else(|| {
-            let type_name = value.py_type_name(vm);
-            // `os.fspath` takes bytes here, so the narrowed `os` wording never applies.
-            ExcType::type_error(format!("expected str, bytes or os.PathLike object, not {type_name}"))
-        })
+        Self::extract(value, vm).ok_or_else(|| ExcType::type_error_fspath(&value.py_type_name(vm)))
     }
 
     /// A subject handed straight to the compiled pattern: `str` or `bytes`, with
@@ -211,21 +212,17 @@ impl Text {
 
     /// `str`, `bytes` or path-like text, else `None`.
     fn extract(value: &Value, vm: &VM<'_>) -> Option<Self> {
-        if let Some(text) = value_to_owned_string(value, vm.heap, vm.interns) {
-            Some(Self::str(&text))
-        } else {
-            value_to_owned_bytes(value, vm.heap, vm.interns).map(|bytes| Self::bytes(&bytes))
-        }
+        value_as_path_str(value, vm.heap, vm.interns)
+            .map(Self::str)
+            .or_else(|| value_as_bytes(value, vm.heap, vm.interns).map(Self::bytes))
     }
 
     /// `str` or `bytes` text only, else `None`.
     fn extract_text(value: &Value, vm: &VM<'_>) -> Option<Self> {
         if value.is_str(vm.heap) {
-            value_to_owned_string(value, vm.heap, vm.interns).map(|text| Self::str(&text))
-        } else if value.py_type_heap(vm.heap) == Type::Bytes {
-            value_to_owned_bytes(value, vm.heap, vm.interns).map(|bytes| Self::bytes(&bytes))
+            value_as_path_str(value, vm.heap, vm.interns).map(Self::str)
         } else {
-            None
+            value_as_bytes(value, vm.heap, vm.interns).map(Self::bytes)
         }
     }
 

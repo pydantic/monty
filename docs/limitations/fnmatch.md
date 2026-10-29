@@ -8,8 +8,5 @@
     reason a non-string name in `filter()` reaches the matcher and raises
     `TypeError: expected string or bytes-like object, got 'int'`, as CPython does on POSIX; Windows CPython raises
     `os.fspath`'s `expected str, bytes or os.PathLike object, not int` first.
-- **Patterns are matched directly, not through `re`.** `translate()` returns the regex text CPython 3.14 writes
-    (`(?s:...)\z`, with `(?>.*?x)` atomic groups), but matching interprets the pattern itself, so a pattern never
-    compiles to a `re.Pattern` and the module has no `_compile_pattern` cache.
-- **The functions carry no attributes and the module has no `__all__`.** `fnmatch.fnmatch.__name__`, `__module__`,
-    `__qualname__` and `__doc__` raise `AttributeError`, as on every built-in Monty module function.
+- **The module has no `__all__`**, and its functions carry no attributes, as on every built-in module
+    (see [modules.md](modules.md)).

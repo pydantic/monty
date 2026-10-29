@@ -883,10 +883,15 @@ pub(crate) fn value_as_path_str<'a>(value: &Value, heap: &'a Heap, interns: &'a 
 
 /// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
 pub(crate) fn value_to_owned_bytes(value: &Value, heap: &Heap, interns: &Interns) -> Option<Vec<u8>> {
+    value_as_bytes(value, heap, interns).map(<[u8]>::to_vec)
+}
+
+/// The bytes of a `bytes` `value` (interned or heap), borrowed, else `None`.
+pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a [u8]> {
     match value {
-        Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
+        Value::InternBytes(id) => Some(interns.get_bytes(*id)),
         Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Some(b.as_slice().to_owned()),
+            HeapData::Bytes(b) => Some(b.as_slice()),
             _ => None,
         },
         _ => None,
