@@ -682,8 +682,8 @@ impl Signature {
         } else {
             ExcType::too_many_positional_range_msg(name_str, required, param_count, actual_count, 0)
         };
-        Err(SimpleException::new_msg(ExcType::TypeError, msg)
-            .with_position(func_name.position)
-            .into())
+        // No position: the VM attaches the calling frame, so the traceback
+        // points at the call, as CPython's does, not at the `def`.
+        Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
     }
 }

@@ -2697,9 +2697,9 @@ fn call_function_wrong_arg_count() {
         .unwrap_err();
     assert_snapshot!(err, @r#"
     Traceback (most recent call last):
-      File "<python-input-0>", line 1, in <module>
-        def add(a, b): return a + b
-            ~~~
+      File "<python-input-1>", line 1, in <module>
+        add(...)
+        ~~~~~~~~
     TypeError: add() missing 1 required positional argument: 'b'
     "#);
 }
