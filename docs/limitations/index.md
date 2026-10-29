@@ -98,6 +98,7 @@ The following modules are present:
 | `tomllib`     | [tomllib.md](tomllib.md)         |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
+| `zoneinfo`    | [zoneinfo.md](zoneinfo.md)       |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
 `hashlib` and `tomllib` are the exceptions: `itertools` implements every name it exports, `hashlib` every guaranteed

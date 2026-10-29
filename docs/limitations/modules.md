@@ -45,6 +45,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `tomllib`     | [tomllib.md](tomllib.md)         |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
+| `zoneinfo`    | [zoneinfo.md](zoneinfo.md)       |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
@@ -72,6 +73,7 @@ are unimplemented and may appear over time.
 Some available modules cover only part of their CPython surface: `functools`
 implements only `reduce`, `partial`, `lru_cache`, and `cache`, `copy` only `copy()` and `deepcopy()`,
 `time` everything but `tzset` and the `clock_*` family, `hashlib` everything but `file_digest()` and `scrypt()`,
+`zoneinfo` everything but `ZoneInfo.from_file()`, `TZPATH` and `reset_tzpath()` (see [zoneinfo.md](zoneinfo.md)),
 and `collections` only the four types above; `tomllib` all three of its names, with the argument and exception differences listed in [tomllib.md](tomllib.md).
 The absent names are missing from
 the module namespace rather than stubbed, so they fail type checking as well as

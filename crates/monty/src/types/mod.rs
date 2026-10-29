@@ -52,6 +52,7 @@ pub mod r#type;
 mod unicode_type;
 mod unicode_type_data;
 pub mod union;
+pub mod zoneinfo;
 
 pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
@@ -91,3 +92,4 @@ pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};
 pub(crate) use r#type::Type;
 pub(crate) use union::Union;
+pub(crate) use zoneinfo::ZoneInfo;

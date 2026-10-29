@@ -613,6 +613,8 @@ pub enum StaticStrings {
     Atan2,
     /// `math.atanh()` function.
     Atanh,
+    /// `zoneinfo.available_timezones()` function.
+    AvailableTimezones,
     /// `base64.b16decode()` function.
     #[strum(serialize = "b16decode")]
     B16Decode,
@@ -757,6 +759,8 @@ pub enum StaticStrings {
     ClassVar,
     /// `clear()` method, shared by `list`, `dict` and `set`.
     Clear,
+    /// `ZoneInfo.clear_cache()` classmethod.
+    ClearCache,
     /// `file.close()` method.
     Close,
     /// `file.closed` attribute.
@@ -1227,6 +1231,8 @@ pub enum StaticStrings {
     Fromisoformat,
     /// `dict.fromkeys()` classmethod.
     Fromkeys,
+    /// `fromutc()` method of `ZoneInfo`.
+    Fromutc,
     /// `@dataclass(frozen=...)`.
     Frozen,
     /// `dataclasses.FrozenInstanceError` exception.
@@ -1753,6 +1759,8 @@ pub enum StaticStrings {
     /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
     #[strum(serialize = "_nil")]
     NilSentinel,
+    /// `ZoneInfo.no_cache()` classmethod.
+    NoCache,
     /// `re.NOFLAG` flag
     #[strum(serialize = "NOFLAG")]
     NoFlag,
@@ -1799,6 +1807,8 @@ pub enum StaticStrings {
     OnError,
     /// Kwarg name `onerror` — `os.walk(onerror=...)`.
     Onerror,
+    /// `only_keys` keyword of `ZoneInfo.clear_cache()`.
+    OnlyKeys,
     /// `Path.open()` and the `open()` builtin, which share the `OsFunctionCall::Open`
     /// round-trip. `Path::py_call_attr` delegates to `builtin_open` for mode/kwarg
     /// validation rather than taking the generic `is_path_os_method` pre-flight.
@@ -2572,6 +2582,14 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+    /// The `zoneinfo.ZoneInfo` class.
+    #[strum(serialize = "ZoneInfo")]
+    ZoneInfo,
+    /// `zoneinfo.ZoneInfoNotFoundError`.
+    #[strum(serialize = "ZoneInfoNotFoundError")]
+    ZoneInfoNotFoundError,
+    /// Module name for `import zoneinfo`.
+    Zoneinfo,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

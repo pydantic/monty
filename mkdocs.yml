@@ -81,6 +81,7 @@ nav:
       - time: 'limitations/time.md'
       - tomllib: 'limitations/tomllib.md'
       - unicodedata: 'limitations/unicodedata.md'
+      - zoneinfo: 'limitations/zoneinfo.md'
       - open() and file objects: 'limitations/open.md'
       - Filesystem and sandbox boundary: 'limitations/filesystem.md'
       - Resource limits: 'limitations/resource_limits.md'

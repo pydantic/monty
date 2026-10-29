@@ -184,6 +184,8 @@ macro_rules! heap_payloads {
             DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
             /// The manager `decimal.localcontext()` returns.
             DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
+            /// A `zoneinfo.ZoneInfo`.
+            ZoneInfo(inline $crate::types::ZoneInfo),
         }
     };
 }
@@ -303,7 +305,8 @@ impl HeapData {
             | Self::Decimal(_)
             | Self::DecimalContext(_)
             | Self::DecimalSignalDict(_)
-            | Self::DecimalContextManager(_) => false,
+            | Self::DecimalContextManager(_)
+            | Self::ZoneInfo(_) => false,
         }
     }
 
@@ -401,6 +404,7 @@ impl HeapData {
             Self::DecimalContext(_) => Type::DecimalContext,
             Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
             Self::DecimalContextManager(_) => Type::DecimalContextManager,
+            Self::ZoneInfo(_) => Type::ZoneInfo,
         }
     }
 }
@@ -750,6 +754,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::DecimalContext($value) => $body,
             Self::DecimalSignalDict($value) => $body,
             Self::DecimalContextManager($value) => $body,
+            Self::ZoneInfo($value) => $body,
             $($custom)*
         }
     };
@@ -999,6 +1004,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::TimeZone(value) => value.py_iter(vm),
             Self::DecimalSignalDict(value) => value.py_iter(vm),
             Self::Decimal(_)
+            | Self::ZoneInfo(_)
             | Self::DecimalContext(_)
             | Self::DecimalContextManager(_)
             | Self::NamedTupleClass(_)

@@ -169,6 +169,11 @@ assert datetime.datetime.strptime('2024-06-15 12:30 UTC', '%Y-%m-%d %H:%M %Z').t
 _rt = datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone(datetime.timedelta(hours=-5)))
 assert datetime.datetime.strptime(_rt.strftime('%Y-%m-%d %H:%M %z'), '%Y-%m-%d %H:%M %z') == _rt
 
+# the parsed offset is a `timezone` object, so it survives `replace()`
+assert repr(datetime.datetime.strptime('2024-01-01 10:00+0100', '%Y-%m-%d %H:%M%z').replace(day=2)) == (
+    'datetime.datetime(2024, 1, 2, 10, 0, tzinfo=datetime.timezone(datetime.timedelta(seconds=3600)))'
+)
+
 # === strptime %z rejections ===
 # lowercase z, a missing sign, a bare hour and a minute above 59 are all no match
 for _bad in ['z', '0100', '+01', '+0160']:

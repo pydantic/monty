@@ -5,7 +5,7 @@ use std::{error::Error, fmt, time::Duration};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Timelike, Utc};
 use jiff::{
     Timestamp, civil,
-    tz::{AmbiguousOffset, TimeZone},
+    tz::{self, AmbiguousOffset, TimeZone},
 };
 use num_bigint::BigInt;
 
@@ -158,11 +158,78 @@ impl SandboxTimeZone {
         }
     }
 
+    /// The offset and abbreviation a naive wall-clock time has in this zone, read
+    /// as [`offset_for_local`](Self::offset_for_local) reads it: in a DST gap the
+    /// pre-transition period's, even though the instant it denotes lies after the
+    /// transition. `None` only outside the civil year range.
+    #[must_use]
+    pub fn info_for_local(&self, local: NaiveDateTime) -> Option<MontyTimeZone> {
+        let offset = self.offset_for_local(local)?;
+        let utc = local.checked_sub_signed(TimeDelta::seconds(i64::from(offset)))?;
+        let info = self.at(utc);
+        if info.offset_seconds == offset {
+            Some(info)
+        } else {
+            // A gap: step back past the transition for the period the offset belongs to.
+            let shifted = utc.checked_sub_signed(TimeDelta::seconds(i64::from(info.offset_seconds - offset)))?;
+            Some(MontyTimeZone {
+                offset_seconds: offset,
+                name: self.at(shifted).name,
+            })
+        }
+    }
+
     /// The UTC instant a naive wall-clock time in this zone denotes, or `None`
     /// outside years 1..=9999.
     #[must_use]
     pub fn utc_from_local(&self, local: NaiveDateTime) -> Option<NaiveDateTime> {
         local_wall_clock(local, self.offset_for_local(local)?.checked_neg()?)
+    }
+
+    /// The daylight-saving offset at `utc`, in seconds: the offset in force minus
+    /// the zone's standard offset that year when daylight time applies, else 0.
+    /// `None` for a fixed zone, which has no notion of DST; `Some(0)` for a named
+    /// zone without one, as `ZoneInfo.dst()` distinguishes them.
+    #[must_use]
+    pub fn dst_seconds(&self, utc: NaiveDateTime) -> Option<i32> {
+        match self {
+            Self::Fixed { .. } => None,
+            Self::Named(zone) => {
+                let info = zone.zone.to_offset_info(timestamp(utc));
+                if info.dst().is_dst() {
+                    let standard = self
+                        .constants(Some(utc.year()))
+                        .map_or(info.offset().seconds(), |c| c.standard.offset_seconds);
+                    Some(info.offset().seconds() - standard)
+                } else {
+                    Some(0)
+                }
+            }
+        }
+    }
+
+    /// The daylight-saving offset of the period a naive wall-clock time reads in,
+    /// chosen as [`info_for_local`](Self::info_for_local) chooses it, so a time in
+    /// a DST gap reports the pre-transition period's saving. `None` for a fixed zone.
+    #[must_use]
+    pub fn dst_seconds_for_local(&self, local: NaiveDateTime) -> Option<i32> {
+        let offset = self.offset_for_local(local)?;
+        let utc = local.checked_sub_signed(TimeDelta::seconds(i64::from(offset)))?;
+        let at = self.at(utc);
+        // A gap: the instant lies after the transition, so step back into the period.
+        let instant = if at.offset_seconds == offset {
+            utc
+        } else {
+            utc.checked_sub_signed(TimeDelta::seconds(i64::from(at.offset_seconds - offset)))?
+        };
+        self.dst_seconds(instant)
+    }
+
+    /// Every IANA name the tz database available to this build knows, for
+    /// `zoneinfo.available_timezones()`.
+    #[must_use]
+    pub fn available_names() -> Vec<String> {
+        tz::db().available().map(|name| name.to_string()).collect()
     }
 
     /// The `time` module's `timezone`, `altzone`, `daylight` and `tzname`, read

@@ -208,6 +208,8 @@ pub(crate) enum BuiltinType {
     DecimalSignalDict,
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    #[strum(serialize = "zoneinfo.ZoneInfo")]
+    ZoneInfo,
 }
 
 impl From<BuiltinType> for Type {
@@ -318,6 +320,7 @@ impl From<BuiltinType> for Type {
             BuiltinType::DecimalContext => Self::DecimalContext,
             BuiltinType::DecimalSignalDict => Self::DecimalSignalDict,
             BuiltinType::DecimalContextManager => Self::DecimalContextManager,
+            BuiltinType::ZoneInfo => Self::ZoneInfo,
         }
     }
 }
@@ -432,6 +435,7 @@ impl TryFrom<Type> for BuiltinType {
             Type::DecimalContext => Self::DecimalContext,
             Type::DecimalSignalDict => Self::DecimalSignalDict,
             Type::DecimalContextManager => Self::DecimalContextManager,
+            Type::ZoneInfo => Self::ZoneInfo,
             Type::Instance(_) => return Err("user-defined classes use heap type objects"),
         })
     }

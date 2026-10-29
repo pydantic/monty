@@ -73,6 +73,8 @@ Constructor: `datetime(year, month, day, hour=0, minute=0, second=0, microsecond
 accepted and validated
 (must be 0 or 1) for CPython argument-parsing parity but does not affect
 the stored value: Monty does not track DST-fold disambiguation.
+`tzinfo` accepts `None`, a `timezone` or a `zoneinfo.ZoneInfo` (see [zoneinfo.md](zoneinfo.md));
+there is no `tzinfo` base class to subclass.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
@@ -172,9 +174,11 @@ Class methods: `fromisoformat(time_string)`. `strptime(string, format)`
 format: it requires the string to carry a date, where CPython defaults the
 missing one to 1900-01-01.
 
-`tzinfo` accepts only `None` or a built-in `timezone` instance. The
-`tzinfo` ABC is not implemented, so custom subclasses are rejected, the
-same restriction as `datetime`.
+`tzinfo` accepts only `None` or a built-in `timezone` instance; a
+`zoneinfo.ZoneInfo` is rejected too, since a bare time has no date to
+resolve it against (see [zoneinfo.md](zoneinfo.md)). The `tzinfo` ABC is
+not implemented, so custom subclasses are rejected, the same restriction
+as `datetime`.
 
 `fold` is stored and reported by `.fold` and `repr()`, and survives the host
 boundary, but is never read: Monty has no DST model, so it cannot use the flag
@@ -219,10 +223,7 @@ Methods: `utcoffset(dt)`, `tzname(dt)`, `dst(dt)`. The `dt` argument is
 validated and then ignored, since the offset is the same at every
 instant.
 
-`fromutc(dt)` is not implemented, and neither is the abstract `tzinfo`
-base class. Only fixed offsets can be constructed, so on `timezone`,
-`datetime` and `time` alike, `utcoffset()` is constant over time and
-`dst()` is always `None`.
+`timezone.fromutc(dt)` is not implemented; `ZoneInfo.fromutc()` is (see [zoneinfo.md](zoneinfo.md)).
 
 An offset is a whole number of seconds: `timezone(timedelta(seconds=1, microseconds=1))` raises
 `ValueError: offset must be a timedelta representing a whole number of seconds`, CPython's own message before 3.7,
