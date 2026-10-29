@@ -30,6 +30,7 @@ use crate::{
         time,
         timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
         timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
+        zoneinfo,
     },
     value::{EitherStr, Value},
 };
@@ -342,6 +343,9 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `zoneinfo.ZoneInfo`.
+    #[strum(serialize = "zoneinfo.ZoneInfo")]
+    ZoneInfo,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -673,6 +677,10 @@ impl Type {
             (Self::Decimal, _) if vm.interns.get_str(method_id) == "from_float" => {
                 decimal::py::class_from_float(vm, args).map(CallResult::Value)
             }
+            (Self::ZoneInfo, Some(StaticStrings::NoCache)) => zoneinfo::init(vm, args).map(CallResult::Value),
+            (Self::ZoneInfo, Some(StaticStrings::ClearCache)) => {
+                zoneinfo::class_clear_cache(vm, args).map(CallResult::Value)
+            }
             (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
@@ -868,6 +876,7 @@ impl Type {
             Self::CsvDialect => csv::dialect_init(vm, args),
             Self::Decimal => decimal::py::init(vm, args),
             Self::DecimalContext => decimal::py_context::init(vm, args),
+            Self::ZoneInfo => zoneinfo::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),

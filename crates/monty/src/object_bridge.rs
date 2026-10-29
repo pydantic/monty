@@ -785,7 +785,8 @@ impl MontyTypeExt for MontyType {
             | Type::CsvDialect
             | Type::DecimalContext
             | Type::DecimalSignalDict
-            | Type::DecimalContextManager => return None,
+            | Type::DecimalContextManager
+            | Type::ZoneInfo => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

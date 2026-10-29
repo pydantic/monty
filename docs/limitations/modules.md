@@ -45,6 +45,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `tomllib`     | [tomllib.md](tomllib.md)         |
 | `typing`      | [typing.md](typing.md)           |
 | `unicodedata` | [unicodedata.md](unicodedata.md) |
+| `zoneinfo`    | [zoneinfo.md](zoneinfo.md)       |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`

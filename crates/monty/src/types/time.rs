@@ -32,7 +32,7 @@ use crate::{
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
         date::{self, StrftimeArgs},
-        datetime::{allocate_tzinfo_ref, tzinfo_from_value},
+        datetime::{TzInfoArg, allocate_tzinfo_ref, tzinfo_from_value},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timezone,
     },
@@ -186,8 +186,14 @@ pub(crate) fn allocate(
     let time = from_components(hour, minute, second, microsecond, fold)?;
     // Only the reference is kept: the `timezone` object itself carries the offset
     // and name, so `tzinfo_from_value`'s decoded copy is used for validation only.
-    let (_, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
-    Ok(allocate_with_tz(vm, time, tz_ref))
+    let tz = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
+    // A bare time has no date to resolve a named zone against, so only fixed offsets attach.
+    if matches!(tz, TzInfoArg::Zone(..)) {
+        return Err(ExcType::type_error(
+            "time() tzinfo must be a datetime.timezone, not zoneinfo.ZoneInfo: a time has no date to resolve the zone",
+        ));
+    }
+    Ok(allocate_with_tz(vm, time, tz.heap_id()))
 }
 
 /// Attaches an already-resolved timezone to a validated `Time` and allocates it.
