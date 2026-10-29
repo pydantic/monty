@@ -226,8 +226,9 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// After a frame raises: forgets the module whose body it was, so the next
-    /// import retries the file. Returns whether the frame was a module body.
+    /// After a module fails to load (its body raised or did not compile):
+    /// forgets the file module on top of the stack, so the next import retries
+    /// the file. Returns whether one was there.
     pub(super) fn forget_failed_module(&mut self) -> bool {
         match self.file_module_on_stack() {
             Some((module, name)) => {

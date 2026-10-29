@@ -147,9 +147,8 @@ the callback declines it, so the whole search costs one round trip; each module 
 session.
 This is the reverse of `open()`, where mounts go first: the callback can serve a module without mounting a directory,
 and shadow a mounted file before it runs as code.
-To refuse one, raise `FileNotFoundError`, which skips that file even when a mount holds it, or any error other than
-the not-found kinds listed in [`limitations/modules.md`](limitations/modules.md#modules-from-files), which fails the
-import.
+To refuse one, raise `FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` or `PermissionError`, which skips
+that file even when a mount holds it; any other error fails the import.
 Only a name `external_modules` lacks is searched for: a factory exception is the import's error, and no file is read:
 
 === "Python"
