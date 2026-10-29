@@ -218,6 +218,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "tomllib",
     "typing",
     "unicodedata",
+    "urllib",
 ];
 
 /// Vendored typeshed modules outside [`SANDBOX_MODULE_NAMES`], including private dependencies,

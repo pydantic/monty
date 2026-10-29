@@ -560,6 +560,8 @@ pub enum StaticStrings {
     AlgorithmsAvailable,
     /// `hashlib.algorithms_guaranteed`.
     AlgorithmsGuaranteed,
+    /// `allow_fragments` parameter of `urlsplit()`, `urlparse()` and `urljoin()`.
+    AllowFragments,
     /// `json.dumps(allow_nan=...)` keyword.
     #[strum(serialize = "allow_nan")]
     AllowNan,
@@ -695,6 +697,8 @@ pub enum StaticStrings {
     Blake2s,
     /// `block_size` attribute of a hash object.
     BlockSize,
+    /// `bs` parameter of `quote_from_bytes()`.
+    Bs,
     /// Kwarg name `buffering` — `open(buffering=...)`.
     Buffering,
     /// `sys.builtin_module_names` attribute.
@@ -791,6 +795,8 @@ pub enum StaticStrings {
     Compare,
     /// `re.compile()` function
     Compile,
+    /// `components` parameter of `urlunsplit()` / `urlunparse()`.
+    Components,
     /// `itertools.compress()` function.
     Compress,
     /// `complex.conjugate()` method.
@@ -909,6 +915,9 @@ pub enum StaticStrings {
     /// Value of `os.defpath`.
     #[strum(serialize = "/bin:/usr/bin")]
     DefpathString,
+    /// The `urllib.parse.DefragResult` named tuple.
+    #[strum(serialize = "DefragResult")]
+    DefragResult,
     /// `math.degrees()` function.
     Degrees,
     /// `delay` parameter of `asyncio.sleep()`.
@@ -975,6 +984,8 @@ pub enum StaticStrings {
     Doc,
     /// `sys.dont_write_bytecode` attribute.
     DontWriteBytecode,
+    /// `doseq` parameter of `urlencode()`.
+    Doseq,
     /// `re.DOTALL` flag
     #[strum(serialize = "DOTALL")]
     DotallFlag,
@@ -1214,6 +1225,8 @@ pub enum StaticStrings {
     Format,
     /// `fp` parameter of `json.load()` / `json.dump()`.
     Fp,
+    /// `fragment` field of the `urllib.parse` results.
+    Fragment,
     /// `math.frexp()` function.
     Frexp,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
@@ -1288,6 +1301,8 @@ pub enum StaticStrings {
     Getsize,
     /// `random.getstate()` function.
     Getstate,
+    /// `geturl()` method of the `urllib.parse` results.
+    Geturl,
     /// `Path.glob()` method — yields a host scan.
     Glob,
     /// `globals` parameter of eval/exec.
@@ -1340,6 +1355,8 @@ pub enum StaticStrings {
     High,
     /// `CacheInfo.hits` field.
     Hits,
+    /// `hostname` property of the `urllib.parse` results.
+    Hostname,
     /// `datetime` / `time` `hour` attribute and constructor kwarg.
     Hour,
     /// `timedelta(hours=...)` constructor kwarg.
@@ -1511,6 +1528,8 @@ pub enum StaticStrings {
     JsonDecodeError,
     /// `kappa` parameter of `random.vonmisesvariate()`.
     Kappa,
+    /// `keep_blank_values` parameter of `parse_qs()` / `parse_qsl()`.
+    KeepBlankValues,
     /// Kwarg name `keepends` — `str.splitlines(keepends=...)`.
     Keepends,
     /// Kwarg name `key` — `sorted(key=...)`, `min(key=...)`, etc.
@@ -1643,6 +1662,8 @@ pub enum StaticStrings {
     /// `base64.MAXLINESIZE` module constant.
     #[strum(serialize = "MAXLINESIZE")]
     MaxLineSize,
+    /// `max_num_fields` parameter of `parse_qs()` / `parse_qsl()`.
+    MaxNumFields,
     /// `decimal.MAX_PREC` constant.
     #[strum(serialize = "MAX_PREC")]
     MaxPrec,
@@ -1739,6 +1760,8 @@ pub enum StaticStrings {
     Namedtuple,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
+    /// `netloc` field of the `urllib.parse` results.
+    Netloc,
     /// `typing.Never` marker.
     #[strum(serialize = "Never")]
     Never,
@@ -1835,6 +1858,8 @@ pub enum StaticStrings {
     Pad,
     /// `itertools.pairwise()` function.
     Pairwise,
+    /// `params` field of `urllib.parse.ParseResult`.
+    Params,
     /// `os.pardir` constant name.
     Pardir,
     /// `Path.parent` property.
@@ -1846,10 +1871,19 @@ pub enum StaticStrings {
     Parents,
     /// `random.paretovariate()` function.
     Paretovariate,
+    /// `urllib.parse` as the `parse` attribute of the `urllib` package.
+    Parse,
     /// Kwarg name `parse_float` — `json.loads()`.
     ParseFloat,
     /// Kwarg name `parse_int` — `json.loads()`.
     ParseInt,
+    /// `parse_qs()` in `urllib.parse`.
+    ParseQs,
+    /// `parse_qsl()` in `urllib.parse`.
+    ParseQsl,
+    /// The `urllib.parse.ParseResult` named tuple.
+    #[strum(serialize = "ParseResult")]
+    ParseResult,
     /// `functools.partial` type.
     Partial,
     /// `partition()` method, shared by `str` and `bytes`.
@@ -1907,6 +1941,8 @@ pub enum StaticStrings {
     Popleft,
     /// `population` parameter of `random.choices()` and `random.sample()`.
     Population,
+    /// `port` property of the `urllib.parse` results.
+    Port,
     /// Value of `os.name`.
     Posix,
     /// Module name for `import posixpath`, and the name `os.path` reports.
@@ -1933,11 +1969,19 @@ pub enum StaticStrings {
     Protocol,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// `qs` parameter of `parse_qs()` / `parse_qsl()`.
+    Qs,
+    /// `query` field of the `urllib.parse` results.
+    Query,
     /// `sys.flags.quiet` field.
     Quiet,
+    /// `quote()` in `urllib.parse`.
+    Quote,
     /// `csv.QUOTE_ALL` constant.
     #[strum(serialize = "QUOTE_ALL")]
     QuoteAll,
+    /// `quote_from_bytes()` in `urllib.parse`.
+    QuoteFromBytes,
     /// `csv.QUOTE_MINIMAL` constant.
     #[strum(serialize = "QUOTE_MINIMAL")]
     QuoteMinimal,
@@ -1950,9 +1994,13 @@ pub enum StaticStrings {
     /// `csv.QUOTE_NOTNULL` constant.
     #[strum(serialize = "QUOTE_NOTNULL")]
     QuoteNotnull,
+    /// `quote_plus()` in `urllib.parse`.
+    QuotePlus,
     /// `csv.QUOTE_STRINGS` constant.
     #[strum(serialize = "QUOTE_STRINGS")]
     QuoteStrings,
+    /// `quote_via` parameter of `urlencode()`.
+    QuoteVia,
     /// `quotechar` dialect attribute and `csv` format parameter.
     Quotechar,
     /// `quotetabs` parameter of `binascii.b2a_qp()`.
@@ -2098,6 +2146,8 @@ pub enum StaticStrings {
     S1,
     /// Kwarg name `s2` — `os.path.samestat(s2=...)`.
     S2,
+    /// `safe` parameter of the `urllib.parse` quoting functions.
+    Safe,
     /// `sys.flags.safe_path` field.
     SafePath,
     /// `salt` parameter of `hashlib.blake2b()` and `pbkdf2_hmac()`.
@@ -2113,6 +2163,8 @@ pub enum StaticStrings {
     Sample,
     /// `os.scandir()` function — yields a host scan.
     Scandir,
+    /// `scheme` field of the `urllib.parse` results.
+    Scheme,
     /// `re.search()` / `pattern.search()` method
     Search,
     /// `datetime` / `time` `second` attribute and constructor kwarg.
@@ -2132,6 +2184,8 @@ pub enum StaticStrings {
     SelfType,
     /// Kwarg name `sep` — `str.split(sep=...)`, `print(sep=...)`, etc.
     Sep,
+    /// `separator` parameter of `parse_qs()` / `parse_qsl()`.
+    Separator,
     /// `json.dumps(separators=...)` keyword.
     Separators,
     /// `seq` parameter of `random.choice()`.
@@ -2213,6 +2267,9 @@ pub enum StaticStrings {
     Span,
     /// `split()` method, shared by `str` and `bytes`; also `re.split()`.
     Split,
+    /// The `urllib.parse.SplitResult` named tuple.
+    #[strum(serialize = "SplitResult")]
+    SplitResult,
     /// `os.path.splitdrive()` function.
     Splitdrive,
     /// `os.path.splitext()` function.
@@ -2283,6 +2340,8 @@ pub enum StaticStrings {
     /// `strict_mode` parameter of `binascii.a2b_base64()`.
     #[strum(serialize = "strict_mode")]
     StrictMode,
+    /// `strict_parsing` parameter of `parse_qs()` / `parse_qsl()`.
+    StrictParsing,
     /// `match.string`
     #[strum(serialize = "string")]
     StringAttr,
@@ -2481,6 +2540,12 @@ pub enum StaticStrings {
     UnixDialect,
     /// `Path.unlink()` and `os.unlink()` — yields a host call.
     Unlink,
+    /// `unquote()` in `urllib.parse`.
+    Unquote,
+    /// `unquote_plus()` in `urllib.parse`.
+    UnquotePlus,
+    /// `unquote_to_bytes()` in `urllib.parse`.
+    UnquoteToBytes,
     /// `@dataclass(unsafe_hash=...)`.
     UnsafeHash,
     /// `update()` method, shared by `set` and `dict`.
@@ -2489,16 +2554,39 @@ pub enum StaticStrings {
     Upper,
     /// `os.urandom()` function.
     Urandom,
+    /// `url` field of `urllib.parse.DefragResult`, and the `url` parameter of the parsing functions.
+    Url,
+    /// `urldefrag()` in `urllib.parse`.
+    Urldefrag,
+    /// `urlencode()` in `urllib.parse`.
+    Urlencode,
+    /// `urljoin()` in `urllib.parse`.
+    Urljoin,
+    /// Module name for `import urllib`.
+    Urllib,
+    /// Module name for `import urllib.parse`.
+    #[strum(serialize = "urllib.parse")]
+    UrllibParse,
+    /// `urlparse()` in `urllib.parse`.
+    Urlparse,
     /// `base64.urlsafe_b64decode()` function.
     #[strum(serialize = "urlsafe_b64decode")]
     UrlsafeB64Decode,
     /// `base64.urlsafe_b64encode()` function.
     #[strum(serialize = "urlsafe_b64encode")]
     UrlsafeB64Encode,
+    /// `urlsplit()` in `urllib.parse`.
+    Urlsplit,
+    /// `urlunparse()` in `urllib.parse`.
+    Urlunparse,
+    /// `urlunsplit()` in `urllib.parse`.
+    Urlunsplit,
     /// `usedforsecurity` keyword of the `hashlib` constructors.
     Usedforsecurity,
     /// Callable accepted by caching decorators.
     UserFunction,
+    /// `username` property of the `urllib.parse` results.
+    Username,
     /// `timezone.utc` class constant.
     Utc,
     /// `utcoffset()` method of `time`, `datetime` and `timezone`.
