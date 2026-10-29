@@ -1741,10 +1741,10 @@ pub enum StaticStrings {
     MultilineFlag,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
-    /// `names` parameter of `fnmatch.filter()`.
-    Names,
     /// The `collections.namedtuple` factory function.
     Namedtuple,
+    /// `names` parameter of `fnmatch.filter()`.
+    Names,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
     /// `typing.Never` marker.

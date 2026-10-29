@@ -129,6 +129,7 @@ for _call, _msg in [
     (lambda: fnmatch.fnmatch(b'a', '*'), 'cannot use a string pattern on a bytes-like object'),
     (lambda: fnmatch.fnmatch('a', b'*'), 'cannot use a bytes pattern on a string-like object'),
     (lambda: fnmatch.fnmatchcase(1, '*'), "expected string or bytes-like object, got 'int'"),
+    (lambda: fnmatch.fnmatchcase(1, 1), "object of type 'int' has no len()"),
     (lambda: fnmatch.fnmatchcase(Path('a'), '*'), "expected string or bytes-like object, got 'PosixPath'"),
     (lambda: fnmatch.fnmatchcase('a', 1), "object of type 'int' has no len()"),
     (lambda: fnmatch.fnmatchcase('a', b'*'), 'cannot use a bytes pattern on a string-like object'),

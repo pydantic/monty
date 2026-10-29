@@ -7,6 +7,5 @@
 - **Patterns are matched directly, not through `re`.** `translate()` returns the regex text CPython 3.14 writes
     (`(?s:...)\z`, with `(?>.*?x)` atomic groups), but matching interprets the pattern itself, so a pattern never
     compiles to a `re.Pattern` and the module has no `_compile_pattern` cache.
-- **Function metadata follows other built-in Monty module functions.** Their representation uses `<function ...>`
-    rather than CPython's `<function fnmatch at ...>` with the function's attributes, and the module does not
-    expose `__all__`.
+- **The functions carry no attributes and the module has no `__all__`.** `fnmatch.fnmatch.__name__`, `__module__`,
+    `__qualname__` and `__doc__` raise `AttributeError`, as on every built-in Monty module function.

@@ -9,6 +9,8 @@
 //! The sandbox's `os.path` is `posixpath`, whose `normcase` is the identity, so
 //! `fnmatch()` and `fnmatchcase()` differ only in how they convert their arguments.
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -56,16 +58,16 @@ pub(super) fn call(vm: &mut VM<'_>, function: FnmatchFunctions, args: ArgValues)
             // `normcase` runs `os.fspath` on both, so a `Path` is accepted and a bad type gets its wording.
             let name = Text::from_path_like(name, vm)?;
             let pat = Text::from_path_like(pat, vm)?;
-            Ok(Value::Bool(fnmatchcase(&name, &pat)?))
+            Ok(Value::Bool(fnmatchcase(&name, &pat, &vm.heap.tracker)?))
         }
         FnmatchFunctions::Fnmatchcase => {
             let FnmatchcaseArgs { name, pat } = FnmatchcaseArgs::from_args(args, vm)?;
             defer_drop!(name, vm);
             defer_drop!(pat, vm);
-            // Straight to the compiled pattern: the subject gets `re`'s wording.
-            let name = Text::from_subject(name, vm)?;
+            // The pattern compiles first, then the subject gets `re`'s wording.
             let pat = Text::from_pattern(pat, vm)?;
-            Ok(Value::Bool(fnmatchcase(&name, &pat)?))
+            let name = Text::from_subject(name, vm)?;
+            Ok(Value::Bool(fnmatchcase(&name, &pat, &vm.heap.tracker)?))
         }
         FnmatchFunctions::Filter => {
             let FilterArgs { names, pat } = FilterArgs::from_args(args, vm)?;
@@ -132,7 +134,7 @@ fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let name = Text::from_subject(item, vm)?;
-        if matches(&tokens, &pattern_subject(&name, &pat)?.chars) {
+        if matches(&tokens, &pattern_subject(&name, &pat)?.chars, &vm.heap.tracker)? {
             out.push(item_guard.into_inner());
         }
     }
@@ -141,9 +143,9 @@ fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
 }
 
 /// `fnmatchcase(name, pat)` on converted arguments.
-fn fnmatchcase(name: &Text, pat: &Text) -> RunResult<bool> {
+fn fnmatchcase(name: &Text, pat: &Text, tracker: &ResourceTracker) -> RunResult<bool> {
     let name = pattern_subject(name, pat)?;
-    Ok(matches(&compile(&pat.chars), &name.chars))
+    Ok(matches(&compile(&pat.chars), &name.chars, tracker)?)
 }
 
 /// Checks that `name` and `pat` are both `str` or both `bytes`, raising `re`'s
@@ -410,10 +412,14 @@ fn compile_class(stuff: &[char]) -> Token {
 
 /// Whether the whole of `text` matches `tokens`: a backtracking wildcard match
 /// that is linear in the common case, remembering only the latest star.
-fn matches(tokens: &[Token], text: &[char]) -> bool {
+fn matches(tokens: &[Token], text: &[char], tracker: &ResourceTracker) -> Result<bool, ResourceError> {
     let (mut t, mut s) = (0, 0);
     let mut star: Option<(usize, usize)> = None;
+    // Backtracking makes this quadratic in the worst case, so the clock is polled.
+    let mut steps = 0;
     while s < text.len() {
+        tracker.check_time_every(steps)?;
+        steps += 1;
         match tokens.get(t) {
             Some(Token::Star) => {
                 star = Some((t, s));
@@ -430,11 +436,11 @@ fn matches(tokens: &[Token], text: &[char]) -> bool {
                     s = star_s + 1;
                     star = Some((star_t, star_s + 1));
                 }
-                None => return false,
+                None => return Ok(false),
             },
         }
     }
-    tokens[t..].iter().all(|token| *token == Token::Star)
+    Ok(tokens[t..].iter().all(|token| *token == Token::Star))
 }
 
 /// Whether a single-character token matches `c`.
