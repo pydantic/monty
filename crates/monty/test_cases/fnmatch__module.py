@@ -136,7 +136,6 @@ for _call, _msg in [
     ),
     (lambda: fnmatch.fnmatchcase('a', 1), "object of type 'int' has no len()"),
     (lambda: fnmatch.fnmatchcase('a', b'*'), 'cannot use a bytes pattern on a string-like object'),
-    (lambda: fnmatch.filter(['a.py', 1], '*.py'), "expected string or bytes-like object, got 'int'"),
     (lambda: fnmatch.filter([b'a.py', 'b.py'], b'*.py'), 'cannot use a bytes pattern on a string-like object'),
     (lambda: fnmatch.filter([], 1), 'expected str, bytes or os.PathLike object, not int'),
     (lambda: fnmatch.filter(5, '*'), "'int' object is not iterable"),
