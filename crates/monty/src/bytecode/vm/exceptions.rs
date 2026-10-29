@@ -153,10 +153,9 @@ impl VM<'_> {
     /// is instantiated here so there is an object to record it on.
     pub(super) fn raise_with_cause(&mut self, exc: Value, cause: Value) -> Option<RunError> {
         let error = self.make_exception(&exc, true);
-        let raised = match exc {
-            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Value::Ref(id),
-            Value::Builtin(Builtins::ExcType(exc_type)) => self.allocate_exception(exc_type),
-            other => {
+        let raised = match self.exception_object(exc) {
+            Ok(raised) => raised,
+            Err(other) => {
                 // `error` is the `exceptions must derive from BaseException` TypeError.
                 other.drop_with(self);
                 cause.drop_with(self);
@@ -165,25 +164,32 @@ impl VM<'_> {
         };
         let cause = match cause {
             Value::None => None,
-            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Some(id),
-            Value::Builtin(Builtins::ExcType(exc_type)) => {
-                let Value::Ref(id) = self.allocate_exception(exc_type) else {
-                    unreachable!("exceptions are heap values")
-                };
-                Some(id)
-            }
-            other => {
-                other.drop_with(self);
-                raised.drop_with(self);
-                let error = ExcType::type_error("exception causes must derive from BaseException");
-                return self.handle_exception_with_value(error, None);
-            }
+            other => match self.exception_object(other) {
+                Ok(cause) => cause.into_ref_id(),
+                Err(other) => {
+                    other.drop_with(self);
+                    raised.drop_with(self);
+                    let error = ExcType::type_error("exception causes must derive from BaseException");
+                    return self.handle_exception_with_value(error, None);
+                }
+            },
         };
         let Value::Ref(raised_id) = &raised else {
             unreachable!("exceptions are heap values")
         };
         self.set_exception_cause(*raised_id, cause);
         self.handle_exception_with_value(error, Some(raised))
+    }
+
+    /// The exception object `value` denotes: itself for an exception, a fresh
+    /// instance for an exception class. Anything else comes back as `Err` for the
+    /// caller to release and report.
+    fn exception_object(&mut self, value: Value) -> Result<Value, Value> {
+        match value {
+            Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Ok(value),
+            Value::Builtin(Builtins::ExcType(exc_type)) => Ok(self.allocate_exception(exc_type)),
+            other => Err(other),
+        }
     }
 
     /// Allocates `exc_type()` with no message, for `raise ExcType from ...` and its cause.
