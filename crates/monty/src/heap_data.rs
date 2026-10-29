@@ -184,6 +184,12 @@ macro_rules! heap_payloads {
             DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
             /// The manager `decimal.localcontext()` returns.
             DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
+            /// An `ipaddress.IPv4Address` or `IPv6Address`.
+            IpAddress(inline $crate::types::IpAddress),
+            /// An `ipaddress.IPv4Network` or `IPv6Network`.
+            IpNetwork(inline $crate::types::IpNetwork),
+            /// The iterator behind `hosts()`, `subnets()` and iterating a network.
+            IpIterator(inline $crate::types::IpIterator),
         }
     };
 }
@@ -303,7 +309,10 @@ impl HeapData {
             | Self::Decimal(_)
             | Self::DecimalContext(_)
             | Self::DecimalSignalDict(_)
-            | Self::DecimalContextManager(_) => false,
+            | Self::DecimalContextManager(_)
+            | Self::IpAddress(_)
+            | Self::IpNetwork(_)
+            | Self::IpIterator(_) => false,
         }
     }
 
@@ -401,6 +410,9 @@ impl HeapData {
             Self::DecimalContext(_) => Type::DecimalContext,
             Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
             Self::DecimalContextManager(_) => Type::DecimalContextManager,
+            Self::IpAddress(address) => address.py_type(),
+            Self::IpNetwork(network) => network.py_type(),
+            Self::IpIterator(_) => Type::WalkGenerator,
         }
     }
 }
@@ -750,6 +762,9 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::DecimalContext($value) => $body,
             Self::DecimalSignalDict($value) => $body,
             Self::DecimalContextManager($value) => $body,
+            Self::IpAddress($value) => $body,
+            Self::IpNetwork($value) => $body,
+            Self::IpIterator($value) => $body,
             $($custom)*
         }
     };
@@ -998,7 +1013,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::TimeDelta(value) => value.py_iter(vm),
             Self::TimeZone(value) => value.py_iter(vm),
             Self::DecimalSignalDict(value) => value.py_iter(vm),
-            Self::Decimal(_)
+            Self::IpNetwork(value) => value.py_iter(vm),
+            Self::IpIterator(value) => value.py_iter(vm),
+            Self::IpAddress(_)
+            | Self::Decimal(_)
             | Self::DecimalContext(_)
             | Self::DecimalContextManager(_)
             | Self::NamedTupleClass(_)
@@ -1033,6 +1051,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::StringIterator(value) => value.py_next(vm),
             Self::BytesIterator(value) => value.py_next(vm),
             Self::RangeIterator(value) => value.py_next(vm),
+            Self::IpIterator(value) => value.py_next(vm),
             Self::DictKeyIterator(value) => value.py_next(vm),
             Self::DictItemIterator(value) => value.py_next(vm),
             Self::DictValueIterator(value) => value.py_next(vm),

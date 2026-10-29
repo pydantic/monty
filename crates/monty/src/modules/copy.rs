@@ -316,6 +316,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DateTime(_)
         | HeapReadOutput::TimeDelta(_)
         | HeapReadOutput::TimeZone(_)
+        | HeapReadOutput::IpAddress(_)
+        | HeapReadOutput::IpNetwork(_)
         | HeapReadOutput::Path(_)
         // Classes and functions. A `def`/`lambda` only reaches the heap once
         // it captures an enclosing scope or evaluates a default; a plain one
@@ -352,6 +354,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::StringIterator(_)
         | HeapReadOutput::BytesIterator(_)
         | HeapReadOutput::RangeIterator(_)
+        | HeapReadOutput::IpIterator(_)
         | HeapReadOutput::DictKeyIterator(_)
         | HeapReadOutput::DictItemIterator(_)
         | HeapReadOutput::DictValueIterator(_)

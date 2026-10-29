@@ -70,6 +70,7 @@ nav:
       - decimal: 'limitations/decimal.md'
       - functools: 'limitations/functools.md'
       - hashlib: 'limitations/hashlib.md'
+      - ipaddress: 'limitations/ipaddress.md'
       - itertools: 'limitations/itertools.md'
       - json: 'limitations/json.md'
       - math: 'limitations/math.md'
