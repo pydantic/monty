@@ -1244,8 +1244,7 @@ pub mod os_call {
         /// The dotted module name.
         #[prost(string, tag = "1")]
         pub module: ::prost::alloc::string::String,
-        /// Absolute virtual directories to search for the module's `.py` file;
-        /// empty (as from a child before file imports) for host modules only.
+        /// Absolute virtual directories to search, in order, for the module's `.py` file.
         #[prost(string, repeated, tag = "2")]
         pub search_path: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     }

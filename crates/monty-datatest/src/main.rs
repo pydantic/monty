@@ -37,7 +37,7 @@ use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_CALL, MontyException, MontyFileHandle,
     MontyObject, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
-    SandboxTimeZone, dir_stat, file_stat,
+    SandboxTimeZone, dir_stat, file_stat, find_module_file,
     scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -1857,9 +1857,10 @@ fn run_mount_fs_iter_loop(
                 // Dispatch through the mount table first.
                 progress = call.resume_with(PrintWriter::Stdout, |fc| match fc {
                     // Any module but the tools fixture is a file on the mount, or missing.
-                    OsFunctionCall::Import(args) if args.module != "tools" => mount_table
-                        .find_module(&args)
-                        .unwrap_or_else(|| ExtFunctionResult::NotFound(IMPORT_CALL.to_owned())),
+                    OsFunctionCall::Import(args) if args.module != "tools" => {
+                        find_module_file(&args, |path| mount_table.read_module(path))
+                            .unwrap_or_else(|| ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()))
+                    }
                     fc => match mount_table.handle_os_call(fc) {
                         MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
                         MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),

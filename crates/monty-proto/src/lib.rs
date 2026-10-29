@@ -33,9 +33,6 @@ pub mod worker;
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
 /// `import_stubs` OS calls, which version 5 parents cannot answer.
-/// `OsCall.Import.search_path` and `ExtFunctionResult.module_file` did not bump
-/// it: a parent answers `module_file` only to an import that carried a search
-/// path, which an older child never sends, and an older parent ignores the path.
 pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.

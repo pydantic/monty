@@ -29,7 +29,7 @@ use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
     NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
-    SleepMode, TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
+    SleepMode, TypeCheckingConfig, find_module_file, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -699,7 +699,7 @@ impl HostOs {
             return self
                 .mounts
                 .as_mut()
-                .and_then(|mounts| mounts.find_module(args))
+                .and_then(|mounts| find_module_file(args, |path| mounts.read_module(path)))
                 .unwrap_or_else(|| call.no_handler_result());
         }
         match self.mounts.as_mut() {
