@@ -224,6 +224,33 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a TypeError for changing an attribute that CPython's `type` guards.
+    ///
+    /// CPython says `cannot set` for any attribute of a built-in type, even under
+    /// `del`, and `cannot delete` for a class's special attributes like `__name__`.
+    #[must_use]
+    fn type_error_immutable_type_attr(verb: &str, attr: &str, type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("cannot {verb} '{attr}' attribute of immutable type '{type_}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `del obj[key]` on a type without item deletion.
+    ///
+    /// CPython words its sequence path (`sequence_path`: integer key on a type with
+    /// `tp_as_sequence`) as `doesn't support item deletion`, and every other case `does not`.
+    #[must_use]
+    fn type_error_not_del_item(type_: &str, sequence_path: bool) -> RunError {
+        let verb = if sequence_path { "doesn't" } else { "does not" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{type_}' object {verb} support item deletion"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for unhashable types when calling `hash()`.
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`

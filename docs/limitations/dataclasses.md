@@ -122,10 +122,6 @@ field after a defaulted one
     call builds a fresh
     closure. Fixable only if Monty gains closures over native functions; nothing
     else depends on that, so it is not planned.
-- **`del obj.field` on a frozen instance never raises `cannot delete field`**,
-    because Monty's parser has no `del` statement at all. Calling the generated
-    `C.__delattr__(obj, 'x')` directly raises it as CPython does, and assignment
-    matches CPython, message included.
 - **`__dataclass_params__` reads back normalised.** `C.__dataclass_params__`
     exists, reprs like CPython's and answers all ten flags, but each is the `bool`
     Monty acted on: `@dataclass(frozen=1)` reports `frozen=True` where CPython

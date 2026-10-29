@@ -63,6 +63,10 @@ This is a known temporary divergence; see `class__annotations.py`.
     collected annotations into whatever the name holds, merging into an explicit
     `dict`, or raising `TypeError` if it holds something else. A class body that
     binds the name but annotates nothing is accepted, and its binding stands.
+- **`del C.__annotations__`** removes the stored dict, so a later read raises
+    `AttributeError`. CPython 3.14 computes the dict lazily: the `del` itself
+    raises `AttributeError` until something has read it, and a read after a
+    successful `del` returns `{}`.
 - **`from __future__ import annotations`** is accepted as a **no-op**, since it
     describes what Monty already does. See
     [language.md](language.md) for the other features.

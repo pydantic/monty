@@ -25,9 +25,11 @@ use crate::{
     py_value::PyValue,
     types::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
+        attribute_deletion_error,
         bytes::PyBytes,
         decimal, host_class_type,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
+        item_deletion_error,
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -715,6 +717,16 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_delitem(&mut self, key: Self, vm: &mut VM<'_>) -> RunResult<()> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_delitem(key, vm)
+        } else {
+            let error = item_deletion_error(self.py_type(vm), &self.py_type_name(vm), &key, vm);
+            key.drop_with(vm);
+            Err(error)
+        }
+    }
+
     fn py_is_iterator(&self, vm: &VM<'_>) -> bool {
         // No immediate value is an iterator; interned `str`/`bytes` are iterable
         // but, as in CPython, are not their own iterators.
@@ -1214,6 +1226,23 @@ impl Value {
         }
     }
 
+    pub fn py_del_attr(&self, name: &EitherStr, vm: &mut VM<'_>) -> RunResult<()> {
+        match self {
+            Self::Ref(heap_id) => vm.heap.read(*heap_id).py_del_attr(name, vm),
+            // Built-in types are immutable; CPython words even deletion as `cannot set`.
+            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_immutable_type_attr(
+                "set",
+                name.as_str(vm.interns),
+                &t.name(vm.heap, vm.interns),
+            )),
+            _ => Err(attribute_deletion_error(
+                self.py_type(vm),
+                &self.py_type_name(vm),
+                name.as_str(vm.interns),
+            )),
+        }
+    }
+
     /// Extracts an integer value from the Value.
     ///
     /// Accepts `Int`, `Bool` (True=1, False=0) and `LongInt` (if it fits in
@@ -1332,7 +1361,11 @@ impl Value {
     /// overflow message (`OverflowError` vs `IndexError`), hence `on_overflow`.
     /// The value is already validated as an int by [`PyTrait::py_index_impl`],
     /// so the non-int arms are unreachable.
-    fn narrow_index_to_i64(index: Self, vm: &mut VM<'_>, on_overflow: impl FnOnce() -> RunError) -> RunResult<i64> {
+    pub(crate) fn narrow_index_to_i64(
+        index: Self,
+        vm: &mut VM<'_>,
+        on_overflow: impl FnOnce() -> RunError,
+    ) -> RunResult<i64> {
         let converted = match &index {
             Self::Int(i) => Ok(*i),
             Self::Bool(b) => Ok(i64::from(*b)),

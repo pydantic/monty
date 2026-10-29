@@ -414,6 +414,15 @@ pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &mut V
     })
 }
 
+/// The error deleting `name` raises on an instance of `class_id`, or `None`
+/// when the deletion may proceed: CPython's frozen `__delattr__`.
+pub(crate) fn frozen_deletion_error(class_id: HeapId, name: &Value, vm: &mut VM<'_>) -> Option<RunError> {
+    generated_method(class_id, "__delattr__", vm)?;
+    Some(match frozen_field_error("delete", name, vm) {
+        Ok(error) | Err(error) => error,
+    })
+}
+
 /// `FrozenInstanceError: cannot {action} field {name!r}`, as CPython's frozen
 /// `__setattr__`/`__delattr__` raise it. `Err` only when `repr(name)` raised.
 fn frozen_field_error(action: &str, name: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {

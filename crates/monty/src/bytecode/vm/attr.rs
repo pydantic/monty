@@ -173,6 +173,13 @@ impl VM<'_> {
         // py_set_attr takes ownership of value and drops it on error
         obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
     }
+
+    pub(super) fn delete_attr(&mut self, name_id: StringId) -> Result<(), RunError> {
+        let this = self;
+        let obj = this.pop();
+        defer_drop!(obj, this);
+        obj.py_del_attr(&EitherStr::Interned(name_id), this)
+    }
 }
 
 /// `Some(is_package)` when `value` is a module: a host module is a package

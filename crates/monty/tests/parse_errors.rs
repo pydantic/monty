@@ -613,14 +613,6 @@ fn matrix_multiplication_augmented_assignment_returns_syntax_error() {
 }
 
 #[test]
-fn del_statement_returns_not_implemented_error() {
-    // The del statement is not supported at parse time
-    let err = get_parse_err("x = 1\ndel x");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support the 'del' statement");
-}
-
-#[test]
 fn duplicate_positional_parameter_returns_syntax_error() {
     // https://github.com/pydantic/monty/issues/377
     //

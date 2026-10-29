@@ -17,8 +17,8 @@ pub(crate) use self::{
     field::DataclassField,
     legacy::{LEGACY_DUMP_VERSION, upgrade_legacy_classes},
     method::{
-        DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error, generated_fields,
-        is_generated_init, run_init,
+        DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error,
+        frozen_deletion_error, generated_fields, is_generated_init, run_init,
     },
     options::{DataclassOptions, DataclassParams},
 };

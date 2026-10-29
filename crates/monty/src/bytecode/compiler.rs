@@ -273,6 +273,9 @@ pub struct Compiler<'a, 'i> {
     /// opcodes that index into the stack.
     is_module_scope: bool,
 
+    /// Class bodies use NameError for deletion of an unbound local name.
+    is_class_scope: bool,
+
     /// Number of stack-resident locals in the running frame for this code object.
     ///
     /// - Function scope: equals the function's `namespace_size` (params + cells +
@@ -523,6 +526,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             fblocks: Vec::new(),
             finally_copies: 0,
             is_module_scope,
+            is_class_scope: false,
             frame_locals,
             comp_slots: Vec::new(),
             flags,
@@ -655,6 +659,38 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Node::Assign { target, object } => {
                 self.compile_expr(object)?;
                 self.compile_store(target)?;
+            }
+            Node::Delete(targets) => {
+                for target in targets {
+                    match target {
+                        AssignTarget::Name(name) => {
+                            self.code.set_location(name.position, None);
+                            self.compile_delete(name)?;
+                        }
+                        AssignTarget::Subscript {
+                            target,
+                            index,
+                            target_position,
+                        } => {
+                            self.compile_expr(target)?;
+                            self.compile_expr(index)?;
+                            self.code.set_location(*target_position, None);
+                            self.code.emit(Opcode::DeleteSubscr)?;
+                        }
+                        AssignTarget::Attr {
+                            object,
+                            attr,
+                            target_position,
+                        } => {
+                            self.compile_expr(object)?;
+                            self.code.set_location(*target_position, None);
+                            let name = attr.string_id().expect("attribute name must be interned");
+                            self.code
+                                .emit_u16(Opcode::DeleteAttr, check_name_index_u16(name, *target_position)?)?;
+                        }
+                        AssignTarget::Unpack { .. } => unreachable!("delete targets are flattened by the parser"),
+                    }
+                }
             }
             Node::UnpackAssign {
                 targets,
@@ -1051,6 +1087,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
+        compiler.is_class_scope = true;
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -3905,17 +3942,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ///
     /// Function-scope `Local` deletes are limited to the first 256 slots
     /// because the only available opcode (`DeleteLocal`) takes a `u8`
-    /// operand; a wide variant has not been added because slot-255 deletes
-    /// are essentially unreachable in real code (each `except ... as e`
-    /// implicitly emits a delete on the bound name, but functions with 256+
-    /// locals plus an `except as` are exotic enough that we surface a
-    /// `SyntaxError` rather than introduce a new opcode just for this).
+    /// operand. Deleting a higher slot raises `SyntaxError` at compile time.
     fn compile_delete(&mut self, target: &Identifier) -> Result<(), CompileError> {
         let slot = target.namespace_id().as_u16();
         match target.scope {
             NameScope::Local => {
+                self.code.register_local_name(slot, target.name_id);
                 if self.is_module_scope {
                     self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
+                } else if self.is_class_scope {
+                    self.code.emit_u16(Opcode::DeleteClassLocal, slot)?;
                 } else if let Ok(s) = u8::try_from(slot) {
                     self.code.emit_u8(Opcode::DeleteLocal, s)?;
                 } else {
@@ -3941,6 +3977,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             NameScope::Cell => {
                 // unbind the cell (CPython's DELETE_DEREF) so a captured
                 // `except ... as` target reads as unbound after cleanup
+                self.code.register_local_name(slot, target.name_id);
                 self.code.emit_u16(Opcode::DeleteCell, slot)?;
             }
             NameScope::CompVar => unreachable!("no syntax exists to `del` a comprehension variable"),

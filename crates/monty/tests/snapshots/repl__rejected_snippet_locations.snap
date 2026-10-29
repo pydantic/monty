@@ -18,10 +18,10 @@ NotImplementedError: Wildcard imports (`from ... import *`) are not supported
 
 Traceback (most recent call last):
   File "<python-input-3>", line 1, in <module>
-    exec("\n\ndel missing")
-    ~~~~~~~~~~~~~~~~~~~~~~~
+    exec("\n\nyield 1")
+    ~~~~~~~~~~~~~~~~~~~
   File "<string>", line 3, in <module>
-NotImplementedError: The monty syntax parser does not yet support the 'del' statement
+NotImplementedError: The monty syntax parser does not yet support yield expressions
 
 Traceback (most recent call last):
   File "<python-input-4>", line 1, in <module>

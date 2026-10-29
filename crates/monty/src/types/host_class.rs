@@ -157,6 +157,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         Ok(())
     }
 
+    fn py_del_attr(&mut self, name: &EitherStr, vm: &mut VM<'h>) -> RunResult<()> {
+        let name_value = attribute_name_value(name, vm);
+        defer_drop!(name_value, vm);
+        match self.attrs_mut().pop(name_value, vm)? {
+            Some((key, value)) => {
+                key.drop_with(vm);
+                value.drop_with(vm);
+                Ok(())
+            }
+            None => Err(ExcType::attribute_error(self.py_type_name(vm), name.as_str(vm.interns))),
+        }
+    }
+
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::HostClass(other)) = other.read_heap(vm) else {
             return Ok(None);

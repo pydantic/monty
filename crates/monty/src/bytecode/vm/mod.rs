@@ -1381,7 +1381,11 @@ impl<'h> VM<'h> {
                 }
                 Opcode::DeleteLocal => {
                     let slot = u16::from(self.current_frame.fetch_u8());
-                    self.delete_local(slot);
+                    try_catch!(self, self.delete_local(slot));
+                }
+                Opcode::DeleteClassLocal => {
+                    let slot = self.current_frame.fetch_u16();
+                    try_catch!(self, self.delete_class_local(slot));
                 }
                 Opcode::DeleteGlobal => {
                     let slot = self.current_frame.fetch_u16();
@@ -1425,7 +1429,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::DeleteCell => {
                     let slot = self.current_frame.fetch_u16();
-                    self.delete_cell(slot);
+                    try_catch!(self, self.delete_cell(slot));
                 }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch!(self, self.binary_add()),
@@ -1582,6 +1586,13 @@ impl<'h> VM<'h> {
                         catch!(self, e);
                     }
                 }
+                Opcode::DeleteSubscr => {
+                    let index = self.pop();
+                    let mut obj = self.pop();
+                    let result = obj.py_delitem(index, self);
+                    obj.drop_with(self);
+                    try_catch!(self, result);
+                }
                 Opcode::LoadAttr => {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
@@ -1608,6 +1619,10 @@ impl<'h> VM<'h> {
                     let name_idx = self.current_frame.fetch_u16();
                     let name_id = StringId::from_index(name_idx);
                     try_catch!(self, self.store_attr(name_id));
+                }
+                Opcode::DeleteAttr => {
+                    let name_idx = self.current_frame.fetch_u16();
+                    try_catch!(self, self.delete_attr(StringId::from_index(name_idx)));
                 }
                 // Control Flow - use self.current_frame.ip directly for jumps
                 Opcode::Jump => {
@@ -2702,11 +2717,34 @@ impl<'h> VM<'h> {
         old_value.drop_with(self);
     }
 
-    /// Deletes a local variable (sets it to Undefined).
-    fn delete_local(&mut self, slot: u16) {
+    /// Deletes a function local (`del x`), raising `UnboundLocalError` if it is already unbound.
+    fn delete_local(&mut self, slot: u16) -> RunResult<()> {
+        if self.unbind_local(slot) {
+            Ok(())
+        } else {
+            Err(self.unbound_local_error(slot, self.current_frame.code.local_name(slot)))
+        }
+    }
+
+    /// Deletes a class-body local, raising `NameError` (as CPython does there) if it is unbound.
+    fn delete_class_local(&mut self, slot: u16) -> RunResult<()> {
+        if self.unbind_local(slot) {
+            Ok(())
+        } else {
+            Err(self.name_error(slot, self.current_frame.code.local_name(slot)))
+        }
+    }
+
+    /// Sets a local slot to `Undefined`, dropping its value; returns false if it was already unbound.
+    fn unbind_local(&mut self, slot: u16) -> bool {
         let index = self.current_frame.stack_base() + slot as usize;
         let old_value = mem::replace(&mut self.stack[index], Value::Undefined);
-        old_value.drop_with(self);
+        if matches!(old_value, Value::Undefined) {
+            false
+        } else {
+            old_value.drop_with(self);
+            true
+        }
     }
 
     /// Loads a global variable and pushes it onto the stack.
@@ -2774,8 +2812,6 @@ impl<'h> VM<'h> {
     ///
     /// Raises `NameError` if the slot is already `Undefined`.
     fn delete_global(&mut self, slot: u16) -> RunResult<()> {
-        // TODO: the `Undefined` branch is currently unreachable from Python source,
-        // needs support for the `del` statement.
         if matches!(self.globals[slot as usize], Value::Undefined) {
             let name = self.global_name(slot);
             return Err(self.name_error(slot, name));
@@ -2864,12 +2900,8 @@ impl<'h> VM<'h> {
         mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
 
-    /// Unbinds a closure cell: replaces its contents with `Undefined`, so a
-    /// later [`Self::load_cell`] raises the free-variable `NameError` —
-    /// CPython's `DELETE_DEREF` cleanup of a captured `except ... as` target.
-    /// The only emitter stores `None` first, so the cell is never already
-    /// unbound here (no error path, unlike [`Self::delete_global`]).
-    fn delete_cell(&mut self, slot: u16) {
+    /// Unbinds a closure cell, raising the appropriate error if already unbound.
+    fn delete_cell(&mut self, slot: u16) -> RunResult<()> {
         let value = Value::Undefined;
         // the guard drops the cell's previous contents after the swap
         let this = self;
@@ -2879,7 +2911,16 @@ impl<'h> VM<'h> {
         let HeapReadOutput::Cell(cell) = this.heap.read(cell_id) else {
             panic!("DeleteCell: entry is not a Cell")
         };
+        if matches!(cell.get(this.heap).0, Value::Undefined) {
+            let name = this.current_frame.code.local_name(slot);
+            return Err(if this.is_free_var_slot(slot) {
+                this.free_var_error(name)
+            } else {
+                this.unbound_local_error(slot, name)
+            });
+        }
         mem::swap(&mut cell.get_mut(this.heap).0, value);
+        Ok(())
     }
 }
 

@@ -385,6 +385,88 @@ impl Type {
         }
     }
 
+    /// Whether CPython gives this type a `tp_as_sequence` slot table, which picks
+    /// the `doesn't support item deletion` wording for an integer `del obj[i]`.
+    /// Every heap type has one: Python-level classes, and C types from
+    /// multi-phase modules (`itertools`, `_io`, `re`, `_hashlib`, `functools.partial`).
+    pub(crate) fn has_sequence_slots(self) -> bool {
+        matches!(
+            self,
+            Self::Str
+                | Self::Bytes
+                | Self::Tuple
+                | Self::NamedTuple
+                | Self::Range
+                | Self::Set
+                | Self::FrozenSet
+                | Self::DictKeys
+                | Self::DictItems
+                | Self::DictValues
+                | Self::Instance(_)
+                | Self::HostClass
+                | Self::Path
+                | Self::RePattern
+                | Self::ReMatch
+                | Self::Random
+                | Self::HashlibHash
+                | Self::HashlibHashXof
+                | Self::Partial
+                | Self::DataclassField
+                | Self::DataclassParams
+                | Self::MissingType
+                | Self::SpecialForm
+                | Self::TextIOWrapper
+                | Self::BufferedReader
+                | Self::BufferedWriter
+                | Self::BufferedRandom
+                | Self::DequeIterator
+                | Self::ItertoolsCount
+                | Self::ItertoolsRepeat
+                | Self::ItertoolsPairwise
+                | Self::ItertoolsCompress
+                | Self::ItertoolsIslice
+                | Self::ItertoolsChain
+                | Self::ItertoolsCycle
+                | Self::ItertoolsTakeWhile
+                | Self::ItertoolsDropWhile
+                | Self::ItertoolsFilterFalse
+                | Self::ItertoolsStarMap
+                | Self::ItertoolsAccumulate
+                | Self::ItertoolsBatched
+                | Self::ItertoolsZipLongest
+                | Self::ItertoolsCombinations
+                | Self::ItertoolsCombinationsWithReplacement
+                | Self::ItertoolsPermutations
+                | Self::ItertoolsProduct
+                | Self::ItertoolsGroupBy
+                | Self::ItertoolsGrouper
+                | Self::ItertoolsTee
+                | Self::ItertoolsTeeDataObject
+        )
+    }
+
+    /// Whether CPython instances of this type carry a `__dict__`, which decides
+    /// whether deleting a missing attribute adds `and no __dict__ for setting new
+    /// attributes` to the `AttributeError`.
+    pub(crate) fn has_instance_dict(self) -> bool {
+        matches!(
+            self,
+            Self::Function
+                | Self::Module
+                | Self::Exception(_)
+                | Self::Partial
+                | Self::Instance(_)
+                | Self::HostClass
+                | Self::MissingType
+                | Self::Random
+                | Self::Counter
+                | Self::TextIOWrapper
+                | Self::BufferedReader
+                | Self::BufferedWriter
+                | Self::BufferedRandom
+        )
+    }
+
     /// The name CPython's `__name__` reports: [`name`](Self::name) with any
     /// module qualifier stripped (`datetime.date` → `date`). CPython keeps one
     /// dotted `tp_name` per C type and derives the bare `__name__` from it, so

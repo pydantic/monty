@@ -6,7 +6,7 @@ use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapObjectRead, HeapReadOutput},
@@ -658,6 +658,12 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         .into())
     }
 
+    fn py_delitem(&mut self, key: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let error = item_deletion_error(self.py_type(vm), &self.py_type_name(vm), &key, vm);
+        key.drop_with(vm);
+        Err(error)
+    }
+
     /// Python attribute assignment, consuming `value` on both success and error.
     ///
     /// The default rejects assignment. Mutable attribute-bearing types override
@@ -666,6 +672,14 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         value.drop_with(vm);
         let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+    }
+
+    fn py_del_attr(&mut self, name: &EitherStr, vm: &mut VM<'h>) -> RunResult<()> {
+        Err(attribute_deletion_error(
+            self.py_type(vm),
+            &self.py_type_name(vm),
+            name.as_str(vm.interns),
+        ))
     }
 
     /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
@@ -731,6 +745,42 @@ pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> Value {
     match name {
         EitherStr::Interned(string_id) => Value::InternString(*string_id),
         EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap),
+    }
+}
+
+/// The error for `del obj[key]` on a type without item deletion.
+///
+/// Built before `key` is dropped. On a type with sequence slots
+/// ([`Type::has_sequence_slots`]) CPython first converts an index-protocol key,
+/// running a user `__index__` and propagating its error or an `IndexError` on
+/// overflow, then says `doesn't support`. Anything else says `does not`.
+pub(crate) fn item_deletion_error(type_: Type, type_name: &str, key: &Value, vm: &mut VM<'_>) -> RunError {
+    if !type_.has_sequence_slots() {
+        return ExcType::type_error_not_del_item(type_name, false);
+    }
+    match key.py_index_impl(vm) {
+        Ok(Some(index)) => {
+            // CPython names the key's own type when its index overflows, as `as_index` does.
+            let key_type = key.py_type_name(vm).into_owned();
+            match Value::narrow_index_to_i64(index, vm, move || ExcType::index_error_cannot_fit(&key_type)) {
+                Ok(_) => ExcType::type_error_not_del_item(type_name, true),
+                Err(error) => error,
+            }
+        }
+        Ok(None) => ExcType::type_error_not_del_item(type_name, false),
+        Err(error) => error,
+    }
+}
+
+/// The `AttributeError` for `del obj.attr` when `attr` does not exist.
+///
+/// CPython adds `and no __dict__ for setting new attributes` for types whose
+/// instances have no `__dict__` ([`Type::has_instance_dict`]).
+pub(crate) fn attribute_deletion_error(type_: Type, type_name: &str, attr: &str) -> RunError {
+    if type_.has_instance_dict() {
+        ExcType::attribute_error(type_name, attr)
+    } else {
+        ExcType::attribute_error_no_setattr(type_name, attr)
     }
 }
 
