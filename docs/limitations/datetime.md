@@ -57,8 +57,9 @@ either.
 `today()` reads the clock, so it depends on the embedder granting one —
 see "Reading the clock" below.
 `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
-A timestamp the platform's `localtime()` rejects raises `OSError` in CPython (`date.fromtimestamp(1e18)`); Monty raises
-`OverflowError: timestamp out of range for platform time_t` for every instant it cannot represent.
+A timestamp the platform's `localtime()` rejects raises `OSError` in CPython (`date.fromtimestamp(1e18)`, and on Windows
+every negative timestamp); Monty raises `OverflowError: timestamp out of range for platform time_t` when the value does
+not fit a 64-bit `time_t` and the year-range `ValueError` for any other instant outside years 1 to 9999.
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -115,8 +116,9 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
     implemented.
 - A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
     Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython, except that an instant
-    the platform's `localtime()` rejects raises `OSError` there (`fromtimestamp(1e18)`) and
-    `OverflowError: timestamp out of range for platform time_t` here.
+    the platform's `localtime()` rejects raises `OSError` there (`fromtimestamp(1e18)`, and on Windows every negative
+    timestamp) where Monty raises `OverflowError: timestamp out of range for platform time_t` for a value outside a
+    64-bit `time_t` and the year-range `ValueError` otherwise.
 - `fromordinal()` and `utcfromtimestamp()` (deprecated in CPython) are not implemented.
 - `time()` and `timetz()` return a `time` whose `fold` is always 0, since
     `datetime` does not store the flag (above). `combine()` likewise

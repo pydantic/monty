@@ -166,8 +166,9 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         .reject_kwargs("date.fromtimestamp", vm.heap)?
         .get_one_arg("date.fromtimestamp", vm.heap)?;
     defer_drop!(value, vm);
-    // `date` converts through `__index__`-style wording, where `datetime` names both numeric types.
-    let utc = datetime::timestamp_to_utc(value, vm)?
+    // `date` floors to whole seconds and uses `__index__`-style wording, where
+    // `datetime` rounds to microseconds and names both numeric types.
+    let utc = datetime::timestamp_to_utc(value, datetime::TimestampRounding::Floor, vm)?
         .ok_or_else(|| ExcType::type_error_not_integer(&value.py_type_name(vm)))?;
     let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
     let local = datetime::wall_clock_at(utc, offset)?;

@@ -329,10 +329,16 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
     defer_drop!(timestamp, vm);
     defer_drop!(tz, vm);
     let (tz, tz_ref) = tzinfo_from_value(tz, vm.heap, vm.interns)?;
-    let utc = timestamp_to_utc(timestamp, vm)?.ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
+    let utc = timestamp_to_utc(timestamp, TimestampRounding::HalfEven, vm)?
+        .ok_or_else(|| timestamp_not_a_number(timestamp, vm))?;
     let mut dt = if let Some(tz) = tz {
+        // CPython builds the UTC value first, so its year error comes first, and a
+        // shifted result that leaves the range is `fromutc()`'s overflow.
+        if !year_in_python_range(utc.year()) {
+            return Err(date::year_out_of_range(utc.year()));
+        }
         DateTime {
-            naive: wall_clock_at(utc, tz.offset_seconds)?,
+            naive: wall_clock_at(utc, tz.offset_seconds).map_err(|_| date_out_of_range())?,
             offset_seconds: Some(tz.offset_seconds),
             timezone_name: tz.name,
             tzinfo_ref: None,
@@ -341,7 +347,10 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
         // CPython detects a DST fold by also converting the instant a day earlier,
         // so the first representable day raises its year error; reproduce that.
-        wall_clock_at(utc - ChronoTimeDelta::days(1), offset)?;
+        let probe = utc
+            .checked_sub_signed(ChronoTimeDelta::days(1))
+            .ok_or_else(|| date::year_out_of_range(utc.year()))?;
+        wall_clock_at(probe, offset)?;
         DateTime {
             naive: wall_clock_at(utc, offset)?,
             offset_seconds: None,
@@ -364,31 +373,65 @@ struct FromtimestampArgs {
     tz: Value,
 }
 
-/// The UTC instant a `fromtimestamp()` argument denotes, with microseconds rounded
-/// half-even as CPython's `_PyTime_ObjectToTimeval` rounds them. `None` for a
-/// value that is not a number; the caller chooses the type error's wording.
-pub(crate) fn timestamp_to_utc(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveDateTime>> {
-    let (seconds, microseconds) = match value.py_value(vm) {
-        PyValue::Bool(b) => (i64::from(b), 0),
-        PyValue::Int(integer) => (integer.to_i64(vm).ok_or_else(timestamp_out_of_range)?, 0),
-        PyValue::Float(f) => split_float_timestamp(f)?,
-        _ => return Ok(None),
+/// How a float `fromtimestamp()` argument is cut to the result's precision:
+/// `datetime` rounds half-even to microseconds, `date` floors to whole seconds.
+#[derive(Clone, Copy)]
+pub(crate) enum TimestampRounding {
+    HalfEven,
+    Floor,
+}
+
+/// The UTC instant a `fromtimestamp()` argument denotes. Integers, floats and
+/// anything with `__index__` are accepted, as CPython's `PyLong_AsLongLong` path
+/// accepts them; `None` for anything else, so the caller can word the type error.
+pub(crate) fn timestamp_to_utc(
+    value: &Value,
+    rounding: TimestampRounding,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<NaiveDateTime>> {
+    let Some((seconds, microseconds)) = timestamp_parts(value, rounding, vm)? else {
+        return Ok(None);
     };
     chrono::DateTime::from_timestamp(seconds, microseconds * 1_000)
         .map(|instant| Some(instant.naive_utc()))
         .ok_or_else(timestamp_out_of_range)
 }
 
+/// Whole seconds and microseconds of a timestamp argument, or `None` when it is
+/// not a number and has no `__index__`.
+fn timestamp_parts(value: &Value, rounding: TimestampRounding, vm: &mut VM<'_>) -> RunResult<Option<(i64, u32)>> {
+    let parts = match value.py_value(vm) {
+        PyValue::Bool(b) => Some((i64::from(b), 0)),
+        PyValue::Int(integer) => Some((integer.to_i64(vm).ok_or_else(timestamp_out_of_range)?, 0)),
+        PyValue::Float(f) => Some(split_float_timestamp(f, rounding)?),
+        _ => None,
+    };
+    if parts.is_some() {
+        return Ok(parts);
+    }
+    let Some(index) = value.py_index_impl(vm)? else {
+        return Ok(None);
+    };
+    defer_drop!(index, vm);
+    timestamp_parts(index, rounding, vm)
+}
+
 /// Splits a float timestamp into whole seconds and microseconds in `0..1_000_000`,
-/// following CPython's `_PyTime_DoubleToDenominator` with half-even rounding.
+/// following CPython's `_PyTime_DoubleToDenominator` (half-even) or its
+/// `_PyTime_ROUND_FLOOR` conversion to whole seconds.
 // Both casts are range-checked: `whole` fits `i64` and `fraction` is a rounded value in `0..1_000_000`.
 #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn split_float_timestamp(value: f64) -> RunResult<(i64, u32)> {
+fn split_float_timestamp(value: f64, rounding: TimestampRounding) -> RunResult<(i64, u32)> {
     if value.is_nan() {
         return Err(SimpleException::new_msg(ExcType::ValueError, "Invalid value NaN (not a number)").into());
     }
-    let mut whole = value.trunc();
-    let mut fraction = ((value - whole) * 1_000_000.0).round_ties_even();
+    let (mut whole, mut fraction) = match rounding {
+        TimestampRounding::HalfEven => {
+            let whole = value.trunc();
+            (whole, ((value - whole) * 1_000_000.0).round_ties_even())
+        }
+        TimestampRounding::Floor => (value.floor(), 0.0),
+    };
     if fraction >= 1_000_000.0 {
         fraction -= 1_000_000.0;
         whole += 1.0;

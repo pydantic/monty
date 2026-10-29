@@ -1610,18 +1610,15 @@ assert str(datetime.timezone.min) == 'UTC-23:59'
 assert datetime.timezone.utc is datetime.timezone.utc
 
 # === fromtimestamp ===
-# The harness runs both interpreters in UTC, so naive results are UTC wall time.
+# The harness runs both interpreters in UTC, so naive results are UTC wall time. Negative
+# and far-future instants live in datetime__zone_default.py, which Windows CPython skips.
 assert datetime.datetime.fromtimestamp(1700000000) == datetime.datetime(2023, 11, 14, 22, 13, 20)
 assert datetime.datetime.fromtimestamp(1700000000.123456789) == datetime.datetime(2023, 11, 14, 22, 13, 20, 123457)
 assert datetime.datetime.fromtimestamp(True) == datetime.datetime(1970, 1, 1, 0, 0, 1)
-assert datetime.datetime.fromtimestamp(-1.5) == datetime.datetime(1969, 12, 31, 23, 59, 58, 500000)
 # microseconds round half to even
 assert datetime.datetime.fromtimestamp(0.0000005).microsecond == 0
 assert datetime.datetime.fromtimestamp(0.0000015).microsecond == 2
 assert datetime.datetime.fromtimestamp(0.0000025).microsecond == 2
-assert datetime.datetime.fromtimestamp(-0.0000005) == datetime.datetime(1970, 1, 1)
-assert datetime.datetime.fromtimestamp(253402300799) == datetime.datetime(9999, 12, 31, 23, 59, 59)
-assert datetime.datetime.fromtimestamp(-62135596800 + 86400) == datetime.datetime(1, 1, 2)
 assert repr(datetime.datetime.fromtimestamp(1700000000, datetime.timezone.utc)) == (
     'datetime.datetime(2023, 11, 14, 22, 13, 20, tzinfo=datetime.timezone.utc)'
 )
@@ -1636,8 +1633,18 @@ assert datetime.datetime.fromtimestamp(1700000000.5, datetime.timezone.utc).time
 
 assert datetime.date.fromtimestamp(1700000000) == datetime.date(2023, 11, 14)
 assert datetime.date.fromtimestamp(1700000000.9) == datetime.date(2023, 11, 14)
-assert datetime.date.fromtimestamp(-62135596800) == datetime.date(1, 1, 1)
-assert datetime.date.fromtimestamp(253402300799) == datetime.date(9999, 12, 31)
+# `date` floors the fraction where `datetime` rounds it
+assert datetime.date.fromtimestamp(86399.9999996) == datetime.date(1970, 1, 1)
+assert datetime.datetime.fromtimestamp(86399.9999996) == datetime.datetime(1970, 1, 2)
+
+
+class _Index:
+    def __index__(self):
+        return 86400
+
+
+assert datetime.datetime.fromtimestamp(_Index()) == datetime.datetime(1970, 1, 2)
+assert datetime.date.fromtimestamp(_Index()) == datetime.date(1970, 1, 2)
 
 for _bad, _exc, _msg in [
     (('x',), TypeError, 'argument must be int or float, not str'),
@@ -1646,8 +1653,6 @@ for _bad, _exc, _msg in [
     ((2**63,), OverflowError, 'timestamp out of range for platform time_t'),
     ((float('inf'),), OverflowError, 'timestamp out of range for platform time_t'),
     ((float('nan'),), ValueError, 'Invalid value NaN (not a number)'),
-    ((253402300800,), ValueError, 'year must be in 1..9999, not 10000'),
-    ((-62135596800,), ValueError, 'year must be in 1..9999, not 0'),
     ((1, 5), TypeError, "tzinfo argument must be None or of a tzinfo subclass, not type 'int'"),
     ((), TypeError, "fromtimestamp() missing required argument 'timestamp' (pos 1)"),
     ((1, 2, 3), TypeError, 'fromtimestamp() takes at most 2 arguments (3 given)'),
@@ -1667,7 +1672,6 @@ except TypeError as e:
 for _bad, _exc, _msg in [
     (('x',), TypeError, "'str' object cannot be interpreted as an integer"),
     ((1e20,), OverflowError, 'timestamp out of range for platform time_t'),
-    ((-62135596801,), ValueError, 'year must be in 1..9999, not 0'),
     ((), TypeError, 'date.fromtimestamp() takes exactly one argument (0 given)'),
     ((1, 2), TypeError, 'date.fromtimestamp() takes exactly one argument (2 given)'),
 ]:
