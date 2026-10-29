@@ -26,9 +26,9 @@
 //! # Iteration
 //!
 //! `__next__` slices the next line from the loaded buffer and cannot yield to
-//! the host, so only the `ForIter` opcode and `next()` load an unread file:
+//! the host, so `ForIter`, `next()`, `list()` and `tuple()` load an unread file first:
 //! [`needs_buffer_load`] then [`buffer_load_call`] with a `BufferLoad`
-//! (re-dispatch) or `FileNext` (answer the call) effect. Any other caller of
+//! (re-dispatch), `FileNext` (answer the call) or `LoadThenCall` (replay the constructor) effect. Any other caller of
 //! `py_next` on an unread file raises `NotImplementedError`.
 //!
 //! [`needs_buffer_load`]: HeapObjectRead::needs_buffer_load
@@ -69,8 +69,8 @@
 //!   cookie. Round-trips through `seek()` correctly.
 //! - `seek(N)` in text mode accepts any char-index offset, where CPython
 //!   restricts it to `seek(0)`, `seek(0, 2)`, or a cookie from `tell()`.
-//! - Iterating an unread file works from `for` loops and `next()` only; a
-//!   builtin consuming it synchronously (`list(f)`, `enumerate(f)`) raises
+//! - Iterating an unread file works from `for`, `next()`, `list()` and `tuple()`; another
+//!   builtin consuming it synchronously (`enumerate(f)`, `set(f)`) raises
 //!   `NotImplementedError` until a read or `seek()` has loaded the buffer.
 //!
 //! Any code path that needs one of these should be added explicitly
@@ -459,7 +459,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     /// The next line of the loaded buffer. An unread file cannot be loaded from
-    /// here (see the module docs): `for` and `next()` load it before calling this.
+    /// here (see the module docs): the supported consumers load it before calling this.
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let file = self.get(vm.heap);
         file.ensure_open()?;
@@ -1183,17 +1183,17 @@ fn next_line<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult
 }
 
 /// `__next__` on an unread file from a caller that cannot suspend for the host
-/// read (`list(f)`, `enumerate(f)`, …); only `for` and `next()` issue it.
+/// read (`set(f)`, `enumerate(f)`, …).
 ///
 /// TODO: `enumerate`, `zip`, `map`, `filter` and `sorted` go away from this
 /// list once they are bytecode, since they then iterate through `ForIter`
 /// (<https://github.com/pydantic/monty/issues/1041>).
-/// The Rust-side consumers that remain (`list(f)`, `''.join(f)`, `sum(f)`, …)
+/// The Rust-side consumers that remain (`set(f)`, `''.join(f)`, `sum(f)`, …)
 /// need the `LoadThenCall` effect `csv.reader(f)` uses: yield the load with
 /// the call stashed, replay the call on resume.
 fn unloaded_iteration_error(file_type: Type) -> RunError {
     ExcType::not_implemented(format!(
-        "iterating an unread {file_type} is only supported by 'for' loops and next(); call seek(0) first to load it"
+        "iterating an unread {file_type} is not supported by this consumer; call seek(0) first to load it"
     ))
     .into()
 }

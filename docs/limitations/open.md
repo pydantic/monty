@@ -98,8 +98,10 @@ methods and attributes are:
     backing buffer as `read()`.
 - `readline()` — one line from the shared buffer; `''`/`b''` at EOF.
 - `readlines()` — a `list` of all remaining lines.
-- `__iter__()` / `__next__()` — loading an unread file is possible only from `for` loops and `next()`; see the
-    divergences below.
+- `__iter__()` / `__next__()` — consumers such as `for` loops, `next()`, `list()`, `tuple()` and
+    [CSV readers](csv.md) can load an unread file.
+    Some consumers cannot load an unread file.
+    See the divergences below.
 - `tell()` — current position. **Text-mode divergence**: returns a
     char-index, not CPython's opaque byte cookie. Round-trips through
     `seek()` correctly.
@@ -130,11 +132,9 @@ Everything else raises `AttributeError`, including: `truncate()`,
     the worker's allocator-backed `max_memory`. The buffer is **never
     invalidated**, so external modifications to the underlying file after
     the first read are not visible to subsequent reads.
-- Iterating a file that has not been read yet needs that host load, which
-    only the `for` statement and the `next()` builtin can issue. Any other
-    consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,
-    `sorted(f)`, `''.join(f)`, …)
-    raises `NotImplementedError: iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it`
+- Some consumers of the iterator protocol cannot load an unread file.
+    Examples include `enumerate(f)`, `zip(f, …)`, `sorted(f)` and `''.join(f)`.
+    These consumers raise `NotImplementedError: iterating an unread _io.TextIOWrapper is not supported by this consumer; call seek(0) first to load it`
     (`_io.BufferedReader` in binary mode).
     Once any read, `seek()` or iteration step has loaded the buffer, every
     consumer works. Comprehensions and generator expressions compile to `for`

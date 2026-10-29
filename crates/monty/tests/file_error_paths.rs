@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use monty::{Dump, MontyRun, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
     ResourceLimits, ResourceTracker,
@@ -743,4 +743,442 @@ fn json_load_dump_taken_while_waiting_for_the_host_still_parses() {
             .expect("expected Complete");
         assert_eq!(result, MontyObject::list([MontyObject::bool(true)]));
     }
+}
+
+fn start_file_sequence(code: &str, mode: &str) -> RunProgress {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let open_call = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap()
+        .into_os_call()
+        .expect("expected Open OsCall");
+    assert_eq!(open_call.function_call.name(), "open");
+    open_call
+        .resume(
+            MontyObject::file_handle(file_handle("/x.txt", mode)),
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+}
+
+fn file_sequence_value(constructor: &str, items: Vec<MontyObject>) -> MontyObject {
+    match constructor {
+        "list" => MontyObject::list(items),
+        "tuple" => MontyObject::tuple(items),
+        "csv.reader" => MontyObject::list(items.into_iter().map(|item| MontyObject::list([item]))),
+        _ => unreachable!("unknown file consumer"),
+    }
+}
+
+fn assert_unread_file_sequence(constructor: &str) {
+    for (mode, content, items) in [
+        (
+            "r",
+            MontyObject::string("one\ntwo".to_owned()),
+            vec![
+                MontyObject::string("one\n".to_owned()),
+                MontyObject::string("two".to_owned()),
+            ],
+        ),
+        (
+            "rb",
+            MontyObject::bytes(b"one\ntwo".to_vec()),
+            vec![
+                MontyObject::bytes(b"one\n".to_vec()),
+                MontyObject::bytes(b"two".to_vec()),
+            ],
+        ),
+        ("r", MontyObject::string(String::new()), vec![]),
+        ("rb", MontyObject::bytes(vec![]), vec![]),
+    ] {
+        let code = format!("f = open('/x.txt', '{mode}')\n{constructor}(f)\n");
+        let result = run_with_open_then_io(
+            &code,
+            if mode == "rb" {
+                "Path.read_bytes"
+            } else {
+                "Path.read_text"
+            },
+            file_handle("/x.txt", mode),
+            content.into(),
+        )
+        .unwrap();
+        assert_eq!(result, file_sequence_value(constructor, items));
+    }
+}
+
+#[test]
+fn list_file_sequence_loads_unread_files() {
+    assert_unread_file_sequence("list");
+}
+
+#[test]
+fn tuple_file_sequence_loads_unread_files() {
+    assert_unread_file_sequence("tuple");
+}
+
+#[test]
+fn file_sequence_loaded_iteration_controls() {
+    for constructor in ["list", "tuple"] {
+        for first in ["first = f.readline()", "first = next(f)", "for first in f:\n    break"] {
+            let code = format!("f = open('/x.txt')\n{first}\n(first, {constructor}(f))\n");
+            let result = run_with_open_then_io(
+                &code,
+                "Path.read_text",
+                file_handle("/x.txt", "r"),
+                MontyObject::string("one\ntwo".to_owned()).into(),
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                MontyObject::tuple([
+                    MontyObject::string("one\n".to_owned()),
+                    file_sequence_value(constructor, vec![MontyObject::string("two".to_owned())]),
+                ])
+            );
+        }
+    }
+}
+
+#[test]
+fn file_sequence_invalid_calls_do_not_read() {
+    for constructor in ["list", "tuple"] {
+        for call in [
+            format!("{constructor}(f, None)"),
+            format!("{constructor}(iterable=f)"),
+            format!("{constructor}(f, unexpected=True)"),
+        ] {
+            let code = format!(
+                "f = open('/x.txt')\ncaught = False\ntry:\n    {call}\nexcept TypeError:\n    caught = True\n(caught, f.tell())\n"
+            );
+            let result = start_file_sequence(&code, "r")
+                .into_complete()
+                .expect("invalid constructor must not request a read");
+            assert_eq!(
+                result,
+                MontyObject::tuple([MontyObject::bool(true), MontyObject::int(0)])
+            );
+        }
+    }
+}
+
+#[test]
+fn file_sequence_closed_and_unreadable_do_not_read() {
+    for constructor in ["list", "tuple"] {
+        for (mode, close, expected_type, expected_message) in [
+            ("r", "f.close()\n", ExcType::ValueError, "I/O operation on closed file."),
+            ("w", "", ExcType::UnsupportedOperation, "not readable"),
+        ] {
+            let code = format!("f = open('/x.txt', '{mode}')\n{close}{constructor}(f)\n");
+            let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+            let call = runner
+                .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+                .unwrap()
+                .into_os_call()
+                .expect("expected Open OsCall");
+            assert_eq!(call.function_call.name(), "open");
+            let error = call
+                .resume(
+                    MontyObject::file_handle(file_handle("/x.txt", mode)),
+                    PrintWriter::Stdout,
+                )
+                .unwrap_err();
+            assert_eq!(error.exc_type(), expected_type);
+            assert_eq!(error.message(), Some(expected_message));
+        }
+    }
+}
+
+#[test]
+fn file_sequence_host_error_then_retry() {
+    for constructor in ["list", "tuple"] {
+        let code = format!(
+            "f = open('/x.txt')\ntry:\n    {constructor}(f)\nexcept OSError as exc:\n    first = str(exc)\n(first, {constructor}(f), f.tell())\n"
+        );
+        let first_read = start_file_sequence(&code, "r")
+            .into_os_call()
+            .expect("expected initial ReadText");
+        assert_eq!(first_read.function_call.name(), "Path.read_text");
+        let retry = first_read
+            .resume(
+                MontyException::new(ExcType::OSError, Some("transient".to_owned())),
+                PrintWriter::Stdout,
+            )
+            .unwrap()
+            .into_os_call()
+            .expect("expected retry ReadText");
+        assert_eq!(retry.function_call.name(), "Path.read_text");
+        let result = retry
+            .resume(MontyObject::string("one\ntwo".to_owned()), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .expect("expected Complete after retry");
+        assert_eq!(
+            result,
+            MontyObject::tuple([
+                MontyObject::string("transient".to_owned()),
+                file_sequence_value(
+                    constructor,
+                    vec![
+                        MontyObject::string("one\n".to_owned()),
+                        MontyObject::string("two".to_owned())
+                    ],
+                ),
+                MontyObject::int(7),
+            ])
+        );
+    }
+}
+
+#[test]
+fn file_sequence_wrong_response_type_returns_runtime_error() {
+    for constructor in ["list", "tuple"] {
+        for mode in ["r", "rb"] {
+            let repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+            #[cfg(feature = "ref-count-return")]
+            let before = repl.heap_entry_count();
+            let code = format!(
+                "f = open('/x.txt', '{mode}')\ncaught = False\ntry:\n    {constructor}(f)\nexcept BaseException:\n    caught = True\n    raise\n"
+            );
+            let progress = repl.feed_start(&code, vec![], PrintWriter::Stdout).unwrap();
+            let ReplProgress::OsCall(open) = progress else {
+                panic!("expected Open OsCall, got {progress:?}");
+            };
+            let progress = open
+                .resume(
+                    MontyObject::file_handle(file_handle("/x.txt", mode)),
+                    PrintWriter::Stdout,
+                )
+                .unwrap();
+            let ReplProgress::OsCall(read) = progress else {
+                panic!("expected read OsCall, got {progress:?}");
+            };
+            let expected_io = if mode == "rb" {
+                "Path.read_bytes"
+            } else {
+                "Path.read_text"
+            };
+            assert_eq!(read.function_call.name(), expected_io);
+            let error = read
+                .resume(MontyObject::int(17), PrintWriter::Stdout)
+                .expect_err("an integer OS reply must fail before buffer installation");
+            assert_eq!(error.error.exc_type(), ExcType::RuntimeError);
+            assert_eq!(
+                error.error.message(),
+                Some("Internal error in monty: install_buffer: OS result must be a string or bytes value")
+            );
+            let mut repl = error.repl;
+            assert_eq!(
+                repl.feed_run("assert caught is False\nf = None\n1 + 1", vec![], PrintWriter::Stdout,)
+                    .unwrap(),
+                MontyObject::int(2)
+            );
+            #[cfg(feature = "ref-count-return")]
+            assert_eq!(repl.heap_entry_count(), before);
+        }
+    }
+}
+
+#[test]
+fn file_sequence_load_rejects_future_reply() {
+    for constructor in ["list", "tuple"] {
+        let code = format!("f = open('/x.txt')\n{constructor}(f)\n");
+        let error = run_with_open_then_io(
+            &code,
+            "Path.read_text",
+            file_handle("/x.txt", "r"),
+            ExtFunctionResult::Future(1),
+        )
+        .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RuntimeError);
+        assert_eq!(error.message(), Some("file loading cannot be answered with a future"));
+    }
+}
+
+#[test]
+fn file_sequence_dump_preserves_pending_constructor() {
+    for constructor in ["list", "tuple"] {
+        let code = format!(
+            "f = open('/x.txt')\nalias = f\ncalls = []\ndef argument():\n    calls.append(1)\n    return f\nresult = {constructor}(argument())\nassert type(result) is {constructor}\n(result, f is alias, f.tell(), calls, {constructor}(alias))\n"
+        );
+        let progress = start_file_sequence(&code, "r");
+        let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+        let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+            panic!("expected a running session");
+        };
+        for progress in [progress, *restored] {
+            let read = progress.into_os_call().expect("expected suspended ReadText");
+            assert_eq!(read.function_call.name(), "Path.read_text");
+            let result = read
+                .resume(MontyObject::string("one\ntwo".to_owned()), PrintWriter::Stdout)
+                .unwrap()
+                .into_complete()
+                .expect("expected Complete after restored read");
+            assert_eq!(
+                result,
+                MontyObject::tuple([
+                    file_sequence_value(
+                        constructor,
+                        vec![
+                            MontyObject::string("one\n".to_owned()),
+                            MontyObject::string("two".to_owned())
+                        ],
+                    ),
+                    MontyObject::bool(true),
+                    MontyObject::int(7),
+                    MontyObject::list([MontyObject::int(1)]),
+                    file_sequence_value(constructor, vec![]),
+                ])
+            );
+        }
+    }
+}
+
+fn assert_file_sequence_restored_abandonment(constructor: &str) {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("import csv", vec![], PrintWriter::Stdout).unwrap();
+    #[cfg(feature = "ref-count-return")]
+    let before = repl.heap_entry_count();
+    let code = format!("f = open('/x.txt')\n{constructor}(f)\n");
+    let progress = repl.feed_start(&code, vec![], PrintWriter::Stdout).unwrap();
+    let ReplProgress::OsCall(open) = progress else {
+        panic!("expected Open OsCall, got {progress:?}");
+    };
+    assert_eq!(open.function_call.name(), "open");
+    let progress = open
+        .resume(
+            MontyObject::file_handle(file_handle("/x.txt", "r")),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+    let Session::Suspended(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected a suspended REPL session");
+    };
+    for progress in [progress, *restored] {
+        let ReplProgress::OsCall(read) = progress else {
+            panic!("expected suspended ReadText OsCall, got {progress:?}");
+        };
+        assert_eq!(read.function_call.name(), "Path.read_text");
+        let mut repl = read.into_repl();
+        assert_eq!(
+            repl.feed_run("assert f.tell() == 0\nf = None\n1 + 1", vec![], PrintWriter::Stdout)
+                .unwrap(),
+            MontyObject::int(2)
+        );
+        #[cfg(feature = "ref-count-return")]
+        assert_eq!(repl.heap_entry_count(), before);
+        drop(repl);
+    }
+}
+
+#[test]
+fn list_file_sequence_restored_load_can_be_abandoned() {
+    assert_file_sequence_restored_abandonment("list");
+}
+
+#[test]
+fn tuple_file_sequence_restored_load_can_be_abandoned() {
+    assert_file_sequence_restored_abandonment("tuple");
+}
+
+#[test]
+fn csv_file_sequence_restored_load_can_be_abandoned() {
+    assert_file_sequence_restored_abandonment("csv.reader");
+}
+
+fn assert_file_sequence_outcomes(constructor: &str) {
+    for outcome in ["success", "host-error", "wrong-type", "future", "abandon"] {
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run("import csv", vec![], PrintWriter::Stdout).unwrap();
+        #[cfg(feature = "ref-count-return")]
+        let before = repl.heap_entry_count();
+        let expression = if constructor == "csv.reader" {
+            "list(csv.reader(f))".to_owned()
+        } else {
+            format!("{constructor}(f)")
+        };
+        let code = format!("f = open('/x.txt')\n{expression}\n");
+        let progress = repl.feed_start(&code, vec![], PrintWriter::Stdout).unwrap();
+        let ReplProgress::OsCall(open) = progress else {
+            panic!("expected Open OsCall, got {progress:?}");
+        };
+        assert_eq!(open.function_call.name(), "open");
+        let progress = open
+            .resume(
+                MontyObject::file_handle(file_handle("/x.txt", "r")),
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+        let ReplProgress::OsCall(read) = progress else {
+            panic!("expected ReadText OsCall, got {progress:?}");
+        };
+        assert_eq!(read.function_call.name(), "Path.read_text");
+        let mut repl = if outcome == "abandon" {
+            read.into_repl()
+        } else {
+            let response = match outcome {
+                "success" => MontyObject::string("one\ntwo".to_owned()).into(),
+                "host-error" => MontyException::new(ExcType::OSError, Some("transient".to_owned())).into(),
+                "wrong-type" => MontyObject::int(42).into(),
+                "future" => ExtFunctionResult::Future(1),
+                _ => unreachable!(),
+            };
+            match read.resume(response, PrintWriter::Stdout) {
+                Ok(progress) => {
+                    assert_eq!(outcome, "success");
+                    let (repl, result) = progress.into_complete().expect("expected completed sequence");
+                    let first_line = if constructor == "csv.reader" { "one" } else { "one\n" };
+                    assert_eq!(
+                        result,
+                        file_sequence_value(
+                            constructor,
+                            vec![
+                                MontyObject::string(first_line.to_owned()),
+                                MontyObject::string("two".to_owned())
+                            ],
+                        )
+                    );
+                    repl
+                }
+                Err(error) => {
+                    let expected_type = match outcome {
+                        "host-error" => ExcType::OSError,
+                        "wrong-type" => ExcType::RuntimeError,
+                        "future" => ExcType::RuntimeError,
+                        _ => panic!("successful response failed"),
+                    };
+                    assert_eq!(error.error.exc_type(), expected_type);
+                    if outcome == "wrong-type" {
+                        assert_eq!(
+                            error.error.message(),
+                            Some("Internal error in monty: install_buffer: OS result must be a string or bytes value")
+                        );
+                    }
+                    error.repl
+                }
+            }
+        };
+        assert_eq!(
+            repl.feed_run("f = None\n1 + 1", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::int(2)
+        );
+        #[cfg(feature = "ref-count-return")]
+        assert_eq!(repl.heap_entry_count(), before);
+    }
+}
+
+#[test]
+fn list_file_sequence_outcomes_release_pending_ownership() {
+    assert_file_sequence_outcomes("list");
+}
+
+#[test]
+fn tuple_file_sequence_outcomes_release_pending_ownership() {
+    assert_file_sequence_outcomes("tuple");
+}
+
+#[test]
+fn csv_file_sequence_outcomes_release_pending_ownership() {
+    assert_file_sequence_outcomes("csv.reader");
 }

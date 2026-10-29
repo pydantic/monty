@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     modules::{
         ModuleFunctions, collections, csv,
@@ -16,6 +16,7 @@ use crate::{
         itertools,
         itertools::ItertoolsFunctions,
     },
+    os_dispatch::PostConversionEffect,
     py_value::PyValue,
     types::{
         Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
@@ -801,11 +802,25 @@ impl Type {
 
     /// Calls this type as a constructor (e.g., `list(x)`, `int(x)`).
     ///
-    /// Iterator acquisition may suspend in user code; other constructors complete natively.
+    /// Iterator acquisition may suspend in user code; list and tuple may load an unread file.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         if self == Self::Iterator {
             builtin_iter(vm, args)
         } else {
+            if matches!(self, Self::List | Self::Tuple)
+                && let ArgValues::One(Value::Ref(file_id)) = &args
+                && let HeapReadOutput::OpenFile(file) = vm.heap.read(*file_id)
+                && file.needs_buffer_load(vm)
+            {
+                let effect = PostConversionEffect::LoadThenCall {
+                    file_id: *file_id,
+                    callable: Value::Builtin(Builtins::Type(
+                        self.try_into().expect("list and tuple are builtin types"),
+                    )),
+                    args,
+                };
+                return Ok(file.buffer_load_call(vm, effect));
+            }
             self.call_native(vm, args).map(CallResult::Value)
         }
     }

@@ -788,12 +788,12 @@ with open(root / 'iter_empty.txt') as f:
 if is_monty:
     f = open(root / 'iter.txt')
     try:
-        list(f)
+        set(f)
         assert False, 'expected NotImplementedError'
     except NotImplementedError as exc:
         assert (
             str(exc)
-            == "iterating an unread _io.TextIOWrapper is only supported by 'for' loops and next(); call seek(0) first to load it"
+            == 'iterating an unread _io.TextIOWrapper is not supported by this consumer; call seek(0) first to load it'
         )
     f.seek(0)
     assert list(f) == ['first\n', 'second\n', 'third']
