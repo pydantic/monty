@@ -1,7 +1,8 @@
 # `urllib` package
 
-Only `urllib.parse` is provided: `import urllib` gives a package whose single attribute is `parse`, and
-`urllib.request`, `urllib.error` and `urllib.robotparser` raise `ModuleNotFoundError`.
+Only `urllib.parse` is provided: `import urllib` gives a package whose single attribute is `parse`;
+`import urllib.request` raises `ModuleNotFoundError` and `from urllib import request` raises `ImportError`, as for
+any missing submodule, and the same goes for `urllib.error` and `urllib.robotparser`.
 The sandbox has no network access, so a request module would have nothing to do.
 
 `urllib.parse` provides `urlparse`, `urlunparse`, `urlsplit`, `urlunsplit`, `urljoin`, `urldefrag`, `quote`,
@@ -10,10 +11,12 @@ The sandbox has no network access, so a request module would have nothing to do.
 checks and the NFKC netloc check.
 
 - **URLs are `str` only.** `urlparse(b'...')`, `urlsplit`, `urljoin`, `urldefrag` and the `urlun*` functions
-    raise `TypeError: urllib.parse does not support bytes URLs; decode to str first` for a `bytes` argument, where
-    CPython returns the `*ResultBytes` variants; `urlparse(None)` fails as a non-string, where CPython treats a
-    falsy non-string as empty bytes.
-    `quote`, `unquote`, `unquote_to_bytes`, `parse_qs`, `parse_qsl` and `urlencode` accept `bytes` as CPython does.
+    raise `TypeError: urllib.parse does not support bytes URLs; decode to str first` for a non-empty `bytes`
+    argument, where CPython returns the `*ResultBytes` variants (`urljoin` returns a falsy operand's partner
+    unchanged, as CPython does); `urlparse(None)` fails as a non-string, where CPython treats a falsy non-string as
+    empty bytes.
+    `quote`, `quote_plus`, `quote_from_bytes`, `unquote`, `unquote_to_bytes`, `parse_qs`, `parse_qsl` and
+    `urlencode` accept `bytes` as CPython does.
 - **The result objects are named tuples without a class.** `ParseResult`, `SplitResult` and `DefragResult` have
     the fields, `_fields`, `_replace()`, `_asdict()`, `_make()` and `geturl()`, and the first two have `hostname`,
     `port`, `username` and `password`, but `type(result).__name__` is `namedtuple` and the classes themselves are

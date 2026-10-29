@@ -555,9 +555,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         let attr_name = attr.as_str(vm.interns);
         // `_fields` (and its alias `__match_args__`) is a data attribute, a tuple
         // of the field names; no field can shadow it since fields cannot start with `_`.
-        // Gated on `class_id`: Monty's internal named tuples (`sys.version_info`,
-        // host imports) model CPython *structseqs*, which expose none of the
-        // `collections.namedtuple` API.
+        // Gated on `has_namedtuple_api`: Monty's internal named tuples
+        // (`sys.version_info`, host imports) model CPython *structseqs*, which
+        // expose none of the `collections.namedtuple` API; the `urllib.parse`
+        // results have it without a class object.
         if matches!(
             attr.static_string(vm.interns),
             Some(StaticStrings::UnderFields | StaticStrings::MatchArgsDunder)
@@ -606,7 +607,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         // The `_`-prefixed namedtuple methods. Field names cannot start with `_`,
         // so these never collide with a real field. Only instances built from a
-        // `collections.namedtuple` class have them — see the note in `py_getattr`.
+        // `collections.namedtuple` class and the `urllib.parse` results have them
+        // — see `has_namedtuple_api`.
         let from_factory = self.has_namedtuple_api(vm);
         // `count`/`index` are inherited from `tuple`, so unlike the `_`-prefixed
         // methods they are available on structseqs too (`sys.version_info.count(0)`
@@ -670,7 +672,6 @@ impl HeapItem for NamedTuple {
 // ============================================================================
 
 impl<'h> HeapRead<'h, NamedTuple> {
-    /// `p._fields` — a tuple of the field names, in order.
     /// Whether the `collections.namedtuple` API applies: instances built from a
     /// factory class, and the `urllib.parse` results, which have no class object
     /// here but are namedtuples in CPython.
@@ -679,6 +680,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
         data.class_id().is_some() || urllib::is_result(data, vm)
     }
 
+    /// `p._fields` — a tuple of the field names, in order.
     fn fields_tuple(&self, vm: &mut VM<'h>) -> Value {
         let names = self.get(vm.heap).field_names.clone();
         fields_tuple_from(&names, vm)

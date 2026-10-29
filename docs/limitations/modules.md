@@ -17,35 +17,36 @@ in the next feed, and after a dump (see [random.md](random.md)).
 
 ## Modules available
 
-| Module        | See                              |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `decimal`     | [decimal.md](decimal.md)         |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
-| `urllib`      | [urllib.md](urllib.md)           |
+| Module         | See                              |
+| -------------- | -------------------------------- |
+| `asyncio`      | [asyncio.md](asyncio.md)         |
+| `base64`       | [base64.md](base64.md)           |
+| `binascii`     | [base64.md](base64.md)           |
+| `bisect`       | [bisect.md](bisect.md)           |
+| `collections`  | [collections.md](collections.md) |
+| `copy`         | [copy.md](copy.md)               |
+| `csv`          | [csv.md](csv.md)                 |
+| `dataclasses`  | [dataclasses.md](dataclasses.md) |
+| `datetime`     | [datetime.md](datetime.md)       |
+| `decimal`      | [decimal.md](decimal.md)         |
+| `functools`    | [functools.md](functools.md)     |
+| `hashlib`      | [hashlib.md](hashlib.md)         |
+| `itertools`    | [itertools.md](itertools.md)     |
+| `json`         | [json.md](json.md)               |
+| `math`         | [math.md](math.md)               |
+| `os`           | [os.md](os.md)                   |
+| `os.path`      | [os.md](os.md)                   |
+| `pathlib`      | [pathlib.md](pathlib.md)         |
+| `posixpath`    | [os.md](os.md)                   |
+| `random`       | [random.md](random.md)           |
+| `re`           | [re.md](re.md)                   |
+| `sys`          | [sys.md](sys.md)                 |
+| `time`         | [time.md](time.md)               |
+| `tomllib`      | [tomllib.md](tomllib.md)         |
+| `typing`       | [typing.md](typing.md)           |
+| `unicodedata`  | [unicodedata.md](unicodedata.md) |
+| `urllib`       | [urllib.md](urllib.md)           |
+| `urllib.parse` | [urllib.md](urllib.md)           |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`

@@ -10,6 +10,8 @@
 
 mod parse;
 
+use std::collections::HashMap;
+
 use smallvec::smallvec;
 
 use self::parse::Split;
@@ -216,7 +218,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: UrllibFunctions, args: ArgValues) 
             defer_drop!(string, vm);
             defer_drop!(encoding, vm);
             defer_drop!(errors, vm);
-            unquote(string, encoding, errors, false, vm)
+            unquote(string, encoding.as_ref(), errors.as_ref(), false, vm)
         }
         UrllibFunctions::UnquotePlus => {
             let UnquotePlusArgs {
@@ -227,7 +229,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: UrllibFunctions, args: ArgValues) 
             defer_drop!(string, vm);
             defer_drop!(encoding, vm);
             defer_drop!(errors, vm);
-            unquote(string, encoding, errors, true, vm)
+            unquote(string, encoding.as_ref(), errors.as_ref(), true, vm)
         }
         UrllibFunctions::UnquoteToBytes => {
             let StringArgs { string } = StringArgs::from_args(args, vm)?;
@@ -363,10 +365,12 @@ macro_rules! unquote_arguments {
         struct $ty {
             #[from_args(static_string = "StringAttr")]
             string: Value,
-            #[from_args(default = Value::None)]
-            encoding: Value,
-            #[from_args(default = Value::None)]
-            errors: Value,
+            // `Option` keeps an omitted argument apart from an explicit `None`,
+            // which `bytes.decode()` rejects.
+            #[from_args(default)]
+            encoding: Option<Value>,
+            #[from_args(default)]
+            errors: Option<Value>,
         }
     };
 }
@@ -653,12 +657,24 @@ enum ResultKind {
 }
 
 impl ResultKind {
+    /// The kind a class-less named tuple is, by name and field count: a
+    /// `collections.namedtuple('SplitResult', ...)` of another shape is not one.
     fn of(named_tuple: &NamedTuple, vm: &VM<'_>) -> Option<Self> {
-        match named_tuple.name_either().static_string(vm.interns)? {
-            StaticStrings::ParseResult => Some(Self::Parse),
-            StaticStrings::SplitResult => Some(Self::Split),
-            StaticStrings::DefragResult => Some(Self::Defrag),
-            _ => None,
+        let kind = match named_tuple.name_either().static_string(vm.interns)? {
+            StaticStrings::ParseResult => Self::Parse,
+            StaticStrings::SplitResult => Self::Split,
+            StaticStrings::DefragResult => Self::Defrag,
+            _ => return None,
+        };
+        (named_tuple.items().len() == kind.field_count()).then_some(kind)
+    }
+
+    /// How many fields the result has.
+    fn field_count(self) -> usize {
+        match self {
+            Self::Parse => 6,
+            Self::Split => 5,
+            Self::Defrag => 2,
         }
     }
 }
@@ -681,9 +697,13 @@ pub(crate) fn result_attr<'h>(
     if !matches!(ResultKind::of(tuple, vm), Some(ResultKind::Parse | ResultKind::Split)) {
         return Ok(None);
     }
-    let Some(attr) = attr.static_string(vm.interns) else {
+    let Some(
+        attr @ (StaticStrings::Hostname | StaticStrings::Port | StaticStrings::Username | StaticStrings::Password),
+    ) = attr.static_string(vm.interns)
+    else {
         return Ok(None);
     };
+    // Only the netloc properties read the netloc, so `_replace(netloc=None).path` still works.
     let netloc = tuple.items()[1].to_str(vm)?.to_owned();
     let optional =
         |text: Option<&str>, vm: &mut VM<'_>| text.map_or(Value::None, |text| allocate_string(text, vm.heap));
@@ -691,8 +711,7 @@ pub(crate) fn result_attr<'h>(
         StaticStrings::Hostname => optional(parse::hostname(&netloc).as_deref(), vm),
         StaticStrings::Port => parse::port(&netloc)?.map_or(Value::None, Value::Int),
         StaticStrings::Username => optional(parse::userinfo(&netloc).0, vm),
-        StaticStrings::Password => optional(parse::userinfo(&netloc).1, vm),
-        _ => return Ok(None),
+        _ => optional(parse::userinfo(&netloc).1, vm),
     }))
 }
 
@@ -703,6 +722,10 @@ pub(crate) fn result_geturl<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Option<Value>> {
+    let count = args.count();
+    let (positional, kwargs) = args.into_parts();
+    defer_drop!(positional, vm);
+    defer_drop!(kwargs, vm);
     let tuple = named_tuple.get(vm.heap);
     let Some(kind) = ResultKind::of(tuple, vm) else {
         return Ok(None);
@@ -713,11 +736,13 @@ pub(crate) fn result_geturl<'h>(
         .iter()
         .map(|item| item.to_str(vm).map(str::to_owned))
         .collect::<RunResult<_>>()?;
-    if args.count() > 0 {
-        let given = args.count() + 1;
-        args.drop_with(vm);
+    if let Some(key) = kwargs.first_key(vm.heap, vm.interns)? {
+        return Err(ExcType::type_error_unexpected_keyword(&format!("{name}.geturl"), &key));
+    }
+    if count > 0 {
         return Err(ExcType::type_error(format!(
-            "{name}.geturl() takes 1 positional argument but {given} were given"
+            "{name}.geturl() takes 1 positional argument but {} were given",
+            count + 1
         )));
     }
     let url = match kind {
@@ -749,21 +774,24 @@ fn quote(
             if s.is_empty() {
                 return Ok(String::new());
             }
-            let encoding = codec_arg(encoding, "utf-8", vm)?;
-            let errors = codec_arg(errors, "strict", vm)?;
+            let encoding = codec_arg(encoding, Some("utf-8"), "encode", "encoding", vm)?;
+            let errors = codec_arg(errors, Some("strict"), "encode", "errors", vm)?;
             let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
             codec.encode(&s, &errors, &vm.heap.tracker)?
         }
-        Some(Text::Bytes(bytes)) => {
+        other => {
+            // Anything but a `str` takes the bytes path, whose codec checks come first.
             if !matches!(encoding, Value::None) {
                 return Err(ExcType::type_error("quote() doesn't support 'encoding' for bytes"));
             }
             if !matches!(errors, Value::None) {
                 return Err(ExcType::type_error("quote() doesn't support 'errors' for bytes"));
             }
-            bytes
+            match other {
+                Some(Text::Bytes(bytes)) => bytes,
+                _ => return Err(ExcType::type_error("quote_from_bytes() expected bytes")),
+            }
         }
-        None => return Err(ExcType::type_error("quote_from_bytes() expected bytes")),
     };
     let mut safe = safe_bytes(safe, vm)?;
     // `quote_plus` lets spaces through quoting so it can turn them into `+`.
@@ -775,23 +803,53 @@ fn quote(
     Ok(if plus { quoted.replace(' ', "+") } else { quoted })
 }
 
-/// The `safe` characters as ASCII bytes: non-ASCII characters of a `str` and
-/// bytes past 127 are dropped, as CPython drops them.
+/// The `safe` characters as ASCII bytes: non-ASCII characters of a `str`, and
+/// codes past 127 of `bytes` or any other iterable of ints, are dropped as CPython
+/// drops them.
 fn safe_bytes(safe: &Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
     match Text::extract(safe, vm)? {
         Some(Text::Str(s)) => Ok(s.bytes().filter(u8::is_ascii).collect()),
         Some(Text::Bytes(b)) => Ok(b.into_iter().filter(u8::is_ascii).collect()),
-        None => Err(ExcType::type_error_not_iterable(&safe.py_type_name(vm))),
+        None => {
+            let iter = safe.clone_with_heap(vm).into_py_iter(vm)?.require_synchronous(vm)?;
+            defer_drop!(iter, vm);
+            let mut iter = iter.read(vm);
+            let mut out = Vec::new();
+            while let Some(item) = iter.py_next(vm)? {
+                defer_drop!(item, vm);
+                // `c < 128` first, then `bytes([...])`, with each step's CPython error.
+                let code = match item {
+                    Value::Int(code) => *code,
+                    Value::Bool(flag) => i64::from(*flag),
+                    Value::Float(_) => item.as_int(vm)?,
+                    other => return Err(ExcType::type_error_ordering("<", &other.py_type_name(vm), "int")),
+                };
+                if code < 0 {
+                    return Err(ExcType::value_error("bytes must be in range(0, 256)"));
+                }
+                if let Ok(code) = u8::try_from(code)
+                    && code.is_ascii()
+                {
+                    out.push(code);
+                }
+            }
+            Ok(out)
+        }
     }
 }
 
-/// An `encoding` / `errors` argument: `None` means `default`, otherwise a `str`.
-fn codec_arg(value: &Value, default: &str, vm: &mut VM<'_>) -> RunResult<String> {
-    match value {
-        Value::None => Ok(default.to_owned()),
-        value if value.is_str(vm.heap) => Ok(value.to_str(vm)?.to_owned()),
-        value => Err(ExcType::type_error(format!(
-            "encode() argument 'encoding' must be str, not {}",
+/// An `encoding` / `errors` argument of `str.encode()` / `bytes.decode()`:
+/// `None` means `default` where the caller has one, otherwise it must be a `str`.
+fn codec_arg(value: &Value, default: Option<&str>, method: &str, name: &str, vm: &mut VM<'_>) -> RunResult<String> {
+    match (value, default) {
+        (Value::None, Some(default)) => Ok(default.to_owned()),
+        (value, _) if value.is_str(vm.heap) => Ok(value.to_str(vm)?.to_owned()),
+        // `_PyArg_BadArgument` writes `None` itself rather than `NoneType`.
+        (Value::None, None) => Err(ExcType::type_error(format!(
+            "{method}() argument '{name}' must be str, not None"
+        ))),
+        (value, _) => Err(ExcType::type_error(format!(
+            "{method}() argument '{name}' must be str, not {}",
             value.py_type_name(vm)
         ))),
     }
@@ -799,20 +857,43 @@ fn codec_arg(value: &Value, default: &str, vm: &mut VM<'_>) -> RunResult<String>
 
 /// `unquote()` / `unquote_plus()`: `%XX` escapes decode with `encoding` and
 /// `errors` (UTF-8 and `replace` by default); a `str` without `%` is returned as is.
-fn unquote(string: &Value, encoding: &Value, errors: &Value, plus: bool, vm: &mut VM<'_>) -> RunResult<Value> {
-    let encoding = codec_arg(encoding, "utf-8", vm)?;
-    let errors = codec_arg(errors, "replace", vm)?;
-    let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
+fn unquote(
+    string: &Value,
+    encoding: Option<&Value>,
+    errors: Option<&Value>,
+    plus: bool,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
     match Text::extract(string, vm)? {
         Some(Text::Bytes(bytes)) => {
             if plus {
                 // CPython's `unquote_plus` replaces with a `str` pattern first.
                 return Err(ExcType::type_error("a bytes-like object is required, not 'str'"));
             }
+            // `bytes.decode(encoding, errors)` takes the arguments as given, so an
+            // explicit `None` is rejected where an omitted one means the default.
+            let encoding = match encoding {
+                Some(value) => codec_arg(value, None, "decode", "encoding", vm)?,
+                None => "utf-8".to_owned(),
+            };
+            let errors = match errors {
+                Some(value) => codec_arg(value, None, "decode", "errors", vm)?,
+                None => "replace".to_owned(),
+            };
+            let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
             let decoded = codec.decode(&parse::unquote_bytes(&bytes), &errors)?;
             Ok(allocate_string(decoded, vm.heap))
         }
         Some(Text::Str(s)) => {
+            let encoding = codec_arg(
+                encoding.unwrap_or(&Value::None),
+                Some("utf-8"),
+                "decode",
+                "encoding",
+                vm,
+            )?;
+            let errors = codec_arg(errors.unwrap_or(&Value::None), Some("replace"), "decode", "errors", vm)?;
+            let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
             let s = if plus { s.replace('+', " ") } else { s };
             if !s.contains('%') {
                 return Ok(if plus {
@@ -821,15 +902,7 @@ fn unquote(string: &Value, encoding: &Value, errors: &Value, plus: bool, vm: &mu
                     string.clone_with_heap(vm)
                 });
             }
-            let mut out = String::with_capacity(s.len());
-            for (ascii, run) in parse::ascii_runs(&s) {
-                if ascii {
-                    out.push_str(&codec.decode(&parse::unquote_bytes(run.as_bytes()), &errors)?);
-                } else {
-                    out.push_str(run);
-                }
-            }
-            Ok(allocate_string(out, vm.heap))
+            Ok(allocate_string(unquote_str(&s, codec, &errors)?, vm.heap))
         }
         // CPython fails its `'%' not in string` test.
         None => Err(ExcType::type_error(format!(
@@ -837,6 +910,20 @@ fn unquote(string: &Value, encoding: &Value, errors: &Value, plus: bool, vm: &mu
             string.py_type_name(vm)
         ))),
     }
+}
+
+/// Percent-decodes the ASCII runs of `s` with `codec`, keeping every other
+/// character as it is, as CPython's `unquote()` does for a `str`.
+fn unquote_str(s: &str, codec: Codec, errors: &str) -> RunResult<String> {
+    let mut out = String::with_capacity(s.len());
+    for (ascii, run) in parse::ascii_runs(s) {
+        if ascii {
+            out.push_str(&codec.decode(&parse::unquote_bytes(run.as_bytes()), errors)?);
+        } else {
+            out.push_str(run);
+        }
+    }
+    Ok(out)
 }
 
 /// `parse_qsl`: the `(name, value)` pairs of a query string, percent-decoded.
@@ -861,11 +948,17 @@ fn parse_qsl(args: &ParseQsArgs, vm: &mut VM<'_>) -> RunResult<Vec<(Text, Text)>
     }
     let keep_blank_values = args.keep_blank_values.py_bool(vm)?;
     let strict_parsing = args.strict_parsing.py_bool(vm)?;
-    let encoding = codec_arg(&args.encoding, "utf-8", vm)?;
-    let errors = codec_arg(&args.errors, "replace", vm)?;
-    let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
-
     let is_bytes = qs.is_bytes();
+    // A `bytes` query never decodes, so its codec arguments go unread, as in CPython.
+    let codec = if is_bytes {
+        None
+    } else {
+        let encoding = codec_arg(&args.encoding, Some("utf-8"), "decode", "encoding", vm)?;
+        let errors = codec_arg(&args.errors, Some("replace"), "decode", "errors", vm)?;
+        let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
+        Some((codec, errors))
+    };
+
     let qs = qs.into_bytes();
     let separator = separator.into_bytes();
     let fields: Vec<&[u8]> = split_bytes(&qs, &separator);
@@ -893,17 +986,19 @@ fn parse_qsl(args: &ParseQsArgs, vm: &mut VM<'_>) -> RunResult<Vec<(Text, Text)>
         if value.is_empty() && !keep_blank_values {
             continue;
         }
-        let decode = |part: &[u8], vm: &mut VM<'_>| -> RunResult<Text> {
+        let decode = |part: &[u8]| -> RunResult<Text> {
             let plus_replaced: Vec<u8> = part.iter().map(|&b| if b == b'+' { b' ' } else { b }).collect();
-            let unquoted = parse::unquote_bytes(&plus_replaced);
-            if is_bytes {
-                Ok(Text::Bytes(unquoted))
-            } else {
-                let _ = vm;
-                Ok(Text::Str(codec.decode(&unquoted, &errors)?))
+            match &codec {
+                None => Ok(Text::Bytes(parse::unquote_bytes(&plus_replaced))),
+                // The split points are ASCII, so the field is still valid UTF-8.
+                Some((codec, errors)) => Ok(Text::Str(unquote_str(
+                    &String::from_utf8_lossy(&plus_replaced),
+                    *codec,
+                    errors,
+                )?)),
             }
         };
-        pairs.push((decode(name, vm)?, decode(value, vm)?));
+        pairs.push((decode(name)?, decode(value)?));
     }
     Ok(pairs)
 }
@@ -937,11 +1032,15 @@ fn pairs_list(pairs: Vec<(Text, Text)>, vm: &mut VM<'_>) -> Value {
 
 /// `parse_qs`'s dict of lists, in first-seen order.
 fn pairs_dict(pairs: Vec<(Text, Text)>, vm: &mut VM<'_>) -> RunResult<Value> {
+    // Keys are found through a map so many distinct keys stay linear.
     let mut grouped: Vec<(Text, Vec<Text>)> = Vec::new();
+    let mut positions: HashMap<Text, usize> = HashMap::new();
     for (name, value) in pairs {
-        match grouped.iter_mut().find(|(key, _)| *key == name) {
-            Some((_, values)) => values.push(value),
-            None => grouped.push((name, vec![value])),
+        if let Some(&index) = positions.get(&name) {
+            grouped[index].1.push(value);
+        } else {
+            positions.insert(name.clone(), grouped.len());
+            grouped.push((name, vec![value]));
         }
     }
     let mut dict_guard = DropGuard::new(Dict::new(), vm);
@@ -1095,7 +1194,7 @@ fn quote_via(args: &UrlencodeArgs, part: &Value, is_key: bool, vm: &mut VM<'_>) 
 }
 
 /// A `str` or `bytes` argument, copied out of the heap.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Text {
     Str(String),
     Bytes(Vec<u8>),
