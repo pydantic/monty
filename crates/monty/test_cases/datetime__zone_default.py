@@ -48,7 +48,26 @@ assert repr(time.altzone) == '0'
 assert repr(time.daylight) == '0'
 assert repr(time.tzname) == "('UTC', 'UTC')"
 
-# === fromtimestamp instants that Windows CPython's localtime() rejects ===
+# === a naive fromtimestamp() is the zone's wall clock ===
+assert datetime.fromtimestamp(1700000000) == datetime(2023, 11, 14, 22, 13, 20)
+assert datetime.fromtimestamp(1700000000.123456789) == datetime(2023, 11, 14, 22, 13, 20, 123457)
+assert datetime.fromtimestamp(True) == datetime(1970, 1, 1, 0, 0, 1)
+assert date.fromtimestamp(1700000000) == date(2023, 11, 14)
+assert date.fromtimestamp(1700000000.9) == date(2023, 11, 14)
+# `date` floors the fraction where `datetime` rounds it
+assert date.fromtimestamp(86399.9999996) == date(1970, 1, 1)
+assert datetime.fromtimestamp(86399.9999996) == datetime(1970, 1, 2)
+
+
+class _Index:
+    def __index__(self):
+        return 86400
+
+
+assert datetime.fromtimestamp(_Index()) == datetime(1970, 1, 2)
+assert date.fromtimestamp(_Index()) == date(1970, 1, 2)
+
+# === instants that Windows CPython's localtime() rejects ===
 assert datetime.fromtimestamp(-1.5) == datetime(1969, 12, 31, 23, 59, 58, 500000)
 assert datetime.fromtimestamp(-0.0000005) == datetime(1970, 1, 1)
 assert datetime.fromtimestamp(253402300799) == datetime(9999, 12, 31, 23, 59, 59)

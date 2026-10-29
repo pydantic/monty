@@ -1610,18 +1610,21 @@ assert str(datetime.timezone.min) == 'UTC-23:59'
 assert datetime.timezone.utc is datetime.timezone.utc
 
 # === fromtimestamp ===
-# The harness runs both interpreters in UTC, so naive results are UTC wall time. Negative
-# and far-future instants live in datetime__zone_default.py, which Windows CPython skips.
-assert datetime.datetime.fromtimestamp(1700000000) == datetime.datetime(2023, 11, 14, 22, 13, 20)
-assert datetime.datetime.fromtimestamp(1700000000.123456789) == datetime.datetime(2023, 11, 14, 22, 13, 20, 123457)
-assert datetime.datetime.fromtimestamp(True) == datetime.datetime(1970, 1, 1, 0, 0, 1)
-# microseconds round half to even
-assert datetime.datetime.fromtimestamp(0.0000005).microsecond == 0
-assert datetime.datetime.fromtimestamp(0.0000015).microsecond == 2
-assert datetime.datetime.fromtimestamp(0.0000025).microsecond == 2
+# Only aware results here: a naive result is the host's wall time, so those checks live
+# in datetime__zone_default.py, which Windows CPython skips.
 assert repr(datetime.datetime.fromtimestamp(1700000000, datetime.timezone.utc)) == (
     'datetime.datetime(2023, 11, 14, 22, 13, 20, tzinfo=datetime.timezone.utc)'
 )
+assert datetime.datetime.fromtimestamp(1700000000.123456789, datetime.timezone.utc) == datetime.datetime(
+    2023, 11, 14, 22, 13, 20, 123457, tzinfo=datetime.timezone.utc
+)
+assert datetime.datetime.fromtimestamp(True, datetime.timezone.utc) == datetime.datetime(
+    1970, 1, 1, 0, 0, 1, tzinfo=datetime.timezone.utc
+)
+# microseconds round half to even; zone offsets are whole seconds, so the field is zone-independent
+assert datetime.datetime.fromtimestamp(0.0000005).microsecond == 0
+assert datetime.datetime.fromtimestamp(0.0000015).microsecond == 2
+assert datetime.datetime.fromtimestamp(0.0000025).microsecond == 2
 _ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30), 'IST')
 _dt = datetime.datetime.fromtimestamp(1700000000, tz=_ist)
 assert repr(_dt) == (
@@ -1630,21 +1633,6 @@ assert repr(_dt) == (
 assert _dt.tzinfo is _ist
 assert _dt.timestamp() == 1700000000.0
 assert datetime.datetime.fromtimestamp(1700000000.5, datetime.timezone.utc).timestamp() == 1700000000.5
-
-assert datetime.date.fromtimestamp(1700000000) == datetime.date(2023, 11, 14)
-assert datetime.date.fromtimestamp(1700000000.9) == datetime.date(2023, 11, 14)
-# `date` floors the fraction where `datetime` rounds it
-assert datetime.date.fromtimestamp(86399.9999996) == datetime.date(1970, 1, 1)
-assert datetime.datetime.fromtimestamp(86399.9999996) == datetime.datetime(1970, 1, 2)
-
-
-class _Index:
-    def __index__(self):
-        return 86400
-
-
-assert datetime.datetime.fromtimestamp(_Index()) == datetime.datetime(1970, 1, 2)
-assert datetime.date.fromtimestamp(_Index()) == datetime.date(1970, 1, 2)
 
 for _bad, _exc, _msg in [
     (('x',), TypeError, 'argument must be int or float, not str'),
