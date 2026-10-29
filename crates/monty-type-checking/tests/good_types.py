@@ -12,6 +12,7 @@ import random
 import re
 import sys
 import tomllib
+import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BufferedReader, BufferedWriter, TextIOWrapper
@@ -783,6 +784,25 @@ assert_type(fnmatch.fnmatchcase(b'a.py', b'*.py'), bool)
 assert_type(fnmatch.filter(['a.py', 'b.txt'], '*.py'), list[str])
 assert_type(fnmatch.filter((b'a', b'b'), b'?'), list[bytes])
 assert_type(fnmatch.translate('*.py'), str)
+
+# === urllib.parse ===
+
+_split = urllib.parse.urlsplit('https://user:pw@example.com:8443/p?q=1#frag')
+assert_type(_split.netloc, str)
+assert_type(_split.port, int | None)
+assert_type(_split.hostname, str | None)
+assert_type(_split.geturl(), str)
+assert_type(urllib.parse.urlparse('http://x/a;b').params, str)
+assert_type(urllib.parse.urldefrag('http://x/#f').fragment, str)
+assert_type(urllib.parse.urljoin('http://x/a/', 'b'), str)
+assert_type(urllib.parse.urlunsplit(('http', 'x', '/', '', '')), str)
+assert_type(urllib.parse.quote('a b'), str)
+assert_type(urllib.parse.quote_plus(b'a b', safe='/'), str)
+assert_type(urllib.parse.unquote('a%20b'), str)
+assert_type(urllib.parse.unquote_to_bytes('a%20b'), bytes)
+assert_type(urllib.parse.urlencode({'a': 1, 'b': [1, 2]}, doseq=True), str)
+assert_type(urllib.parse.parse_qs('a=1&a=2'), dict[str, list[str]])
+assert_type(urllib.parse.parse_qsl(b'a=1'), list[tuple[bytes, bytes]])
 
 # === open ===
 # Upstream typeshed's signatures accept any argument value the runtime might accept.
