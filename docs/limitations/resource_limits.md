@@ -253,16 +253,16 @@ indistinguishable from a stack overflow.
     reports the resource error instead of that exception, and an operation
     that swallows a timeout internally (`repr` truncating with `...[timeout]`)
     still fails the turn that contained it.
-- `bytes` operations that search for a sub-sequence (`in` with a bytes-like
-    probe, `find`, `count`, `split`, `partition`, `replace` and their
-    variants) poll the clock every 64KiB, or every two lengths of the
-    searched-for sequence if that is longer. Searching for a
+- `str` and `bytes` operations that search for a sub-sequence (`find`,
+    `index`, `count`, `split`, `partition` and their variants, `in` with a
+    `str` or bytes-like probe, and `bytes.replace`) poll the clock every 64KiB, or every
+    two lengths of the searched-for sequence if that is longer. Searching for a
     sequence over 64KiB therefore overshoots its duration budget in proportion to
-    its length.
-- The neighbouring `bytes` operations that scan without a sub-sequence are
-    **not** polled and run to completion however large the input: `in` with an
-    integer probe (a single-byte scan) and `split()`/`rsplit()` left to their
-    default `sep=None` (whitespace splitting).
+    its length. `str.replace` is **not** polled.
+- The neighbouring operations that scan without a sub-sequence are
+    **not** polled and run to completion however large the input: `bytes` `in`
+    with an integer probe (a single-byte scan) and `split()`/`rsplit()` left to
+    their default `sep=None` (whitespace splitting) on either type.
 - The `str` case methods (`lower`, `upper`, `casefold`, `capitalize`, `title`,
     `swapcase`) and `is*()` predicates are **not** polled and run to completion.
     Their cost is linear in the input, so the overshoot is bounded by the largest

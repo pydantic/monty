@@ -318,6 +318,23 @@ assert 'a b c'.rsplit(maxsplit=0) == ['a b c']
 assert 'a  b'.rsplit(maxsplit=2) == ['a', 'b']
 assert 'a\xa0\xa0b'.rsplit(maxsplit=2) == ['a', 'b']
 assert '  a  b  '.rsplit(maxsplit=1) == ['  a', 'b']
+# Overlapping separators match from the splitting end.
+assert 'aaa'.split('aa') == ['', 'a']
+assert 'aaa'.rsplit('aa') == ['a', '']
+assert 'ñañaña'.rsplit('aña', 1) == ['ñañ', '']
+
+
+class RaisingIndex:
+    def __index__(self):
+        raise RuntimeError('index')
+
+
+# `maxsplit` converts before `sep` is type-checked.
+try:
+    'abc'.split(1, RaisingIndex())
+    assert False, 'expected RuntimeError'
+except RuntimeError as exc:
+    assert str(exc) == 'index'
 
 # splitlines()
 assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c']
@@ -774,3 +791,36 @@ try:
     assert False, 'splitlines pos + kwarg should raise'
 except TypeError as e:
     assert str(e) == 'splitlines() takes at most 1 argument (2 given)', f'dup: {e}'
+
+
+# === argument type and arity errors ===
+def raises(f):
+    try:
+        f()
+        assert False, 'expected an exception'
+    except Exception as exc:
+        return f'{type(exc).__name__}: {exc}'
+
+
+assert raises(lambda: 'abc'.find(1)) == 'TypeError: find() argument 1 must be str, not int'
+assert raises(lambda: 'abc'.rfind(b'a')) == 'TypeError: rfind() argument 1 must be str, not bytes'
+assert raises(lambda: 'abc'.count(None)) == 'TypeError: count() argument 1 must be str, not None'
+assert raises(lambda: 'abc'.index(1, RaisingIndex())) == 'TypeError: index() argument 1 must be str, not int'
+assert raises(lambda: 'abc'.strip(1)) == 'TypeError: strip arg must be None or str'
+assert raises(lambda: 'abc'.rstrip(b'a')) == 'TypeError: rstrip arg must be None or str'
+assert raises(lambda: 'abc'.removeprefix(1)) == 'TypeError: removeprefix() argument must be str, not int'
+assert raises(lambda: 'abc'.removesuffix(None)) == 'TypeError: removesuffix() argument must be str, not None'
+assert raises(lambda: 'abc'.partition(1)) == 'TypeError: must be str, not int'
+assert raises(lambda: 'abc'.rpartition(None)) == 'TypeError: must be str, not NoneType'
+assert raises(lambda: 'abc'.split(1)) == 'TypeError: must be str or None, not int'
+assert raises(lambda: 'abc'.rsplit(b'a')) == 'TypeError: must be str or None, not bytes'
+assert raises(lambda: 'abc'.replace(1, 'a')) == 'TypeError: replace() argument 1 must be str, not int'
+assert raises(lambda: 'abc'.replace('a', None)) == 'TypeError: replace() argument 2 must be str, not None'
+assert raises(lambda: 'a'.center(5, 1)) == 'TypeError: The fill character must be a unicode character, not int'
+assert raises(lambda: 'abc'.find()) == 'TypeError: find expected at least 1 argument, got 0'
+assert raises(lambda: 'abc'.rindex('a', 1, 2, 3)) == 'TypeError: rindex expected at most 3 arguments, got 4'
+assert raises(lambda: 'abc'.lstrip('a', 'b')) == 'TypeError: lstrip expected at most 1 argument, got 2'
+assert raises(lambda: 'abc'.count(sub='a')) == 'TypeError: str.count() takes no keyword arguments'
+assert raises(lambda: 'abc'.strip(chars='a')) == 'TypeError: str.strip() takes no keyword arguments'
+assert raises(lambda: 'a b'.split(None, 1, 2)) == 'TypeError: split() takes at most 2 arguments (3 given)'
+assert raises(lambda: 'a b'.rsplit(None, 1, 2)) == 'TypeError: rsplit() takes at most 2 arguments (3 given)'

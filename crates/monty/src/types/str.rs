@@ -1,8 +1,7 @@
-use std::{cell::Cell, fmt::Write, ops};
+use std::{cell::Cell, fmt::Write, ops, ops::Range};
 
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
-use smallvec::smallvec;
 
 use super::{
     Bytes, CmpOrder, PyTrait,
@@ -14,7 +13,7 @@ use crate::{
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapView, heap_read_ref_as_field},
     identity::Identity,
@@ -27,7 +26,8 @@ use crate::{
         LazyHeapSet, Type,
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
-        slice::{SearchRange, search_range, slice_collect_iterator},
+        slice::{search_range, slice_collect_iterator},
+        str_like::{self, ArgRole, Direction, SearchOp, StrLike, StripSide, find_subsequence},
     },
     value::{EitherStr, Value, eq_str},
 };
@@ -389,6 +389,100 @@ impl ops::Deref for Str {
     }
 }
 
+/// `str` methods index by character, so units are `char`s and offsets need a UTF-8 walk unless the text is ASCII.
+impl StrLike for str {
+    type Unit = char;
+
+    const CHECKS_SUB_FIRST: bool = true;
+
+    fn as_bytes(&self) -> &[u8] {
+        self.as_bytes()
+    }
+
+    fn py_len(&self) -> usize {
+        self.chars().count()
+    }
+
+    fn byte_range(&self, start: usize, end: usize) -> Range<usize> {
+        if start >= end {
+            0..0
+        } else if self.is_ascii() {
+            start.min(self.len())..end.min(self.len())
+        } else {
+            let mut start_byte = self.len();
+            let mut end_byte = self.len();
+            for (char_idx, (byte_idx, _)) in self.char_indices().enumerate() {
+                if char_idx == start {
+                    start_byte = byte_idx;
+                }
+                if char_idx == end {
+                    end_byte = byte_idx;
+                    break;
+                }
+            }
+            start_byte..end_byte
+        }
+    }
+
+    fn unit_index(&self, byte_offset: usize) -> usize {
+        self[..byte_offset].chars().count()
+    }
+
+    fn units(&self) -> impl DoubleEndedIterator<Item = (usize, char)> {
+        self.char_indices()
+    }
+
+    fn unit_len(unit: char) -> usize {
+        unit.len_utf8()
+    }
+
+    fn is_space(unit: char) -> bool {
+        is_space(unit)
+    }
+
+    fn contains_unit(&self, unit: char) -> bool {
+        self.contains(unit)
+    }
+
+    fn extract_arg<'a>(value: &Value, vm: &'a VM<'_>) -> Option<&'a Self> {
+        match value {
+            Value::InternString(id) => Some(vm.interns.get_str(*id)),
+            Value::Ref(heap_id) if let HeapData::Str(s) = vm.heap.get(*heap_id) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn arg_type_error(role: ArgRole, method: &str, value: &Value, vm: &VM<'_>) -> RunError {
+        let name = str_like::bare_name(method);
+        match role {
+            ArgRole::Sub => {
+                ExcType::type_error_bad_arg_pos(name, 1, "str", value.py_type(vm).cpython_arg_name(vm.heap, vm.interns))
+            }
+            ArgRole::Chars => ExcType::type_error(format!("{name} arg must be None or str")),
+            ArgRole::Affix => ExcType::type_error(format!(
+                "{name}() argument must be str, not {}",
+                value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
+            )),
+            ArgRole::Separator => ExcType::type_error(format!("must be str, not {}", value.py_type_name(vm))),
+            ArgRole::SplitSeparator => {
+                ExcType::type_error(format!("must be str or None, not {}", value.py_type_name(vm)))
+            }
+        }
+    }
+
+    fn byte_needle(_: &Value, _: &str, _: &mut VM<'_>) -> RunResult<Option<u8>> {
+        Ok(None)
+    }
+
+    fn allocate(&self, heap: &Heap) -> Value {
+        allocate_string(self, heap)
+    }
+
+    fn not_found_error() -> RunError {
+        ExcType::value_error_substring_not_found()
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
@@ -614,25 +708,25 @@ fn call_str_method_impl<'h>(
             Ok(Value::Bool(str_isdecimal(s.get(vm.heap))))
         }
         // Search methods
-        StaticStrings::Find => str_find(s, args, vm),
-        StaticStrings::Rfind => str_rfind(s, args, vm),
-        StaticStrings::Index => str_index(s, args, vm),
-        StaticStrings::Rindex => str_rindex(s, args, vm),
-        StaticStrings::Count => str_count(s, args, vm),
+        StaticStrings::Find => str_like::search(s, SearchOp::Find, "str.find", args, vm),
+        StaticStrings::Rfind => str_like::search(s, SearchOp::Rfind, "str.rfind", args, vm),
+        StaticStrings::Index => str_like::search(s, SearchOp::Index, "str.index", args, vm),
+        StaticStrings::Rindex => str_like::search(s, SearchOp::Rindex, "str.rindex", args, vm),
+        StaticStrings::Count => str_like::search(s, SearchOp::Count, "str.count", args, vm),
         StaticStrings::Startswith => str_startswith(s, args, vm),
         StaticStrings::Endswith => str_endswith(s, args, vm),
         // Strip/trim methods
-        StaticStrings::Strip => str_strip(s, args, vm),
-        StaticStrings::Lstrip => str_lstrip(s, args, vm),
-        StaticStrings::Rstrip => str_rstrip(s, args, vm),
-        StaticStrings::Removeprefix => str_removeprefix(s, args, vm),
-        StaticStrings::Removesuffix => str_removesuffix(s, args, vm),
+        StaticStrings::Strip => str_like::strip(s, StripSide::Both, "str.strip", args, vm),
+        StaticStrings::Lstrip => str_like::strip(s, StripSide::Start, "str.lstrip", args, vm),
+        StaticStrings::Rstrip => str_like::strip(s, StripSide::End, "str.rstrip", args, vm),
+        StaticStrings::Removeprefix => str_like::remove_prefix(s, "str.removeprefix", args, vm),
+        StaticStrings::Removesuffix => str_like::remove_suffix(s, "str.removesuffix", args, vm),
         // Split methods
-        StaticStrings::Split => str_split(s, args, vm),
-        StaticStrings::Rsplit => str_rsplit(s, args, vm),
+        StaticStrings::Split => str_like::split(s, Direction::Forward, args, vm),
+        StaticStrings::Rsplit => str_like::split(s, Direction::Reverse, args, vm),
         StaticStrings::Splitlines => str_splitlines(s, args, vm),
-        StaticStrings::Partition => str_partition(s, args, vm),
-        StaticStrings::Rpartition => str_rpartition(s, args, vm),
+        StaticStrings::Partition => str_like::partition(s, Direction::Forward, "str.partition", args, vm),
+        StaticStrings::Rpartition => str_like::partition(s, Direction::Reverse, "str.rpartition", args, vm),
         // Replace/modify methods
         StaticStrings::Replace => str_replace(s, args, vm),
         StaticStrings::Center => str_center(s, args, vm),
@@ -908,123 +1002,8 @@ fn str_isdecimal(s: &str) -> bool {
 }
 
 // =============================================================================
-// Search methods
+// Prefix/suffix matching
 // =============================================================================
-
-/// Implements Python's `str.find(sub, start?, end?)` method.
-///
-/// Returns the lowest index in the string where substring sub is found within
-/// the slice s[start:end]. Returns -1 if sub is not found.
-fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.find", str_len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` finds nothing: `'abc'.find('', 4) == -1`
-        return Ok(Value::Int(-1));
-    };
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    let result = match slice.find(&sub) {
-        Some(pos) => {
-            // Convert byte offset to char offset, then add start offset
-            let char_pos = slice[..pos].chars().count();
-            i64::try_from(start + char_pos).unwrap_or(i64::MAX)
-        }
-        None => -1,
-    };
-    Ok(Value::Int(result))
-}
-
-/// Implements Python's `str.rfind(sub, start?, end?)` method.
-///
-/// Returns the highest index in the string where substring sub is found within
-/// the slice s[start:end]. Returns -1 if sub is not found.
-fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.rfind", str_len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` finds nothing: `'abc'.rfind('', 4) == -1`
-        return Ok(Value::Int(-1));
-    };
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    let result = match slice.rfind(&sub) {
-        Some(pos) => {
-            // Convert byte offset to char offset, then add start offset
-            let char_pos = slice[..pos].chars().count();
-            i64::try_from(start + char_pos).unwrap_or(i64::MAX)
-        }
-        None => -1,
-    };
-    Ok(Value::Int(result))
-}
-
-/// Implements Python's `str.index(sub, start?, end?)` method.
-///
-/// Like find(), but raises ValueError when the substring is not found.
-fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.index", str_len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` finds nothing: `'abc'.index('', 4)` raises `ValueError`
-        return Err(ExcType::value_error_substring_not_found());
-    };
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    match slice.find(&sub) {
-        Some(pos) => {
-            let char_pos = slice[..pos].chars().count();
-            let result = i64::try_from(start + char_pos).unwrap_or(i64::MAX);
-            Ok(Value::Int(result))
-        }
-        None => Err(ExcType::value_error_substring_not_found()),
-    }
-}
-
-/// Implements Python's `str.rindex(sub, start?, end?)` method.
-///
-/// Like rfind(), but raises ValueError when the substring is not found.
-fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.rindex", str_len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` finds nothing: `'abc'.rindex('', 4)` raises `ValueError`
-        return Err(ExcType::value_error_substring_not_found());
-    };
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    match slice.rfind(&sub) {
-        Some(pos) => {
-            let char_pos = slice[..pos].chars().count();
-            let result = i64::try_from(start + char_pos).unwrap_or(i64::MAX);
-            Ok(Value::Int(result))
-        }
-        None => Err(ExcType::value_error_substring_not_found()),
-    }
-}
-
-/// Implements Python's `str.count(sub, start?, end?)` method.
-///
-/// Returns the number of non-overlapping occurrences of substring sub in
-/// the string s[start:end].
-fn str_count<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.count", str_len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` counts nothing: `'abc'.count('', 2, 1) == 0`
-        return Ok(Value::Int(0));
-    };
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    let count = if sub.is_empty() {
-        // Empty string matches between every character, plus start and end
-        slice.chars().count() + 1
-    } else {
-        slice.matches(&sub).count()
-    };
-    let result = i64::try_from(count).unwrap_or(i64::MAX);
-    Ok(Value::Int(result))
-}
 
 /// Implements Python's `str.startswith(prefix, start?, end?)` method.
 ///
@@ -1069,7 +1048,8 @@ fn str_starts_ends_with<'h>(
         // `start` past `end` matches nothing, but each affix is still type-checked
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
-    let slice = slice_string(s.get(vm.heap), start, end);
+    let s = s.get(vm.heap);
+    let slice = &s[s.byte_range(start, end)];
     Ok(Value::Bool(affix_matches(affix, slice, method, matcher, vm)?))
 }
 
@@ -1126,42 +1106,11 @@ fn affix_matches(
     }
 }
 
-/// Parses arguments for search methods (find, rfind, index, rindex, count).
-///
-/// Returns the substring and the `(start, end)` character range to search, or
-/// `None` for a `start` past `end`, where nothing is found (see [`search_range`]).
-fn parse_search_args(
-    method: &str,
-    str_len: usize,
-    args: ArgValues,
-    vm: &mut VM<'_>,
-) -> RunResult<(String, SearchRange)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
-    defer_drop!(pos, vm);
-    match pos.as_slice() {
-        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
-            let sub = extract_string_arg(sub_value, vm)?;
-            let range = search_range(bounds.first(), bounds.get(1), str_len, vm)?;
-            Ok((sub, range))
-        }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    }
-}
-
-/// Extracts a string from a Value, returning an error if not a string.
-fn extract_string_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
-    match value {
-        Value::InternString(id) => Ok(vm.interns.get_str(*id).to_owned()),
-        Value::Ref(heap_id) => {
-            if let HeapData::Str(s) = vm.heap.get(*heap_id) {
-                Ok(s.as_str().to_owned())
-            } else {
-                Err(ExcType::type_error("expected str"))
-            }
-        }
-        _ => Err(ExcType::type_error("expected str")),
-    }
+/// Extracts an owned copy of a `str` argument, raising `error()` for anything else.
+fn extract_string_arg(value: &Value, vm: &VM<'_>, error: impl FnOnce() -> RunError) -> RunResult<String> {
+    <str as StrLike>::extract_arg(value, vm)
+        .map(str::to_owned)
+        .ok_or_else(error)
 }
 
 /// Extracts an integer from a Value, returning an error if not an integer.
@@ -1186,303 +1135,9 @@ fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
     i32::try_from(as_i64).map_err(|_| ExcType::overflow_c_int())
 }
 
-/// Returns a substring of s from character index start to end; ASCII text is sliced by byte offset.
-fn slice_string(s: &str, start: usize, end: usize) -> &str {
-    if start >= end {
-        return "";
-    }
-    if s.is_ascii() {
-        return &s[start.min(s.len())..end.min(s.len())];
-    }
-
-    let mut start_byte = s.len();
-    let mut end_byte = s.len();
-
-    for (char_idx, (byte_idx, _)) in s.char_indices().enumerate() {
-        if char_idx == start {
-            start_byte = byte_idx;
-        }
-        if char_idx == end {
-            end_byte = byte_idx;
-            break;
-        }
-    }
-
-    &s[start_byte..end_byte]
-}
-
-// =============================================================================
-// Strip/trim methods
-// =============================================================================
-
-/// Implements Python's `str.strip(chars?)` method.
-///
-/// Returns a copy of the string with leading and trailing characters removed.
-/// If chars is not specified, whitespace characters are removed.
-fn str_strip<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let chars = parse_strip_arg("str.strip", args, vm)?;
-    let s = s.get(vm.heap);
-    let result = match &chars {
-        Some(c) => s.trim_matches(|ch| c.contains(ch)).to_owned(),
-        None => s.trim_matches(is_space).to_owned(),
-    };
-    Ok(allocate_string(result, vm.heap))
-}
-
-/// Implements Python's `str.lstrip(chars?)` method.
-///
-/// Returns a copy of the string with leading characters removed.
-fn str_lstrip<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let chars = parse_strip_arg("str.lstrip", args, vm)?;
-    let s = s.get(vm.heap);
-    let result = match &chars {
-        Some(c) => s.trim_start_matches(|ch| c.contains(ch)).to_owned(),
-        None => s.trim_start_matches(is_space).to_owned(),
-    };
-    Ok(allocate_string(result, vm.heap))
-}
-
-/// Implements Python's `str.rstrip(chars?)` method.
-///
-/// Returns a copy of the string with trailing characters removed.
-fn str_rstrip<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let chars = parse_strip_arg("str.rstrip", args, vm)?;
-    let s = s.get(vm.heap);
-    let result = match &chars {
-        Some(c) => s.trim_end_matches(|ch| c.contains(ch)).to_owned(),
-        None => s.trim_end_matches(is_space).to_owned(),
-    };
-    Ok(allocate_string(result, vm.heap))
-}
-
-/// Parses the optional chars argument for strip methods.
-///
-/// Accepts None as a value meaning "use default whitespace stripping".
-fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Option<String>> {
-    let value = args.get_zero_one_arg(method, vm.heap)?;
-    match value {
-        None => Ok(None),
-        Some(Value::None) => Ok(None), // Explicit None means default whitespace
-        Some(v) => {
-            defer_drop!(v, vm);
-            let result = extract_string_arg(v, vm)?;
-            Ok(Some(result))
-        }
-    }
-}
-
-/// Implements Python's `str.removeprefix(prefix)` method.
-///
-/// If the string starts with the prefix string, return string[len(prefix):].
-/// Otherwise, return a copy of the original string.
-fn str_removeprefix<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let prefix_value = args.get_one_arg("str.removeprefix", vm.heap)?;
-    defer_drop!(prefix_value, vm);
-    let prefix = extract_string_arg(prefix_value, vm)?;
-
-    let s = s.get(vm.heap);
-    let result = s.strip_prefix(&prefix).unwrap_or(s).to_owned();
-    Ok(allocate_string(result, vm.heap))
-}
-
-/// Implements Python's `str.removesuffix(suffix)` method.
-///
-/// If the string ends with the suffix string, return string[:-len(suffix)].
-/// Otherwise, return a copy of the original string.
-fn str_removesuffix<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let suffix_value = args.get_one_arg("str.removesuffix", vm.heap)?;
-    defer_drop!(suffix_value, vm);
-    let suffix = extract_string_arg(suffix_value, vm)?;
-
-    let s = s.get(vm.heap);
-    let result = s.strip_suffix(&suffix).unwrap_or(s).to_owned();
-    Ok(allocate_string(result, vm.heap))
-}
-
 // =============================================================================
 // Split methods
 // =============================================================================
-
-/// Implements Python's `str.split(sep?, maxsplit?)` method.
-///
-/// Returns a list of the words in the string, using sep as the delimiter string.
-fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
-    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
-    let s = s.get(vm.heap);
-
-    let parts: Vec<&str> = match &sep {
-        Some(sep) => {
-            // Empty separator raises ValueError
-            if sep.is_empty() {
-                return Err(ExcType::value_error_empty_separator());
-            }
-            if maxsplit < 0 {
-                s.split(sep.as_str()).collect()
-            } else {
-                // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                s.splitn(max.saturating_add(1), sep.as_str()).collect()
-            }
-        }
-        None => {
-            // Split on whitespace, filtering empty strings
-            if maxsplit < 0 {
-                s.split(is_space).filter(|part| !part.is_empty()).collect()
-            } else {
-                // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                split_whitespace_n(s, max)
-            }
-        }
-    };
-
-    // Convert to list of strings (using interned empty string when applicable)
-    let mut list_items = Vec::with_capacity(parts.len());
-    for (i, part) in parts.into_iter().enumerate() {
-        vm.heap.tracker.check_memory_time_every(i)?;
-        list_items.push(allocate_string(part, vm.heap));
-    }
-
-    let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
-}
-
-/// Implements Python's `str.rsplit(sep?, maxsplit?)` method.
-///
-/// Returns a list of the words in the string, using sep as the delimiter string,
-/// splitting from the right.
-fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
-    let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
-    let s = s.get(vm.heap);
-
-    let parts: Vec<&str> = match &sep {
-        Some(sep) => {
-            // Empty separator raises ValueError
-            if sep.is_empty() {
-                return Err(ExcType::value_error_empty_separator());
-            }
-            if maxsplit < 0 {
-                s.rsplit(sep.as_str()).collect::<Vec<_>>().into_iter().rev().collect()
-            } else {
-                // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                let mut parts: Vec<_> = s.rsplitn(max.saturating_add(1), sep.as_str()).collect();
-                parts.reverse();
-                parts
-            }
-        }
-        None => {
-            // Split on whitespace from right
-            if maxsplit < 0 {
-                s.split(is_space).filter(|part| !part.is_empty()).collect()
-            } else {
-                // Safe cast: we've checked maxsplit >= 0
-                let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                rsplit_whitespace_n(s, max)
-            }
-        }
-    };
-
-    // Convert to list of strings (using interned empty string when applicable)
-    let mut list_items = Vec::with_capacity(parts.len());
-    for (i, part) in parts.into_iter().enumerate() {
-        vm.heap.tracker.check_memory_time_every(i)?;
-        list_items.push(allocate_string(part, vm.heap));
-    }
-
-    let list = super::List::new(list_items);
-    let heap_id = vm.heap.allocate(HeapData::List(list));
-    Ok(Value::Ref(heap_id))
-}
-
-/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
-/// by the actual `split`/`rsplit` implementations.
-///
-/// `sep = None` is documented as "split on whitespace", so it is mapped to
-/// `Option::None`; any other value is run through `extract_string_arg`.
-/// `maxsplit` is always coerced to `i64` via `extract_int_arg`. Each argument
-/// is dropped on every path so refcounts stay balanced.
-fn coerce_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<(Option<String>, i64)> {
-    defer_drop!(sep, vm);
-    defer_drop!(maxsplit, vm);
-    let sep = match sep {
-        Value::None => None,
-        _ => Some(extract_string_arg(sep, vm)?),
-    };
-    let maxsplit = extract_int_arg(maxsplit, vm)?;
-    Ok((sep, maxsplit))
-}
-
-/// Argument shape for `str.split(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "split")]
-struct SplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
-}
-
-/// Argument shape for `str.rsplit(sep=None, maxsplit=-1)`.
-#[derive(FromArgs)]
-#[from_args(name = "rsplit")]
-struct RsplitArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::Int(-1))]
-    maxsplit: Value,
-}
-
-/// Split string on whitespace, returning at most `maxsplit + 1` parts.
-fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut remaining = s.trim_start_matches(is_space);
-    let mut count = 0;
-
-    while !remaining.is_empty() && count < maxsplit {
-        if let Some(end) = remaining.find(is_space) {
-            parts.push(&remaining[..end]);
-            remaining = remaining[end..].trim_start_matches(is_space);
-            count += 1;
-        } else {
-            break;
-        }
-    }
-
-    if !remaining.is_empty() {
-        parts.push(remaining);
-    }
-
-    parts
-}
-
-/// Split string on whitespace from the right, returning at most `maxsplit + 1` parts.
-fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut remaining = s.trim_end_matches(is_space);
-    let mut count = 0;
-
-    while !remaining.is_empty() && count < maxsplit {
-        if let Some(start) = remaining.rfind(is_space) {
-            let ws_len = remaining[start..].chars().next().unwrap().len_utf8();
-            parts.push(&remaining[start + ws_len..]);
-            remaining = remaining[..start].trim_end_matches(is_space);
-            count += 1;
-        } else {
-            break;
-        }
-    }
-
-    if !remaining.is_empty() {
-        parts.push(remaining);
-    }
-
-    parts.reverse();
-    parts
-}
 
 /// Implements Python's `str.splitlines(keepends?)` method.
 ///
@@ -1584,64 +1239,6 @@ fn value_is_truthy(v: &Value) -> bool {
     }
 }
 
-/// Implements Python's `str.partition(sep)` method.
-///
-/// Splits the string at the first occurrence of sep, and returns a 3-tuple
-/// containing the part before the separator, the separator itself, and the part after.
-fn str_partition<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let sep_value = args.get_one_arg("str.partition", vm.heap)?;
-    defer_drop!(sep_value, vm);
-    let sep = extract_string_arg(sep_value, vm)?;
-
-    if sep.is_empty() {
-        return Err(ExcType::value_error_empty_separator());
-    }
-
-    let s = s.get(vm.heap);
-    let (before, sep_found, after) = match s.find(&sep) {
-        Some(pos) => (&s[..pos], &sep[..], &s[pos + sep.len()..]),
-        None => (s, "", ""),
-    };
-
-    let before_val = allocate_string(before, vm.heap);
-    let sep_val = allocate_string(sep_found, vm.heap);
-    let after_val = allocate_string(after, vm.heap);
-
-    Ok(super::allocate_tuple(
-        smallvec![before_val, sep_val, after_val],
-        vm.heap,
-    ))
-}
-
-/// Implements Python's `str.rpartition(sep)` method.
-///
-/// Splits the string at the last occurrence of sep, and returns a 3-tuple
-/// containing the part before the separator, the separator itself, and the part after.
-fn str_rpartition<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let sep_value = args.get_one_arg("str.rpartition", vm.heap)?;
-    defer_drop!(sep_value, vm);
-    let sep = extract_string_arg(sep_value, vm)?;
-
-    if sep.is_empty() {
-        return Err(ExcType::value_error_empty_separator());
-    }
-
-    let s = s.get(vm.heap);
-    let (before, sep_found, after) = match s.rfind(&sep) {
-        Some(pos) => (&s[..pos], &sep[..], &s[pos + sep.len()..]),
-        None => ("", "", s),
-    };
-
-    let before_val = allocate_string(before, vm.heap);
-    let sep_val = allocate_string(sep_found, vm.heap);
-    let after_val = allocate_string(after, vm.heap);
-
-    Ok(super::allocate_tuple(
-        smallvec![before_val, sep_val, after_val],
-        vm.heap,
-    ))
-}
-
 // =============================================================================
 // Replace/modify methods
 // =============================================================================
@@ -1676,8 +1273,16 @@ fn parse_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunRes
     defer_drop!(new, vm);
     defer_drop!(count, vm);
 
-    let old_s = extract_string_arg(old, vm)?;
-    let new_s = extract_string_arg(new, vm)?;
+    let bad_arg = |pos, value: &Value| {
+        ExcType::type_error_bad_arg_pos(
+            "replace",
+            pos,
+            "str",
+            value.py_type(vm).cpython_arg_name(vm.heap, vm.interns),
+        )
+    };
+    let old_s = extract_string_arg(old, vm, || bad_arg(1, old))?;
+    let new_s = extract_string_arg(new, vm, || bad_arg(2, new))?;
     let count_i = extract_int_arg(count, vm)?;
     Ok((old_s, new_s, count_i))
 }
@@ -1798,7 +1403,12 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
             } else {
                 usize::try_from(w).unwrap_or(usize::MAX)
             };
-            let fill_str = extract_string_arg(fillchar_value, vm)?;
+            let fill_str = extract_string_arg(fillchar_value, vm, || {
+                ExcType::type_error(format!(
+                    "The fill character must be a unicode character, not {}",
+                    fillchar_value.py_type_name(vm)
+                ))
+            })?;
             if fill_str.chars().count() != 1 {
                 return Err(ExcType::type_error_fillchar_must_be_single_char());
             }
@@ -2129,14 +1739,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
 /// Shared by logical string views and concrete heap dispatch.
 /// A non-str probe reports its own type, as CPython does.
 pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
+    // An empty needle is in everything, and `find_subsequence` rejects it.
+    let contains = |needle: &str| -> RunResult<bool> {
+        Ok(needle.is_empty() || find_subsequence(container_str.as_bytes(), needle.as_bytes(), heap)?.is_some())
+    };
     match item {
-        Value::InternString(item_id) => {
-            let item_str = interns.get_str(*item_id);
-            Ok(container_str.contains(item_str))
-        }
+        Value::InternString(item_id) => contains(interns.get_str(*item_id)),
         Value::Ref(item_heap_id) => {
             if let HeapData::Str(item_str) = heap.get(*item_heap_id) {
-                Ok(container_str.contains(item_str.as_str()))
+                contains(item_str.as_str())
             } else {
                 Err(ExcType::type_error(format!(
                     "'in <string>' requires string as left operand, not {}",
