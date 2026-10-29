@@ -73,6 +73,8 @@ Constructor: `datetime(year, month, day, hour=0, minute=0, second=0, microsecond
 accepted and validated
 (must be 0 or 1) for CPython argument-parsing parity but does not affect
 the stored value: Monty does not track DST-fold disambiguation.
+`tzinfo` accepts `None`, a `timezone` or a `zoneinfo.ZoneInfo` (see [zoneinfo.md](zoneinfo.md));
+there is no `tzinfo` base class to subclass.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
@@ -221,10 +223,7 @@ Methods: `utcoffset(dt)`, `tzname(dt)`, `dst(dt)`. The `dt` argument is
 validated and then ignored, since the offset is the same at every
 instant.
 
-`timezone.fromutc(dt)` is not implemented (`ZoneInfo.fromutc()` is), and
-neither is the abstract `tzinfo` base class, so a `tzinfo` is either a
-`timezone` or a `zoneinfo.ZoneInfo` (see [zoneinfo.md](zoneinfo.md)). On
-`timezone`, `utcoffset()` is constant over time and `dst()` is always `None`.
+`timezone.fromutc(dt)` is not implemented; `ZoneInfo.fromutc()` is (see [zoneinfo.md](zoneinfo.md)).
 
 An offset is a whole number of seconds: `timezone(timedelta(seconds=1, microseconds=1))` raises
 `ValueError: offset must be a timedelta representing a whole number of seconds`, CPython's own message before 3.7,
