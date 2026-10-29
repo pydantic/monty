@@ -179,6 +179,32 @@ for _default in [lambda o: o, lambda o: [o]]:
     except ValueError as exc:
         assert str(exc) == 'Circular reference detected'
 
+
+# the value is marked before `default` runs, so a cycle through two objects is
+# detected on the revisit without calling `default` a third time
+
+
+class _Node:
+    pass
+
+
+_a = _Node()
+_b = _Node()
+_calls = []
+
+
+def _swap(o):
+    _calls.append(o)
+    return _b if o is _a else _a
+
+
+try:
+    json.dumps(_a, default=_swap)
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'Circular reference detected'
+assert _calls == [_a, _b]
+
 # `default` is only called when needed, so a non-callable passes until then
 try:
     json.dumps({1}, default=5)

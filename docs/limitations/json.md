@@ -84,6 +84,9 @@ callback that calls an external function or does host I/O raises `NotImplemented
 A `default` that returns its own argument raises `ValueError: Circular reference detected` for a heap value, as in
 CPython, but for a value without a heap identity (a builtin function, say) the recursion limit is what stops it, with
 `RecursionError`.
+A dict's entries are collected before any of its values is encoded, so a `default` that adds, removes or replaces
+entries of a dict still being encoded does not affect the output; CPython's encoder reads the live dict unless
+`sort_keys=True`, and emits the mutated entries.
 
 Rejected with `TypeError` if passed:
 

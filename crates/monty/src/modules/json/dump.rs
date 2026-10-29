@@ -565,13 +565,22 @@ impl<'h> Encoder<'_, 'h> {
     }
 
     /// Encodes a value no JSON type covers through `default(value)`, or raises
-    /// CPython's `TypeError` when no `default` was given. The value stays marked
-    /// while its replacement encodes, so a `default` that returns its argument
-    /// raises `Circular reference detected` as in CPython.
+    /// CPython's `TypeError` when no `default` was given. The value is marked
+    /// before `default` runs and stays marked while its replacement encodes, so a
+    /// revisit raises `Circular reference detected` without calling `default` again.
     fn serialize_fallback(&mut self, value: &Value, depth: usize) -> RunResult<()> {
         if matches!(self.default, Value::None) {
             return Err(not_serializable(value, self.vm));
         }
+        match value {
+            Value::Ref(id) => self.with_entered_container(*id, |enc| enc.serialize_default(value, depth)),
+            // Immediates (a builtin function, say) have no heap identity to mark.
+            _ => self.serialize_default(value, depth),
+        }
+    }
+
+    /// Calls `default(value)` and encodes what it returns.
+    fn serialize_default(&mut self, value: &Value, depth: usize) -> RunResult<()> {
         let argument = value.clone_with_heap(self.vm);
         let replacement = self.vm.evaluate_function(self.default, ArgValues::One(argument))?;
         let this = self;
@@ -580,11 +589,7 @@ impl<'h> Encoder<'_, 'h> {
         // without ever repeating a container, so the recursion limit bounds it.
         let token = this.vm.recursion_token()?;
         defer_drop!(token, this);
-        match value {
-            Value::Ref(id) => this.with_entered_container(*id, |enc| enc.serialize_value(replacement, depth)),
-            // Immediates (a builtin function, say) have no heap identity to mark.
-            _ => this.serialize_value(replacement, depth),
-        }
+        this.serialize_value(replacement, depth)
     }
 
     /// Streams items from a list or tuple into a JSON array, formatting
