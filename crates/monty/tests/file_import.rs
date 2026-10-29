@@ -422,3 +422,46 @@ fn an_abandoned_import_is_not_cached() {
         "RuntimeError: 'os.getenv' is not supported in this environment"
     );
 }
+
+/// However the snippet is abandoned mid-body, the next import reads the file
+/// the host serves then rather than binding the partial module.
+#[test]
+fn an_abandoned_import_reads_the_file_again() {
+    let fixed = &[("/proj/helpers.py", "before = 1\nafter = 2\n")];
+    let abandoned = [
+        suspended_helpers().into_repl(),
+        // a suspension restored from a dump abandons through `ReplSnapshot`
+        round_trip(ReplProgress::OsCall(suspended_helpers())).into_repl(),
+        suspended_helpers()
+            .abort(
+                MontyException::new(ExcType::RuntimeError, Some("cancelled".to_owned())),
+                PrintWriter::Stdout,
+            )
+            .unwrap_err()
+            .repl,
+    ];
+    for repl in abandoned {
+        let mut imports = Vec::new();
+        let (_, result) = feed_logged(
+            repl,
+            "import helpers\n(helpers.before, helpers.after)",
+            fixed,
+            &mut imports,
+        );
+        assert_eq!(asked(&imports), [("helpers", vec!["/proj"])]);
+        assert_eq!(result.unwrap(), eval("(1, 2)", &[]));
+    }
+}
+
+/// `import helpers`, suspended at a `Path.read_text` between its two assignments.
+fn suspended_helpers() -> ReplOsCall {
+    let source = "from pathlib import Path\nbefore = 1\nPath('/proj/wait.txt').read_text()\nafter = 2\n";
+    let progress = first_import("import helpers")
+        .resume(module_file("/proj/helpers.py", source), PrintWriter::Stdout)
+        .unwrap();
+    let ReplProgress::OsCall(read) = progress else {
+        panic!("expected the module body to suspend");
+    };
+    assert_eq!(read.function_call.name(), "Path.read_text");
+    read
+}
