@@ -2267,6 +2267,26 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "subsection not found").into()
     }
 
+    /// Creates a ValueError for an integer used as a byte outside `0..=255`.
+    ///
+    /// Matches CPython's format: `ValueError: byte must be in range(0, 256)`
+    #[must_use]
+    fn value_error_byte_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "byte must be in range(0, 256)").into()
+    }
+
+    /// Creates a TypeError for a non-bytes argument to a `bytes` method.
+    ///
+    /// Matches CPython's format: `TypeError: a bytes-like object is required, not '{type}'`
+    #[must_use]
+    fn type_error_bytes_like_required(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("a bytes-like object is required, not '{type_name}'"),
+        )
+        .into()
+    }
+
     /// Creates a LookupError for unknown error handler.
     ///
     /// Matches CPython's format: `LookupError: unknown error handler name '{name}'`

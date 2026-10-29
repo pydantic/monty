@@ -215,6 +215,9 @@ assert b'hello'.split(b'x') == [b'hello']
 assert b'a,b,c'.rsplit(b',') == [b'a', b'b', b'c']
 assert b'a,b,c'.rsplit(b',', 1) == [b'a,b', b'c']
 assert b'a b c'.rsplit() == [b'a', b'b', b'c']
+# Overlapping separators match from the right.
+assert b'aaa'.rsplit(b'aa') == [b'a', b'']
+assert b'aaaa'.rsplit(b'aaa') == [b'a', b'']
 
 # === bytes.splitlines() ===
 assert b'a\nb\nc'.splitlines() == [b'a', b'b', b'c']
@@ -609,3 +612,61 @@ assert (b'a' * 200_000).find(missing) == -1
 assert (b'a' * 200_000).rfind(missing) == -1
 assert (missing in b'a' * 200_000) is False
 assert (b'a' * 200_000).count(missing) == 0
+
+# === search methods take an int as one byte ===
+assert b'abc'.find(97) == 0
+assert b'abc'.rfind(99) == 2
+assert b'abca'.index(97, 1) == 3
+assert b'abc'.rindex(98) == 1
+assert b'aab'.count(97) == 2
+assert b'abc'.find(1) == -1
+assert b'\x01'.find(True) == 0
+
+
+class ByteIndex:
+    def __index__(self):
+        return 98
+
+
+assert b'abc'.find(ByteIndex()) == 1
+
+
+def raises(f):
+    try:
+        f()
+        assert False, 'expected an exception'
+    except Exception as exc:
+        return f'{type(exc).__name__}: {exc}'
+
+
+assert raises(lambda: b'abc'.find(256)) == 'ValueError: byte must be in range(0, 256)'
+assert raises(lambda: b'abc'.count(-1)) == 'ValueError: byte must be in range(0, 256)'
+assert raises(lambda: b'abc'.index(2**70)) == 'ValueError: byte must be in range(0, 256)'
+assert raises(lambda: b'abc'.index(120)) == 'ValueError: subsection not found'
+
+# === argument type errors ===
+assert raises(lambda: b'abc'.find('a')) == "TypeError: argument should be integer or bytes-like object, not 'str'"
+assert raises(lambda: b'abc'.rindex(1.5)) == "TypeError: argument should be integer or bytes-like object, not 'float'"
+assert raises(lambda: b'abc'.strip(1)) == "TypeError: a bytes-like object is required, not 'int'"
+assert raises(lambda: b'abc'.removeprefix(None)) == "TypeError: a bytes-like object is required, not 'NoneType'"
+assert raises(lambda: b'abc'.partition([])) == "TypeError: a bytes-like object is required, not 'list'"
+assert raises(lambda: b'abc'.split(1)) == "TypeError: a bytes-like object is required, not 'int'"
+assert raises(lambda: b'abc'.replace(1, b'')) == "TypeError: a bytes-like object is required, not 'int'"
+assert raises(lambda: b'a'.center(5, 1)) == 'TypeError: center() argument 2 must be a byte string of length 1, not int'
+assert (
+    raises(lambda: b'a'.ljust(5, None)) == 'TypeError: ljust() argument 2 must be a byte string of length 1, not None'
+)
+assert (
+    raises(lambda: b'a'.rjust(5, b'ab'))
+    == 'TypeError: rjust(): argument 2 must be a byte string of length 1, not a bytes object of length 2'
+)
+
+# === arity errors ===
+assert raises(lambda: b'abc'.find()) == 'TypeError: find expected at least 1 argument, got 0'
+assert raises(lambda: b'abc'.count(b'a', 1, 2, 3)) == 'TypeError: count expected at most 3 arguments, got 4'
+assert raises(lambda: b'abc'.strip(b'a', b'b')) == 'TypeError: strip expected at most 1 argument, got 2'
+assert raises(lambda: b'abc'.find(sub=b'a')) == 'TypeError: bytes.find() takes no keyword arguments'
+assert raises(lambda: b'abc'.lstrip(chars=b'a')) == 'TypeError: bytes.lstrip() takes no keyword arguments'
+assert raises(lambda: b'a b'.split(None, 1, 2)) == 'TypeError: split() takes at most 2 arguments (3 given)'
+assert raises(lambda: b'a b'.rsplit(None, maxsplit=1, x=2)) == 'TypeError: rsplit() takes at most 2 arguments (3 given)'
+assert raises(lambda: b'a'.splitlines(1, 2)) == 'TypeError: splitlines() takes at most 1 argument (2 given)'

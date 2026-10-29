@@ -44,6 +44,7 @@ pub mod re_pattern;
 pub mod set;
 pub mod slice;
 pub mod str;
+pub(crate) mod str_like;
 pub mod time;
 pub mod timedelta;
 pub mod timezone;
