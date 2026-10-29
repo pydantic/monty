@@ -66,11 +66,8 @@ not supported; passing more than one argument raises an internal error.
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 
-- `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` follow CPython: `raise X from Y` records
-    `Y` (a bare class is instantiated) and suppresses the context, `raise X from None` suppresses it alone, and an
-    exception raised while another is handled records that one as its context, cutting a link that would loop.
-    The three attributes are read-only: `exc.__cause__ = other` raises `AttributeError`, where CPython accepts an
-    exception or `None`.
+- `exc.__cause__`, `exc.__context__` and `exc.__suppress_context__` are read-only: `exc.__cause__ = other` raises
+    `AttributeError`, where CPython accepts an exception or `None`.
 
 - An exception rebuilt from a copy loses its chain: one that escapes a nested synchronous call (a `sorted()` key,
     `json.dumps(default=...)`, a `__repr__`) reaches the outer handler with `__cause__` and `__context__` reset to

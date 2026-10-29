@@ -2,6 +2,8 @@
 
 use std::fmt::{self, Write};
 
+use monty_types::ResourceError;
+
 use super::VM;
 use crate::{
     builtins::Builtins,
@@ -214,28 +216,35 @@ impl VM<'_> {
     /// `raised`, as CPython's `_PyErr_SetObject` does: a bare `raise` of the handled
     /// exception itself gets none, and a link that would make the chain circular is
     /// cut first. Exceptions caught by an internal (frozen) handler are not context,
-    /// since the equivalent CPython code is C.
-    fn attach_context(&mut self, raised: &Value) {
+    /// since the equivalent CPython code is C. The scan is linear in the chain, so
+    /// it polls the clock: a loop that re-raises inside a handler grows the chain
+    /// by one link each time and would otherwise spend quadratic time unchecked.
+    fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
         let Some(CaughtException::Value(Value::Ref(handled_id))) = self.exception_stack.last() else {
-            return;
+            return Ok(());
         };
         let handled_id = *handled_id;
         let Value::Ref(raised_id) = raised else {
-            return;
+            return Ok(());
         };
         if *raised_id == handled_id {
-            return;
+            return Ok(());
         }
         let mut cursor = handled_id;
-        while let Some(next) = self.exception_context(cursor) {
+        for step in 0usize.. {
+            let Some(next) = self.exception_context(cursor) else {
+                break;
+            };
             if next == *raised_id {
                 self.set_exception_context(cursor, None);
                 break;
             }
+            self.heap.tracker.check_time_every(step)?;
             cursor = next;
         }
         self.heap.inc_ref(handled_id);
         self.set_exception_context(*raised_id, Some(handled_id));
+        Ok(())
     }
 
     /// The `__context__` of the exception `id`, borrowed.
@@ -452,7 +461,10 @@ impl VM<'_> {
             };
             self.create_exception_value(exc)
         };
-        self.attach_context(&exc_value);
+        if let Err(error) = self.attach_context(&exc_value) {
+            exc_value.drop_with(self);
+            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error.into()));
+        }
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)

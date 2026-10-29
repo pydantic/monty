@@ -993,6 +993,12 @@ pub enum StaticStrings {
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,
+    /// `__cause__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__cause__")]
+    DunderCause,
+    /// `__context__` of an exception: the one being handled when it was raised.
+    #[strum(serialize = "__context__")]
+    DunderContext,
     /// `__delattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__delattr__")]
     DunderDelattr,
@@ -1027,15 +1033,6 @@ pub enum StaticStrings {
     /// `__name__` attribute of a type.
     #[strum(serialize = "__name__")]
     DunderName,
-    /// `__cause__` of an exception, set by `raise ... from`.
-    #[strum(serialize = "__cause__")]
-    DunderCause,
-    /// `__context__` of an exception: the one being handled when it was raised.
-    #[strum(serialize = "__context__")]
-    DunderContext,
-    /// `__suppress_context__` of an exception, set by `raise ... from`.
-    #[strum(serialize = "__suppress_context__")]
-    DunderSuppressContext,
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,
@@ -1051,6 +1048,9 @@ pub enum StaticStrings {
     /// `__setattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__setattr__")]
     DunderSetattr,
+    /// `__suppress_context__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__suppress_context__")]
+    DunderSuppressContext,
     /// `decimal.__version__` attribute.
     #[strum(serialize = "__version__")]
     DunderVersion,
