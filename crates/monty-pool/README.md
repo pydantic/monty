@@ -156,9 +156,9 @@ pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
 ```
 
 CPU mode replaces budget-derived wall deadlines.
-Linux, macOS and Windows poll every 5 ms during execution turns.
+When a CPU backstop is active, Linux, macOS and Windows poll every 5 ms during execution turns.
 The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
-Idle workers and host waits do not incur periodic CPU reads.
+Idle workers and host work between turns do not incur periodic CPU reads.
 
 Live worker reports cannot spend or refund the supervisor's CPU allowance.
 Resuming preserves observed feed CPU and its single grace allowance. A new feed resets both.

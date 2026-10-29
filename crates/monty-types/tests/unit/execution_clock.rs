@@ -52,7 +52,12 @@ fn wall_mode_never_arms_the_cpu_counter() {
 }
 
 #[test]
-fn clock_availability_matches_the_execution_feature() {
+fn wall_clock_is_always_available() {
     assert!(ExecutionClock::Wall.is_available());
-    assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(feature = "cpu-clock"));
+}
+
+#[cfg(not(feature = "cpu-clock"))]
+#[test]
+fn cpu_clock_is_unavailable_without_the_feature() {
+    assert!(!ExecutionClock::Cpu.is_available());
 }

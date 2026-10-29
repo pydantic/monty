@@ -202,7 +202,7 @@ It stops measuring at each completion or suspension. Host callback time is outsi
 The existing feed and turn grace settings use CPU time in this mode.
 Feed consumption and grace do not renew on resume.
 
-Linux, macOS and Windows poll every 5 ms during execution turns.
+When a CPU backstop is active, Linux, macOS and Windows poll every 5 ms during execution turns.
 CPU exhaustion kills and reaps the worker. The explicit wall deadline handles blocked workers.
 A supervisor clock failure discards the worker instead of weakening enforcement.
 OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.
@@ -216,7 +216,8 @@ Use clients that understand the clock metadata with CPU-mode server profiles for
 Older clients ignore this metadata and can retain premature wall-time backstops under contention.
 Default wall-mode servers remain compatible with those clients.
 A CPU-mode server requires a finite client `request_timeout`, independent of its own supervisor deadline.
-The WebSocket client default is 10 seconds. Choose this wall deadline for the expected budgets and scheduling delays.
+Python and Node WebSocket clients default to 10 seconds. Rust clients have no default deadline.
+Choose this wall deadline for the expected budgets and scheduling delays.
 It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
 Local CPU pools require the child to acknowledge CPU mode before executing code.

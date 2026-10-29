@@ -104,7 +104,7 @@ static RUN_EXECUTION: Instrument = Instrument {
     kind: MetricKind::Histogram,
     name: "monty.run.execution_time",
     unit: "s",
-    description: "Sandbox execution time of one feed, excluding host round-trips.",
+    description: "Sandbox execution time of one feed using the pool's wall or CPU clock, excluding host round-trips.",
 };
 
 /// Wall time of one housekeeping turn.
