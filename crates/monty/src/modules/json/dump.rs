@@ -569,11 +569,9 @@ impl<'h> Encoder<'_, 'h> {
     /// before `default` runs and stays marked while its replacement encodes, so a
     /// revisit raises `Circular reference detected` without calling `default` again.
     fn serialize_fallback(&mut self, value: &Value, depth: usize) -> RunResult<()> {
-        if matches!(self.default, Value::None) {
-            return Err(not_serializable(value, self.vm));
-        }
-        match value {
-            Value::Ref(id) => self.with_entered_container(*id, |enc| enc.serialize_default(value, depth)),
+        match (self.default, value) {
+            (Value::None, _) => Err(not_serializable(value, self.vm)),
+            (_, Value::Ref(id)) => self.with_entered_container(*id, |enc| enc.serialize_default(value, depth)),
             // Immediates (a builtin function, say) have no heap identity to mark.
             _ => self.serialize_default(value, depth),
         }
