@@ -9,7 +9,7 @@ so offsets and abbreviations depend on that database's version, as CPython's dep
     `except zoneinfo.ZoneInfoNotFoundError` catches along with every other `KeyError`.
 - **There is no instance cache.** `ZoneInfo('UTC') is ZoneInfo('UTC')` is `False` where CPython caches instances;
     equality compares keys instead, so `ZoneInfo('UTC') == ZoneInfo.no_cache('UTC')` is `True` where CPython's
-    identity-based equality says `False`. `ZoneInfo.clear_cache()` does nothing beyond iterating `only_keys`, and
+    identity-based equality says `False`. `ZoneInfo.clear_cache()` accepts and ignores `only_keys` without validating it, and
     `copy.copy()` / `copy.deepcopy()` return the same object for every instance, where CPython rebuilds one made
     by `ZoneInfo.no_cache()`.
 - **Keys are case-sensitive.** `ZoneInfo('europe/london')` raises; CPython accepts it on a case-insensitive

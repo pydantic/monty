@@ -443,19 +443,16 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     // Invalid fixed instants raise; only CallHost falls back to the host's clock.
     let Some(utc) = sandbox_instant(vm)? else {
         let tz = match tz {
-            TzInfoArg::None => None,
-            TzInfoArg::Fixed(tz, _) => Some(MontyTimeZone {
+            TzInfoArg::None => Ok(None),
+            TzInfoArg::Fixed(tz, _) => Ok(Some(MontyTimeZone {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
-            }),
+            })),
             // The zone's offset depends on the instant only the host knows.
-            TzInfoArg::Zone(..) => {
-                return Err(ExcType::not_implemented(
-                    "datetime.now() with a zoneinfo.ZoneInfo is not supported with a host-serviced clock",
-                )
-                .into());
-            }
-        };
+            TzInfoArg::Zone(..) => Err(ExcType::not_implemented(
+                "datetime.now() with a zoneinfo.ZoneInfo is not supported with a host-serviced clock",
+            )),
+        }?;
         return Ok(CallResult::OsCall(OsFunctionCall::DateTimeNow(tz)));
     };
     let mut dt = match tz.at_utc(utc) {
@@ -1639,13 +1636,14 @@ impl<'h> HeapObjectRead<'h, DateTime> {
     /// else a `timezone` carrying the offset and name in force at this instant.
     fn fixed_tzinfo_value(&self, vm: &mut VM<'h>) -> Value {
         let dt = self.get(vm.heap);
-        if zone_of(dt.tzinfo_ref, vm.heap).is_none() {
-            return self.tzinfo_value(vm);
-        }
-        match timezone_info(dt) {
-            Some(tz) if tz.offset_seconds == 0 && tz.name.is_none() => vm.heap.get_timezone_utc(),
-            Some(tz) => Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))),
-            None => Value::None,
+        if zone_of(dt.tzinfo_ref, vm.heap).is_some() {
+            match timezone_info(dt) {
+                Some(tz) if tz.offset_seconds == 0 && tz.name.is_none() => vm.heap.get_timezone_utc(),
+                Some(tz) => Value::Ref(vm.heap.allocate(HeapData::TimeZone(tz))),
+                None => Value::None,
+            }
+        } else {
+            self.tzinfo_value(vm)
         }
     }
 

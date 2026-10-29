@@ -63,46 +63,38 @@ impl HeapItem for ZoneInfo {
 pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let KeyArgs { key } = KeyArgs::from_args(args, vm)?;
     defer_drop!(key, vm);
-    if !key.is_str(vm.heap) {
-        return Err(ExcType::type_error_fspath(&key.py_type_name(vm)));
+    if key.is_str(vm.heap) {
+        let key = key.to_str(vm)?.to_owned();
+        check_key(&key)?;
+        let zone = SandboxTimeZone::named(&key)
+            .map_err(|_| SimpleException::new_msg(ExcType::KeyError, format!("No time zone found with key {key}")))?;
+        Ok(Value::Ref(vm.heap.allocate(HeapData::ZoneInfo(ZoneInfo { key, zone }))))
+    } else {
+        Err(ExcType::type_error_fspath(&key.py_type_name(vm)))
     }
-    let key = key.to_str(vm)?.to_owned();
-    if key.starts_with('/') {
-        return Err(ExcType::value_error(format!(
-            "ZoneInfo keys may not be absolute paths, got: {key}"
-        )));
-    }
-    if key.split('/').any(|part| part == "..") {
-        return Err(ExcType::value_error(format!(
-            "ZoneInfo keys must refer to subdirectories of TZPATH, got: {key}"
-        )));
-    }
-    if key.split('/').any(|part| matches!(part, "" | ".")) {
-        return Err(ExcType::value_error(format!(
-            "ZoneInfo keys must be normalized relative paths, got: {key}"
-        )));
-    }
-    let zone = SandboxTimeZone::named(&key)
-        .map_err(|_| SimpleException::new_msg(ExcType::KeyError, format!("No time zone found with key {key}")))?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::ZoneInfo(ZoneInfo { key, zone }))))
 }
 
-/// `ZoneInfo.clear_cache(*, only_keys=None)`: a no-op, since there is no cache,
-/// but `only_keys` is still iterated so a non-iterable raises as in CPython.
+/// CPython's `ZoneInfo` key checks, in its order, each a `ValueError`.
+fn check_key(key: &str) -> RunResult<()> {
+    let problem = if key.starts_with('/') {
+        Some("may not be absolute paths")
+    } else if key.split('/').any(|part| part == "..") {
+        Some("must refer to subdirectories of TZPATH")
+    } else if key.split('/').any(|part| matches!(part, "" | ".")) {
+        Some("must be normalized relative paths")
+    } else {
+        None
+    };
+    problem.map_or(Ok(()), |problem| {
+        Err(ExcType::value_error(format!("ZoneInfo keys {problem}, got: {key}")))
+    })
+}
+
+/// `ZoneInfo.clear_cache(*, only_keys=None)`: there is no instance cache, so
+/// `only_keys` is accepted and released unread (CPython iterates it).
 pub(crate) fn class_clear_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ClearCacheArgs { only_keys } = ClearCacheArgs::from_args(args, vm)?;
-    defer_drop!(only_keys, vm);
-    if !matches!(*only_keys, Value::None) {
-        let iter = only_keys
-            .clone_with_heap(vm)
-            .into_py_iter(vm)?
-            .require_synchronous(vm)?;
-        defer_drop!(iter, vm);
-        let mut iter = iter.read(vm);
-        while let Some(key) = iter.py_next(vm)? {
-            key.drop_with(vm);
-        }
-    }
+    only_keys.drop_with(vm);
     Ok(Value::None)
 }
 
@@ -171,10 +163,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ZoneInfo> {
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let Some(HeapReadOutput::ZoneInfo(other)) = other.read_heap(vm) else {
-            return Ok(None);
-        };
-        Ok(Some(self.get(vm.heap).key == other.get(vm.heap).key))
+        Ok(match other.read_heap(vm) {
+            Some(HeapReadOutput::ZoneInfo(other)) => Some(self.get(vm.heap).key == other.get(vm.heap).key),
+            _ => None,
+        })
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
@@ -212,41 +204,47 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ZoneInfo> {
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let zone = self.get(vm.heap).zone.clone();
-        let value = match attr.static_string(vm.interns) {
+        match attr.static_string(vm.interns) {
             Some(method @ (StaticStrings::Utcoffset | StaticStrings::Tzname | StaticStrings::Dst)) => {
                 let dt = dt_argument(method, args, vm)?;
                 defer_drop!(dt, vm);
-                let Some(wall) = wall_clock_arg(dt, vm)? else {
-                    return Ok(CallResult::Value(Value::None));
-                };
-                let offset = resolve_local(&zone, wall)?;
-                match method {
-                    StaticStrings::Utcoffset => timezone::utcoffset_value(Some(offset.offset_seconds), vm.heap),
-                    StaticStrings::Tzname => allocate_string(
-                        timezone::tzname_string(offset.offset_seconds, offset.name.as_deref()),
-                        vm.heap,
-                    ),
-                    _ => timezone::utcoffset_value(zone.dst_seconds_for_local(wall), vm.heap),
+                match wall_clock_arg(dt, vm)? {
+                    // `utcoffset(None)` and friends answer `None`, as CPython does.
+                    None => Ok(Value::None),
+                    Some(wall) => {
+                        let offset = resolve_local(&zone, wall)?;
+                        Ok(match method {
+                            StaticStrings::Utcoffset => timezone::utcoffset_value(Some(offset.offset_seconds), vm.heap),
+                            StaticStrings::Tzname => allocate_string(
+                                timezone::tzname_string(offset.offset_seconds, offset.name.as_deref()),
+                                vm.heap,
+                            ),
+                            _ => timezone::utcoffset_value(zone.dst_seconds_for_local(wall), vm.heap),
+                        })
+                    }
                 }
             }
             Some(StaticStrings::Fromutc) => {
                 let dt = args.get_one_arg("fromutc", vm.heap)?;
                 defer_drop!(dt, vm);
-                let Some(HeapReadOutput::DateTime(datetime)) = dt.read_heap(vm) else {
-                    return Err(ExcType::type_error("fromutc: argument must be a datetime"));
-                };
-                let (utc, tzinfo_ref) = {
-                    let datetime = datetime.get(vm.heap);
-                    (datetime.naive(), datetime.tzinfo_ref())
-                };
-                if tzinfo_ref != Some(self.id()) {
-                    return Err(ExcType::value_error("fromutc: dt.tzinfo is not self"));
+                match dt.read_heap(vm) {
+                    Some(HeapReadOutput::DateTime(datetime)) => {
+                        let (utc, tzinfo_ref) = {
+                            let datetime = datetime.get(vm.heap);
+                            (datetime.naive(), datetime.tzinfo_ref())
+                        };
+                        if tzinfo_ref == Some(self.id()) {
+                            datetime::allocate_in_zone(utc, &zone, self.id(), vm.heap)
+                        } else {
+                            Err(ExcType::value_error("fromutc: dt.tzinfo is not self"))
+                        }
+                    }
+                    _ => Err(ExcType::type_error("fromutc: argument must be a datetime")),
                 }
-                datetime::allocate_in_zone(utc, &zone, self.id(), vm.heap)?
             }
-            _ => return Err(ExcType::attribute_error_method(Type::ZoneInfo, attr, args, vm)),
-        };
-        Ok(CallResult::Value(value))
+            _ => Err(ExcType::attribute_error_method(Type::ZoneInfo, attr, args, vm)),
+        }
+        .map(CallResult::Value)
     }
 }
 

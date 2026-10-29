@@ -189,11 +189,12 @@ pub(crate) fn allocate(
     let tz = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
     // A bare time has no date to resolve a named zone against, so only fixed offsets attach.
     if matches!(tz, TzInfoArg::Zone(..)) {
-        return Err(ExcType::type_error(
+        Err(ExcType::type_error(
             "time() tzinfo must be a datetime.timezone, not zoneinfo.ZoneInfo: a time has no date to resolve the zone",
-        ));
+        ))
+    } else {
+        Ok(allocate_with_tz(vm, time, tz.heap_id()))
     }
-    Ok(allocate_with_tz(vm, time, tz.heap_id()))
 }
 
 /// Attaches an already-resolved timezone to a validated `Time` and allocates it.

@@ -207,11 +207,3 @@ assert len({_first, _second, datetime(2024, 10, 27, 1, 30, tzinfo=_london)}) == 
 assert datetime(2024, 3, 31, 1, 30, tzinfo=_london).dst() == timedelta(0)
 assert _london.dst(datetime(2024, 3, 31, 1, 30)) == timedelta(0)
 assert datetime(2024, 3, 31, 2, 30, tzinfo=_london).dst() == timedelta(hours=1)
-
-# === clear_cache reads only_keys ===
-assert ZoneInfo.clear_cache(only_keys=['Europe/London']) is None
-try:
-    ZoneInfo.clear_cache(only_keys=1)
-    assert False, 'expected TypeError'
-except TypeError as e:
-    assert str(e) == "'int' object is not iterable"

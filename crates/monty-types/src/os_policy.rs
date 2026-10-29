@@ -168,14 +168,15 @@ impl SandboxTimeZone {
         let utc = local.checked_sub_signed(TimeDelta::seconds(i64::from(offset)))?;
         let info = self.at(utc);
         if info.offset_seconds == offset {
-            return Some(info);
+            Some(info)
+        } else {
+            // A gap: step back past the transition for the period the offset belongs to.
+            let shifted = utc.checked_sub_signed(TimeDelta::seconds(i64::from(info.offset_seconds - offset)))?;
+            Some(MontyTimeZone {
+                offset_seconds: offset,
+                name: self.at(shifted).name,
+            })
         }
-        // A gap: step back past the transition for the period the offset belongs to.
-        let shifted = utc.checked_sub_signed(TimeDelta::seconds(i64::from(info.offset_seconds - offset)))?;
-        Some(MontyTimeZone {
-            offset_seconds: offset,
-            name: self.at(shifted).name,
-        })
     }
 
     /// The UTC instant a naive wall-clock time in this zone denotes, or `None`
@@ -195,13 +196,14 @@ impl SandboxTimeZone {
             Self::Fixed { .. } => None,
             Self::Named(zone) => {
                 let info = zone.zone.to_offset_info(timestamp(utc));
-                if !info.dst().is_dst() {
-                    return Some(0);
+                if info.dst().is_dst() {
+                    let standard = self
+                        .constants(Some(utc.year()))
+                        .map_or(info.offset().seconds(), |c| c.standard.offset_seconds);
+                    Some(info.offset().seconds() - standard)
+                } else {
+                    Some(0)
                 }
-                let standard = self
-                    .constants(Some(utc.year()))
-                    .map_or(info.offset().seconds(), |c| c.standard.offset_seconds);
-                Some(info.offset().seconds() - standard)
             }
         }
     }
