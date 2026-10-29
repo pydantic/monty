@@ -69,10 +69,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: FnmatchFunctions, args: ArgValues)
         }
         FnmatchFunctions::Filter => {
             let FilterArgs { names, pat } = FilterArgs::from_args(args, vm)?;
-            defer_drop!(pat, vm);
-            // Binds before iterating `names`, so a bad pattern wins over a bad iterable.
-            let pat = Text::from_path_like(pat, vm)?;
-            filter(names, &pat, vm)
+            filter(names, pat, vm)
         }
         FnmatchFunctions::Translate => {
             let TranslateArgs { pat } = TranslateArgs::from_args(args, vm)?;
@@ -115,7 +112,15 @@ struct TranslateArgs {
 }
 
 /// `filter(names, pat)`: the members of `names` that match, in order and unchanged.
-fn filter(names: Value, pat: &Text, vm: &mut VM<'_>) -> RunResult<Value> {
+fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    // `names` is only consumed once the pattern binds, so a bad pattern wins over a bad iterable.
+    let mut names_guard = DropGuard::new(names, vm);
+    let (_, vm) = names_guard.as_parts_mut();
+    let pat = {
+        defer_drop!(pat, vm);
+        Text::from_path_like(pat, vm)?
+    };
+    let (names, vm) = names_guard.into_parts();
     let tokens = compile(&pat.chars);
     let iter = names.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
@@ -127,7 +132,7 @@ fn filter(names: Value, pat: &Text, vm: &mut VM<'_>) -> RunResult<Value> {
         let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let name = Text::from_subject(item, vm)?;
-        if matches(&tokens, &pattern_subject(&name, pat)?.chars) {
+        if matches(&tokens, &pattern_subject(&name, &pat)?.chars) {
             out.push(item_guard.into_inner());
         }
     }
