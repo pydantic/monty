@@ -542,10 +542,26 @@ class MontyDisconnectError(MontyError):
     the server may have dropped the session by policy — an idle, session, or
     turn timeout, or being over capacity. A client that only sees the
     connection go away cannot tell those apart, so this error claims no more
-    than that. Retry on a fresh session.
+    than that. The request may have run; do not replay it automatically.
 
     Cannot be constructed directly from Python.
     """
+
+    @property
+    def stage(self) -> str | None:
+        """`send` or `receive` for the first recorded failure, or `None` if unavailable."""
+
+    @property
+    def close_code(self) -> int | None:
+        """The recorded peer Close code, or `None` if unavailable."""
+
+    @property
+    def close_reason(self) -> str | None:
+        """The recorded peer Close reason, or `None` if unavailable."""
+
+    @property
+    def transport_error(self) -> str | None:
+        """The recorded transport or protocol error, or `None` for a peer Close frame."""
 
 @final
 class MontyShutdown(MontyError):

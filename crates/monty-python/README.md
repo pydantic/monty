@@ -38,6 +38,10 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`MontyDisconnectError` exposes `stage`, `close_code`, `close_reason`, and `transport_error` when available.
+These fields preserve transport evidence, not proof that the request did or did not run.
+The client does not automatically replay a disconnected request.
+
 ## Host decode budget
 
 `AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.

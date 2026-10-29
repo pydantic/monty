@@ -22,7 +22,7 @@ use std::{
     env,
     path::PathBuf,
     process::{ExitStatus, Stdio},
-    sync::Once,
+    sync::{Arc, Once, OnceLock},
     time::Duration,
 };
 
@@ -56,7 +56,7 @@ use tokio_tungstenite::{
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
-use crate::{MontyTransport, PoolConfig, PoolError};
+use crate::{MontyTransport, PoolConfig, PoolError, WebSocketDisconnect};
 
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -109,6 +109,8 @@ struct WebSocketWorker {
     sink: Option<SplitSink<WsStream, Message>>,
     /// Binary frames (or the terminal error) forwarded by the reader task.
     events: mpsc::Receiver<Result<Bytes, FrameError>>,
+    /// The first failure, retained independently of queued protocol events.
+    disconnect: Arc<OnceLock<WebSocketDisconnect>>,
     /// The task owning the read half; aborted on teardown/drop.
     reader: JoinHandle<()>,
 }
@@ -275,13 +277,15 @@ impl Worker {
         // split so a background task can poll (and thereby pong) the read half
         let (sink, read_half) = stream.split();
         let (tx, events) = mpsc::channel(WS_EVENT_CHANNEL_DEPTH);
-        let reader = tokio::spawn(read_ws_events(read_half, tx));
+        let disconnect = Arc::new(OnceLock::new());
+        let reader = tokio::spawn(read_ws_events(read_half, tx, Arc::clone(&disconnect)));
         Ok(Self {
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             id: 0,
             kind: WorkerKind::WebSocket(Box::new(WebSocketWorker {
                 sink: Some(sink),
                 events,
+                disconnect,
                 reader,
             })),
             checkouts_served: 0,
@@ -324,11 +328,13 @@ impl Worker {
                 let body = encode_to_capped_vec(request)?;
                 let len = body.len();
                 match &mut w.sink {
-                    Some(sink) => sink
-                        .send(Message::Binary(body.into()))
-                        .await
-                        .map(|()| len)
-                        .map_err(ws_to_frame_error),
+                    Some(sink) => match sink.send(Message::Binary(body.into())).await {
+                        Ok(()) => Ok(len),
+                        Err(err) => {
+                            let _ = w.disconnect.set(websocket_error("send", &err));
+                            Err(ws_to_frame_error(err))
+                        }
+                    },
                     None => Err(FrameError::Truncated),
                 }
             }
@@ -352,6 +358,14 @@ impl Worker {
             }
         }
         result.map(drop)
+    }
+
+    /// Copies the first recorded failure before teardown can add a local Close.
+    pub(crate) fn websocket_disconnect(&self) -> Option<Box<WebSocketDisconnect>> {
+        match &self.kind {
+            WorkerKind::WebSocket(worker) => worker.disconnect.get().cloned().map(Box::new),
+            WorkerKind::Subprocess(_) => None,
+        }
     }
 
     /// Attaches the host's trace context, if it captured one, before this
@@ -618,7 +632,11 @@ const WS_EVENT_CHANNEL_DEPTH: usize = 1;
 ///
 /// Reserving the slot before polling keeps the reader polling (and ponging)
 /// rather than blocked holding a frame.
-async fn read_ws_events(mut read_half: SplitStream<WsStream>, events: mpsc::Sender<Result<Bytes, FrameError>>) {
+async fn read_ws_events(
+    mut read_half: SplitStream<WsStream>,
+    events: mpsc::Sender<Result<Bytes, FrameError>>,
+    disconnect: Arc<OnceLock<WebSocketDisconnect>>,
+) {
     // an Err from reserve means the receiver dropped: the worker is gone
     while let Ok(permit) = events.reserve().await {
         let result = loop {
@@ -627,12 +645,30 @@ async fn read_ws_events(mut read_half: SplitStream<WsStream>, events: mpsc::Send
                 // polling is itself what pongs: tungstenite queues the pong on
                 // read and flushes it during read polling
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                // a clean close, or text/raw frames the protocol never uses
-                Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
+                Some(Ok(Message::Close(frame))) => {
+                    let _ = disconnect.set(WebSocketDisconnect {
+                        stage: "receive",
+                        close_code: frame.as_ref().map(|frame| frame.code.into()),
+                        close_reason: frame.map(|frame| frame.reason.to_string()),
+                        transport_error: None,
+                    });
                     break Err(FrameError::Truncated);
                 }
-                Some(Err(WsError::Io(err))) => break Err(FrameError::Io(err)),
-                Some(Err(_)) => break Err(FrameError::Truncated),
+                Some(Ok(Message::Text(_) | Message::Frame(_))) => {
+                    let _ = disconnect.set(websocket_failure("receive", "unexpected non-binary WebSocket message"));
+                    break Err(FrameError::Truncated);
+                }
+                None => {
+                    let _ = disconnect.set(websocket_failure(
+                        "receive",
+                        "WebSocket stream ended without a Close frame",
+                    ));
+                    break Err(FrameError::Truncated);
+                }
+                Some(Err(err)) => {
+                    let _ = disconnect.set(websocket_error("receive", &err));
+                    break Err(ws_to_frame_error(err));
+                }
             }
         };
         // any error is terminal: deliver it and exit
@@ -644,7 +680,22 @@ async fn read_ws_events(mut read_half: SplitStream<WsStream>, events: mpsc::Send
     }
 }
 
-/// Maps a tungstenite error from a *send* onto a `FrameError`.
+/// Retains the transport error without adding the dial URL or headers.
+fn websocket_error(stage: &'static str, err: &WsError) -> WebSocketDisconnect {
+    websocket_failure(stage, err.to_string())
+}
+
+/// Describes a transport failure for which no peer Close frame is available.
+fn websocket_failure(stage: &'static str, message: impl Into<String>) -> WebSocketDisconnect {
+    WebSocketDisconnect {
+        stage,
+        close_code: None,
+        close_reason: None,
+        transport_error: Some(message.into()),
+    }
+}
+
+/// Preserves I/O errors and classifies other WebSocket failures as a lost connection.
 fn ws_to_frame_error(err: WsError) -> FrameError {
     match err {
         WsError::Io(err) => FrameError::Io(err),

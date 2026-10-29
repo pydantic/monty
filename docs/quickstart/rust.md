@@ -367,3 +367,8 @@ assert_eq!(result, MontyObject::int(42));
 - [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup)
     identify the host receiver for routed calls and lookups, including class construction via `__call__`.
     Plain calls and lookups carry `None`.
+
+## Remote disconnects
+
+`PoolError::Disconnected` retains optional `websocket` details with the observed I/O stage, peer Close code and reason, or transport error.
+The peer reason is unverified text, and a disconnect does not establish whether the request ran.

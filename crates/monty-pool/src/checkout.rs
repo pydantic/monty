@@ -2054,11 +2054,13 @@ impl Checkout {
         // and only a wedged-alive one pays for it, on an already-failed turn.
         // A deadline expiry never lands here (see `poison_timeout`), so nothing
         // is waiting on this grace that should have been killed outright.
+        let websocket_details = worker.websocket_disconnect();
         let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
         drop(worker);
         if websocket {
             PoolError::Disconnected {
                 context: context.to_owned(),
+                websocket: websocket_details,
             }
         } else if status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE) {
             // the worker is gone, unlike every other `Runtime` error — the
