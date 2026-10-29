@@ -2748,15 +2748,14 @@ impl ExceptionRaise {
     /// is raised from a namespace lookup - the initial frame has the position but not
     /// the function name, which gets filled in as the error propagates.
     ///
-    /// `hide_caret` omits the frame's carets, as CPython does under an `import`
-    /// whose module body raised.
+    /// `hide_caret` omits the added frame's carets, as CPython does under an
+    /// `import` whose module body raised; a nameless frame keeps its own.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // If innermost frame has no name, set it instead of adding a parent
             // This handles errors from namespace lookups which create nameless frames
             if frame.frame_name.is_none() {
                 frame.frame_name = Some(name);
-                frame.hide_caret = hide_caret;
                 return;
             }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent

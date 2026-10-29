@@ -146,7 +146,10 @@ The host reads each candidate itself, as a `Path.read_text` call to the `os` cal
 the callback declines it, so the whole search costs one round trip; each module that imports successfully runs once per
 session.
 This is the reverse of `open()`, where mounts go first: the callback can serve a module without mounting a directory,
-and shadow or refuse a mounted file before it runs as code.
+and shadow a mounted file before it runs as code.
+To refuse one, raise `FileNotFoundError`, which skips that file even when a mount holds it, or any error other than
+the not-found kinds listed in [`limitations/modules.md`](limitations/modules.md#modules-from-files), which fails the
+import.
 Only a name `external_modules` lacks is searched for: a factory exception is the import's error, and no file is read:
 
 === "Python"
@@ -283,7 +286,10 @@ Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][p
 `external_modules` and never reach this handler.
 An import of a module the checkout does not provide reaches it first, before the mounts, as `Path.read_text` of
 `<cwd>/name/__init__.py` and `<cwd>/name.py` (see [importing modules](#importing-modules)): return the source of a
-file you serve, and answer one you do not with `NOT_HANDLED` (the mounts are read next) or `FileNotFoundError`.
+file you serve, and answer one you do not with `NOT_HANDLED`, so the mounts are read next.
+A `FileNotFoundError` (or `PermissionError`, `NotADirectoryError`, `IsADirectoryError`) skips that file without
+consulting the mounts, so a handler that raises it for every path it does not serve hides every mounted module;
+any other error fails the import.
 It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
 Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 
