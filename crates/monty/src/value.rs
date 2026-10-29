@@ -1982,7 +1982,7 @@ impl EitherStr {
     pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
             Self::Interned(id) => interns.static_string(*id),
-            Self::Heap(value) => StaticStrings::from_str(value).ok(),
+            Self::Heap(value) => heap_static_string(value),
         }
     }
 
@@ -1996,6 +1996,16 @@ impl EitherStr {
             Self::Heap(s) => s,
         }
     }
+}
+
+/// Classifies a runtime-built attribute name, the rare arm of [`EitherStr::static_string`].
+///
+/// Kept out of line and cold so the `StaticStrings` PHF hash is never inlined into the hot
+/// attribute dispatchers that inline `static_string`.
+#[cold]
+#[inline(never)]
+fn heap_static_string(value: &str) -> Option<StaticStrings> {
+    StaticStrings::from_str(value).ok()
 }
 
 /// Marker values for special objects that exist but have minimal functionality.

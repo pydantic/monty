@@ -704,17 +704,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {
-            do_list_sort(self, args, vm)?;
-            return Ok(CallResult::Value(Value::None));
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Sort) => {
+                do_list_sort(self, args, vm)?;
+                Ok(CallResult::Value(Value::None))
+            }
+            Some(method) => call_list_method(self, method, args, vm).map(CallResult::Value),
+            None => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)))
+            }
         }
-
-        let Some(method) = attr.static_string(vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
-        };
-
-        call_list_method(self, method, args, vm).map(CallResult::Value)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
