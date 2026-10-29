@@ -398,8 +398,10 @@ The bindings answer two [OS calls](snapshots.md#the-snapshot-kinds) from `extern
     package's `__path__` for one of its submodules.
     When `external_modules` lacks the module, the bindings search each directory on that path for `<name>/__init__.py`,
     then `<name>.py` (see [importing modules](filesystem.md#importing-modules)), and answer `module_file` with the
-    first found, which the sandbox runs as sandbox code, or `not_found`, which raises `ModuleNotFoundError`.
-    A factory exception or a read error other than a missing file is raised at the import, and nothing else is tried.
+    first found, which the sandbox runs as sandbox code, or `not_found`, which raises the statement's miss error:
+    `ModuleNotFoundError`, or `ImportError` for `from pkg import sub`.
+    A read raising `FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` or `PermissionError` moves on to the
+    next candidate; a factory exception or any other read error is raised at the import, and nothing else is tried.
     A host module's submodules are its attributes and are never requested.
 - `import_stubs` requests stubs for imported host modules the session has not asked about, once before type checking.
     Return a dict of dotted paths to `.pyi` sources, including submodules, with `None` for missing stubs.

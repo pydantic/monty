@@ -12,7 +12,6 @@ use crate::{
     object::CallArgs,
     results::ExtFunctionResult,
     type_checking::is_identifier,
-    virtual_path::normalize_virtual_path,
 };
 
 /// The arguments of an `import` call: the module and where its file may be.
@@ -62,10 +61,11 @@ impl ImportArgs {
     /// per directory, the package `name/__init__.py` before the module `name.py`.
     ///
     /// The call comes from an untrusted sandbox, so a name with a component
-    /// that is not an identifier has no candidates, a directory that is not
-    /// absolute or holds a NUL byte is skipped, and the rest are normalized, so
-    /// a handler checking a prefix never sees `..`. Paths are built one directory
-    /// at a time: a long name times many directories never sits in memory at once.
+    /// that is not an identifier has no candidates, and a directory that is not
+    /// absolute or holds a NUL byte is skipped. Paths are built one directory at
+    /// a time: a long name times many directories never sits in memory at once.
+    /// They are not normalized: mounts check them as sent, as for `open()`, and
+    /// an `os` handler receives them normalized through [`OsFunctionCall::to_args`](crate::OsFunctionCall::to_args).
     pub fn candidates(&self) -> impl Iterator<Item = String> + '_ {
         let valid = self.module.split('.').all(is_identifier);
         let leaf = self.module.rsplit('.').next().unwrap_or(&self.module);
@@ -73,8 +73,7 @@ impl ImportArgs {
             .iter()
             .filter(move |dir| valid && dir.starts_with('/') && !dir.contains('\0'))
             .flat_map(move |dir| {
-                let dir = normalize_virtual_path(dir);
-                let dir = dir.strip_suffix('/').unwrap_or(&dir);
+                let dir = dir.strip_suffix('/').unwrap_or(dir);
                 [format!("{dir}/{leaf}/__init__.py"), format!("{dir}/{leaf}.py")]
             })
     }

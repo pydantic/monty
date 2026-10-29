@@ -2,8 +2,8 @@
 //! search reads, and how each read is classified.
 
 use monty_types::{
-    ExcType, ExtFunctionResult, ImportArgs, ModuleFile, ModuleRead, MontyException, MontyObject, OsFunctionCall,
-    find_module_file,
+    ExcType, ExtFunctionResult, ImportArgs, ModuleFile, ModuleRead, MontyException, MontyObject, MontyPath,
+    OsFunctionCall, find_module_file,
 };
 
 fn args(module: &str, search_path: &[&str]) -> ImportArgs {
@@ -48,20 +48,22 @@ fn candidates_reject_untrusted_names_and_directories() {
     );
 }
 
-/// A sandbox-set `__path__` cannot hide `..` from a handler checking a path prefix.
+/// Candidates keep the directory as sent, so a mount checks its length and
+/// depth before collapsing `..`; an `os` handler sees them normalized.
 #[test]
-fn candidates_are_normalized() {
+fn candidates_keep_the_directory_as_sent() {
+    let search = args("secrets", &["/allowed/../private"]);
+    let candidates = search.candidates().collect::<Vec<_>>();
     assert_eq!(
-        args("secrets", &["/allowed/../private", "/a/./b//"])
-            .candidates()
-            .collect::<Vec<_>>(),
+        candidates,
         [
-            "/private/secrets/__init__.py",
-            "/private/secrets.py",
-            "/a/b/secrets/__init__.py",
-            "/a/b/secrets.py"
+            "/allowed/../private/secrets/__init__.py",
+            "/allowed/../private/secrets.py"
         ]
     );
+    let handler_args = OsFunctionCall::ReadText(MontyPath::new(candidates[1].clone())).to_args();
+    let path = handler_args.args().next().unwrap().to_owned();
+    assert_eq!(path, MontyObject::path("/private/secrets.py".to_owned()));
 }
 
 /// A long name across many directories is expanded one directory at a time,

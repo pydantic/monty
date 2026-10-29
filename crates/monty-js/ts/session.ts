@@ -721,7 +721,8 @@ class TurnAnswerer {
     if (this.os !== undefined) {
       let returned: unknown
       try {
-        returned = this.os(READ_TEXT_CALL, [path], kwargsToRecord([]))
+        // normalized as for any OS call, so a handler checking a prefix never sees `..`
+        returned = this.os(READ_TEXT_CALL, [normalizeVirtualPath(path)], kwargsToRecord([]))
         if (isThenable(returned)) {
           returned = await returned
         }
@@ -1637,9 +1638,9 @@ const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 
  * An import's candidate files, mirroring `ImportArgs::candidates` in
  * monty-types: per directory, the package `name/__init__.py` before the module
  * `name.py`. The call comes from an untrusted worker, so a name that is not
- * dotted identifiers, or a directory that is not absolute, yields nothing; the
- * rest are normalized, so a handler checking a prefix never sees `..`, and
- * built one at a time, so a long name times many directories never sits in memory.
+ * dotted identifiers, or a directory that is not absolute, yields nothing. The
+ * paths are built one at a time, so a long name times many directories never
+ * sits in memory, and kept as sent, so mounts check them before collapsing `..`.
  */
 function* importCandidates(name: string, searchPath: unknown): Generator<string> {
   if (!Array.isArray(searchPath) || !name.split('.').every((part) => IDENTIFIER.test(part))) {
@@ -1648,7 +1649,7 @@ function* importCandidates(name: string, searchPath: unknown): Generator<string>
   const leaf = name.slice(name.lastIndexOf('.') + 1)
   for (const dir of searchPath) {
     if (typeof dir === 'string' && dir.startsWith('/') && !dir.includes('\0')) {
-      const base = normalizeVirtualPath(dir).replace(/\/$/, '')
+      const base = dir.endsWith('/') ? dir.slice(0, -1) : dir
       yield `${base}/${leaf}/__init__.py`
       yield `${base}/${leaf}.py`
     }
