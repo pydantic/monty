@@ -2327,6 +2327,9 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         // Release the owned decimal context references (mirrors `for_each_child_id`).
         HeapData::DecimalSignalDict(dict) => dict.py_dec_ref_ids(stack),
         HeapData::DecimalContextManager(manager) => manager.py_dec_ref_ids(stack),
+        // Release the owned `__cause__` / `__context__` references. Exceptions stay
+        // out of `for_each_child_id`: a chain only ever reaches other exceptions.
+        HeapData::Exception(exc) => exc.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }
