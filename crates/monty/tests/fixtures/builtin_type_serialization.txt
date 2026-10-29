@@ -102,3 +102,7 @@ Decimal 102
 DecimalContext 103
 DecimalSignalDict 104
 DecimalContextManager 105
+IPv4Address 106
+IPv6Address 107
+IPv4Network 108
+IPv6Network 109

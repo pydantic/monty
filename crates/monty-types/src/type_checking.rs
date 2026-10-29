@@ -205,6 +205,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "functools",
     "gc",
     "hashlib",
+    "ipaddress",
     "itertools",
     "json",
     "math",

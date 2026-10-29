@@ -755,8 +755,8 @@ impl<'h> PyTrait<'h> for Value {
     }
 }
 
-/// Orders two heap values of the same kind: long ints, strings, bytes, sequences and
-/// temporal values; `Incomparable` for any other pair.
+/// Orders two heap values of the same kind: long ints, strings, bytes, sequences,
+/// temporal values, IP addresses and networks; `Incomparable` for any other pair.
 ///
 /// Separate from `py_cmp` so its read guards are released before the caller's
 /// `Decimal` fallback, which needs the heap mutably.
@@ -798,6 +798,8 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
             Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
         }
+        (HeapReadOutput::IpAddress(a), HeapReadOutput::IpAddress(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::IpNetwork(a), HeapReadOutput::IpNetwork(b)) => a.py_cmp(&b, vm),
         _ => Ok(CmpOrder::Incomparable),
     }
 }

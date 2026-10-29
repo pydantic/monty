@@ -31,6 +31,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `decimal`     | [decimal.md](decimal.md)         |
 | `functools`   | [functools.md](functools.md)     |
 | `hashlib`     | [hashlib.md](hashlib.md)         |
+| `ipaddress`   | [ipaddress.md](ipaddress.md)     |
 | `itertools`   | [itertools.md](itertools.md)     |
 | `json`        | [json.md](json.md)               |
 | `math`        | [math.md](math.md)               |

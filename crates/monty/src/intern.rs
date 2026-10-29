@@ -553,6 +553,15 @@ pub enum StaticStrings {
     Acosh,
     /// `set.add()` method.
     Add,
+    /// `address` parameter of the `ipaddress` constructors.
+    Address,
+    /// `address_exclude()` method of the `ipaddress` networks.
+    AddressExclude,
+    /// `ipaddress.AddressValueError`.
+    #[strum(serialize = "AddressValueError")]
+    AddressValueError,
+    /// `addresses` parameter of `ipaddress.collapse_addresses()`.
+    Addresses,
     /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "adobe")]
     Adobe,
@@ -695,6 +704,8 @@ pub enum StaticStrings {
     Blake2s,
     /// `block_size` attribute of a hash object.
     BlockSize,
+    /// `broadcast_address` property of the `ipaddress` networks.
+    BroadcastAddress,
     /// Kwarg name `buffering` — `open(buffering=...)`.
     Buffering,
     /// `sys.builtin_module_names` attribute.
@@ -768,6 +779,8 @@ pub enum StaticStrings {
     /// The class parameter of the decorator `@dataclass(...)` returns, which
     /// CPython spells `def wrap(cls)` and so accepts by keyword.
     Cls,
+    /// `ipaddress.collapse_addresses()` function.
+    CollapseAddresses,
     /// `gc.collect()` function.
     Collect,
     /// Module name for `import collections`.
@@ -789,10 +802,14 @@ pub enum StaticStrings {
     Commonprefix,
     /// `field(compare=...)`.
     Compare,
+    /// `compare_networks()` method of the `ipaddress` networks.
+    CompareNetworks,
     /// `re.compile()` function
     Compile,
     /// `itertools.compress()` function.
     Compress,
+    /// `compressed` property of the `ipaddress` classes.
+    Compressed,
     /// `complex.conjugate()` method.
     Conjugate,
     /// Kwarg name `context` — the `decimal` methods.
@@ -1126,6 +1143,8 @@ pub enum StaticStrings {
     Expanduser,
     /// `os.path.expandvars()` function.
     Expandvars,
+    /// `exploded` property of the `ipaddress` classes.
+    Exploded,
     /// `math.expm1()` function.
     Expm1,
     /// `DecimalTuple.exponent` field.
@@ -1184,6 +1203,8 @@ pub enum StaticStrings {
     Findall,
     /// `re.finditer()` / `pattern.finditer()` method
     Finditer,
+    /// `first` parameter of `ipaddress.summarize_address_range()`.
+    First,
     /// `pattern.flags`
     Flags,
     /// `sys.float_info` attribute.
@@ -1340,12 +1361,28 @@ pub enum StaticStrings {
     High,
     /// `CacheInfo.hits` field.
     Hits,
+    /// `hostmask` property of the `ipaddress` networks.
+    Hostmask,
+    /// `hosts()` method of the `ipaddress` networks.
+    Hosts,
     /// `datetime` / `time` `hour` attribute and constructor kwarg.
     Hour,
     /// `timedelta(hours=...)` constructor kwarg.
     Hours,
     /// `math.hypot()` function.
     Hypot,
+    /// The `ipaddress.IPv4Address` class.
+    #[strum(serialize = "IPv4Address")]
+    IPv4Address,
+    /// The `ipaddress.IPv4Network` class.
+    #[strum(serialize = "IPv4Network")]
+    IPv4Network,
+    /// The `ipaddress.IPv6Address` class.
+    #[strum(serialize = "IPv6Address")]
+    IPv6Address,
+    /// The `ipaddress.IPv6Network` class.
+    #[strum(serialize = "IPv6Network")]
+    IPv6Network,
     /// `decimal.IEEEContext()` function.
     #[strum(serialize = "IEEEContext")]
     IeeeContext,
@@ -1401,6 +1438,22 @@ pub enum StaticStrings {
     /// `decimal.InvalidOperation` signal.
     #[strum(serialize = "InvalidOperation")]
     InvalidOperation,
+    /// `ipaddress.ip_address()` function.
+    IpAddress,
+    /// `ipaddress.ip_network()` function.
+    IpNetwork,
+    /// Module name for `import ipaddress`.
+    Ipaddress,
+    /// `ipv4_mapped` property of `IPv6Address`.
+    Ipv4Mapped,
+    /// `ipaddress.IPV4LENGTH` constant.
+    #[strum(serialize = "IPV4LENGTH")]
+    Ipv4length,
+    /// `ipv6_mapped` property of `IPv4Address`.
+    Ipv6Mapped,
+    /// `ipaddress.IPV6LENGTH` constant.
+    #[strum(serialize = "IPV6LENGTH")]
+    Ipv6length,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `dataclasses.is_dataclass()` function.
@@ -1409,13 +1462,29 @@ pub enum StaticStrings {
     IsDir,
     /// `Path.is_file()` method — yields a host call.
     IsFile,
+    /// `is_global` property of the `ipaddress` classes.
+    IsGlobal,
     /// `DirEntry.is_junction()` method.
     IsJunction,
+    /// `is_link_local` property of the `ipaddress` classes.
+    IsLinkLocal,
+    /// `is_loopback` property of the `ipaddress` classes.
+    IsLoopback,
+    /// `is_multicast` property of the `ipaddress` classes.
+    IsMulticast,
     /// `unicodedata.is_normalized()` function.
     #[strum(serialize = "is_normalized")]
     IsNormalized,
+    /// `is_private` property of the `ipaddress` classes.
+    IsPrivate,
+    /// `is_reserved` property of the `ipaddress` classes.
+    IsReserved,
+    /// `is_site_local` property of the IPv6 `ipaddress` classes.
+    IsSiteLocal,
     /// `Path.is_symlink()` method — yields a host call.
     IsSymlink,
+    /// `is_unspecified` property of the `ipaddress` classes.
+    IsUnspecified,
     /// `os.path.isabs()` function.
     Isabs,
     /// `isalnum()` method, shared by `str` and `bytes`.
@@ -1523,6 +1592,8 @@ pub enum StaticStrings {
     KwOnly,
     /// `lambd` parameter of `random.expovariate()`.
     Lambd,
+    /// `last` parameter of `ipaddress.summarize_address_range()`.
+    Last,
     /// `last_node` parameter of `hashlib.blake2b()`.
     LastNode,
     /// `math.lcm()` function.
@@ -1646,6 +1717,8 @@ pub enum StaticStrings {
     /// `decimal.MAX_PREC` constant.
     #[strum(serialize = "MAX_PREC")]
     MaxPrec,
+    /// `max_prefixlen` property of the `ipaddress` classes.
+    MaxPrefixlen,
     /// `deque.maxlen` attribute (also a constructor keyword argument).
     Maxlen,
     /// `sys.maxsize` attribute.
@@ -1739,6 +1812,13 @@ pub enum StaticStrings {
     Namedtuple,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
+    /// `netmask` property of the `ipaddress` networks.
+    Netmask,
+    /// `ipaddress.NetmaskValueError`.
+    #[strum(serialize = "NetmaskValueError")]
+    NetmaskValueError,
+    /// `network_address` property of the `ipaddress` networks.
+    NetworkAddress,
     /// `typing.Never` marker.
     #[strum(serialize = "Never")]
     Never,
@@ -1746,6 +1826,8 @@ pub enum StaticStrings {
     New,
     /// `new_limit` parameter of `csv.field_size_limit()`.
     NewLimit,
+    /// `new_prefix` parameter of `subnets()` and `supernet()`.
+    NewPrefix,
     /// Kwarg name `newline` — `open(newline=...)`.
     Newline,
     /// `math.nextafter()` function.
@@ -1785,6 +1867,8 @@ pub enum StaticStrings {
     Now,
     /// Kwarg name `num` — `Context.create_decimal()`.
     Num,
+    /// `num_addresses` property of the `ipaddress` networks.
+    NumAddresses,
     /// Kwarg name `number` — `round(number=...)`.
     Number,
     /// Kwarg name `obj` — `json.dumps(obj=...)`.
@@ -1828,8 +1912,12 @@ pub enum StaticStrings {
     /// `decimal.Overflow` signal.
     #[strum(serialize = "Overflow")]
     Overflow,
+    /// `overlaps()` method of the `ipaddress` networks.
+    Overlaps,
     /// Kwarg name `override` — `Decimal.__format__()`.
     Override,
+    /// `packed` property of the `ipaddress` addresses.
+    Packed,
     /// `pad` parameter of `base64.b85encode()`.
     #[strum(serialize = "pad")]
     Pad,
@@ -1920,6 +2008,10 @@ pub enum StaticStrings {
     Prec,
     /// `sys.prefix` attribute.
     Prefix,
+    /// `prefixlen` property of the `ipaddress` networks.
+    Prefixlen,
+    /// `prefixlen_diff` parameter of `subnets()` and `supernet()`.
+    PrefixlenDiff,
     /// `time.process_time()` function.
     ProcessTime,
     /// `time.process_time_ns()` function.
@@ -2043,6 +2135,8 @@ pub enum StaticStrings {
     ReturnExceptions,
     /// `list.reverse()` method.
     Reverse,
+    /// `reverse_pointer` property of the `ipaddress` classes.
+    ReversePointer,
     /// `rfind()` method, shared by `str` and `bytes`.
     Rfind,
     /// `Path.rglob()` method — yields a host scan.
@@ -2113,6 +2207,8 @@ pub enum StaticStrings {
     Sample,
     /// `os.scandir()` function — yields a host scan.
     Scandir,
+    /// `scope_id` property of `IPv6Address`.
+    ScopeId,
     /// `re.search()` / `pattern.search()` method
     Search,
     /// `datetime` / `time` `second` attribute and constructor kwarg.
@@ -2192,6 +2288,8 @@ pub enum StaticStrings {
     Sin,
     /// `math.sinh()` function.
     Sinh,
+    /// `sixtofour` property of `IPv6Address`.
+    Sixtofour,
     /// `size` parameter of `os.urandom()`.
     Size,
     /// `skipinitialspace` dialect attribute and `csv` format parameter.
@@ -2295,6 +2393,10 @@ pub enum StaticStrings {
     StructTime,
     /// `re.sub()` / `pattern.sub()` method
     Sub,
+    /// `subnet_of()` method of the `ipaddress` networks.
+    SubnetOf,
+    /// `subnets()` method of the `ipaddress` networks.
+    Subnets,
     /// `decimal.Subnormal` signal.
     #[strum(serialize = "Subnormal")]
     Subnormal,
@@ -2304,8 +2406,14 @@ pub enum StaticStrings {
     Suffix,
     /// `Path.suffixes` property.
     Suffixes,
+    /// `ipaddress.summarize_address_range()` function.
+    SummarizeAddressRange,
     /// `math.sumprod()` function.
     Sumprod,
+    /// `supernet()` method of the `ipaddress` networks.
+    Supernet,
+    /// `supernet_of()` method of the `ipaddress` networks.
+    SupernetOf,
     /// `os.path.supports_unicode_filenames` constant name.
     SupportsUnicodeFilenames,
     /// `swapcase()` method, shared by `str` and `bytes`.
@@ -2345,6 +2453,8 @@ pub enum StaticStrings {
     TeeType,
     /// `file.tell()` method.
     Tell,
+    /// `teredo` property of `IPv6Address`.
+    Teredo,
     /// Kwarg name `third` — `Decimal.fma()`.
     Third,
     /// `time.thread_time()` function.
@@ -2506,6 +2616,10 @@ pub enum StaticStrings {
     /// `sys.flags.utf8_mode` field.
     #[strum(serialize = "utf8_mode")]
     Utf8Mode,
+    /// `ipaddress.v4_int_to_packed()` function.
+    V4IntToPacked,
+    /// `ipaddress.v6_int_to_packed()` function.
+    V6IntToPacked,
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
@@ -2535,8 +2649,14 @@ pub enum StaticStrings {
     Weibullvariate,
     /// `weights` parameter of `random.choices()`.
     Weights,
+    /// `with_hostmask` property of the `ipaddress` networks.
+    WithHostmask,
     /// `Path.with_name()` method, answered without host I/O.
     WithName,
+    /// `with_netmask` property of the `ipaddress` networks.
+    WithNetmask,
+    /// `with_prefixlen` property of the `ipaddress` networks.
+    WithPrefixlen,
     /// `Path.with_stem()` method, answered without host I/O.
     WithStem,
     /// `Path.with_suffix()` method, answered without host I/O.

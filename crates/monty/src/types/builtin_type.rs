@@ -208,6 +208,14 @@ pub(crate) enum BuiltinType {
     DecimalSignalDict,
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    #[strum(serialize = "ipaddress.IPv4Address")]
+    IPv4Address,
+    #[strum(serialize = "ipaddress.IPv6Address")]
+    IPv6Address,
+    #[strum(serialize = "ipaddress.IPv4Network")]
+    IPv4Network,
+    #[strum(serialize = "ipaddress.IPv6Network")]
+    IPv6Network,
 }
 
 impl From<BuiltinType> for Type {
@@ -318,6 +326,10 @@ impl From<BuiltinType> for Type {
             BuiltinType::DecimalContext => Self::DecimalContext,
             BuiltinType::DecimalSignalDict => Self::DecimalSignalDict,
             BuiltinType::DecimalContextManager => Self::DecimalContextManager,
+            BuiltinType::IPv4Address => Self::IPv4Address,
+            BuiltinType::IPv6Address => Self::IPv6Address,
+            BuiltinType::IPv4Network => Self::IPv4Network,
+            BuiltinType::IPv6Network => Self::IPv6Network,
         }
     }
 }
@@ -432,6 +444,10 @@ impl TryFrom<Type> for BuiltinType {
             Type::DecimalContext => Self::DecimalContext,
             Type::DecimalSignalDict => Self::DecimalSignalDict,
             Type::DecimalContextManager => Self::DecimalContextManager,
+            Type::IPv4Address => Self::IPv4Address,
+            Type::IPv6Address => Self::IPv6Address,
+            Type::IPv4Network => Self::IPv4Network,
+            Type::IPv6Network => Self::IPv6Network,
             Type::Instance(_) => return Err("user-defined classes use heap type objects"),
         })
     }

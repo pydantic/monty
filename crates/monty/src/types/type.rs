@@ -24,6 +24,7 @@ use crate::{
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
+        ipaddress,
         long_int::INT_MAX_STR_DIGITS,
         path,
         str::{StringRepr, allocate_string},
@@ -183,7 +184,8 @@ pub enum Type {
     /// The iterator `os.scandir()` returns.
     #[strum(serialize = "posix.ScandirIterator")]
     ScandirIterator,
-    /// The iterator `os.walk()` and `Path.walk()` return; CPython's is a generator.
+    /// The iterator `os.walk()`, `Path.walk()` and the `ipaddress` networks' `hosts()`,
+    /// `subnets()` and iteration return; CPython's is a generator.
     #[strum(serialize = "generator")]
     WalkGenerator,
     // Variants serialize by name into dumps: renaming one needs `#[serde(alias)]`.
@@ -342,6 +344,18 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `ipaddress.IPv4Address`.
+    #[strum(serialize = "ipaddress.IPv4Address")]
+    IPv4Address,
+    /// `ipaddress.IPv6Address`.
+    #[strum(serialize = "ipaddress.IPv6Address")]
+    IPv6Address,
+    /// `ipaddress.IPv4Network`.
+    #[strum(serialize = "ipaddress.IPv4Network")]
+    IPv4Network,
+    /// `ipaddress.IPv6Network`.
+    #[strum(serialize = "ipaddress.IPv6Network")]
+    IPv6Network,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -868,6 +882,10 @@ impl Type {
             Self::CsvDialect => csv::dialect_init(vm, args),
             Self::Decimal => decimal::py::init(vm, args),
             Self::DecimalContext => decimal::py_context::init(vm, args),
+            Self::IPv4Address => ipaddress::init_address(vm, args, false),
+            Self::IPv6Address => ipaddress::init_address(vm, args, true),
+            Self::IPv4Network => ipaddress::init_network(vm, args, false),
+            Self::IPv6Network => ipaddress::init_network(vm, args, true),
 
             // Primitive types - inline implementation
             Self::Int => int_init(vm, args),
