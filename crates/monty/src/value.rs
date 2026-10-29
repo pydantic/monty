@@ -755,8 +755,8 @@ impl<'h> PyTrait<'h> for Value {
     }
 }
 
-/// Orders two heap values of the same kind: long ints, strings, bytes, sequences and
-/// temporal values; `Incomparable` for any other pair.
+/// Orders two heap values of the same kind: long ints, strings, bytes, sequences,
+/// temporal values, IP addresses and networks; `Incomparable` for any other pair.
 ///
 /// Separate from `py_cmp` so its read guards are released before the caller's
 /// `Decimal` fallback, which needs the heap mutably.

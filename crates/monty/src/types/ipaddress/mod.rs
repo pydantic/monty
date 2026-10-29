@@ -10,7 +10,7 @@ pub(crate) mod parse;
 
 use std::{
     cmp::Ordering,
-    collections::hash_map::DefaultHasher,
+    collections::{HashMap, hash_map::DefaultHasher},
     fmt::{self, Display, Formatter, Write},
     hash::{Hash, Hasher},
 };
@@ -29,8 +29,8 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        CmpOrder, LazyHeapSet, List, LongInt, PyTrait, Type, bytes::allocate_bytes, str::allocate_string,
-        tuple::allocate_tuple,
+        CmpOrder, LazyHeapSet, List, LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::INT_MAX_STR_DIGITS,
+        str::allocate_string, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -231,6 +231,15 @@ pub(crate) fn collapse_addresses(addresses: &Value, vm: &mut VM<'_>) -> RunResul
             return Err(ExcType::attribute_error(item.py_type_name(vm), "_prefixlen"));
         }
     }
+    // CPython's merge orders the networks, so a version mix fails there.
+    if let (Some(network), Some(address)) = (nets.first(), ips.first())
+        && network.v6 != address.v6
+    {
+        return Err(not_same_version(
+            &IpNetwork::new(address.v6, address.bits(), parse::max_prefixlen(address.v6)).to_string(),
+            &network.to_string(),
+        ));
+    }
     // Adjacent addresses summarize into networks before the networks merge.
     ips.sort_by_key(IpAddress::bits);
     ips.dedup_by_key(|address| address.bits());
@@ -254,15 +263,18 @@ fn summarize(v6: bool, first: u128, last: u128) -> Vec<IpNetwork> {
     let mut networks = Vec::new();
     let mut current = first;
     while current <= last {
-        let span = last - current + 1;
+        // The whole 128-bit space has 2**128 addresses, one more than `u128` holds.
+        let span_bits = (last - current)
+            .checked_add(1)
+            .map_or(128, |span| 128 - span.leading_zeros() - 1);
         let righthand_zeros = if current == 0 {
             width
         } else {
             current.trailing_zeros().min(width)
         };
-        let nbits = righthand_zeros.min(128 - span.leading_zeros() - 1);
+        let nbits = righthand_zeros.min(span_bits);
         networks.push(IpNetwork::new(v6, current, width - nbits));
-        match current.checked_add(1u128 << nbits) {
+        match 1u128.checked_shl(nbits).and_then(|size| current.checked_add(size)) {
             Some(next) if next - 1 != parse::all_ones(v6) => current = next,
             _ => break,
         }
@@ -273,20 +285,23 @@ fn summarize(v6: bool, first: u128, last: u128) -> Vec<IpNetwork> {
 /// CPython's `_collapse_addresses_internal`: merge sibling networks into their
 /// supernet until none remain, then drop networks another one covers.
 fn collapse(mut to_merge: Vec<IpNetwork>) -> Vec<IpNetwork> {
-    let mut subnets: Vec<(IpNetwork, IpNetwork)> = Vec::new();
+    // Keyed by supernet, as CPython's dict is, so each network costs one lookup.
+    let mut subnets: HashMap<IpNetwork, IpNetwork> = HashMap::new();
     while let Some(net) = to_merge.pop() {
         let supernet = net.supernet_by(1);
-        match subnets.iter().position(|(key, _)| *key == supernet) {
-            None => subnets.push((supernet, net)),
-            Some(index) => {
-                if subnets[index].1 != net {
-                    subnets.remove(index);
+        match subnets.get(&supernet) {
+            None => {
+                subnets.insert(supernet, net);
+            }
+            Some(existing) => {
+                if *existing != net {
+                    subnets.remove(&supernet);
                     to_merge.push(supernet);
                 }
             }
         }
     }
-    let mut merged: Vec<IpNetwork> = subnets.into_iter().map(|(_, net)| net).collect();
+    let mut merged: Vec<IpNetwork> = subnets.into_values().collect();
     merged.sort();
     let mut result: Vec<IpNetwork> = Vec::new();
     for net in merged {
@@ -343,10 +358,20 @@ macro_rules! network_arguments {
 network_arguments!(V4NetworkArgs, "IPv4Network.__init__");
 network_arguments!(V6NetworkArgs, "IPv6Network.__init__");
 
-/// Argument shape for `subnets(prefixlen_diff=1, new_prefix=None)` and `supernet(...)`.
+/// Argument shape for `subnets(prefixlen_diff=1, new_prefix=None)`.
 #[derive(FromArgs)]
 #[from_args(name = "subnets", style = def)]
-struct PrefixArgs {
+struct SubnetsArgs {
+    #[from_args(default = Value::Int(1))]
+    prefixlen_diff: Value,
+    #[from_args(default = Value::None)]
+    new_prefix: Value,
+}
+
+/// Argument shape for `supernet(prefixlen_diff=1, new_prefix=None)`.
+#[derive(FromArgs)]
+#[from_args(name = "supernet", style = def)]
+struct SupernetArgs {
     #[from_args(default = Value::Int(1))]
     prefixlen_diff: Value,
     #[from_args(default = Value::None)]
@@ -374,6 +399,7 @@ impl IpAddress {
     /// anything else. `Err` is a parse failure; the outer `Err` an evaluation error.
     fn from_value(address: &Value, v6: bool, vm: &mut VM<'_>) -> RunResult<Result<Self, ParseError>> {
         if let Some(value) = value_to_bigint(address, vm) {
+            check_str_digits(&value)?;
             return Ok(Self::from_bigint(&value, v6));
         }
         if let PyValue::Bytes(bytes) = address.py_value(vm) {
@@ -778,6 +804,9 @@ impl IpNetwork {
                 let Some(first) = items.first() else {
                     return Err(ExcType::index_error("tuple index out of range"));
                 };
+                if items.len() > 2 {
+                    return Err(ExcType::unpack_size_error(2, items.len()));
+                }
                 let host = IpAddress::from_value(first, v6, vm)?;
                 let prefixlen = match items.get(1) {
                     Some(mask) => Self::prefixlen_from_value(mask, v6, vm)?,
@@ -819,6 +848,7 @@ impl IpNetwork {
     /// The prefix length of a mask given as an int or text.
     fn prefixlen_from_value(mask: &Value, v6: bool, vm: &mut VM<'_>) -> RunResult<Result<u32, ParseError>> {
         if let Some(value) = value_to_bigint(mask, vm) {
+            check_str_digits(&value)?;
             return Ok(match u32::try_from(&value) {
                 Ok(prefixlen) if prefixlen <= parse::max_prefixlen(v6) => Ok(prefixlen),
                 _ => Err(ParseError(format!("{value} is not a valid netmask"))),
@@ -1118,11 +1148,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, IpNetwork> {
                 network.hosts().allocate(vm)
             }
             Some(StaticStrings::Subnets) => {
-                let (prefixlen_diff, new_prefix) = prefix_arguments(args, vm)?;
+                let (prefixlen_diff, new_prefix) = prefix_arguments(args, false, vm)?;
                 network.subnets(prefixlen_diff, new_prefix)?.allocate(vm)
             }
             Some(StaticStrings::Supernet) => {
-                let (prefixlen_diff, new_prefix) = prefix_arguments(args, vm)?;
+                let (prefixlen_diff, new_prefix) = prefix_arguments(args, true, vm)?;
                 network.supernet(prefixlen_diff, new_prefix)?.allocate(vm)
             }
             Some(StaticStrings::Overlaps) => {
@@ -1236,6 +1266,7 @@ impl IpNetwork {
         if self.prefixlen == width {
             return Ok(IpIterator::networks(self.v6, self.network(), 1, self.prefixlen, 1));
         }
+        // `i128` keeps every `i64` argument from overflowing the sums below.
         let prefixlen_diff = match new_prefix {
             Some(new_prefix) => {
                 if new_prefix < i64::from(self.prefixlen) {
@@ -1244,15 +1275,15 @@ impl IpNetwork {
                 if prefixlen_diff != 1 {
                     return Err(ExcType::value_error("cannot set prefixlen_diff and new_prefix"));
                 }
-                new_prefix - i64::from(self.prefixlen)
+                i128::from(new_prefix) - i128::from(self.prefixlen)
             }
-            None => prefixlen_diff,
+            None => i128::from(prefixlen_diff),
         };
         if prefixlen_diff < 0 {
             return Err(ExcType::value_error("prefix length diff must be > 0"));
         }
-        let new_prefixlen = i64::from(self.prefixlen) + prefixlen_diff;
-        if new_prefixlen > i64::from(width) {
+        let new_prefixlen = i128::from(self.prefixlen) + prefixlen_diff;
+        if new_prefixlen > i128::from(width) {
             return Err(ExcType::value_error(format!(
                 "prefix length diff {new_prefixlen} is invalid for netblock {self}"
             )));
@@ -1261,7 +1292,8 @@ impl IpNetwork {
         let shift = u32::try_from(prefixlen_diff).expect("checked above");
         // `::/0` into host networks is 2**128 subnets: saturate, no iteration gets that far.
         let count = 1u128.checked_shl(shift).unwrap_or(u128::MAX);
-        let step = 1u128 << (width - new_prefixlen);
+        // A zero diff yields the network itself, so the step does not matter.
+        let step = 1u128.checked_shl(width - new_prefixlen).unwrap_or(u128::MAX);
         Ok(IpIterator::networks(
             self.v6,
             self.network(),
@@ -1276,6 +1308,7 @@ impl IpNetwork {
         if self.prefixlen == 0 {
             return Ok(self.clone());
         }
+        // `i128` keeps every `i64` argument from overflowing the differences below.
         let prefixlen_diff = match new_prefix {
             Some(new_prefix) => {
                 if new_prefix > i64::from(self.prefixlen) {
@@ -1284,27 +1317,38 @@ impl IpNetwork {
                 if prefixlen_diff != 1 {
                     return Err(ExcType::value_error("cannot set prefixlen_diff and new_prefix"));
                 }
-                i64::from(self.prefixlen) - new_prefix
+                i128::from(self.prefixlen) - i128::from(new_prefix)
             }
-            None => prefixlen_diff,
+            None => i128::from(prefixlen_diff),
         };
-        let new_prefixlen = i64::from(self.prefixlen) - prefixlen_diff;
+        let new_prefixlen = i128::from(self.prefixlen) - prefixlen_diff;
         if new_prefixlen < 0 {
             return Err(ExcType::value_error(format!(
                 "current prefixlen is {}, cannot have a prefixlen_diff of {prefixlen_diff}",
                 self.prefixlen
             )));
         }
-        Ok(self.supernet_by(u32::try_from(prefixlen_diff).expect("checked above")))
+        // CPython shifts the netmask by the diff, which a negative one rejects.
+        let prefixlen_diff = u32::try_from(prefixlen_diff).map_err(|_| ExcType::value_error("negative shift count"))?;
+        Ok(self.supernet_by(prefixlen_diff))
     }
 }
 
 /// Binds `(prefixlen_diff=1, new_prefix=None)` for `subnets` and `supernet`.
-fn prefix_arguments(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, Option<i64>)> {
-    let PrefixArgs {
-        prefixlen_diff,
-        new_prefix,
-    } = PrefixArgs::from_args(args, vm)?;
+fn prefix_arguments(args: ArgValues, supernet: bool, vm: &mut VM<'_>) -> RunResult<(i64, Option<i64>)> {
+    let (prefixlen_diff, new_prefix) = if supernet {
+        let SupernetArgs {
+            prefixlen_diff,
+            new_prefix,
+        } = SupernetArgs::from_args(args, vm)?;
+        (prefixlen_diff, new_prefix)
+    } else {
+        let SubnetsArgs {
+            prefixlen_diff,
+            new_prefix,
+        } = SubnetsArgs::from_args(args, vm)?;
+        (prefixlen_diff, new_prefix)
+    };
     defer_drop!(prefixlen_diff, vm);
     defer_drop!(new_prefix, vm);
     let prefixlen_diff = prefixlen_diff.as_int(vm)?;
@@ -1344,7 +1388,7 @@ impl IpIterator {
     }
 
     fn allocate(self, vm: &mut VM<'_>) -> Value {
-        Value::Ref(vm.heap.allocate(HeapData::IpIterator(self)))
+        Value::Ref(vm.heap.allocate(HeapData::IpIterator(Box::new(self))))
     }
 }
 
@@ -1389,6 +1433,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, IpIterator> {
 // ============================================================================
 // Shared helpers
 // ============================================================================
+
+/// Rejects an integer argument with more decimal digits than
+/// `sys.int_max_str_digits` allows: the range errors quote the integer in
+/// decimal, which fails this way in CPython, and rendering millions of digits
+/// here would be unbounded work. The bit count settles all but a sliver of values.
+fn check_str_digits(value: &BigInt) -> RunResult<()> {
+    // 10**4300 needs 14285 bits.
+    const LIMIT_BITS: u64 = 14_285;
+    let bits = value.bits();
+    if bits > LIMIT_BITS || (bits == LIMIT_BITS && value.magnitude().to_string().len() > INT_MAX_STR_DIGITS) {
+        Err(ExcType::value_error_int_too_large_for_str())
+    } else {
+        Ok(())
+    }
+}
 
 /// The version number as Python reports it.
 fn version(v6: bool) -> i64 {

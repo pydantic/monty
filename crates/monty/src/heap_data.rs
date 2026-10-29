@@ -189,7 +189,7 @@ macro_rules! heap_payloads {
             /// An `ipaddress.IPv4Network` or `IPv6Network`.
             IpNetwork(inline $crate::types::IpNetwork),
             /// The iterator behind `hosts()`, `subnets()` and iterating a network.
-            IpIterator(inline $crate::types::IpIterator),
+            IpIterator(boxed $crate::types::IpIterator),
         }
     };
 }

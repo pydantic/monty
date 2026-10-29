@@ -454,6 +454,37 @@ try:
 except ipaddress.NetmaskValueError as e:
     assert str(e) == "'33' is not a valid netmask"
 
+# prefix arithmetic stays in range for every argument
+assert list(ipaddress.IPv6Network('::/0').subnets(prefixlen_diff=0)) == [ipaddress.IPv6Network('::/0')]
+assert list(ipaddress.IPv6Network('::/0').subnets(new_prefix=0)) == [ipaddress.IPv6Network('::/0')]
+assert list(ipaddress.IPv4Network('10.0.0.0/24').subnets(0)) == [ipaddress.IPv4Network('10.0.0.0/24')]
+assert ipaddress.IPv4Network('10.0.0.0/24').supernet(0) == ipaddress.IPv4Network('10.0.0.0/24')
+_digits_msg = 'Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit'
+for _call, _msg in [
+    (lambda: ipaddress.IPv4Network('10.0.0.0/24').supernet(prefixlen_diff=-1), 'negative shift count'),
+    (
+        lambda: list(ipaddress.IPv4Network('10.0.0.0/24').subnets(2**62)),
+        'prefix length diff 4611686018427387928 is invalid for netblock 10.0.0.0/24',
+    ),
+    (
+        lambda: ipaddress.IPv4Network('10.0.0.0/24').supernet(prefixlen_diff=2**62),
+        'current prefixlen is 24, cannot have a prefixlen_diff of 4611686018427387904',
+    ),
+    (
+        lambda: ipaddress.IPv4Network('10.0.0.0/24').supernet(new_prefix=-(2**62)),
+        'current prefixlen is 24, cannot have a prefixlen_diff of 4611686018427387928',
+    ),
+    (lambda: ipaddress.IPv4Network(('10.0.0.0', 24, 5)), 'too many values to unpack (expected 2, got 3)'),
+    (lambda: ipaddress.IPv4Address(1 << 20000), _digits_msg),
+    (lambda: ipaddress.IPv6Address(-(1 << 20000)), _digits_msg),
+    (lambda: ipaddress.IPv4Network(('10.0.0.0', 1 << 20000)), _digits_msg),
+]:
+    try:
+        _call()
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == _msg
+
 # === module functions ===
 assert [str(x) for x in ipaddress.summarize_address_range(IPv4Address('192.0.2.0'), IPv4Address('192.0.2.130'))] == [
     '192.0.2.0/25',
@@ -532,3 +563,34 @@ for _call, _exc, _msg in [
         assert str(e) == _msg
 assert ip_network(address='1.2.3.0/24', strict=False) == IPv4Network('1.2.3.0/24')
 assert ip_address(address='1.2.3.4') == IPv4Address('1.2.3.4')
+
+# the whole address space summarizes to one network
+assert list(
+    ipaddress.summarize_address_range(ipaddress.IPv4Address('0.0.0.0'), ipaddress.IPv4Address('255.255.255.255'))
+) == [ipaddress.IPv4Network('0.0.0.0/0')]
+assert list(
+    ipaddress.summarize_address_range(
+        ipaddress.IPv6Address('::'), ipaddress.IPv6Address('ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff')
+    )
+) == [ipaddress.IPv6Network('::/0')]
+
+# mixed versions fail across addresses and networks
+for _items, _msg in [
+    (
+        [ipaddress.IPv4Network('0.0.0.0/0'), ipaddress.IPv6Address('::1')],
+        '::1/128 and 0.0.0.0/0 are not of the same version',
+    ),
+    (
+        [ipaddress.IPv4Address('1.1.1.1'), ipaddress.IPv6Network('::/64')],
+        '1.1.1.1/32 and ::/64 are not of the same version',
+    ),
+    (
+        [ipaddress.IPv6Network('::/64'), ipaddress.IPv4Address('1.1.1.1')],
+        '1.1.1.1/32 and ::/64 are not of the same version',
+    ),
+]:
+    try:
+        list(ipaddress.collapse_addresses(_items))
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == _msg
