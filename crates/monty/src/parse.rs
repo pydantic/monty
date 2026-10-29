@@ -2811,14 +2811,14 @@ impl ParseError {
     }
 
     /// Converts an imported file's compile error: the file is the innermost
-    /// traceback frame, as CPython reports an error that `import` meets.
+    /// traceback frame, under an `import` line shown without carets, as CPython does.
     pub(crate) fn into_file_run_error(self, path: &str, source: &str) -> RunError {
         let (exc_type, msg, frame) = self.into_parts(path, source);
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new_msg(exc_type, msg),
             frame: None,
             snippet_frame: Some(Box::new(frame)),
-            hide_caret: false,
+            hide_caret: true,
         })
     }
 

@@ -226,9 +226,8 @@ impl VM<'_> {
         Ok(())
     }
 
-    /// After a module body raises: forgets the module so the next import
-    /// retries the file, returning whether the frame was one. CPython shows
-    /// no carets under the `import` statement such an error unwinds through.
+    /// After a frame raises: forgets the module whose body it was, so the next
+    /// import retries the file. Returns whether the frame was a module body.
     pub(super) fn forget_failed_module(&mut self) -> bool {
         match self.file_module_on_stack() {
             Some((module, name)) => {

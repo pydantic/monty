@@ -438,6 +438,7 @@ impl VM<'_> {
             // Synchronous evaluation stops unwinding here, but its caller still
             // belongs in the traceback when the error crosses that boundary.
             let should_return = this.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
             let from_module_body = is_initializer && this.forget_failed_module();
 
             // Add caller frame info to traceback (if we have a call site).
@@ -470,6 +471,7 @@ impl VM<'_> {
 
             let is_initializer = self.current_frame().is_initializer;
             let should_return = self.pop_frame();
+            // CPython shows no carets under the `import` a module body's error unwinds through.
             let from_module_body = is_initializer && self.forget_failed_module();
 
             // Add caller frame info to traceback. Resolve the offset against the

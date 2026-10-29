@@ -142,8 +142,11 @@ The divergences are in [`limitations/os.md`](limitations/os.md).
 `import helpers` runs the package `helpers/__init__.py`, or else `helpers.py`, from the working directory when no
 [host module](host-functions.md#importing-host-modules) of that name exists, so a module file in a mount imports
 directly.
-The host reads each candidate itself, through the `os` callback first and the mounts when the callback declines it,
-so the whole search costs one round trip; each module that imports successfully runs once per session.
+The host reads each candidate itself, as a `Path.read_text` call to the `os` callback first and through the mounts when
+the callback declines it, so the whole search costs one round trip; each module that imports successfully runs once per
+session.
+This is the reverse of `open()`, where mounts go first: the callback can serve a module without mounting a directory,
+and shadow or refuse a mounted file before it runs as code.
 Only a name `external_modules` lacks is searched for: a factory exception is the import's error, and no file is read:
 
 === "Python"

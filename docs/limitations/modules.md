@@ -118,9 +118,8 @@ With no host or mount to answer, every unknown module raises `ModuleNotFoundErro
 
 An `import` the host has no module for runs the module's file, which the host finds on the search path the `import`
 call carries: `<dir>/name/__init__.py`, then `<dir>/name.py`, for each directory.
-The bindings read each candidate as a `Path.read_text` call to the `os` handler first, then through the feed's mounts
-when the handler declines it, the reverse of `open()`, where mounts go first: the handler can serve a module without
-mounting a directory, and shadow or refuse a mounted file before it runs as code.
+The bindings read each candidate through the `os` handler and the feed's mounts (see
+[importing modules](../filesystem.md#importing-modules)).
 `FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` and `PermissionError` (including the answer outside
 any mount) move on to the next file; any other error raises at the `import`.
 Differences from CPython:

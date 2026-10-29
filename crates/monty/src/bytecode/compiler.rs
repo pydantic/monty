@@ -4007,7 +4007,7 @@ impl CompileError {
             exc: SimpleException::new_msg(exc_type, msg),
             frame: None,
             snippet_frame: Some(Box::new(frame)),
-            hide_caret: false,
+            hide_caret: true,
         })
     }
 

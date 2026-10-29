@@ -275,6 +275,28 @@ fn an_error_in_a_module_shows_its_file_in_the_traceback() {
     "#);
 }
 
+/// Only the `import` a module body's error unwinds through loses its carets:
+/// the call that reached the import keeps them, as in CPython.
+#[test]
+fn an_import_inside_a_function_shows_its_caller() {
+    let files = &[("/proj/bad.py", "def f():\n    return 1 / 0\n\nf()\n")];
+    insta::assert_snapshot!(traceback("def g():\n    import bad\ng()", files), @r#"
+    Traceback (most recent call last):
+      File "<python-input-0>", line 3, in <module>
+        g()
+        ~~~
+      File "<python-input-0>", line 2, in g
+        import bad
+      File "/proj/bad.py", line 4, in <module>
+        f()
+        ~~~
+      File "/proj/bad.py", line 2, in f
+        return 1 / 0
+               ~~~~~
+    ZeroDivisionError: division by zero
+    "#);
+}
+
 #[test]
 fn a_syntax_error_in_a_module_names_its_file() {
     let files = &[("/proj/bad.py", "x = 1\nx = = 2\n")];
@@ -282,7 +304,6 @@ fn a_syntax_error_in_a_module_names_its_file() {
     Traceback (most recent call last):
       File "<python-input-0>", line 1, in <module>
         import bad
-        ~~~~~~~~~~
       File "/proj/bad.py", line 2
         x = = 2
             ~
