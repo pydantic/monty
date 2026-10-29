@@ -193,3 +193,25 @@ assert type(_zones).__name__ == 'set'
 assert 'Europe/London' in _zones
 assert 'UTC' in _zones
 assert len(_zones) > 300
+
+# === equal wall clocks of a repeated hour hash alike ===
+_first = datetime(2024, 10, 27, 0, 30, tzinfo=timezone.utc).astimezone(_london)
+_second = datetime(2024, 10, 27, 1, 30, tzinfo=timezone.utc).astimezone(_london)
+assert _first == _second
+assert hash(_first) == hash(_second)
+assert hash(_first) == hash(datetime(2024, 10, 27, 1, 30, tzinfo=_london))
+assert hash(_first) == hash(datetime(2024, 10, 27, 0, 30, tzinfo=timezone.utc))
+assert len({_first, _second, datetime(2024, 10, 27, 1, 30, tzinfo=_london)}) == 1
+
+# === a wall clock in a DST gap reports the saving of the period before it ===
+assert datetime(2024, 3, 31, 1, 30, tzinfo=_london).dst() == timedelta(0)
+assert _london.dst(datetime(2024, 3, 31, 1, 30)) == timedelta(0)
+assert datetime(2024, 3, 31, 2, 30, tzinfo=_london).dst() == timedelta(hours=1)
+
+# === clear_cache reads only_keys ===
+assert ZoneInfo.clear_cache(only_keys=['Europe/London']) is None
+try:
+    ZoneInfo.clear_cache(only_keys=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'int' object is not iterable"

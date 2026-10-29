@@ -206,6 +206,23 @@ impl SandboxTimeZone {
         }
     }
 
+    /// The daylight-saving offset of the period a naive wall-clock time reads in,
+    /// chosen as [`info_for_local`](Self::info_for_local) chooses it, so a time in
+    /// a DST gap reports the pre-transition period's saving. `None` for a fixed zone.
+    #[must_use]
+    pub fn dst_seconds_for_local(&self, local: NaiveDateTime) -> Option<i32> {
+        let offset = self.offset_for_local(local)?;
+        let utc = local.checked_sub_signed(TimeDelta::seconds(i64::from(offset)))?;
+        let at = self.at(utc);
+        // A gap: the instant lies after the transition, so step back into the period.
+        let instant = if at.offset_seconds == offset {
+            utc
+        } else {
+            utc.checked_sub_signed(TimeDelta::seconds(i64::from(at.offset_seconds - offset)))?
+        };
+        self.dst_seconds(instant)
+    }
+
     /// Every IANA name the tz database available to this build knows, for
     /// `zoneinfo.available_timezones()`.
     #[must_use]

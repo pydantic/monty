@@ -593,12 +593,14 @@ pub(crate) fn class_strptime(heap: &mut Heap, args: ArgValues, interns: &Interns
         timezone::check_offset_seconds(offset_seconds)?;
     }
 
-    let dt = DateTime {
+    let mut dt = DateTime {
         naive,
         offset_seconds,
         timezone_name: None,
         tzinfo_ref: None,
     };
+    // A parsed offset is a `timezone` object, so `replace()` and `tzinfo` see it.
+    attach_or_allocate_tzinfo_ref(&mut dt, None, heap);
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 
@@ -1376,8 +1378,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        let dt = self.get(vm.heap);
         let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
+        match zone_of(dt.tzinfo_ref, vm.heap) {
+            // CPython hashes the instant the wall clock denotes at `fold=0`, so both
+            // readings of a repeated hour hash alike, as they compare equal.
+            Some(zone) => {
+                let micros = zone
+                    .offset_for_local(dt.naive)
+                    .and_then(|offset| dt.naive.checked_sub_signed(ChronoTimeDelta::seconds(i64::from(offset))))
+                    .map(|utc| utc.and_utc().timestamp_micros());
+                let _ = micros.inspect(|micros| micros.hash(&mut hasher));
+            }
+            None => dt.hash(&mut hasher),
+        }
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
@@ -1564,9 +1578,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Dst) => {
                 args.check_zero_args("datetime.dst", vm.heap)?;
-                // A fixed offset never observes DST; a `ZoneInfo` reports its saving at this instant.
-                let dst = zone_of(dt.tzinfo_ref, vm.heap)
-                    .and_then(|zone| to_utc_naive(&dt).and_then(|utc| zone.dst_seconds(utc)));
+                // A fixed offset never observes DST; a `ZoneInfo` reports the saving of
+                // the period its wall clock reads in, as `utcoffset()` chose it.
+                let dst = zone_of(dt.tzinfo_ref, vm.heap).and_then(|zone| zone.dst_seconds_for_local(dt.naive));
                 Ok(CallResult::Value(timezone::utcoffset_value(dst, vm.heap)))
             }
             _ => Err(ExcType::attribute_error_method(Type::DateTime, attr, args, vm)),

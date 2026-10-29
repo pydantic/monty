@@ -13,16 +13,16 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use chrono::{NaiveDateTime, TimeDelta};
+use chrono::NaiveDateTime;
 use monty_types::{MontyTimeZone, SandboxTimeZone};
 
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropGuard, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, Set, Type, datetime,
@@ -87,19 +87,34 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::ZoneInfo(ZoneInfo { key, zone }))))
 }
 
-/// `ZoneInfo.clear_cache(*, only_keys=None)`: a no-op, since there is no cache.
+/// `ZoneInfo.clear_cache(*, only_keys=None)`: a no-op, since there is no cache,
+/// but `only_keys` is still iterated so a non-iterable raises as in CPython.
 pub(crate) fn class_clear_cache(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ClearCacheArgs { only_keys } = ClearCacheArgs::from_args(args, vm)?;
-    only_keys.drop_with(vm);
+    defer_drop!(only_keys, vm);
+    if !matches!(*only_keys, Value::None) {
+        let iter = only_keys
+            .clone_with_heap(vm)
+            .into_py_iter(vm)?
+            .require_synchronous(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
+        while let Some(key) = iter.py_next(vm)? {
+            key.drop_with(vm);
+        }
+    }
     Ok(Value::None)
 }
 
 /// `zoneinfo.available_timezones()`: the keys of the tz database, as a set.
 pub(crate) fn available_timezones(vm: &mut VM<'_>) -> RunResult<Value> {
-    let mut names = Set::new();
+    // Guarded so a resource error part-way releases the names already added.
+    let mut names_guard = DropGuard::new(Set::new(), vm);
+    let (names, vm) = names_guard.as_parts_mut();
     for name in SandboxTimeZone::available_names() {
         names.add(allocate_string(name, vm.heap), vm)?;
     }
+    let (names, vm) = names_guard.into_parts();
     Ok(Value::Ref(vm.heap.allocate(HeapData::Set(names))))
 }
 
@@ -124,16 +139,26 @@ struct ClearCacheArgs {
 fn dt_argument(method: StaticStrings, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let name: &'static str = method.into();
     let count = args.count();
-    let mut positional = args.into_pos_only(name, vm.heap)?;
-    let (Some(dt), None) = (positional.next(), positional.next()) else {
-        positional.drop_with(vm);
-        return Err(ExcType::type_error(if count == 0 {
-            format!("{name}() takes exactly 1 positional argument (0 given)")
-        } else {
-            format!("{name}() takes at most 1 argument ({count} given)")
-        }));
-    };
-    Ok(dt)
+    let positional = args.into_pos_only(name, vm.heap)?;
+    defer_drop_mut!(positional, vm);
+    let (first, second) = (positional.next(), positional.next());
+    match (first, second) {
+        (Some(dt), None) => Ok(dt),
+        (first, second) => {
+            // Both values were taken off the iterator, so the guard cannot release them.
+            if let Some(value) = first {
+                value.drop_with(vm);
+            }
+            if let Some(value) = second {
+                value.drop_with(vm);
+            }
+            Err(ExcType::type_error(if count == 0 {
+                format!("{name}() takes exactly 1 positional argument (0 given)")
+            } else {
+                format!("{name}() takes at most 1 argument ({count} given)")
+            }))
+        }
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ZoneInfo> {
@@ -194,14 +219,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ZoneInfo> {
                 let Some(wall) = wall_clock_arg(dt, vm)? else {
                     return Ok(CallResult::Value(Value::None));
                 };
-                let (offset, utc) = resolve_local(&zone, wall)?;
+                let offset = resolve_local(&zone, wall)?;
                 match method {
                     StaticStrings::Utcoffset => timezone::utcoffset_value(Some(offset.offset_seconds), vm.heap),
                     StaticStrings::Tzname => allocate_string(
                         timezone::tzname_string(offset.offset_seconds, offset.name.as_deref()),
                         vm.heap,
                     ),
-                    _ => timezone::utcoffset_value(zone.dst_seconds(utc), vm.heap),
+                    _ => timezone::utcoffset_value(zone.dst_seconds_for_local(wall), vm.heap),
                 }
             }
             Some(StaticStrings::Fromutc) => {
@@ -240,14 +265,10 @@ fn wall_clock_arg(dt: &Value, vm: &VM<'_>) -> RunResult<Option<NaiveDateTime>> {
     }
 }
 
-/// The offset in force for a wall-clock time in `zone` (its first occurrence in a
-/// fold, the pre-transition offset in a gap), with the UTC instant it denotes.
-fn resolve_local(zone: &SandboxTimeZone, wall: NaiveDateTime) -> RunResult<(MontyTimeZone, NaiveDateTime)> {
-    let info = zone.info_for_local(wall).ok_or_else(out_of_range)?;
-    let utc = wall
-        .checked_sub_signed(TimeDelta::seconds(i64::from(info.offset_seconds)))
-        .ok_or_else(out_of_range)?;
-    Ok((info, utc))
+/// The offset in force for a wall-clock time in `zone`: its first occurrence in a
+/// fold, the pre-transition offset in a gap.
+fn resolve_local(zone: &SandboxTimeZone, wall: NaiveDateTime) -> RunResult<MontyTimeZone> {
+    zone.info_for_local(wall).ok_or_else(out_of_range)
 }
 
 fn out_of_range() -> RunError {

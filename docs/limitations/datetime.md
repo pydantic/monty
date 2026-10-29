@@ -221,10 +221,10 @@ Methods: `utcoffset(dt)`, `tzname(dt)`, `dst(dt)`. The `dt` argument is
 validated and then ignored, since the offset is the same at every
 instant.
 
-`fromutc(dt)` is not implemented, and neither is the abstract `tzinfo`
-base class, so a `tzinfo` is either a `timezone` or a `zoneinfo.ZoneInfo`
-(see [zoneinfo.md](zoneinfo.md)). On `timezone`, `utcoffset()` is constant
-over time and `dst()` is always `None`.
+`timezone.fromutc(dt)` is not implemented (`ZoneInfo.fromutc()` is), and
+neither is the abstract `tzinfo` base class, so a `tzinfo` is either a
+`timezone` or a `zoneinfo.ZoneInfo` (see [zoneinfo.md](zoneinfo.md)). On
+`timezone`, `utcoffset()` is constant over time and `dst()` is always `None`.
 
 An offset is a whole number of seconds: `timezone(timedelta(seconds=1, microseconds=1))` raises
 `ValueError: offset must be a timedelta representing a whole number of seconds`, CPython's own message before 3.7,
