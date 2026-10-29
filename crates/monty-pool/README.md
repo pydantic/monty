@@ -218,7 +218,7 @@ input so adapters that do not support metrics continue to work.
 A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
 from a server policy drop.
 Its optional `websocket` details retain the first recorded failure, including its I/O stage, peer Close code and reason, or transport error.
-A peer reason is unverified text and does not establish whether the request ran.
+The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 A draining server can instead return `PoolError::Shutdown`, naming what to load the session from when it could store
 it.
 The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
