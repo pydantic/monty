@@ -401,9 +401,10 @@ A refused connection rejects `checkout()`.
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Either can also reject `checkout()` itself, while the session is being created.
 `MontyDisconnectError` exposes read-only `stage`, `closeCode`, `closeReason`, and `transportError` properties.
+These properties are included in JSON serialization and object spreads.
 They retain the first recorded failure, with `null` for missing evidence.
 `stage` is `send` or `receive`.
-A peer Close supplies its code and reason.
+A peer Close supplies any code or reason it includes.
 Other transport or protocol failures supply error text.
 A later failure does not replace the first recorded evidence.
 The Close reason is unverified peer text, and these fields do not establish whether the request ran.

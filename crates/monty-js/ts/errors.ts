@@ -221,10 +221,14 @@ export class MontyCrashedError extends MontyError {
  * session is lost. The request may have run. Do not replay it automatically.
  */
 export class MontyDisconnectError extends MontyError {
-  readonly #stage: string | null
-  readonly #closeCode: number | null
-  readonly #closeReason: string | null
-  readonly #transportError: string | null
+  /** The operation that recorded the first failure, either `send` or `receive`, or `null` if unavailable. */
+  declare readonly stage: string | null
+  /** The peer's recorded Close code, or `null` if unavailable. */
+  declare readonly closeCode: number | null
+  /** The peer's recorded Close reason, or `null` if unavailable. This text is unverified. */
+  declare readonly closeReason: string | null
+  /** The recorded transport or protocol error, or `null` for a peer Close frame or missing evidence. */
+  declare readonly transportError: string | null
 
   constructor(
     message: string,
@@ -237,30 +241,12 @@ export class MontyDisconnectError extends MontyError {
   ) {
     super('RuntimeError', message)
     this.name = 'MontyDisconnectError'
-    this.#stage = options.stage ?? null
-    this.#closeCode = options.closeCode ?? null
-    this.#closeReason = options.closeReason ?? null
-    this.#transportError = options.transportError ?? null
-  }
-
-  /** The operation that recorded the first failure, either `send` or `receive`, or `null` if unavailable. */
-  get stage(): string | null {
-    return this.#stage
-  }
-
-  /** The peer's recorded Close code, or `null` if unavailable. */
-  get closeCode(): number | null {
-    return this.#closeCode
-  }
-
-  /** The peer's recorded Close reason, or `null` if unavailable. This text is unverified. */
-  get closeReason(): string | null {
-    return this.#closeReason
-  }
-
-  /** The recorded transport or protocol error, or `null` for a peer Close frame or missing evidence. */
-  get transportError(): string | null {
-    return this.#transportError
+    Object.defineProperties(this, {
+      stage: { value: options.stage ?? null, enumerable: true },
+      closeCode: { value: options.closeCode ?? null, enumerable: true },
+      closeReason: { value: options.closeReason ?? null, enumerable: true },
+      transportError: { value: options.transportError ?? null, enumerable: true },
+    })
   }
 }
 

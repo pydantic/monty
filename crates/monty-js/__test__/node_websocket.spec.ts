@@ -299,6 +299,7 @@ test('unexpected text supplies a diagnostic without echoing the payload', async 
   await using pool = await MontyWebsocket.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
+  t.is(error.message, 'RuntimeError: monty worker connection closed while waiting for a reply')
   t.is(error.stage, 'receive')
   t.is(error.closeCode, null)
   t.is(error.closeReason, null)

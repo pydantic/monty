@@ -520,3 +520,13 @@ test('disconnect diagnostics are read-only and do not follow constructor options
   t.is(error.closeReason, '')
   t.is(error.transportError, null)
 })
+
+test('disconnect diagnostics are included in JSON and object spreads', () => {
+  const diagnostics = { stage: 'receive', closeCode: 1008, closeReason: 'session retired', transportError: null }
+  const error = new MontyDisconnectError('connection closed', diagnostics)
+  for (const [field, value] of Object.entries(diagnostics)) {
+    t.true(Object.hasOwn(error, field))
+    t.is(JSON.parse(JSON.stringify(error))[field], value)
+    t.is({ ...error }[field as keyof typeof diagnostics], value)
+  }
+})
