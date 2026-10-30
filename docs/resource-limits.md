@@ -205,6 +205,10 @@ Feed consumption and grace do not renew on resume.
 When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
 CPU exhaustion kills and reaps the worker. The explicit wall deadline handles blocked workers.
 A supervisor clock failure discards the worker instead of weakening enforcement.
+CPU mode needs `/proc` mounted for the pool's own PID namespace, as in a standard container; spawning a worker fails
+otherwise.
+The pool records the child's start time at spawn and checks it before acting on a reading, so another process's CPU
+time never decides a kill or charges the feed; a reused PID counts as a clock failure.
 OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.
 
 Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.

@@ -8,6 +8,11 @@ use crate::cpu_clock::Clock;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// One turn's CPU allowance, measured from a baseline sample of the child's clock.
+///
+/// Polls take unconfirmed samples (see [`Clock::confirm`]) and confirm only before acting on one:
+/// an error, a crossed limit, or the final charge. An unconfirmed sample under the limit drives
+/// nothing, and a confirmation vouches for the baseline and every sample before it.
 pub(crate) struct Monitor {
     clock: Clock,
     started: Duration,
@@ -22,28 +27,44 @@ pub(crate) enum Failure {
 
 impl Monitor {
     pub(crate) fn new(clock: Clock, limit: Duration) -> io::Result<Self> {
-        let started = clock.read()?;
+        let started = clock.sample().map_err(|error| confirmed_error(&clock, error))?;
         Ok(Self { clock, started, limit })
     }
 
+    /// Confirmed consumption since the baseline, for charging the turn to the feed budget.
     pub(crate) fn elapsed(&self) -> io::Result<Duration> {
+        let consumed = self.consumed();
+        self.clock.confirm()?;
+        consumed
+    }
+
+    /// Confirms only before failing, since a failure kills the worker.
+    fn check(&self) -> Result<(), Failure> {
+        match self.consumed() {
+            Ok(consumed) if consumed < self.limit => Ok(()),
+            Ok(consumed) => {
+                self.clock.confirm().map_err(Failure::Clock)?;
+                Err(Failure::Limit {
+                    limit: self.limit,
+                    consumed,
+                })
+            }
+            Err(error) => Err(Failure::Clock(confirmed_error(&self.clock, error))),
+        }
+    }
+
+    /// Unconfirmed consumption since the baseline.
+    fn consumed(&self) -> io::Result<Duration> {
         self.clock
-            .read()?
+            .sample()?
             .checked_sub(self.started)
             .ok_or_else(|| io::Error::other("child CPU clock moved backwards"))
     }
+}
 
-    fn check(&self) -> Result<(), Failure> {
-        let consumed = self.elapsed().map_err(Failure::Clock)?;
-        if consumed >= self.limit {
-            Err(Failure::Limit {
-                limit: self.limit,
-                consumed,
-            })
-        } else {
-            Ok(())
-        }
-    }
+/// Reports a vanished child (whose PID may now name another process) in place of a sampling error.
+fn confirmed_error(clock: &Clock, error: io::Error) -> io::Error {
+    clock.confirm().err().unwrap_or(error)
 }
 
 /// Bounds either protocol path with independent CPU and wall limits. Cancellation drops the I/O future.

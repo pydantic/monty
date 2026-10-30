@@ -166,6 +166,13 @@ Resuming preserves observed feed CPU and its single grace allowance. A new feed 
 Host work between turns is outside the measurement window.
 CPU exhaustion returns `PoolError::CpuLimit`; the wall deadline returns `PoolError::Timeout`.
 Both kill and reap the worker. Clock failures also discard it without weakening enforcement.
+CPU mode needs `/proc` mounted for the pool's own PID namespace: at spawn the pool checks `/proc` reports it as the child's
+parent, and fails the spawn otherwise.
+The pool records the child's `/proc` start time at spawn and checks it before acting on a CPU reading: before killing for
+a crossed limit or a clock error, and before charging the final reading to the feed.
+A matching start time shows the PID named the child throughout, so ordinary polls skip the check.
+If the PID stopped naming the child, for example because something else in the host process reaped it and the PID was
+reused, the reading is discarded as a clock failure.
 Both mechanisms require the host runtime to make progress.
 
 Snapshots store their clock. A load with another clock fails without consuming the configured session.
