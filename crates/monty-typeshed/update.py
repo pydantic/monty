@@ -195,6 +195,7 @@ os.path: 3.0-
 pathlib: 3.4-
 pathlib.types: 3.14-
 posixpath: 3.0-
+pydantic: 3.0-
 random: 3.0-
 re: 3.0-
 sys: 3.0-

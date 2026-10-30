@@ -629,3 +629,31 @@ fn bisect_does_not_declare_runtime_all_metadata() {
     let diagnostics = check_concise("import bisect\nbisect.__all__", "main.py").expect("__all__ is absent at runtime");
     assert_snapshot!(diagnostics, @"main.py:2:1: error[unresolved-attribute] Module `bisect` has no member `__all__`");
 }
+
+/// The bundled `pydantic` stub covers `TypeAdapter` and `ValidationError`, so
+/// code using them type-checks, and a misuse is reported.
+#[test]
+fn pydantic_stub() {
+    let code = "\
+from pydantic import TypeAdapter, ValidationError
+
+adapter = TypeAdapter(list[int])
+try:
+    values = adapter.validate_python(['1', 2])
+except ValidationError as exc:
+    count = exc.error_count()
+    details = exc.errors(include_url=False)
+    text = exc.json(indent=2)
+    print(exc.title)
+    ";
+    assert!(check(code, "main.py").is_none());
+
+    let code = "\
+from pydantic import TypeAdapter
+
+adapter = TypeAdapter(int)
+adapter.validate(1)
+    ";
+    let error_diagnostics = check_concise(code, "main.py").expect("expected type errors");
+    assert_snapshot!(error_diagnostics, @"main.py:4:1: error[unresolved-attribute] Object of type `TypeAdapter[Unknown]` has no attribute `validate`");
+}

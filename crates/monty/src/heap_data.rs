@@ -168,6 +168,8 @@ macro_rules! heap_payloads {
             Union(inline $crate::types::Union),
             /// A `typing.Literal[...]` or `typing.Annotated[...]`.
             TypingAlias(inline $crate::types::TypingAlias),
+            /// A `pydantic.TypeAdapter` and its validator arena.
+            TypeAdapter(boxed $crate::types::TypeAdapter),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -275,6 +277,7 @@ impl HeapData {
             | Self::GenericAlias(_)
             | Self::Union(_)
             | Self::TypingAlias(_)
+            | Self::TypeAdapter(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -355,6 +358,7 @@ impl HeapData {
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
             Self::TypingAlias(alias) => alias.py_type(),
+            Self::TypeAdapter(_) => Type::TypeAdapter,
             Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
@@ -719,6 +723,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
             Self::TypingAlias($value) => $body,
+            Self::TypeAdapter($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
@@ -1020,6 +1025,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::GenericAlias(_)
             | Self::Union(_)
             | Self::TypingAlias(_)
+            | Self::TypeAdapter(_)
             | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)

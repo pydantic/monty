@@ -160,6 +160,11 @@ impl TypingAlias {
     pub(crate) fn args(&self, heap: &impl ContainsHeap) -> Value {
         self.args.clone_with_heap(heap)
     }
+
+    /// Which form was subscripted.
+    pub(crate) fn form(&self) -> TypingForm {
+        self.form
+    }
 }
 
 /// Owned clones of a stored tuple's items; `args` comes from [`TypingAlias::args`].

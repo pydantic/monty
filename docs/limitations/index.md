@@ -93,6 +93,7 @@ The following modules are present:
 | `os`          | [os.md](os.md)                   |
 | `os.path`     | [os.md](os.md)                   |
 | `pathlib`     | [pathlib.md](pathlib.md)         |
+| `pydantic`    | [pydantic.md](pydantic.md)       |
 | `posixpath`   | [os.md](os.md)                   |
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |

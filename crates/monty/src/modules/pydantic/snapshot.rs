@@ -11,6 +11,7 @@
 
 use std::mem;
 
+use ahash::AHashSet;
 use monty_types::{
     MontyDate, MontyObject, MontyTime, MontyTimeDelta,
     unstable::{self, MontyNode},
@@ -20,7 +21,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapReadOutput},
+    heap::{HeapData, HeapId, HeapReadOutput},
     object_bridge::MontyObjectExt,
     types::{PyTrait, date as date_type, datetime as datetime_type, time as time_type, timedelta as timedelta_type},
     value::Value,
@@ -31,20 +32,56 @@ const NODE_BUDGET: usize = 4096;
 
 /// Snapshots `value`, spending from a fresh [`NODE_BUDGET`].
 pub(crate) fn snapshot_value(value: &Value, vm: &mut VM<'_>) -> MontyObject {
-    let mut budget = NODE_BUDGET;
-    snapshot(value, &mut budget, vm)
+    let mut walk = Walk {
+        budget: NODE_BUDGET,
+        in_progress: AHashSet::new(),
+    };
+    snapshot(value, &mut walk, vm)
 }
 
-/// One level of the snapshot walk; `budget` counts the nodes left.
-fn snapshot(value: &Value, budget: &mut usize, vm: &mut VM<'_>) -> MontyObject {
-    if *budget == 0 {
+/// The walk's state: the nodes left and the containers being descended, so a
+/// container that holds itself is cut at the reference back.
+struct Walk {
+    budget: usize,
+    in_progress: AHashSet<HeapId>,
+}
+
+/// One level of the snapshot walk.
+fn snapshot(value: &Value, walk: &mut Walk, vm: &mut VM<'_>) -> MontyObject {
+    if walk.budget == 0 {
         return repr_object(value, vm);
     }
-    *budget -= 1;
+    walk.budget -= 1;
     let Ok(mut guard) = vm.recursion_guard() else {
         return repr_object(value, vm);
     };
     let vm = &mut *guard;
+    if let Value::Ref(id) = value {
+        if walk.in_progress.contains(id) {
+            return MontyObject::repr(cycle_placeholder(vm.heap.get(*id)));
+        }
+        walk.in_progress.insert(*id);
+    }
+    let object = snapshot_node(value, walk, vm);
+    if let Value::Ref(id) = value {
+        walk.in_progress.remove(id);
+    }
+    object
+}
+
+/// The text Python prints for a container reached again while printing it.
+fn cycle_placeholder(data: &HeapData) -> &'static str {
+    match data {
+        HeapData::List(_) => "[...]",
+        HeapData::Tuple(_) | HeapData::NamedTuple(_) => "(...)",
+        HeapData::Dict(_) => "{...}",
+        _ => "...",
+    }
+}
+
+/// The node for `value`, its children snapshotted through `walk`.
+fn snapshot_node(value: &Value, walk: &mut Walk, vm: &mut VM<'_>) -> MontyObject {
+    let budget = walk;
     match value {
         Value::None => MontyObject::none(),
         Value::Bool(b) => MontyObject::bool(*b),
@@ -164,9 +201,9 @@ fn snapshot(value: &Value, budget: &mut usize, vm: &mut VM<'_>) -> MontyObject {
     }
 }
 
-/// Snapshots each of `children` in order, sharing `budget`.
-fn snapshot_all(children: &[Value], budget: &mut usize, vm: &mut VM<'_>) -> Vec<MontyObject> {
-    children.iter().map(|child| snapshot(child, budget, vm)).collect()
+/// Snapshots each of `children` in order through the shared walk.
+fn snapshot_all(children: &[Value], walk: &mut Walk, vm: &mut VM<'_>) -> Vec<MontyObject> {
+    children.iter().map(|child| snapshot(child, walk, vm)).collect()
 }
 
 /// The repr fallback: a value with no snapshot form keeps the text Python
