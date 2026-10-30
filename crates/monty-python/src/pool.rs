@@ -1561,7 +1561,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
         let search = module_import_search(&event);
         let resume_with = match event {
-            TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
+            TurnEvent::Complete(value) => return decode_result(py, &value, &instances),
             TurnEvent::OsCall { .. } if module_call => {
                 match sync_turn_answer(py, event, &lookup, &instances).and_then(|answer| match (answer, &search) {
                     // no host module: the file search, `os=` then mounts
@@ -1832,7 +1832,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         let search = module_import_search(&event);
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
-                return Python::attach(|py| monty_to_py(py, &value, &instances));
+                return Python::attach(|py| decode_result(py, &value, &instances));
             }
             TurnEvent::OsCall { .. } if module_call => {
                 let answer =
@@ -2302,6 +2302,21 @@ fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSp
     Err(PyTypeError::new_err(
         "mount must be a MountDir, a list of MountDir, or None",
     ))
+}
+
+/// Converts a feed's final value to Python, raising a decode failure as
+/// `MontyRuntimeError` so the host's own traceback (and its file paths) never
+/// reaches the caller. Such a value is one CPython cannot build, e.g. a
+/// namedtuple field starting with `_`, or a dict keyed by a class-instance proxy.
+pub(crate) fn decode_result(py: Python<'_>, value: &MontyObject, instances: &InstanceStore) -> PyResult<Py<PyAny>> {
+    monty_to_py(py, value, instances).map_err(|err| {
+        let exc = exc_py_to_monty(py, &err);
+        let message = format!(
+            "cannot convert the result to a Python value: {}",
+            exc.message().unwrap_or_default()
+        );
+        MontyError::new_err(py, MontyException::new(exc.exc_type(), Some(message)))
+    })
 }
 
 /// Maps a pool failure onto the Python exception hierarchy.

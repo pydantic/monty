@@ -74,6 +74,11 @@ An uncaught conversion exception ends the feed as a runtime error.
 Values supplied through `inputs` or `external_lookup` instead fail host-side;
 see [Python error handling](../quickstart/python.md#errors).
 
+Some sandbox results have no CPython equivalent: a namedtuple field starting with `_` (which `rename=True` produces),
+or a dict or set keyed by a class-instance proxy, which is unhashable.
+A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
+exception type and the message prefixed `cannot convert the result to a Python value: `.
+
 ## Message size
 
 A value and its message envelope must fit within 256 MiB.
