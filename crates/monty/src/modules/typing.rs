@@ -202,33 +202,40 @@ fn get_type_hints(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
     let globalns = namespace_dict(globalns, "globalns", vm)?;
     let localns = namespace_dict(localns, "localns", vm)?;
-    let entries = match hint_source(obj, vm) {
-        HintSource::Function(func_id, globals) => function_entries(func_id, globals, globalns, localns, vm),
-        HintSource::Class(class_id) => class_entries(class_id, globalns, localns, vm)?,
-        HintSource::Host(target) => return Ok(CallResult::OsCall(OsFunctionCall::GetTypeHints(target))),
-        HintSource::Empty => Vec::new(),
-        HintSource::NotAnnotatable => return Err(ExcType::no_annotations(obj, vm)),
-    };
-    if entries.is_empty() {
-        return Ok(CallResult::Value(Value::Ref(
-            vm.heap.allocate(HeapData::Dict(Dict::new())),
-        )));
+    match hint_source(obj, vm) {
+        HintSource::Function(func_id, globals) => {
+            evaluate_entries(function_entries(func_id, globals, globalns, localns, vm), vm)
+        }
+        HintSource::Class(class_id) => evaluate_entries(class_entries(class_id, globalns, localns, vm)?, vm),
+        HintSource::Host(target) => Ok(CallResult::OsCall(OsFunctionCall::GetTypeHints(target))),
+        HintSource::Empty => evaluate_entries(Vec::new(), vm),
+        HintSource::NotAnnotatable => Err(ExcType::no_annotations(obj, vm)),
     }
-    let entries = Value::Ref(vm.heap.allocate(HeapData::List(List::new(entries))));
-    vm.call_frozen_exact(
-        FrozenFunction::TypingGetTypeHints,
-        [
-            entries,
-            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
-            Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
-            Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
-            Value::Builtin(Builtins::Type(BuiltinType::Str)),
-            Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
-            Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
-            Value::Builtin(Builtins::Type(BuiltinType::Union)),
-            Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
-        ],
-    )
+}
+
+/// Hands evaluator `entries` to the frozen evaluator; with none, `{}` without a call.
+fn evaluate_entries(entries: Vec<Value>, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    if entries.is_empty() {
+        Ok(CallResult::Value(Value::Ref(
+            vm.heap.allocate(HeapData::Dict(Dict::new())),
+        )))
+    } else {
+        let entries = Value::Ref(vm.heap.allocate(HeapData::List(List::new(entries))));
+        vm.call_frozen_exact(
+            FrozenFunction::TypingGetTypeHints,
+            [
+                entries,
+                Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
+                Value::Builtin(Builtins::Type(BuiltinType::Str)),
+                Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
+                Value::Builtin(Builtins::Type(BuiltinType::Union)),
+                Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
+            ],
+        )
+    }
 }
 
 /// Where an object's annotations come from.
@@ -381,14 +388,14 @@ fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
     vm.heap.inc_ref(class_id);
     let class = Value::Ref(class_id);
     defer_drop!(class, vm);
-    let repr = match class.py_repr(vm) {
+    match class.py_repr(vm) {
         Ok(repr) => {
             defer_drop!(repr, vm);
-            repr.to_str(vm).map(str::to_owned).unwrap_or_default()
+            let repr = repr.to_str(vm).map(str::to_owned).unwrap_or_default();
+            ExcType::value_error(format!("{repr}.__annotations__ is neither a dict nor None"))
         }
-        Err(err) => return err,
-    };
-    ExcType::value_error(format!("{repr}.__annotations__ is neither a dict nor None"))
+        Err(err) => err,
+    }
 }
 
 /// A fresh heap dict holding the class namespace's entries.

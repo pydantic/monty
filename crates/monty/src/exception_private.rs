@@ -178,16 +178,16 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
     /// is neither annotated nor callable: `5 does not have annotations`.
     fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
-        let repr = match obj.py_repr(vm) {
+        match obj.py_repr(vm) {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
-                repr_value
+                let repr = repr_value
                     .to_str(vm)
-                    .map_or_else(|_| format!("<{}>", obj.py_type_name(vm)), str::to_owned)
+                    .map_or_else(|_| format!("<{}>", obj.py_type_name(vm)), str::to_owned);
+                Self::type_error(format!("{repr} does not have annotations"))
             }
-            Err(err) => return err,
-        };
-        Self::type_error(format!("{repr} does not have annotations"))
+            Err(err) => err,
+        }
     }
 
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
