@@ -23,7 +23,7 @@ use crate::{
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
-    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
+    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing, pydantic},
     types::{
         BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
@@ -775,6 +775,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Exception(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
@@ -782,6 +783,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
                 }
             }
+            Self::Builtin(Builtins::ExcType(ExcType::ValidationError)) => pydantic::errors::call_class_method(attr, args, vm),
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))

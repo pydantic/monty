@@ -36,6 +36,7 @@ pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod os_path;
 pub(crate) mod pathlib;
+pub(crate) mod pydantic;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod statistics;
@@ -110,6 +111,8 @@ pub(crate) enum StandardLib {
     Annotationlib,
     /// The `statistics` module: means, medians, modes, variances and quantiles.
     Statistics,
+    /// The `pydantic` module: `TypeAdapter` and `ValidationError`.
+    Pydantic,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -149,6 +152,7 @@ impl StandardLib {
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Statistics => Some(Self::Statistics),
+            StaticStrings::Pydantic => Some(Self::Pydantic),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -194,6 +198,7 @@ impl StandardLib {
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             Self::Statistics => statistics::create_module(vm),
+            Self::Pydantic => pydantic::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
