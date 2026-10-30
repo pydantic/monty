@@ -779,6 +779,7 @@ impl MontyTypeExt for MontyType {
             | Type::MissingType
             | Type::LiteralGenericAlias
             | Type::AnnotatedAlias
+            | Type::TypeAdapter
             | Type::DirEntry
             | Type::ScandirIterator
             | Type::WalkGenerator

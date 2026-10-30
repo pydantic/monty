@@ -77,6 +77,16 @@ impl GenericAlias {
         }
     }
 
+    /// The subscripted type, `list` in `list[int]`.
+    pub(crate) fn origin(&self) -> BuiltinType {
+        self.origin
+    }
+
+    /// An owned ref to the `__args__` tuple.
+    pub(crate) fn args(&self, heap: &impl ContainsHeap) -> Value {
+        self.args.clone_with_heap(heap)
+    }
+
     /// Invokes `on_child` for the heap id this alias owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         if let Value::Ref(id) = self.args {

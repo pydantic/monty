@@ -76,6 +76,7 @@ nav:
       - math: 'limitations/math.md'
       - os: 'limitations/os.md'
       - pathlib: 'limitations/pathlib.md'
+      - pydantic: 'limitations/pydantic.md'
       - random: 'limitations/random.md'
       - re: 'limitations/re.md'
       - sys: 'limitations/sys.md'
