@@ -76,7 +76,8 @@ They use `ExecutionClock::Wall` by default. Native callers can select
 Subprocess hosts set `PoolConfig::execution_clock` once for the pool; CPU enforcement needs a local Linux subprocess
 worker, so remote (WebSocket) setups enable it in the server's local pool. CPU mode samples the executing
 thread with a cache of up to 1 ms and reads exact execution boundaries.
-Unavailable or unusable counters use conservative elapsed time for that window.
+Unavailable or unusable counters use conservative elapsed time for that window; off Linux the counter is always
+unavailable, so check `ExecutionClock::is_available()` before selecting CPU mode directly.
 The OS controls counter accuracy and resolution. Snapshots preserve clock selection
 and recorded consumption. WebAssembly workers accept wall mode only.
 

@@ -378,6 +378,9 @@ impl ResourceTracker {
     }
 
     /// Selects the execution clock before the tracker starts running.
+    ///
+    /// Off Linux, CPU mode cannot read the thread counter and charges elapsed time instead;
+    /// check [`ExecutionClock::is_available`] first to refuse it.
     #[must_use]
     pub fn with_execution_clock(mut self, clock: ExecutionClock) -> Self {
         self.execution_clock = clock;

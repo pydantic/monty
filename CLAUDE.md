@@ -62,7 +62,8 @@ Key rules:
 
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
-- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms.
+    The one exception is the CPU execution clock, which is Linux-only so that it needs no `unsafe`.
 - Tests in `crates/*/tests/` should be cross-platform; use helper functions for
     OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
     `crates/monty-fs/tests/common/mod.rs`, shared via `mod common;` — each

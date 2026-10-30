@@ -55,6 +55,7 @@ carry no API compatibility guarantee.
 Execution limits use wall time by default. CPU mode, Linux only, uses sampled thread CPU time.
 The `monty` crate enables the `monty-types/cpu-clock` feature for native CPU reads.
 `ExecutionClock::is_available()` checks whether this thread can read the selected clock.
+Off Linux a CPU-mode `ResourceTracker` charges elapsed time instead, so check it before selecting CPU mode directly.
 CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.
 They require a finite `PoolConfig::request_timeout` as a wall deadline.
 Remote deployments enable CPU enforcement in the server's local subprocess pool; WebSocket clients adopt its clock.
