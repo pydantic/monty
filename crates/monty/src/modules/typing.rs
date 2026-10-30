@@ -386,7 +386,7 @@ fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
     match class.py_repr(vm) {
         Ok(repr) => {
             defer_drop!(repr, vm);
-            let repr = repr.to_str(vm).map(str::to_owned).unwrap_or_default();
+            let repr = repr.as_str(vm).map(str::to_owned).unwrap_or_default();
             ExcType::value_error(format!("{repr}.__annotations__ is neither a dict nor None"))
         }
         Err(err) => err,

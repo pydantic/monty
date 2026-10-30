@@ -182,8 +182,8 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 let repr = repr_value
-                    .to_str(vm)
-                    .map_or_else(|_| format!("<{}>", obj.py_type_name(vm)), str::to_owned);
+                    .as_str(vm)
+                    .map_or_else(|| format!("<{}>", obj.py_type_name(vm)), str::to_owned);
                 Self::type_error(format!("{repr} does not have annotations"))
             }
             Err(err) => err,
