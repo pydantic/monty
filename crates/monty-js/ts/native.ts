@@ -142,6 +142,10 @@ export interface ProtocolTurn {
 export interface DisconnectedTurn {
   kind: 'disconnected'
   message: string
+  stage?: string | null
+  closeCode?: number | null
+  closeReason?: string | null
+  transportError?: string | null
 }
 
 /** A draining server declined the request, which did not run; the session is

@@ -218,12 +218,35 @@ export class MontyCrashedError extends MontyError {
  * only; the local analogue is `MontyCrashedError`). The sandbox may have died,
  * or the server may have dropped the session by policy — an idle, session or
  * turn timeout, or being over capacity; the client cannot tell which. The
- * session is lost; check out a new one.
+ * session is lost. The request may have run. Do not replay it automatically.
  */
 export class MontyDisconnectError extends MontyError {
-  constructor(message: string) {
+  /** The operation that recorded the first failure, either `send` or `receive`, or `null` if unavailable. */
+  declare readonly stage: string | null
+  /** The peer's recorded Close code, or `null` if unavailable. */
+  declare readonly closeCode: number | null
+  /** The peer's recorded Close reason, or `null` if unavailable. This text is unverified. */
+  declare readonly closeReason: string | null
+  /** The recorded transport or protocol error, or `null` for a peer Close frame or missing evidence. */
+  declare readonly transportError: string | null
+
+  constructor(
+    message: string,
+    options: {
+      stage?: string | null
+      closeCode?: number | null
+      closeReason?: string | null
+      transportError?: string | null
+    } = {},
+  ) {
     super('RuntimeError', message)
     this.name = 'MontyDisconnectError'
+    Object.defineProperties(this, {
+      stage: { value: options.stage ?? null, enumerable: true },
+      closeCode: { value: options.closeCode ?? null, enumerable: true },
+      closeReason: { value: options.closeReason ?? null, enumerable: true },
+      transportError: { value: options.transportError ?? null, enumerable: true },
+    })
   }
 }
 
