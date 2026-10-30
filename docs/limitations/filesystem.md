@@ -125,6 +125,8 @@ Hosts can configure a cumulative `write_bytes_limit` per mount. In
 `OverlayMemory`, appending to an existing real file can materialize that
 file into the in-memory overlay, so the existing file bytes count against
 the limit along with the newly appended bytes.
+Each directory `mkdir` creates, parents included, is charged 4,096 bytes against the limit before anything is
+created, so a `mkdir(parents=True)` that would pass the limit creates nothing.
 
 ## Sandbox guarantees
 

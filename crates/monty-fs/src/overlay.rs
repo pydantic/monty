@@ -12,10 +12,10 @@ use monty_types::{FileMode, MontyObject, dir_stat, file_stat, normalize_virtual_
 
 use super::{
     common::{
-        LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8, check_write_limit,
-        commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir, host_is_file,
-        host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative, map_io,
-        read_file_limited, visible_entries,
+        DIRECTORY_WRITE_BYTES, LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8,
+        check_write_limit, commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir,
+        host_is_file, host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative,
+        map_io, read_file_limited, visible_entries,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -827,13 +827,14 @@ fn ensure_parent_exists(
     Ok(())
 }
 
-/// Creates a directory inside the overlay.
+/// Creates a directory inside the overlay. Each directory it records, parents
+/// included, is charged [`DIRECTORY_WRITE_BYTES`] against the write quota first.
 fn mkdir(
     state: &mut OverlayState,
     relative: &str,
     parents: bool,
     exist_ok: bool,
-    ctx: &MountContext<'_>,
+    ctx: &mut MountContext<'_>,
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
@@ -870,30 +871,42 @@ fn mkdir(
         }
     }
 
-    if parents {
-        create_overlay_parents(state, relative, ctx)?;
+    let to_create = if parents {
+        overlay_dirs_to_create(state, relative, ctx)?
     } else {
         ensure_parent_exists(state, relative, ctx, vpath)?;
+        vec![relative.to_owned()]
+    };
+    // charged for every directory before any is recorded
+    let charge = to_create.len().saturating_mul(DIRECTORY_WRITE_BYTES);
+    check_write_limit(charge, ctx)?;
+    for dir in to_create {
+        state.insert(
+            dir,
+            OverlayEntry::Directory {
+                mtime: current_timestamp(),
+            },
+            ctx.memory_usage_limit,
+        )?;
     }
-
-    state.insert(
-        relative.to_owned(),
-        OverlayEntry::Directory {
-            mtime: current_timestamp(),
-        },
-        ctx.memory_usage_limit,
-    )?;
+    commit_write_bytes(charge, ctx);
     Ok(MontyObject::none())
 }
 
-/// Creates parent directories for `mkdir(parents=True)` with overlay semantics.
+/// The overlay keys `mkdir(parents=True)` must record as directories, the
+/// target last: every component that is neither an overlay nor a real directory.
 ///
 /// Each component is classified through the descriptor: any symlink raises
 /// `PermissionError` instead of being shadowed by (or aliased under) an
 /// in-memory tree.
-fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountContext<'_>) -> Result<(), MountError> {
+fn overlay_dirs_to_create(
+    state: &OverlayState,
+    relative: &str,
+    ctx: &MountContext<'_>,
+) -> Result<Vec<String>, MountError> {
     let mut walk = ComponentWalk::new(ctx.mount_dir);
     let mut current = String::new();
+    let mut to_create = Vec::new();
 
     for component in relative.split('/') {
         if !current.is_empty() {
@@ -915,15 +928,7 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     &current_vpath,
                 ));
             }
-            Some(OverlayEntry::Deleted) => {
-                state.insert(
-                    current.clone(),
-                    OverlayEntry::Directory {
-                        mtime: current_timestamp(),
-                    },
-                    ctx.memory_usage_limit,
-                )?;
-            }
+            Some(OverlayEntry::Deleted) => to_create.push(current.clone()),
             None => {
                 match real {
                     // Already a real directory, so nothing to record.
@@ -943,18 +948,12 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     RealTarget::Absent => {}
                 }
 
-                state.insert(
-                    current.clone(),
-                    OverlayEntry::Directory {
-                        mtime: current_timestamp(),
-                    },
-                    ctx.memory_usage_limit,
-                )?;
+                to_create.push(current.clone());
             }
         }
     }
 
-    Ok(())
+    Ok(to_create)
 }
 
 /// Removes a file in the overlay by adding a tombstone.
