@@ -11,11 +11,15 @@ Every bundled import builds a fresh module object; there is no `sys.modules` cac
 [modules from files](#modules-from-files).
 Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
 survive the next import.
-Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`.
+Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`, except for
+`secrets.DEFAULT_ENTROPY`, which is mutable.
 [Host modules](#host-modules) are module objects too, bound afresh by every import.
-The one exception is `random`'s module-level generator, which is session
-state: a `random.seed(...)` is still in effect after a later `import random`,
-in the next feed, and after a dump (see [random.md](random.md)).
+
+Although each import creates a new module object, `random`'s module-level generator and `secrets.DEFAULT_ENTROPY` are
+session state.
+A `random.seed(...)` remains in effect after a later `import random`, in the next feed, and after a dump
+(see [random.md](random.md)).
+Changes to `secrets.DEFAULT_ENTROPY` persist across imports and REPL snippets (see [secrets.md](secrets.md)).
 
 ## Modules available
 
@@ -43,6 +47,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `posixpath`   | [os.md](os.md)                   |
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
+| `secrets`     | [secrets.md](secrets.md)         |
 | `sys`         | [sys.md](sys.md)                 |
 | `time`        | [time.md](time.md)               |
 | `tomllib`     | [tomllib.md](tomllib.md)         |

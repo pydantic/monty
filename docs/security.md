@@ -316,18 +316,24 @@ See [datetime](limitations/datetime.md#reading-the-clock).
 
 ### Entropy
 
-`os.urandom()` is the only call that reads entropy from the host.
+Monty represents a request for entropy as an `os.urandom` OS call.
 Through the pool the request reaches your `os=` handler like any other OS call; with no handler it raises
 `RuntimeError`.
+
 Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
 `max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
 A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
 
+Inside the sandbox, `os.urandom(n)` and the `secrets` functions both request bytes through this handler.
+A host that wants reproducible runs can provide deterministic replies to `os.urandom` requests.
+
 The `random` module calls the handler only under `random_start='call_host'`.
 By default it uses worker OS entropy.
-For reproducible runs, configure a seed: `{'seed': ...}` in Python, `{ seed }` in JavaScript, or `RandomStart::Seed` in Rust.
+For reproducible `random` output, set `random_start='call_host'` and return deterministic `os.urandom` replies, or
+configure a seed: `{'seed': ...}` in Python, `{ seed }` in JavaScript, or `RandomStart::Seed` in Rust.
 An explicit `random.seed(42)` overrides this policy.
-See [random](limitations/random.md).
+
+See [random](limitations/random.md) and [secrets](limitations/secrets.md) for details about the sandbox APIs.
 
 ### Waiting
 

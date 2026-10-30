@@ -2584,6 +2584,30 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+    /// Module name for `import secrets`.
+    Secrets,
+    /// `secrets.randbits()` function.
+    Randbits,
+    /// `secrets.randbelow()` function.
+    Randbelow,
+    /// `secrets.token_bytes()` function.
+    TokenBytes,
+    /// `secrets.token_hex()` function.
+    TokenHex,
+    /// `secrets.token_urlsafe()` function.
+    TokenUrlsafe,
+    /// `secrets.compare_digest()` function.
+    CompareDigest,
+    /// `secrets.DEFAULT_ENTROPY` constant.
+    #[strum(serialize = "DEFAULT_ENTROPY")]
+    DefaultEntropy,
+    /// `exclusive_upper_bound` parameter to `secrets.randbelow()`.
+    ExclusiveUpperBound,
+    /// `nbytes` parameter to `secrets.token_bytes()` and token helpers.
+    Nbytes,
+    /// `__all__` module attribute.
+    #[strum(serialize = "__all__")]
+    DunderAll,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

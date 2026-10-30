@@ -24,9 +24,10 @@ use std::{borrow::Cow, mem};
 use ahash::AHashSet;
 use monty_types::{
     ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceTracker, normalize_virtual_path,
+    RenameCallArgs, ResourceTracker, UrandomArgs, normalize_virtual_path,
     unstable::{self, MontyNode},
 };
+use num_bigint::{BigInt, BigUint};
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
@@ -42,9 +43,11 @@ use crate::{
             samefile_first_reply, samefile_second_reply, stat_field_reply,
         },
         random::RandomRetry,
+        secrets::Output as SecretOutput,
         time::ClockReading,
     },
-    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
+    string_builder::StringBuilder,
+    types::{Path, PyTrait, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
     value::Value,
     virtual_path::posix_join,
 };
@@ -119,7 +122,8 @@ impl PendingEffect {
     /// held across the host yield (see [`PostConversionEffect::release`]).
     pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
         match self {
-            Self::Pre(_) | Self::Import(_) => {}
+            Self::Pre(effect) => effect.release(heap),
+            Self::Import(_) => {}
             Self::Post(effect) => effect.release(heap),
             Self::Scan(effect) => effect.release(heap),
         }
@@ -144,8 +148,7 @@ impl From<ScanEffect> for PendingEffect {
     }
 }
 
-/// Reshapes the raw host reply before heap conversion: plain data in, plain
-/// data out, so no variant holds a heap reference and none needs cleanup.
+/// Reshapes host replies; `SecretChoice` also retains its sequence across the yield.
 // TODO: Consider separating effects from caller names so functions can share result handling.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PreConversionEffect {
@@ -214,9 +217,24 @@ pub(crate) enum PreConversionEffect {
         /// Whether the argument was `bytes`, so the result is too.
         is_bytes: bool,
     },
+    /// Convert an exact-length entropy reply for a `secrets` helper.
+    SecretBytes { size: usize, output: SecretOutput },
+    /// Draw an index and apply it to a retained `secrets.choice` sequence.
+    SecretChoice {
+        sequence: Value,
+        bound: usize,
+        size: usize,
+        bits: usize,
+    },
 }
 
 impl PreConversionEffect {
+    pub(crate) fn release(self, heap: &mut impl ContainsHeap) {
+        if let Self::SecretChoice { sequence, .. } = self {
+            sequence.drop_with(heap);
+        }
+    }
+
     /// Applies the effect to the host's reply, yielding the value the VM
     /// imports and pushes, or the next call of a multi-step operation;
     /// `Chdir` adopts the directory as a side effect.
@@ -227,6 +245,17 @@ impl PreConversionEffect {
             Self::Unlink { .. } => Ok(MontyObject::none()),
             Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
             Self::UrandomLength { size } => urandom_reply(value, size),
+            Self::SecretBytes { size, output } => {
+                return secret_bytes_reply(value, size, output, &vm.heap.tracker);
+            }
+            Self::SecretChoice {
+                sequence,
+                bound,
+                size,
+                bits,
+            } => {
+                return secret_choice_reply(sequence, bound, size, bits, &value, vm);
+            }
             Self::Chdir { path, spelled } => {
                 check_chdir_stat(&value, &spelled)?;
                 vm.env.cwd = Cow::Owned(normalize_virtual_path(&path).into_owned());
@@ -257,7 +286,7 @@ impl PreConversionEffect {
             Self::Unlink { .. } => "Path.unlink",
             Self::Chdir { .. } => "os.chdir",
             Self::IterdirPaths { .. } => "Path.iterdir",
-            Self::UrandomLength { .. } => "os.urandom",
+            Self::UrandomLength { .. } | Self::SecretBytes { .. } | Self::SecretChoice { .. } => "os.urandom",
             Self::StatField(field) => field.function(),
             Self::ResolvedPath { .. } | Self::RealpathStrict { .. } => "os.path.realpath",
             Self::Lexists { .. } => "os.path.lexists",
@@ -273,8 +302,10 @@ impl PreConversionEffect {
 /// VM suspends again instead of resuming Python, as if the function had
 /// yielded it itself).
 pub(crate) enum Reshaped {
-    /// The operation is complete; push this.
+    /// The operation is complete; push the converted host value.
     Value(MontyObject),
+    /// The operation is complete with a value already in the VM heap.
+    VmValue(Value),
     /// Suspend again with this call, `effect` armed for its reply.
     Call {
         call: OsFunctionCall,
@@ -494,6 +525,113 @@ fn urandom_reply(value: MontyObject, size: usize) -> Result<MontyObject, RunErro
         MontyNode::Bytes(bytes) => Err(urandom_reply_error(Ok(bytes.len()), size)),
         _ => Err(urandom_reply_error(Err(value.as_ref().type_name()), size)),
     }
+}
+
+fn secret_choice_reply(
+    sequence: Value,
+    bound: usize,
+    size: usize,
+    bits: usize,
+    reply: &MontyObject,
+    vm: &mut VM<'_>,
+) -> Result<Reshaped, RunError> {
+    let bytes = match unstable::root_node(reply) {
+        MontyNode::Bytes(bytes) if bytes.len() == size => bytes,
+        MontyNode::Bytes(bytes) => {
+            sequence.drop_with(vm);
+            return Err(urandom_reply_error(Ok(bytes.len()), size));
+        }
+        _ => {
+            sequence.drop_with(vm);
+            return Err(urandom_reply_error(Err(reply.as_ref().type_name()), size));
+        }
+    };
+    let candidate = secret_candidate(bytes, bits);
+    if candidate >= BigUint::from(bound) {
+        return Ok(Reshaped::Call {
+            call: OsFunctionCall::Urandom(UrandomArgs { size: size as u64 }),
+            effect: Some(
+                PreConversionEffect::SecretChoice {
+                    sequence,
+                    bound,
+                    size,
+                    bits,
+                }
+                .into(),
+            ),
+        });
+    }
+    let index =
+        i64::try_from(candidate.to_u64_digits().first().copied().unwrap_or(0)).expect("a sequence index fits in i64");
+    defer_drop!(sequence, vm);
+    let selected = sequence.py_getitem(&Value::Int(index), vm)?;
+    Ok(Reshaped::VmValue(selected))
+}
+
+fn secret_bytes_reply(
+    value: MontyObject,
+    size: usize,
+    output: SecretOutput,
+    tracker: &ResourceTracker,
+) -> Result<Reshaped, RunError> {
+    let bytes = match unstable::root_node(&value) {
+        MontyNode::Bytes(bytes) if bytes.len() == size => bytes,
+        MontyNode::Bytes(bytes) => return Err(urandom_reply_error(Ok(bytes.len()), size)),
+        _ => return Err(urandom_reply_error(Err(value.as_ref().type_name()), size)),
+    };
+    let result = match output {
+        SecretOutput::Bytes => return Ok(Reshaped::Value(value)),
+        SecretOutput::Hex => {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut builder = StringBuilder::with_capacity(bytes.len().saturating_mul(2), tracker)?;
+            for byte in bytes {
+                builder.push(char::from(HEX[usize::from(byte >> 4)]))?;
+                builder.push(char::from(HEX[usize::from(byte & 0x0f)]))?;
+            }
+            MontyObject::string(builder.finish_raw()?)
+        }
+        SecretOutput::UrlSafe => {
+            const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut builder = StringBuilder::with_capacity(bytes.len().saturating_mul(4).div_ceil(3), tracker)?;
+            for chunk in bytes.chunks(3) {
+                let n = (u32::from(chunk[0]) << 16)
+                    | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                    | u32::from(*chunk.get(2).unwrap_or(&0));
+                builder.push(char::from(ALPHABET[((n >> 18) & 63) as usize]))?;
+                builder.push(char::from(ALPHABET[((n >> 12) & 63) as usize]))?;
+                if chunk.len() > 1 {
+                    builder.push(char::from(ALPHABET[((n >> 6) & 63) as usize]))?;
+                }
+                if chunk.len() > 2 {
+                    builder.push(char::from(ALPHABET[(n & 63) as usize]))?;
+                }
+            }
+            MontyObject::string(builder.finish_raw()?)
+        }
+        SecretOutput::Bits { bit_count } => MontyObject::bigint(BigInt::from(secret_candidate(bytes, bit_count))),
+        SecretOutput::Randbelow { upper, bit_count } => {
+            let candidate = secret_candidate(bytes, bit_count);
+            if candidate >= upper {
+                return Ok(Reshaped::Call {
+                    call: OsFunctionCall::Urandom(UrandomArgs { size: size as u64 }),
+                    effect: Some(
+                        PreConversionEffect::SecretBytes {
+                            size,
+                            output: SecretOutput::Randbelow { upper, bit_count },
+                        }
+                        .into(),
+                    ),
+                });
+            }
+            MontyObject::bigint(BigInt::from(candidate))
+        }
+    };
+    Ok(Reshaped::Value(result))
+}
+
+/// Decodes the requested high bits of an entropy reply as a candidate integer.
+fn secret_candidate(bytes: &[u8], bit_count: usize) -> BigUint {
+    BigUint::from_bytes_be(bytes) >> bytes.len().saturating_mul(8).saturating_sub(bit_count)
 }
 
 /// The `RuntimeError` for an `os.urandom` reply that is not `bytes` of

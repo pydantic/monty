@@ -27,6 +27,7 @@ use crate::{
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
     intern::Interns,
+    modules::secrets::default_entropy_value,
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
     parse::source_nesting_exception,
@@ -89,6 +90,9 @@ pub struct MontyRepl {
     /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
     random: SessionRandom,
+    /// Mutable `secrets.DEFAULT_ENTROPY`, shared across snippets.
+    #[serde(default = "default_entropy_value")]
+    secrets_default_entropy: Value,
     /// Modules imported from files, carried between snippets like the globals
     /// so each file runs once per session.
     #[serde(default)]
@@ -128,6 +132,7 @@ impl MontyRepl {
             os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
+            secrets_default_entropy: default_entropy_value(),
             modules: ModuleCache::default(),
             heap,
             globals: Vec::new(),
@@ -293,6 +298,7 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut this.random);
+                vm.secrets_default_entropy = mem::replace(&mut this.secrets_default_entropy, default_entropy_value());
                 vm.modules = mem::take(&mut this.modules);
 
                 // Inject inputs with VM alive
@@ -302,6 +308,7 @@ impl MontyRepl {
                         &mut this.cwd,
                         &mut this.random,
                         &mut this.modules,
+                        &mut this.secrets_default_entropy,
                         &mut vm,
                     );
                     return Err(error);
@@ -319,6 +326,7 @@ impl MontyRepl {
                         &mut this.cwd,
                         &mut this.random,
                         &mut this.modules,
+                        &mut this.secrets_default_entropy,
                         &mut vm,
                     );
                     None
@@ -398,6 +406,7 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.secrets_default_entropy = mem::replace(&mut self.secrets_default_entropy, default_entropy_value());
                 vm.modules = mem::take(&mut self.modules);
 
                 if let Err(e) = inject_inputs_into_vm(&executor.program, input_values, &input_ids, &mut vm) {
@@ -406,6 +415,7 @@ impl MontyRepl {
                         &mut self.cwd,
                         &mut self.random,
                         &mut self.modules,
+                        &mut self.secrets_default_entropy,
                         &mut vm,
                     );
                     return Err(e);
@@ -419,6 +429,7 @@ impl MontyRepl {
                     &mut self.cwd,
                     &mut self.random,
                     &mut self.modules,
+                    &mut self.secrets_default_entropy,
                     &mut vm,
                 );
                 Ok(result)
@@ -507,6 +518,7 @@ impl MontyRepl {
                 );
 
                 vm.random = mem::take(&mut self.random);
+                vm.secrets_default_entropy = mem::replace(&mut self.secrets_default_entropy, default_entropy_value());
                 vm.modules = mem::take(&mut self.modules);
                 let result = match convert_args(args, vm) {
                     Ok(args) => {
@@ -553,6 +565,7 @@ impl MontyRepl {
                 let args_slot = executor.program.input_slots[0].index();
                 mem::replace(&mut globals[args_slot], Value::Undefined).drop_with(vm);
                 self.random = mem::take(&mut vm.random);
+                self.secrets_default_entropy = mem::replace(&mut vm.secrets_default_entropy, default_entropy_value());
                 self.modules = mem::take(&mut vm.modules);
                 self.globals = globals;
                 if let Some(cwd) = vm.take_changed_cwd() {
@@ -659,6 +672,7 @@ impl<'a> CheckedSource<'a> {
 impl Drop for MontyRepl {
     fn drop(&mut self) {
         self.globals.drain(..).drop_with(&mut self.heap);
+        mem::replace(&mut self.secrets_default_entropy, default_entropy_value()).drop_with(&mut self.heap);
     }
 }
 
@@ -1043,6 +1057,7 @@ impl ReplNameLookup {
                         &mut repl.cwd,
                         &mut repl.random,
                         &mut repl.modules,
+                        &mut repl.secrets_default_entropy,
                         &mut vm,
                     );
                     None
@@ -1097,6 +1112,7 @@ impl ReplResolveFutures {
         repl.globals = state.globals;
         repl.cwd = Arc::from(state.cwd);
         repl.random = state.random;
+        mem::replace(&mut repl.secrets_default_entropy, state.secrets_default_entropy).drop_with(&mut repl.heap);
         repl.modules = state.modules;
         repl.commit_executor(executor);
         repl
@@ -1170,6 +1186,7 @@ impl ReplResolveFutures {
                         &mut repl.cwd,
                         &mut repl.random,
                         &mut repl.modules,
+                        &mut repl.secrets_default_entropy,
                         &mut vm,
                     );
                     return Err(MontyException::runtime_error(format!(
@@ -1189,6 +1206,7 @@ impl ReplResolveFutures {
                         &mut repl.cwd,
                         &mut repl.random,
                         &mut repl.modules,
+                        &mut repl.secrets_default_entropy,
                         &mut vm,
                     );
                     None
@@ -1326,6 +1344,7 @@ fn abort_restored(
                 &mut repl.cwd,
                 &mut repl.random,
                 &mut repl.modules,
+                &mut repl.secrets_default_entropy,
                 &mut vm,
             );
             converted
@@ -1375,6 +1394,7 @@ impl ReplSnapshot {
         repl.globals = state.globals;
         repl.cwd = Arc::from(state.cwd);
         repl.random = state.random;
+        mem::replace(&mut repl.secrets_default_entropy, state.secrets_default_entropy).drop_with(&mut repl.heap);
         repl.modules = state.modules;
         repl.commit_executor(executor);
         repl
@@ -1428,6 +1448,7 @@ impl ReplSnapshot {
                         &mut repl.cwd,
                         &mut repl.random,
                         &mut repl.modules,
+                        &mut repl.secrets_default_entropy,
                         &mut vm,
                     );
                     None
@@ -1452,6 +1473,7 @@ fn reclaim_vm_state(
     cwd: &mut Arc<str>,
     random: &mut SessionRandom,
     modules: &mut ModuleCache,
+    secrets_default_entropy: &mut Value,
     vm: &mut VM<'_>,
 ) {
     *globals = vm.take_globals();
@@ -1459,6 +1481,7 @@ fn reclaim_vm_state(
         *cwd = Arc::from(changed);
     }
     *random = mem::take(&mut vm.random);
+    *secrets_default_entropy = mem::replace(&mut vm.secrets_default_entropy, default_entropy_value());
     *modules = mem::take(&mut vm.modules);
 }
 
