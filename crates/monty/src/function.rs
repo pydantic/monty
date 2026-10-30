@@ -1,6 +1,7 @@
 use std::{
     cell::OnceCell,
     fmt::{self, Write},
+    ops::Not,
 };
 
 use crate::{
@@ -98,6 +99,10 @@ pub(crate) struct Function {
     /// Stringized `(name, annotation)` pairs, evaluated by `typing.get_type_hints()`.
     #[serde(rename = "H", default, skip_serializing_if = "<[_]>::is_empty")]
     pub annotations: Box<[(StringId, StringId)]>,
+    /// Whether the `def` follows `from __future__ import annotations`, so
+    /// `get_type_hints()` treats [`Self::annotations`] as PEP 563 forward references.
+    #[serde(rename = "U", default, skip_serializing_if = "Not::not")]
+    pub future_annotations: bool,
     /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
     #[serde(rename = "B")]
     pub code: Code,
@@ -144,14 +149,17 @@ impl Function {
             is_async,
             exact_positional_call: OnceCell::new(),
             annotations: Box::default(),
+            future_annotations: false,
             code,
         }
     }
 
-    /// Attaches the stringized parameter and return annotations.
+    /// Attaches the stringized parameter and return annotations and whether
+    /// they were written under `from __future__ import annotations`.
     #[must_use]
-    pub fn with_annotations(mut self, annotations: Box<[(StringId, StringId)]>) -> Self {
+    pub fn with_annotations(mut self, annotations: Box<[(StringId, StringId)]>, future_annotations: bool) -> Self {
         self.annotations = annotations;
+        self.future_annotations = future_annotations;
         self
     }
 

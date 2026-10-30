@@ -28,7 +28,7 @@ use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
-pub(crate) use namespace::{FrameGlobals, FrameNamespace, function_namespace};
+pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -2779,6 +2779,11 @@ impl<'h> VM<'h> {
             self.push(value);
             Ok(None)
         }
+    }
+
+    /// The function whose frame is executing, `None` for module-level code.
+    pub(crate) fn current_function_id(&self) -> Option<FunctionId> {
+        self.current_frame.function_id
     }
 
     /// Returns the interned name of a module-level global at `slot`, if known.

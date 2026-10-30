@@ -2,49 +2,52 @@
 source: crates/monty-type-checking/tests/main.rs
 expression: actual
 ---
-bad_types.py:26:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
-bad_types.py:27:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float*`
-bad_types.py:28:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
-bad_types.py:29:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `list[int]`
-bad_types.py:32:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | str]`
-bad_types.py:33:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[float]`
-bad_types.py:40:12: error[invalid-return-type] Return type does not match returned value: expected `int`, found `Literal["oops"]`
-bad_types.py:44:12: error[invalid-return-type] Return type does not match returned value: expected `str`, found `Literal[123]`
-bad_types.py:48:12: error[invalid-return-type] Return type does not match returned value: expected `list[int]`, found `list[int | str]`
-bad_types.py:52:12: error[invalid-return-type] Return type does not match returned value: expected `None`, found `Literal[42]`
-bad_types.py:67:11: error[unsupported-operator] Operator `+` is not supported between objects of type `int` and `str`
-bad_types.py:68:11: error[unsupported-operator] Operator `-` is not supported between objects of type `str` and `int`
-bad_types.py:74:1: error[type-assertion-failure] Type `Literal[42]` does not match asserted type `str`
-bad_types.py:77:1: error[type-assertion-failure] Type `list[int]` does not match asserted type `list[str]`
-bad_types.py:89:5: error[unresolved-attribute] Object of type `MyClass` has no attribute `nonexistent_attr`
-bad_types.py:99:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
-bad_types.py:100:23: error[too-many-positional-arguments] Too many positional arguments to function `takes_two`: expected 2, got 3
-bad_types.py:105:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
-bad_types.py:105:16: error[unknown-argument] Argument `c` does not match any known parameter of function `takes_two`
-bad_types.py:111:1: error[call-non-callable] Object of type `Literal[42]` is not callable
-bad_types.py:126:23: error[invalid-key] Unknown key "uuid" for TypedDict `SearchTag`
-bad_types.py:131:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
-bad_types.py:136:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
-bad_types.py:137:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
-bad_types.py:140:7: error[unresolved-attribute] Module `sys` has no member `missing`
-bad_types.py:141:1: error[unresolved-attribute] Module `hashlib` has no member `file_digest`
-bad_types.py:142:16: error[invalid-argument-type] Argument to function `sha256` is incorrect: Expected `bytes`, found `Literal["text"]`
-bad_types.py:143:15: error[invalid-argument-type] Argument to function `loads` is incorrect: Expected `str`, found `Literal[b"a = 1"]`
-bad_types.py:144:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `SupportsRead[bytes]`, found `Literal["pyproject.toml"]`
-bad_types.py:145:24: error[unknown-argument] Argument `parse_float` does not match any known parameter of function `loads`
-bad_types.py:150:7: error[unresolved-attribute] Module `functools` has no member `CacheInfo`
-bad_types.py:160:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
-bad_types.py:161:21: error[too-many-positional-arguments] Too many positional arguments to bound method `_lru_cache_wrapper.__call__`: expected 2, got 3
+bad_types.py:28:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `Literal["hello"]`
+bad_types.py:29:11: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `float*`
+bad_types.py:30:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `Literal[42]`
+bad_types.py:31:11: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `list[int]`
+bad_types.py:34:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[int | str]`
+bad_types.py:35:16: error[invalid-argument-type] Argument to function `takes_list_int` is incorrect: Expected `list[int]`, found `list[float]`
+bad_types.py:42:12: error[invalid-return-type] Return type does not match returned value: expected `int`, found `Literal["oops"]`
+bad_types.py:46:12: error[invalid-return-type] Return type does not match returned value: expected `str`, found `Literal[123]`
+bad_types.py:50:12: error[invalid-return-type] Return type does not match returned value: expected `list[int]`, found `list[int | str]`
+bad_types.py:54:12: error[invalid-return-type] Return type does not match returned value: expected `None`, found `Literal[42]`
+bad_types.py:69:11: error[unsupported-operator] Operator `+` is not supported between objects of type `int` and `str`
+bad_types.py:70:11: error[unsupported-operator] Operator `-` is not supported between objects of type `str` and `int`
+bad_types.py:76:1: error[type-assertion-failure] Type `Literal[42]` does not match asserted type `str`
+bad_types.py:79:1: error[type-assertion-failure] Type `list[int]` does not match asserted type `list[str]`
+bad_types.py:91:5: error[unresolved-attribute] Object of type `MyClass` has no attribute `nonexistent_attr`
+bad_types.py:101:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
+bad_types.py:102:23: error[too-many-positional-arguments] Too many positional arguments to function `takes_two`: expected 2, got 3
+bad_types.py:107:1: error[missing-argument] No argument provided for required parameter `b` of function `takes_two`
+bad_types.py:107:16: error[unknown-argument] Argument `c` does not match any known parameter of function `takes_two`
+bad_types.py:113:1: error[call-non-callable] Object of type `Literal[42]` is not callable
+bad_types.py:128:23: error[invalid-key] Unknown key "uuid" for TypedDict `SearchTag`
+bad_types.py:133:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
+bad_types.py:138:19: error[invalid-argument-type] Argument to function `takes_int` is incorrect: Expected `int`, found `str`
+bad_types.py:139:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
+bad_types.py:142:7: error[unresolved-attribute] Module `sys` has no member `missing`
+bad_types.py:143:1: error[unresolved-attribute] Module `hashlib` has no member `file_digest`
+bad_types.py:144:16: error[invalid-argument-type] Argument to function `sha256` is incorrect: Expected `bytes`, found `Literal["text"]`
+bad_types.py:145:15: error[invalid-argument-type] Argument to function `loads` is incorrect: Expected `str`, found `Literal[b"a = 1"]`
+bad_types.py:146:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `SupportsRead[bytes]`, found `Literal["pyproject.toml"]`
+bad_types.py:147:24: error[unknown-argument] Argument `parse_float` does not match any known parameter of function `loads`
+bad_types.py:152:7: error[unresolved-attribute] Module `functools` has no member `CacheInfo`
 bad_types.py:162:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
-bad_types.py:165:17: error[invalid-argument-type] Argument to `Context.__init__` is incorrect: Expected `dict[type[DecimalException], bool] | list[type[DecimalException]] | None`, found `tuple[<class 'Inexact'>]`
-bad_types.py:166:22: error[invalid-argument-type] Argument to function `localcontext` is incorrect: Expected `dict[type[DecimalException], bool] | list[type[DecimalException]] | None`, found `tuple[<class 'Rounded'>]`
-bad_types.py:173:1: error[no-matching-overload] No overload of function `open` matches arguments
-bad_types.py:174:1: error[no-matching-overload] No overload of function `open` matches arguments
-bad_types.py:175:27: error[invalid-argument-type] Argument to function `open` is incorrect: Expected `str | None`, found `Literal[1]`
-bad_types.py:176:38: error[invalid-argument-type] Argument to bound method `_TextIOBase.write` is incorrect: Expected `str`, found `Literal[b"hello"]`
-bad_types.py:177:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `Buffer`, found `Literal["hello"]`
-bad_types.py:178:1: error[invalid-assignment] Cannot assign to read-only property `closed` on object of type `TextIOWrapper[_WrappedBuffer]`: Attempted assignment to `TextIOWrapper[_WrappedBuffer].closed` here
-bad_types.py:181:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
-bad_types.py:182:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:163:21: error[too-many-positional-arguments] Too many positional arguments to bound method `_lru_cache_wrapper.__call__`: expected 2, got 3
+bad_types.py:164:18: error[invalid-argument-type] Argument to bound method `_lru_cache_wrapper.__call__` is incorrect: Expected `int`, found `Literal["nope"]`
+bad_types.py:167:17: error[invalid-argument-type] Argument to `Context.__init__` is incorrect: Expected `dict[type[DecimalException], bool] | list[type[DecimalException]] | None`, found `tuple[<class 'Inexact'>]`
+bad_types.py:168:22: error[invalid-argument-type] Argument to function `localcontext` is incorrect: Expected `dict[type[DecimalException], bool] | list[type[DecimalException]] | None`, found `tuple[<class 'Rounded'>]`
+bad_types.py:175:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:176:1: error[no-matching-overload] No overload of function `open` matches arguments
+bad_types.py:177:27: error[invalid-argument-type] Argument to function `open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:178:38: error[invalid-argument-type] Argument to bound method `_TextIOBase.write` is incorrect: Expected `str`, found `Literal[b"hello"]`
+bad_types.py:179:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `Buffer`, found `Literal["hello"]`
+bad_types.py:180:1: error[invalid-assignment] Cannot assign to read-only property `closed` on object of type `TextIOWrapper[_WrappedBuffer]`: Attempted assignment to `TextIOWrapper[_WrappedBuffer].closed` here
 bad_types.py:183:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
-bad_types.py:184:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:184:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`
+bad_types.py:185:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:186:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:188:1: error[unresolved-attribute] Module `annotationlib` has no member `call_annotate_function`
+bad_types.py:189:26: error[invalid-argument-type] Argument to `ForwardRef.__init__` is incorrect: Expected `str`, found `Literal[1]`
+bad_types.py:190:42: error[invalid-argument-type] Argument to function `get_annotations` is incorrect: Expected `bool`, found `Literal["yes"]`

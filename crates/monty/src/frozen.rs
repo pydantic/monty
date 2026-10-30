@@ -17,7 +17,7 @@ use crate::{
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{iter, lru_cache},
+    types::{forward_ref, iter, lru_cache},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -36,9 +36,12 @@ pub(crate) enum FrozenFunction {
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
-    /// Evaluate stringized annotations for `typing.get_type_hints`.
+    /// Evaluate stringized annotations for `typing.get_type_hints` and `annotationlib.get_annotations`.
     #[serde(rename = "typing.get_type_hints")]
     TypingGetTypeHints,
+    /// `ForwardRef.evaluate()`, applying the format's rules to one evaluation.
+    #[serde(rename = "annotationlib.ForwardRef.evaluate")]
+    ForwardRefEvaluate,
 }
 
 impl FrozenFunction {
@@ -77,6 +80,7 @@ impl FrozenFunction {
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
             Self::TypingGetTypeHints => typing::GET_TYPE_HINTS_SOURCE,
+            Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
         }
     }
 }
@@ -86,7 +90,7 @@ impl FrozenFunction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
-    /// Evaluate one annotation string in explicit namespaces.
+    /// Evaluate one annotation string in explicit namespaces and name-resolution mode.
     EvalHint,
     /// Call a user `__iter__` without validating its result yet.
     GetIter,

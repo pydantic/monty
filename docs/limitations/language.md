@@ -97,10 +97,11 @@ exactly, except for the comprehension target restriction in
 ## `__future__` imports
 
 `from __future__ import ...` is a compiler directive, not a real import: it
-binds nothing and is accepted as a no-op. Of CPython's ten features, eight
-became mandatory in Python 3.7 or earlier and so are inert there too, and
-`annotations` is a no-op here because Monty already stringizes annotations
-(see [typing.md](typing.md)). Divergences:
+binds nothing. Of CPython's ten features, eight became mandatory in Python 3.7
+or earlier and so are inert there too. `annotations` is recorded on the
+functions and classes defined after it, which `typing.get_type_hints()` then
+evaluates as PEP 563 strings (see [typing.md](typing.md#get_type_hints)); class
+`__annotations__` are strings either way. Divergences:
 
 - **`barry_as_FLUFL`** (PEP 401) raises
     `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
@@ -113,7 +114,8 @@ became mandatory in Python 3.7 or earlier and so are inert there too, and
     far from the import, so it is rejected at the import instead.
 - **Position is not enforced.** CPython requires `__future__` imports to
     precede all other statements (`SyntaxError: "from __future__ imports must occur at the beginning of the file"`);
-    Monty accepts them anywhere.
+    Monty accepts them anywhere, and `annotations` then applies only to the
+    definitions that follow it.
 - `import __future__` (as opposed to `from __future__ import ...`) raises
     `ModuleNotFoundError`; there is no `__future__` module object.
 

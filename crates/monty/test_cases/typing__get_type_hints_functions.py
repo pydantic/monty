@@ -495,3 +495,35 @@ for source in ['\nint', 'int\n', '\x0cint', ' \x0cint', '#c\nint', '  #c\nint', 
 
 # an error does not stop later calls from working
 assert get_type_hints(only_return) == {'return': int}
+
+
+# === Every annotation evaluates before any forward reference resolves ===
+def bind_later():
+    global LaterBound
+    LaterBound = int
+    return str
+
+
+def ordered(a: 'LaterBound', b: bind_later()):
+    pass
+
+
+assert get_type_hints(ordered) == {'a': int, 'b': str}
+
+
+# === Names resolve when the hints are asked for, rebound builtins included ===
+# (last, since the rebinding stands; CPython caches a function's evaluated
+# annotations, so a function evaluated before the rebinding keeps `int` there)
+def before_rebinding(x: int):
+    pass
+
+
+assert get_type_hints(before_rebinding) == {'x': int}
+exec('int = str')
+
+
+def after_rebinding(x: int):
+    pass
+
+
+assert get_type_hints(after_rebinding) == {'x': str}

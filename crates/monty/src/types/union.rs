@@ -124,7 +124,7 @@ impl Union {
     /// Deduplication is a linear scan per member, so a union built from a
     /// huge tuple is quadratic; the loop polls the time limit rather than
     /// running to completion.
-    fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
+    pub(crate) fn from_members(members: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
         defer_drop!(members, vm);
         let mut guard = DropGuard::new(Vec::new(), vm);
         let (flat, vm) = guard.as_parts_mut();

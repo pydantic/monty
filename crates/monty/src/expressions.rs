@@ -977,6 +977,8 @@ pub struct PreparedFunctionDef {
     pub is_async: bool,
     /// Stringized `(name, annotation)` pairs, copied onto the compiled [`Function`](crate::function::Function).
     pub annotations: Vec<(StringId, StringId)>,
+    /// Whether the definition follows `from __future__ import annotations`.
+    pub future_annotations: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).
