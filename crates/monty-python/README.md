@@ -181,6 +181,8 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
+`max_file_bytes` (10 MB) and `max_total_file_bytes` (50 MB) cap the `MemoryFile` content one file and all files may
+grow to; a larger write raises `OSError`.
 Unseeded `random` generators request host entropy only under `os_policy={'random_start': 'call_host'}`.
 Otherwise they use worker OS entropy or the configured seed.
 
