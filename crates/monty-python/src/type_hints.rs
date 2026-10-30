@@ -5,6 +5,7 @@
 //! general encoder would turn a host class into a fake function and reject
 //! `int | None`.
 
+use monty_proto::python::{InstanceStore, py_type_object_to_monty};
 use monty_types::{MontyObject, MontyUuid};
 use pyo3::{
     intern,
@@ -13,26 +14,22 @@ use pyo3::{
     types::{PyDict, PyString, PyType},
 };
 
-use super::{class_instance::InstanceStore, convert::py_type_object_to_monty};
-
-/// The hints of a host function: `typing.get_type_hints(obj)`, falling back to
-/// `obj.__annotations__` (an unresolvable forward reference makes the former
-/// raise), then to `{}`.
-pub fn callable_type_hints(obj: &Bound<'_, PyAny>) -> MontyObject {
+/// The hints of a host function, from `typing.get_type_hints(obj)`. Its
+/// exception (`NameError` for an unresolvable forward reference) is raised in
+/// the sandbox, as CPython raises it.
+pub(crate) fn callable_type_hints(obj: &Bound<'_, PyAny>) -> PyResult<MontyObject> {
     static GET_TYPE_HINTS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
-    let py = obj.py();
     let hints = GET_TYPE_HINTS
-        .import(py, "typing", "get_type_hints")
-        .and_then(|get_type_hints| get_type_hints.call1((obj,)))
-        .or_else(|_| obj.getattr(intern!(py, "__annotations__")))
-        .and_then(|hints| Ok(hints.cast_into::<PyDict>()?));
-    hints.map_or_else(|_| MontyObject::dict([]), |hints| hints_to_monty(&hints))
+        .import(obj.py(), "typing", "get_type_hints")?
+        .call1((obj,))?
+        .cast_into::<PyDict>()?;
+    Ok(hints_to_monty(&hints))
 }
 
 /// The hints of the host class registered under `id`, from its `ClassType`
 /// wrapper's `get_type_hints()`; `{}` when no class is registered there.
-pub fn class_type_hints(py: Python<'_>, store: &InstanceStore, id: &MontyUuid) -> PyResult<MontyObject> {
+pub(crate) fn class_type_hints(py: Python<'_>, store: &InstanceStore, id: &MontyUuid) -> PyResult<MontyObject> {
     let Some(wrapper) = store.get(py, id)? else {
         return Ok(MontyObject::dict([]));
     };

@@ -770,25 +770,24 @@ def unresolvable_hints(url: str, target: 'Unresolvable') -> None:
     pass
 
 
-@pytest.mark.parametrize(
-    'func,expected',
-    [
-        pytest.param(
-            resolvable_hints,
-            snapshot({'a': int, 'b': 'list[str]', 'c': 'test_external.HintTarget', 'd': 'int | None', 'return': str}),
-            id='resolvable',
-        ),
-        pytest.param(
-            unresolvable_hints,
-            # not a `snapshot()`: inline-snapshot cannot render `NoneType`
-            {'url': str, 'target': 'Unresolvable', 'return': type(None)},
-            id='unresolvable',
-        ),
-    ],
-)
-def test_external_function_type_hints(monty_run: RunMonty, func: Any, expected: Any):
+def test_external_function_type_hints(monty_run: RunMonty):
     code = 'from typing import get_type_hints\nget_type_hints(f)'
-    assert monty_run(code, external_lookup={'f': func}) == expected
+    assert monty_run(code, external_lookup={'f': resolvable_hints}) == snapshot(
+        {'a': int, 'b': 'list[str]', 'c': 'test_external.HintTarget', 'd': 'int | None', 'return': str}
+    )
+
+
+def test_external_function_unresolvable_hint_raises(monty_run: RunMonty):
+    # the host's `NameError` is raised in the sandbox, as CPython's `get_type_hints` raises it
+    code = """
+from typing import get_type_hints
+try:
+    get_type_hints(f)
+except NameError as e:
+    result = str(e)
+result
+"""
+    assert monty_run(code, external_lookup={'f': unresolvable_hints}) == snapshot("name 'Unresolvable' is not defined")
 
 
 class UnreprableHint:

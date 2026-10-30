@@ -153,7 +153,7 @@ impl InstanceStore {
     }
 
     /// Looks up the wrapper registered for `uuid` (instance or class type).
-    pub(super) fn get(&self, py: Python<'_>, uuid: &MontyUuid) -> PyResult<Option<Py<PyAny>>> {
+    pub fn get(&self, py: Python<'_>, uuid: &MontyUuid) -> PyResult<Option<Py<PyAny>>> {
         Ok(self
             .objects
             .bind(py)

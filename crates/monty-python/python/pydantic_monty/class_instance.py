@@ -294,19 +294,12 @@ class ClassType(BaseWrapper):
 
     def get_type_hints(self) -> dict[str, Any]:
         """The class's type hints, returned by `typing.get_type_hints()` on the
-        class in the sandbox. Called each time the sandbox asks: falls back to the
-        raw `__annotations__` when a forward reference cannot resolve, and to `{}`
-        when those cannot be read either.
+        class in the sandbox. Called each time the sandbox asks; an exception
+        (`NameError` for an unresolvable forward reference) is raised there.
 
         Override to return different hints, or `{}` to hide them.
         """
-        try:
-            return get_type_hints(self.value)
-        except Exception:
-            try:
-                return dict(getattr(self.value, '__annotations__', {}))
-            except Exception:
-                return {}
+        return get_type_hints(self.value)
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """Routes `__call__` (construction) to `construct`; every other name

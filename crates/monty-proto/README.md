@@ -51,7 +51,8 @@ for the schema and the protocol rules documented alongside it.
   Snapshot compatibility is checked separately using the dump-format version.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
-  used by the `pydantic-monty-client` extension module. The feature pulls in `pyo3` (but never its
+  used by the `pydantic-monty-client` extension module and by the embedded-CPython worker `monty-cpython`
+  (in the private `monty-private` repository). The feature pulls in `pyo3` (but never its
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.
 

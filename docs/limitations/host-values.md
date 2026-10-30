@@ -74,9 +74,7 @@ The host evaluates them only then, never when the function or class crosses, and
 - **Hints other than builtin types become text.**
     A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
     The sandbox cannot resolve the text back to an object.
-- **Python resolves hints with `typing.get_type_hints`** on the host.
-    If that raises (an unresolvable forward reference), the raw `__annotations__` are used instead, so resolved and unresolved hints can mix; if both fail, the sandbox gets `{}`.
-    A hint that cannot be converted (its `repr()` raises, say) is left out.
+- **A hint that cannot be converted is left out** (its `repr()` raises, say), rather than failing the call.
 - **A host function is looked up by name, as a call to it would be.**
     A function the sandbox could not call (a callable passed in `inputs` rather than `external_lookup`) has no hints.
 - **A class wrapped in [`ClassType`][pydantic_monty.ClassType] answers through [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints]**, called each time the sandbox asks.

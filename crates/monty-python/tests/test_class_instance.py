@@ -1357,11 +1357,18 @@ def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='earlier versions evaluate annotations at class creation')
 def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
     # without `from __future__ import annotations`, a name imported only for type
-    # checkers makes `__annotations__` itself raise, so the sandbox gets no hints
+    # checkers makes evaluating the hints raise, which the sandbox sees
     ns: dict[str, Any] = {}
     source = 'from dataclasses import dataclass\n@dataclass\nclass Price:\n    amount: Decimal\n    currency: str'
     # `dont_inherit` drops this module's `from __future__ import annotations`
     exec(compile(source, '<price>', 'exec', dont_inherit=True), ns)
     x = ClassInstance(ns['Price'](1, 'USD'), eager_attrs='all')
-    code = 'from typing import get_type_hints\n(x.currency, get_type_hints(type(x)))'
-    assert monty_run(code, inputs={'x': x}) == snapshot(('USD', {}))
+    code = """
+from typing import get_type_hints
+try:
+    get_type_hints(type(x))
+except NameError as e:
+    result = (x.currency, str(e))
+result
+"""
+    assert monty_run(code, inputs={'x': x}) == snapshot(('USD', "name 'Decimal' is not defined"))

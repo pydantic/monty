@@ -4,8 +4,7 @@
 //! lazy attributes resolve through the session's [`InstanceStore`].
 
 use monty_proto::python::{
-    DecodedArena, InstanceStore, PyExternalModule, callable_type_hints, class_type_hints, exc_py_to_monty,
-    get_docstring, py_to_monty, py_to_monty_value,
+    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, GET_TYPE_HINTS_CALL, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject,
@@ -20,7 +19,11 @@ use pyo3::{
     types::{PyDict, PyMapping, PyTuple, PyType},
 };
 
-use crate::{callback_context, exceptions::MontyConversionError};
+use crate::{
+    callback_context,
+    exceptions::MontyConversionError,
+    type_hints::{callable_type_hints, class_type_hints},
+};
 
 /// Resolves a feed's bare names, dotted module calls, and the OS calls its names answer.
 /// Calls re-read the dict entry, so replacing a callable with a value raises `TypeError`.
@@ -190,12 +193,13 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
 
     /// Answers `typing.get_type_hints` of a host function, resolved by name as a
     /// call to it would be, or of a host class, by its registered wrapper. `{}`
-    /// when the target is malformed or no longer resolves.
+    /// when the target is malformed or no longer resolves; an exception evaluating
+    /// the hints is raised in the sandbox.
     fn type_hints(&self, args: &CallArgs) -> ExtFunctionResult {
         let hints = match TypeHintsTarget::from_call_args(args) {
             Some(TypeHintsTarget::Function(name)) => self
                 .callable(&name)
-                .map(|callable| callable.map_or_else(|| MontyObject::dict([]), |c| callable_type_hints(&c))),
+                .and_then(|callable| callable.map_or_else(|| Ok(MontyObject::dict([])), |c| callable_type_hints(&c))),
             Some(TypeHintsTarget::Class(id)) => class_type_hints(self.py, self.instances, &id),
             None => Ok(MontyObject::dict([])),
         };
