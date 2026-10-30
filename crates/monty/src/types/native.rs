@@ -22,7 +22,7 @@ use crate::{
     builtins::{iter::builtin_iter, object::object_class_attr, type_::builtin_type},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
-    modules::{collections, csv, hashlib, itertools},
+    modules::{collections, csv, hashlib, itertools, pydantic},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, TimeZone, Tuple,
         bytes, complex, date, datetime, decimal, dict, path,
@@ -1000,6 +1000,19 @@ native_types! {
     /// `statistics.StatisticsError`, raised for empty or too-small data sets.
     StatisticsError("statistics.StatisticsError", ValueError)
         .exc(ExcType::StatisticsError),
+    /// `pydantic_core.ValidationError`, carrying its line errors as plain data.
+    ValidationError("pydantic_core._pydantic_core.ValidationError", ValueError)
+        .exc(ExcType::ValidationError)
+        .class_method(pydantic::errors::class_method),
+    /// `pydantic_core.PydanticSerializationError`, for a value with no JSON form.
+    PydanticSerializationError("pydantic_core._pydantic_core.PydanticSerializationError", ValueError)
+        .exc(ExcType::PydanticSerializationError),
+    /// `pydantic.errors.PydanticUserError`, the base of pydantic's API-misuse errors.
+    PydanticUserError("pydantic.errors.PydanticUserError", RuntimeError)
+        .exc(ExcType::PydanticUserError),
+    /// `pydantic.errors.PydanticSchemaGenerationError`, for a type with no schema.
+    PydanticSchemaGenerationError("pydantic.errors.PydanticSchemaGenerationError", PydanticUserError)
+        .exc(ExcType::PydanticSchemaGenerationError),
 }
 
 #[cfg(test)]
