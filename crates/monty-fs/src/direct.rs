@@ -10,10 +10,10 @@ use monty_types::{FileMode, MontyObject, normalize_virtual_path, scan::EntryInfo
 
 use super::{
     common::{
-        MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes, host_append_bytes,
-        host_append_text, host_is_dir, host_is_file, host_iterdir, host_list_visible_dir_entries, host_mkdir,
-        host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink, host_write_bytes, host_write_text, map_io,
-        reject_non_regular,
+        DIRECTORY_WRITE_BYTES, MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes,
+        host_append_bytes, host_append_text, host_is_dir, host_is_file, host_iterdir, host_list_visible_dir_entries,
+        host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink, host_write_bytes,
+        host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -188,9 +188,35 @@ fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<M
 }
 
 /// Creates a directory, using `create_dir_all` only when `parents` is set.
-fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &MountContext<'_>) -> Result<MontyObject, MountError> {
+///
+/// Each directory it will create, parents included, is charged
+/// [`DIRECTORY_WRITE_BYTES`] against the write quota before anything is created.
+fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
-    host_mkdir(ctx.mount_dir, target.for_dir_op(), parents, exist_ok, path)
+    let rel = target.for_dir_op();
+    let charge = if ctx.write_bytes_limit.is_some() {
+        missing_dirs(ctx.mount_dir, rel, parents).saturating_mul(DIRECTORY_WRITE_BYTES)
+    } else {
+        0
+    };
+    check_write_limit(charge, ctx)?;
+    let result = host_mkdir(ctx.mount_dir, rel, parents, exist_ok, path)?;
+    commit_write_bytes(charge, ctx);
+    Ok(result)
+}
+
+/// How many directories `mkdir` would create at `rel`: with `parents`, every
+/// component from the shortest absent prefix on; without, the target if absent.
+fn missing_dirs(dir: &Dir, rel: &str, parents: bool) -> usize {
+    let absent = |prefix: &str| dir.metadata(prefix).is_err();
+    if parents {
+        let components: Vec<&str> = rel.split('/').collect();
+        (1..=components.len())
+            .find(|&n| absent(&components[..n].join("/")))
+            .map_or(0, |n| components.len() + 1 - n)
+    } else {
+        usize::from(absent(rel))
+    }
 }
 
 /// Renames an entry within the same mount.

@@ -31,6 +31,7 @@
 //! - [`MountMode::ReadOnly`] — reads work, writes raise `PermissionError`
 //! - [`MountMode::OverlayMemory`] — reads fall through to host; writes stored in memory
 
+pub use common::DIRECTORY_WRITE_BYTES;
 pub use error::MountError;
 pub use mount_mode::MountMode;
 pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountRoot, MountTable};
