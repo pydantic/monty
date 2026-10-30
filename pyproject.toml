@@ -178,8 +178,11 @@ exclude = [
     # test, which pyright reads as a malformed forward reference
     "crates/monty/test_cases/class__annotations.py",
     # annotations that are not type expressions (`x: 1`, a string naming a
-    # variable) are evaluated by `get_type_hints` under test
+    # variable, bare generics) are evaluated by `get_type_hints` under test
     "crates/monty/test_cases/typing__get_type_hints.py",
+    "crates/monty/test_cases/typing__get_type_hints_classes.py",
+    "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
+    "crates/monty/test_cases/typing__get_type_hints_functions.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

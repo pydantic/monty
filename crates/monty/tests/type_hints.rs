@@ -1,7 +1,7 @@
 //! `typing.get_type_hints()` over host functions and classes, and hints surviving dump/restore.
 //!
-//! Sandbox-only behaviour is covered by `test_cases/typing__get_type_hints.py`;
-//! these cases need a host to answer the `get_type_hints` OS call or a dump to round-trip.
+//! `test_cases/typing__get_type_hints*.py` compare against CPython, the `_external` ones through
+//! the datatest harness's host; these cases check the raw OS call, unresolved text hints and dumps.
 
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{

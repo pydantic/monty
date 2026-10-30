@@ -129,6 +129,8 @@ fn run_snippet(
 ///
 /// Takes borrowed `globals` / `locals` dict ids (`None` globals means the
 /// module slots); `globals_first` makes bound slot globals shadow `locals`.
+/// A `forward_ref` compiles as CPython's `ForwardRef` does: no leading
+/// indentation, and a compile error raises its "must be an expression" error.
 /// The namespace is built here rather than by
 /// `snippet_namespace`, which would inherit the calling frame's: the caller is
 /// frozen code. Each distinct text and mode compiles once per session, so a
@@ -138,10 +140,22 @@ pub(crate) fn eval_hint(
     globals: Option<HeapId>,
     locals: Option<HeapId>,
     globals_first: bool,
+    forward_ref: bool,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
     let text = snippet_source("eval", source, vm)?;
-    reject_null_bytes(&text)?;
+    // `eval()` strips leading spaces and tabs, but `compile()` rejects them
+    if forward_ref && text.starts_with([' ', '\t']) {
+        return Err(ExcType::forward_ref_not_expression(&text));
+    }
+    let not_expression = |err: RunError| {
+        if forward_ref && err.is_catchable(ExcType::SyntaxError) {
+            ExcType::forward_ref_not_expression(&text)
+        } else {
+            err
+        }
+    };
+    reject_null_bytes(&text).map_err(not_expression)?;
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
@@ -158,7 +172,7 @@ pub(crate) fn eval_hint(
     if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
         vm.push_snippet_frame(func_id, None, namespace)?;
     } else {
-        let func_id = compile_and_push(SnippetSource::Eval, &text, names, namespace, vm)?;
+        let func_id = compile_and_push(SnippetSource::Eval, &text, names, namespace, vm).map_err(not_expression)?;
         vm.interns.set_hint_snippet(names, text, func_id);
     }
     Ok(CallResult::FramePushed)

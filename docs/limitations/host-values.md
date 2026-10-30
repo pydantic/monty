@@ -74,6 +74,8 @@ The host evaluates them only then, never when the function or class crosses, and
 - **Hints other than builtin types become text.**
     A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
     The sandbox cannot resolve the text back to an object.
+- **`globalns` and `localns` are not sent to the host.**
+    A host that stores its annotations as strings (`from __future__ import annotations`) resolves them in its own module, where CPython would use the namespaces given.
 - **A hint that cannot be converted is left out** (its `repr()` raises, say), rather than failing the call.
 - **A host function is looked up by name, as a call to it would be.**
     A function the sandbox could not call (a callable passed in `inputs` rather than `external_lookup`) has no hints.

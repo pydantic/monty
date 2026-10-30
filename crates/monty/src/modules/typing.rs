@@ -116,7 +116,7 @@ def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, t
     hints = {}
     for name, hint, globalns, localns, fwd_globalns, fwd_localns, fwd_globals_first in entries:
         if isinstance_(hint, str_):
-            hint = eval_hint(hint, globalns, localns, False)
+            hint = eval_hint(hint, globalns, localns, False, False)
         # Each frame is [hint, resolved args or None, forward refs seen, next arg index].
         stack = [[hint, None, (), 0]]
         while stack:
@@ -126,7 +126,7 @@ def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, t
                 seen = frame[2]
                 while isinstance_(hint, str_) and hint not in seen:
                     seen = seen + (hint,)
-                    hint = eval_hint(hint, fwd_globalns, fwd_localns, fwd_globals_first)
+                    hint = eval_hint(hint, fwd_globalns, fwd_localns, fwd_globals_first, True)
                 if isinstance_(hint, generic_alias) or isinstance_(hint, union):
                     frame[0] = hint
                     frame[1] = []
@@ -452,6 +452,8 @@ struct EvalHintArgs {
     locals: Value,
     #[from_args(pos_only)]
     globals_first: Value,
+    #[from_args(pos_only)]
+    forward_ref: Value,
 }
 
 /// Frozen helper: evaluates one annotation string; the namespaces are dicts or
@@ -462,10 +464,19 @@ pub(crate) fn call_eval_hint(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Call
         globals,
         locals,
         globals_first,
+        forward_ref,
     } = EvalHintArgs::from_args(args, vm)?;
     defer_drop!(source, vm);
     defer_drop!(globals, vm);
     defer_drop!(locals, vm);
     let globals_first = matches!(globals_first, Value::Bool(true));
-    eval_exec::eval_hint(source, globals.ref_id(), locals.ref_id(), globals_first, vm)
+    let forward_ref = matches!(forward_ref, Value::Bool(true));
+    eval_exec::eval_hint(
+        source,
+        globals.ref_id(),
+        locals.ref_id(),
+        globals_first,
+        forward_ref,
+        vm,
+    )
 }

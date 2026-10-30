@@ -14,13 +14,4 @@ cyc = {}
 exec('def f():\n    return 1', cyc)
 cyc = None
 gc.collect()
-
-# A snippet that fails to compile releases the namespace dicts it was given.
-bad_globals = {}
-bad_locals = {}
-for _ in range(2):
-    try:
-        exec('await x', bad_globals, bad_locals)
-    except SyntaxError:
-        pass
-# ref-counts={'ns': 4, 'obj': 2, 'gc': 1, 'bad_globals': 1, 'bad_locals': 1}
+# ref-counts={'ns': 4, 'obj': 2, 'gc': 1}

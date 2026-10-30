@@ -190,6 +190,16 @@ pub(crate) trait ExcTypeExt: Sized {
         }
     }
 
+    /// Creates the SyntaxError `typing.get_type_hints()` raises for a forward
+    /// reference that does not compile as an expression, e.g. `' int'` or `'x = 1'`.
+    fn forward_ref_not_expression(source: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::SyntaxError,
+            format!("Forward reference must be an expression -- got {}", StringRepr(source)),
+        )
+        .into()
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.
