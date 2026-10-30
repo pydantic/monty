@@ -3,6 +3,7 @@
 //! `test_cases/typing__get_type_hints*.py` compare against CPython, the `_external` ones through
 //! the datatest harness's host; these cases check the raw OS call, unresolved text hints and dumps.
 
+use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, GET_TYPE_HINTS_CALL, MontyObject, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
@@ -153,4 +154,74 @@ h = get_type_hints(A)
         runner.run_no_limits(vec![]).unwrap(),
         MontyObject::tuple((0..4).map(|_| MontyObject::bool(true))),
     );
+}
+
+/// `FORWARDREF` still asks the host, which evaluates its own hints.
+#[test]
+fn host_hints_in_forwardref_format_come_from_the_host() {
+    let progress = start(
+        "from annotationlib import Format\nfrom typing import get_type_hints\nget_type_hints(f, format=Format.FORWARDREF)",
+        MontyObject::function("fetch", None),
+    );
+    let target = TypeHintsTarget::Function("fetch".to_owned());
+    let result = answer_hints(progress, &target, host_hints()).into_complete().unwrap();
+    assert_eq!(result, host_hints());
+}
+
+/// The host never sends annotation text, so `STRING` has nothing to answer with.
+#[test]
+fn host_hints_in_string_format_are_unsupported() {
+    let mut runner = MontyRun::new(
+        "from annotationlib import Format\nfrom typing import get_type_hints\nget_type_hints(f, format=Format.STRING)"
+            .to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = runner
+        .run_no_limits(vec![MontyObject::function("fetch", None)])
+        .unwrap_err();
+    assert_snapshot!(error.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 3, in <module>
+        get_type_hints(f, format=Format.STRING)
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: get_type_hints() format=Format.STRING is not supported for host functions and classes
+    "#);
+}
+
+/// A `FORWARDREF` evaluation suspended on a host call dumps and restores with its
+/// stringifier state, so the unresolved name still composes with the host's value.
+#[test]
+fn forward_ref_evaluation_survives_dump_and_restore() {
+    let code = "\
+from annotationlib import Format
+from typing import get_type_hints
+def g(a: Later | f(), b: list[Later]):
+    pass
+hints = get_type_hints(g, format=Format.FORWARDREF)
+(hints['a'].__forward_arg__, hints['a'].__owner__ is g, hints['b'].__args__[0].__forward_arg__)";
+    let progress = start(code, MontyObject::function("fetch", None));
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session")
+    };
+    for progress in [progress, *loaded] {
+        let call = progress.into_function_call().expect("expected the fetch() call");
+        assert_eq!(call.function_name, "fetch");
+        let result = call
+            .resume(MontyObject::int(1), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(
+            result,
+            MontyObject::tuple([
+                MontyObject::string("Later | 1"),
+                MontyObject::bool(true),
+                MontyObject::string("Later"),
+            ]),
+        );
+    }
 }

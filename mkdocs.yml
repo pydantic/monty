@@ -59,6 +59,7 @@ nav:
       - Format mini-language: 'limitations/format.md'
       - str.encode() / bytes.decode(): 'limitations/encoding.md'
       - typing: 'limitations/typing.md'
+      - annotationlib: 'limitations/annotationlib.md'
       - asyncio: 'limitations/asyncio.md'
       - Standard library modules: 'limitations/modules.md'
       - base64: 'limitations/base64.md'

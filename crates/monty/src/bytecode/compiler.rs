@@ -925,7 +925,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         )
-        .with_annotations(func_def.annotations.clone().into_boxed_slice());
+        .with_annotations(
+            func_def.annotations.clone().into_boxed_slice(),
+            func_def.future_annotations,
+        );
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)

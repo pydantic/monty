@@ -182,8 +182,15 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let class_id = vm
-        .heap
-        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))));
+    // A compiled class body ends in this call, so its frame's function carries
+    // the body's `from __future__ import annotations` state.
+    let future_annotations = vm
+        .current_function_id()
+        .is_some_and(|id| vm.interns.get_function(id).future_annotations);
+    let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
+        class_name,
+        namespace_dict,
+        future_annotations,
+    ))));
     Ok(Value::Ref(class_id))
 }
