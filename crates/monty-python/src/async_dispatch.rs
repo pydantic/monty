@@ -26,8 +26,9 @@ use crate::external::{
 };
 
 /// Answers an intercepted OS call (see
-/// [`is_intercepted_os_call`](crate::external::is_intercepted_os_call)) from `names`,
-/// returning `CallResult::ModuleCoroutine` when a factory must be awaited first.
+/// [`is_intercepted_os_call`](crate::external::is_intercepted_os_call)): imports and stubs
+/// from the host's names and modules, type hints from the named function or the `ClassType`
+/// in `instances`. Returns `CallResult::ModuleCoroutine` when a factory must be awaited first.
 pub(crate) fn dispatch_intercepted_os_call(
     function_name: &str,
     args: &CallArgs,

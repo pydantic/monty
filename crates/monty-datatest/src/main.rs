@@ -743,7 +743,7 @@ fn fixture_type_hints(target: &TypeHintsTarget) -> MontyObject {
                 ("b", ty(MontyType::Str)),
                 ("return", ty(MontyType::Str)),
             ],
-            "return_value" => vec![("x", text("object")), ("return", text("object"))],
+            "return_value" => vec![("x", ty(MontyType::Object)), ("return", ty(MontyType::Object))],
             "get_list" => vec![("return", text("list[int]"))],
             "raise_error" => vec![
                 ("exc_type", ty(MontyType::Str)),
@@ -754,7 +754,7 @@ fn fixture_type_hints(target: &TypeHintsTarget) -> MontyObject {
             "make_mutable_point" => vec![("return", text("test_fixtures.MutablePoint"))],
             "make_user" => vec![("name", ty(MontyType::Str)), ("return", text("test_fixtures.User"))],
             "make_empty" => vec![("return", text("test_fixtures.Empty"))],
-            "async_call" => vec![("x", text("object")), ("return", text("asyncio.Future[object]"))],
+            "async_call" => vec![("x", ty(MontyType::Object)), ("return", text("asyncio.Future[object]"))],
             "async_fail" => vec![
                 ("exc_type", ty(MontyType::Str)),
                 ("message", ty(MontyType::Str)),

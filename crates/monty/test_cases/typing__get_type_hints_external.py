@@ -28,6 +28,7 @@ assert list(get_type_hints(type(make_user('Samuel')))) == ['name', 'active']
 # === Host module attributes ===
 assert get_type_hints(tools.add_ints) == {'a': int, 'b': int, 'return': int}
 assert get_type_hints(tools.concat_strings) == {'a': str, 'b': str, 'return': str}
+assert get_type_hints(return_value) == {'x': object, 'return': object}
 assert get_type_hints(tools.nested.return_value) == get_type_hints(return_value)
 assert get_type_hints(tools) == {}
 

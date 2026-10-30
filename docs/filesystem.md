@@ -281,8 +281,9 @@ Use host storage whose availability and side effects are acceptable for the work
 ## The `os` callback
 
 Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
-[Host module](host-functions.md#importing-host-modules) calls (`import` and `import_stubs`) use the checkout's
-`external_modules`, and `typing.get_type_hints` the host function or class it names; none reach this handler.
+Two kinds of call never reach this handler: [host module](host-functions.md#importing-host-modules) calls
+(`import` and `import_stubs`) are answered from the checkout's `external_modules`, and `typing.get_type_hints` of a
+host function or class is answered by that function or class.
 An import of a module the checkout does not provide reaches it first, before the mounts, as `Path.read_text` of
 `<cwd>/name/__init__.py` and `<cwd>/name.py` (see [importing modules](#importing-modules)): return the source of a
 file you serve, and answer one you do not with `NOT_HANDLED`, so the mounts are read next.

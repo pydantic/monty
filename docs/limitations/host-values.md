@@ -76,7 +76,8 @@ The host evaluates them only then, never when the function or class crosses, and
     The sandbox cannot resolve the text back to an object.
 - **`globalns` and `localns` are not sent to the host.**
     A host that stores its annotations as strings (`from __future__ import annotations`) resolves them in its own module, where CPython would use the namespaces given.
-- **A hint that cannot be converted is left out** (its `repr()` raises, say), rather than failing the call.
+- **An error from the host's `typing.get_type_hints` is raised in the sandbox**, as CPython raises it: a `NameError` for an unresolvable forward reference, say.
+    Only a hint that cannot be converted (its `repr()` raises, say) is left out rather than failing the call.
 - **A host function is looked up by name, as a call to it would be.**
     A function the sandbox could not call (a callable passed in `inputs` rather than `external_lookup`) has no hints.
 - **A class wrapped in [`ClassType`][pydantic_monty.ClassType] answers through [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints]**, called each time the sandbox asks.
