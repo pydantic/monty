@@ -720,6 +720,10 @@ pub enum StaticStrings {
     Buffering,
     /// `sys.builtin_module_names` attribute.
     BuiltinModuleNames,
+    /// Kwarg name `by_alias` — `TypeAdapter` methods.
+    ByAlias,
+    /// Kwarg name `by_name` — `TypeAdapter` methods.
+    ByName,
     /// `sys.byteorder` attribute.
     Byteorder,
     /// `bytes_per_sep` parameter of `binascii.hexlify()`.
@@ -814,6 +818,8 @@ pub enum StaticStrings {
     Compile,
     /// `itertools.compress()` function.
     Compress,
+    /// Kwarg name `config` — `TypeAdapter()`.
+    Config,
     /// `complex.conjugate()` method.
     Conjugate,
     /// Kwarg name `context` — the `decimal` methods.
@@ -1009,6 +1015,10 @@ pub enum StaticStrings {
     DstDirFd,
     /// `json.dump()` function.
     Dump,
+    /// `dump_json()` method of `pydantic.TypeAdapter`.
+    DumpJson,
+    /// `dump_python()` method of `pydantic.TypeAdapter`.
+    DumpPython,
     /// `json.dumps()` function.
     Dumps,
     /// `__all__` — the names `from m import *` binds from a module.
@@ -1205,6 +1215,8 @@ pub enum StaticStrings {
     Expanduser,
     /// `os.path.expandvars()` function.
     Expandvars,
+    /// Kwarg name `experimental_allow_partial` — `TypeAdapter` methods.
+    ExperimentalAllowPartial,
     /// `math.expm1()` function.
     Expm1,
     /// `DecimalTuple.exponent` field.
@@ -1218,6 +1230,8 @@ pub enum StaticStrings {
     ExtendedContext,
     /// `deque.extendleft()` method.
     Extendleft,
+    /// Kwarg name `extra` — `TypeAdapter` methods.
+    Extra,
     /// `extrasaction` parameter and attribute of `csv.DictWriter`.
     Extrasaction,
     /// `os.extsep` constant name.
@@ -1312,6 +1326,8 @@ pub enum StaticStrings {
     Fp,
     /// `math.frexp()` function.
     Frexp,
+    /// Kwarg name `from_attributes` — `TypeAdapter.validate_python()`.
+    FromAttributes,
     /// `from_exception_data()` class method of `pydantic.ValidationError`.
     FromExceptionData,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
@@ -1635,6 +1651,8 @@ pub enum StaticStrings {
     /// `json.JSONDecodeError` exception.
     #[strum(serialize = "JSONDecodeError")]
     JsonDecodeError,
+    /// `json_schema()` method of `pydantic.TypeAdapter`.
+    JsonSchema,
     /// `kappa` parameter of `random.vonmisesvariate()`.
     Kappa,
     /// Kwarg name `keepends` — `str.splitlines(keepends=...)`.
@@ -1989,6 +2007,9 @@ pub enum StaticStrings {
     Pardir,
     /// `Path.parent` property.
     Parent,
+    /// Kwarg name `_parent_depth` — `TypeAdapter()`.
+    #[strum(serialize = "_parent_depth")]
+    ParentDepth,
     /// Value of `os.pardir`.
     #[strum(serialize = "..")]
     ParentDirString,
@@ -2604,6 +2625,9 @@ pub enum StaticStrings {
     /// `typing.Type` marker.
     #[strum(serialize = "Type")]
     Type,
+    /// `pydantic.TypeAdapter` class.
+    #[strum(serialize = "TypeAdapter")]
+    TypeAdapter,
     /// `type` key of a `ValidationError.errors()` entry.
     #[strum(serialize = "type")]
     TypeKey,
@@ -2697,6 +2721,12 @@ pub enum StaticStrings {
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
+    /// `validate_json()` method of `pydantic.TypeAdapter`.
+    ValidateJson,
+    /// `validate_python()` method of `pydantic.TypeAdapter`.
+    ValidatePython,
+    /// `validate_strings()` method of `pydantic.TypeAdapter`.
+    ValidateStrings,
     /// `pydantic.ValidationError` exception class.
     #[strum(serialize = "ValidationError")]
     ValidationError,

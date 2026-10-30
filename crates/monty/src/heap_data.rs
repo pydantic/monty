@@ -167,6 +167,8 @@ macro_rules! heap_payloads {
             Union(inline $crate::types::Union),
             /// An `annotationlib.ForwardRef`, also the stringifier a `FORWARDREF` evaluation composes.
             ForwardRef(boxed $crate::types::ForwardRef),
+            /// A `pydantic.TypeAdapter` and its validator arena.
+            TypeAdapter(boxed $crate::types::TypeAdapter),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -274,6 +276,7 @@ impl HeapData {
             | Self::GenericAlias(_)
             | Self::Union(_)
             | Self::ForwardRef(_)
+            | Self::TypeAdapter(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -353,6 +356,7 @@ impl HeapData {
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
             Self::ForwardRef(_) => Type::ForwardRef,
+            Self::TypeAdapter(_) => Type::TypeAdapter,
             Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,

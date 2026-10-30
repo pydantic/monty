@@ -151,6 +151,7 @@ macro_rules! forward_py_value {
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
             Self::ForwardRef($value) => $body,
+            Self::TypeAdapter($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
