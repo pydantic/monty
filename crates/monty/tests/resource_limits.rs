@@ -1752,6 +1752,27 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
     );
 }
 
+/// Subroutine calls, a fancy-regex extension CPython lacks, are rejected before fancy-regex
+/// compiles them, with CPython's error.
+#[test]
+fn re_subroutine_call_is_rejected_before_compiling() {
+    let code = r"
+import re
+re.compile('(a\\g<1>?\\g<1>?\\g<1>?)')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let start = Instant::now();
+    let exc = ex.run_no_limits(vec![]).unwrap_err();
+
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "rejection should be immediate"
+    );
+    assert_eq!(exc.exc_type(), ExcType::RePatternError);
+    assert_eq!(exc.message(), Some("bad escape \\g at position 2"));
+}
+
 /// User slots that recurse through native dispatch must fail before exhausting the Rust stack.
 #[test]
 fn recursive_instance_protocols_are_bounded() {
