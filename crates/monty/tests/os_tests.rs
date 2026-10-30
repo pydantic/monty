@@ -87,8 +87,10 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
         | OsFunctionCall::AsyncSystemSleep(_) => MontyObject::none(),
-        // never mocked: these tests import nothing the sandbox lacks
-        OsFunctionCall::Import(_) | OsFunctionCall::ImportStubs(_) => MontyObject::dict([]),
+        // never mocked: these tests import nothing the sandbox lacks and ask no host for hints
+        OsFunctionCall::Import(_) | OsFunctionCall::ImportStubs(_) | OsFunctionCall::GetTypeHints(_) => {
+            MontyObject::dict([])
+        }
         OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
             year: 2023,
             month: 11,

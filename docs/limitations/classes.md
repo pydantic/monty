@@ -458,12 +458,7 @@ every construction request. Divergences:
     rather than silently dropping the binding. A walrus inside a lambda *body*
     (`f = lambda: (z := 1)`) binds in the lambda's own scope and works. A walrus
     in a comprehension in the class body is also rejected (CPython rejects that
-    too, but as a `SyntaxError` with different wording). A walrus in an
-    *annotation* (`x: (y := int) = 5`) runs in Monty, since annotation
-    expressions are captured as source text (stringized) and never evaluated, so
-    the walrus never binds; CPython raises `SyntaxError`. This follows from
-    annotations never being evaluated, so it would change if they ever are (see
-    [typing.md](typing.md)).
+    too, but as a `SyntaxError` with different wording).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `object`

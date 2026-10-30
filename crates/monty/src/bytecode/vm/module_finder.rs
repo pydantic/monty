@@ -253,6 +253,7 @@ impl VM<'_> {
         let frame_namespace = Box::new(FrameNamespace::Snippet {
             globals: FrameGlobals::Dict(namespace),
             locals: None,
+            globals_first: false,
         });
         // TODO(site-packages): reuse compiled code across sessions; a large
         // package otherwise recompiles every module in every session.

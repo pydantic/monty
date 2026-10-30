@@ -22,6 +22,7 @@ mod pool;
 mod print_target;
 mod snapshot;
 mod telemetry;
+mod type_hints;
 mod version;
 
 // The Python API cannot construct a Rust disconnect without transport evidence.

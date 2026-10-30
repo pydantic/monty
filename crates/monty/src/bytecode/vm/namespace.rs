@@ -7,7 +7,7 @@
 //! globals through that dict at every call. [`FrameNamespace`] records which
 //! case a frame is in; the descriptor owns the dict references it names.
 
-use std::iter;
+use std::{iter, ops::Not};
 
 use ahash::AHashSet;
 
@@ -54,6 +54,10 @@ pub(crate) enum FrameNamespace {
         globals: FrameGlobals,
         /// The snippet's locals dict, if it runs with one distinct from its globals.
         locals: Option<HeapId>,
+        /// Bound slot globals shadow `locals`: the lookup order CPython's
+        /// `get_type_hints` gives a class forward reference (module, then class).
+        #[serde(default, skip_serializing_if = "Not::not")]
+        globals_first: bool,
     },
 }
 
@@ -89,7 +93,7 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
     fn drop_with(self, ctx: &mut C) {
         match *self {
             FrameNamespace::Function { globals } => ctx.heap_mut().dec_ref(globals),
-            FrameNamespace::Snippet { globals, locals } => {
+            FrameNamespace::Snippet { globals, locals, .. } => {
                 if let FrameGlobals::Dict(globals) = globals {
                     ctx.heap_mut().dec_ref(globals);
                 }
@@ -122,6 +126,7 @@ impl<'h> VM<'h> {
                 Some(FrameNamespace::Snippet {
                     globals,
                     locals: frame_locals,
+                    ..
                 }) => {
                     let (globals, frame_locals) = (*globals, *frame_locals);
                     if let FrameGlobals::Dict(dict) = globals {
@@ -161,15 +166,23 @@ impl<'h> VM<'h> {
             (FrameGlobals::Slots, Some(_)) => SnippetNames::NameOverSlots,
             (FrameGlobals::Slots, None) => SnippetNames::Slots,
         };
-        Ok((names, Box::new(FrameNamespace::Snippet { globals, locals })))
+        Ok((
+            names,
+            Box::new(FrameNamespace::Snippet {
+                globals,
+                locals,
+                globals_first: false,
+            }),
+        ))
     }
 
     /// Admits a snippet before publishing its compilation and installing its frame.
     /// A recursion-limit rejection discards both the overlay and the owned namespace.
+    /// `overlay` is `None` when `func_id` is already committed (a cached hint snippet).
     pub(crate) fn push_snippet_frame(
         &mut self,
         func_id: FunctionId,
-        overlay: CompileInterns<'_>,
+        overlay: Option<CompileInterns<'_>>,
         namespace: Box<FrameNamespace>,
     ) -> RunResult<()> {
         let mut namespace_guard = DropGuard::new(namespace, self);
@@ -178,7 +191,9 @@ impl<'h> VM<'h> {
         vm.incr_recursion()?;
         // Publication makes the code borrowable for the run. Nothing fallible or
         // re-entrant may intervene between admission and installing the frame.
-        overlay.commit();
+        if let Some(overlay) = overlay {
+            overlay.commit();
+        }
         let (namespace, vm) = namespace_guard.into_parts();
         let code = &vm.interns.get_function(func_id).code;
         let frame = CallFrame::new_function(
@@ -206,6 +221,7 @@ impl<'h> VM<'h> {
                 | FrameNamespace::Snippet {
                     globals: FrameGlobals::Dict(dict),
                     locals: None,
+                    ..
                 },
             ) => {
                 let dict = *dict;
@@ -215,6 +231,7 @@ impl<'h> VM<'h> {
             Some(FrameNamespace::Snippet {
                 globals: FrameGlobals::Slots,
                 locals: None,
+                ..
             }) => self.snapshot_globals()?,
             Some(FrameNamespace::Function { .. }) => self.snapshot_locals()?,
             None if self.namespace_frame().function_id.is_none() => self.snapshot_globals()?,
@@ -251,10 +268,19 @@ impl<'h> VM<'h> {
         let (globals, locals) = self.frame_namespace();
         if flags & NAME_GLOBAL_ONLY == 0
             && let Some(locals) = locals
-            && let Some(value) = self.namespace_get(locals, name_id)?
         {
-            self.push(value);
-            return Ok(None);
+            if globals == FrameGlobals::Slots
+                && self.frame_globals_first()
+                && !matches!(self.globals[usize::from(slot)], Value::Undefined)
+            {
+                let value = self.globals[usize::from(slot)].clone_with_heap(self.heap);
+                self.push(value);
+                return Ok(None);
+            }
+            if let Some(value) = self.namespace_get(locals, name_id)? {
+                self.push(value);
+                return Ok(None);
+            }
         }
         match globals {
             FrameGlobals::Slots if flags & NAME_CALLABLE != 0 => {
@@ -384,8 +410,19 @@ impl<'h> VM<'h> {
         match self.current_frame.namespace.as_deref() {
             None => (FrameGlobals::Slots, None),
             Some(FrameNamespace::Function { globals }) => (FrameGlobals::Dict(*globals), None),
-            Some(FrameNamespace::Snippet { globals, locals }) => (*globals, *locals),
+            Some(FrameNamespace::Snippet { globals, locals, .. }) => (*globals, *locals),
         }
+    }
+
+    /// Whether the current frame is a snippet whose bound slot globals shadow its locals.
+    fn frame_globals_first(&self) -> bool {
+        matches!(
+            self.current_frame.namespace.as_deref(),
+            Some(FrameNamespace::Snippet {
+                globals_first: true,
+                ..
+            })
+        )
     }
 
     /// Looks `name_id` up in a namespace dict, returning an owned value.

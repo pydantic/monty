@@ -66,6 +66,26 @@ A host `Decimal` whose coefficient exceeds 4300 digits is rejected as an invalid
 A trapped decimal signal reaching a Python host is the real `decimal` exception class, but its `args` hold the
 message string rather than CPython's list of condition classes.
 
+## Type hints
+
+`typing.get_type_hints()` of a host function or host class in the sandbox asks the host for its hints (see [typing.md](typing.md#get_type_hints)).
+The host evaluates them only then, never when the function or class crosses, and the sandbox returns them as the host answers.
+
+- **Hints other than builtin types become text.**
+    A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
+    The sandbox cannot resolve the text back to an object.
+- **`globalns` and `localns` are not sent to the host.**
+    A host that stores its annotations as strings (`from __future__ import annotations`) resolves them in its own module, where CPython would use the namespaces given.
+- **An error from the host's `typing.get_type_hints` is raised in the sandbox**, as CPython raises it: a `NameError` for an unresolvable forward reference, say.
+    Only a hint that cannot be converted (its `repr()` raises, say) is left out rather than failing the call.
+- **A host function is looked up by name, as a call to it would be.**
+    A function the sandbox could not call (a callable passed in `inputs` rather than `external_lookup`) has no hints.
+- **A class wrapped in [`ClassType`][pydantic_monty.ClassType] answers through [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints]**, called each time the sandbox asks.
+    `HostCls.__annotations__` is not set in the sandbox.
+    An unwrapped host class enters as a host function: `get_type_hints(HostCls)` returns its hints too.
+- **JavaScript hosts send no hints**, so `get_type_hints` of a JavaScript function is `{}`.
+- **A Rust host answers the `typing.get_type_hints` OS call itself**; a host that does not handle it gives `{}`.
+
 ## Conversion failures
 
 An unsupported host-function or `os` callback result raises a catchable `TypeError` inside the sandbox.
