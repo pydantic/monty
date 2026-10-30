@@ -4,6 +4,7 @@
 use std::{
     error,
     fmt::{self, Write},
+    hash::{Hash, Hasher},
     mem, str,
     sync::Arc,
 };
@@ -11,7 +12,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr, VariantNames};
 
-use crate::format::StringRepr;
+use crate::{format::StringRepr, object::MontyObject};
 
 /// Public representation of a Monty exception.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -442,6 +443,26 @@ pub enum ExcType {
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
     DecimalFloatOperation,
+
+    // --- pydantic ---
+    // Appended after the decimal signals: `id()` encodes types through postcard,
+    // whose variant indices must stay stable.
+    /// Subclass of ValueError: `pydantic_core.ValidationError`, carrying its line
+    /// errors as [`ValidationErrorData`].
+    #[strum(serialize = "pydantic_core._pydantic_core.ValidationError")]
+    ValidationError,
+    /// Subclass of ValueError: `pydantic_core.PydanticSerializationError`, raised
+    /// by `dump_json` / `dump_python(mode='json')` for a value with no JSON form.
+    #[strum(serialize = "pydantic_core._pydantic_core.PydanticSerializationError")]
+    PydanticSerializationError,
+    /// Subclass of RuntimeError: `pydantic.errors.PydanticUserError`, the base of
+    /// the errors pydantic raises for misuse of its own API.
+    #[strum(serialize = "pydantic.errors.PydanticUserError")]
+    PydanticUserError,
+    /// Subclass of PydanticUserError: raised for a type pydantic cannot build a
+    /// schema for.
+    #[strum(serialize = "pydantic.errors.PydanticSchemaGenerationError")]
+    PydanticSchemaGenerationError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.
@@ -468,7 +489,14 @@ impl ExcType {
             // ArithmeticError catches ZeroDivisionError and OverflowError
             Self::ArithmeticError => matches!(self, Self::ZeroDivisionError | Self::OverflowError),
             // RuntimeError catches RecursionError and NotImplementedError
-            Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
+            Self::RuntimeError => matches!(
+                self,
+                Self::RecursionError
+                    | Self::NotImplementedError
+                    | Self::PydanticUserError
+                    | Self::PydanticSchemaGenerationError
+            ),
+            Self::PydanticUserError => matches!(self, Self::PydanticSchemaGenerationError),
             // AttributeError catches FrozenInstanceError
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
@@ -482,6 +510,8 @@ impl ExcType {
                     | Self::JsonDecodeError
                     | Self::TomlDecodeError
                     | Self::BinasciiError
+                    | Self::ValidationError
+                    | Self::PydanticSerializationError
                     | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError
@@ -567,6 +597,8 @@ pub enum ExcData {
     /// `json.JSONDecodeError` attribute fields. Boxed like
     /// [`ExcData::Unicode`] to keep the enum small.
     Json(Box<JsonErrorData>),
+    /// `pydantic_core.ValidationError`'s line errors. Boxed like the others.
+    Validation(Box<ValidationErrorData>),
 }
 
 impl ExcData {
@@ -585,6 +617,80 @@ impl ExcData {
         match self {
             Self::Json(data) => Some(data),
             _ => None,
+        }
+    }
+
+    /// The validation line errors, if this is [`ExcData::Validation`].
+    #[must_use]
+    pub fn validation(&self) -> Option<&ValidationErrorData> {
+        match self {
+            Self::Validation(data) => Some(data),
+            _ => None,
+        }
+    }
+}
+
+/// The payload of a `pydantic_core.ValidationError`: the title named in
+/// `str(exc)`, which input mode raised it, and one entry per line error.
+///
+/// Inputs and context values are stored as [`MontyObject`] snapshots rather
+/// than live sandbox references, so an exception stays plain data wherever it
+/// is cloned or copied out of the sandbox. A value with no snapshot form (an
+/// instance, a function) or one over the snapshot budget is kept as its repr.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ValidationErrorData {
+    /// The validator's name: `int`, `list[int]`, a dataclass's class name.
+    pub title: String,
+    /// Whether the input was a Python value or JSON; a few messages differ.
+    pub input_type: ValidationInputType,
+    /// Every failure, in validation order.
+    pub line_errors: Vec<ValidationLineError>,
+}
+
+/// One entry of a `ValidationError`, as `errors()` reports it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ValidationLineError {
+    /// The catalogue type, e.g. `int_parsing`.
+    pub error_type: String,
+    /// Where the failure was, outermost first; empty at the root.
+    pub loc: Vec<LocItem>,
+    /// The rendered message.
+    pub msg: String,
+    /// A snapshot of the failing input.
+    pub input: MontyObject,
+    /// The Python type name of the input, as `str(exc)` reports `input_type=`.
+    pub input_type_name: String,
+    /// The template's parameters, in the catalogue's order; empty for most types.
+    pub ctx: Vec<(String, MontyObject)>,
+}
+
+/// One step of a line error's location: a field or key name, or a sequence index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum LocItem {
+    /// A field name, dict key or union member name.
+    Key(String),
+    /// A sequence index or positional-argument index.
+    Index(i64),
+}
+
+/// Which input mode a validation ran in; `errors()` renders a few messages
+/// differently (`Input should be null` for JSON, `Input should be None` for Python).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ValidationInputType {
+    Python,
+    Json,
+}
+
+/// Hashes the parts an exception is compared by, skipping the value snapshots
+/// (floats make [`MontyObject`] unhashable).
+impl Hash for ValidationErrorData {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.title.hash(state);
+        self.input_type.hash(state);
+        for line in &self.line_errors {
+            line.error_type.hash(state);
+            line.loc.hash(state);
+            line.msg.hash(state);
         }
     }
 }
