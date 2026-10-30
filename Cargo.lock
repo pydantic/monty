@@ -2553,6 +2553,7 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode_names2",
+ "zmij",
 ]
 
 [[package]]

@@ -1099,6 +1099,8 @@ pub enum StaticStrings {
     /// is the lowercase `re.error` alias.
     #[strum(serialize = "Error")]
     ErrorClass,
+    /// `error_count()` method of `pydantic.ValidationError`.
+    ErrorCount,
     /// Kwarg name `errors` — `open(errors=...)`.
     Errors,
     /// `re.escape()` function
@@ -1226,6 +1228,8 @@ pub enum StaticStrings {
     Fp,
     /// `math.frexp()` function.
     Frexp,
+    /// `from_exception_data()` class method of `pydantic.ValidationError`.
+    FromExceptionData,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
@@ -1350,6 +1354,8 @@ pub enum StaticStrings {
     Hexversion,
     /// `hi` in the bisect module.
     Hi,
+    /// Kwarg name `hide_input` — `ValidationError.from_exception_data()`.
+    HideInput,
     /// `high` parameter of `random.triangular()`.
     High,
     /// `CacheInfo.hits` field.
@@ -1376,8 +1382,14 @@ pub enum StaticStrings {
     Ignorechars,
     /// `complex.imag` attribute.
     Imag,
+    /// Kwarg name `include_context` — `ValidationError.errors()`.
+    IncludeContext,
     /// `include_extras` parameter of `typing.get_type_hints()`.
     IncludeExtras,
+    /// Kwarg name `include_input` — `ValidationError.errors()`.
+    IncludeInput,
+    /// Kwarg name `include_url` — `ValidationError.errors()`.
+    IncludeUrl,
     /// `binascii.Incomplete` exception class.
     #[strum(serialize = "Incomplete")]
     IncompleteClass,
@@ -1395,6 +1407,10 @@ pub enum StaticStrings {
     Initial,
     /// `inner_size` parameter of `hashlib.blake2b()`.
     InnerSize,
+    /// `input` key of a `ValidationError.errors()` entry.
+    Input,
+    /// Kwarg name `input_type` — `ValidationError.from_exception_data()`.
+    InputType,
     /// `list.insert()` method.
     Insert,
     /// `insort` in the bisect module.
@@ -1555,6 +1571,8 @@ pub enum StaticStrings {
     Lgamma,
     /// The value of `sys.platlibdir`.
     Lib,
+    /// Kwarg name `line_errors` — `ValidationError.from_exception_data()`.
+    LineErrors,
     /// `line_num` attribute of the `csv` readers.
     LineNum,
     /// `os.linesep` constant name.
@@ -1581,6 +1599,8 @@ pub enum StaticStrings {
     Load,
     /// `json.loads()` and `tomllib.loads()` functions.
     Loads,
+    /// `loc` key of a `ValidationError.errors()` entry.
+    Loc,
     /// `decimal.localcontext()` function.
     Localcontext,
     /// `localns` parameter of `typing.get_type_hints()`.
@@ -1746,6 +1766,8 @@ pub enum StaticStrings {
     /// `Counter.most_common()` method.
     #[strum(serialize = "most_common")]
     MostCommon,
+    /// `msg` key of a `ValidationError.errors()` entry.
+    Msg,
     /// `mu` parameter of `random.gauss()` and the other normal variates.
     Mu,
     /// `re.MULTILINE` flag
@@ -1955,6 +1977,17 @@ pub enum StaticStrings {
     Protocol,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// The `pydantic` module.
+    Pydantic,
+    /// `pydantic.PydanticSchemaGenerationError` exception class.
+    #[strum(serialize = "PydanticSchemaGenerationError")]
+    PydanticSchemaGenerationError,
+    /// `pydantic.PydanticSerializationError` exception class.
+    #[strum(serialize = "PydanticSerializationError")]
+    PydanticSerializationError,
+    /// `pydantic.PydanticUserError` exception class.
+    #[strum(serialize = "PydanticUserError")]
+    PydanticUserError,
     /// `sys.flags.quiet` field.
     Quiet,
     /// `csv.QUOTE_ALL` constant.
@@ -2447,6 +2480,9 @@ pub enum StaticStrings {
     /// `typing.Type` marker.
     #[strum(serialize = "Type")]
     Type,
+    /// `type` key of a `ValidationError.errors()` entry.
+    #[strum(serialize = "type")]
+    TypeKey,
     /// `typing.TYPE_CHECKING` constant.
     #[strum(serialize = "TYPE_CHECKING")]
     TypeChecking,
@@ -2513,6 +2549,8 @@ pub enum StaticStrings {
     Upper,
     /// `os.urandom()` function.
     Urandom,
+    /// `url` key of a `ValidationError.errors()` entry.
+    Url,
     /// `base64.urlsafe_b64decode()` function.
     #[strum(serialize = "urlsafe_b64decode")]
     UrlsafeB64Decode,
@@ -2533,6 +2571,9 @@ pub enum StaticStrings {
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
+    /// `pydantic.ValidationError` exception class.
+    #[strum(serialize = "ValidationError")]
+    ValidationError,
     /// Kwarg name `value` — `decimal.Decimal()`.
     Value,
     /// `dict.values()` method.

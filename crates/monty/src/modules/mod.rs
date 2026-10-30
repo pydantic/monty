@@ -35,6 +35,7 @@ pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod os_path;
 pub(crate) mod pathlib;
+pub(crate) mod pydantic;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sys;
@@ -104,6 +105,8 @@ pub(crate) enum StandardLib {
     Decimal,
     /// The `fnmatch` module: shell-style pattern matching.
     Fnmatch,
+    /// The `pydantic` module: `TypeAdapter` and `ValidationError`.
+    Pydantic,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -141,6 +144,7 @@ impl StandardLib {
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Pydantic => Some(Self::Pydantic),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -184,6 +188,7 @@ impl StandardLib {
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Pydantic => pydantic::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }

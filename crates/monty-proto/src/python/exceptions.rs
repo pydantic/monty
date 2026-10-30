@@ -61,6 +61,10 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
         ExcType::JsonDecodeError => json_decode_error_to_py(py, exc_data, msg),
         ExcType::TomlDecodeError => toml_decode_error_to_py(py, exc_data, msg),
+        // pydantic's classes are not rebuilt on the host; the rendered message
+        // crosses under the builtin parent each inherits from.
+        ExcType::ValidationError | ExcType::PydanticSerializationError => exceptions::PyValueError::new_err(msg),
+        ExcType::PydanticUserError | ExcType::PydanticSchemaGenerationError => exceptions::PyRuntimeError::new_err(msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
         ExcType::OSError => exceptions::PyOSError::new_err(msg),
