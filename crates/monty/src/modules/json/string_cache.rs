@@ -1,10 +1,8 @@
 //! Per-run string cache for `json.loads()`.
 //!
-//! Repeated JSON parsing within a single execution often encounters the same
-//! strings — especially dict keys like `"id"`, `"name"`, `"type"` — across
-//! multiple `json.loads()` calls. This cache deduplicates heap allocations for
-//! those strings by hashing incoming bytes and returning a `clone_with_heap` of
-//! a previously allocated `Value` on cache hits.
+//! This cache deduplicates repeated strings of 16–64 UTF-8 bytes across
+//! `json.loads()` calls within one execution. Shorter strings are interned or
+//! stored inline. Cache hits return a `clone_with_heap` of the existing `Value`.
 //!
 //! The design is modelled on jiter's `PyStringCache`: a fixed-capacity
 //! fully-associative cache with linear probing and no eviction (when all probe
@@ -33,9 +31,9 @@ const CAPACITY: usize = 16_384;
 
 /// Minimum string length eligible for caching.
 ///
-/// Empty strings and single-ASCII-character strings are already interned by
-/// `allocate_string`, so caching them would be redundant.
-const MIN_LEN: usize = 2;
+/// Strings up to 15 UTF-8 bytes are interned or stored inline, so caching them
+/// would be redundant.
+const MIN_LEN: usize = 16;
 
 /// Maximum string length eligible for caching.
 ///
@@ -54,7 +52,7 @@ type CacheEntry = Option<(u64, Box<str>, Value)>;
 ///
 /// - Created as empty (`None`) when the VM starts.
 /// - Backing storage allocated on the first `get_or_allocate` call with an
-///   eligible string (2–64 bytes).
+///   eligible string (16–64 bytes).
 /// - Persists across multiple `json.loads()` calls within the same run.
 /// - Cleaned up when the VM is dropped via [`drop_all`](Self::drop_all).
 /// - Cached values keep themselves alive via the refcount on each cached
@@ -159,5 +157,42 @@ impl CacheInner {
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::ResourceTracker;
+
+    use super::*;
+    use crate::{heap::Heap, value::Value};
+
+    #[test]
+    fn inline_strings_bypass_the_cache() {
+        let mut cache = JsonStringCache::default();
+        let mut heap = Heap::new(16, ResourceTracker::default());
+
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let value = cache.get_or_allocate("123456789012345".to_owned(), reader);
+            assert!(matches!(value, Value::InlineString(_)));
+        });
+
+        assert!(cache.inner.is_none());
+    }
+
+    #[test]
+    fn sixteen_byte_strings_use_the_cache() {
+        let mut cache = JsonStringCache::default();
+        let mut heap = Heap::new(16, ResourceTracker::default());
+
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let first = cache.get_or_allocate("1234567890123456".to_owned(), reader);
+            let second = cache.get_or_allocate("1234567890123456".to_owned(), reader);
+            assert!(matches!((&first, &second), (Value::Ref(a), Value::Ref(b)) if a == b));
+            first.drop_with(reader);
+            second.drop_with(reader);
+        });
+        assert!(cache.inner.is_some());
+        cache.drop_all(&mut heap);
     }
 }

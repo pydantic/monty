@@ -179,6 +179,7 @@ impl GraphExporter {
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
@@ -1149,7 +1150,7 @@ fn repr_node(value: &Value, vm: &mut VM<'_>) -> MontyNode {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
             defer_drop!(s, vm);
-            MontyNode::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
+            MontyNode::Repr(s.try_to_str(vm).map(str::to_owned).unwrap_or_default())
         }
         Err(e) => {
             let ty = value.py_type_name(vm);

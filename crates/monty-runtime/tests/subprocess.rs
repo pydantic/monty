@@ -925,7 +925,9 @@ fn small_memory_limit_leaves_normal_work_alone() {
 fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    let (_, event) = child.feed("[str(i) for i in range(131_072)]");
+    // Strings exceed inline capacity so execution reaches the soft limit.
+    // Returning only the length avoids testing the separate export hard limit.
+    let (_, event) = child.feed("len([str(i) + 'abcdefghijklmnop' for i in range(131_072)])");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
@@ -1192,7 +1194,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_055_460,
+            1_103_055,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
@@ -1251,6 +1253,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
             1_079_568,
+        ),
+        // A key can return an existing repr; copying repeated reprs into the error
+        // message must still respect the budget.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
+            1_254_593,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
         // precision: an integer conversion, `f` formatting, and division, `sqrt`,

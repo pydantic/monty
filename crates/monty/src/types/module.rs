@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
-    types::{Dict, py_trait::attribute_name_value},
+    types::Dict,
     value::{EitherStr, Value},
 };
 
@@ -194,14 +194,7 @@ impl<'h> HeapRead<'h, Module> {
         let mut args_guard = DropGuard::new(args, vm);
         let vm = args_guard.ctx();
 
-        // Bundled and host attribute names are interned; a file module's
-        // namespace is an ordinary dict, so any computed name may be bound.
-        let is_file = self.get(vm.heap).file.is_some();
-        let value = match attr {
-            EitherStr::Heap(_) if !is_file => None,
-            _ => self.attr_value(attr.as_str(vm.interns), vm),
-        };
-        match value {
+        match self.attr_value(attr.as_str(vm.interns), vm) {
             Some(value) => {
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
@@ -221,7 +214,7 @@ impl<'h> HeapRead<'h, Module> {
             value.drop_with(vm);
             return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
         };
-        let key = attribute_name_value(name, vm);
+        let key = name.as_value(vm.heap);
         let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
             key.drop_with(vm);
             value.drop_with(vm);

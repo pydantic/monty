@@ -101,10 +101,10 @@ struct TomlLoadsArgs {
 fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let TomlLoadsArgs { s } = TomlLoadsArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let table = match s.to_str(vm) {
-        Ok(source) => parse_document(source, &vm.heap.tracker)?,
-        Err(_) => return Err(ExcType::toml_loads_type_error(&s.py_type_name(vm))),
-    };
+    let source = s
+        .as_str(vm)
+        .ok_or_else(|| ExcType::toml_loads_type_error(&s.py_type_name(vm)))?;
+    let table = parse_document(source, &vm.heap.tracker)?;
     value::table_into_value(table, vm)
 }
 

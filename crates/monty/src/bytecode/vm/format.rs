@@ -42,7 +42,9 @@ impl VM<'_> {
 
         let mut total_len = 0_usize;
         for part in parts.as_slice() {
-            let s = part.to_str_heap(this.heap, this.interns)?;
+            let s = part
+                .as_str_heap(this.heap, this.interns)
+                .expect("f-string parts are strings");
             total_len = total_len.saturating_add(s.len());
         }
 
@@ -50,7 +52,9 @@ impl VM<'_> {
         let mut result = String::with_capacity(total_len);
 
         for part in parts.as_slice() {
-            let s = part.to_str_heap(this.heap, this.interns)?;
+            let s = part
+                .as_str_heap(this.heap, this.interns)
+                .expect("f-string parts are strings");
             result.push_str(s);
         }
 
@@ -85,7 +89,8 @@ impl VM<'_> {
                     let spec = decode_format_spec(*encoded);
                     this.format_parsed_value(value, conversion, &spec)?
                 } else {
-                    let spec = str_value_into_string(spec_value.py_str(this)?, this)?;
+                    // The compiler builds dynamic specs from f-string parts, which are strings.
+                    let spec = spec_value.as_str(this).expect("format spec is a string").to_owned();
                     this.format_runtime_value(value, conversion, Some(&spec))?
                 }
             }
@@ -163,10 +168,12 @@ impl VM<'_> {
     /// Applies the f-string and `str.format()` conversion flags to a value.
     pub(crate) fn convert_value(&mut self, value: &Value, conversion: u8) -> Result<String, RunError> {
         match conversion {
-            0 | 1 if value.py_type(self) == Type::Str => Ok(value.to_str(self)?.to_owned()),
-            2 => str_value_into_string(value.py_repr(self)?, self),
+            0 | 1 if value.py_type(self) == Type::Str => {
+                Ok(value.as_str(self).expect("string type checked above").to_owned())
+            }
+            2 => Ok(str_value_into_string(value.py_repr(self)?, self)),
             3 => {
-                let value = str_value_into_string(value.py_repr(self)?, self)?;
+                let value = str_value_into_string(value.py_repr(self)?, self);
                 let mut escaped = StringBuilder::with_capacity(value.len(), &self.heap.tracker)?;
                 for (index, character) in value.chars().enumerate() {
                     self.heap.tracker.check_time_every(index)?;
@@ -189,7 +196,7 @@ impl VM<'_> {
                 escaped.finish_raw()
             }
             // No conversion and `!s` both use `str()`.
-            _ => str_value_into_string(value.py_str(self)?, self),
+            _ => Ok(str_value_into_string(value.py_str(self)?, self)),
         }
     }
 
@@ -282,7 +289,7 @@ impl VM<'_> {
 /// `String`, dropping the value's heap reference on every path. Used by the
 /// f-string conversion arms, which need the text in an owned buffer to feed
 /// the mini-language formatter.
-fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> Result<String, RunError> {
+fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> String {
     defer_drop!(value, vm);
-    Ok(value.to_str(vm)?.to_owned())
+    value.as_str(vm).expect("py_str and py_repr return str").to_owned()
 }

@@ -419,7 +419,10 @@ pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &mut V
 fn frozen_field_error(action: &str, name: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
     let name = name.py_repr(vm)?;
     defer_drop!(name, vm);
-    let message = format!("cannot {action} field {}", name.to_str(vm)?);
+    let message = format!(
+        "cannot {action} field {}",
+        name.as_str(vm).expect("py_repr returns str")
+    );
     Ok(SimpleException::new_msg(ExcType::FrozenInstanceError, message).into())
 }
 

@@ -264,14 +264,10 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
 }
 
 fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
-    match name_arg {
-        Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(s) => Ok(Some(s.as_str().to_owned())),
-            _ => Err(bad_name_arg(name_arg, heap, interns)),
-        },
-        _ => Err(bad_name_arg(name_arg, heap, interns)),
-    }
+    name_arg
+        .try_to_str_heap(heap, interns)
+        .map(|name| Some(name.to_owned()))
+        .map_err(|_| bad_name_arg(name_arg, heap, interns))
 }
 
 /// Builds the `timezone() argument 2 must be str, not <type>` error CPython

@@ -229,14 +229,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             return vm.call_function(value, args);
         }
         let origin = Type::from(self.get(vm.heap).origin);
-        match attr {
-            EitherStr::Interned(method_id) => origin.call_class_method(*method_id, args, vm),
-            // Classmethod names are all interned, so a heap string never names one.
-            EitherStr::Heap(name) => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error_type(&origin.name(vm.heap, vm.interns), name))
-            }
-        }
+        origin.call_class_method(attr, args, vm)
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -283,11 +276,7 @@ pub(crate) fn repr_type_arg(
 mod tests {
     use serde::Serialize;
 
-    use super::GenericAlias;
-    use crate::{
-        types::{BuiltinType, Type},
-        value::Value,
-    };
+    use super::*;
 
     #[test]
     fn legacy_origin_dump_loads_unchanged() {

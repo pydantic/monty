@@ -8,7 +8,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapReadOutput},
-    types::py_trait::attribute_name_value,
     value::{EitherStr, Value},
 };
 
@@ -59,7 +58,7 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
         return Err(no_dict_error(object, &name, vm));
     };
 
-    let name = attribute_name_value(&name, vm);
+    let name = name.as_value(vm.heap);
     // The write path itself, bypassing whatever the class would have done.
     let replaced = instance.set_attr_unchecked(name, value.clone_with_heap(vm), vm)?;
     replaced.drop_with(vm);

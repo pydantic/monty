@@ -591,7 +591,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
-    Ok(str_value.to_str(vm)?.to_owned())
+    Ok(str_value.as_str(vm).expect("py_str returns str").to_owned())
 }
 
 /// Byte-capped sink that stops repr formatting on a character boundary.

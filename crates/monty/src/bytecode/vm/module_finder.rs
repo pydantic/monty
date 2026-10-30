@@ -332,16 +332,8 @@ impl VM<'_> {
             Some(HeapData::Tuple(tuple)) => tuple.as_slice(),
             _ => return Vec::new(),
         };
-        // Matched directly: `to_str_heap` would format a discarded `TypeError` per non-string.
         dirs.iter()
-            .filter_map(|dir| match dir {
-                Value::InternString(id) => Some(self.interns.get_str(*id)),
-                Value::Ref(id) => match self.heap.get(*id) {
-                    HeapData::Str(s) => Some(s.as_str()),
-                    _ => None,
-                },
-                _ => None,
-            })
+            .filter_map(|dir| dir.as_str_heap(self.heap, self.interns))
             .map(|dir| posix_join(&self.env.cwd, dir))
             .collect()
     }
