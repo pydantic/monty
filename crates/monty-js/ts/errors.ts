@@ -218,12 +218,49 @@ export class MontyCrashedError extends MontyError {
  * only; the local analogue is `MontyCrashedError`). The sandbox may have died,
  * or the server may have dropped the session by policy — an idle, session or
  * turn timeout, or being over capacity; the client cannot tell which. The
- * session is lost; check out a new one.
+ * session is lost. The request may have run. Do not replay it automatically.
  */
 export class MontyDisconnectError extends MontyError {
-  constructor(message: string) {
+  readonly #stage: string | null
+  readonly #closeCode: number | null
+  readonly #closeReason: string | null
+  readonly #transportError: string | null
+
+  constructor(
+    message: string,
+    options: {
+      stage?: string | null
+      closeCode?: number | null
+      closeReason?: string | null
+      transportError?: string | null
+    } = {},
+  ) {
     super('RuntimeError', message)
     this.name = 'MontyDisconnectError'
+    this.#stage = options.stage ?? null
+    this.#closeCode = options.closeCode ?? null
+    this.#closeReason = options.closeReason ?? null
+    this.#transportError = options.transportError ?? null
+  }
+
+  /** The operation that recorded the first failure, either `send` or `receive`, or `null` if unavailable. */
+  get stage(): string | null {
+    return this.#stage
+  }
+
+  /** The peer's recorded Close code, or `null` if unavailable. */
+  get closeCode(): number | null {
+    return this.#closeCode
+  }
+
+  /** The peer's recorded Close reason, or `null` if unavailable. This text is unverified. */
+  get closeReason(): string | null {
+    return this.#closeReason
+  }
+
+  /** The recorded transport or protocol error, or `null` for a peer Close frame or missing evidence. */
+  get transportError(): string | null {
+    return this.#transportError
   }
 }
 

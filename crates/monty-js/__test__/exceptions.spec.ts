@@ -1,7 +1,13 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
+import {
+  MontyError,
+  MontySyntaxError,
+  MontyRuntimeError,
+  MontyTypingError,
+  MontyDisconnectError,
+} from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -488,4 +494,29 @@ test('display() works polymorphically on MontyTypingError', async () => {
     error.message,
     'TypeError: error[invalid-assignment]: Object of type `Literal["str"]` is not assignable to `int`',
   )
+})
+
+test('disconnect errors without transport evidence keep unknown fields null', () => {
+  const error = new MontyDisconnectError('connection closed')
+  t.is(error.name, 'MontyDisconnectError')
+  t.is(error.message, 'RuntimeError: connection closed')
+  t.true(error instanceof MontyError)
+  t.is(error.stage, null)
+  t.is(error.closeCode, null)
+  t.is(error.closeReason, null)
+  t.is(error.transportError, null)
+})
+
+test('disconnect diagnostics are read-only and do not follow constructor options mutations', () => {
+  const options = { stage: 'receive', closeCode: 1000, closeReason: '', transportError: null }
+  const error = new MontyDisconnectError('connection closed', options)
+  options.closeCode = 1008
+  options.closeReason = 'changed'
+  for (const field of ['stage', 'closeCode', 'closeReason', 'transportError']) {
+    t.false(Reflect.set(error, field, 'changed'))
+  }
+  t.is(error.stage, 'receive')
+  t.is(error.closeCode, 1000)
+  t.is(error.closeReason, '')
+  t.is(error.transportError, null)
 })

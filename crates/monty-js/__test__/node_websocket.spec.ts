@@ -192,6 +192,10 @@ test('a dropped connection raises MontyDisconnectError and loses the session', a
   t.is(await session.feedRun('1 + 1'), 2)
   const error = await t.throwsAsync(() => session.feedRun('2 + 2'), { instanceOf: MontyDisconnectError })
   t.regex(error.message, /^RuntimeError: monty worker connection closed while /)
+  t.is(error.stage, 'receive')
+  t.is(error.closeCode, null)
+  t.is(error.closeReason, null)
+  t.is(error.transportError, 'WebSocket protocol error: Connection reset without closing handshake')
   t.is(await t.throwsAsync(() => session.feedRun('3 + 3')), error)
 })
 
@@ -241,4 +245,62 @@ test('a closed pool rejects checkouts', async () => {
   await t.throwsAsync(() => pool.checkout(), {
     message: 'the pool is closed — create a new MontyWebsocket pool',
   })
+})
+
+test.each([
+  [1000, ''],
+  [1008, 'session capacity exhausted'],
+  [1001, '再起動中 🐍'],
+] as const)('disconnect retains peer Close %s and reason %s', async (code, reason) => {
+  const relayServer = await server(droppingRelay(2, (ws) => ws.close(code, reason)))
+  await using pool = await MontyWebsocket.create(relayServer.url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
+  t.is(error.message, 'RuntimeError: monty worker connection closed while waiting for a reply')
+  t.is(error.stage, 'receive')
+  t.is(error.closeCode, code)
+  t.is(error.closeReason, reason)
+  t.is(error.transportError, null)
+  t.is(await t.throwsAsync(() => session.feedRun('2 + 2')), error)
+  t.is(relayServer.headers.length, 1)
+})
+
+test('a Close without a code does not invent peer details', async () => {
+  const { url } = await server(droppingRelay(2, (ws) => ws.close()))
+  await using pool = await MontyWebsocket.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
+  t.is(error.stage, 'receive')
+  t.is(error.closeCode, null)
+  t.is(error.closeReason, null)
+  t.is(error.transportError, null)
+})
+
+test('checkout and dump preserve peer Close diagnostics', async () => {
+  for (const dropAt of [1, 2]) {
+    const { url } = await server(droppingRelay(dropAt, (ws) => ws.close(1008, 'session retired')))
+    await using pool = await MontyWebsocket.create(url, { requestTimeout: 30 })
+    const error = await t.throwsAsync(
+      async () => {
+        await using session = await pool.checkout()
+        await session.dump()
+      },
+      { instanceOf: MontyDisconnectError },
+    )
+    t.is(error.stage, 'receive')
+    t.is(error.closeCode, 1008)
+    t.is(error.closeReason, 'session retired')
+    t.is(error.transportError, null)
+  }
+})
+
+test('unexpected text supplies a diagnostic without echoing the payload', async () => {
+  const { url } = await server(droppingRelay(2, (ws) => ws.send('private peer payload')))
+  await using pool = await MontyWebsocket.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
+  t.is(error.stage, 'receive')
+  t.is(error.closeCode, null)
+  t.is(error.closeReason, null)
+  t.is(error.transportError, 'unexpected non-binary WebSocket message')
 })

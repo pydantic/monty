@@ -1731,7 +1731,7 @@ function lostSessionError(turn: CrashedTurn | DisconnectedTurn | ShutdownTurn): 
     case 'crashed':
       return new MontyCrashedError(turn.message, turn)
     case 'disconnected':
-      return new MontyDisconnectError(turn.message)
+      return new MontyDisconnectError(turn.message, turn)
     case 'shutdown':
       return new MontyShutdown(turn.message, turn.dump === undefined ? null : bufferFrom(turn.dump))
   }

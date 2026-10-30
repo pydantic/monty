@@ -55,8 +55,11 @@ export function relay(ws: WebSocket): void {
   })()
 }
 
-/** A relay that drops the connection, without a reply, on its `dropAt`-th request. */
-export function droppingRelay(dropAt: number): (ws: WebSocket) => Promise<void> {
+/** A relay that ends the connection on its `dropAt`-th request, abruptly by default. */
+export function droppingRelay(
+  dropAt: number,
+  disconnect: (ws: WebSocket) => void = (ws) => ws.terminate(),
+): (ws: WebSocket) => Promise<void> {
   return async (ws) => {
     const child = new ChildFrames()
     let requests = 0
@@ -64,7 +67,7 @@ export function droppingRelay(dropAt: number): (ws: WebSocket) => Promise<void> 
       for await (const message of messages(ws)) {
         requests += 1
         if (requests === dropAt) {
-          ws.terminate()
+          disconnect(ws)
           return
         }
         child.send(message)

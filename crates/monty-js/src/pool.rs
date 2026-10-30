@@ -33,7 +33,7 @@ use std::{
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    PrintFuture, ReplConfig, ResumeValue, TurnEvent, WebSocketDisconnect,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -1049,7 +1049,10 @@ enum TurnOutcome {
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
     /// A remote worker's connection closed mid-session; the session is lost.
-    Disconnected(String),
+    Disconnected {
+        message: String,
+        websocket: Option<Box<WebSocketDisconnect>>,
+    },
     /// A draining server declined the request, which did not run; `dump`
     /// names what restores the session, when the server stored it.
     Shutdown { message: String, dump: Option<Vec<u8>> },
@@ -1093,7 +1096,14 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 message: PoolError::Crashed { status, cause }.to_string(),
                 timed_out: false,
             },
-            Err(err @ PoolError::Disconnected { .. }) => Self::Disconnected(err.to_string()),
+            Err(PoolError::Disconnected { context, websocket }) => Self::Disconnected {
+                message: PoolError::Disconnected {
+                    context,
+                    websocket: None,
+                }
+                .to_string(),
+                websocket,
+            },
             // the error's Display notes whether a dump came with it, so render
             // it before taking the dump back out
             Err(err @ PoolError::Shutdown { .. }) => {
@@ -1207,9 +1217,15 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
         }
-        TurnOutcome::Disconnected(message) => {
+        TurnOutcome::Disconnected { message, websocket } => {
             obj.set("kind", "disconnected")?;
             obj.set("message", message)?;
+            if let Some(details) = websocket {
+                obj.set("stage", details.stage)?;
+                obj.set("closeCode", details.close_code)?;
+                obj.set("closeReason", details.close_reason)?;
+                obj.set("transportError", details.transport_error)?;
+            }
         }
         TurnOutcome::Shutdown { message, dump } => {
             obj.set("kind", "shutdown")?;
