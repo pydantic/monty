@@ -1,5 +1,7 @@
 //! Implementation of the enumerate() builtin function.
 
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use smallvec::smallvec;
 
 use crate::{
@@ -7,8 +9,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData},
-    types::{List, allocate_tuple},
+    heap::{DropGuard, DropWithContext, Heap, HeapData},
+    types::{List, LongInt, PyTrait, allocate_tuple},
     value::Value,
 };
 
@@ -18,27 +20,21 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (iterable, start) = extract_enumerate_args(args, vm)?;
-    // Guard `start` before building the iterator: a non-iterable `iterable`
-    // errors out of `py_iter`, and a heap-backed start must not leak.
-    defer_drop!(start, vm);
+    // `start` is converted before the iterator is built, as in CPython, so a bad
+    // start wins over a non-iterable `iterable`; both are released on either error.
+    let mut iterable_guard = DropGuard::new(iterable, vm);
+    let (_, vm) = iterable_guard.as_parts_mut();
+    let mut index = {
+        defer_drop!(start, vm);
+        match start {
+            Some(start) => EnumerateIndex::from_start(start, vm)?,
+            None => EnumerateIndex::Small(0),
+        }
+    };
+    let (iterable, vm) = iterable_guard.into_parts();
     let iter = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
-
-    // Get start index (default 0)
-    let mut index: i64 = match start {
-        Some(Value::Int(n)) => *n,
-        Some(Value::Bool(b)) => i64::from(*b),
-        Some(v) => {
-            let type_name = v.py_type_name(vm);
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("'{type_name}' object cannot be interpreted as an integer"),
-            )
-            .into());
-        }
-        None => 0,
-    };
 
     let result: Vec<Value> = Vec::new();
     let mut result_guard = DropGuard::new(result, vm);
@@ -46,14 +42,61 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     while let Some(item) = iter.py_next(vm)? {
         // Create tuple (index, item)
-        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap);
+        let index_val = index.take_next(vm.heap);
+        let tuple_val = allocate_tuple(smallvec![index_val, item], vm.heap);
         result.push(tuple_val);
-        index += 1;
     }
 
     let (result, vm) = result_guard.into_parts();
     let heap_id = vm.heap.allocate(HeapData::List(List::new(result)));
     Ok(Value::Ref(heap_id))
+}
+
+/// The running index of `enumerate`: an `i64` until the next step would overflow,
+/// then a `BigInt`, as CPython moves from `en_index` to `en_longindex`.
+enum EnumerateIndex {
+    Small(i64),
+    Big(BigInt),
+}
+
+impl EnumerateIndex {
+    /// Converts `start` as CPython's `PyNumber_Index` does: any `int`, however
+    /// large, or an object with `__index__`.
+    fn from_start(start: &Value, vm: &mut VM<'_>) -> RunResult<Self> {
+        let Some(index) = start.py_index_impl(vm)? else {
+            let type_name = start.py_type_name(vm);
+            return Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("'{type_name}' object cannot be interpreted as an integer"),
+            )
+            .into());
+        };
+        defer_drop!(index, vm);
+        Ok(if let Value::Int(n) = index {
+            Self::Small(*n)
+        } else {
+            let big = index.as_long_int(vm).expect("__index__ returns an int");
+            big.to_i64().map_or_else(|| Self::Big(big.clone()), Self::Small)
+        })
+    }
+
+    /// Returns the current index and steps to the next one.
+    fn take_next(&mut self, heap: &mut Heap) -> Value {
+        match self {
+            Self::Small(current) => {
+                let current = *current;
+                *self = current
+                    .checked_add(1)
+                    .map_or_else(|| Self::Big(BigInt::from(current) + 1), Self::Small);
+                Value::Int(current)
+            }
+            Self::Big(current) => {
+                let value = LongInt::new(current.clone()).into_value(heap);
+                *current += 1;
+                value
+            }
+        }
+    }
 }
 
 /// Extracts `enumerate(iterable, start=0)` arguments, faithfully mirroring
