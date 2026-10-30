@@ -7,7 +7,7 @@
 //! globals through that dict at every call. [`FrameNamespace`] records which
 //! case a frame is in; the descriptor owns the dict references it names.
 
-use std::iter;
+use std::{iter, ops::Not};
 
 use ahash::AHashSet;
 
@@ -56,15 +56,9 @@ pub(crate) enum FrameNamespace {
         locals: Option<HeapId>,
         /// Bound slot globals shadow `locals`: the lookup order CPython's
         /// `get_type_hints` gives a class forward reference (module, then class).
-        #[serde(default, skip_serializing_if = "is_false")]
+        #[serde(default, skip_serializing_if = "Not::not")]
         globals_first: bool,
     },
-}
-
-/// Serde predicate keeping the default `globals_first` out of dumps.
-#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde passes the field by reference")]
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 impl FrameNamespace {

@@ -299,6 +299,8 @@ A bare disconnect is never resumed, since the request may have run.
 
 Before type checking a feed, `import_stubs` requests host module stubs once per module per session.
 Answer with a dict of dotted module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
+`typing.get_type_hints()` of a host function or class asks the host with `OsFunctionCall::GetTypeHints`,
+naming the function or the `ClassType` id; answer with a dict of hints, or `NotHandled` for `{}`.
 
 ## Monty crates
 

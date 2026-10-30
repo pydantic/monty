@@ -5,7 +5,7 @@
 //! general encoder would turn a host class into a fake function and reject
 //! `int | None`.
 
-use monty_proto::python::{InstanceStore, py_type_object_to_monty};
+use monty_proto::python::{InstanceStore, is_class_type_wrapper, py_type_object_to_monty};
 use monty_types::{MontyObject, MontyUuid};
 use pyo3::{
     exceptions::PyTypeError,
@@ -30,12 +30,17 @@ pub(crate) fn callable_type_hints(obj: &Bound<'_, PyAny>) -> PyResult<MontyObjec
 
 /// The hints of the host class registered under `id`, from its `ClassType`
 /// wrapper's `get_type_hints()`, which an override may answer with any mapping;
-/// `{}` when no class is registered there.
+/// `{}` when nothing is registered there. The store also holds instance wrappers,
+/// which an untrusted child could name: those are a miss too.
 pub(crate) fn class_type_hints(py: Python<'_>, store: &InstanceStore, id: &MontyUuid) -> PyResult<MontyObject> {
     let Some(wrapper) = store.get(py, id)? else {
         return Ok(MontyObject::dict([]));
     };
-    let hints = wrapper.bind(py).call_method0(intern!(py, "get_type_hints"))?;
+    let wrapper = wrapper.bind(py);
+    if !is_class_type_wrapper(wrapper)? {
+        return Ok(MontyObject::dict([]));
+    }
+    let hints = wrapper.call_method0(intern!(py, "get_type_hints"))?;
     match hints.cast::<PyMapping>() {
         Ok(hints) => hints_to_monty(hints),
         Err(_) => Err(PyTypeError::new_err(format!(

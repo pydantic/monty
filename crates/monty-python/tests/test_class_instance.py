@@ -1324,8 +1324,9 @@ class Typed:
 def test_class_type_hints(monty_run: RunMonty):
     code = 'from typing import get_type_hints\nget_type_hints(T)'
     # builtin types cross as themselves, anything else as text
-    expected = {'name': str, 'tags': 'list[str]', 'parent': 'test_class_instance.Typed | None'}
-    assert monty_run(code, inputs={'T': ClassType(Typed)}) == expected
+    assert monty_run(code, inputs={'T': ClassType(Typed)}) == snapshot(
+        {'name': str, 'tags': 'list[str]', 'parent': 'test_class_instance.Typed | None'}
+    )
 
 
 def test_class_type_hints_read_only_when_asked(monty_run: RunMonty):

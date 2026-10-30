@@ -104,13 +104,10 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 }
 
 /// Evaluates stringized annotations, mirroring CPython 3.14's `typing._eval_type`.
-///
-/// `entries` holds `(name, hint, globals, locals, fwd_globals, fwd_locals, fwd_globals_first)`
-/// tuples: a `str` hint is evaluated in `globals` / `locals`, and any string it yields,
-/// or that appears in a `GenericAlias` / `Union` argument, is a forward reference
-/// evaluated in the `fwd_*` namespaces. Strings already seen in one chain are left
-/// as they are, so `a = 'a'` cannot loop. The walk keeps an explicit stack because
-/// frozen code cannot recurse.
+/// Each `(name, hint, globals, locals, fwd_globals, fwd_locals, fwd_globals_first)` entry
+/// evaluates a `str` hint in `globals` / `locals`; a string it yields, at any depth of a
+/// `GenericAlias` / `Union`, is a forward reference evaluated in the `fwd_*` namespaces.
+/// A string seen before in the chain stays a `str`, so `a = 'a'` cannot loop.
 pub(crate) const GET_TYPE_HINTS_SOURCE: &str = r"
 def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, tuple_, generic_alias, union, none_type):
     hints = {}
@@ -311,13 +308,10 @@ fn function_entries(
         .collect()
 }
 
-/// Entries for a class's own `__annotations__`.
-///
-/// An annotation evaluates with the class namespace over the module globals,
-/// as its `__annotate__` would. Without explicit namespaces a forward reference
-/// looks in the module globals first (CPython's `get_type_hints` swaps them).
-/// The class namespace is copied, as CPython's `dict(vars(cls))` is, because
-/// the evaluator needs a heap dict.
+/// Entries for a class's own `__annotations__`. An annotation evaluates with a copy
+/// of the class namespace (CPython's `dict(vars(cls))`) over the module globals, as
+/// its `__annotate__` would; without explicit namespaces a forward reference looks
+/// in the module globals first, as CPython's `get_type_hints` swaps them.
 fn class_entries(
     class_id: HeapId,
     globalns: Option<HeapId>,

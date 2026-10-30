@@ -125,16 +125,11 @@ fn run_snippet(
     Ok(CallResult::FramePushed)
 }
 
-/// Evaluates one stringized annotation for `typing.get_type_hints()`.
-///
-/// Takes borrowed `globals` / `locals` dict ids (`None` globals means the
-/// module slots); `globals_first` makes bound slot globals shadow `locals`.
-/// A `forward_ref` compiles as CPython's `ForwardRef` does: no leading
-/// indentation, and a compile error raises its "must be an expression" error.
-/// The namespace is built here rather than by
-/// `snippet_namespace`, which would inherit the calling frame's: the caller is
-/// frozen code. Each distinct text and mode compiles once per session, so a
-/// decorator calling `get_type_hints` on every call publishes no new functions.
+/// Evaluates one stringized annotation for `typing.get_type_hints()` in borrowed
+/// `globals` / `locals` dicts (`None` globals means the module slots), with
+/// `globals_first` letting bound slot globals shadow `locals`. A `forward_ref`
+/// compiles as CPython's `ForwardRef` does: a compile error or leading indentation
+/// raises its "must be an expression" error. Each distinct text and mode compiles once per session.
 pub(crate) fn eval_hint(
     source: &Value,
     globals: Option<HeapId>,
