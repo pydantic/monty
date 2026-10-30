@@ -35,7 +35,7 @@ use std::{
 };
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
+use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value, uuid_to_py};
 use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange};
 use pyo3::{
     Borrowed,
@@ -64,8 +64,9 @@ use crate::{
     },
     import_files::{find_import_file_async, find_import_file_sync, import_search},
     pool::{
-        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
-        dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
+        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, decode_result, discard_checkout,
+        discard_checkout_sync, dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync,
+        turn_fn,
     },
     print_target::PrintTarget,
     telemetry::{capture_otel_context, snapshot_trace_context},
@@ -1453,7 +1454,7 @@ pub struct MontyComplete {
 impl MontyComplete {
     #[getter]
     fn output(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        monty_to_py(py, &self.value, &self.instances)
+        decode_result(py, &self.value, &self.instances)
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
