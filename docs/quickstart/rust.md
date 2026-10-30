@@ -317,8 +317,10 @@ let RunProgress::Complete(result) = progress else { panic!("expected completion"
 assert_eq!(result, MontyObject::int(42));
 ```
 
-`typing.get_type_hints()` of a host function suspends with
-[`OsFunctionCall::GetTypeHints`](../api/rust/monty-types.md#osfunctioncall), naming the function; the host's answer is the call's result:
+`typing.get_type_hints()` of a host function or class suspends with
+[`OsFunctionCall::GetTypeHints`](../api/rust/monty-types.md#osfunctioncall), naming the function (`TypeHintsTarget::Function`)
+or the class's id (`TypeHintsTarget::Class`).
+The host's answer is the call's result; `OsFunctionCall::no_handler_result()` answers `{}` for a host without hints:
 
 ```rust
 use monty::{MontyRun, RunProgress};

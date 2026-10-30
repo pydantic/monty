@@ -104,6 +104,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 }
 
 /// Evaluates stringized annotations, mirroring CPython 3.14's `typing._eval_type`.
+///
 /// Each `(name, hint, globals, locals, fwd_globals, fwd_locals, fwd_globals_first)` entry
 /// evaluates a `str` hint in `globals` / `locals`; a string it yields, at any depth of a
 /// `GenericAlias` / `Union`, is a forward reference evaluated in the `fwd_*` namespaces.
@@ -114,7 +115,8 @@ def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, t
     for name, hint, globalns, localns, fwd_globalns, fwd_localns, fwd_globals_first in entries:
         if isinstance_(hint, str_):
             hint = eval_hint(hint, globalns, localns, False, False)
-        # Each frame is [hint, resolved args or None, forward refs seen, next arg index].
+        # An explicit stack, since frozen code cannot recurse. Each frame is
+        # [hint, resolved args or None, forward refs seen, next arg index].
         stack = [[hint, None, (), 0]]
         while stack:
             frame = stack[-1]
@@ -308,8 +310,9 @@ fn function_entries(
         .collect()
 }
 
-/// Entries for a class's own `__annotations__`. An annotation evaluates with a copy
-/// of the class namespace (CPython's `dict(vars(cls))`) over the module globals, as
+/// Entries for a class's own `__annotations__`.
+///
+/// An annotation evaluates with a copy of the class namespace (CPython's `dict(vars(cls))`) over the module globals, as
 /// its `__annotate__` would; without explicit namespaces a forward reference looks
 /// in the module globals first, as CPython's `get_type_hints` swaps them.
 fn class_entries(

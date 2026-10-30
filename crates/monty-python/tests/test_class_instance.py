@@ -1357,6 +1357,14 @@ def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
     assert monty_run(code, inputs=inputs) == snapshot((True, {'renamed': int}))
 
 
+def test_class_type_hints_of_an_instance_id(monty_run: RunMonty):
+    # an instance wrapper of the class object, sent last, takes over the class's id
+    class_id = uuid4()
+    code = 'from typing import get_type_hints\nget_type_hints(T)'
+    inputs = {'T': ClassType(Typed, id=class_id), 'i': ClassInstance(Typed, id=class_id)}
+    assert monty_run(code, inputs=inputs) == snapshot({})
+
+
 def test_class_type_hints_any_mapping(monty_run: RunMonty):
     class Proxied(ClassType):
         def get_type_hints(self) -> Mapping[str, Any]:
