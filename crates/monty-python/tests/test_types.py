@@ -14,7 +14,14 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyConversionError, MontyRuntimeError, MontyStdTypeProxy
+from pydantic_monty import (
+    AsyncMonty,
+    MontyComplete,
+    MontyConversionError,
+    MontyRuntimeError,
+    MontySession,
+    MontyStdTypeProxy,
+)
 
 
 def test_none_input(monty_run: RunMonty):
@@ -704,6 +711,51 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
     """sys.version_info can be compared to tuples."""
     result = monty_run('import sys; (sys.version_info.major, sys.version_info.minor, sys.version_info.micro)')
     assert result == snapshot((3, 14, 0))
+
+
+# === Results the host cannot build ===
+
+UNDECODABLE_RESULTS = [
+    pytest.param(
+        "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)",
+        "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')",
+        id='namedtuple_underscore_field',
+    ),
+    pytest.param(
+        'class K:\n    pass\n{K(): 1}',
+        "MontyRuntimeError(TypeError: cannot convert the result to a Python value: cannot use 'pydantic_monty.MontyClassProxy' as a dict key (unhashable type: 'pydantic_monty.MontyClassProxy'))",
+        id='proxy_dict_key',
+    ),
+]
+
+
+@pytest.mark.parametrize(('code', 'expected'), UNDECODABLE_RESULTS)
+def test_undecodable_result_sync(monty_run: RunMonty, code: str, expected: str):
+    """A result CPython refuses to build raises `MontyRuntimeError`, not the
+    host's own exception with its traceback."""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
+    assert exc_info.value.__cause__ is None
+    assert repr(exc_info.value) == expected
+
+
+@pytest.mark.parametrize(('code', 'expected'), UNDECODABLE_RESULTS)
+async def test_undecodable_result_async(code: str, expected: str):
+    async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                await session.feed_run(code)
+    assert repr(exc_info.value) == expected
+
+
+def test_undecodable_result_feed_start(session: MontySession):
+    complete = session.feed_start('class K:\n    pass\n{K(): 1}')
+    assert isinstance(complete, MontyComplete)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        complete.output
+    assert repr(exc_info.value) == snapshot(
+        "MontyRuntimeError(TypeError: cannot convert the result to a Python value: cannot use 'pydantic_monty.MontyClassProxy' as a dict key (unhashable type: 'pydantic_monty.MontyClassProxy'))"
+    )
 
 
 # === User-defined NamedTuple input ===
