@@ -12,6 +12,7 @@ use pyo3::{
     exceptions::{PyBaseException, PyTypeError, PyValueError},
     intern,
     prelude::*,
+    sync::PyOnceLock,
     types::{
         PyBool, PyBytes, PyComplex, PyDate, PyDateAccess, PyDateTime, PyDelta, PyDict, PyFloat, PyFrozenSet, PyInt,
         PyList, PyModule, PySet, PyString, PyTime, PyTuple, PyType,
@@ -615,9 +616,12 @@ fn namedtuple_type_name(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// `typing.get_type_hints(obj)`, falling back to `obj.__annotations__` (an
 /// unresolvable forward reference makes the former raise), then to `{}`.
 fn host_type_hints<'py>(obj: &Bound<'py, PyAny>) -> Bound<'py, PyDict> {
+    static GET_TYPE_HINTS: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
     let py = obj.py();
-    py.import(intern!(py, "typing"))
-        .and_then(|typing| typing.call_method1(intern!(py, "get_type_hints"), (obj,)))
+    GET_TYPE_HINTS
+        .import(py, "typing", "get_type_hints")
+        .and_then(|get_type_hints| get_type_hints.call1((obj,)))
         .or_else(|_| obj.getattr(intern!(py, "__annotations__")))
         .and_then(|hints| hints.cast_into::<PyDict>()?.copy())
         .unwrap_or_else(|_| PyDict::new(py))
