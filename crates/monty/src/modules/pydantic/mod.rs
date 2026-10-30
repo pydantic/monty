@@ -7,11 +7,17 @@
 //! error catalogue in `catalogue.rs` is copied from pydantic-core so messages
 //! match it byte for byte.
 
+pub(crate) mod arena;
+pub(crate) mod build;
 pub(crate) mod catalogue;
+pub(crate) mod coerce;
 pub(crate) mod errors;
+pub(crate) mod input;
 pub(crate) mod iso;
 pub(crate) mod json_writer;
+pub(crate) mod python_input;
 pub(crate) mod snapshot;
+pub(crate) mod validate;
 
 use crate::{
     builtins::Builtins,
@@ -19,7 +25,7 @@ use crate::{
     exception_private::ExcType,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{Module, allocate_string},
+    types::{BuiltinType, Module, allocate_string},
     value::Value,
 };
 
@@ -39,6 +45,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     ] {
         module.set_attr(name, Value::Builtin(Builtins::ExcType(exc_type)), vm);
     }
+    module.set_attr(
+        StaticStrings::TypeAdapter,
+        Value::Builtin(Builtins::Type(BuiltinType::TypeAdapter)),
+        vm,
+    );
     let version = allocate_string(PYDANTIC_VERSION, vm.heap);
     module.set_attr(StaticStrings::RandomVersion, version, vm);
     vm.heap.allocate(HeapData::Module(Box::new(module)))
