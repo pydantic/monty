@@ -50,7 +50,10 @@ python = ["dep:pyo3", "dep:strum"]
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
 # `tzdb-bundled` so every worker resolves zone names; native binaries add `tzdb` for the OS copy.
-worker = ["dep:monty", "dep:monty-type-checking", "monty-types/tzdb-bundled"]
+# `worker-core` leaves out the type checker (ty, ruff_db, typeshed) for embedders
+# that never type-check: such a worker refuses `type_check: true`. `worker` adds it.
+worker-core = ["dep:monty", "monty-types/tzdb-bundled"]
+worker = ["worker-core", "dep:monty-type-checking"]
 
 [[bin]]
 name = "generate-proto"
