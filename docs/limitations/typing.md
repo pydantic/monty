@@ -93,6 +93,8 @@ Divergences:
 - **`format=` other than `None` raises `NotImplementedError`.**
 - **`globalns` / `localns` must be a dict or `None`.**
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.
+- **A string stored in a class's `__annotations__` evaluates as annotation source, not as a forward reference.**
+    Monty's stored annotations are already strings, so one assigned directly (`C.__annotations__['x'] = 'Missing'`) is indistinguishable from `x: Missing`: it evaluates in the class and session namespaces, so `get_type_hints(C, {'Missing': int})` raises `NameError` where CPython returns `{'x': int}`.
 - **A self-referential string stays a `str`.**
     With `a = 'a'`, `def f(x: 'a')` gives `{'x': 'a'}` where CPython returns `ForwardRef('a', ...)`; there is no `ForwardRef`.
 - **Annotations are re-evaluated on every call**, including any side effects, where CPython evaluates a non-string annotation once.
