@@ -108,7 +108,8 @@ Wall mode counts elapsed time while the VM runs. It is the default.
 CPU mode uses the executing thread's CPU counter. It is supported only on Linux.
 Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
 Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
-Pools on macOS and Windows reject CPU mode, as do WebAssembly workers, which have no thread CPU counter.
+Local subprocess pools on macOS and Windows reject CPU mode, as do WebAssembly workers, which have no thread CPU counter.
+A WebSocket client on any platform can still use a Linux server's CPU clock.
 Workers reject CPU configuration if the initial thread CPU counter read fails.
 If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
 
@@ -195,7 +196,7 @@ Select `Monty(execution_clock='cpu', request_timeout=2)` in Python,
 or `PoolConfig::execution_clock = ExecutionClock::Cpu` in Rust.
 The pool applies this policy to every session. Session limits select numeric budgets, not clocks.
 Wall time remains the default. CPU mode requires a Linux subprocess worker and a finite local pool `request_timeout`.
-Pools on macOS and Windows and WebAssembly workers reject CPU mode.
+Local subprocess pools on macOS and Windows and WebAssembly workers reject CPU mode.
 
 The subprocess pool independently measures child process CPU, including compilation and protocol work during execution turns.
 It stops measuring at each completion or suspension. Host callback time is outside the window.

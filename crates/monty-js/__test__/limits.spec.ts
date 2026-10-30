@@ -408,7 +408,9 @@ test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', asy
   const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }))
   t.true(
     String(unbounded).includes(
-      supportsCpuClock ? 'finite request_timeout' : 'CPU execution clock is only supported for subprocess workers on Linux',
+      supportsCpuClock
+        ? 'finite request_timeout'
+        : 'CPU execution clock is only supported for subprocess workers on Linux',
     ),
   )
 })

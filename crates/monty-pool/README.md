@@ -156,7 +156,8 @@ pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
 ```
 
 CPU mode replaces budget-derived wall deadlines.
-CPU mode is Linux-only; `Pool::new` rejects it on other platforms.
+CPU mode needs Linux workers: `Pool::new` rejects it for subprocess pools on other platforms.
+A WebSocket pool on any platform can still adopt a Linux server's CPU clock.
 When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
 The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
 Idle workers and host work between turns do not incur periodic CPU reads.
