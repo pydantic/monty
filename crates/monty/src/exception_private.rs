@@ -13,6 +13,7 @@ use crate::{
     fstring::{FormatError, ascii_escape},
     heap::{DropWithContext, HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
+    modules::pydantic,
     parse::CodeRange,
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
@@ -2755,6 +2756,12 @@ impl<'h> HeapRead<'h, SimpleException> {
 impl SimpleException {
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+        // pydantic's `ValidationError.__repr__` is its `__str__`: the error listing.
+        if self.exc_type == ExcType::ValidationError
+            && let Some(message) = &self.arg
+        {
+            return f.write_str(message);
+        }
         let type_str: &'static str = self.exc_type.into();
         write!(f, "{type_str}(")?;
 
@@ -2807,8 +2814,23 @@ impl<'h> HeapRead<'h, SimpleException> {
                 smallvec![]
             };
             Some(CallResult::Value(allocate_tuple(elements, vm.heap)))
+        } else if let ExcData::Validation(data) = &self.get(vm.heap).data {
+            pydantic::errors::getattr(data, attr, vm).map(CallResult::Value)
         } else {
             None
+        }
+    }
+
+    /// Calls a method on this exception: only a `ValidationError` has any
+    /// (`errors()`, `error_count()`, `json()`); every other name is an
+    /// `AttributeError`.
+    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        if let ExcData::Validation(data) = &self.get(vm.heap).data {
+            let data = data.clone();
+            pydantic::errors::call_method(&data, attr, args, vm)
+        } else {
+            let type_name: &'static str = self.get(vm.heap).exc_type.into();
+            Err(ExcType::attribute_error_method(type_name, attr, args, vm))
         }
     }
 }
