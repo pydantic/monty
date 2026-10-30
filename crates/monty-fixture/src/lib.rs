@@ -38,6 +38,9 @@ pub struct Header {
     pub skip_cpython_windows: bool,
     /// Set `__name__ = '__main__'` for CPython only.
     pub cpython_main_module: bool,
+    /// Put the dev virtualenv's `site-packages` on CPython's `sys.path`, so the case can
+    /// `import pydantic` there; Monty's side is unaffected.
+    pub cpython_site_packages: bool,
     /// Interpreters the case must fail on (strict: passing there is an error).
     pub xfail: Vec<Interpreter>,
     /// Overrides the GC interval of the case's resource limits.

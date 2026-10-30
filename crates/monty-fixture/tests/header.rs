@@ -18,6 +18,7 @@ fn reads_every_key() {
 # /// monty
 # call-external = true
 # xfail = ['monty', 'cpython']
+# cpython-site-packages = true
 # gc-interval = 200
 # timezone = 'Europe/London'  # trailing comment
 #
@@ -32,6 +33,7 @@ x = 1
         header,
         Header {
             call_external: true,
+            cpython_site_packages: true,
             xfail: vec![Interpreter::Monty, Interpreter::Cpython],
             gc_interval: Some(200),
             timezone: Some("Europe/London".to_owned()),
@@ -53,7 +55,7 @@ fn rejects_unknown_key() {
       |
     1 | xfial = ['monty']
       | ^^^^^
-    unknown field `xfial`, expected one of `call-external`, `run-async`, `mount-fs`, `skip-cpython-windows`, `cpython-main-module`, `xfail`, `gc-interval`, `timezone`, `bench`
+    unknown field `xfial`, expected one of `call-external`, `run-async`, `mount-fs`, `skip-cpython-windows`, `cpython-main-module`, `cpython-site-packages`, `xfail`, `gc-interval`, `timezone`, `bench`
     ");
 }
 
