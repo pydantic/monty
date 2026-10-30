@@ -4,12 +4,12 @@
 //! - `TYPE_CHECKING`: Always False (used for conditional imports)
 //! - Common type hints as `Marker` values (Any, Optional, List, Dict, etc.)
 //! - `Union`, the type behind `int | None` (see `types/union.rs`)
-//!
 //! - `get_type_hints()`, evaluating the stringized annotations Monty stores
 //!
 //! These markers exist so code that imports typing constructs works correctly,
-//! though Monty doesn't perform static type checking. `Optional[X]` is the one
-//! marker that can be subscripted, producing `X | None`.
+//! though Monty doesn't perform static type checking. Three markers can be
+//! subscripted: `Optional[X]` produces `X | None`, and `Literal[...]` and
+//! `Annotated[...]` build the aliases in `types/typing_alias.rs`.
 
 use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
@@ -103,14 +103,17 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
     }
 }
 
-/// Evaluates stringized annotations, mirroring CPython 3.14's `typing._eval_type`.
+/// Evaluates stringized annotations, mirroring CPython 3.14's `typing._eval_type`
+/// and `_strip_annotations`.
 ///
 /// Each `(name, hint, globals, locals, fwd_globals, fwd_locals, fwd_globals_first)` entry
 /// evaluates a `str` hint in `globals` / `locals`; a string it yields, at any depth of a
-/// `GenericAlias` / `Union`, is a forward reference evaluated in the `fwd_*` namespaces.
-/// A string seen before in the chain stays a `str`, so `a = 'a'` cannot loop.
+/// `GenericAlias` / `Union` / `Annotated`, is a forward reference evaluated in the `fwd_*`
+/// namespaces. A string seen before in the chain stays a `str`, so `a = 'a'` cannot loop.
+/// `Literal` choices are values, never forward references, so they are left alone.
+/// Unless `include_extras`, an `Annotated` at any depth is replaced by its type.
 pub(crate) const GET_TYPE_HINTS_SOURCE: &str = r"
-def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, tuple_, generic_alias, union, none_type):
+def __monty_typing_get_type_hints(entries, include_extras, eval_hint, isinstance_, len_, str_, tuple_, generic_alias, union, annotated_alias, annotated, none_type):
     hints = {}
     for name, hint, globalns, localns, fwd_globalns, fwd_localns, fwd_globals_first in entries:
         if isinstance_(hint, str_):
@@ -126,7 +129,7 @@ def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, t
                 while isinstance_(hint, str_) and hint not in seen:
                     seen = seen + (hint,)
                     hint = eval_hint(hint, fwd_globalns, fwd_localns, fwd_globals_first, True)
-                if isinstance_(hint, generic_alias) or isinstance_(hint, union):
+                if isinstance_(hint, generic_alias) or isinstance_(hint, union) or isinstance_(hint, annotated_alias):
                     frame[0] = hint
                     frame[1] = []
                     frame[2] = seen
@@ -142,7 +145,12 @@ def __monty_typing_get_type_hints(entries, eval_hint, isinstance_, len_, str_, t
                 stack.append([args[index], None, frame[2], 0])
                 continue
             resolved = tuple_(frame[1])
-            if resolved != args:
+            if isinstance_(hint, annotated_alias):
+                if not include_extras:
+                    hint = resolved[0]
+                elif resolved != args:
+                    hint = annotated[resolved + hint.__metadata__]
+            elif resolved != args:
                 if isinstance_(hint, generic_alias):
                     hint = hint.__origin__[resolved]
                 else:
@@ -167,7 +175,7 @@ struct GetTypeHintsArgs {
     globalns: Value,
     #[from_args(default = Value::None)]
     localns: Value,
-    /// Accepted and ignored: Monty has no `Annotated` metadata to strip.
+    /// Keeps `Annotated[...]` metadata when true; otherwise each is replaced by its type.
     #[from_args(default = Value::Bool(false))]
     include_extras: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -201,19 +209,24 @@ fn get_type_hints(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     }
     let globalns = namespace_dict(globalns, "globalns", vm)?;
     let localns = namespace_dict(localns, "localns", vm)?;
+    let include_extras = include_extras.py_bool(vm)?;
     match hint_source(obj, vm) {
-        HintSource::Function(func_id, globals) => {
-            evaluate_entries(function_entries(func_id, globals, globalns, localns, vm), vm)
+        HintSource::Function(func_id, globals) => evaluate_entries(
+            function_entries(func_id, globals, globalns, localns, vm),
+            include_extras,
+            vm,
+        ),
+        HintSource::Class(class_id) => {
+            evaluate_entries(class_entries(class_id, globalns, localns, vm)?, include_extras, vm)
         }
-        HintSource::Class(class_id) => evaluate_entries(class_entries(class_id, globalns, localns, vm)?, vm),
         HintSource::Host(target) => Ok(CallResult::OsCall(OsFunctionCall::GetTypeHints(target))),
-        HintSource::Empty => evaluate_entries(Vec::new(), vm),
+        HintSource::Empty => evaluate_entries(Vec::new(), include_extras, vm),
         HintSource::NotAnnotatable => Err(ExcType::no_annotations(obj, vm)),
     }
 }
 
 /// Hands evaluator `entries` to the frozen evaluator; with none, `{}` without a call.
-fn evaluate_entries(entries: Vec<Value>, vm: &mut VM<'_>) -> RunResult<CallResult> {
+fn evaluate_entries(entries: Vec<Value>, include_extras: bool, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if entries.is_empty() {
         Ok(CallResult::Value(Value::Ref(
             vm.heap.allocate(HeapData::Dict(Dict::new())),
@@ -224,6 +237,7 @@ fn evaluate_entries(entries: Vec<Value>, vm: &mut VM<'_>) -> RunResult<CallResul
             FrozenFunction::TypingGetTypeHints,
             [
                 entries,
+                Value::Bool(include_extras),
                 Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
@@ -231,6 +245,8 @@ fn evaluate_entries(entries: Vec<Value>, vm: &mut VM<'_>) -> RunResult<CallResul
                 Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
                 Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
                 Value::Builtin(Builtins::Type(BuiltinType::Union)),
+                Value::Builtin(Builtins::Type(BuiltinType::AnnotatedAlias)),
+                Value::Marker(Marker(StaticStrings::Annotated)),
                 Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
             ],
         )

@@ -175,6 +175,33 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `isinstance()` raises for a subscripted `typing`
+    /// form (`Literal[1]`, `Annotated[int, 1]`) as its second argument.
+    #[must_use]
+    fn isinstance_subscripted_generic() -> RunError {
+        Self::type_error("Subscripted generics cannot be used with class and instance checks")
+    }
+
+    /// Creates the TypeError for `typing.Annotated[int]` (or fewer arguments).
+    #[must_use]
+    fn annotated_requires_two_args() -> RunError {
+        Self::type_error("Annotated[...] should be used with at least two arguments (a type and an annotation).")
+    }
+
+    /// Creates the TypeError for `typing.Annotated[(a, b), meta]`, `repr`
+    /// being the tuple's.
+    #[must_use]
+    fn annotated_type_required(repr: &str) -> RunError {
+        Self::type_error(format!("Annotated[t, ...]: t must be a type. Got {repr}."))
+    }
+
+    /// Creates the TypeError for calling a `typing` form or its subscript
+    /// (`Literal[1]()`): `Cannot instantiate typing.Literal`.
+    #[must_use]
+    fn cannot_instantiate_typing_form(form: &str) -> RunError {
+        Self::type_error(format!("Cannot instantiate typing.{form}"))
+    }
+
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
     /// is neither annotated nor callable: `5 does not have annotations`.
     fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {

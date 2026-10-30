@@ -183,6 +183,9 @@ exclude = [
     "crates/monty/test_cases/typing__get_type_hints_classes.py",
     "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
     "crates/monty/test_cases/typing__get_type_hints_functions.py",
+    # `Literal[1][2]` and bare `dict` / `list` as annotated types are runtime
+    # behaviour under test, not type expressions
+    "crates/monty/test_cases/typing__literal_annotated.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

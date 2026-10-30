@@ -777,6 +777,8 @@ impl MontyTypeExt for MontyType {
             | Type::Blake2b
             | Type::Blake2s
             | Type::MissingType
+            | Type::LiteralGenericAlias
+            | Type::AnnotatedAlias
             | Type::DirEntry
             | Type::ScandirIterator
             | Type::WalkGenerator

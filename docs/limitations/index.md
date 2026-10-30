@@ -40,7 +40,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
     directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
-- Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
+- Runtime generic aliases (`list[int]`), `|` unions (`int | None`), `Literal[...]` and `Annotated[...]`,
+    see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 

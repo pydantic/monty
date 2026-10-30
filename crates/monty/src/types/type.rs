@@ -342,6 +342,12 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `typing._LiteralGenericAlias`, the type of `Literal['a', 'b']`.
+    #[strum(serialize = "typing._LiteralGenericAlias")]
+    LiteralGenericAlias,
+    /// `typing._AnnotatedAlias`, the type of `Annotated[int, 'meta']`.
+    #[strum(serialize = "typing._AnnotatedAlias")]
+    AnnotatedAlias,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
