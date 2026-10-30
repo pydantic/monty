@@ -462,7 +462,23 @@ except AttributeError as exc:
     assert str(exc) == "type object 'Foo' has no attribute 'missing'"
 
 # a forward reference must compile as an expression on its own
-for source in [' int', '\tint', '', '   ', 'x = 1', 'int +', 'await x', 'def f(): pass']:
+for source in [
+    ' int',
+    '\tint',
+    '\n int',
+    '\n\tint',
+    '\r\n int',
+    '#c\n int',
+    '\x0c int',
+    '',
+    '   ',
+    '\n',
+    '#c',
+    'x = 1',
+    'int +',
+    'await x',
+    'def f(): pass',
+]:
     ns = {}
     exec(f'def f(a: {source!r}): pass', ns)
     try:
@@ -471,8 +487,8 @@ for source in [' int', '\tint', '', '   ', 'x = 1', 'int +', 'await x', 'def f()
     except SyntaxError as exc:
         assert str(exc) == f'Forward reference must be an expression -- got {source!r}'
 
-# leading newlines, form feeds and comment lines are allowed
-for source in ['\nint', 'int\n', '\x0cint', '#c\nint', '(\n int)']:
+# leading blank and comment lines are skipped, and a form feed resets the indentation
+for source in ['\nint', 'int\n', '\x0cint', ' \x0cint', '#c\nint', '  #c\nint', '\n   \nint', '(\n int)']:
     ns = {}
     exec(f'def f(a: {source!r}): pass', ns)
     assert get_type_hints(ns['f']) == {'a': int}

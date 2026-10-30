@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, dataclass
 from fractions import Fraction
 from functools import cached_property
+from types import MappingProxyType
 from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
@@ -1330,7 +1332,7 @@ def test_class_type_hints_read_only_when_asked(monty_run: RunMonty):
     calls: list[str] = []
 
     class Counting(ClassType):
-        def get_type_hints(self) -> dict[str, Any]:
+        def get_type_hints(self) -> Mapping[str, Any]:
             calls.append('get_type_hints')
             return super().get_type_hints()
 
@@ -1352,6 +1354,33 @@ def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
     code = 'from typing import get_type_hints\n(a is b, get_type_hints(b))'
     inputs = {'a': ClassType(Typed, id=class_id), 'b': Renamed(Typed, id=class_id)}
     assert monty_run(code, inputs=inputs) == snapshot((True, {'renamed': int}))
+
+
+def test_class_type_hints_any_mapping(monty_run: RunMonty):
+    class Proxied(ClassType):
+        def get_type_hints(self) -> Mapping[str, Any]:
+            return MappingProxyType({'name': str, 'count': int})
+
+    code = 'from typing import get_type_hints\nget_type_hints(T)'
+    assert monty_run(code, inputs={'T': Proxied(Typed)}) == snapshot({'name': str, 'count': int})
+
+
+def test_class_type_hints_not_a_mapping(monty_run: RunMonty):
+    class Broken(ClassType):
+        def get_type_hints(self) -> Mapping[str, Any]:
+            return [('name', str)]  # pyright: ignore[reportReturnType]
+
+    code = """
+from typing import get_type_hints
+try:
+    get_type_hints(T)
+except TypeError as e:
+    result = str(e)
+result
+"""
+    assert monty_run(code, inputs={'T': Broken(Typed)}) == snapshot(
+        'ClassType.get_type_hints() must return a mapping, not list'
+    )
 
 
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='earlier versions evaluate annotations at class creation')

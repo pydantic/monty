@@ -8,10 +8,11 @@
 use monty_proto::python::{InstanceStore, py_type_object_to_monty};
 use monty_types::{MontyObject, MontyUuid};
 use pyo3::{
+    exceptions::PyTypeError,
     intern,
     prelude::*,
     sync::PyOnceLock,
-    types::{PyDict, PyString, PyType},
+    types::{PyMapping, PyString, PyType},
 };
 
 /// The hints of a host function, from `typing.get_type_hints(obj)`. Its
@@ -23,30 +24,35 @@ pub(crate) fn callable_type_hints(obj: &Bound<'_, PyAny>) -> PyResult<MontyObjec
     let hints = GET_TYPE_HINTS
         .import(obj.py(), "typing", "get_type_hints")?
         .call1((obj,))?
-        .cast_into::<PyDict>()?;
-    Ok(hints_to_monty(&hints))
+        .cast_into::<PyMapping>()?;
+    hints_to_monty(&hints)
 }
 
 /// The hints of the host class registered under `id`, from its `ClassType`
-/// wrapper's `get_type_hints()`; `{}` when no class is registered there.
+/// wrapper's `get_type_hints()`, which an override may answer with any mapping;
+/// `{}` when no class is registered there.
 pub(crate) fn class_type_hints(py: Python<'_>, store: &InstanceStore, id: &MontyUuid) -> PyResult<MontyObject> {
     let Some(wrapper) = store.get(py, id)? else {
         return Ok(MontyObject::dict([]));
     };
-    let hints = wrapper
-        .bind(py)
-        .call_method0(intern!(py, "get_type_hints"))?
-        .cast_into::<PyDict>()?;
-    Ok(hints_to_monty(&hints))
+    let hints = wrapper.bind(py).call_method0(intern!(py, "get_type_hints"))?;
+    match hints.cast::<PyMapping>() {
+        Ok(hints) => hints_to_monty(hints),
+        Err(_) => Err(PyTypeError::new_err(format!(
+            "ClassType.get_type_hints() must return a mapping, not {}",
+            hints.get_type().name()?
+        ))),
+    }
 }
 
-/// Converts a hints dict, leaving out entries whose name is not a `str` or
+/// Converts a hints mapping, leaving out entries whose name is not a `str` or
 /// whose hint cannot be read, rather than failing the whole answer.
-fn hints_to_monty(hints: &Bound<'_, PyDict>) -> MontyObject {
-    MontyObject::dict(hints.iter().filter_map(|(name, hint)| {
-        let name = name.extract::<String>().ok()?;
+fn hints_to_monty(hints: &Bound<'_, PyMapping>) -> PyResult<MontyObject> {
+    let items = hints.items()?;
+    Ok(MontyObject::dict(items.iter().filter_map(|item| {
+        let (name, hint) = item.extract::<(String, Bound<'_, PyAny>)>().ok()?;
         Some((MontyObject::string(name), hint_value(&hint).ok()?))
-    }))
+    })))
 }
 
 /// One hint: `None` stands for `NoneType`, as in a hint; a builtin type the

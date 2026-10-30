@@ -144,8 +144,7 @@ pub(crate) fn eval_hint(
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
     let text = snippet_source("eval", source, vm)?;
-    // `eval()` strips leading spaces and tabs, but `compile()` rejects them
-    if forward_ref && text.starts_with([' ', '\t']) {
+    if forward_ref && first_code_line_indented(&text) {
         return Err(ExcType::forward_ref_not_expression(&text));
     }
     let not_expression = |err: RunError| {
@@ -231,6 +230,27 @@ fn reject_null_bytes(source: &str) -> RunResult<()> {
     } else {
         Ok(())
     }
+}
+
+/// Whether the first line of code in `source` is indented, which `compile()` rejects
+/// but `eval()` strips. Like CPython's tokenizer, it skips blank and comment-only
+/// lines, and a form feed resets the column.
+fn first_code_line_indented(source: &str) -> bool {
+    source
+        .lines()
+        .find_map(|line| {
+            let mut indented = false;
+            for c in line.chars() {
+                match c {
+                    ' ' | '\t' => indented = true,
+                    '\x0c' => indented = false,
+                    '#' => return None,
+                    _ => return Some(indented),
+                }
+            }
+            None
+        })
+        .unwrap_or(false)
 }
 
 /// Parses, prepares and compiles `source` into an unpublished overlay, returning

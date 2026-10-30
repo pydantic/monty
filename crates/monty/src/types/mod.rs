@@ -56,7 +56,7 @@ pub mod union;
 
 pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
-pub(crate) use class::Class;
+pub(crate) use class::{Class, ClassAnnotations};
 pub(crate) use complex::Complex;
 pub(crate) use csv::CsvObject;
 pub(crate) use deque::Deque;

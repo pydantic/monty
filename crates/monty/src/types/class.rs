@@ -81,16 +81,25 @@ impl Class {
         &self.namespace
     }
 
-    /// The class's own `__annotations__` dict, or `None` for a class body with none.
-    pub(crate) fn annotations<'a>(&self, heap: &'a Heap, interns: &Interns) -> Option<&'a Dict> {
-        match self.namespace.get_by_str("__annotations__", heap, interns)?.ref_id() {
-            Some(id) => match heap.get(id) {
-                HeapData::Dict(annotations) => Some(annotations),
-                _ => None,
+    /// What the class's own namespace binds `__annotations__` to.
+    pub(crate) fn annotations<'a>(&self, heap: &'a Heap, interns: &Interns) -> ClassAnnotations<'a> {
+        match self.namespace.get_by_str("__annotations__", heap, interns) {
+            None => ClassAnnotations::Missing,
+            Some(value) => match value.ref_id().map(|id| heap.get(id)) {
+                Some(HeapData::Dict(annotations)) => ClassAnnotations::Dict(annotations),
+                _ => ClassAnnotations::NotADict,
             },
-            None => None,
         }
     }
+}
+
+/// A class's `__annotations__` binding, from [`Class::annotations`].
+pub(crate) enum ClassAnnotations<'a> {
+    /// The class body annotated nothing and bound no `__annotations__`.
+    Missing,
+    Dict(&'a Dict),
+    /// Bound to something else, such as `None`, which `get_type_hints` rejects.
+    NotADict,
 }
 
 impl<'h> HeapReadMut<'h, Class> {

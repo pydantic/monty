@@ -21,7 +21,7 @@ to transform values crossing the boundary.
 
 from __future__ import annotations
 
-from collections.abc import Coroutine, Iterable
+from collections.abc import Coroutine, Iterable, Mapping
 from dataclasses import KW_ONLY, dataclass, field, fields, is_dataclass
 from inspect import iscoroutine
 from types import FunctionType
@@ -292,12 +292,12 @@ class ClassType(BaseWrapper):
             eager_attrs = [(name, getattr(self.value, name)) for name in self.eager_attrs]
         return {name: self.convert_value(name, value) for name, value in eager_attrs}
 
-    def get_type_hints(self) -> dict[str, Any]:
+    def get_type_hints(self) -> Mapping[str, Any]:
         """The class's type hints, returned by `typing.get_type_hints()` on the
         class in the sandbox. Called each time the sandbox asks; an exception
         (`NameError` for an unresolvable forward reference) is raised there.
 
-        Override to return different hints, or `{}` to hide them.
+        Override to return different hints in any mapping, or `{}` to hide them.
         """
         return get_type_hints(self.value)
 

@@ -24,7 +24,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
-    types::{BuiltinType, Dict, List, Module, PyTrait, allocate_tuple},
+    types::{BuiltinType, ClassAnnotations, Dict, List, Module, PyTrait, allocate_tuple},
     value::{Marker, Value},
 };
 
@@ -330,13 +330,11 @@ fn class_entries(
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("hint_source classified a class");
     };
-    let annotations = match class.namespace().get_by_str("__annotations__", vm.heap, vm.interns) {
-        None => return Ok(Vec::new()),
-        Some(value) => match value.ref_id().map(|id| vm.heap.get(id)) {
-            Some(HeapData::Dict(annotations)) => annotations,
-            // CPython's `annotationlib` rejects `None` here too.
-            _ => return Err(not_a_dict_error(class_id, vm)),
-        },
+    let annotations = match class.annotations(vm.heap, vm.interns) {
+        ClassAnnotations::Missing => return Ok(Vec::new()),
+        ClassAnnotations::Dict(annotations) => annotations,
+        // CPython's `annotationlib` rejects `None` here too.
+        ClassAnnotations::NotADict => return Err(not_a_dict_error(class_id, vm)),
     };
     let pairs: Vec<(Value, Value)> = annotations
         .iter()
