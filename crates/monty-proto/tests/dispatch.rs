@@ -1072,7 +1072,11 @@ fn load_requires_the_saved_clock_for_idle_and_suspended_sessions() {
             } else {
                 dump("saved.py", None, &[], SessionRef::Idle(&repl)).unwrap()
             };
-            for destination in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+            // CPU mode is Linux-only; elsewhere a CPU dump can still be saved but not loaded.
+            for destination in [ExecutionClock::Wall, ExecutionClock::Cpu]
+                .into_iter()
+                .filter(|clock| clock.is_available())
+            {
                 let mut child = Child::default();
                 let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
                     execution_clock: Some(pb::ExecutionClock::from(destination) as i32),
@@ -1140,7 +1144,20 @@ fn configuration_acknowledges_the_selected_execution_clock() {
             .read::<pb::ChildEvent>()
             .unwrap()
             .unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
-        assert_eq!(event.execution_clock, Some(clock as i32));
+        if ExecutionClock::from(clock).is_available() {
+            assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
+            assert_eq!(event.execution_clock, Some(clock as i32));
+        } else {
+            assert_eq!(
+                expect_error_message(event.kind.unwrap()),
+                "protocol violation: CPU execution clock is unavailable"
+            );
+        }
     }
+}
+
+/// CPU mode is Linux-only, so the worker refuses it elsewhere instead of silently using wall time.
+#[test]
+fn cpu_clock_availability_matches_the_platform() {
+    assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(target_os = "linux"));
 }

@@ -2,6 +2,7 @@ use std::{thread, time::Duration};
 
 use super::{ExecutionClock, ExecutionInstant};
 
+#[cfg(target_os = "linux")]
 #[test]
 fn cached_sample_preserves_the_last_reported_duration() {
     let mut window = ExecutionInstant::now(ExecutionClock::Cpu, None);
@@ -56,8 +57,8 @@ fn wall_clock_is_always_available() {
     assert!(ExecutionClock::Wall.is_available());
 }
 
-#[cfg(not(feature = "cpu-clock"))]
+#[cfg(not(all(feature = "cpu-clock", target_os = "linux")))]
 #[test]
-fn cpu_clock_is_unavailable_without_the_feature() {
+fn cpu_clock_is_unavailable_without_the_feature_or_off_linux() {
     assert!(!ExecutionClock::Cpu.is_available());
 }

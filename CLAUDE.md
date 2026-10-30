@@ -183,7 +183,8 @@ subprocesses:
     streamed `Print` events out, then exactly one turn-ending event.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A WebSocket server selects its own clock and reports it to clients; session limits cannot override it.
-    Local subprocess pools supervise CPU with the child's OS process clock on Linux, macOS and Windows.
+    CPU mode is Linux-only, so it needs no `unsafe`: `Pool::new` rejects it elsewhere and the worker refuses it.
+    Local subprocess pools supervise CPU with the child's OS process clock.
     CPU mode requires a finite `PoolConfig::request_timeout`; WebSocket clients do not supervise CPU locally.
     WebAssembly workers accept wall mode only.
     Snapshots retain their clock; the worker rejects a load configured with another clock.

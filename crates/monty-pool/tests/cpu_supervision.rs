@@ -1,6 +1,6 @@
-//! Real process supervision on Linux, macOS and Windows, independent of interpreter polling.
+//! Real process supervision on Linux, independent of interpreter polling.
 
-#![cfg(any(target_os = "linux", target_os = "macos", windows))]
+#![cfg(target_os = "linux")]
 
 use std::{env, future::ready, path::PathBuf, sync::OnceLock, thread, time::Duration};
 

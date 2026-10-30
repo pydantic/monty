@@ -624,7 +624,7 @@ class Monty:
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
             execution_clock: Clock for all sessions in this pool. Defaults to wall time.
-                CPU mode requires a finite `request_timeout`.
+                CPU mode is Linux-only and requires a finite `request_timeout`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
                 `1` runs every session in a fresh process.
             feed_duration_limit_grace: Seconds beyond `max_feed_duration_secs` on

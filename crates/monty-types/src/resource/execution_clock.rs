@@ -1,20 +1,15 @@
 //! Execution-window accounting with sampled thread CPU time and an elapsed-time fallback.
 
-#[cfg(any(unix, windows))]
+#[cfg(target_os = "linux")]
 use std::thread::{ThreadId, current};
 use std::time::Duration;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
-#[cfg(all(feature = "cpu-clock", unix))]
+#[cfg(all(feature = "cpu-clock", target_os = "linux"))]
 use nix::{libc::CLOCK_THREAD_CPUTIME_ID, time::ClockId};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
-#[cfg(all(feature = "cpu-clock", windows))]
-use windows_sys::Win32::{
-    Foundation::FILETIME,
-    System::Threading::{GetCurrentThread, GetThreadTimes},
-};
 
 use super::ExecutionClock;
 
@@ -29,7 +24,7 @@ pub(super) struct ExecutionInstant {
     sampled_at: Instant,
     sample_interval: Duration,
     last_elapsed: Duration,
-    #[cfg(any(unix, windows))]
+    #[cfg(target_os = "linux")]
     thread: Option<ThreadId>,
 }
 
@@ -44,7 +39,7 @@ impl ExecutionInstant {
             sampled_at: wall,
             sample_interval: remaining.map_or(SAMPLE_INTERVAL, |budget| budget.min(SAMPLE_INTERVAL)),
             last_elapsed: Duration::ZERO,
-            #[cfg(any(unix, windows))]
+            #[cfg(target_os = "linux")]
             thread: cpu.map(|_| current().id()),
         }
     }
@@ -61,7 +56,7 @@ impl ExecutionInstant {
 
     /// A failed, reversed, or cross-thread clock uses elapsed time for the rest of this window.
     fn measure(&mut self, exact: bool) -> Duration {
-        #[cfg(any(unix, windows))]
+        #[cfg(target_os = "linux")]
         if self.cpu.is_some() && Some(current().id()) != self.thread {
             self.cpu = None;
         }
@@ -84,15 +79,9 @@ impl ExecutionInstant {
 }
 
 /// Read an absolute counter without retaining a thread-bound handle in movable VM state.
-#[cfg_attr(
-    all(feature = "cpu-clock", windows),
-    expect(
-        unsafe_code,
-        reason = "the current-thread pseudo-handle and separate initialized FILETIME outputs stay live"
-    )
-)]
+/// CPU mode is Linux-only, where `nix` reads the counter without `unsafe`.
 pub(super) fn thread_cpu() -> Option<Duration> {
-    #[cfg(all(feature = "cpu-clock", unix))]
+    #[cfg(all(feature = "cpu-clock", target_os = "linux"))]
     {
         let time = ClockId::from_raw(CLOCK_THREAD_CPUTIME_ID).now().ok()?;
         Some(Duration::new(
@@ -100,37 +89,12 @@ pub(super) fn thread_cpu() -> Option<Duration> {
             time.tv_nsec().try_into().ok()?,
         ))
     }
-    #[cfg(all(feature = "cpu-clock", windows))]
-    {
-        let mut created = FILETIME::default();
-        let mut exited = FILETIME::default();
-        let mut kernel = FILETIME::default();
-        let mut user = FILETIME::default();
-        // SAFETY: the pseudo-handle names this thread; each output is a separate live FILETIME.
-        let status = unsafe {
-            GetThreadTimes(
-                GetCurrentThread(),
-                &raw mut created,
-                &raw mut exited,
-                &raw mut kernel,
-                &raw mut user,
-            )
-        };
-        if status == 0 {
-            return None;
-        }
-        let ticks = |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
-        ticks(kernel)
-            .checked_add(ticks(user))?
-            .checked_mul(100)
-            .map(Duration::from_nanos)
-    }
-    #[cfg(not(all(feature = "cpu-clock", any(unix, windows))))]
+    #[cfg(not(all(feature = "cpu-clock", target_os = "linux")))]
     {
         None
     }
 }
 
-#[cfg(all(test, any(unix, windows)))]
+#[cfg(test)]
 #[path = "../../tests/unit/execution_clock.rs"]
 mod tests;

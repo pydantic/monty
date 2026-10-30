@@ -66,15 +66,9 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
 opentelemetry_sdk = { version = "0.32", optional = true }
 
+# CPU supervision is Linux-only: `nix` reads the child's CPU clock without `unsafe`.
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.31.3", features = ["process", "time"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2"
-mach2 = "0.7"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [[example]]
 name = "cpu-test-worker"

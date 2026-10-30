@@ -163,6 +163,8 @@ jobs:
       # coverage for `make test-no-features`
       # `test-rust-os` has no Linux entry, so this is the only Linux run of
       # monty-fs: its race soaks are enabled here or they never run on Linux.
+      # It is also the only run of monty-types' Linux-only CPU clock tests: `monty`
+      # enables `monty-types/cpu-clock` for the whole build.
       - run: cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
         env:
           MONTY_FS_SOAK: '1'
@@ -505,7 +507,6 @@ jobs:
       - run: cargo test -p monty-fs
       # monty-types holds the resource tracker, including the snapshot-restore limit caps.
       - run: cargo test -p monty-types
-      - run: cargo test -p monty-types --features cpu-clock --test execution_clock
       # The two race soaks are opt-in so a local `cargo test -p monty-fs` does
       # not pay ~5s for them, but they are regression guards on the
       # descriptor-relative open and the FIFO re-check, so CI must run them.

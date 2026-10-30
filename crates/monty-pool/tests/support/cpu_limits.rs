@@ -2,7 +2,6 @@ use std::sync::OnceLock;
 
 use monty_proto::{WireArena, WireFunctionCall};
 use monty_types::ExecutionClock;
-#[cfg(target_os = "linux")]
 use nix::{
     errno::Errno,
     sys::wait::{WaitPidFlag, waitpid},
@@ -34,23 +33,10 @@ fn limits(millis: u64) -> ReplConfig {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn reaped(pid: u32) {
     assert_eq!(
         waitpid(Pid::from_raw(i32::try_from(pid).unwrap()), Some(WaitPidFlag::WNOHANG)),
         Err(Errno::ECHILD)
-    );
-}
-
-#[cfg(target_os = "macos")]
-fn reaped(pid: u32) {
-    assert!(
-        !Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .output()
-            .unwrap()
-            .status
-            .success()
     );
 }
 
@@ -478,15 +464,7 @@ async fn cancellation_discards_the_worker_before_any_resume() {
     ));
     timeout(Duration::from_secs(2), async {
         loop {
-            #[cfg(target_os = "linux")]
             let alive = Path::new(&format!("/proc/{pid}")).exists();
-            #[cfg(target_os = "macos")]
-            let alive = Command::new("kill")
-                .args(["-0", &pid.to_string()])
-                .output()
-                .unwrap()
-                .status
-                .success();
             if !alive {
                 break;
             }

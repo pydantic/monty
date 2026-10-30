@@ -105,10 +105,10 @@ A few integer operations carry their own caps regardless of `max_memory`:
 Both duration limits count **execution time**.
 
 Wall mode counts elapsed time while the VM runs. It is the default.
-CPU mode on Linux, macOS and Windows uses the executing thread's CPU counter.
+CPU mode uses the executing thread's CPU counter. It is supported only on Linux.
 Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
 Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
-WebAssembly workers require wall mode because they have no thread CPU counter.
+Pools on macOS and Windows reject CPU mode, as do WebAssembly workers, which have no thread CPU counter.
 Workers reject CPU configuration if the initial thread CPU counter read fails.
 If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
 
@@ -194,15 +194,15 @@ Select `Monty(execution_clock='cpu', request_timeout=2)` in Python,
 `Monty.create({executionClock: 'cpu', requestTimeout: 2})` in JavaScript,
 or `PoolConfig::execution_clock = ExecutionClock::Cpu` in Rust.
 The pool applies this policy to every session. Session limits select numeric budgets, not clocks.
-Wall time remains the default. CPU mode requires a native worker and a finite local pool `request_timeout`.
-WebAssembly workers reject CPU mode.
+Wall time remains the default. CPU mode requires a Linux subprocess worker and a finite local pool `request_timeout`.
+Pools on macOS and Windows and WebAssembly workers reject CPU mode.
 
 The subprocess pool independently measures child process CPU, including compilation and protocol work during execution turns.
 It stops measuring at each completion or suspension. Host callback time is outside the window.
 The existing feed and turn grace settings use CPU time in this mode.
 Feed consumption and grace do not renew on resume.
 
-When a CPU backstop is active, Linux, macOS and Windows poll every 5 ms during execution turns.
+When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
 CPU exhaustion kills and reaps the worker. The explicit wall deadline handles blocked workers.
 A supervisor clock failure discards the worker instead of weakening enforcement.
 OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.

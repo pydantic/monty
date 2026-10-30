@@ -156,7 +156,8 @@ pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
 ```
 
 CPU mode replaces budget-derived wall deadlines.
-When a CPU backstop is active, Linux, macOS and Windows poll every 5 ms during execution turns.
+CPU mode is Linux-only; `Pool::new` rejects it on other platforms.
+When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
 The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
 Idle workers and host work between turns do not incur periodic CPU reads.
 

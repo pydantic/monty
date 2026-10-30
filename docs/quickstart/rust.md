@@ -52,7 +52,7 @@ carry no API compatibility guarantee.
 - **[`monty`](../api/rust/monty.md)** is the in-process interpreter.
     Use it when you control the code being run, or when subprocesses are impossible.
 
-Execution limits use wall time by default. Native CPU mode uses sampled thread CPU time.
+Execution limits use wall time by default. CPU mode, Linux only, uses sampled thread CPU time.
 The `monty` crate enables the `monty-types/cpu-clock` feature for native CPU reads.
 `ExecutionClock::is_available()` checks whether this thread can read the selected clock.
 CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.

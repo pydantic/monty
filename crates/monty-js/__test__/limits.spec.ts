@@ -1,6 +1,6 @@
 import { test } from 'vitest'
 import { assertMemoryError, t } from './assertions.js'
-import { isWasm } from './env.js'
+import { isWasm, supportsCpuClock } from './env.js'
 
 import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
@@ -343,6 +343,9 @@ test('execution clock is fixed by the pool', async () => {
     await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
       message: 'WebAssembly workers require executionClock: wall',
     })
+  } else if (!supportsCpuClock) {
+    const error = await t.throwsAsync(() => Monty.create({ requestTimeout: 2, executionClock: 'cpu' }))
+    t.true(String(error).includes('CPU execution clock is only supported for subprocess workers on Linux'))
   } else {
     await using bounded = await Monty.create({ requestTimeout: 2, executionClock: 'cpu' })
     for (const budget of [0.05, 0.1]) {
@@ -403,5 +406,9 @@ test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', asy
   )
   t.true(String(invalid).includes("executionClock must be 'wall' or 'cpu'"))
   const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }))
-  t.true(String(unbounded).includes('finite request_timeout'))
+  t.true(
+    String(unbounded).includes(
+      supportsCpuClock ? 'finite request_timeout' : 'CPU execution clock is only supported for subprocess workers on Linux',
+    ),
+  )
 })

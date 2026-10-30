@@ -30,6 +30,9 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+// only the off-Linux CPU rejection test names the clock; Linux CPU tests import their own
+#[cfg(not(target_os = "linux"))]
+use monty_types::ExecutionClock;
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
@@ -3329,9 +3332,25 @@ async fn invalid_stub_answers_without_cpu_supervision_remain_resumable() {
     pool.close().await;
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 #[path = "support/cpu_limits.rs"]
 mod cpu_limits;
+
+/// CPU supervision is Linux-only, so other platforms refuse CPU mode before spawning a worker.
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn cpu_clock_is_rejected_off_linux() {
+    let mut config = config();
+    config.execution_clock = ExecutionClock::Cpu;
+    config.request_timeout = Some(Duration::from_secs(2));
+    let Err(error) = Pool::new(config).await else {
+        panic!("CPU pool must be rejected off Linux");
+    };
+    assert_eq!(
+        error.to_string(),
+        "failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux"
+    );
+}
 
 /// An oversized result discards the worker; the next checkout still succeeds.
 #[tokio::test]

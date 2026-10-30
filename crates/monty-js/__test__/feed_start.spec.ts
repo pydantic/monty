@@ -12,7 +12,7 @@ import {
   ProtocolError,
 } from '@pydantic/monty'
 import { MountDir } from '@pydantic/monty/node'
-import { isWasm } from './env.js'
+import { isWasm, supportsCpuClock } from './env.js'
 import { setupPool } from './helpers.js'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -711,7 +711,7 @@ test('loadSnapshot captures externalLookup for resumeAuto', async () => {
 })
 
 for (const suspended of [false, true]) {
-  test.skipIf(isWasm)(`CPU snapshot clock round trip and mismatch: suspended=${suspended}`, async () => {
+  test.skipIf(!supportsCpuClock)(`CPU snapshot clock round trip and mismatch: suspended=${suspended}`, async () => {
     await using owned = await Monty.create({ requestTimeout: 2, executionClock: 'cpu' })
     const limits = { maxFeedDurationSecs: 0.5 }
     let state: Uint8Array

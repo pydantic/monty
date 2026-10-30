@@ -3,7 +3,7 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(target_os = "linux")]
 mod binary;
 
 #[cfg(feature = "telemetry")]
@@ -24,14 +24,19 @@ use monty_pool::{
     ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-use monty_types::{CallArgs, ExecutionClock, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
+// only the Linux CPU-server test names the clock or builds its own runtime
+#[cfg(target_os = "linux")]
+use monty_types::ExecutionClock;
+use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
+#[cfg(target_os = "linux")]
+use tokio::runtime::Builder;
+use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
 use tokio::time::timeout;
-use tokio::{runtime::Builder, task::spawn_blocking};
 use tungstenite::{
     Message, WebSocket,
     handshake::server::{Request, Response},
@@ -3015,7 +3020,7 @@ async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
 
 /// The server selects CPU mode and enforces it beside the child.
 #[tokio::test]
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(target_os = "linux")]
 async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
     let binary = binary::monty_binary();
     let (listener, mut config) = ws_pool_config();

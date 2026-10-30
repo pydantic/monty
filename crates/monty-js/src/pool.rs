@@ -98,7 +98,7 @@ where
 pub struct NativePoolOptions {
     /// Resolved path to the `monty` binary.
     pub binary_path: String,
-    /// Clock for all sessions: "wall" (default) or "cpu".
+    /// Clock for all sessions: "wall" (default) or "cpu" (Linux only).
     pub execution_clock: Option<String>,
     /// Workers spawned eagerly by `start()`, and replaced in the background
     /// whenever one is recycled, crashes or is discarded.

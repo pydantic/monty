@@ -36,7 +36,7 @@ implementation**.
 
 ## Who should depend on it
 
-The `monty` interpreter enables the `cpu-clock` feature for native CPU accounting.
+The `monty` interpreter enables the `cpu-clock` feature for native CPU accounting, which is Linux-only.
 Host-only users do not need this feature or its platform CPU dependencies.
 `ExecutionClock::is_available()` reports whether the current thread can read the selected clock.
 
@@ -73,7 +73,7 @@ assert_eq!(value.py_repr(), "[1, 'x']");
 Execution budgets charge bytecode and native builtins, excluding host suspension.
 They use `ExecutionClock::Wall` by default. Native callers can select
 `ExecutionClock::Cpu` with `ResourceTracker::with_execution_clock`.
-Subprocess hosts set `PoolConfig::execution_clock` once for the pool. CPU mode samples the executing
+Subprocess hosts set `PoolConfig::execution_clock` once for the pool. CPU mode is Linux-only; it samples the executing
 thread with a cache of up to 1 ms and reads exact execution boundaries.
 Unavailable or unusable counters use conservative elapsed time for that window.
 The OS controls counter accuracy and resolution. Snapshots preserve clock selection

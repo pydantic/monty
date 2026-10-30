@@ -51,7 +51,7 @@ rather than its clock, and never suspend.
 - `'elapsed'` returns the session's accumulated execution time: the same clock `max_feed_duration` is charged
     against, which pauses while suspended on the host or sleeping.
     The execution clock defaults to wall time.
-    [CPU mode](../resource-limits.md#cpu-execution-clock) uses the executing thread's CPU time.
+    [CPU mode](../resource-limits.md#cpu-execution-clock), Linux only, uses the executing thread's CPU time.
     Unusable VM CPU counters fall back to elapsed time for that window. Work outside the VM is excluded.
 
 Monty has no threads, so `thread_time()` is the same clock as `process_time()`.

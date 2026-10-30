@@ -1,4 +1,4 @@
-//! Synthetic child for cross-platform supervisor tests. It deliberately has no VM fuel checks.
+//! Synthetic child for the Linux CPU supervisor tests. It deliberately has no VM fuel checks.
 
 use std::{hint::black_box, io, thread, time::Duration};
 

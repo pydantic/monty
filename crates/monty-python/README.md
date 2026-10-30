@@ -205,6 +205,7 @@ more details.
 Execution duration limits use wall time by default.
 Both clocks charge bytecode and native builtin execution, excluding host suspension.
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
+CPU mode is Linux-only; creating a CPU pool on macOS or Windows fails.
 The clock applies to the whole pool; checkouts cannot override it.
 CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
 Smaller remaining budgets shorten that interval.

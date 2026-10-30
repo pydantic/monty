@@ -80,16 +80,20 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
-        if config.execution_clock == ExecutionClock::Cpu
-            && !config.transport.is_websocket()
-            && (!cfg!(any(target_os = "linux", target_os = "macos", windows))
-                || config
-                    .request_timeout
-                    .is_none_or(|limit| Instant::now().checked_add(limit).is_none()))
-        {
-            return Err(PoolError::Spawn(
-                "CPU execution clock requires a supported native subprocess and finite request_timeout".to_owned(),
-            ));
+        if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_websocket() {
+            if !cfg!(target_os = "linux") {
+                return Err(PoolError::Spawn(
+                    "CPU execution clock is only supported for subprocess workers on Linux".to_owned(),
+                ));
+            }
+            if config
+                .request_timeout
+                .is_none_or(|limit| Instant::now().checked_add(limit).is_none())
+            {
+                return Err(PoolError::Spawn(
+                    "CPU execution clock requires a finite request_timeout".to_owned(),
+                ));
+            }
         }
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).

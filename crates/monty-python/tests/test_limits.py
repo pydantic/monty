@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable
 from typing import Literal
@@ -334,7 +335,10 @@ def test_negative_grace_is_rejected():
     )
 
 
-@pytest.mark.parametrize('clock', ['wall', 'cpu'])
+cpu_clock = pytest.mark.skipif(sys.platform != 'linux', reason='the CPU execution clock is Linux-only')
+
+
+@pytest.mark.parametrize('clock', ['wall', pytest.param('cpu', marks=cpu_clock)])
 def test_execution_clock_selection(clock: Literal['wall', 'cpu']):
     with Monty(request_timeout=2.0, execution_clock=clock) as pool:
         with pool.checkout(limits={'max_feed_duration_secs': 0.05}) as session:
@@ -346,6 +350,7 @@ def test_unknown_execution_clock_is_rejected():
         Monty(execution_clock='processor')  # type: ignore[arg-type]
 
 
+@cpu_clock
 def test_execution_clock_cannot_be_overridden_per_session():
     with Monty(execution_clock='cpu', request_timeout=2.0) as pool:
         with pytest.raises(ValueError, match="unknown limits key 'execution_clock'"):
@@ -355,12 +360,24 @@ def test_execution_clock_cannot_be_overridden_per_session():
                 assert session.feed_run('1 + 1') == 2
 
 
+@cpu_clock
 def test_cpu_clock_requires_a_pool_wall_deadline():
     with pytest.raises(RuntimeError, match='finite request_timeout'):
         with Monty(execution_clock='cpu', request_timeout=None):
             pytest.fail('CPU pool succeeded without a wall deadline')
 
 
+@pytest.mark.skipif(sys.platform == 'linux', reason='the CPU execution clock is supported on Linux')
+def test_cpu_clock_is_rejected_off_linux():
+    with pytest.raises(RuntimeError) as exc_info:
+        with Monty(execution_clock='cpu', request_timeout=2.0):
+            pytest.fail('CPU pool succeeded off Linux')
+    assert exc_info.value.args[0] == snapshot(
+        'failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux'
+    )
+
+
+@cpu_clock
 @pytest.mark.parametrize('suspended', [False, True])
 def test_cpu_clock_snapshot_round_trip_and_mismatch(suspended: bool):
     limits: ResourceLimits = {'max_feed_duration_secs': 0.5}
@@ -391,6 +408,7 @@ def test_cpu_clock_snapshot_round_trip_and_mismatch(suspended: bool):
                     incompatible.load_session(state)
 
 
+@cpu_clock
 @pytest.mark.anyio
 async def test_async_pool_fixes_the_clock_for_different_session_budgets():
     async with AsyncMonty(execution_clock='cpu', request_timeout=2.0) as pool:

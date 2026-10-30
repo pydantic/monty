@@ -21,7 +21,7 @@ import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
 export interface MontyOptions {
-  /** Clock for every session (default `'wall'`). CPU mode requires a finite `requestTimeout`. */
+  /** Clock for every session (default `'wall'`). CPU mode is Linux-only and requires a finite `requestTimeout`. */
   executionClock?: 'wall' | 'cpu'
   /** Path to the `monty` binary; resolved automatically when omitted. */
   binaryPath?: string

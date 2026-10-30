@@ -1,5 +1,5 @@
 //! Native execution-clock regressions independent of interpreter dispatch speed.
-#![cfg(all(feature = "cpu-clock", any(unix, windows)))]
+#![cfg(all(feature = "cpu-clock", target_os = "linux"))]
 
 use std::{
     hint::black_box,

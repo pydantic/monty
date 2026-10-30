@@ -149,13 +149,13 @@ pub enum ExecutionClock {
     /// Elapsed time while the interpreter executes, including descheduling.
     #[default]
     Wall,
-    /// Thread CPU time. A failed native clock uses conservative elapsed time.
+    /// Thread CPU time, Linux only. A failed native clock uses conservative elapsed time.
     /// CPU accounting is approximate and does not bound response latency.
     Cpu,
 }
 
 impl ExecutionClock {
-    /// Whether this thread can read the selected clock. CPU reads require the `cpu-clock` feature.
+    /// Whether this thread can read the selected clock. CPU reads require Linux and the `cpu-clock` feature.
     #[must_use]
     pub fn is_available(self) -> bool {
         self == Self::Wall || execution_clock::thread_cpu().is_some()

@@ -459,7 +459,7 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     `request_timeout` to no deadline; only the WebSocket pools ([`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket],
     JavaScript `MontyWebsocket.create()`) set one, at 10 seconds.
     Local Python, JavaScript and Rust subprocess pools support [CPU execution clocks](resource-limits.md#cpu-execution-clock)
-    on Linux, macOS and Windows. Their graces use an independent process CPU counter.
+    on Linux only. Their graces use an independent process CPU counter.
     CPU mode requires a finite wall deadline: `request_timeout` in Python, `requestTimeout` in JavaScript,
     or `PoolConfig::request_timeout` in Rust.
     WebSocket clients adopt the server's clock; only the server's local CPU-mode subprocess pool enforces CPU.
