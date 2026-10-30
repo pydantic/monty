@@ -1,7 +1,7 @@
 import functools
 import typing
 from dataclasses import dataclass
-from typing import Optional, get_type_hints
+from typing import Annotated, Literal, Optional, get_type_hints
 
 
 class Foo:
@@ -219,6 +219,70 @@ assert get_type_hints(MissingAttr, localns={'Missing2': int}) == {'a': int}
 assert get_type_hints(MissingAttr, {'Missing2': str}) == {'a': str}
 assert get_type_hints(MissingAttr, {'Missing2': str}, {'Missing2': bytes}) == {'a': bytes}
 assert get_type_hints(basic, include_extras=True) == get_type_hints(basic)
+
+
+# === Annotated and Literal ===
+# `Annotated` is stripped at any depth unless `include_extras`; its type is
+# resolved like any other hint, while `Literal` choices are values, not forward references
+def annotated(
+    a: Annotated[int, 'x'],
+    b: list[Annotated[int, 1]],
+    c: Annotated['Foo', 2],
+    d: Literal['a', 'Foo'],
+    e: Annotated[int, 1] | None,
+    g: Annotated[list['Foo'], 1],
+    h: 'Annotated[Foo, 3]',
+) -> Annotated[Literal[1, 2], 3]:
+    pass
+
+
+assert get_type_hints(annotated) == {
+    'a': int,
+    'b': list[int],
+    'c': Foo,
+    'd': Literal['a', 'Foo'],
+    'e': int | None,
+    'g': list[Foo],
+    'h': Foo,
+    'return': Literal[1, 2],
+}
+assert get_type_hints(annotated, include_extras=True) == {
+    'a': Annotated[int, 'x'],
+    'b': list[Annotated[int, 1]],
+    'c': Annotated[Foo, 2],
+    'd': Literal['a', 'Foo'],
+    'e': Annotated[int, 1] | None,
+    'g': Annotated[list[Foo], 1],
+    'h': Annotated[Foo, 3],
+    'return': Annotated[Literal[1, 2], 3],
+}
+assert get_type_hints(annotated, include_extras=1)['a'] == Annotated[int, 'x']
+assert get_type_hints(annotated, None, None, True)['a'] == Annotated[int, 'x']
+
+
+class AnnotatedFields:
+    x: Annotated[int, 1]
+    y: 'Annotated[Later, 2]'
+    z: Literal['Later'] = 'Later'
+
+
+# the forward reference needs `Annotated` and `Later` in `globalns`: the CPython
+# harness runs this file in a bare dict, as noted above
+annotated_ns = {'Annotated': Annotated, 'Later': Later}
+assert get_type_hints(AnnotatedFields, annotated_ns) == {'x': int, 'y': Later, 'z': Literal['Later']}
+assert get_type_hints(AnnotatedFields, annotated_ns, include_extras=True) == {
+    'x': Annotated[int, 1],
+    'y': Annotated[Later, 2],
+    'z': Literal['Later'],
+}
+
+
+# a `None` default does not make the hint optional
+def default_none(a: Annotated[int, 1] = None):
+    pass
+
+
+assert get_type_hints(default_none) == {'a': int}
 
 # === Functions defined by exec ===
 ns = {}

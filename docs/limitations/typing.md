@@ -2,8 +2,9 @@
 
 `typing` exists so type-annotated code can `import` it without
 `ModuleNotFoundError`. **No runtime type checking happens.** Apart from
-`Union` and `Optional` (see [Unions](#unions)) the forms are inert marker
-objects that cannot be subscripted: `List[int]` and `Callable[[int], str]`
+`Union` and `Optional` (see [Unions](#unions)) and `Literal` and `Annotated`
+(see [`Literal` and `Annotated`](#literal-and-annotated)) the forms are inert
+marker objects that cannot be subscripted: `List[int]` and `Callable[[int], str]`
 raise `TypeError: 'typing._SpecialForm' object is not subscriptable`.
 Annotations are unaffected, being stringized rather than evaluated (see below).
 
@@ -88,8 +89,8 @@ Divergences:
 - **A class created by `exec()` uses the session globals**, not the `exec` globals dict.
     A function created by `exec()` uses its dict, as in CPython.
 - **Unsubscriptable `typing` forms fail on evaluation.**
-    `x: List[int]`, `ClassVar[int]` (common in dataclasses), `Annotated[int, 'meta']` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable` from `get_type_hints`, since they are inert markers (see above).
-- **`include_extras` has no effect**: there is no `Annotated` metadata to keep or strip.
+    `x: List[int]`, `ClassVar[int]` (common in dataclasses) and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable` from `get_type_hints`, since they are inert markers (see above).
+    `Annotated[...]` is resolved and, unless `include_extras=True`, replaced by its type at any depth, as in CPython.
 - **`format=` other than `None` raises `NotImplementedError`.**
 - **`globalns` / `localns` must be a dict or `None`.**
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.
@@ -147,6 +148,45 @@ Divergences in the aliases themselves:
     Monty's partial objects take no attributes, so the lookup raises
     `AttributeError`. `partial` is the only subscriptable type whose CPython
     instances accept it.
+
+## `Literal` and `Annotated`
+
+`Literal['a', 'b']` and `Annotated[int, 'meta']` build CPython's
+`typing._LiteralGenericAlias` and `typing._AnnotatedAlias`, with `__origin__`,
+`__args__`, `__parameters__`, `__name__` and (for `Annotated`) `__metadata__`.
+Choices deduplicate by value and type, nested forms flatten, an `Annotated`
+delegates other attributes and calls to its type, and both take part in `|`
+unions. Divergences:
+
+- **`Literal` and `Annotated` themselves are `typing._SpecialForm`** rather
+    than CPython's `_TypedCacheSpecialForm`, and calling one raises
+    `TypeError: 'typing._SpecialForm' object is not callable` where CPython
+    says `Cannot instantiate typing.Literal` (`Literal[1]()` does match).
+- **Argument reprs use Monty's type names**, as in a generic alias:
+    `typing.Annotated[Foo, 1]` where CPython prints `typing.Annotated[__main__.Foo, 1]`.
+- **String arguments stay strings.** `Annotated['Foo', 1]` keeps `'Foo'` where
+    CPython wraps it as `ForwardRef('Foo', is_class=True)`; `get_type_hints`
+    resolves it either way, and `Literal['Foo']` is a plain choice in both.
+- **The annotated type is barely checked.** A tuple is refused with CPython's
+    message and `None` becomes `NoneType`, but a bare special form is accepted
+    (`Annotated[Optional, 1]`) where CPython raises
+    `TypeError: Plain typing.Optional is not valid as type argument`.
+- **Error messages name the qualified type.** `len(Literal[1])` raises
+    `object of type 'typing._LiteralGenericAlias' has no len()` and
+    `Literal[1].foo` raises `'typing._LiteralGenericAlias' object has no attribute 'foo'`,
+    where CPython says `'_LiteralGenericAlias'` and a bare `foo`.
+- **An unhashable argument names the alias.** `hash(Literal[[1]])` raises
+    `TypeError: unhashable type: 'typing._LiteralGenericAlias'` where CPython
+    says `cannot use 'tuple' as a set element (unhashable type: 'list')`, and
+    `hash(Annotated[int, [1]])` names `'typing._AnnotatedAlias'` where CPython names `'list'`.
+- **Not iterable.** CPython iterates an alias to yield its starred form
+    (`*Literal[1]`); Monty raises `TypeError: 'typing._LiteralGenericAlias' object is not iterable`.
+- **No attributes beyond those listed.** `__class__`, `__or__` and the other
+    dunders CPython exposes raise `AttributeError`, and an `Annotated` relays
+    no dunder to its type.
+- **Neither crosses the host boundary.** Like a generic alias, one built in
+    the sandbox reaches the host as its repr string, and `type(Literal[1])` has
+    no `MontyObject` form.
 
 ## Unions
 
