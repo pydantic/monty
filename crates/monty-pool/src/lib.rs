@@ -56,6 +56,10 @@ impl MontyTransport {
 /// itself before killing it.
 pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 
+/// Default [`PoolConfig::max_checkouts_per_worker`]: bounds how many sessions
+/// one worker serves while amortising its respawn over many checkouts.
+pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
@@ -92,8 +96,9 @@ pub struct PoolConfig {
     /// Extra allowance for `ResourceLimits::max_turn_duration`, in the pool's clock.
     /// Each feed or resume starts a new turn allowance. `None` disables this backstop.
     pub turn_duration_limit_grace: Option<Duration>,
-    /// Recycle (kill and respawn) a worker after this many checkouts, to
-    /// bound the impact of any slow leak in a long-lived child. With the
+    /// Recycle (kill and respawn) a worker after this many checkouts, bounding
+    /// how long a slow leak or a compromised child survives. Defaults to
+    /// [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`]; `None` never recycles. With the
     /// subprocess transport, `Some(1)` gives every session a fresh process — the
     /// setting for mutually untrusted callers — usually spawned before it asked
     /// when `min_processes > 0`.
@@ -115,7 +120,8 @@ pub struct PoolConfig {
 impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
     /// `max_processes =` available parallelism, no timeouts, a 1s grace on
-    /// each of the two duration backstops, no recycling.
+    /// each of the two duration backstops, recycling after
+    /// [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`] checkouts.
     pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
@@ -139,7 +145,7 @@ impl PoolConfig {
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
-            max_checkouts_per_worker: None,
+            max_checkouts_per_worker: Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
             auto_resume: true,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             #[cfg(feature = "telemetry")]

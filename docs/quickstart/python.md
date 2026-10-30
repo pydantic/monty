@@ -425,7 +425,7 @@ pool = Monty(
     max_processes=None,  # cap on live workers; defaults to the CPU count
     checkout_timeout=None,  # seconds `checkout()` waits for a free worker
     request_timeout=None,  # hard per-turn deadline; kills the worker
-    max_checkouts_per_worker=None,  # recycle a worker after N sessions
+    max_checkouts_per_worker=1000,  # recycle a worker after N sessions; None never recycles
 )
 ```
 

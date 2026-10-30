@@ -356,7 +356,8 @@ await using pool = await Monty.create({
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
 Replacement workers get new IDs, even if the OS reuses a PID.
-`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
+`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295 and defaults to 1000; 0 and 1 both retire a worker after
+each checkout, and `null` never recycles.
 `workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
@@ -437,6 +438,8 @@ Differences from the native path:
 - **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
     is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
     spawns a cold one.
+    With the default `maxCheckoutsPerWorker`, that means the checkout after each worker's 1000th spawns a cold worker,
+    about 90 ms in Node against under 1 ms for a warm checkout; `null` keeps workers instead.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

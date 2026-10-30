@@ -110,9 +110,10 @@ Invalid snapshots have no correctness or availability guarantees.
   budget. This excludes wire buffers and host-language conversion; it is not a
   process-memory limit. Exhaustion discards the worker without replaying the request.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
-  the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
-  a fresh process, which with `min_processes > 0` the background refill has usually spawned
-  before the checkout asks.
+  how long a slow leak or a compromised worker survives. It defaults to
+  `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
+  subprocess transport, `Some(1)` runs every session in a fresh process, which with
+  `min_processes > 0` the background refill has usually spawned before the checkout asks.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with

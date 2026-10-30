@@ -14,7 +14,7 @@ import {
   type TypeCheckFormat,
   encodeAssertMessageAnnotations,
   encodeOsPolicy,
-  validateMaxCheckouts,
+  resolveMaxCheckouts,
 } from './options.js'
 import { enterSession, type ExternalModules, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -58,8 +58,8 @@ export interface MontyOptions {
    */
   turnDurationLimitGrace?: number | null
   /** Recycle a worker after this many sessions: an integer from 0 to 4294967295.
-   *  Both 0 and 1 retire after each checkout; omitted means no recycling. */
-  maxCheckoutsPerWorker?: number
+   *  Both 0 and 1 retire after each checkout; omitted means 1000, `null` never recycles. */
+  maxCheckoutsPerWorker?: number | null
 }
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
@@ -175,7 +175,7 @@ export class Monty {
 
   /** Creates the pool and prewarms `minProcesses` workers. */
   static async create(options: MontyOptions = {}): Promise<Monty> {
-    validateMaxCheckouts(options.maxCheckoutsPerWorker)
+    const maxCheckoutsPerWorker = resolveMaxCheckouts(options.maxCheckoutsPerWorker)
     const native = new NativePool({
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
@@ -186,7 +186,7 @@ export class Monty {
       // `null` disables a backstop; omitted means the 1s default
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
-      ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
+      ...(maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker } : {}),
     })
     await native.start()
     return new Monty(native)
