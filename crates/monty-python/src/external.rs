@@ -25,7 +25,7 @@ use crate::{
     type_hints::{callable_type_hints, class_type_hints},
 };
 
-/// Resolves a feed's bare names, dotted module calls, and the OS calls its names answer.
+/// Resolves a feed's bare names, dotted module calls and intercepted OS calls.
 /// Calls re-read the dict entry, so replacing a callable with a value raises `TypeError`.
 /// Returned `ClassInstance` wrappers register in the instance store.
 pub struct ExternalLookup<'a, 'py> {
@@ -167,11 +167,11 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Answers an `import` or `import_stubs` OS call (see [`is_names_call`])
+    /// Answers an `import` or `import_stubs` OS call (see [`is_intercepted_os_call`])
     /// from `external_modules`, or `typing.get_type_hints` from the host function
     /// or class it names; `None` for any other call. A factory's awaitable is an
     /// error here, as the sync pool cannot await it.
-    pub fn names_call(&self, function_name: &str, args: &CallArgs) -> Option<ExtFunctionResult> {
+    pub fn intercepted_os_call(&self, function_name: &str, args: &CallArgs) -> Option<ExtFunctionResult> {
         match function_name {
             IMPORT_CALL => Some(self.import_module(args)),
             IMPORT_STUBS_CALL => Some(self.import_stubs(args)),
@@ -180,9 +180,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Like [`names_call`](Self::names_call) but hands a factory's awaitable
+    /// Like [`intercepted_os_call`](Self::intercepted_os_call) but hands a factory's awaitable
     /// back as [`CallResult::ModuleCoroutine`] for the async loop to await.
-    pub fn names_call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> Option<CallResult> {
+    pub fn intercepted_os_call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> Option<CallResult> {
         match function_name {
             IMPORT_CALL => Some(self.import_module_or_coroutine(args)),
             IMPORT_STUBS_CALL => Some(self.import_stubs_or_coroutine(args)),
@@ -493,10 +493,10 @@ impl HostModules {
     }
 }
 
-/// Identifies the OS calls the host's names answer (imports, stubs and type
-/// hints), which take precedence over mounts and `os=`.
+/// Identifies intercepted OS calls (imports, stubs and type hints): the binding
+/// answers them from what the session was given, ahead of mounts and `os=`.
 /// Call only for OS events: an ordinary function named `import_stubs` is unrelated.
-pub(crate) fn is_names_call(function_name: &str) -> bool {
+pub(crate) fn is_intercepted_os_call(function_name: &str) -> bool {
     matches!(function_name, IMPORT_CALL | IMPORT_STUBS_CALL | GET_TYPE_HINTS_CALL)
 }
 
