@@ -12,7 +12,10 @@ use std::sync::Arc;
 
 use monty_types::{ExcType, ExtFunctionResult, ImportArgs, ModuleFile, OsFunctionCall};
 
-use super::{FrameExit, FrameNamespace, VM, namespace::FrameGlobals};
+use super::{
+    FrameExit, FrameNamespace, VM,
+    namespace::{FrameGlobals, MissingNames},
+};
 use crate::{
     builtins::eval_exec::{SnippetSource, compile_and_push},
     bytecode::CallResult,
@@ -254,6 +257,7 @@ impl VM<'_> {
             globals: FrameGlobals::Dict(namespace),
             locals: None,
             globals_first: false,
+            missing: MissingNames::Raise,
         });
         // TODO(site-packages): reuse compiled code across sessions; a large
         // package otherwise recompiles every module in every session.

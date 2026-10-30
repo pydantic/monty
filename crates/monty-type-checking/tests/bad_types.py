@@ -9,6 +9,8 @@ import tomllib
 from pathlib import Path
 from typing import TypedDict, assert_type
 
+import annotationlib
+
 
 def takes_int(x: int) -> None:
     pass
@@ -182,3 +184,7 @@ path.open(1)
 path.open(encoding=1)
 path.open(closefd=False)
 path.open(opener=lambda file, flags: 0)
+
+annotationlib.call_annotate_function
+annotationlib.ForwardRef(1)
+annotationlib.get_annotations(takes_int, eval_str='yes')

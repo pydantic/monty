@@ -8,7 +8,7 @@ use std::{str, sync::Arc};
 
 use crate::{
     args::{ArgValues, FromArgs, Signature},
-    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, VM},
+    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, MissingNames, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
@@ -128,19 +128,26 @@ fn run_snippet(
 /// Evaluates one stringized annotation for `typing.get_type_hints()`.
 ///
 /// Runs in borrowed `globals` / `locals` dicts (`None` globals means the module slots),
-/// with `globals_first` letting bound slot globals shadow `locals`. A `forward_ref`
-/// compiles as CPython's `ForwardRef` does: a compile error or leading indentation
-/// raises its "must be an expression" error. Each distinct text and mode compiles once per session.
-/// The namespace is built here, not by `snippet_namespace`, which would inherit the
-/// calling frame's: the caller is frozen code.
+/// with `globals_first` letting bound slot globals shadow `locals`, and `missing`
+/// choosing between `NameError` and a `ForwardRef` stringifier for an unresolved
+/// name. A `forward_ref` compiles as CPython's `ForwardRef` does: a compile error or
+/// leading indentation raises its "must be an expression" error.
+///
+/// Each distinct text and mode compiles once per session, so names are always
+/// resolved at run time: a snippet compiled when `int` was the builtin must see a
+/// later `int = str`. The namespace is built here, not by `snippet_namespace`,
+/// which would inherit the calling frame's: the caller is frozen code.
 pub(crate) fn eval_hint(
     source: &Value,
     globals: Option<HeapId>,
     locals: Option<HeapId>,
     globals_first: bool,
     forward_ref: bool,
+    missing: MissingNames,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
+    let mut missing_guard = DropGuard::new(missing, vm);
+    let (_, vm) = missing_guard.as_parts_mut();
     let text = snippet_source("eval", source, vm)?;
     if forward_ref && first_code_line_indented(&text) {
         return Err(ExcType::forward_ref_not_expression(&text));
@@ -153,18 +160,20 @@ pub(crate) fn eval_hint(
         }
     };
     reject_null_bytes(&text).map_err(not_expression)?;
+    // The namespace owns `missing` from here, on every path.
+    let (missing, vm) = missing_guard.into_parts();
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
-    let (globals, names) = match (globals, locals) {
-        (Some(dict), _) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
-        (None, Some(_)) => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
-        (None, None) => (FrameGlobals::Slots, SnippetNames::Slots),
+    let (globals, names) = match globals {
+        Some(dict) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
+        None => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
     };
     let namespace = Box::new(FrameNamespace::Snippet {
         globals,
         locals,
         globals_first,
+        missing,
     });
     if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
         vm.push_snippet_frame(func_id, None, namespace)?;

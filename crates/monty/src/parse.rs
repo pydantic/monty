@@ -49,12 +49,11 @@ pub const MAX_NESTING_DEPTH: u16 = 30;
 /// Caps dotted-import components to bound quadratic storage for interned path prefixes.
 pub const MAX_IMPORT_COMPONENTS: usize = 32;
 
-/// `from __future__ import ...` features whose semantics Monty already provides,
-/// so importing them is a no-op rather than an error.
+/// `from __future__ import ...` features Monty accepts.
 ///
 /// All but the last are inert in CPython too, having become mandatory by 3.7.
-/// `annotations` is still meaningful there, and a no-op here only because Monty
-/// stringizes unconditionally (see `limitations/typing.md`) — what it asks for.
+/// `annotations` binds nothing either, but is recorded on the definitions that
+/// follow it so `typing.get_type_hints()` applies PEP 563's namespace rules.
 const SUPPORTED_FUTURES: [&str; 9] = [
     "nested_scopes",
     "generators",
@@ -151,6 +150,8 @@ pub struct RawFunctionDef {
     /// `(parameter or "return", stringized annotation)` pairs in CPython's order,
     /// read back by `typing.get_type_hints()`.
     pub annotations: Vec<(StringId, StringId)>,
+    /// Whether the definition follows `from __future__ import annotations`.
+    pub future_annotations: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -336,6 +337,9 @@ pub struct Parser<'a, 'i> {
     /// class's traceback frame needs the concrete position. Read only by
     /// [`Parser::class_keyword_range`].
     class_keyword_offsets: Vec<TextSize>,
+    /// Whether `from __future__ import annotations` has been parsed, so the
+    /// definitions after it evaluate their annotations as PEP 563 strings.
+    future_annotations: bool,
 }
 
 impl<'a, 'i> Parser<'a, 'i> {
@@ -351,6 +355,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
             class_keyword_offsets,
+            future_annotations: false,
         }
     }
 
@@ -921,7 +926,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                             "aliasing a `__future__` feature",
                             self.convert_range(alias.range),
                         )),
-                        None => Ok(Node::Pass),
+                        None => {
+                            if names.iter().any(|a| a.name.id.as_str() == "annotations") {
+                                self.future_annotations = true;
+                            }
+                            Ok(Node::Pass)
+                        }
                     };
                 }
                 // We only support absolute imports (level 0)
@@ -1055,6 +1065,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                 body,
                 is_async,
                 annotations,
+                future_annotations: self.future_annotations,
             },
             decorators,
         ))
@@ -1305,6 +1316,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             body,
             is_async: false,
             annotations: Vec::new(),
+            future_annotations: self.future_annotations,
         };
 
         Ok(Node::ClassDef {

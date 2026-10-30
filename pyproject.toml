@@ -183,6 +183,9 @@ exclude = [
     "crates/monty/test_cases/typing__get_type_hints_classes.py",
     "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
     "crates/monty/test_cases/typing__get_type_hints_functions.py",
+    "crates/monty/test_cases/typing__get_type_hints_formats.py",
+    "crates/monty/test_cases/typing__get_type_hints_future.py",
+    "crates/monty/test_cases/annotationlib__forward_ref.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

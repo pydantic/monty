@@ -12,7 +12,9 @@ Annotations are unaffected, being stringized rather than evaluated (see below).
 `Any`, `Optional`, `Union`, `List`, `Dict`, `Tuple`, `Set`, `FrozenSet`,
 `Callable`, `Type`, `Sequence`, `Mapping`, `Iterable`, `Iterator`,
 `Generator`, `ClassVar`, `Final`, `Literal`, `TypeVar`, `Generic`,
-`Protocol`, `Annotated`, `Self`, `Never`, `NoReturn`, `TYPE_CHECKING`.
+`Protocol`, `Annotated`, `Self`, `Never`, `NoReturn`, `TYPE_CHECKING`,
+`ForwardRef` (the [`annotationlib`](annotationlib.md) type) and
+[`get_type_hints`](#get_type_hints).
 
 `TYPE_CHECKING` is `False`, as in CPython at runtime.
 
@@ -21,7 +23,8 @@ Annotations are unaffected, being stringized rather than evaluated (see below).
 - `get_args`, `get_origin`, `cast`, `assert_type`,
     `assert_never`, `overload`, `final`, `runtime_checkable`, `NewType`,
     `NamedTuple`, `TypedDict`, `dataclass_transform`, `ParamSpec`,
-    `Concatenate`, `Unpack`, `TypeAlias`, `TypeAliasType`, `LiteralString`.
+    `Concatenate`, `Unpack`, `TypeAlias`, `TypeAliasType`, `LiteralString`,
+    `evaluate_forward_ref`.
 - Annotation introspection on **functions and modules**: `__annotations__` is
     not populated there. Class `__annotations__` **is** populated; see below.
     Function annotations are read only through
@@ -65,9 +68,11 @@ This is a known temporary divergence; see `class__annotations.py`.
     collected annotations into whatever the name holds, merging into an explicit
     `dict`, or raising `TypeError` if it holds something else. A class body that
     binds the name but annotates nothing is accepted, and its binding stands.
-- **`from __future__ import annotations`** is accepted as a **no-op**, since it
-    describes what Monty already does. See
-    [language.md](language.md) for the other features.
+- **`from __future__ import annotations`** leaves `__annotations__` unchanged,
+    since it describes what Monty already does, but is recorded on the classes
+    and functions after it so [`get_type_hints()`](#get_type_hints) evaluates
+    their annotations as PEP 563 strings. See [language.md](language.md) for the
+    other features.
 - Consequences: code that reads `__annotations__` expecting type *objects*
     sees strings; [`get_type_hints()`](#get_type_hints) evaluates them. CPython 3.14's `@dataclass` reads evaluated objects
     (`annotationlib.Format.FORWARDREF`), but keeps a string path for `ClassVar` /
@@ -80,7 +85,9 @@ sandbox boundary.
 ## `get_type_hints`
 
 `get_type_hints(obj, globalns=None, localns=None, include_extras=False, *, format=None)` evaluates the annotations Monty stores.
-It follows CPython 3.14's algorithm: a plain annotation evaluates where it was written, a string (forward reference) in `globalns` / `localns`, and `list['Foo']` / `Optional['Foo']` arguments are resolved at any depth.
+It follows CPython 3.14's algorithm: every annotation evaluates where it was written, then a string (forward reference) evaluates in `globalns` / `localns`, and `list['Foo']` / `Optional['Foo']` arguments are resolved at any depth.
+Under `from __future__ import annotations` every annotation is such a string, so it evaluates in `globalns` / `localns` only.
+`format=` takes the [`annotationlib.Format`](annotationlib.md#format) members: `VALUE` (the default), `FORWARDREF`, which returns an unresolved name as an [`annotationlib.ForwardRef`](annotationlib.md#forwardref), and `STRING`, which returns the stored text.
 Divergences:
 
 - **Function annotations see only the function's globals.**
@@ -90,17 +97,25 @@ Divergences:
 - **Unsubscriptable `typing` forms fail on evaluation.**
     `x: List[int]`, `ClassVar[int]` (common in dataclasses), `Annotated[int, 'meta']` and `Callable[[int], str]` raise `TypeError: 'typing._SpecialForm' object is not subscriptable` from `get_type_hints`, since they are inert markers (see above).
 - **`include_extras` has no effect**: there is no `Annotated` metadata to keep or strip.
-- **`format=` other than `None` raises `NotImplementedError`.**
 - **`globalns` / `localns` must be a dict or `None`.**
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.
-- **A string stored in a class's `__annotations__` evaluates as annotation source, not as a forward reference.**
+- **A string stored in a class's `__annotations__` evaluates as annotation source, not as a forward reference**, unless the class body ran under `from __future__ import annotations`.
     Monty's stored annotations are already strings, so one assigned directly (`C.__annotations__['x'] = 'Missing'`) is indistinguishable from `x: Missing`: it evaluates in the class and session namespaces, so `get_type_hints(C, {'Missing': int})` raises `NameError` where CPython returns `{'x': int}`.
-- **A self-referential string stays a `str`.**
-    With `a = 'a'`, `def f(x: 'a')` gives `{'x': 'a'}` where CPython returns `ForwardRef('a', ...)`; there is no `ForwardRef`.
-- **Annotations are re-evaluated on every call**, including any side effects, where CPython evaluates a non-string annotation once.
+- **Annotations are re-evaluated on every call**, including any side effects, where CPython evaluates a non-string annotation once and caches the result.
+    A builtin rebound after the first call (`exec('int = str')`) is therefore seen by the next one.
 - **Modules record no annotations**, so `get_type_hints(module)` is `{}`.
 - **Evaluation errors show a `<string>` frame** in the traceback, where CPython shows its `typing` / `annotationlib` frames.
 - **Host functions and host classes** return the hints the host answers with, unevaluated in the sandbox; see [host-values.md](host-values.md#type-hints).
+    The host evaluates them in `VALUE` form whatever the `format`: `FORWARDREF` raises where CPython would return a `ForwardRef`, and `STRING` raises `NotImplementedError`.
+- **`FORWARDREF` never asks the host for a name.**
+    A name the host would supply through a name lookup is a `ForwardRef` in this format where CPython resolves it.
+- **A `FORWARDREF` reference holds the resolved text.**
+    CPython keeps the objects an unresolved expression used aside under placeholder names, so `x: int | Later` gives `ForwardRef('int | Later')` with a `__forward_arg__` of `'__annotationlib_name_1__ | Later'`; Monty writes `int | Later` into `__forward_arg__` and resolves `int` by name when the reference is evaluated.
+    A class is written by its bare name: `Foo | Later` where CPython's `__resolved_str__` reads `__main__.Foo | Later`.
+- **Comparison operators are not stringified.**
+    `x: Later == 1` evaluates to `False` in `FORWARDREF` where CPython returns `ForwardRef('Later == 1')`.
+- **`STRING` is the stringized source.**
+    A starred argument stays as written (`x: Later(*[2])` gives `'Later(*[2])'`) where CPython reconstructs the call it made: `'Later(2)'`.
 
 ## Runtime generic aliases
 
