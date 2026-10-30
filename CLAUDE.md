@@ -850,6 +850,8 @@ Unknown keys, wrong types and malformed blocks are errors, and every key default
     modules written there import on both sides (it is first on CPython's `sys.path`; write every file before the first import)
 - `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
 - `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
+- `cpython-site-packages = true` to put the dev virtualenv's `site-packages` on CPython's `sys.path`, so a case can
+    `import pydantic` there (the Monty side is unaffected)
 - `gc-interval = <N>` to override the GC interval
 - `timezone = 'Europe/London'` to run the case in an IANA zone rather than the UTC default:
     it sets `OsPolicy::timezone` for Monty and `TZ` for CPython, so `astimezone()`,
