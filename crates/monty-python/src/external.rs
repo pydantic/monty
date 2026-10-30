@@ -7,7 +7,7 @@ use monty_proto::python::{
     DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, IMPORT_CALL, IMPORT_STUBS_CALL, MontyObject, MontyUuid, NameLookupResult,
+    CallArgs, ExtFunctionResult, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject, MontyUuid, NameLookupResult,
     unstable::{self, MontyNode},
     validate_module_name,
 };
@@ -33,7 +33,7 @@ pub struct ExternalLookup<'a, 'py> {
 impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// Binds the captured dicts (each `None` when the caller passed none, in
     /// which case every name resolves to `NameError` / `NotFound`, and every
-    /// import to `ModuleNotFoundError`).
+    /// import to `NotFound`, which the drive loop answers from files).
     pub(crate) fn new(py: Python<'py>, names: &'py HostNames, instances: &'a InstanceStore) -> Self {
         Self {
             py,
@@ -300,8 +300,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Answers `import <name>` with the module's value, `NotFound` (a
-    /// `ModuleNotFoundError`) when `external_modules` lacks it.
+    /// Answers `import <name>` with the module's value, `NotFound` when
+    /// `external_modules` lacks it (the drive loop then searches for its file).
     fn import_module(&self, args: &CallArgs) -> ExtFunctionResult {
         let Some(name) = import_name(args) else {
             return ExtFunctionResult::NotFound(IMPORT_CALL.to_owned());
@@ -711,11 +711,11 @@ fn submodule<'py>(
         .and_then(|value| value.cast_into::<PyExternalModule>().ok()))
 }
 
-/// The module name an `import` call carries, if it is well formed.
+/// The module name an `import` call carries, if it is well formed; the
+/// search path after it is for the file search (see `import_files`).
 fn import_name(args: &CallArgs) -> Option<&str> {
-    let mut args = args.args();
-    let name = args.next()?;
-    args.next().is_none().then(|| name.as_str()).flatten()
+    ImportArgs::from_call_args(args)?;
+    args.args().next()?.as_str()
 }
 
 /// The module names an `import_stubs` call carries, if it is well formed.

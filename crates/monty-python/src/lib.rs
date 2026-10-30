@@ -14,6 +14,7 @@ mod build;
 mod callback_context;
 pub mod exceptions;
 mod external;
+mod import_files;
 mod limits;
 mod mount;
 mod os_policy;
@@ -23,6 +24,8 @@ mod snapshot;
 mod telemetry;
 mod version;
 
+// The Python API cannot construct a Rust disconnect without transport evidence.
+// Private access tests that conversion without inventing peer details.
 #[cfg(test)]
 #[path = "../tests/rust/disconnect.rs"]
 mod disconnect_tests;

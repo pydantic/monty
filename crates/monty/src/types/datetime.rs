@@ -1120,9 +1120,9 @@ struct IsoformatArgs {
 /// with the argument's length rather than its type.
 fn isoformat_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<char> {
     let Some(sep) = sep else { return Ok('T') };
-    // `to_str_heap`'s own message is the generic `expected string, not X`, so
+    // `try_to_str_heap`'s own message is the generic `expected string, not X`, so
     // only its success is used and the rejection is reworded here.
-    match sep.to_str_heap(vm.heap, vm.interns).ok() {
+    match sep.try_to_str_heap(vm.heap, vm.interns).ok() {
         Some(s) if s.chars().count() == 1 => Ok(s.chars().next().expect("just counted one char")),
         Some(s) => Err(ExcType::type_error_bad_arg_pos(
             "isoformat",

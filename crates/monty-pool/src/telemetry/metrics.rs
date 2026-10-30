@@ -99,12 +99,12 @@ static RUN_DURATION: Instrument = Instrument {
 };
 
 /// Sandbox time of one execution turn. Subtracting it from [`RUN_DURATION`]
-/// leaves host and transport overhead, primarily suspension handling.
+/// leaves host and transport overhead. CPU mode also leaves descheduling and throttling.
 static RUN_EXECUTION: Instrument = Instrument {
     kind: MetricKind::Histogram,
     name: "monty.run.execution_time",
     unit: "s",
-    description: "Sandbox execution time of one feed, excluding host round-trips.",
+    description: "Sandbox execution time of one feed using the pool's wall or CPU clock, excluding host round-trips.",
 };
 
 /// Wall time of one housekeeping turn.
@@ -793,6 +793,7 @@ fn ext_result(result: Option<&pb::ExtFunctionResult>) -> &'static str {
         Some(pb::ext_function_result::Kind::Future(_)) => "future",
         Some(pb::ext_function_result::Kind::NotFound(_)) => "not_found",
         Some(pb::ext_function_result::Kind::NotHandled(_)) => "not_handled",
+        Some(pb::ext_function_result::Kind::ModuleFile(_)) => "module_file",
         None => "missing",
     }
 }
@@ -1105,6 +1106,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: None,
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1334,6 +1337,8 @@ mod tests {
                 max_suspensions: None,
                 restored_script_name: None,
                 session_id: None,
+                execution_clock: None,
+                feed_suspended: None,
                 feed_execution_micros: 0,
                 max_feed_duration_micros: None,
                 max_turn_duration_micros: None,
@@ -1431,6 +1436,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1443,6 +1450,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: None,
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1475,6 +1484,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: None,
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1498,6 +1509,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: None,
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,

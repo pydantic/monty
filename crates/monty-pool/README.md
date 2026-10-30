@@ -96,7 +96,7 @@ Invalid snapshots have no correctness or availability guarantees.
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
   enforcement while they run because the timer cannot be polled. When a session has a
-  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the child,
   each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
   `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
@@ -130,11 +130,66 @@ A failed restore also discards the worker.
 
 Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
 A remote CPython worker needs deployment-level process teardown instead.
-The duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
+The default elapsed-duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
 full budget plus grace, but `request_timeout` applies independently.
 Both deadlines are polled, so decoding a large reply can delay enforcement.
 Host mount I/O runs between turns and is not covered by either deadline; see
 [filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
+
+## Execution clocks
+
+`PoolConfig::execution_clock` selects `Wall` (default) or `Cpu` for VM budgets and supervisor backstops.
+CPU mode uses the VM's thread counter and an independent OS process counter during active turns.
+It requires a finite `request_timeout`, which remains a separate wall deadline.
+The feed and turn graces use the selected clock and default to one second.
+For tight CPU budgets, set graces that allow for compilation and protocol CPU.
+
+```rust
+use std::time::Duration;
+use monty_pool::PoolConfig;
+use monty_types::ExecutionClock;
+let mut pool = PoolConfig::subprocess("monty");
+pool.execution_clock = ExecutionClock::Cpu;
+pool.request_timeout = Some(Duration::from_secs(2));
+pool.feed_duration_limit_grace = Some(Duration::from_millis(10));
+pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
+```
+
+CPU mode replaces budget-derived wall deadlines.
+CPU mode needs Linux workers: `Pool::new` rejects it for subprocess pools on other platforms.
+A WebSocket pool on any platform can still adopt a Linux server's CPU clock.
+When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
+The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
+Idle workers and host work between turns do not incur periodic CPU reads.
+
+Live worker reports cannot spend or refund the supervisor's CPU allowance.
+Resuming preserves observed feed CPU and its single grace allowance. A new feed resets both.
+Host work between turns is outside the measurement window.
+CPU exhaustion returns `PoolError::CpuLimit`; the wall deadline returns `PoolError::Timeout`.
+Both kill and reap the worker. Clock failures also discard it without weakening enforcement.
+CPU mode needs `/proc` mounted for the pool's own PID namespace: at spawn the pool checks `/proc` reports it as the child's
+parent, and fails the spawn otherwise.
+The pool records the child's `/proc` start time at spawn and checks it before acting on a CPU reading: before killing for
+a crossed limit or a clock error, and before charging the final reading to the feed.
+A matching start time shows the PID named the child throughout, so ordinary polls skip the check.
+If the PID stopped naming the child, for example because something else in the host process reaped it and the PID was
+reused, the reading is discarded as a clock failure.
+Both mechanisms require the host runtime to make progress.
+
+Snapshots store their clock. A load with another clock fails without consuming the configured session.
+Restore seeds consumption from trusted saved VM usage and takes a fresh OS baseline.
+Snapshots do not store protocol CPU or spent CPU grace separately.
+Local CPU pools reject workers that do not acknowledge the selected clock. Wall mode supports older workers.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+WebSocket servers select the clock through their pool or profile and report it in the configuration reply.
+Clients adopt that clock for deadlines; CPU mode requires a finite client `request_timeout`.
+CPU profiles need clients that understand the clock metadata to avoid premature wall backstops under contention.
+The server does not enforce this requirement; older clients remain accepted.
+A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
+WebAssembly workers support wall mode only.
+
+The independent client `request_timeout` still bounds response latency under contention.
+Choose it for the expected CPU budgets and scheduling delays. CPU accounting does not extend this wall deadline.
 
 ## Observability
 
@@ -184,8 +239,8 @@ called function's name (under any outcome — a host lookup that is a callable r
 anything), an exception class and any path are all left out rather than becoming a time
 series each. The one name recorded is an os call's, which comes from the protocol's own
 fixed set. The subtraction worth knowing: `monty.run.duration` minus
-`monty.run.execution_time` is host and transport overhead, primarily time spent answering
-suspensions.
+`monty.run.execution_time` includes host and transport overhead. In CPU mode, the difference also
+includes descheduling and CPU throttling.
 
 Metric attributes deliberately never identify a pool. The worker up/down counters therefore
 total over all pools recording into the same host meter, and a dropped pool subtracts its

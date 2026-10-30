@@ -62,6 +62,7 @@ use crate::{
         CallResult, ExternalLookup, HostNames, is_module_call, resolve_object_attr, sync_module_coroutines_error,
         wire_call_arguments,
     },
+    import_files::{find_import_file_async, find_import_file_sync, import_search},
     pool::{
         FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
@@ -485,6 +486,7 @@ fn ext_result_to_resume(result: ExtFunctionResult) -> ResumeValue {
             let _ = name;
             ResumeValue::NotFound
         }
+        ExtFunctionResult::ModuleFile(file) => ResumeValue::ModuleFile(file),
     }
 }
 
@@ -794,6 +796,22 @@ impl PyFunctionSnapshot {
                 )),
             }
         };
+        // no host module: the file search, `os=` then mounts
+        let search = module_call
+            .then(|| import_search(&call.function_name, &call.args))
+            .flatten();
+        let value = match (value, search) {
+            (ResumeValue::NotFound, Some(search)) => {
+                match find_import_file_sync(py, &search, ctx.os.as_ref(), &ctx.instances, &ctx.checkout) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        discard_checkout_sync(py, &ctx.checkout);
+                        return Err(err);
+                    }
+                }
+            }
+            (value, _) => value,
+        };
         drop(guard);
         drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p))))
     }
@@ -986,6 +1004,17 @@ impl PyAsyncFunctionSnapshot {
                 }
                 Ok(Dispatched::AsValue(future)) => Ok(ext_result_to_resume(future.await)),
                 Err(err) => Err(err),
+            };
+            // no host module: the file search, `os=` then mounts
+            let search = module_call
+                .then(|| import_search(&call.function_name, &call.args))
+                .flatten();
+            let answer = match (answer, search) {
+                (Ok(ResumeValue::NotFound), Some(search)) => {
+                    let (os, instances) = (ctx.os.as_ref(), &ctx.instances);
+                    find_import_file_async(&search, os, instances, &ctx.checkout, &context, &native).await
+                }
+                (answer, _) => answer,
             };
             let value = match answer {
                 Ok(value) => value,

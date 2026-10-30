@@ -48,7 +48,7 @@ fn import_error(code: &str, module: &str, value: MontyObject) -> String {
 fn try_answer_import(progress: RunProgress, module: &str, value: MontyObject) -> Result<RunProgress, MontyException> {
     let call = progress.into_os_call().unwrap();
     assert_eq!(call.function_call.name(), IMPORT_CALL);
-    assert!(matches!(&call.function_call, OsFunctionCall::Import(name) if name == module));
+    assert!(matches!(&call.function_call, OsFunctionCall::Import(args) if args.module == module));
     assert!(!call.allow_eager_await);
     call.resume(value, PrintWriter::Stdout)
 }
@@ -185,9 +185,7 @@ fn a_not_found_answer_is_a_module_not_found_error() {
 
     let call = start("import nope").into_os_call().unwrap();
     let err = call
-        .resume_with(PrintWriter::Stdout, |call| {
-            ExtFunctionResult::Error(call.on_no_handler())
-        })
+        .resume_with(PrintWriter::Stdout, |call| call.no_handler_result())
         .unwrap_err();
     assert_snapshot!(err.to_string(), @r#"
     Traceback (most recent call last):
@@ -236,7 +234,7 @@ fn a_repl_import_suspends_and_the_module_persists() {
     else {
         panic!("expected the import to suspend");
     };
-    assert!(matches!(&call.function_call, OsFunctionCall::Import(name) if name == "tools"));
+    assert!(matches!(&call.function_call, OsFunctionCall::Import(args) if args.module == "tools"));
     let module = host_module("tools", 1, vec![("x", MontyObject::int(2))]);
     let ReplProgress::Complete { repl, .. } = call.resume(module, PrintWriter::Stdout).unwrap() else {
         panic!("expected the snippet to complete");

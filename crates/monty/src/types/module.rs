@@ -1,13 +1,13 @@
 //! Python module type for representing imported modules.
 
-use monty_types::MontyUuid;
+use monty_types::{MontyUuid, StringRepr};
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, HeapId, HeapItem, HeapRead},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     types::Dict,
     value::{EitherStr, Value},
@@ -19,6 +19,8 @@ use crate::{
 /// and a dictionary of attributes. Bundled modules like `sys` and `typing`
 /// control their own attributes; a host module arrives over the boundary with
 /// its attrs and an [`id`](Self::id), which it carries back when exported.
+/// A module imported from a `.py` file keeps its attributes in its
+/// [`FileModule`] namespace instead, and leaves `attrs` empty.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Module {
     /// The module name (e.g., "sys", "typing").
@@ -29,16 +31,29 @@ pub(crate) struct Module {
     /// `None` for a bundled module.
     #[serde(default)]
     id: Option<MontyUuid>,
+    /// Set for a module imported from a `.py` file.
+    #[serde(default)]
+    file: Option<FileModule>,
 }
 
-/// A module's name: interned for a bundled module, owned text for a host one,
-/// since the VM cannot intern at runtime. Untagged so a bundled name still
-/// dumps as the bare interned id it always has.
+/// The parts of a module that only a `.py` file import has.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileModule {
+    /// The module's globals dict, OWNED. Its functions resolve their globals
+    /// through it, so attribute reads and writes go here and stay visible to them.
+    namespace: HeapId,
+    /// The virtual path the module was read from, for its repr.
+    origin: String,
+}
+
+/// A module's name: interned for a bundled module, owned text for a host or
+/// file one, since the VM cannot intern at runtime. Untagged so a bundled name
+/// still dumps as the bare interned id it always has.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(crate) enum ModuleName {
     Interned(StringId),
-    Host(String),
+    Owned(String),
 }
 
 impl Module {
@@ -50,15 +65,28 @@ impl Module {
             name: ModuleName::Interned(interns.intern_static(name)),
             attrs: Dict::new(),
             id: None,
+            file: None,
         }
     }
 
     /// Creates a host module from its wire name, identity and already-converted attrs.
     pub fn host(name: String, id: MontyUuid, attrs: Dict) -> Self {
         Self {
-            name: ModuleName::Host(name),
+            name: ModuleName::Owned(name),
             attrs,
             id: Some(id),
+            file: None,
+        }
+    }
+
+    /// Creates a module imported from the file at `origin`, taking ownership of
+    /// the `namespace` dict reference its code runs in.
+    pub fn file(name: String, namespace: HeapId, origin: String) -> Self {
+        Self {
+            name: ModuleName::Owned(name),
+            attrs: Dict::new(),
+            id: None,
+            file: Some(FileModule { namespace, origin }),
         }
     }
 
@@ -66,8 +94,28 @@ impl Module {
     pub fn name_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
         match &self.name {
             ModuleName::Interned(id) => interns.get_str(*id),
-            ModuleName::Host(name) => name.as_str(),
+            ModuleName::Owned(name) => name.as_str(),
         }
+    }
+
+    /// `<module 'name'>`, or `<module 'name' from 'path'>` for a file module,
+    /// both quoted as `repr()` quotes a string.
+    pub fn repr(&self, interns: &Interns) -> String {
+        let name = StringRepr(self.name_str(interns));
+        match self.origin() {
+            Some(origin) => format!("<module {name} from {}>", StringRepr(origin)),
+            None => format!("<module {name}>"),
+        }
+    }
+
+    /// A file module's namespace dict (borrowed); `None` for bundled and host modules.
+    pub fn namespace(&self) -> Option<HeapId> {
+        self.file.as_ref().map(|file| file.namespace)
+    }
+
+    /// The virtual path a file module was read from.
+    pub fn origin(&self) -> Option<&str> {
+        self.file.as_ref().map(|file| file.origin.as_str())
     }
 
     /// The host identity of the module; `None` for a bundled module.
@@ -93,14 +141,29 @@ impl Module {
             .expect("module attribute keys are interned, so hashing cannot fail");
     }
 
-    /// Returns whether this module has any heap references in its attributes.
-    pub fn has_refs(&self) -> bool {
-        self.attrs.has_refs()
+    /// Calls `on_child` for every heap reference the module holds, for the cycle collector.
+    pub fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
+        if let Some(namespace) = self.namespace() {
+            on_child(namespace);
+        }
+        if self.attrs.has_refs() {
+            for (k, v) in &self.attrs {
+                if let Value::Ref(id) = k {
+                    on_child(*id);
+                }
+                if let Value::Ref(id) = v {
+                    on_child(*id);
+                }
+            }
+        }
     }
 
     /// Collects child HeapIds for reference counting.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.attrs.py_dec_ref_ids(stack);
+        if let Some(namespace) = self.namespace() {
+            stack.push(namespace);
+        }
     }
 }
 
@@ -111,16 +174,12 @@ impl<'h> HeapRead<'h, Module> {
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        let value = self
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)?;
-
+        let value = self.attr_value(attr.as_str(vm.interns), vm)?;
         // If the value is a Property, invoke its getter to compute the actual value
-        if let Value::Property(prop) = *value {
+        if let Value::Property(prop) = value {
             Some(prop.get())
         } else {
-            Some(CallResult::Value(value.clone_with_heap(vm)))
+            Some(CallResult::Value(value))
         }
     }
 
@@ -135,19 +194,8 @@ impl<'h> HeapRead<'h, Module> {
         let mut args_guard = DropGuard::new(args, vm);
         let vm = args_guard.ctx();
 
-        let attr_str = match attr {
-            EitherStr::Interned(id) => vm.interns.get_str(*id),
-            EitherStr::Heap(s) => {
-                return Err(ExcType::attribute_error_module(
-                    self.get(vm.heap).name_str(vm.interns),
-                    s,
-                ));
-            }
-        };
-
-        match self.get(vm.heap).attrs().get_by_str(attr_str, vm.heap, vm.interns) {
+        match self.attr_value(attr.as_str(vm.interns), vm) {
             Some(value) => {
-                let value = value.clone_with_heap(vm);
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
                 vm.call_function(value, args)
@@ -158,10 +206,43 @@ impl<'h> HeapRead<'h, Module> {
             )),
         }
     }
+
+    /// Binds an attribute on a file module's namespace, so the module's own
+    /// functions see it; other modules reject assignment.
+    pub fn py_set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let Some(namespace) = self.get(vm.heap).namespace() else {
+            value.drop_with(vm);
+            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
+        };
+        let key = name.as_value(vm.heap);
+        let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            return Err(RunError::internal("module namespace is not a dict"));
+        };
+        let old = dict.set(key, value, vm)?;
+        old.drop_with(vm);
+        Ok(())
+    }
+
+    /// An owned copy of the attribute `name`, from the file namespace or `attrs`.
+    fn attr_value(&self, name: &str, vm: &VM<'h>) -> Option<Value> {
+        let module = self.get(vm.heap);
+        let attrs = match module.namespace() {
+            Some(namespace) => match vm.heap.get(namespace) {
+                HeapData::Dict(dict) => dict,
+                _ => return None,
+            },
+            None => &module.attrs,
+        };
+        attrs
+            .get_by_str(name, vm.heap, vm.interns)
+            .map(|value| value.clone_with_heap(vm.heap))
+    }
 }
 
 impl HeapItem for Module {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.attrs.py_dec_ref_ids(stack);
+        Self::py_dec_ref_ids(self, stack);
     }
 }

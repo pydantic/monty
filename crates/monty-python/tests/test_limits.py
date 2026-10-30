@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Callable
+from typing import Literal
 
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyRuntimeError, ResourceLimits
+from pydantic_monty import AsyncMonty, FunctionSnapshot, Monty, MontyComplete, MontyRuntimeError, ResourceLimits
 
 
 def test_resource_limits_typed_dict():
@@ -331,3 +333,88 @@ def test_negative_grace_is_rejected():
     assert exc_info.value.args[0] == snapshot(
         'invalid turn_duration_limit_grace: cannot convert float seconds to Duration: value is negative'
     )
+
+
+cpu_clock = pytest.mark.skipif(sys.platform != 'linux', reason='the CPU execution clock is Linux-only')
+
+
+@pytest.mark.parametrize('clock', ['wall', pytest.param('cpu', marks=cpu_clock)])
+def test_execution_clock_selection(clock: Literal['wall', 'cpu']):
+    with Monty(request_timeout=2.0, execution_clock=clock) as pool:
+        with pool.checkout(limits={'max_feed_duration_secs': 0.05}) as session:
+            assert session.feed_run('sum(range(1000))') == 499_500
+
+
+def test_unknown_execution_clock_is_rejected():
+    with pytest.raises(ValueError, match="execution_clock must be 'wall' or 'cpu'"):
+        Monty(execution_clock='processor')  # type: ignore[arg-type]
+
+
+@cpu_clock
+def test_execution_clock_cannot_be_overridden_per_session():
+    with Monty(execution_clock='cpu', request_timeout=2.0) as pool:
+        with pytest.raises(ValueError, match="unknown limits key 'execution_clock'"):
+            pool.checkout(limits={'execution_clock': 'wall'})  # type: ignore[typeddict-unknown-key]
+        for budget in [0.05, 0.1]:
+            with pool.checkout(limits={'max_feed_duration_secs': budget}) as session:
+                assert session.feed_run('1 + 1') == 2
+
+
+@cpu_clock
+def test_cpu_clock_requires_a_pool_wall_deadline():
+    with pytest.raises(RuntimeError, match='finite request_timeout'):
+        with Monty(execution_clock='cpu', request_timeout=None):
+            pytest.fail('CPU pool succeeded without a wall deadline')
+
+
+@pytest.mark.skipif(sys.platform == 'linux', reason='the CPU execution clock is supported on Linux')
+def test_cpu_clock_is_rejected_off_linux():
+    with pytest.raises(RuntimeError) as exc_info:
+        with Monty(execution_clock='cpu', request_timeout=2.0):
+            pytest.fail('CPU pool succeeded off Linux')
+    assert exc_info.value.args[0] == snapshot(
+        'failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux'
+    )
+
+
+@cpu_clock
+@pytest.mark.parametrize('suspended', [False, True])
+def test_cpu_clock_snapshot_round_trip_and_mismatch(suspended: bool):
+    limits: ResourceLimits = {'max_feed_duration_secs': 0.5}
+    with Monty(request_timeout=2.0, execution_clock='cpu') as pool:
+        with pool.checkout(limits=limits) as source:
+            if suspended:
+                pending = source.feed_start('result = fetch()\nresult + 1')
+                assert isinstance(pending, FunctionSnapshot)
+                state = pending.dump()
+            else:
+                source.feed_run('kept = 41')
+                state = source.dump()
+        with pool.checkout(limits=limits) as destination:
+            if suspended:
+                loaded = destination.load_snapshot(state)
+                assert isinstance(loaded, FunctionSnapshot)
+                result = loaded.resume({'return_value': 41})
+                assert isinstance(result, MontyComplete)
+                assert result.output == 42
+            else:
+                destination.load_session(state)
+                assert destination.feed_run('kept + 1') == 42
+        with Monty() as wall_pool, wall_pool.checkout() as incompatible:
+            with pytest.raises(MontyRuntimeError, match='snapshot execution clock differs'):
+                if suspended:
+                    incompatible.load_snapshot(state)
+                else:
+                    incompatible.load_session(state)
+
+
+@cpu_clock
+@pytest.mark.anyio
+async def test_async_pool_fixes_the_clock_for_different_session_budgets():
+    async with AsyncMonty(execution_clock='cpu', request_timeout=2.0) as pool:
+        for budget in [0.05, 0.1]:
+            async with pool.checkout(limits={'max_feed_duration_secs': budget}) as session:
+                assert await session.feed_run('sum(range(1000))') == 499_500
+                with pytest.raises(MontyRuntimeError) as exc_info:
+                    await session.feed_run('while True: pass')
+                assert isinstance(exc_info.value.exception(), TimeoutError)

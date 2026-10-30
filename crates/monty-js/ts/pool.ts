@@ -21,6 +21,8 @@ import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
 export interface MontyOptions {
+  /** Clock for every session (default `'wall'`). CPU mode is Linux-only and requires a finite `requestTimeout`. */
+  executionClock?: 'wall' | 'cpu'
   /** Path to the `monty` binary; resolved automatically when omitted. */
   binaryPath?: string
   /**
@@ -37,22 +39,16 @@ export interface MontyOptions {
    */
   checkoutTimeout?: number
   /**
-   * Hard per-turn deadline in seconds: a worker that does not answer a
-   * protocol request in time is killed and the session fails with
-   * `MontyCrashedError` (`timedOut: true`). Off by default — prefer the
-   * in-sandbox `maxFeedDurationSecs` limit; this is the backstop for code that
-   * wedges the interpreter itself.
+   * Wall deadline in seconds for each protocol turn (default off).
+   * Expiry kills the worker and raises `MontyCrashedError` (`timedOut: true`).
+   * CPU mode requires a finite value. `maxFeedDurationSecs` bounds execution across repeated suspensions.
    */
   requestTimeout?: number
   /**
-   * Grace period in seconds for the automatic `maxFeedDurationSecs` backstop
-   * (default 1, `null` disables). For sessions with a `maxFeedDurationSecs`
-   * limit, the worker reports the running feed's execution time each turn (the
-   * sandbox clock runs only while the interpreter executes, never while
-   * suspended on the host) and the host kills the worker this long after the
-   * budget expires — covering cases the in-sandbox limit cannot catch (its
-   * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
-   * (`timedOut: true`), losing the session. `requestTimeout` is independent.
+   * Seconds beyond `maxFeedDurationSecs` on the selected clock (default 1, `null` disables).
+   * CPU mode uses an independent OS process counter. Resuming does not renew feed grace.
+   * Exhaustion kills the worker and raises `MontyCrashedError` with `timedOut: true`.
+   * `requestTimeout` remains independent.
    */
   feedDurationLimitGrace?: number | null
   /**
@@ -82,9 +78,11 @@ export interface CheckoutOptions {
   /** Global type-checking stubs. Supply module stubs through `ExternalModule.stubs` in `externalModules`. */
   typeCheckStubs?: string
   /**
-   * Importable host modules for every feed of the session (see [`ExternalModules`]); missing
-   * imports raise `ModuleNotFoundError`. The record is read live, each entry validated when a
-   * snippet first imports it, so modules may be added later; a factory runs once per session.
+   * Importable host modules for every feed of the session (see [`ExternalModules`]); non-bundled
+   * names the record lacks read the package `<cwd>/name/__init__.py`, else `<cwd>/name.py`, through
+   * the `os` handler and then the mounts, and run the file as sandbox code, raising
+   * `ModuleNotFoundError` when neither exists. The record is read live, each entry validated when a snippet first imports it,
+   * so modules may be added later; a factory runs once per session.
    */
   externalModules?: ExternalModules
   /**
@@ -129,10 +127,9 @@ export interface CheckoutOptions {
  * The pool counts `maxSuspensions` per checkout and aborts an over-budget
  * feed with an uncatchable `RuntimeError`.
  *
- * Both duration limits share one clock, which runs only while sandboxed
- * code executes, never while suspended on the host; they differ in when it
- * restarts: at each feed, at each host round trip. Exceeding either raises
- * `TimeoutError` in the sandbox.
+ * Duration limits use the pool's clock (default wall time), paused on the host.
+ * The feed budget resets at each feed; the turn budget resets at each host answer.
+ * Exceeding either raises `TimeoutError` in the sandbox.
  */
 export interface ResourceLimits {
   /**
@@ -183,6 +180,7 @@ export class Monty {
       binaryPath: findMontyBinary(options.binaryPath),
       minProcesses: options.minProcesses ?? 1,
       maxProcesses: options.maxProcesses ?? availableParallelism(),
+      executionClock: options.executionClock,
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(options.requestTimeout !== undefined ? { requestTimeoutMs: options.requestTimeout * 1000 } : {}),
       // `null` disables a backstop; omitted means the 1s default

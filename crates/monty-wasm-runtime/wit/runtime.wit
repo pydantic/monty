@@ -327,6 +327,14 @@ interface worker {
         message: string,
     }
 
+    /// A module's `.py` file the host found for an `import` call.
+    record module-file {
+        /// The virtual path it was read from.
+        path: string,
+        /// The file's text.
+        source: string,
+    }
+
     /// The host's answer to an external function or OS call; a returned
     /// value is an index into the request's arena.
     variant call-result {
@@ -335,6 +343,8 @@ interface worker {
         pending-future(u32),
         not-found(string),
         not-handled,
+        /// Only answers an `import` call with a search path.
+        module-file(module-file),
     }
 
     /// An answer to the currently suspended function or OS call.

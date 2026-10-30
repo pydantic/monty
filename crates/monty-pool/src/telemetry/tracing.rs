@@ -608,6 +608,11 @@ fn render_ext_result(result: Option<&pb::ExtFunctionResult>, values: Option<&Wir
             (text.into(), cut)
         }
         Some(pb::ext_function_result::Kind::NotHandled(_)) => ("not handled".into(), false),
+        // The path only: the source is the module's whole text.
+        Some(pb::ext_function_result::Kind::ModuleFile(file)) => {
+            let (text, cut) = capped_text(|writer| write!(writer, "module file: {}", file.path));
+            (text.into(), cut)
+        }
         None => (MISSING.into(), false),
     }
 }
@@ -1190,6 +1195,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: None,
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1339,6 +1346,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: Some("dumped.py".to_owned()),
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
@@ -1393,6 +1402,8 @@ mod tests {
             max_suspensions: None,
             restored_script_name: Some("restored.py".to_owned()),
             session_id: None,
+            execution_clock: None,
+            feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,

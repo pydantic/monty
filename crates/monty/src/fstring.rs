@@ -698,7 +698,11 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         validate_string_spec(spec)?;
         // `value` is already a `str`, so borrow it directly — no `py_str`
         // round-trip (which would allocate a fresh heap copy just to drop it).
-        return format_string(value.to_str(vm)?, spec, &vm.heap.tracker);
+        return format_string(
+            value.as_str(vm).expect("string type checked above"),
+            spec,
+            &vm.heap.tracker,
+        );
     }
 
     // A grouping option (`,`/`_`) is only legal for certain presentation
@@ -868,7 +872,7 @@ pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>)
         (_, None) => {
             let s = value.py_str(vm)?;
             defer_drop!(s, vm);
-            format_string(s.to_str(vm)?, spec, &vm.heap.tracker)
+            format_string(s.as_str(vm).expect("py_str returns str"), spec, &vm.heap.tracker)
         }
 
         // Type mismatch errors

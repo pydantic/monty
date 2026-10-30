@@ -19,7 +19,7 @@
 //! is cancel-safe.
 
 use std::{
-    env,
+    env, io,
     path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::{Arc, Once, OnceLock},
@@ -31,6 +31,7 @@ use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, decode_frame_with_budget, encode_framed_into,
     encode_to_capped_vec, pb,
 };
+use monty_types::ExecutionClock;
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -53,8 +54,10 @@ use tokio_tungstenite::{
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
-use crate::{MontyTransport, PoolConfig, PoolError, WebSocketDisconnect};
+use crate::{MontyTransport, PoolConfig, PoolError, WebSocketDisconnect, cpu_clock::Clock};
 
+// Private access lets these tests inject stream EOF and await the reader before a failed send.
+// Pool checkouts cannot select those transport states deterministically.
 #[cfg(test)]
 #[path = "../tests/unit/websocket_worker.rs"]
 mod tests;
@@ -95,6 +98,8 @@ enum WorkerKind {
 /// framed stdin, and the cancel-safe stdout frame reader.
 struct SubprocessWorker {
     child: Child,
+    /// The child's CPU clock, recorded at spawn in CPU mode; `None` in wall mode.
+    cpu_clock: Option<Clock>,
     stdin: ChildStdin,
     recv: FrameRecv,
     /// Reused encode buffer for outgoing frames (see [`Worker::send`]).
@@ -161,7 +166,7 @@ impl Worker {
     /// WebSocket upgrade request; a subprocess makes no request and ignores them.
     pub(crate) async fn new(config: &PoolConfig, connect_headers: &[(String, String)]) -> Result<Self, PoolError> {
         let worker = match &config.transport {
-            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
+            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, config.execution_clock),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
@@ -193,7 +198,10 @@ impl Worker {
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
     /// `Configure` of its first checkout).
-    fn subprocess(binary_path: &PathBuf) -> Result<Self, PoolError> {
+    ///
+    /// CPU mode records the child's CPU clock here, while the child is certainly
+    /// unreaped, so later reads can detect a reused PID (see [`Clock`]).
+    fn subprocess(binary_path: &PathBuf, execution_clock: ExecutionClock) -> Result<Self, PoolError> {
         let mut command = Command::new(binary_path);
         command
             .arg("subprocess")
@@ -216,6 +224,13 @@ impl Worker {
             .spawn()
             .map_err(|err| PoolError::Spawn(format!("{}: {err}", binary_path.display())))?;
 
+        // a failure drops `child`, which `kill_on_drop` kills
+        let cpu_clock = match execution_clock {
+            ExecutionClock::Cpu => {
+                Some(Clock::new(&child).map_err(|err| PoolError::Spawn(format!("recording child CPU clock: {err}")))?)
+            }
+            ExecutionClock::Wall => None,
+        };
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         Ok(Self {
@@ -223,6 +238,7 @@ impl Worker {
             id: 0,
             kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
                 child,
+                cpu_clock,
                 stdin,
                 recv: FrameRecv::new(stdout),
                 send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
@@ -438,6 +454,20 @@ impl Worker {
         match &self.kind {
             WorkerKind::Subprocess(w) => w.child.id(),
             WorkerKind::WebSocket(_) => None,
+        }
+    }
+
+    /// The child's CPU clock recorded at spawn, for one turn's supervision.
+    pub(crate) fn cpu_clock(&self) -> io::Result<Clock> {
+        match &self.kind {
+            WorkerKind::Subprocess(worker) => worker
+                .cpu_clock
+                .clone()
+                .ok_or_else(|| io::Error::other("worker was spawned without a CPU clock")),
+            WorkerKind::WebSocket(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "remote child CPU clock is unavailable",
+            )),
         }
     }
 

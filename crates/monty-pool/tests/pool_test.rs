@@ -2,26 +2,25 @@
 //! headline scenarios: a worker dying mid-execution (kill, crash, timeout)
 //! must surface as a clean error and never poison the pool.
 
+mod binary;
 mod common;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
+#[cfg(target_os = "linux")]
+use std::{env, ffi::OsStr, os::unix::ffi::OsStrExt};
 use std::{
-    env,
     fmt::Write as _,
     fs,
     future::ready,
     io,
     path::{Path, PathBuf},
     process::Command,
-    sync::Once,
     thread,
     time::Duration,
 };
-#[cfg(target_os = "linux")]
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 use insta::assert_snapshot;
 use monty_pool::{
@@ -31,45 +30,22 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+// only the off-Linux CPU rejection test names the clock; Linux CPU tests import their own
+#[cfg(not(target_os = "linux"))]
+use monty_types::ExecutionClock;
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, DateTimeSource, ExcType, IMPORT_CALL, IMPORT_STUBS_CALL, MontyException, MontyObject, MontyUuid,
-    NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig,
-    TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, ModuleFile, ModuleRead,
+    MontyException, MontyObject, MontyUuid, NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart,
+    ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
 
-use crate::common::wait_for_idle;
-
-/// Locates (building once if needed) the `monty` CLI binary for tests.
-fn monty_binary() -> PathBuf {
-    static BUILD: Once = Once::new();
-    if let Ok(path) = env::var("MONTY_TEST_BIN") {
-        return PathBuf::from(path);
-    }
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_owned();
-    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(|| workspace.join("target"), PathBuf::from);
-    let path = target.join("debug").join(format!("monty{}", env::consts::EXE_SUFFIX));
-    BUILD.call_once(|| {
-        if !path.exists() {
-            let status = Command::new(env!("CARGO"))
-                .args(["build", "-p", "monty-runtime"])
-                .status()
-                .expect("failed to run cargo build -p monty-runtime");
-            assert!(status.success(), "building the monty binary failed");
-        }
-    });
-    assert!(path.exists(), "monty binary missing at {}", path.display());
-    path
-}
+use crate::{binary::monty_binary, common::wait_for_idle};
 
 fn config() -> PoolConfig {
     PoolConfig::subprocess(monty_binary())
@@ -511,6 +487,54 @@ os.chdir('sub')
     let result = session.feed("os.getcwd()", vec![], mount(), false, &mut no_print).await;
     let event = feed_with_mounts(&mut session, result).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::string("/".to_owned()));
+    session.finish().await.unwrap();
+}
+
+/// A host with no module of an import's name reads its candidate files from
+/// the mounts without resuming the worker, then answers with the file found:
+/// one `import` call per module, the working directory defaulting to the first mount.
+#[tokio::test]
+async fn a_module_file_in_a_mount_is_imported() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("helpers.py"), "def double(x):\n    return x * 2\n").unwrap();
+    fs::create_dir(dir.path().join("pkg")).unwrap();
+    fs::write(dir.path().join("pkg/__init__.py"), "").unwrap();
+    fs::write(dir.path().join("pkg/sub.py"), "value = 3\n").unwrap();
+    let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+
+    let code = "import helpers\nfrom pkg.sub import value\n(helpers.double(value), helpers.__file__)";
+    let mut event = session.feed(code, vec![], mount(), false, &mut no_print).await.unwrap();
+    let mut asked = Vec::new();
+    while matches!(&event, TurnEvent::OsCall { function_name, .. } if function_name == IMPORT_CALL) {
+        let args = expect_import_args(event);
+        let mut answer = ResumeValue::NotFound;
+        for path in args.candidates() {
+            if let ModuleRead::Text(source) = session.read_from_mounts(&path).await.unwrap() {
+                answer = ResumeValue::ModuleFile(ModuleFile { path, source });
+                break;
+            }
+        }
+        asked.push((args.module, args.search_path));
+        event = session.resume(answer, &mut no_print).await.unwrap();
+    }
+    let dirs = |dir: &str| vec![dir.to_owned()];
+    assert_eq!(
+        asked,
+        [
+            ("helpers".to_owned(), dirs("/mnt")),
+            ("pkg".to_owned(), dirs("/mnt")),
+            ("pkg.sub".to_owned(), dirs("/mnt/pkg")),
+        ]
+    );
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::tuple([MontyObject::int(6), MontyObject::string("/mnt/helpers.py".to_owned())])
+    );
+    // a mount read answers only a pending import
+    let err = session.read_from_mounts("/mnt/helpers.py").await.unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "{err:?}");
     session.finish().await.unwrap();
 }
 
@@ -3090,6 +3114,11 @@ fn host_module(name: &str, attrs: Vec<(&str, MontyObject)>) -> MontyObject {
 }
 
 fn expect_import(event: TurnEvent) -> String {
+    expect_import_args(event).module
+}
+
+/// The arguments of the `import` call `event` suspended on.
+fn expect_import_args(event: TurnEvent) -> ImportArgs {
     let TurnEvent::OsCall {
         function_name, args, ..
     } = event
@@ -3097,11 +3126,7 @@ fn expect_import(event: TurnEvent) -> String {
         panic!("expected the import to suspend, got {event:?}");
     };
     assert_eq!(function_name, IMPORT_CALL);
-    let module: Vec<_> = args.args().map(|arg| arg.to_owned()).collect();
-    let [module] = module.as_slice() else {
-        panic!("expected one module name, got {module:?}");
-    };
-    module.as_ref().as_str().expect("a module name").to_owned()
+    ImportArgs::from_call_args(&args).expect("well-formed import arguments")
 }
 
 fn expect_import_stubs(event: TurnEvent) -> Vec<String> {
@@ -3270,6 +3295,61 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     };
     assert_snapshot!(diagnostics, @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
     session.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_stub_answers_without_cpu_supervision_remain_resumable() {
+    let pool = Pool::new(config()).await.unwrap();
+    for answer in [ResumeValue::Future, ResumeValue::Return(MontyObject::int(42))] {
+        let mut session = pool
+            .checkout(&ReplConfig {
+                type_check: true,
+                ..ReplConfig::default()
+            })
+            .await
+            .unwrap();
+        let event = session
+            .feed("import tools", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+        assert!(matches!(
+            session.resume(answer, &mut no_print).await,
+            Err(PoolError::Protocol(_))
+        ));
+        let error = MontyException::new(ExcType::RuntimeError, Some("stub provider failed".to_owned()));
+        let result = session.resume(ResumeValue::Error(error), &mut no_print).await;
+        assert!(
+            matches!(result, Err(PoolError::Runtime(ref error)) if error.message() == Some("stub provider failed"))
+        );
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        session.finish().await.unwrap();
+    }
+    pool.close().await;
+}
+
+#[cfg(target_os = "linux")]
+#[path = "support/cpu_limits.rs"]
+mod cpu_limits;
+
+/// CPU supervision is Linux-only, so other platforms refuse CPU mode before spawning a worker.
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn cpu_clock_is_rejected_off_linux() {
+    let mut config = config();
+    config.execution_clock = ExecutionClock::Cpu;
+    config.request_timeout = Some(Duration::from_secs(2));
+    let Err(error) = Pool::new(config).await else {
+        panic!("CPU pool must be rejected off Linux");
+    };
+    assert_eq!(
+        error.to_string(),
+        "failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux"
+    );
 }
 
 /// An oversized result discards the worker; the next checkout still succeeds.

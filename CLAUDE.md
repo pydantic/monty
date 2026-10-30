@@ -62,7 +62,8 @@ Key rules:
 
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
-- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms.
+    The one exception is the CPU execution clock, which is Linux-only so that it needs no `unsafe`.
 - Tests in `crates/*/tests/` should be cross-platform; use helper functions for
     OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
     `crates/monty-fs/tests/common/mod.rs`, shared via `mod common;` — each
@@ -181,6 +182,14 @@ subprocesses:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
     streamed `Print` events out, then exactly one turn-ending event.
+- `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
+    A WebSocket server selects its own clock and reports it to clients; session limits cannot override it.
+    CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
+    the worker refuses it. WebSocket clients on any platform can adopt a Linux server's CPU clock.
+    Local subprocess pools supervise CPU with the child's OS process clock.
+    CPU mode requires a finite `PoolConfig::request_timeout`; WebSocket clients do not supervise CPU locally.
+    WebAssembly workers accept wall mode only.
+    Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
     are cancel-safe (partial-frame state lives in the worker, no pump task),
@@ -831,7 +840,8 @@ Unknown keys, wrong types and malformed blocks are errors, and every key default
 
 - `call-external = true` to support calling external functions
 - `run-async = true` to support running async code
-- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both;
+    modules written there import on both sides (it is first on CPython's `sys.path`; write every file before the first import)
 - `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
 - `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
 - `gc-interval = <N>` to override the GC interval

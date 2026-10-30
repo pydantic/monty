@@ -44,6 +44,7 @@ import {
   type EnterTurn,
   type FunctionCallTurn,
   type LoadedTurn,
+  type ModuleReadTurn,
   type NameLookupTurn,
   type NativeFutureResult,
   type NativeTurn,
@@ -309,8 +310,9 @@ export class MontySession {
    * taken mid-execution.
    *
    * Valid only on a fresh session, before any feed or load (it replaces the
-   * whole session); throws otherwise. The dump restores its own resource limits
-   * and type-check state. Throws if the dump is actually a suspended snapshot.
+   * whole session); throws otherwise. Checkout limits cap the restored limits.
+   * The execution clock must match the dump. Type-check state comes from the dump.
+   * Throws if the dump is actually a suspended snapshot.
    *
    * Only load unmodified bytes from a trusted, compatible Monty producer.
    * The caller must establish provenance and integrity; Monty does not authenticate
@@ -343,7 +345,8 @@ export class MontySession {
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
    * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
-   * also apply here.
+   * also apply here. Checkout limits cap the restored limits, and the execution
+   * clock must match the dump.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
@@ -663,7 +666,8 @@ class TurnAnswerer {
   }
 
   /**
-   * Returns the host module, or not-found for the sandbox to raise `ModuleNotFoundError`.
+   * Returns the host module, else the module's `.py` file from its search path
+   * (see `answerImportFile`), else not-found for `ModuleNotFoundError`.
    */
   private async answerImport(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     const [args] = restoreCallArgs(call, this.instances)
@@ -676,7 +680,7 @@ class TurnAnswerer {
       // Raise factory and getter errors at the sandbox import.
       const entry = await this.module(name)
       if (entry === undefined) {
-        return this.native.resumeNotFound(onPrint)
+        return this.answerImportFile(name, args[1], onPrint)
       }
       value = moduleValue(name, entry)
     } catch (err) {
@@ -684,6 +688,63 @@ class TurnAnswerer {
       return this.native.resumeError(excType, message, onPrint)
     }
     return this.resumeWithValue(value, onPrint)
+  }
+
+  /**
+   * Answers an import no host module serves with the module's `.py` file: each
+   * candidate on its search path is read through `os` first, then the feed's
+   * mounts. A call with no search path, from a worker predating file imports,
+   * gets not-found.
+   */
+  private async answerImportFile(name: string, searchPath: unknown, onPrint: PrintCallback): Promise<object> {
+    for (const path of importCandidates(name, searchPath)) {
+      const read = await this.readImportCandidate(path, onPrint)
+      switch (read.kind) {
+        case 'moduleText':
+          return this.native.resumeModuleFile(path, read.text, onPrint)
+        case 'moduleReadError':
+          return this.native.resumeError(read.excType, read.message, onPrint)
+        case 'moduleMissing':
+        case 'notMounted':
+          continue
+        default:
+          // the mount read lost the worker: that is the turn's outcome
+          return read
+      }
+    }
+    return this.native.resumeNotFound(onPrint)
+  }
+
+  /** Reads one candidate file of an import: `os` first, the feed's mounts when it declines. */
+  private async readImportCandidate(
+    path: string,
+    onPrint: PrintCallback,
+  ): Promise<ModuleReadTurn | NotMountedTurn | NativeTurn> {
+    if (this.os !== undefined) {
+      let returned: unknown
+      try {
+        // normalized as for any OS call, so a handler checking a prefix never sees `..`
+        returned = this.os(READ_TEXT_CALL, [normalizeVirtualPath(path)], kwargsToRecord([]))
+        if (isThenable(returned)) {
+          returned = await returned
+        }
+      } catch (err) {
+        const { excType, message } = jsErrorParts(err)
+        return MISSING_FILE_ERRORS.has(excType)
+          ? { kind: 'moduleMissing' }
+          : { kind: 'moduleReadError', excType, message }
+      }
+      if (returned !== NOT_HANDLED) {
+        return typeof returned === 'string'
+          ? { kind: 'moduleText', text: returned }
+          : {
+              kind: 'moduleReadError',
+              excType: 'RuntimeError',
+              message: 'invalid return type: Path.read_text for an import must return a str',
+            }
+      }
+    }
+    return (await this.native.readFromMounts(path, onPrint)) as ModuleReadTurn | NotMountedTurn | NativeTurn
   }
 
   /**
@@ -1581,6 +1642,50 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
   }
   return { excType: 'RuntimeError', message: String(err) }
 }
+
+/** The OS call an import's candidate file is read with, as `open()`'s handler sees it. */
+const READ_TEXT_CALL = 'Path.read_text'
+
+/** Errors reading a candidate that mean its file is not there, so the search moves on. */
+const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 'IsADirectoryError', 'PermissionError'])
+
+/**
+ * An import's candidate files, mirroring `ImportArgs::candidates` in
+ * monty-types: per directory, the package `name/__init__.py` before the module
+ * `name.py`. The call comes from an untrusted worker, so a name that is not
+ * dotted identifiers, or a directory that is not absolute, yields nothing. The
+ * paths are built one at a time, so a long name times many directories never
+ * sits in memory, and kept as sent, so mounts check them before collapsing `..`.
+ */
+function* importCandidates(name: string, searchPath: unknown): Generator<string> {
+  if (!Array.isArray(searchPath) || !name.split('.').every((part) => IDENTIFIER.test(part))) {
+    return
+  }
+  const leaf = name.slice(name.lastIndexOf('.') + 1)
+  for (const dir of searchPath) {
+    if (typeof dir === 'string' && dir.startsWith('/') && !dir.includes('\0')) {
+      const base = dir.endsWith('/') ? dir.slice(0, -1) : dir
+      yield `${base}/${leaf}/__init__.py`
+      yield `${base}/${leaf}.py`
+    }
+  }
+}
+
+/** An absolute POSIX path with `.` removed and `..` resolved, stopping at `/`, as `normalize_virtual_path` in monty-types. */
+function normalizeVirtualPath(path: string): string {
+  const parts: string[] = []
+  for (const segment of path.split('/')) {
+    if (segment === '..') {
+      parts.pop()
+    } else if (segment !== '' && segment !== '.') {
+      parts.push(segment)
+    }
+  }
+  return `/${parts.join('/')}`
+}
+
+/** A Python identifier, as far as a module name component needs one. */
+const IDENTIFIER = /^[\p{XID_Start}_]\p{XID_Continue}*$/u
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function'

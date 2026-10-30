@@ -396,14 +396,7 @@ impl Dict {
 /// JSON object parsing only inserts string keys, but the helper remains
 /// defensive and returns `None` for any non-string value.
 fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    match key {
-        Value::InternString(id) => Some(interns.get_str(*id)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(string) => Some(string.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
+    key.as_str_heap(heap, interns)
 }
 
 /// Returns whether `key` is a string equal to `expected`.
@@ -411,14 +404,7 @@ fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Intern
 /// This bypasses Python's full equality machinery because JSON object keys are
 /// always strings, so content comparison is sufficient and much cheaper.
 fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Interns) -> bool {
-    match key {
-        Value::InternString(id) => interns.get_str(*id) == expected,
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(string) => string.as_str() == expected,
-            _ => false,
-        },
-        _ => false,
-    }
+    key.as_str_heap(heap, interns) == Some(expected)
 }
 
 impl<'h> HeapRead<'h, Dict> {
@@ -812,6 +798,7 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::Float(f) => eq_f64(*f, key, vm),
             Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
             Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+            Value::InlineString(text) => eq_str(text.as_str(), key, vm),
             Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Str(s) => eq_str(s.as_str(), key, vm),

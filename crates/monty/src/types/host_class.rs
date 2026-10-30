@@ -7,7 +7,7 @@ use std::{
 
 use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
-use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -150,7 +150,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -193,12 +193,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             defer_drop!(key, vm);
             // Keys are strings in practice; render a non-string key (possible
             // in host-built attrs) via repr rather than fail.
-            let key_str = if let Ok(s) = key.to_str(vm) {
+            let key_str = if let Some(s) = key.as_str(vm) {
                 s.to_owned()
             } else {
                 let repr = key.py_repr(vm)?;
                 defer_drop!(repr, vm);
-                repr.to_str(vm)?.to_owned()
+                repr.as_str(vm).expect("py_repr returns str").to_owned()
             };
             // The value is cloned only after the fallible key formatting, so a
             // formatting error cannot strand an unguarded clone; re-reading at

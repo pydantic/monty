@@ -516,25 +516,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
+                let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).search(arg, text, vm.heap)
             }
             Some(StaticStrings::Match) => {
                 let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
+                let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).match_start(arg, text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
                 let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
+                let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).fullmatch(arg, text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
+                let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).findall(text, vm.heap)
             }
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
@@ -542,7 +542,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
             Some(StaticStrings::Finditer) => {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
+                let text = arg.try_to_str(vm)?;
                 self.get(vm.heap).finditer(arg, text, vm.heap)
             }
             _ => return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm)),
@@ -577,7 +577,7 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
     // CPython processes the replacement template *before* its match loop, so
     // this check must precede the negative-count early return below: a bad
     // repl raises even when zero substitutions will run.
-    let Ok(repl) = repl_val.to_str(vm) else {
+    let Ok(repl) = repl_val.try_to_str(vm) else {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
@@ -586,14 +586,14 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
         // Validate octal escapes even when the negative count skips matching.
         translate_replacement(repl)?;
         // Negative count — Pattern.sub returns the input string unchanged.
-        // The subject is still type-checked (`to_str` raises this method's
+        // The subject is still type-checked (`try_to_str` raises this method's
         // `expected string, not {t}` wording) before the refcount bump; no
         // need to re-allocate.
-        let _ = string_val.to_str(vm)?;
+        let _ = string_val.try_to_str(vm)?;
         return Ok(string_val.clone_with_heap(vm.heap));
     };
 
-    let text = string_val.to_str(vm)?;
+    let text = string_val.try_to_str(vm)?;
     pattern.get(vm.heap).sub(repl, text, count, vm.heap)
 }
 
@@ -608,7 +608,7 @@ fn call_pattern_split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm
     defer_drop!(string_val, vm);
 
     let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
-    let text = string_val.to_str(vm)?.to_owned();
+    let text = string_val.try_to_str(vm)?.to_owned();
     pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
 }
 

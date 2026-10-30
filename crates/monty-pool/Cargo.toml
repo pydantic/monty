@@ -66,7 +66,17 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
 opentelemetry_sdk = { version = "0.32", optional = true }
 
+# CPU supervision is Linux-only: `nix` reads the child's CPU clock without `unsafe`.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31.3", features = ["process", "time"] }
+
+[[example]]
+name = "cpu-test-worker"
+path = "tests/support/cpu_worker.rs"
+
 [dev-dependencies]
+serde_json = { workspace = true }
+cpu-time = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
 tempfile = { workspace = true }

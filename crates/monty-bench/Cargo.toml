@@ -9,13 +9,19 @@ description = "Benchmarks for the Monty interpreter — compares Monty vs CPytho
 publish = false
 
 [features]
+default = ["local"]
+
+# CPython comparisons and flamegraphs are only needed for local benchmarks.
+local = ["dep:criterion", "dep:pprof", "dep:pyo3", "dep:pyo3-build-config"]
+
 # Runs the `main` bench under the worker's global allocator (`monty-alloc`)
 # instead of `System`, to price the hard memory ceiling on real workloads.
 worker-alloc = ["dep:monty-alloc"]
+
 # Set by the CodSpeed workflow: report through `codspeed-criterion-compat` and
 # leave out the CPython comparisons. A feature rather than `cfg(codspeed)`,
 # which `cargo codspeed` sets only for simulation builds, not walltime ones.
-codspeed = []
+codspeed = ["dep:codspeed-criterion-compat"]
 
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
@@ -27,16 +33,16 @@ monty-pool = { workspace = true }
 monty-proto = { workspace = true }
 # The pool benchmarks use Criterion's Tokio async executor.
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
-pyo3 = { workspace = true, features = ["auto-initialize"] }
+pyo3 = { workspace = true, features = ["auto-initialize"], optional = true }
 tempfile = { workspace = true }
-codspeed-criterion-compat = { version = "5.0.1", features = ["async_tokio"] }
-criterion = { version = "0.5", features = ["async_tokio"] }
+codspeed-criterion-compat = { version = "5.0.1", features = ["async_tokio"], optional = true }
+criterion = { version = "0.5", features = ["async_tokio"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
-pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
+pprof = { version = "0.15", features = ["flamegraph", "criterion"], optional = true }
 
 [build-dependencies]
-pyo3-build-config = { workspace = true }
+pyo3-build-config = { workspace = true, optional = true }
 
 [[bench]]
 name = "main"

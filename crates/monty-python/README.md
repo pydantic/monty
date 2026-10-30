@@ -65,6 +65,8 @@ An `ExternalModule` copies its `attrs` dict at construction and imports as a `mo
 functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
 Its `id` identifies the module when it crosses back out of the sandbox.
 The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
+An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__init__.py` (or `name.py`) through the
+`os` handler, then the feed's mounts, and runs it as the module, once per session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
@@ -201,3 +203,26 @@ Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
+
+## Execution time
+
+Execution duration limits use wall time by default.
+Both clocks charge bytecode and native builtin execution, excluding host suspension.
+Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
+CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
+(`async with`) raises `RuntimeError`.
+WebSocket clients on any platform adopt the server's clock.
+The clock applies to the whole pool; checkouts cannot override it.
+CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
+Smaller remaining budgets shorten that interval.
+Execution boundaries take fresh samples. WebAssembly workers support wall time only.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+If the counter later becomes unusable during execution, the VM uses elapsed time for that window.
+The OS controls CPU counter accuracy and resolution.
+Native pool backstops use the selected clock and configured grace.
+CPU mode uses an independent OS process counter and requires a finite wall-clock `request_timeout`.
+Snapshots retain their clock and VM consumption.
+CPU restore approximates prior supervisor usage from saved VM consumption.
+The snapshot does not record protocol CPU or supervisor grace separately.
+Load them through a pool with the same execution clock.
+Snapshots without a clock use wall time.

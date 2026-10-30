@@ -1255,8 +1255,7 @@ pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Co
 /// The same coercion with `expected` naming the accepted types, which
 /// `binascii`'s own functions word differently from `base64`'s.
 pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expected: &str) -> RunResult<Cow<'a, [u8]>> {
-    if value.is_str(vm.heap) {
-        let text = value.to_str(vm)?;
+    if let Some(text) = value.as_str(vm) {
         if text.is_ascii() {
             Ok(Cow::Borrowed(text.as_bytes()))
         } else {
@@ -1331,7 +1330,7 @@ fn assert_len_bytes(bytes: &[u8], expected: usize) -> RunResult<()> {
 fn assertion_error(value: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
     let repr = value.py_repr(vm)?;
     defer_drop!(repr, vm);
-    let message = repr.to_str(vm)?.to_owned();
+    let message = repr.as_str(vm).expect("py_repr returns str").to_owned();
     Ok(SimpleException::new_msg(ExcType::AssertionError, message).into())
 }
 

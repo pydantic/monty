@@ -109,7 +109,9 @@ impl Union {
             defer_drop!(key, vm);
             let repr = key.py_repr(vm)?;
             defer_drop!(repr, vm);
-            Err(ExcType::optional_requires_single_type(repr.to_str(vm)?))
+            Err(ExcType::optional_requires_single_type(
+                repr.as_str(vm).expect("py_repr returns str"),
+            ))
         } else {
             Self::from_members(vec![key, Value::None], vm)
         }

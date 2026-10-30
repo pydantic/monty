@@ -32,7 +32,7 @@ pub struct Header {
     pub call_external: bool,
     /// Wrap the code in an async context for CPython, allowing top-level `await`.
     pub run_async: bool,
-    /// Mount a fixture directory: `/mnt` for Monty, a real path for CPython.
+    /// Mount a fixture directory: `/mnt` for Monty, a real path for CPython, importable on both.
     pub mount_fs: bool,
     /// Skip the CPython side on Windows, for POSIX path semantics only Monty provides there.
     pub skip_cpython_windows: bool,

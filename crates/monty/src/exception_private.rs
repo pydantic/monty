@@ -266,7 +266,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                if let Ok(s) = key_value.to_str(vm) {
+                if let Some(s) = key_value.as_str(vm) {
                     s.to_owned()
                 } else {
                     format!("<{}>", key.py_type_name(vm))
@@ -1051,7 +1051,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .to_str(vm)
+                    .try_to_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,
@@ -1726,22 +1726,35 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an ImportError for when a name cannot be imported from a module.
     ///
-    /// Matches CPython's format for built-in modules:
+    /// Matches CPython's format, which names the file a module was loaded from:
     /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for import errors.
     #[must_use]
-    fn cannot_import_name(name: &str, module_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::ImportError,
-            format!("cannot import name '{name}' from '{module_name}' (unknown location)"),
-        );
-        RunError::Exc(ExceptionRaise {
-            exc,
-            frame: None,
-            snippet_frame: None,
-            hide_caret: true,
-        })
+    fn cannot_import_name(name: &str, module_name: &str, origin: Option<&str>) -> RunError {
+        let origin = origin.unwrap_or("unknown location");
+        import_error_without_caret(format!("cannot import name '{name}' from '{module_name}' ({origin})"))
+    }
+
+    /// The `RuntimeError` for a host answering anything but an `import` call
+    /// with a module file.
+    #[must_use]
+    fn module_file_for_non_import() -> RunError {
+        SimpleException::new_msg(
+            ExcType::RuntimeError,
+            "only an import can be answered with a module file",
+        )
+        .into()
+    }
+
+    /// The `ImportError` for `from module import name` while `module`'s body is
+    /// still running, CPython's hint at a circular import.
+    #[must_use]
+    fn cannot_import_name_partial(name: &str, module_name: &str, origin: &str) -> RunError {
+        import_error_without_caret(format!(
+            "cannot import name '{name}' from partially initialized module '{module_name}' \
+             (most likely due to a circular import) ({origin})"
+        ))
     }
 
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
@@ -2797,17 +2810,15 @@ impl ExceptionRaise {
     /// this sets its name instead of creating a new parent. This happens when the error
     /// is raised from a namespace lookup - the initial frame has the position but not
     /// the function name, which gets filled in as the error propagates.
-    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId) {
-        self.add_caller_frame_inner(position, name, false);
-    }
-
-    fn add_caller_frame_inner(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
+    ///
+    /// `hide_caret` omits the added frame's carets, as CPython does under an
+    /// `import` whose module body raised; a nameless frame keeps its own.
+    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // If innermost frame has no name, set it instead of adding a parent
             // This handles errors from namespace lookups which create nameless frames
             if frame.frame_name.is_none() {
                 frame.frame_name = Some(name);
-                frame.hide_caret = hide_caret;
                 return;
             }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
@@ -2867,8 +2878,10 @@ impl ExceptionRaise {
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let src =
-                            eval_source.unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                        // An imported file also carries its own source, but shows its lines.
+                        let src = eval_source
+                            .or_else(|| interns.file_source(fname_id))
+                            .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
@@ -3050,6 +3063,16 @@ impl RunError {
 /// CPython's `ModuleNotFoundError` message for `module_name`.
 fn no_module_named(module_name: &str) -> String {
     format!("No module named '{module_name}'")
+}
+
+/// An `ImportError` shown without carets, as CPython shows import errors.
+fn import_error_without_caret(msg: String) -> RunError {
+    RunError::Exc(ExceptionRaise {
+        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        frame: None,
+        snippet_frame: None,
+        hide_caret: true,
+    })
 }
 
 /// Formats a list of parameter names for error messages, matching CPython's

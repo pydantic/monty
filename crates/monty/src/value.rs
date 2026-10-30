@@ -3,7 +3,7 @@ use std::{
     cmp::Ordering,
     fmt::{self, Write},
     mem,
-    str::FromStr,
+    str::{self, FromStr},
 };
 
 use num_bigint::{BigInt, Sign};
@@ -17,7 +17,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    hash::{HashValue, hash_f64, hash_named, hash_one},
+    hash::{HashValue, hash_f64, hash_named, hash_one, hash_python_str},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
@@ -27,6 +27,7 @@ use crate::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
         decimal, host_class_type,
+        inline_str::InlineStr,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
@@ -39,9 +40,7 @@ use crate::{
 
 /// Primary value type representing Python objects at runtime.
 ///
-/// This enum uses a hybrid design: small immediate values (Int, Bool, None) are stored
-/// inline, while heap-allocated values (List, Str, Dict, etc.) are stored in the arena
-/// and referenced via `Ref(HeapId)`.
+/// Stores immediate values directly and arena objects through `Ref(HeapId)`.
 ///
 /// NOTE: `Clone` is intentionally NOT derived. Use `clone_with_heap()`. Direct cloning via `.clone()` would
 /// bypass reference counting and cause memory leaks.
@@ -68,6 +67,9 @@ pub(crate) enum Value {
     /// To get the actual string content, use `interns.get(string_id)`.
     #[serde(rename = "T")]
     InternString(StringId),
+    /// A short UTF-8 string stored directly in the value slot.
+    #[serde(rename = "S")]
+    InlineString(InlineStr),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     /// To get the actual bytes content, use `interns.get_bytes(bytes_id)`.
     #[serde(rename = "R")]
@@ -255,6 +257,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
+            Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
             Self::ModuleFunction(_) => Type::BuiltinFunction,
@@ -288,6 +291,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::InternString(o) => Some(id == o),
                 _ => eq_str(vm.interns.get_str(*id), other, vm),
             }),
+            Self::InlineString(text) => Ok(text.eq_value(other, vm)),
             Self::InternBytes(id) => Ok(match other {
                 // Fast path for the same interned bytes; otherwise compare content
                 // (interned bytes are not deduplicated, unlike strings).
@@ -391,6 +395,22 @@ impl<'h> PyTrait<'h> for Value {
             (Self::InternString(s1), Self::InternString(s2)) => {
                 Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
             }
+            (Self::InlineString(text), Self::Ref(id)) if let HeapData::Str(value) = vm.heap.get(*id) => {
+                Ok(CmpOrder::Ordered(text.as_bytes().cmp(value.as_str().as_bytes())))
+            }
+            (Self::Ref(id), Self::InlineString(text)) if let HeapData::Str(value) = vm.heap.get(*id) => {
+                Ok(CmpOrder::Ordered(value.as_str().as_bytes().cmp(text.as_bytes())))
+            }
+            (Self::InlineString(left), Self::InlineString(right)) => {
+                // UTF-8 byte order matches Unicode scalar order, including prefixes.
+                Ok(CmpOrder::Ordered(left.as_bytes().cmp(right.as_bytes())))
+            }
+            (Self::InlineString(text), Self::InternString(id)) => {
+                Ok(CmpOrder::Ordered(text.as_bytes().cmp(interns.get_str(*id).as_bytes())))
+            }
+            (Self::InternString(id), Self::InlineString(text)) => {
+                Ok(CmpOrder::Ordered(interns.get_str(*id).as_bytes().cmp(text.as_bytes())))
+            }
             // Cross-type string comparisons: interned vs heap-allocated
             (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
                 Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str())))
@@ -461,6 +481,7 @@ impl<'h> PyTrait<'h> for Value {
             // same value back (inc-ref'd for the heap case) instead of cloning
             // the bytes into a fresh allocation.
             Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
+            Self::InlineString(text) => Ok(Self::InlineString(*text)),
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
@@ -728,7 +749,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             // Interned string and bytes literals iterate without ever reaching
             // the heap, so they answer here rather than in `HeapReadOutput`.
-            Self::InternString(_) | Self::InternBytes(_) => true,
+            Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
             Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
             _ => false,
         }
@@ -740,6 +761,7 @@ impl<'h> PyTrait<'h> for Value {
         } else {
             match self {
                 Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+                Self::InlineString(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
                 Self::InternBytes(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
             }
@@ -827,6 +849,7 @@ impl Value {
     pub(crate) fn py_value<'h>(&self, vm: &VM<'h>) -> PyValue<'h> {
         match self {
             Self::InternString(id) => PyValue::Str(PyStr::Interned(*id)),
+            Self::InlineString(text) => PyValue::Str(PyStr::Inline(*text)),
             Self::InternBytes(id) => PyValue::Bytes(PyBytes::Interned(*id)),
             Self::Int(value) => PyValue::Int(PyInt::Small(*value)),
             Self::InternLongInt(id) => PyValue::Int(PyInt::Interned(*id)),
@@ -845,6 +868,14 @@ impl Value {
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inline_str(&self) -> Option<&str> {
+        let Self::InlineString(text) = self else {
+            return None;
+        };
+        Some(text.as_str())
     }
 
     /// Returns the Python `Type` for this value using only `&Heap` (no full VM borrow).
@@ -924,6 +955,7 @@ impl Value {
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
+            Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
@@ -1092,6 +1124,7 @@ impl Value {
         // cold arms construct a hasher, via `hash_one`.
         match self {
             Self::InternString(string_id) => Ok(Some(vm.interns.str_hash(*string_id))),
+            Self::InlineString(text) => Ok(Some(hash_python_str(text.as_str()))),
             Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
             Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
@@ -1690,6 +1723,7 @@ impl Value {
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
+            Self::InlineString(text) => Self::InlineString(*text),
             Self::InternBytes(b) => Self::InternBytes(*b),
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
@@ -1757,13 +1791,12 @@ impl Value {
         }
     }
 
-    /// Converts the value into a keyword string representation if possible.
-    ///
-    /// Returns `Some(KeywordStr)` for `InternString` values or heap `str`
-    /// objects, otherwise returns `None`.
+    /// Returns a string name that can outlive a heap borrow.
+    /// Copies heap-backed text; returns `None` for non-string values.
     pub fn as_either_str(&self, heap: &Heap) -> Option<EitherStr> {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
+            Self::InlineString(text) => Some(EitherStr::Inline(*text)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
                 HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
                 _ => None,
@@ -1772,42 +1805,46 @@ impl Value {
         }
     }
 
-    /// Borrows the value as a `&str` if it is a string (interned or heap `str`).
-    ///
-    /// Unlike [`as_either_str`](Self::as_either_str) this never allocates — both
-    /// interned and heap strings are returned by borrow — and it errors rather
-    /// than returning `None` for non-strings, with CPython's generic `expected
-    /// string, not <type>` message. Use it wherever a function reads a `str`
-    /// argument it does not need to own; the borrow keeps `self` and the heap
-    /// pinned, so drop/allocate only once it ends.
-    pub(crate) fn to_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
-        self.to_str_heap(vm.heap, vm.interns)
+    /// Borrows string contents without allocating, or returns `None` for non-strings.
+    pub(crate) fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> Option<&'a str> {
+        self.as_str_heap(vm.heap, vm.interns)
     }
 
-    /// [`to_str`](Self::to_str) for contexts without a `&VM` — takes `heap` and
+    /// [`as_str`](Self::as_str) for contexts without a `&VM`.
+    pub(crate) fn as_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
+        match self {
+            Self::InternString(string_id) => Some(interns.get_str(*string_id)),
+            Self::InlineString(text) => Some(text.as_str()),
+            Self::Ref(heap_id) => match heap.get(*heap_id) {
+                HeapData::Str(s) => Some(s.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Borrows string contents, or raises `TypeError` with `expected string, not <type>`.
+    pub(crate) fn try_to_str<'a>(&'a self, vm: &'a VM<'_>) -> RunResult<&'a str> {
+        self.try_to_str_heap(vm.heap, vm.interns)
+    }
+
+    /// [`try_to_str`](Self::try_to_str) for contexts without a `&VM` — takes `heap` and
     /// `interns` separately so callers can keep a disjoint `&mut` borrow of
     /// another `VM` field alive (e.g. resolving a `str` `Value` produced by
     /// `py_str` while writing it to `vm.print_writer`).
-    pub(crate) fn to_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
-        match self {
-            Self::InternString(string_id) => return Ok(interns.get_str(*string_id)),
-            Self::Ref(heap_id) => {
-                if let HeapData::Str(s) = heap.get(*heap_id) {
-                    return Ok(s.as_str());
-                }
-            }
-            _ => {}
-        }
-        Err(ExcType::type_error(format!(
-            "expected string, not {}",
-            self.py_type_name_heap(heap, interns)
-        )))
+    pub(crate) fn try_to_str_heap<'a>(&'a self, heap: &'a Heap, interns: &'a Interns) -> RunResult<&'a str> {
+        self.as_str_heap(heap, interns).ok_or_else(|| {
+            ExcType::type_error(format!(
+                "expected string, not {}",
+                self.py_type_name_heap(heap, interns)
+            ))
+        })
     }
 
     /// check if the value is a string.
     pub fn is_str(&self, heap: &Heap) -> bool {
         match self {
-            Self::InternString(_) => true,
+            Self::InternString(_) | Self::InlineString(_) => true,
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
             _ => false,
         }
@@ -1880,10 +1917,11 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
     }
 }
 
-/// `s == other`, resolving the other operand from an interned or heap string.
+/// `s == other`, returning `None` for non-string operands.
 pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
+        Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
         Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
         _ => None,
     }
@@ -1898,14 +1936,13 @@ pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
     }
 }
 
-/// Interned or heap-owned string identifier.
-///
-/// Used when a string value can come from either the intern table (for known
-/// static strings and keywords) or from a heap-allocated Python string object.
+/// A string name that can outlive a heap borrow.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EitherStr {
     /// Interned string identifier (cheap comparisons and no allocation).
     Interned(StringId),
+    /// Short UTF-8 string stored without a heap allocation.
+    Inline(InlineStr),
     /// Heap-owned string extracted from a `str` object.
     Heap(String),
 }
@@ -1924,37 +1961,47 @@ impl From<String> for EitherStr {
 }
 
 impl EitherStr {
-    /// Returns the keyword as a str slice for error messages or comparisons.
+    /// Returns an owned string value, preserving interned names.
+    pub(crate) fn as_value(&self, heap: &Heap) -> Value {
+        match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Inline(text) => Value::InlineString(*text),
+            Self::Heap(text) => allocate_string(text.as_str(), heap),
+        }
+    }
+
+    /// Returns the keyword text for error messages or comparisons.
     pub fn as_str<'a>(&'a self, interns: &'a Interns) -> &'a str {
         match self {
             Self::Interned(id) => interns.get_str(*id),
+            Self::Inline(text) => text.as_str(),
             Self::Heap(s) => s.as_str(),
         }
     }
 
-    /// The text as a `Cow` borrowing only `interns`, so it outlives heap
-    /// borrows — error messages format the name after `drop_with` cleanup.
+    /// The text as a `Cow` that outlives heap borrows, for error messages
+    /// formatted after `drop_with` cleanup.
     pub fn to_cow<'i>(&self, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            Self::Inline(text) => Cow::Owned(text.as_str().to_owned()),
             Self::Heap(s) => Cow::Owned(s.clone()),
         }
     }
 
-    /// Re-resolves a heap string to its interned id when the interner already
-    /// knows the text.
+    /// Re-resolves a runtime string to its interned id when the interner knows it.
     ///
-    /// Builtin attribute dispatch matches on `StringId`, so a name computed at
-    /// runtime (`getattr(x, 'up' + 'per')`) arrives as [`Heap`](Self::Heap) and
-    /// misses every builtin attribute — while still resolving on instances and
-    /// modules, which compare by text. Interning is a lookup, never an insert,
-    /// so sandboxed code cannot grow the interner by guessing names.
+    /// Looks up existing IDs for builtin attribute dispatch without growing the interner.
     #[must_use]
     pub fn resolve_interned(self, interns: &Interns) -> Self {
         match self {
             Self::Heap(s) => match interns.get_string_id_by_name(&s) {
                 Some(id) => Self::Interned(id),
                 None => Self::Heap(s),
+            },
+            Self::Inline(text) => match interns.get_string_id_by_name(text.as_str()) {
+                Some(id) => Self::Interned(id),
+                None => self,
             },
             already @ Self::Interned(_) => already,
         }
@@ -1964,6 +2011,7 @@ impl EitherStr {
     pub fn matches(&self, target: StringId, interns: &Interns) -> bool {
         match self {
             Self::Interned(id) => *id == target,
+            Self::Inline(text) => text.as_bytes() == interns.get_str(target).as_bytes(),
             Self::Heap(s) => s == interns.get_str(target),
         }
     }
@@ -1973,7 +2021,7 @@ impl EitherStr {
     pub fn string_id(&self) -> Option<StringId> {
         match self {
             Self::Interned(id) => Some(*id),
-            Self::Heap(_) => None,
+            Self::Inline(_) | Self::Heap(_) => None,
         }
     }
 
@@ -1982,17 +2030,16 @@ impl EitherStr {
     pub fn static_string(&self, interns: &Interns) -> Option<StaticStrings> {
         match self {
             Self::Interned(id) => interns.static_string(*id),
+            Self::Inline(text) => StaticStrings::from_str(text.as_str()).ok(),
             Self::Heap(value) => StaticStrings::from_str(value).ok(),
         }
     }
 
-    /// Converts this `EitherStr` into an owned `String`.
-    ///
-    /// For interned strings, looks up and clones the string content.
-    /// For heap strings, returns the owned string directly.
+    /// Returns owned text, reusing an existing `String` when possible.
     pub fn into_string(self, interns: &Interns) -> String {
         match self {
             Self::Interned(id) => interns.get_str(id).to_owned(),
+            Self::Inline(text) => text.as_str().to_owned(),
             Self::Heap(s) => s,
         }
     }
@@ -2204,8 +2251,52 @@ mod tests {
     use crate::{
         heap::HeapReader,
         run::{Program, SessionTables},
-        types::LongInt,
+        types::{
+            LongInt,
+            str::{allocate_string_no_interning, allocate_string_on_heap},
+        },
     };
+
+    #[test]
+    fn value_size_is_16_bytes() {
+        assert_eq!(mem::size_of::<Value>(), 16);
+    }
+
+    #[test]
+    fn inline_string_capacity_is_fifteen_utf8_bytes() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        for text in ["123456789012345", "ééééééabc"] {
+            for value in [
+                allocate_string(text.to_owned(), &heap),
+                allocate_string_no_interning(text.to_owned(), &heap),
+            ] {
+                assert!(matches!(value, Value::InlineString(_)));
+                assert_eq!(value.inline_str(), Some(text));
+                value.drop_with(&mut heap);
+            }
+        }
+        for text in ["1234567890123456", "ééééééabcd"] {
+            for value in [
+                allocate_string(text.to_owned(), &heap),
+                allocate_string_no_interning(text.to_owned(), &heap),
+            ] {
+                assert!(matches!(value, Value::Ref(_)));
+                value.drop_with(&mut heap);
+            }
+        }
+    }
+
+    #[test]
+    fn inline_string_dump_roundtrip_preserves_every_length() {
+        for length in 0..=15 {
+            let text = "a".repeat(length);
+            let value = Value::InlineString(InlineStr::new(&text).unwrap());
+            let dumped = minicbor_serde::to_vec(&value).unwrap();
+            let restored: Value = minicbor_serde::from_slice(&dumped).unwrap();
+            assert_eq!(restored.inline_str(), Some("a".repeat(length).as_str()));
+        }
+        assert_eq!(Value::None.inline_str(), None);
+    }
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2216,6 +2307,48 @@ mod tests {
         let long_int = LongInt::new(value);
         let heap_id = heap.allocate(HeapData::LongInt(long_int));
         (heap, heap_id)
+    }
+
+    #[test]
+    fn as_either_str_keeps_inline_text_inline() {
+        let heap = Heap::new(16, ResourceTracker::default());
+        let value = allocate_string("abcdefghijklmno".to_owned(), &heap);
+
+        let name = value.as_either_str(&heap).unwrap();
+        assert!(matches!(name, EitherStr::Inline(_)));
+        assert_eq!(name.as_str(&Interns::default()), "abcdefghijklmno");
+    }
+
+    #[test]
+    fn inline_attribute_names_resolve_without_inserting() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let interns = Interns::default();
+        let start = interns.intern_static(StaticStrings::Start);
+        let value = allocate_string("start".to_owned(), &heap);
+        let name = value.as_either_str(&heap).unwrap();
+        assert!(name.matches(start, &interns));
+        assert_eq!(name.string_id(), None);
+        assert_eq!(name.static_string(&interns), interns.static_string(start));
+        assert!(matches!(name.to_cow(&interns), Cow::Owned(text) if text == "start"));
+        assert!(matches!(name.resolve_interned(&interns), EitherStr::Interned(id) if id == start));
+        value.drop_with(&mut heap);
+
+        let value = allocate_string("zzq".to_owned(), &heap);
+        let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
+        assert!(matches!(name, EitherStr::Inline(_)));
+        assert!(!name.matches(start, &interns));
+        assert_eq!(name.static_string(&interns), None);
+        assert_eq!(name.into_string(&interns), "zzq");
+        assert!(interns.get_string_id_by_name("zzq").is_none());
+        value.drop_with(&mut heap);
+
+        for text in ["start", "a_name_longer_than_inline"] {
+            let value = allocate_string_on_heap(text, &heap);
+            let name = value.as_either_str(&heap).unwrap().resolve_interned(&interns);
+            assert_eq!(name.as_str(&interns), text);
+            assert_eq!(name.string_id(), (text == "start").then_some(start));
+            value.drop_with(&mut heap);
+        }
     }
 
     /// Tests that `as_index()` correctly handles a LongInt containing an i64-fitting value.

@@ -9,6 +9,7 @@ use std::{
 
 use futures_util::future::join_all;
 use monty_proto::pb;
+use monty_types::ExecutionClock;
 use tokio::{
     runtime::Handle,
     sync::Notify,
@@ -79,6 +80,21 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
+        if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_websocket() {
+            if !cfg!(target_os = "linux") {
+                return Err(PoolError::Spawn(
+                    "CPU execution clock is only supported for subprocess workers on Linux".to_owned(),
+                ));
+            }
+            if config
+                .request_timeout
+                .is_none_or(|limit| Instant::now().checked_add(limit).is_none())
+            {
+                return Err(PoolError::Spawn(
+                    "CPU execution clock requires a finite request_timeout".to_owned(),
+                ));
+            }
+        }
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
@@ -125,7 +141,9 @@ impl Pool {
     /// `options.telemetry`) while below `max_processes`, and otherwise waits
     /// up to `checkout_timeout` (forever when `None`) before failing with
     /// [`PoolError::Exhausted`].
-    pub async fn checkout_with(&self, repl: &ReplConfig, mut options: CheckoutOptions) -> Result<Checkout, PoolError> {
+    pub async fn checkout_with(&self, repl: &ReplConfig, options: CheckoutOptions) -> Result<Checkout, PoolError> {
+        #[cfg(feature = "telemetry")]
+        let mut options = options;
         // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &options.telemetry {

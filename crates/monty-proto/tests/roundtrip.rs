@@ -7,12 +7,12 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData,
-    MAX_SLEEP_SECONDS, MkdirCallArgs, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject,
-    MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NameLookupResult, NamedValues,
-    OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs, ProcessTime, RandomSeed,
-    RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode, SourceRange, StackFrame,
-    TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, ImportArgs,
+    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, ModuleFile, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs,
+    ProcessTime, RandomSeed, RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode,
+    SourceRange, StackFrame, TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -785,6 +785,10 @@ fn ext_results_round_trip() {
         ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("no".to_owned()))),
         ExtFunctionResult::Future(7),
         ExtFunctionResult::NotFound("missing".to_owned()),
+        ExtFunctionResult::ModuleFile(ModuleFile {
+            path: "/proj/m.py".to_owned(),
+            source: "x = 1\n".to_owned(),
+        }),
     ];
     for case in cases {
         let expected = format!("{case:?}");
@@ -1052,6 +1056,11 @@ fn os_calls_round_trip_all_variants() {
         // the longest length either sleep accepts survives the f64 seconds on the wire
         OsFunctionCall::Sleep(sleep_duration(MAX_SLEEP_SECONDS).unwrap()),
         OsFunctionCall::AsyncSleep(sleep_duration_saturating(f64::INFINITY).unwrap()),
+        OsFunctionCall::Import(ImportArgs::new("tools")),
+        OsFunctionCall::Import(ImportArgs {
+            module: "pkg.sub".to_owned(),
+            search_path: vec!["/proj/pkg".to_owned(), "/lib".to_owned()],
+        }),
     ]
     .into_iter()
     // every caller, so a new one cannot be added without a wire round trip
@@ -1194,6 +1203,22 @@ fn a_stubs_ask_repeating_a_module_is_rejected() {
         OsFunctionCall::try_from(call).unwrap_err().to_string(),
         "invalid value for ImportStubs.modules: module \"tools\" is asked about twice"
     );
+}
+
+/// A child predating file imports sends an `import` with no search path, which
+/// decodes as one only host modules can answer.
+#[test]
+fn an_import_without_a_search_path_is_host_modules_only() {
+    let legacy = pb::os_call::Import {
+        module: "tools".to_owned(),
+        ..Default::default()
+    };
+    let call = OsFunctionCall::try_from(pb::os_call::Call::Import(legacy)).unwrap();
+    let OsFunctionCall::Import(args) = call else {
+        panic!("expected an import");
+    };
+    assert_eq!(args, ImportArgs::new("tools"));
+    assert_eq!(args.candidates().count(), 0);
 }
 
 /// A child-supplied fixed offset outside `datetime.timezone`'s range is refused

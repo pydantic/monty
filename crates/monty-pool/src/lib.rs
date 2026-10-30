@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
 mod checkout;
+mod cpu;
+mod cpu_clock;
 mod pool;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
@@ -13,7 +15,7 @@ use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::Exi
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
-use monty_types::MontyException;
+use monty_types::{ExecutionClock, MontyException};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Metrics;
@@ -66,6 +68,10 @@ pub struct PoolConfig {
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
     pub transport: MontyTransport,
+    /// Clock for local worker sessions (default wall time). CPU mode requires Linux
+    /// subprocess workers and a finite [`Self::request_timeout`].
+    /// WebSocket pools adopt the server's clock without local CPU supervision.
+    pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
@@ -79,23 +85,12 @@ pub struct PoolConfig {
     /// Excludes wire buffers and host-language conversion, and does not change
     /// the sandbox's memory limit.
     pub max_decode_bytes: usize,
-    /// Grace period for the automatic `ResourceLimits::max_feed_duration`
-    /// backstop.
-    ///
-    /// When a session has a feed budget, the worker reports the running feed's
-    /// execution time on every turn-ending event (the sandbox clock is the
-    /// single source of truth: it runs only while the interpreter executes,
-    /// never during suspensions waiting on the host or between feeds), and the
-    /// parent bounds each turn by what that budget has left plus this grace.
-    ///
-    /// The grace is the window in which the sandbox may raise `TimeoutError`
-    /// itself and keep the session alive; a worker that misses it is killed and
-    /// the call fails with [`PoolError::Timeout`], so too short a grace costs
-    /// workers that would have recovered.
+    /// Extra feed allowance in the pool's clock. CPU mode grants it once per feed.
+    /// Wall mode uses reported time; CPU mode uses OS CPU. Exhaustion kills with `Timeout` or `CpuLimit`, respectively.
+    /// `None` disables this backstop. `request_timeout` remains independent.
     pub feed_duration_limit_grace: Option<Duration>,
-    /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
-    /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
-    /// that whole limit plus this, the turn clock starting at zero.
+    /// Extra allowance for `ResourceLimits::max_turn_duration`, in the pool's clock.
+    /// Each feed or resume starts a new turn allowance. `None` disables this backstop.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child. With the
@@ -139,6 +134,7 @@ impl PoolConfig {
             min_processes: 1,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
             transport,
+            execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
@@ -165,11 +161,17 @@ pub enum PoolError {
         /// How the pool learned of the death, and what it can say about it.
         cause: CrashCause,
     },
-    /// The worker was killed after its turn outlived `request_timeout` (or
-    /// one of the feed/turn duration backstop deadlines).
+    /// The worker exceeded `request_timeout` or a wall-mode feed/turn backstop.
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,
+    },
+    /// The supervisor killed the worker after its OS-observed CPU allowance expired.
+    CpuLimit {
+        /// The remaining CPU allowance for this turn, including any configured CPU grace.
+        limit: Duration,
+        /// CPU consumed since the supervisor's fresh per-turn OS baseline.
+        consumed: Duration,
     },
     /// The worker violated the wire protocol, or the caller violated the
     /// checkout state machine. Worker-originated protocol failures discard the
@@ -286,6 +288,12 @@ impl fmt::Display for PoolError {
                 }
                 None => f.write_str("monty server is shutting down; the request did not run"),
             },
+            Self::CpuLimit { limit, consumed } => {
+                write!(
+                    f,
+                    "monty worker exceeded CPU allowance {limit:?} (observed {consumed:?})"
+                )
+            }
         }
     }
 }

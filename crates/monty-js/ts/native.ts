@@ -196,6 +196,14 @@ export interface NotMountedTurn {
   kind: 'notMounted'
 }
 
+/** A mount's answer to reading one candidate file of an `import`. Only
+ *  produced by `NativeSession.readFromMounts`, which resolves to a
+ *  `NotMountedTurn` when no mount covers the path. */
+export type ModuleReadTurn =
+  | { kind: 'moduleText'; text: string }
+  | { kind: 'moduleMissing' }
+  | { kind: 'moduleReadError'; excType: string; message: string }
+
 /** Everything one protocol turn can resolve to. */
 export type NativeTurn =
   | CompleteTurn

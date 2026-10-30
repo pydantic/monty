@@ -137,6 +137,67 @@ The directory is not checked against the mounts, and `os.chdir()` needs a mount 
 target exists.
 The divergences are in [`limitations/os.md`](limitations/os.md).
 
+### Importing modules
+
+`import helpers` runs the package `helpers/__init__.py`, or else `helpers.py`, from the working directory when no
+[host module](host-functions.md#importing-host-modules) of that name exists, so a module file in a mount imports
+directly.
+The host reads each candidate itself, as a `Path.read_text` call to the `os` callback first and through the mounts when
+the callback declines it, so the whole search costs one round trip; each module that imports successfully runs once per
+session.
+This is the reverse of `open()`, where mounts go first: the callback can serve a module without mounting a directory,
+and shadow a mounted file before it runs as code.
+To refuse one, raise `FileNotFoundError`, `NotADirectoryError`, `IsADirectoryError` or `PermissionError`, which skips
+that file even when a mount holds it; any other error fails the import.
+Only a name `external_modules` lacks is searched for: a factory exception is the import's error, and no file is read:
+
+=== "Python"
+
+    ```python
+    import tempfile
+    from pathlib import Path
+
+    from pydantic_monty import Monty, MountDir
+
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, 'helpers.py').write_text('def double(x):\n    return x * 2\n')
+
+        code = 'import helpers\nhelpers.double(21)'
+
+        with MountDir(host_path=tmp, virtual_path='/data', mode='read-only') as mount:
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    print(session.feed_run(code, mount=mount))
+                    #> 42
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { join } from 'node:path'
+
+    import { Monty } from '@pydantic/monty'
+    import { MountDir } from '@pydantic/monty/node'
+
+    const tmp = mkdtempSync(join(tmpdir(), 'monty-'))
+    writeFileSync(join(tmp, 'helpers.py'), 'def double(x):\n    return x * 2\n')
+
+    const code = 'import helpers\nhelpers.double(21)'
+
+    {
+      using mount = new MountDir({ hostPath: tmp, virtualPath: '/data', mode: 'read-only' })
+      await using pool = await Monty.create()
+      await using session = await pool.checkout()
+      console.log(await session.feedRun(code, { mount })) // 42
+    }
+    rmSync(tmp, { recursive: true })
+    ```
+
+The divergences, including the search path and the module cache, are in
+[`limitations/modules.md`](limitations/modules.md#modules-from-files).
+
 ### Modes
 
 | Mode                  | Reads                    | Writes                                           |
@@ -222,6 +283,12 @@ Use host storage whose availability and side effects are acceptable for the work
 Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
 [Host module](host-functions.md#importing-host-modules) calls (`import` and `import_stubs`) use the checkout's
 `external_modules` and never reach this handler.
+An import of a module the checkout does not provide reaches it first, before the mounts, as `Path.read_text` of
+`<cwd>/name/__init__.py` and `<cwd>/name.py` (see [importing modules](#importing-modules)): return the source of a
+file you serve, and answer one you do not with `NOT_HANDLED`, so the mounts are read next.
+A `FileNotFoundError` (or `PermissionError`, `NotADirectoryError`, `IsADirectoryError`) skips that file without
+consulting the mounts, so a handler that raises it for every path it does not serve hides every mounted module;
+any other error fails the import.
 It is called with keyword arguments, `name`, `args`, `kwargs` and `is_async`, and its return value is handed back to the sandbox.
 Absorb the arguments you do not use with `**_future_kwargs`, so a later version can pass more:
 

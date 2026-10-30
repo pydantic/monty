@@ -84,6 +84,7 @@ impl VM<'_> {
     }
 
     /// Loads a `from ... import` attribute, raising `ImportError` if missing.
+    /// A file package's missing attribute may be a submodule, imported here.
     /// `module_id` supplies the error's module name because host values need not be `Module`s.
     pub(super) fn load_attr_import(&mut self, name_id: StringId, module_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
@@ -95,8 +96,14 @@ impl VM<'_> {
         match obj.py_getattr(&attr, this) {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
-                let name_str = this.interns.get_str(name_id);
-                Err(ExcType::cannot_import_name(name_str, this.interns.get_str(module_id)))
+                this.import_file_attr(obj, name_id).unwrap_or_else(|| {
+                    let name_str = this.interns.get_str(name_id);
+                    Err(ExcType::cannot_import_name(
+                        name_str,
+                        this.interns.get_str(module_id),
+                        None,
+                    ))
+                })
             }
             Err(e) => Err(e),
         }
@@ -105,13 +112,17 @@ impl VM<'_> {
     /// Replaces the stack top with the next submodule of a dotted import.
     /// Missing attributes raise `ModuleNotFoundError` naming `path_id`. Modules also
     /// reject non-module attributes (`math.pi`, the host-served `os.environ`); bundled
-    /// ones add "is not a package" to errors, host modules being packages.
+    /// ones add "is not a package" to errors, host modules being packages. A file
+    /// package imports the submodule's own file, whatever attribute it has.
     pub(super) fn load_submodule(&mut self, name_id: StringId, path_id: StringId) -> Result<CallResult, RunError> {
         let this = self;
 
         let obj = this.pop();
         defer_drop!(obj, this);
 
+        if let Some(result) = this.import_file_submodule(obj, path_id) {
+            return result;
+        }
         let package = module_package(obj, this.heap);
         let is_builtin = package == Some(false);
         let attr = EitherStr::Interned(name_id);

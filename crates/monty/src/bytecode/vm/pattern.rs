@@ -15,10 +15,8 @@ use crate::{
     bytecode::op::{MATCH_SHAPE_MAPPING, MATCH_SHAPE_MIN_LEN},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
-    types::{
-        Dict, PyTrait, Type, instance::class_name, set::set_element_hash, str::allocate_string, tuple::allocate_tuple,
-    },
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    types::{Dict, PyTrait, Type, instance::class_name, set::set_element_hash, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -309,7 +307,7 @@ fn class_pattern_names(
         match class_match_args(cls, nargs, vm)? {
             MatchArgs::SelfMatch => names.push(Value::None),
             MatchArgs::Names(positional) => {
-                names.extend(positional.iter().map(|name| either_str_value(name, vm.heap)));
+                names.extend(positional.iter().map(|name| name.as_value(vm.heap)));
             }
         }
     }
@@ -403,14 +401,6 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
         names.push(name);
     }
     Ok(MatchArgs::Names(names))
-}
-
-/// An attribute name as a `str` value for the `MatchClass` names tuple.
-fn either_str_value(name: &EitherStr, heap: &Heap) -> Value {
-    match name {
-        EitherStr::Interned(id) => Value::InternString(*id),
-        EitherStr::Heap(text) => allocate_string(text.clone(), heap),
-    }
 }
 
 /// `TypeError: Foo.__match_args__ must be a tuple (got list)`.

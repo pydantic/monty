@@ -179,6 +179,7 @@ impl GraphExporter {
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
@@ -450,10 +451,10 @@ impl GraphExporter {
                     imag: c.imag,
                 })
             }
-            // A host module crosses back with its id and attrs; a bundled one
-            // has no host identity and crosses as its repr.
-            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
-                Some(id) => {
+            // A host module crosses back with its id and attrs; a bundled or
+            // file one has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => {
+                if let Some(id) = m.get(vm.heap).id() {
                     let name = m.get(vm.heap).name_str(vm.interns).to_owned();
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
@@ -462,9 +463,10 @@ impl GraphExporter {
                         id,
                         attrs: self.push_pairs(children, vm),
                     }
+                } else {
+                    MontyNode::Repr(m.get(vm.heap).repr(vm.interns))
                 }
-                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
-            },
+            }
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);
@@ -1148,7 +1150,7 @@ fn repr_node(value: &Value, vm: &mut VM<'_>) -> MontyNode {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
             defer_drop!(s, vm);
-            MontyNode::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
+            MontyNode::Repr(s.try_to_str(vm).map(str::to_owned).unwrap_or_default())
         }
         Err(e) => {
             let ty = value.py_type_name(vm);

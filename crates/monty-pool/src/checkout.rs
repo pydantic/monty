@@ -16,22 +16,23 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
-    os_call_from_proto, pb, validate_requirement,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
+    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    MONTY_VERSION, MontyException, MontyObject, MontyUuid, NameLookupResult, NamedValues, OsFunctionCall, OsPolicy,
-    PrintStream, ResourceLimits, SleepMode, SourceRange, TypeCheckingConfig, validate_cwd,
+    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExecutionClock, ExtFunctionResult,
+    IMPORT_STUBS_CALL_ID, MONTY_VERSION, ModuleFile, ModuleRead, MontyException, MontyObject, MontyUuid,
+    NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream, ResourceLimits, SleepMode, SourceRange,
+    TypeCheckingConfig, validate_cwd,
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
-use tokio::{task::spawn_blocking, time::timeout};
+use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolConfig, PoolError,
+    CrashCause, PoolConfig, PoolError, cpu,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -284,9 +285,13 @@ pub enum TurnEvent {
     /// no-handler default.
     ///
     /// Answer host imports from the caller's modules before other handlers.
-    /// [`OsFunctionCall::Import`] takes a module value; `NotFound` / `NotHandled` raise
-    /// `ModuleNotFoundError`. [`OsFunctionCall::ImportStubs`] takes a dict of dotted
-    /// module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
+    /// [`OsFunctionCall::Import`] takes a module value, or, failing that, the module's
+    /// [`ResumeValue::ModuleFile`] from its search path (the caller's `os` handler, then
+    /// [`Checkout::read_from_mounts`]), which the sandbox runs as sandbox code; `NotFound` /
+    /// `NotHandled` raise the statement's miss error (`ModuleNotFoundError`, or `ImportError`
+    /// for `from pkg import sub`), and an error is raised at the import.
+    /// [`OsFunctionCall::ImportStubs`] takes a dict of dotted module paths to `.pyi` source
+    /// or `None`, or `NotHandled` for no stubs.
     OsCall {
         function_name: String,
         /// One arena holding every positional and keyword argument.
@@ -341,6 +346,9 @@ pub enum ResumeValue {
     /// No handler exists for the called name — the sandbox raises
     /// `NameError` (`ModuleNotFoundError` for an `import`).
     NotFound,
+    /// The module's `.py` file, answering an `import` call with a non-empty
+    /// search path (see [`Checkout::read_from_mounts`]); the sandbox runs it.
+    ModuleFile(ModuleFile),
     /// No handler accepted this OS call — the sandbox raises the call's own
     /// no-handler default (`PermissionError` naming the path for filesystem
     /// calls, `RuntimeError` for the rest). Only valid answering a
@@ -458,6 +466,7 @@ pub struct Checkout {
 /// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
+    execution_clock: ExecutionClock,
     /// The session's `max_feed_duration`, when configured.
     feed_budget: Option<Duration>,
     /// The session's `max_turn_duration`, when configured.
@@ -469,6 +478,10 @@ struct SessionBudget {
     /// out, so a worker reporting less than it did mid-feed cannot loosen its
     /// own feed backstop.
     reported_feed_execution: Duration,
+    /// OS-observed CPU during live turns, seeded from the saved VM usage on restore.
+    observed_feed_execution: Duration,
+    /// Also tracks raw suspensions, whose payloads are not classified into `pending`.
+    cpu_feed_suspended: bool,
     /// The session's `max_suspensions` in force (the configured one, else
     /// [`DEFAULT_MAX_SUSPENSIONS`]).
     suspension_limit: u64,
@@ -488,9 +501,12 @@ impl SessionBudget {
     fn from_config(repl: &ReplConfig) -> Self {
         let limits = repl.limits.as_ref();
         Self {
+            execution_clock: ExecutionClock::Wall,
             feed_budget: limits.and_then(|limits| limits.max_feed_duration),
             turn_budget: limits.and_then(|limits| limits.max_turn_duration),
             reported_feed_execution: Duration::ZERO,
+            observed_feed_execution: Duration::ZERO,
+            cpu_feed_suspended: false,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
             sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
@@ -506,9 +522,12 @@ impl SessionBudget {
     /// they are the ceilings on the dump's.
     fn forget(&mut self) {
         *self = Self {
+            execution_clock: self.execution_clock,
             feed_budget: self.feed_budget,
             turn_budget: self.turn_budget,
             reported_feed_execution: Duration::ZERO,
+            observed_feed_execution: Duration::ZERO,
+            cpu_feed_suspended: false,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
             sleep_limit: self.sleep_limit,
@@ -532,6 +551,16 @@ impl SessionBudget {
         }
         if is_suspension(event) {
             self.suspensions_seen += 1;
+            self.cpu_feed_suspended = true;
+        } else if matches!(
+            event.kind,
+            Some(
+                pb::child_event::Kind::Complete(_)
+                    | pb::child_event::Kind::Error(_)
+                    | pb::child_event::Kind::TypingError(_)
+            )
+        ) {
+            self.cpu_feed_suspended = false;
         }
     }
 
@@ -539,6 +568,7 @@ impl SessionBudget {
     /// [`reported_feed_execution`](Self::reported_feed_execution).
     fn begin_feed(&mut self) {
         self.reported_feed_execution = Duration::ZERO;
+        self.observed_feed_execution = Duration::ZERO;
     }
 
     /// Reports when this event exceeds the suspension limit.
@@ -755,14 +785,16 @@ impl Checkout {
         repl: &ReplConfig,
         redial: Option<Redial>,
     ) -> Result<Self, PoolError> {
-        let request = configure_request(repl);
+        let request = configure_request(repl, &pool.config);
+        let mut budget = SessionBudget::from_config(repl);
+        budget.execution_clock = pool.config.execution_clock;
         let mut this = Self {
             worker: Some(worker),
             pool,
             pending: None,
             turn_in_flight: false,
             abort_in_flight: false,
-            budget: SessionBudget::from_config(repl),
+            budget,
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
@@ -827,8 +859,8 @@ impl Checkout {
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         // (see `pending_load_budget` for when the old budget comes back)
-        self.pending = None;
         self.begin_load();
+        self.pending = None;
         self.restored_script_name = None;
         // a load names a new session; a storing relay's reply supplies its ID
         let session_id = self.session_id.take();
@@ -901,7 +933,9 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
-        if self.pending.is_some() {
+        if self.pending.is_some()
+            || (self.budget.execution_clock == ExecutionClock::Cpu && self.budget.cpu_feed_suspended)
+        {
             return Err(PoolError::Protocol(
                 "feed called while a suspension is awaiting an answer".into(),
             ));
@@ -948,10 +982,36 @@ impl Checkout {
         else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
+        if let Some(OsFunctionCall::ImportStubs(asked)) = os_call.as_deref() {
+            match &value {
+                ResumeValue::Return(answer) => {
+                    import_stubs_from_answer(answer, asked).map_err(|message| PoolError::Protocol(message.into()))?;
+                }
+                ResumeValue::Future => {
+                    return Err(PoolError::Protocol(
+                        "import_stubs cannot be answered with a future".into(),
+                    ));
+                }
+                ResumeValue::Error(_)
+                | ResumeValue::NotFound
+                | ResumeValue::NotHandled
+                | ResumeValue::ModuleFile(_) => {}
+            }
+        }
         let (call_id, function_name, is_os_call) = (*call_id, function_name.clone(), os_call.is_some());
         if matches!(value, ResumeValue::NotHandled) && !is_os_call {
             return Err(PoolError::Protocol(
                 "NotHandled is only valid answering an OS call".into(),
+            ));
+        }
+        // A child that sent no search path predates file imports and cannot read the answer.
+        let searches_files = matches!(
+            os_call.as_deref(),
+            Some(OsFunctionCall::Import(args)) if !args.search_path.is_empty()
+        );
+        if matches!(value, ResumeValue::ModuleFile(_)) && !searches_files {
+            return Err(PoolError::Protocol(
+                "ModuleFile is only valid answering an import with a search path".into(),
             ));
         }
         let (result, values) = match value {
@@ -959,6 +1019,7 @@ impl Checkout {
             ResumeValue::Error(exc) => ext_result_to_proto(ExtFunctionResult::Error(exc)),
             ResumeValue::Future => ext_result_to_proto(ExtFunctionResult::Future(call_id)),
             ResumeValue::NotFound => ext_result_to_proto(ExtFunctionResult::NotFound(function_name)),
+            ResumeValue::ModuleFile(file) => ext_result_to_proto(ExtFunctionResult::ModuleFile(file)),
             ResumeValue::NotHandled => (
                 pb::ExtFunctionResult {
                     kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
@@ -1058,6 +1119,42 @@ impl Checkout {
         }
     }
 
+    /// Reads one candidate file of a pending `import` call through this feed's
+    /// mounts, without resuming the worker; [`ModuleRead::NotHandled`] when no
+    /// mount covers `path`. Any other pending suspension is a protocol error. A host answering an import itself reads each
+    /// [`ImportArgs::candidates`](monty_types::ImportArgs::candidates) path,
+    /// then resumes with [`ResumeValue::ModuleFile`] or [`ResumeValue::NotFound`].
+    ///
+    /// The read runs on tokio's blocking pool; dropping this future mid-read
+    /// discards the worker on the next call, as for [`Self::resume_from_mounts`].
+    pub async fn read_from_mounts(&mut self, path: &str) -> Result<ModuleRead, PoolError> {
+        self.ensure_ready()?;
+        let searches_files = matches!(
+            &self.pending,
+            Some(Pending::Call { os_call: Some(call), .. })
+                if matches!(call.as_ref(), OsFunctionCall::Import(args) if !args.search_path.is_empty())
+        );
+        if !searches_files {
+            return Err(PoolError::Protocol(
+                "read_from_mounts is only valid answering an import with a search path".into(),
+            ));
+        }
+        let Some(mut mounts) = self.feed_mounts.take() else {
+            return Ok(ModuleRead::NotHandled);
+        };
+        let path = path.to_owned();
+        self.turn_in_flight = true;
+        let (mounts, read) = self
+            .run_blocking(move || {
+                let read = mounts.read_module(&path);
+                (mounts, read)
+            })
+            .await?;
+        self.feed_mounts = Some(mounts);
+        self.turn_in_flight = false;
+        Ok(read)
+    }
+
     /// Answers a [`TurnEvent::NameLookup`] with a [`NameLookupResult`] (or a
     /// `MontyObject`, an `Option<MontyObject>` where `None` is `Undefined`, or
     /// a `MontyException` for `Error`): a value resolves the name; `Undefined`
@@ -1111,7 +1208,10 @@ impl Checkout {
                 let result = match value {
                     ResumeValue::Return(value) => ExtFunctionResult::Return(value),
                     ResumeValue::Error(exc) => ExtFunctionResult::Error(exc),
-                    ResumeValue::Future | ResumeValue::NotFound | ResumeValue::NotHandled => {
+                    ResumeValue::Future
+                    | ResumeValue::NotFound
+                    | ResumeValue::NotHandled
+                    | ResumeValue::ModuleFile(_) => {
                         return Err(PoolError::Protocol(
                             format!("future {call_id} must resolve to Return or Error").into(),
                         ));
@@ -1276,8 +1376,72 @@ impl Checkout {
 
     /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
+        if self.budget.execution_clock == ExecutionClock::Cpu {
+            return None;
+        }
         self.budget
             .backstop_deadline(DurationGraces::from_config(&self.pool.config))
+    }
+
+    /// Takes a fresh OS CPU baseline for this turn, independent of worker reports.
+    async fn cpu_monitor(&mut self, request: &pb::ParentRequest) -> Result<Option<cpu::Monitor>, PoolError> {
+        if self.budget.execution_clock != ExecutionClock::Cpu || self.pool.config.transport.is_websocket() {
+            return Ok(None);
+        }
+        if !is_execution_turn(request) {
+            return Ok(None);
+        }
+        let Some(limit) = cpu::allowance(
+            self.budget.feed_budget,
+            self.budget.turn_budget,
+            self.budget.observed_feed_execution,
+            self.pool.config.feed_duration_limit_grace,
+            self.pool.config.turn_duration_limit_grace,
+        ) else {
+            return Ok(None);
+        };
+        let clock = self.worker.as_ref().ok_or(PoolError::Finished)?.cpu_clock();
+        match clock.and_then(|clock| cpu::Monitor::new(clock, limit)) {
+            Ok(monitor) => Ok(Some(monitor)),
+            Err(error) => Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
+        }
+    }
+
+    /// Checks a final sample because a ready I/O future can run past the CPU budget.
+    async fn finish_cpu_turn<T>(
+        &mut self,
+        monitor: Option<cpu::Monitor>,
+        wall_deadline: Option<DeadlineInstant>,
+        outcome: Result<Result<T, PoolError>, cpu::Failure>,
+    ) -> Result<T, PoolError> {
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(failure) => return Err(self.poison_supervision(failure).await),
+        };
+        if self.budget.execution_clock == ExecutionClock::Cpu
+            && self.worker.is_some()
+            && wall_deadline.is_some_and(|deadline| DeadlineInstant::now() >= deadline)
+        {
+            return Err(self.poison_timeout().await);
+        }
+        if self.worker.is_some()
+            && let Some(monitor) = monitor
+        {
+            let consumed = match monitor.elapsed() {
+                Ok(consumed) => consumed,
+                Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
+            };
+            self.budget.observed_feed_execution = self.budget.observed_feed_execution.saturating_add(consumed);
+            if consumed >= monitor.limit {
+                return Err(self
+                    .poison_supervision(cpu::Failure::Limit {
+                        limit: monitor.limit,
+                        consumed,
+                    })
+                    .await);
+            }
+        }
+        outcome
     }
 
     /// Snapshots the budget and forgets it ahead of a `Load`, so the reply can
@@ -1300,18 +1464,38 @@ impl Checkout {
     /// Invalid suspension payloads are protocol violations, even when over budget.
     /// The first non-print `Load` reply settles the budget: `Ok` or a suspension adopts the dump;
     /// any other reply restores the live session's budget.
-    async fn abort_if_over_budget(&mut self, event: &mut pb::ChildEvent) -> Result<bool, PoolError> {
+    async fn abort_if_over_budget(
+        &mut self,
+        event: &mut pb::ChildEvent,
+        preserve_suspension: bool,
+    ) -> Result<bool, PoolError> {
+        let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
+        let was_aborting = self.abort_in_flight;
         let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
-        if !is_print
-            && let Some(saved) = self.pending_load_budget.take()
-            && !(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event))
-        {
-            self.budget = saved;
+        if !is_print && let Some(saved) = self.pending_load_budget.take() {
+            if matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(event) {
+                // Restore seeds saved VM usage. Live turns use OS measurements.
+                self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
+            } else {
+                self.budget = saved;
+            }
         }
         self.budget.update_from(event);
+        // A rejected control or raw request can leave the original feed suspended.
+        if self.budget.execution_clock == ExecutionClock::Cpu
+            && was_suspended
+            && (preserve_suspension || event.feed_suspended == Some(true))
+            && !was_aborting
+            && matches!(
+                event.kind,
+                Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+            )
+        {
+            self.budget.cpu_feed_suspended = true;
+        }
         let exceeded = self
             .budget
             .over_suspension_limit(event)
@@ -1363,15 +1547,12 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
+        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
+        let monitor = self.cpu_monitor(request).await?;
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
-        let outcome = match deadline {
-            Some(limit) => match timeout(limit, self.turn_io(request, &mut *on_print)).await {
-                Ok(outcome) => outcome,
-                Err(_elapsed) => Err(self.poison_timeout().await),
-            },
-            None => self.turn_io(request, &mut *on_print).await,
-        };
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io(request, &mut *on_print)).await;
+        let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         match outcome {
             // boxed: it recurses into this turn, and its state machine must not
@@ -1472,7 +1653,7 @@ impl Checkout {
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
-        let configure = configure_request(&redial.repl);
+        let configure = configure_request(&redial.repl, &self.pool.config);
         let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
@@ -1532,6 +1713,8 @@ impl Checkout {
     /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
     /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
+    /// An error from an older worker does not establish that a suspended feed ended.
+    /// Complete its suspension or finish the checkout before starting another feed.
     ///
     /// # Security
     /// `request` is typically a remote client's, so it is treated as hostile:
@@ -1566,6 +1749,14 @@ impl Checkout {
                 "lifecycle requests (Configure/Reset/Shutdown) cannot be driven through turn_raw".into(),
             ));
         }
+        if let Some(pb::parent_request::Kind::AbortFeed(abort)) = &request.kind
+            && abort
+                .exception
+                .as_ref()
+                .is_none_or(|exception| MontyException::try_from(exception.clone()).is_err())
+        {
+            return Err(PoolError::Protocol("AbortFeed requires a valid exception".into()));
+        }
         // As `restore`: forget the Configure-time budget and re-adopt the
         // dump's from the reply's budget fields (see `pending_load_budget`).
         let is_load = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)));
@@ -1576,20 +1767,22 @@ impl Checkout {
         // so the parent's must follow it rather than carry the last feed's
         // total into this feed's backstop.
         if matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+            if self.budget.execution_clock == ExecutionClock::Cpu && self.budget.cpu_feed_suspended {
+                return Err(PoolError::Protocol(
+                    "feed called while a suspension is awaiting an answer".into(),
+                ));
+            }
             self.budget.begin_feed();
         }
+        let monitor = self.cpu_monitor(request).await?;
         self.turn_in_flight = true;
         // as `expect_turn`: `request_timeout` alone would drop the duration
         // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.armed_deadline = deadline;
-        let outcome = match deadline {
-            Some(limit) => match timeout(limit, self.turn_io_raw(request, on_event)).await {
-                Ok(outcome) => outcome,
-                Err(_elapsed) => Err(self.poison_timeout().await),
-            },
-            None => self.turn_io_raw(request, on_event).await,
-        };
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io_raw(request, on_event)).await;
+        let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         if is_load {
             self.end_load();
@@ -1616,8 +1809,25 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if self.abort_if_over_budget(&mut event).await? {
+            let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
+            let aborting = self.abort_in_flight || explicit_abort;
+            let feed_ended = is_execution_turn(request)
+                && event.feed_suspended == Some(false)
+                && matches!(
+                    event.kind,
+                    Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+                );
+            let preserve_suspension = !explicit_abort && !feed_ended;
+            if self.abort_if_over_budget(&mut event, preserve_suspension).await? {
                 continue;
+            }
+            if is_suspension(&event)
+                || matches!(event.kind, Some(pb::child_event::Kind::Complete(_)))
+                || feed_ended
+                || (aborting && is_abort_reply(&event))
+            {
+                // A raw advance invalidates the earlier typed resume token.
+                self.pending = None;
             }
             // strict alternation: zero or more `Print`s, then exactly one
             // turn-ender — so anything that is not a print ends the turn
@@ -1696,6 +1906,30 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
+                && matches!(event.kind, Some(pb::child_event::Kind::Ok(_)))
+            {
+                let clock = match pb::ExecutionClock::try_from(event.execution_clock.unwrap_or_default()) {
+                    Ok(clock) => ExecutionClock::from(clock),
+                    Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
+                };
+                if self.pool.config.transport.is_websocket() {
+                    if clock == ExecutionClock::Cpu
+                        && self
+                            .pool
+                            .config
+                            .request_timeout
+                            .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
+                    {
+                        return Err(
+                            self.protocol_violation("CPU execution clock requires a finite client request_timeout")
+                        );
+                    }
+                    self.budget.execution_clock = clock;
+                } else if clock != self.pool.config.execution_clock {
+                    return Err(self.protocol_violation("worker did not acknowledge the configured execution clock"));
+                }
+            }
             // Only a storing relay sets this, on its reply to `Configure` or
             // `Load`. Taken before the budget check: a re-announced suspension
             // over budget is aborted and dropped, but the session it names lives on.
@@ -1704,7 +1938,10 @@ impl Checkout {
             }
             // a suspension past `max_suspensions` is aborted here and never
             // reaches the caller; the abort's reply is the next event
-            if self.abort_if_over_budget(&mut event).await? {
+            if self
+                .abort_if_over_budget(&mut event, !is_execution_turn(request))
+                .await?
+            {
                 continue;
             }
             // Only a `Load` reply carries this; it lets `restore` report the
@@ -1845,7 +2082,9 @@ impl Checkout {
                     // an error reply to `Dump` (e.g. an oversize dump) does not
                     // end the in-flight feed — the child stays suspended and
                     // resumable, so keep the pending call and mounts
-                    if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
+                    if event.feed_suspended != Some(true)
+                        && !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_)))
+                    {
                         self.pending = None;
                         self.feed_mounts = None;
                     }
@@ -2084,20 +2323,36 @@ impl Checkout {
     /// future has already been dropped (safe — `Worker::recv` is cancel-safe),
     /// so this only kills, reaps, and classifies.
     async fn poison_timeout(&mut self) -> PoolError {
-        if let Some(mut worker) = self.worker.take() {
+        let error = PoolError::Timeout {
+            timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
+        };
+        self.terminate_for_limit(error, "turn_timeout").await
+    }
+
+    async fn poison_supervision(&mut self, failure: cpu::Failure) -> PoolError {
+        match failure {
+            cpu::Failure::Timeout => self.poison_timeout().await,
+            cpu::Failure::Limit { limit, consumed } => {
+                self.terminate_for_limit(PoolError::CpuLimit { limit, consumed }, "cpu_limit")
+                    .await
+            }
+            cpu::Failure::Clock(error) => self.poison(&format!("reading child CPU clock: {error}")).await,
+        }
+    }
+
+    /// The capacity guard preserves cleanup when cancellation interrupts reaping.
+    async fn terminate_for_limit(&mut self, error: PoolError, reason: &'static str) -> PoolError {
+        if let Some(worker) = self.worker.take() {
             #[cfg(feature = "telemetry")]
             self.record_finish("error");
-            // guard, not a trailing release: a caller dropping this future
-            // mid-reap must still release the slot and count the death
-            let _capacity = CapacityGuard::terminating(&self.pool, "turn_timeout");
-            let _ = worker.kill_and_reap().await;
+            let _capacity = CapacityGuard::terminating(&self.pool, reason);
+            let mut worker = worker;
+            worker.kill_and_reap().await;
             drop(worker);
         }
         self.pending = None;
         self.feed_mounts = None;
-        PoolError::Timeout {
-            timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
-        }
+        error
     }
 
     /// Discards the worker without crash classification, for turn-enders
@@ -2142,9 +2397,11 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-fn configure_request(repl: &ReplConfig) -> pb::ParentRequest {
+fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),
+        execution_clock: (!pool.transport.is_websocket())
+            .then(|| pb::ExecutionClock::from(pool.execution_clock) as i32),
         limits: repl.limits.as_ref().map(Into::into),
         type_check: repl.type_check,
         type_check_stubs: repl.type_check_stubs.clone(),
@@ -2178,6 +2435,7 @@ fn resume_failure(err: &PoolError) -> &'static str {
         PoolError::Shutdown { .. } => "shutdown",
         PoolError::Protocol(_) => "mismatch",
         PoolError::Timeout { .. } => "timeout",
+        PoolError::CpuLimit { .. } => "cpu_limit",
         PoolError::Finished => "error",
     }
 }

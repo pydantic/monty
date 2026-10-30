@@ -153,6 +153,7 @@ cap-std = "4.0"
 rustix = { version = "1.1", features = ["fs"] }
 # `mkfifo` for the tests behind that guard — rustix gates its own out on Apple.
 nix = { version = "0.31", features = ["fs"] }
+cpu-time = "1.0"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
