@@ -58,6 +58,9 @@ Both methods use the same host rename operation, so overwrite behavior depends o
 
 `Path.glob()`, `Path.rglob()` and `Path.walk()` count only the visible parameters in arity errors, excluding bound `self`.
 
+`Path.read_text()` supports only its zero-argument form. Optional `encoding`, `errors`, and `newline` parameters are not supported.
+Built-in mounts decode text as UTF-8, independent of the host locale.
+
 Not implemented: `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,
 `samefile`, `expanduser`.

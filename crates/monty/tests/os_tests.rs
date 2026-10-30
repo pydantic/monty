@@ -2249,6 +2249,11 @@ fn path_result_effects_survive_a_dump() {
             ExtFunctionResult::Error(MontyException::new(ExcType::FileNotFoundError, None)),
             MontyObject::none(),
         ),
+        (
+            "from pathlib import Path\nPath('/file').read_text()",
+            ExtFunctionResult::Return(MontyObject::string("head\r\nbody\rlast\r".to_owned())),
+            MontyObject::string("head\nbody\nlast\n".to_owned()),
+        ),
     ] {
         let progress = host_runner(code)
             .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)

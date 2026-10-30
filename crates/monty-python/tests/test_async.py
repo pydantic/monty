@@ -1258,3 +1258,13 @@ async def test_async_os_callback_for_time_sleep_is_awaited_in_place(asession_cal
         return 'ignored'
 
     assert await asession_call_host.feed_run('import time; time.sleep(0.001) is None', os=os_handler) == snapshot(True)
+
+
+async def test_async_path_read_text_newlines_completes(asession_call_host: AsyncMontySession):
+    async def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        await asyncio.sleep(0.001)
+        return 'first\r\nsecond\r'
+
+    code = "from pathlib import Path\nPath('/test.txt').read_text()"
+    result = await asession_call_host.feed_run(code, os=os_handler)
+    assert result == snapshot('first\nsecond\n')

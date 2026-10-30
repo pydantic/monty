@@ -2196,4 +2196,25 @@ def test_special_characters_in_content(monty_run: RunMonty):
     content = 'line1\nline2\ttab\r\nwindows'
     fs = OSAccess([MemoryFile('/special.txt', content=content)])
     result = monty_run('from pathlib import Path; Path("/special.txt").read_text()', os=fs)
-    assert result == snapshot('line1\nline2\ttab\r\nwindows')
+    assert result == snapshot('line1\nline2\ttab\nwindows')
+
+
+def test_read_text_converts_newlines_for_memory_file(monty_run: RunMonty):
+    raw = b'head\r\nbody\rlast\r\r\nend\r'
+    fs = OSAccess([MemoryFile('/test/newlines.txt', content=raw)])
+    result = monty_run('from pathlib import Path; Path("/test/newlines.txt").read_text()', os=fs)
+    assert result == snapshot('head\nbody\nlast\n\nend\n')
+
+
+@pytest.mark.parametrize(
+    ('reply', 'expected'),
+    [
+        ('head\r\nbody\rlast\r', snapshot('head\nbody\nlast\n')),
+        ('head\nbody\nlast\n', snapshot('head\nbody\nlast\n')),
+    ],
+    ids=('raw-newlines', 'already-normalized'),
+)
+def test_read_text_normalizes_callback_file_replies(monty_run: RunMonty, reply: str, expected: str):
+    file = CallbackFile('/test/newlines.txt', read=lambda _: reply, write=lambda _, __: None)
+    result = monty_run('from pathlib import Path; Path("/test/newlines.txt").read_text()', os=OSAccess([file]))
+    assert result == expected

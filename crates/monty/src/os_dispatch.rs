@@ -44,7 +44,12 @@ use crate::{
         random::RandomRetry,
         time::ClockReading,
     },
-    types::{Path, Type, dir_scan::ScanEffect, file::FileName, random::RandomTarget},
+    types::{
+        Path, Type,
+        dir_scan::ScanEffect,
+        file::{FileName, translate_newlines},
+        random::RandomTarget,
+    },
     value::Value,
     virtual_path::posix_join,
 };
@@ -214,6 +219,8 @@ pub(crate) enum PreConversionEffect {
         /// Whether the argument was `bytes`, so the result is too.
         is_bytes: bool,
     },
+    /// Apply universal-newline translation to a `Path.read_text` reply.
+    ReadText,
 }
 
 impl PreConversionEffect {
@@ -223,6 +230,7 @@ impl PreConversionEffect {
     pub(crate) fn reshape(self, value: MontyObject, vm: &mut VM<'_>) -> Result<Reshaped, RunError> {
         let reply = match self {
             Self::ListdirNames => listdir_names(value),
+            Self::ReadText => Ok(read_text_reply(value)),
             Self::RenamePath { target } | Self::ReplacePath { target } => Ok(MontyObject::path(target)),
             Self::Unlink { .. } => Ok(MontyObject::none()),
             Self::IterdirPaths { path } => iterdir_paths(value, &path, &vm.heap.tracker),
@@ -252,6 +260,7 @@ impl PreConversionEffect {
     fn operation_name(&self) -> &'static str {
         match self {
             Self::ListdirNames => "os.listdir",
+            Self::ReadText => "Path.read_text",
             Self::RenamePath { .. } => "Path.rename",
             Self::ReplacePath { .. } => "Path.replace",
             Self::Unlink { .. } => "Path.unlink",
@@ -266,6 +275,16 @@ impl PreConversionEffect {
             Self::ExpandVars { .. } => "os.path.expandvars",
         }
     }
+}
+
+fn read_text_reply(value: MontyObject) -> MontyObject {
+    let Some(text) = value.as_ref().as_str() else {
+        return value;
+    };
+    if !text.contains('\r') {
+        return value;
+    }
+    MontyObject::string(translate_newlines(text))
 }
 
 /// What a [`PreConversionEffect`] makes of the host's reply: the value the
@@ -627,7 +646,13 @@ pub(crate) fn build_path_os_call(
         StaticStrings::IsFile => path_only!("is_file", IsFile),
         StaticStrings::IsDir => path_only!("is_dir", IsDir),
         StaticStrings::IsSymlink => path_only!("is_symlink", IsSymlink),
-        StaticStrings::ReadText => path_only!("read_text", ReadText),
+        StaticStrings::ReadText => {
+            args.check_zero_args("read_text", vm.heap)?;
+            return Ok(CallResult::OsCallWithEffect {
+                call: OsFunctionCall::ReadText(path),
+                effect: PreConversionEffect::ReadText.into(),
+            });
+        }
         StaticStrings::ReadBytes => path_only!("read_bytes", ReadBytes),
         StaticStrings::StatMethod => {
             let PathStatArgs {
