@@ -1,7 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontyRuntimeError } from '@pydantic/monty'
+import { MontyRuntimeError, NOT_HANDLED } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -568,4 +568,16 @@ test('a non-callable lookup value with a then is never awaited', async () => {
     message: /^TypeError: /,
   })
   t.false(thenRan)
+})
+
+test('get_type_hints of a host function is empty and never reaches os', async () => {
+  const osCalls: string[] = []
+  const os = (name: string) => {
+    osCalls.push(name)
+    return NOT_HANDLED
+  }
+  const code = 'from typing import get_type_hints\nget_type_hints(fetch)'
+  const hints = await run(code, { externalLookup: { fetch: () => null }, os })
+  t.deepEqual(hints, new Map())
+  t.deepEqual(osCalls, [])
 })

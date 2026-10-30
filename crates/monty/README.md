@@ -134,6 +134,8 @@ The sandbox runs the file as the module and caches it for the session.
 `ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers), or running without a host, raises
 `ModuleNotFoundError`; an exception the host raises for the import is raised as it is.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+`typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
+answer is the call's result, and running without a host gives `{}`.
 
 ## Other pieces
 

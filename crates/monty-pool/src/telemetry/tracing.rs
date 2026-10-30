@@ -829,6 +829,13 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
             args_cut |= cut;
             os_call!("import_stubs", args.modules = modules)
         }
+        Some(Call::GetTypeHints(h)) => {
+            if let Some(pb::os_call::get_type_hints::Target::Function(name)) = &h.target {
+                os_call!("get_type_hints", args.function = string_arg!(name))
+            } else {
+                os_call!("get_type_hints")
+            }
+        }
         // the pattern is recorded joined, as the user wrote it, built only up to the cap
         Some(Call::Scan(s)) => os_call!(
             "scan",

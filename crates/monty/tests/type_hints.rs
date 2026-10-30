@@ -1,30 +1,24 @@
-//! `typing.get_type_hints()` over host functions, and hints surviving dump/restore.
+//! `typing.get_type_hints()` over host functions and classes, and hints surviving dump/restore.
 //!
 //! Sandbox-only behaviour is covered by `test_cases/typing__get_type_hints.py`;
-//! these cases need a host to send hints or a dump to round-trip them.
+//! these cases need a host to answer the `get_type_hints` OS call or a dump to round-trip.
 
-use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, MontyObject, MontyType, PrintWriter, ResourceTracker,
-    unstable::{self, MontyNode},
+    CompileOptions, GET_TYPE_HINTS_CALL, MontyObject, MontyType, MontyUuid, OsFunctionCall, PrintWriter,
+    ResourceTracker, TypeHintsTarget,
 };
 
-/// A host function sending a builtin type, an unresolvable string and `None`.
-fn hinted_function() -> MontyObject {
-    MontyObject::function_with_annotations(
-        "fetch",
-        None,
-        [
-            ("url", MontyObject::type_object(MontyType::Str)),
-            ("retries", MontyObject::string("int | None")),
-            ("return", MontyObject::type_object(MontyType::NoneType)),
-        ],
-    )
+/// The id of the host class in [`host_class`].
+const CLASS_ID: MontyUuid = MontyUuid::from_u128(0x1234);
+
+/// A host class with no eager attrs.
+fn host_class() -> MontyObject {
+    MontyObject::class_type("Point", CLASS_ID, true, false, [])
 }
 
-/// The hints `get_type_hints(f)` returns for [`hinted_function`].
-fn hinted_function_hints() -> MontyObject {
+/// Hints a host might answer with: a builtin type, unresolved text and `NoneType`.
+fn host_hints() -> MontyObject {
     MontyObject::dict([
         (MontyObject::string("url"), MontyObject::type_object(MontyType::Str)),
         (MontyObject::string("retries"), MontyObject::string("int | None")),
@@ -35,77 +29,81 @@ fn hinted_function_hints() -> MontyObject {
     ])
 }
 
-/// Runs `code` with `f` bound to `input`.
-fn run_with_function(code: &str, input: MontyObject) -> Result<MontyObject, String> {
-    let mut runner = MontyRun::new(
+/// Starts `code` with `f` bound to `input`.
+fn start(code: &str, input: MontyObject) -> RunProgress {
+    MontyRun::new(
         code.to_owned(),
         "test.py",
         vec!["f".to_owned()],
         CompileOptions::default(),
     )
-    .unwrap();
-    runner.run_no_limits(vec![input]).map_err(|err| err.to_string())
+    .unwrap()
+    .start(vec![input], ResourceTracker::default(), PrintWriter::Stdout)
+    .unwrap()
 }
 
-/// Host hints come back as sent, with nothing evaluated in the sandbox.
-#[test]
-fn host_function_hints() {
-    let result = run_with_function(
-        "from typing import get_type_hints\nget_type_hints(f)",
-        hinted_function(),
-    );
-    assert_eq!(result.unwrap(), hinted_function_hints());
+/// Asserts `progress` is the `get_type_hints` OS call for `target`, then answers it with `hints`.
+fn answer_hints(progress: RunProgress, target: &TypeHintsTarget, hints: MontyObject) -> RunProgress {
+    let call = progress.into_os_call().expect("expected the get_type_hints OS call");
+    assert_eq!(call.function_call.name(), GET_TYPE_HINTS_CALL);
+    let OsFunctionCall::GetTypeHints(asked) = &call.function_call else {
+        panic!("expected GetTypeHints, got {:?}", call.function_call);
+    };
+    assert_eq!(asked, target);
+    call.resume(hints, PrintWriter::Stdout).unwrap()
 }
 
-/// A plain `MontyObject::function` has no hints.
+/// A host function's hints are requested by its name and returned as the host answers them.
 #[test]
-fn host_function_without_hints() {
-    let result = run_with_function(
+fn host_function_hints_come_from_the_host() {
+    let progress = start(
         "from typing import get_type_hints\nget_type_hints(f)",
         MontyObject::function("fetch", None),
     );
-    assert_eq!(result.unwrap(), MontyObject::dict([]));
+    let target = TypeHintsTarget::Function("fetch".to_owned());
+    let result = answer_hints(progress, &target, host_hints()).into_complete().unwrap();
+    assert_eq!(result, host_hints());
 }
 
-/// The returned dict is fresh: mutating it leaves the function's hints alone.
+/// A host class's hints are requested by its class id.
 #[test]
-fn host_function_hints_are_copied() {
-    let code = "\
-from typing import get_type_hints
-get_type_hints(f).clear()
-get_type_hints(f)";
-    assert_eq!(
-        run_with_function(code, hinted_function()).unwrap(),
-        hinted_function_hints()
-    );
+fn host_class_hints_come_from_the_host() {
+    let progress = start("from typing import get_type_hints\nget_type_hints(f)", host_class());
+    let target = TypeHintsTarget::Class(CLASS_ID);
+    let result = answer_hints(progress, &target, host_hints()).into_complete().unwrap();
+    assert_eq!(result, host_hints());
 }
 
-/// A hint that is neither a builtin type nor a string is rejected on import.
+/// Without a host to ask, a host function has no hints.
 #[test]
-fn host_function_invalid_hint_value() {
-    let input = MontyObject::function_with_annotations("fetch", None, [("url", MontyObject::int(1))]);
-    let err = run_with_function("f", input).unwrap_err();
-    assert_snapshot!(err, @"RuntimeError: invalid input type: function annotations must be builtin types or strings");
+fn unserved_host_hints_are_empty() {
+    let mut runner = MontyRun::new(
+        "from typing import get_type_hints\nget_type_hints(f)".to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = runner
+        .run_no_limits(vec![MontyObject::function("fetch", None)])
+        .unwrap();
+    assert_eq!(result, MontyObject::dict([]));
 }
 
-/// A hint name that is not a string is rejected on import.
+/// The `get_type_hints` call crosses to a host as `(kind, name or id)` args and reads back.
 #[test]
-fn host_function_invalid_hint_name() {
-    let (mut graph, root) = unstable::into_graph_parts(hinted_function());
-    for node in graph.nodes_mut() {
-        if let MontyNode::String(name) = node
-            && name == "url"
-        {
-            *node = MontyNode::Int(1);
-        }
+fn type_hints_target_call_args_round_trip() {
+    for target in [
+        TypeHintsTarget::Function("fetch".to_owned()),
+        TypeHintsTarget::Class(CLASS_ID),
+    ] {
+        let args = OsFunctionCall::GetTypeHints(target.clone()).to_args();
+        assert_eq!(TypeHintsTarget::from_call_args(&args), Some(target));
     }
-    let input = unstable::object_from_graph(graph, root).unwrap();
-    let err = run_with_function("f", input).unwrap_err();
-    assert_snapshot!(err, @"RuntimeError: invalid input type: function annotation names must be strings");
 }
 
-/// Sandbox and host hints both survive a dump taken mid-run, and the restored
-/// session still evaluates sandbox hints (rebuilding the compiled-hint cache).
+/// A session dumped while asking the host for hints restores and resumes,
+/// and still evaluates sandbox hints (rebuilding the compiled-hint cache).
 #[test]
 fn hints_survive_dump_and_restore() {
     let code = "\
@@ -115,43 +113,21 @@ class Foo:
 def g(a: int, b: 'Foo') -> list['Foo']:
     pass
 before = get_type_hints(g)
-gate()
-(before == get_type_hints(g), get_type_hints(g)['b'] is Foo, get_type_hints(f))";
-    let runner = MontyRun::new(
-        code.to_owned(),
-        "test.py",
-        vec!["f".to_owned()],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let progress = runner
-        .start(vec![hinted_function()], ResourceTracker::default(), PrintWriter::Stdout)
-        .unwrap();
+host = get_type_hints(f)
+(before == get_type_hints(g), get_type_hints(g)['b'] is Foo, host)";
+    let progress = start(code, MontyObject::function("fetch", None));
     let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
     let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
         panic!("dumped a running session")
     };
+    let target = TypeHintsTarget::Function("fetch".to_owned());
     // Both sessions run to completion, so their heaps are released properly.
     for progress in [progress, *loaded] {
         assert_eq!(
-            resume_gate(progress),
-            MontyObject::tuple([
-                MontyObject::bool(true),
-                MontyObject::bool(true),
-                hinted_function_hints(),
-            ]),
+            answer_hints(progress, &target, host_hints()).into_complete().unwrap(),
+            MontyObject::tuple([MontyObject::bool(true), MontyObject::bool(true), host_hints()]),
         );
     }
-}
-
-/// Resumes the `gate()` call and runs to completion.
-fn resume_gate(progress: RunProgress) -> MontyObject {
-    let call = progress.into_function_call().expect("expected call to 'gate'");
-    assert_eq!(call.function_name, "gate");
-    call.resume(MontyObject::none(), PrintWriter::Stdout)
-        .unwrap()
-        .into_complete()
-        .unwrap()
 }
 
 /// Without namespaces, a class's plain annotations see the class namespace

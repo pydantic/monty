@@ -6,7 +6,7 @@ use crate::{
     exception_private::RunResult,
     hash::{HashValue, identity_hash},
     heap::HeapObjectRead,
-    types::{BuiltinType, LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -14,101 +14,28 @@ use crate::{
 ///
 /// The name allocation is shared with the heap's weak external-function cache,
 /// which preserves identity while any function with this name remains live.
-/// Hints are leaf data (no heap references), so the entry stays GC-inert.
-#[derive(Debug, serde::Deserialize)]
-#[serde(from = "DumpedExtFunction")]
-pub(crate) struct ExtFunction {
-    name: Arc<str>,
-    /// The host's type hints, shared by every crossing of this name.
-    hints: ExtHints,
-}
-
-/// A host function's `(name, hint)` type hints, in the order the host sent them.
-pub(crate) type ExtHints = Box<[(Box<str>, ExtHint)]>;
-
-/// One host type hint: a builtin type, or the text of anything else.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) enum ExtHint {
-    Type(BuiltinType),
-    Text(Box<str>),
-}
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExtFunction(Arc<str>);
 
 impl ExtFunction {
-    /// Creates an external function with an owned, shareable lookup name and no hints.
+    /// Creates an external function with an owned, shareable lookup name.
     pub(crate) fn new(name: &str) -> Self {
-        Self {
-            name: Arc::from(name),
-            hints: Box::default(),
-        }
+        Self(Arc::from(name))
     }
 
     /// Returns the function name as text.
     pub(crate) fn as_str(&self) -> &str {
-        &self.name
+        &self.0
     }
 
     /// Returns the shared name used as the weak-cache key.
     pub(crate) fn cache_key(&self) -> Arc<str> {
-        Arc::clone(&self.name)
+        Arc::clone(&self.0)
     }
 
     /// Clones the function name for an external call suspension.
     pub(crate) fn clone_name(&self) -> EitherStr {
-        self.name.to_string().into()
-    }
-
-    /// The host's `(name, hint)` type hints, in the order it sent them.
-    pub(crate) fn hints(&self) -> &[(Box<str>, ExtHint)] {
-        &self.hints
-    }
-
-    /// Replaces the hints; every live reference to this name observes the change.
-    pub(crate) fn set_hints(&mut self, hints: ExtHints) {
-        self.hints = hints;
-    }
-}
-
-/// A hint-less function dumps as its bare name, the shape older dumps hold.
-impl serde::Serialize for ExtFunction {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.hints.is_empty() {
-            serializer.serialize_str(&self.name)
-        } else {
-            WithHints {
-                name: Arc::clone(&self.name),
-                hints: self.hints.clone(),
-            }
-            .serialize(serializer)
-        }
-    }
-}
-
-/// Either dumped shape of an [`ExtFunction`].
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum DumpedExtFunction {
-    Name(Arc<str>),
-    WithHints(WithHints),
-}
-
-/// The dumped shape of an [`ExtFunction`] with hints.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct WithHints {
-    #[serde(rename = "N")]
-    name: Arc<str>,
-    #[serde(rename = "H")]
-    hints: ExtHints,
-}
-
-impl From<DumpedExtFunction> for ExtFunction {
-    fn from(dumped: DumpedExtFunction) -> Self {
-        match dumped {
-            DumpedExtFunction::Name(name) => Self {
-                name,
-                hints: Box::default(),
-            },
-            DumpedExtFunction::WithHints(WithHints { name, hints }) => Self { name, hints },
-        }
+        self.0.to_string().into()
     }
 }
 

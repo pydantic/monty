@@ -11,6 +11,7 @@
 //! though Monty doesn't perform static type checking. `Optional[X]` is the one
 //! marker that can be subscripted, producing `X | None`.
 
+use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
 
 use crate::{
@@ -23,7 +24,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
-    types::{BuiltinType, Dict, ExtHint, List, Module, PyTrait, allocate_tuple, str::allocate_string},
+    types::{BuiltinType, Dict, List, Module, PyTrait, allocate_tuple},
     value::{Marker, Value},
 };
 
@@ -176,7 +177,8 @@ struct GetTypeHintsArgs {
 
 /// `typing.get_type_hints()`: collects `obj`'s stringized annotations and the
 /// namespaces to evaluate them in, then hands them to the frozen evaluator,
-/// which can push frames and suspend for host name lookups.
+/// which can push frames and suspend for host name lookups. A host function or
+/// class suspends with an OS call instead: only the host can evaluate its hints.
 fn get_type_hints(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let GetTypeHintsArgs {
         obj,
@@ -203,7 +205,7 @@ fn get_type_hints(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let entries = match hint_source(obj, vm) {
         HintSource::Function(func_id, globals) => function_entries(func_id, globals, globalns, localns, vm),
         HintSource::Class(class_id) => class_entries(class_id, globalns, localns, vm)?,
-        HintSource::Host(id) => return host_hints(id, vm).map(CallResult::Value),
+        HintSource::Host(target) => return Ok(CallResult::OsCall(OsFunctionCall::GetTypeHints(target))),
         HintSource::Empty => Vec::new(),
         HintSource::NotAnnotatable => return Err(ExcType::no_annotations(obj, vm)),
     };
@@ -235,8 +237,8 @@ enum HintSource {
     Function(FunctionId, Option<HeapId>),
     /// A sandbox class's `__annotations__`.
     Class(HeapId),
-    /// An `ExtFunction` or `HostClassType`, whose hints the host already evaluated.
-    Host(HeapId),
+    /// An `ExtFunction` or `HostClassType`, whose hints the host evaluates on request.
+    Host(TypeHintsTarget),
     /// A module or callable with no annotations Monty records: `{}`.
     Empty,
     /// Neither annotated nor callable: `TypeError`, as in CPython.
@@ -259,7 +261,10 @@ fn hint_source(obj: &Value, vm: &VM<'_>) -> HintSource {
             HeapData::FunctionDefaults(function) => return HintSource::Function(function.func_id, function.globals),
             HeapData::Closure(closure) => return HintSource::Function(closure.func_id, closure.globals),
             HeapData::Class(_) => return HintSource::Class(id),
-            HeapData::ExtFunction(_) | HeapData::HostClassType(_) => return HintSource::Host(id),
+            HeapData::ExtFunction(function) => {
+                return HintSource::Host(TypeHintsTarget::Function(function.as_str().to_owned()));
+            }
+            HeapData::HostClassType(class) => return HintSource::Host(TypeHintsTarget::Class(class.type_id())),
             HeapData::BoundMethod(method) => &method.func,
             HeapData::LruCache(cache) => match cache.wrapped() {
                 Some(func) => func,
@@ -270,40 +275,6 @@ fn hint_source(obj: &Value, vm: &VM<'_>) -> HintSource {
             _ => return HintSource::NotAnnotatable,
         };
     }
-}
-
-/// A fresh dict of the hints the host sent: an `ExtFunction`'s own, or a host
-/// class's `__annotations__` attr. Nothing is evaluated; unresolvable host
-/// hints arrive as strings and stay strings.
-fn host_hints(id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    let pairs = match vm.heap.get(id) {
-        HeapData::ExtFunction(function) => function
-            .hints()
-            .iter()
-            .map(|(name, hint)| {
-                let hint = match hint {
-                    ExtHint::Type(t) => Value::Builtin(Builtins::Type(*t)),
-                    ExtHint::Text(text) => allocate_string(text.to_string(), vm.heap),
-                };
-                (allocate_string(name.to_string(), vm.heap), hint)
-            })
-            .collect(),
-        HeapData::HostClassType(class) => match class
-            .attrs()
-            .get_by_str("__annotations__", vm.heap, vm.interns)
-            .and_then(Value::ref_id)
-            .map(|id| vm.heap.get(id))
-        {
-            Some(HeapData::Dict(annotations)) => annotations
-                .iter()
-                .map(|(name, hint)| (name.clone_with_heap(vm.heap), hint.clone_with_heap(vm.heap)))
-                .collect(),
-            _ => Vec::new(),
-        },
-        _ => unreachable!("hint_source classified a host object"),
-    };
-    let dict = Dict::from_pairs(pairs, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
 }
 
 /// Entries for a `def`. An annotation evaluates in the function's own globals,

@@ -864,7 +864,7 @@ class TurnAnswerer {
   }
 
   /**
-   * Handles imports and sleeps locally; other calls try mounts, `os`, then the sandbox default.
+   * Handles imports, type hints and sleeps locally; other calls try mounts, `os`, then the sandbox default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.functionName === IMPORT_CALL) {
@@ -872,6 +872,10 @@ class TurnAnswerer {
     }
     if (call.functionName === IMPORT_STUBS_CALL) {
       return this.answerImportStubs(call, onPrint)
+    }
+    if (call.functionName === GET_TYPE_HINTS_CALL) {
+      // JavaScript functions and classes carry no type hints, which the sandbox reads as `{}`.
+      return this.native.resumeNotHandled(onPrint)
     }
     const wait = this.systemSleepFor(call)
     if (wait !== null) {
@@ -1455,6 +1459,9 @@ const IMPORT_CALL = 'import'
 
 /** The OS call a type-checked feed makes for the stubs of the host modules it imports. */
 const IMPORT_STUBS_CALL = 'import_stubs'
+
+/** The OS call `typing.get_type_hints()` makes for a host function or class. */
+const GET_TYPE_HINTS_CALL = 'typing.get_type_hints'
 
 /** Modules keyed by import name, read when a snippet first imports one: invalid identifiers, keywords
  *  and sandbox-provided names throw there. Factories run at most once per session and may return a Promise. */

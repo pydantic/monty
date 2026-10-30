@@ -38,6 +38,9 @@ for the schema and the protocol rules documented alongside it.
   Dotted imports read further components as attributes of that value.
   Before type checking, `import_stubs` requests host stubs once per module per session.
   Answer with a dict of dotted module paths to `.pyi` source or `None`.
+- Type hints: `OsCall.get_type_hints` asks for the hints of a host function (by name) or host class
+  (by `ClassType` id) when sandbox code calls `typing.get_type_hints()` on it.
+  Answer with a dict of hints; `not_handled` means `{}`.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
   version a parent declares in `Configure`, and the range a child serves.
   Versioned independently of the monty package: peers on different releases

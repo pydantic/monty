@@ -707,12 +707,7 @@ impl<'e> GraphEncoder<'e> {
                 let name: String = func_obj
                     .get_named_property::<String>("name")
                     .unwrap_or_else(|_| "<anonymous>".to_string());
-                // JS functions carry no type hints.
-                Ok(self.leaf(MontyNode::Function {
-                    name,
-                    docstring: None,
-                    annotations: Box::default(),
-                }))
+                Ok(self.leaf(MontyNode::Function { name, docstring: None }))
             }
             ValueType::Symbol | ValueType::External => {
                 // These JS types don't have Monty equivalents

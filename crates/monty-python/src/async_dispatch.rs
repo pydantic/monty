@@ -25,10 +25,10 @@ use crate::external::{
     AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
-/// Answers an `import` or `import_stubs` OS call (see
-/// [`is_module_call`](crate::external::is_module_call)) from `names`,
+/// Answers an OS call the host's names serve (see
+/// [`is_names_call`](crate::external::is_names_call)) from `names`,
 /// returning `CallResult::ModuleCoroutine` when a factory must be awaited first.
-pub(crate) fn dispatch_module_call(
+pub(crate) fn dispatch_names_call(
     function_name: &str,
     args: &CallArgs,
     names: &HostNames,
@@ -36,8 +36,8 @@ pub(crate) fn dispatch_module_call(
 ) -> CallResult {
     Python::attach(|py| {
         ExternalLookup::new(py, names, instances)
-            .module_call_or_coroutine(function_name, args)
-            .expect("only a module OS call is dispatched here")
+            .names_call_or_coroutine(function_name, args)
+            .expect("only a names OS call is dispatched here")
     })
 }
 

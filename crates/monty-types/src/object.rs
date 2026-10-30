@@ -181,30 +181,10 @@ impl MontyObject {
     /// A host function the sandbox calls back by `name`.
     #[must_use]
     pub fn function(name: impl Into<String>, docstring: Option<String>) -> Self {
-        Self::function_with_annotations(name, docstring, [] as [(String, Self); 0])
-    }
-
-    /// A host function carrying type hints for `typing.get_type_hints()`.
-    ///
-    /// Each hint should be a [`type_object`](Self::type_object) or a
-    /// [`string`](Self::string); the sandbox rejects anything else.
-    #[must_use]
-    pub fn function_with_annotations(
-        name: impl Into<String>,
-        docstring: Option<String>,
-        annotations: impl IntoIterator<Item = (impl Into<String>, Self)>,
-    ) -> Self {
-        let mut graph = MontyGraph::new();
-        let annotations = push_pairs(
-            annotations.into_iter().map(|(name, hint)| (Self::string(name), hint)),
-            &mut graph,
-        );
-        let root = graph.push(MontyNode::Function {
+        Self::leaf(MontyNode::Function {
             name: name.into(),
             docstring,
-            annotations: annotations.into_boxed_slice(),
-        });
-        Self { graph, root }
+        })
     }
 
     /// A builtin function such as `len`.
@@ -515,20 +495,6 @@ impl<'a> ObjectRef<'a> {
                 .map(|(key, value)| (self.child(*key), self.child(*value)))
                 .collect(),
         )
-    }
-
-    /// The `(name, hint)` type hints of a host function; `None` for any other value.
-    #[must_use]
-    pub fn annotations(&self) -> Option<Vec<(Self, Self)>> {
-        match self.node() {
-            MontyNode::Function { annotations, .. } => Some(
-                annotations
-                    .iter()
-                    .map(|(name, hint)| (self.child(*name), self.child(*hint)))
-                    .collect(),
-            ),
-            _ => None,
-        }
     }
 
     /// The value as an `int`, if it fits in 64 bits.

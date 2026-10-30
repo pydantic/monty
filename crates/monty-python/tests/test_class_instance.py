@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import gc
 import re
 import sys
-import weakref
 from dataclasses import FrozenInstanceError, dataclass
 from fractions import Fraction
 from functools import cached_property
@@ -951,11 +949,8 @@ def test_type_after_restore_is_class_type_proxy(pool: Monty):
         assert proxy.name == snapshot('Person')
         assert proxy.is_dataclass is True
         assert isinstance(proxy.id, UUID)
-        # the class's type hints travel as its `__annotations__` attr
-        assert proxy.attributes == snapshot({'__annotations__': {'name': str, 'age': int}})
-        assert repr(proxy) == snapshot(
-            "MontyClassTypeProxy(name='Person', attributes={'__annotations__': {'name': <class 'str'>, 'age': <class 'int'>}})"
-        )
+        assert proxy.attributes == snapshot({})
+        assert repr(proxy) == snapshot("MontyClassTypeProxy(name='Person', attributes={})")
         assert proxy == session.feed_run('type(x)')
         assert proxy != session.feed_run('class Other:\n    pass\nOther')
         code = '(t is type(x), isinstance(x, t), t.__name__)'
@@ -1329,11 +1324,26 @@ def test_class_type_hints(monty_run: RunMonty):
     # builtin types cross as themselves, anything else as text
     expected = {'name': str, 'tags': 'list[str]', 'parent': 'test_class_instance.Typed | None'}
     assert monty_run(code, inputs={'T': ClassType(Typed)}) == expected
-    assert monty_run('T.__annotations__', inputs={'T': ClassType(Typed)}) == expected
+
+
+def test_class_type_hints_read_only_when_asked(monty_run: RunMonty):
+    calls: list[str] = []
+
+    class Counting(ClassType):
+        def get_type_hints(self) -> dict[str, Any]:
+            calls.append('get_type_hints')
+            return super().get_type_hints()
+
+    T = Counting(Typed)
+    assert monty_run('T.__name__', inputs={'T': T}) == snapshot('Typed')
+    assert calls == snapshot([])
+    code = 'from typing import get_type_hints\nget_type_hints(T)["name"]'
+    assert monty_run(code, inputs={'T': T}) is str
+    assert calls == snapshot(['get_type_hints'])
 
 
 def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
-    # wrappers sharing an id are one sandbox class: the last one sent supplies its hints
+    # wrappers sharing an id are one sandbox class: the last one sent answers for its hints
     class Renamed(ClassType):
         def get_type_hints(self) -> dict[str, Any]:
             return {'renamed': int}
@@ -1347,7 +1357,7 @@ def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
 @pytest.mark.skipif(sys.version_info < (3, 14), reason='earlier versions evaluate annotations at class creation')
 def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
     # without `from __future__ import annotations`, a name imported only for type
-    # checkers makes `__annotations__` itself raise; the class still crosses, hint-less
+    # checkers makes `__annotations__` itself raise, so the sandbox gets no hints
     ns: dict[str, Any] = {}
     source = 'from dataclasses import dataclass\n@dataclass\nclass Price:\n    amount: Decimal\n    currency: str'
     # `dont_inherit` drops this module's `from __future__ import annotations`
@@ -1355,23 +1365,3 @@ def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
     x = ClassInstance(ns['Price'](1, 'USD'), eager_attrs='all')
     code = 'from typing import get_type_hints\n(x.currency, get_type_hints(type(x)))'
     assert monty_run(code, inputs={'x': x}) == snapshot(('USD', {}))
-
-
-def test_class_type_hints_do_not_pin_the_class():
-    # a hint referring back to its own class must not keep the class alive
-    # once its wrapper is gone (a process-wide cache keyed by class would)
-    def make_class() -> type[Any]:
-        class Node:
-            pass
-
-        Node.__annotations__ = {'parent': Node}
-        return Node
-
-    node_class = make_class()
-    ref = weakref.ref(node_class)
-    wrapper = ClassType(node_class)
-    assert wrapper.get_type_hints() == {'parent': node_class}
-    assert wrapper.get_type_hints() is wrapper.get_type_hints()
-    del node_class, wrapper
-    gc.collect()
-    assert ref() is None

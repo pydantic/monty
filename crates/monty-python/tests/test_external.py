@@ -788,7 +788,7 @@ def unresolvable_hints(url: str, target: 'Unresolvable') -> None:
 )
 def test_external_function_type_hints(monty_run: RunMonty, func: Any, expected: Any):
     code = 'from typing import get_type_hints\nget_type_hints(f)'
-    assert monty_run(code, inputs={'f': func}) == expected
+    assert monty_run(code, external_lookup={'f': func}) == expected
 
 
 class UnreprableHint:
@@ -803,4 +803,26 @@ def test_external_function_unconvertible_hint_is_dropped(monty_run: RunMonty):
     f.__annotations__['b'] = UnreprableHint()
     code = 'from typing import get_type_hints\nget_type_hints(f)'
     # not a `snapshot()`: inline-snapshot cannot render `NoneType`
-    assert monty_run(code, inputs={'f': f}) == {'a': int, 'return': type(None)}
+    assert monty_run(code, external_lookup={'f': f}) == {'a': int, 'return': type(None)}
+
+
+hint_evaluations: list[str] = []
+
+
+def counted_hint() -> type[int]:
+    hint_evaluations.append('hint')
+    return int
+
+
+# a string annotation, evaluated in this module by `typing.get_type_hints`
+def lazily_hinted(x: 'counted_hint()') -> int:  # pyright: ignore[reportInvalidTypeForm,reportUnknownParameterType]
+    return 1
+
+
+def test_external_function_hints_read_only_when_asked(monty_run: RunMonty):
+    hint_evaluations.clear()
+    assert monty_run('f(1)', external_lookup={'f': lazily_hinted}) == 1
+    assert hint_evaluations == snapshot([])
+    code = 'from typing import get_type_hints\nget_type_hints(f)'
+    assert monty_run(code, external_lookup={'f': lazily_hinted}) == snapshot({'x': int, 'return': int})
+    assert hint_evaluations == snapshot(['hint'])

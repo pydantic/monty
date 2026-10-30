@@ -100,7 +100,7 @@ Divergences:
 - **Annotations are re-evaluated on every call**, including any side effects, where CPython evaluates a non-string annotation once.
 - **Modules record no annotations**, so `get_type_hints(module)` is `{}`.
 - **Evaluation errors show a `<string>` frame** in the traceback, where CPython shows its `typing` / `annotationlib` frames.
-- **Host functions and host classes** return the hints the host sent, unevaluated; see [host-values.md](host-values.md#type-hints).
+- **Host functions and host classes** return the hints the host answers with, unevaluated in the sandbox; see [host-values.md](host-values.md#type-hints).
 
 ## Runtime generic aliases
 

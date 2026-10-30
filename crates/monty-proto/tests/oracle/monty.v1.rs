@@ -348,16 +348,12 @@ pub struct ModuleNode {
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Function {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
-    /// Type hints as `(name, hint)` node indexes, in order; absent when there are none.
-    /// Each name is a `str` node and each hint a builtin `Type` or `str` node.
-    #[prost(message, optional, tag = "3")]
-    pub annotations: ::core::option::Option<NodePairs>,
 }
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
@@ -1140,7 +1136,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1275,6 +1271,24 @@ pub mod os_call {
         #[prost(string, repeated, tag = "1")]
         pub modules: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     }
+    /// The host object `OsCall.get_type_hints` asks about.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct GetTypeHints {
+        #[prost(oneof = "get_type_hints::Target", tags = "1, 2")]
+        pub target: ::core::option::Option<get_type_hints::Target>,
+    }
+    /// Nested message and enum types in `GetTypeHints`.
+    pub mod get_type_hints {
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+        pub enum Target {
+            /// A host function, by the name the sandbox calls it with.
+            #[prost(string, tag = "1")]
+            Function(::prost::alloc::string::String),
+            /// A host class, by the id of the `ClassType` it crossed as.
+            #[prost(message, tag = "2")]
+            ClassId(super::super::Uuid),
+        }
+    }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
         /// ---- FS read / check / remove — the string is the virtual path -------
@@ -1381,6 +1395,10 @@ pub mod os_call {
         /// Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
         #[prost(message, tag = "33")]
         Scan(Scan),
+        /// typing.get_type_hints() of a host function or class. Answer with a dict
+        /// of hints, which the call returns as is; `not_handled` means `{}`.
+        #[prost(message, tag = "34")]
+        GetTypeHints(GetTypeHints),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

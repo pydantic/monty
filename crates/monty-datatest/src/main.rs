@@ -1032,6 +1032,8 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         OsFunctionCall::Import(args) if args.module == "tools" => FixtureRegistry::make_tools_module().into(),
         OsFunctionCall::Import(_) => ExtFunctionResult::NotFound(call.name().to_owned()),
         OsFunctionCall::ImportStubs(_) => unreachable!("{} is asked only by a type-checking worker", call.name()),
+        // The fixture's host functions carry no type hints.
+        OsFunctionCall::GetTypeHints(_) => call.no_handler_result(),
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
         // `OsPolicy::default()` answers the clock and initial random seed in the sandbox.

@@ -63,7 +63,7 @@ pub(crate) use deque::Deque;
 pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator};
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
 pub(crate) use dir_scan::DirScan;
-pub(crate) use ext_function::{ExtFunction, ExtHint, ExtHints};
+pub(crate) use ext_function::ExtFunction;
 pub(crate) use file::OpenFile;
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use hashlib::HashObject;

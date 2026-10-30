@@ -68,22 +68,22 @@ message string rather than CPython's list of condition classes.
 
 ## Type hints
 
-A host function or class carries its type hints in, for `typing.get_type_hints()` in the sandbox (see [typing.md](typing.md#get_type_hints)).
-The sandbox returns them as sent and never evaluates them.
+`typing.get_type_hints()` of a host function or host class in the sandbox asks the host for its hints (see [typing.md](typing.md#get_type_hints)).
+The host evaluates them only then, never when the function or class crosses, and the sandbox returns them as the host answers.
 
 - **Hints other than builtin types become text.**
     A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
     The sandbox cannot resolve the text back to an object.
 - **Python resolves hints with `typing.get_type_hints`** on the host.
-    If that raises (an unresolvable forward reference), the raw `__annotations__` are sent instead, so resolved and unresolved hints can mix; if both fail, no hints are sent.
+    If that raises (an unresolvable forward reference), the raw `__annotations__` are used instead, so resolved and unresolved hints can mix; if both fail, the sandbox gets `{}`.
     A hint that cannot be converted (its `repr()` raises, say) is left out.
-- **A class wrapped in [`ClassType`][pydantic_monty.ClassType] carries its hints as its `__annotations__` attribute** in the sandbox, so `HostCls.__annotations__` holds the converted hints, and a host class proxy's `attributes` include them.
-    [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints] supplies them, evaluated once per wrapper.
-    An unwrapped host class enters as a host function: `get_type_hints(HostCls)` returns its hints, but it has no `__annotations__` attribute.
-- **Hints are shared per function name.**
-    Host functions with the same name are one sandbox object, so the latest non-empty set of hints sent for that name applies to every reference.
+- **A host function is looked up by name, as a call to it would be.**
+    A function the sandbox could not call (a callable passed in `inputs` rather than `external_lookup`) has no hints.
+- **A class wrapped in [`ClassType`][pydantic_monty.ClassType] answers through [`ClassType.get_type_hints`][pydantic_monty.ClassType.get_type_hints]**, called each time the sandbox asks.
+    `HostCls.__annotations__` is not set in the sandbox.
+    An unwrapped host class enters as a host function: `get_type_hints(HostCls)` returns its hints too.
 - **JavaScript hosts send no hints**, so `get_type_hints` of a JavaScript function is `{}`.
-- **Hints only flow in.** A host function returned to the host carries none.
+- **A Rust host answers the `typing.get_type_hints` OS call itself**; a host that does not handle it gives `{}`.
 
 ## Conversion failures
 

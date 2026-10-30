@@ -3050,7 +3050,6 @@ impl Interns {
         self.frozen_functions.borrow_mut().insert(function, id);
     }
 
-    /// Identifies implementation frames hidden from tracebacks and namespace introspection.
     /// The committed snippet that evaluates annotation `text` in mode `names`, if compiled before.
     pub(crate) fn hint_snippet(&self, names: SnippetNames, text: &Arc<str>) -> Option<FunctionId> {
         self.hint_snippets.borrow().get(&(names, Arc::clone(text))).copied()
@@ -3061,6 +3060,7 @@ impl Interns {
         self.hint_snippets.borrow_mut().insert((names, text), id);
     }
 
+    /// Identifies implementation frames hidden from tracebacks and namespace introspection.
     pub(crate) fn is_internal_function(&self, id: FunctionId) -> bool {
         self.frozen_functions.borrow().values().any(|&function| function == id)
     }

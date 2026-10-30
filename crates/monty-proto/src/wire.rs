@@ -474,22 +474,14 @@ fn encode_node(node: &MontyNode, buf: &mut impl BufMut) {
             encode_str(2, fh.mode.as_str(), buf);
             encode_uint64(3, fh.position, buf);
         }
-        MontyNode::Function {
-            name,
-            docstring,
-            annotations,
-        } => {
+        MontyNode::Function { name, docstring } => {
             encode_message_key(
                 tag::FUNCTION,
-                function_len(name, docstring.as_deref(), annotations),
+                str_len(1, name) + opt_str_len(2, docstring.as_deref()),
                 buf,
             );
             encode_str(1, name, buf);
             encode_opt_str(2, docstring.as_deref(), buf);
-            if !annotations.is_empty() {
-                encode_message_key(3, node_pairs_len(1, annotations), buf);
-                encode_node_pairs(1, annotations, buf);
-            }
         }
         MontyNode::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
         MontyNode::Cycle(placeholder) => encoding::string::encode(tag::CYCLE, placeholder, buf),
@@ -544,11 +536,9 @@ fn node_len(node: &MontyNode) -> usize {
         MontyNode::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyNode::Decimal(d) => encoding::string::encoded_len(tag::DECIMAL, d),
         MontyNode::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
-        MontyNode::Function {
-            name,
-            docstring,
-            annotations,
-        } => submessage_len(tag::FUNCTION, function_len(name, docstring.as_deref(), annotations)),
+        MontyNode::Function { name, docstring } => {
+            submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
+        }
         MontyNode::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
         MontyNode::Cycle(placeholder) => encoding::string::encoded_len(tag::CYCLE, placeholder),
     }
@@ -680,17 +670,6 @@ fn class_origin(class: &ClassTypeNode) -> pb::TypeOrigin {
 /// NodePairs attrs = 3`.
 fn class_instance_len(class_type: NodeId, id: &pb::Uuid, attrs: &[(NodeId, NodeId)]) -> usize {
     uint32_len(1, class_type.0) + encoding::message::encoded_len(2, id) + submessage_len(3, node_pairs_len(1, attrs))
-}
-
-/// `Function` body: `name = 1`, `docstring = 2`, and `annotations = 3` only when non-empty.
-fn function_len(name: &str, docstring: Option<&str>, annotations: &[(NodeId, NodeId)]) -> usize {
-    str_len(1, name)
-        + opt_str_len(2, docstring)
-        + if annotations.is_empty() {
-            0
-        } else {
-            submessage_len(3, node_pairs_len(1, annotations))
-        }
 }
 
 /// `ModuleNode` body: `name = 1`, `id = 2`, `attrs = 3`.
@@ -885,11 +864,6 @@ fn node_from_proto(node: pb::MontyNode) -> Result<MontyNode, DecodeError> {
         Kind::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
-            annotations: value
-                .annotations
-                .map(|annotations| boxed_pairs(annotations.0.into_inner()))
-                .transpose()?
-                .unwrap_or_default(),
         },
         Kind::Repr(value) => MontyNode::Repr(value),
         Kind::Cycle(value) => MontyNode::Cycle(value),
@@ -998,19 +972,6 @@ fn merge_ids(
         encoding::uint32::merge(wire_type, &mut id, buf, ctx)?;
         push_charged(ids, NodeId(id))
     }
-}
-
-/// Converts decoded pairs to a boxed slice, charging the exact-size buffer
-/// that dropping spare capacity may allocate.
-fn boxed_pairs(pairs: Vec<(NodeId, NodeId)>) -> Result<Box<[(NodeId, NodeId)]>, DecodeError> {
-    if pairs.len() < pairs.capacity() {
-        let bytes = pairs
-            .len()
-            .checked_mul(size_of::<(NodeId, NodeId)>())
-            .ok_or_else(decode_budget::exhausted)?;
-        decode_budget::charge(bytes)?;
-    }
-    Ok(pairs.into_boxed_slice())
 }
 
 /// Bytes charged per reference to a node. A host binding turns each reference

@@ -223,15 +223,6 @@ fn corpus() -> Vec<MontyObject> {
         ),
         MontyObject::function("f".to_owned(), None),
         MontyObject::function("fetch".to_owned(), Some(String::new())),
-        // annotations encode only when present
-        MontyObject::function_with_annotations(
-            "typed",
-            Some("doc".to_owned()),
-            [
-                ("x", MontyObject::type_object(MontyType::Int)),
-                ("return", MontyObject::string("list[Foo]")),
-            ],
-        ),
         // an empty name is an implicit-presence default; id and attrs always encode
         MontyObject::module(String::new(), MontyUuid::from_u128(0), []),
         MontyObject::module(
@@ -401,14 +392,9 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             instance_id: Some(oracle_uuid(instance_id)),
             attrs: Some(oracle_pairs(attrs)),
         }),
-        MontyNode::Function {
-            name,
-            docstring,
-            annotations,
-        } => Kind::Function(oracle::Function {
+        MontyNode::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
             docstring: docstring.clone(),
-            annotations: (!annotations.is_empty()).then(|| oracle_pairs(annotations)),
         }),
         MontyNode::Module { name, id, attrs } => Kind::Module(oracle::ModuleNode {
             name: name.clone(),

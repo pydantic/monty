@@ -10,10 +10,8 @@ implementation**.
 - `MontyObject` / `MontyType` — Python values and their types at the host
   boundary, including the `datetime` family (`MontyDate`, `MontyDateTime`,
   `MontyTimeDelta`, `MontyTimeZone`) and `MontyFileHandle`.
-- `ObjectRef` — a borrowed value, with typed accessors (`as_int`, `as_str`, `items`, `pairs`, `annotations`).
+- `ObjectRef` — a borrowed value, with typed accessors (`as_int`, `as_str`, `items`, `pairs`).
   `MontyObject::as_ref()` borrows a value for inspection.
-  `MontyObject::function_with_annotations` builds a host function carrying type hints for
-  `typing.get_type_hints()` in the sandbox: each hint a `type_object` or a `string`.
 - `CallArgs` / `NamedValues` — the arguments or inputs of one message.
   Their builders accept `MontyObject` values; their iterators return borrowed values.
   Both carriers and the `MontyObject` / `ObjectRef` types keep their fields private.

@@ -260,10 +260,6 @@ class ClassType(BaseWrapper):
     instance_allowed_methods: Policy = None
     """Policy applied to constructed instances (see `ClassInstance`)."""
 
-    _type_hints: dict[str, Any] | None = field(default=None, init=False, repr=False, compare=False)
-    """`get_type_hints` result, cached on the wrapper: a process-wide cache keyed
-    by class could never evict a class whose hints refer back to it."""
-
     def __post_init__(self) -> None:
         super().__post_init__()
         self.instance_eager_attrs = _normalize_policy('instance_eager_attrs', self.instance_eager_attrs, tuple)
@@ -297,25 +293,20 @@ class ClassType(BaseWrapper):
         return {name: self.convert_value(name, value) for name, value in eager_attrs}
 
     def get_type_hints(self) -> dict[str, Any]:
-        """The class's type hints, sent into the sandbox as its `__annotations__`
-        for `typing.get_type_hints()` there. Evaluated once per wrapper (and read
-        once per class in each message): falls back to the raw `__annotations__`
-        when a forward reference cannot resolve, and to `{}` when those cannot be
-        evaluated either (a `TYPE_CHECKING`-only name).
+        """The class's type hints, returned by `typing.get_type_hints()` on the
+        class in the sandbox. Called each time the sandbox asks: falls back to the
+        raw `__annotations__` when a forward reference cannot resolve, and to `{}`
+        when those cannot be read either.
 
-        Override to send different hints, or `{}` to send none.
+        Override to return different hints, or `{}` to hide them.
         """
-        if self._type_hints is not None:
-            return self._type_hints
         try:
-            hints = get_type_hints(self.value)
+            return get_type_hints(self.value)
         except Exception:
             try:
-                hints = dict(getattr(self.value, '__annotations__', {}))
+                return dict(getattr(self.value, '__annotations__', {}))
             except Exception:
-                hints = {}
-        self._type_hints = hints
-        return hints
+                return {}
 
     def call_method(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """Routes `__call__` (construction) to `construct`; every other name

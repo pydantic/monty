@@ -171,10 +171,9 @@ The construction runs on the host, and the new instance crosses back governed by
 A constructed instance keeps the [`ClassType`][pydantic_monty.ClassType] that built it, so `type(p)` is the class the sandbox was given.
 On a `ClassType` itself, `eager_attrs`, `lazy_attrs` and `allowed_methods` expose class constants, classmethods and
 staticmethods.
-With a Python host, the class's type hints, from
-[`ClassType.get_type_hints()`][pydantic_monty.ClassType.get_type_hints], become its `__annotations__` in the sandbox,
-so `typing.get_type_hints(Person)` works there.
-A JavaScript `ClassType` sends no hints, so the sandbox sees none.
+With a Python host, `typing.get_type_hints(Person)` in the sandbox asks the host, which answers with
+[`ClassType.get_type_hints()`][pydantic_monty.ClassType.get_type_hints]; override it to return different hints.
+A JavaScript `ClassType` has no hints, so the sandbox sees `{}`.
 See [type hints](limitations/host-values.md#type-hints).
 
 ## Values returned by methods

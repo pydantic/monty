@@ -294,9 +294,6 @@ message ModuleNode {
 message Function {
   string name = 1;
   optional string docstring = 2;
-  // Type hints as `(name, hint)` node indexes, in order; absent when there are none.
-  // Each name is a `str` node and each hint a builtin `Type` or `str` node.
-  NodePairs annotations = 3;
 }
 
 // ============================================================================
@@ -972,6 +969,9 @@ message OsCall {
     ImportStubs import_stubs = 32;
     // Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
     Scan scan = 33;
+    // typing.get_type_hints() of a host function or class. Answer with a dict
+    // of hints, which the call returns as is; `not_handled` means `{}`.
+    GetTypeHints get_type_hints = 34;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -1072,6 +1072,16 @@ message OsCall {
   // The argument of `OsCall.import_stubs`, in source order.
   message ImportStubs {
     repeated string modules = 1;
+  }
+
+  // The host object `OsCall.get_type_hints` asks about.
+  message GetTypeHints {
+    oneof target {
+      // A host function, by the name the sandbox calls it with.
+      string function = 1;
+      // A host class, by the id of the `ClassType` it crossed as.
+      Uuid class_id = 2;
+    }
   }
 }
 

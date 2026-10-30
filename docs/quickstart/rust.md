@@ -317,21 +317,24 @@ let RunProgress::Complete(result) = progress else { panic!("expected completion"
 assert_eq!(result, MontyObject::int(42));
 ```
 
-A host function can also carry type hints, which `typing.get_type_hints()` returns unevaluated in the sandbox:
+`typing.get_type_hints()` of a host function suspends with
+[`OsFunctionCall::GetTypeHints`](../api/rust/monty-types.md#osfunctioncall), naming the function; the host's answer is the call's result:
 
 ```rust
-use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject, MontyType};
+use monty::{MontyRun, RunProgress};
+use monty_types::{CompileOptions, MontyObject, MontyType, OsFunctionCall, PrintWriter, ResourceTracker, TypeHintsTarget};
 
-let fetch = MontyObject::function_with_annotations(
-    "fetch",
-    None,
-    [("url", MontyObject::type_object(MontyType::Str)), ("return", MontyObject::string("Page"))],
-);
-let code = "import typing
-typing.get_type_hints(fetch)['return']";
-let mut runner = MontyRun::new(code.to_owned(), "main.py", vec!["fetch".to_owned()], CompileOptions::default()).unwrap();
-assert_eq!(runner.run_no_limits(vec![fetch]).unwrap(), MontyObject::string("Page"));
+let code = "import typing\ntyping.get_type_hints(fetch)['url']";
+let runner = MontyRun::new(code.to_owned(), "main.py", vec!["fetch".to_owned()], CompileOptions::default()).unwrap();
+let fetch = MontyObject::function("fetch", None);
+let progress = runner.start(vec![fetch], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
+
+let RunProgress::OsCall(call) = progress else { panic!("expected an OS call") };
+let OsFunctionCall::GetTypeHints(TypeHintsTarget::Function(name)) = &call.function_call else { panic!() };
+assert_eq!(name, "fetch");
+let hints = MontyObject::dict([(MontyObject::string("url"), MontyObject::type_object(MontyType::Str))]);
+let progress = call.resume(hints, PrintWriter::Stdout).unwrap();
+assert_eq!(progress.into_complete().unwrap(), MontyObject::type_object(MontyType::Str));
 ```
 
 Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed

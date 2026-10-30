@@ -41,9 +41,10 @@ pub use crate::{
         MontyType, NamedValues, ObjectRef, unstable,
     },
     os::{
-        GetenvArgs, IMPORT_CALL, IMPORT_STUBS_CALL, IMPORT_STUBS_CALL_ID, MAX_SLEEP_SECONDS, MkdirCallArgs, MontyPath,
-        OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, SleepError, TimeCaller,
-        UrandomArgs, dir_stat, file_stat, sleep_duration, sleep_duration_saturating, stat_result, symlink_stat,
+        GET_TYPE_HINTS_CALL, GetenvArgs, IMPORT_CALL, IMPORT_STUBS_CALL, IMPORT_STUBS_CALL_ID, MAX_SLEEP_SECONDS,
+        MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+        SleepError, TimeCaller, TypeHintsTarget, UrandomArgs, dir_stat, file_stat, sleep_duration,
+        sleep_duration_saturating, stat_result, symlink_stat,
     },
     os_policy::{
         DateTimeSource, NamedZone, OsPolicy, ProcessTime, RandomSeed, RandomStart, SandboxTimeZone, SleepMode,
