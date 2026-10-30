@@ -55,7 +55,7 @@ libm = "0.2"
 sha1 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 chrono = { workspace = true }
-speedate = "0.17.0"
+speedate = "0.18.0"
 zmij = "1.0"
 itertools = "0.14.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }

@@ -1,7 +1,7 @@
 //! `pydantic_core.ValidationError`: collecting line errors during validation,
 //! raising the exception, and the methods sandboxed code reads it through.
 //!
-//! A [`LineError`] holds a live input value; building the exception
+//! Validators accumulate [`LineError`]s holding live input values; building the exception
 //! snapshots each input (see `snapshot.rs`) and renders the messages, so the
 //! exception itself is plain data. `str(exc)` is rendered once at that point
 //! and stored as the exception's message; `errors()`, `error_count()`, `json()`
@@ -14,7 +14,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
     intern::StaticStrings,
     modules::pydantic::{
@@ -56,6 +56,57 @@ impl LineError {
     pub(crate) fn with_outer_loc(mut self, item: LocItem) -> Self {
         self.loc.push(item);
         self
+    }
+
+    /// Replaces the error type, keeping the location and input.
+    pub(crate) fn with_type(mut self, error_type: ErrorType) -> Self {
+        self.error_type = error_type;
+        self
+    }
+}
+
+/// Why a validator failed: one or more line errors, or an interpreter error
+/// (a resource limit, a recursion limit) that aborts validation outright.
+#[derive(Debug)]
+pub(crate) enum ValError {
+    Lines(Vec<LineError>),
+    Run(RunError),
+}
+
+impl ValError {
+    /// A single root-located line error taking ownership of `input`.
+    pub(crate) fn owned(error_type: ErrorType, input: Value) -> Self {
+        Self::Lines(vec![LineError::owned(error_type, input)])
+    }
+}
+
+impl From<RunError> for ValError {
+    fn from(err: RunError) -> Self {
+        Self::Run(err)
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for ValError {
+    fn drop_with(self, ctx: &mut C) {
+        if let Self::Lines(lines) = self {
+            lines.drop_with(ctx);
+        }
+    }
+}
+
+pub(crate) type ValResult<T> = Result<T, ValError>;
+
+/// Turns a validator failure into the exception to raise: a `ValidationError`
+/// titled `title` for line errors, or the interpreter error itself.
+pub(crate) fn into_run_error(
+    error: ValError,
+    title: &str,
+    input_type: ValidationInputType,
+    vm: &mut VM<'_>,
+) -> RunError {
+    match error {
+        ValError::Lines(lines) => build(title, input_type, lines, false, vm).into(),
+        ValError::Run(err) => err,
     }
 }
 
