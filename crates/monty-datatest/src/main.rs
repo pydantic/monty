@@ -2353,6 +2353,8 @@ impl Drop for CpythonTimeZone {
 /// them breaks namespace packages and PyO3 extensions, which cannot re-initialise.
 struct CpythonSitePackages {
     path: String,
+    /// Whether `apply` appended the entry, so only that one is removed.
+    added: bool,
 }
 
 impl CpythonSitePackages {
@@ -2361,11 +2363,18 @@ impl CpythonSitePackages {
     /// The virtualenv is `VIRTUAL_ENV` when set, else `.venv` in the workspace
     /// root; a missing `site-packages` is a setup error (`make install-py`).
     fn apply(enabled: bool) -> Option<Self> {
+        // Appends only when absent, so an interpreter that already has the
+        // directory on its path keeps it after the case.
+        const ADD: &CStr = c"import sys
+added = path not in sys.path
+if added:
+    sys.path.append(path)
+";
         if !enabled {
             return None;
         }
         let venv = env::var_os("VIRTUAL_ENV").map_or_else(|| CANONICAL_WS_DIR.join(".venv"), PathBuf::from);
-        let path = Python::attach(|py| {
+        let (path, added) = Python::attach(|py| {
             let venv = venv.to_str().expect("virtualenv path is not UTF-8");
             let vars = PyDict::new(py);
             vars.set_item("base", venv).expect("failed to build sysconfig vars");
@@ -2381,22 +2390,29 @@ impl CpythonSitePackages {
                 Path::new(&path).is_dir(),
                 "cpython-site-packages needs the dev virtualenv's {path}: run `make install-py`"
             );
-            let sys = py.import("sys").expect("Failed to import sys");
-            sys.getattr("path")
-                .and_then(|sys_path| sys_path.call_method1("append", (&path,)))
+            let locals = PyDict::new(py);
+            let added: bool = locals
+                .set_item("path", &path)
+                .and_then(|()| py.run(ADD, None, Some(&locals)))
+                .and_then(|()| locals.get_item("added"))
+                .and_then(|added| added.expect("the snippet sets `added`").extract())
                 .expect("Failed to add site-packages to sys.path");
-            path
+            (path, added)
         });
-        Some(Self { path })
+        Some(Self { path, added })
     }
 }
 
 impl Drop for CpythonSitePackages {
     fn drop(&mut self) {
-        // Filtering rather than `remove` tolerates a case that took the entry off itself.
+        // The `in` check tolerates a case that took the entry off itself.
         const CLEANUP: &CStr = c"import sys
-sys.path[:] = [entry for entry in sys.path if entry != path]
+if path in sys.path:
+    sys.path.remove(path)
 ";
+        if !self.added {
+            return;
+        }
         Python::attach(|py| {
             let locals = PyDict::new(py);
             locals

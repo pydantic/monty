@@ -171,8 +171,9 @@ unions. Divergences:
     message and `None` becomes `NoneType`, but a bare special form is accepted
     (`Annotated[Optional, 1]`) where CPython raises
     `TypeError: Plain typing.Optional is not valid as type argument`.
-- **Only the listed attributes exist.** `Literal[1].__module__`, `.__qualname__` and `.__doc__` raise
-    `AttributeError` where CPython's alias class inherits them (`'typing'`, `'Annotated'`, its docstring);
+- **Only the listed attributes exist.** `__module__`, `__qualname__` and `__doc__` raise `AttributeError` on
+    both forms, where CPython gives `'typing'`, `'Literal'` and `None` for `Literal[1]` and `'typing'`,
+    `'Annotated'` and the `Annotated` docstring for `Annotated[int, 1]`;
     an `Annotated` delegates non-dunder names to its type and nothing else.
 - **Error messages name the qualified type.** `len(Literal[1])` raises
     `object of type 'typing._LiteralGenericAlias' has no len()` and

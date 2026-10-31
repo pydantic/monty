@@ -581,8 +581,8 @@ impl ExcType {
     }
 }
 
-/// Structured payload attached to exception types whose CPython counterparts
-/// carry more than a message: unicode and json decode errors, and pydantic's
+/// Structured payload attached to exception types that carry more than a
+/// message: CPython's unicode and json decode errors, and pydantic's
 /// `ValidationError` with its line errors. The enum leaves room for future
 /// variants (e.g. `OSError`'s `errno`/`filename`) without another field on
 /// every exception.
