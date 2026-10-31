@@ -27,6 +27,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
+    modules::StandardLib,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
 };
@@ -49,33 +50,6 @@ const MAXSIZE: i64 = i64::MAX;
 
 /// `sys.maxunicode` — the largest code point, `U+10FFFF`.
 const MAXUNICODE: i64 = 0x0010_FFFF;
-
-/// The modules Monty can import, in the sorted order CPython uses for its own
-/// `sys.builtin_module_names`. Every Monty module is compiled into the
-/// interpreter, so this is the whole importable set rather than a C-extension
-/// subset — keep it in step with [`StandardLib`](super::StandardLib).
-const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
-    StaticStrings::Asyncio,
-    StaticStrings::Base64,
-    StaticStrings::Binascii,
-    StaticStrings::Bisect,
-    StaticStrings::Collections,
-    StaticStrings::Dataclasses,
-    StaticStrings::Datetime,
-    StaticStrings::Functools,
-    #[cfg(feature = "test-hooks")]
-    StaticStrings::Gc,
-    StaticStrings::Itertools,
-    StaticStrings::Json,
-    StaticStrings::Math,
-    StaticStrings::Os,
-    StaticStrings::Pathlib,
-    StaticStrings::Random,
-    StaticStrings::Re,
-    StaticStrings::Sys,
-    StaticStrings::Typing,
-    StaticStrings::Unicodedata,
-];
 
 /// Functions exposed by the `sys` module under the `test-hooks` feature.
 ///
@@ -326,11 +300,18 @@ fn int_max_str_digits() -> Value {
     i64::try_from(INT_MAX_STR_DIGITS).map_or(Value::Int(i64::MAX), Value::Int)
 }
 
-/// Builds the `sys.builtin_module_names` tuple from [`BUILTIN_MODULE_NAMES`].
+/// Builds the `sys.builtin_module_names` tuple: every module compiled into the
+/// interpreter, sorted as CPython's is. Read from the module registry so the
+/// tuple cannot drift from what `import` accepts; the `os.path` spellings are
+/// left out, CPython's tuple holding top-level names only.
 fn builtin_module_names(vm: &VM<'_>) -> Value {
-    let names: SmallVec<_> = BUILTIN_MODULE_NAMES
-        .iter()
-        .map(|name| Value::InternString(vm.interns.intern_static(*name)))
+    let mut names: Vec<StaticStrings> = StandardLib::static_names()
+        .filter(|name| !matches!(name, StaticStrings::OsPath | StaticStrings::Posixpath))
+        .collect();
+    names.sort_unstable_by_key(|name| <&'static str>::from(*name));
+    let names: SmallVec<_> = names
+        .into_iter()
+        .map(|name| Value::InternString(vm.interns.intern_static(name)))
         .collect();
     allocate_tuple(names, vm.heap)
 }
