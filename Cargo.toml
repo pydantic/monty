@@ -131,6 +131,7 @@ serde_bytes = "0.11"
 # so `make check-proto` (regenerate + git diff) is reproducible
 prost = "=0.14.4"
 sha2 = "0.11"
+subtle = "2.6"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }

@@ -37,6 +37,7 @@ pub(crate) mod os_path;
 pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
+pub(crate) mod secrets;
 pub(crate) mod sys;
 pub(crate) mod time;
 pub(crate) mod tomllib;
@@ -86,6 +87,8 @@ pub(crate) enum StandardLib {
     /// The `random` module: CPython's Mersenne Twister generator and the
     /// distributions built on it.
     Random,
+    /// Cryptographically strong random values and tokens.
+    Secrets,
     /// The `copy` module providing `copy()` and `deepcopy()`.
     Copy,
     /// The `time` module providing `time()` and `sleep()`, both of which the
@@ -133,6 +136,7 @@ impl StandardLib {
             StaticStrings::Base64 => Some(Self::Base64),
             StaticStrings::Binascii => Some(Self::Binascii),
             StaticStrings::Random => Some(Self::Random),
+            StaticStrings::Secrets => Some(Self::Secrets),
             StaticStrings::Copy => Some(Self::Copy),
             StaticStrings::Time => Some(Self::Time),
             StaticStrings::Hashlib => Some(Self::Hashlib),
@@ -176,6 +180,7 @@ impl StandardLib {
             Self::Base64 => base64::create_module(vm),
             Self::Binascii => binascii::create_module(vm),
             Self::Random => random::create_module(vm),
+            Self::Secrets => secrets::create_module(vm),
             Self::Copy => copy::create_module(vm),
             Self::Time => time::create_module(vm),
             Self::Hashlib => hashlib::create_module(vm),
@@ -220,6 +225,7 @@ pub(crate) enum ModuleFunctions {
     Tomllib(tomllib::TomllibFunctions),
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
+    Secrets(secrets::SecretsFunctions),
     Typing(typing::TypingFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
@@ -251,6 +257,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
+            Self::Secrets(func) => write!(f, "{func}"),
             Self::Copy(func) => write!(f, "{func}"),
             Self::Frozen(func) => write!(f, "{func}"),
             Self::Time(func) => write!(f, "{func}"),
@@ -290,6 +297,7 @@ impl ModuleFunctions {
             Self::Base64(functions) => base64::call(vm, functions, args).map(CallResult::Value),
             Self::Binascii(functions) => binascii::call(vm, functions, args).map(CallResult::Value),
             Self::Random(functions) => random::call(vm, functions, args),
+            Self::Secrets(functions) => secrets::call(vm, functions, args),
             Self::Copy(functions) => copy::call(vm, functions, args).map(CallResult::Value),
             Self::Frozen(functions) => frozen::call_helper(functions, args, vm),
             Self::Time(functions) => time::call(vm, functions, args),

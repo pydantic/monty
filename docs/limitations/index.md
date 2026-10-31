@@ -95,6 +95,7 @@ The following modules are present:
 | `posixpath`   | [os.md](os.md)                   |
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |
+| `secrets`     | [secrets.md](secrets.md)         |
 | `sys`         | [sys.md](sys.md)                 |
 | `time`        | [time.md](time.md)               |
 | `tomllib`     | [tomllib.md](tomllib.md)         |

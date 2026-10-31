@@ -10,6 +10,7 @@ import json
 import os
 import random
 import re
+import secrets
 import sys
 import tomllib
 from collections.abc import Iterator
@@ -762,6 +763,10 @@ assert_type(random.choices('abc', k=2), list[str])
 assert_type(random.Random(42).uniform(1, 2), float)
 assert_type(random.Random().getrandbits(8), int)
 assert_type(os.urandom(4), bytes)
+
+# === secrets ===
+assert_type(secrets.choice(seq=[1, 2]), int)
+assert_type(secrets.randbits(k=8), int)
 
 
 # === bisect ===

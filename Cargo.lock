@@ -2549,6 +2549,7 @@ dependencies = [
  "smallvec",
  "speedate",
  "strum 0.27.2",
+ "subtle",
  "tempfile",
  "unicode-general-category",
  "unicode-normalization",

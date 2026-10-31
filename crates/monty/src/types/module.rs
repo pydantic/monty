@@ -207,27 +207,16 @@ impl<'h> HeapRead<'h, Module> {
         }
     }
 
-    /// Binds an attribute on a file module's namespace, so the module's own
-    /// functions see it; other modules reject assignment.
-    pub fn py_set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let Some(namespace) = self.get(vm.heap).namespace() else {
-            value.drop_with(vm);
-            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
-        };
-        let key = name.as_value(vm.heap);
-        let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
-            key.drop_with(vm);
-            value.drop_with(vm);
-            return Err(RunError::internal("module namespace is not a dict"));
-        };
-        let old = dict.set(key, value, vm)?;
-        old.drop_with(vm);
-        Ok(())
-    }
-
     /// An owned copy of the attribute `name`, from the file namespace or `attrs`.
     fn attr_value(&self, name: &str, vm: &VM<'h>) -> Option<Value> {
         let module = self.get(vm.heap);
+        if module.name_str(vm.interns) == "secrets"
+            && module.id().is_none()
+            && module.namespace().is_none()
+            && name == "DEFAULT_ENTROPY"
+        {
+            return Some(vm.secrets_default_entropy.clone_with_heap(vm.heap));
+        }
         let attrs = match module.namespace() {
             Some(namespace) => match vm.heap.get(namespace) {
                 HeapData::Dict(dict) => dict,
@@ -241,8 +230,80 @@ impl<'h> HeapRead<'h, Module> {
     }
 }
 
+impl<'h> HeapRead<'h, Module> {
+    /// Sets a file-module attribute or the session's `secrets.DEFAULT_ENTROPY`.
+    pub fn py_set_attr(&self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let (is_secrets_default, namespace) = {
+            let module = self.get(vm.heap);
+            (
+                module.name_str(vm.interns) == "secrets"
+                    && module.id().is_none()
+                    && module.namespace().is_none()
+                    && name.as_str(vm.interns) == "DEFAULT_ENTROPY",
+                module.namespace(),
+            )
+        };
+        if is_secrets_default {
+            vm.replace_secrets_default_entropy(value.clone_with_heap(vm.heap));
+            value.drop_with(vm);
+            return Ok(());
+        }
+        let Some(namespace) = namespace else {
+            value.drop_with(vm);
+            return Err(ExcType::attribute_error_no_setattr("module", name.as_str(vm.interns)));
+        };
+        let key = name.as_value(vm.heap);
+        let HeapReadOutput::Dict(dict) = vm.heap.read(namespace) else {
+            key.drop_with(vm);
+            value.drop_with(vm);
+            return Err(RunError::internal("module namespace is not a dict"));
+        };
+        let old = dict.set(key, value, vm)?;
+        old.drop_with(vm);
+        Ok(())
+    }
+}
+
 impl HeapItem for Module {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         Self::py_dec_ref_ids(self, stack);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{PrintWriter, ResourceTracker};
+
+    use super::*;
+    use crate::{
+        heap::{Heap, HeapReader},
+        run::{Program, SessionTables},
+    };
+
+    // File modules named `secrets` must not get the built-in special case.
+    #[test]
+    fn file_module_named_secrets_uses_its_own_namespace() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let namespace = heap.allocate(HeapData::Dict(Dict::new()));
+        let module = heap.allocate(HeapData::Module(Box::new(Module::file(
+            "secrets".to_owned(),
+            namespace,
+            "secrets.py".to_owned(),
+        ))));
+        let name = EitherStr::Heap("DEFAULT_ENTROPY".to_owned());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let HeapReadOutput::Module(module) = vm.heap.read(module) else {
+                panic!("expected a file module");
+            };
+            assert!(module.py_getattr(&name, &mut vm).is_none());
+            module.py_set_attr(&name, Value::Int(7), &mut vm).unwrap();
+            let value = module.py_getattr(&name, &mut vm).unwrap();
+            assert!(matches!(value, CallResult::Value(Value::Int(7))));
+            assert!(matches!(vm.secrets_default_entropy, Value::Int(32)));
+        });
     }
 }
