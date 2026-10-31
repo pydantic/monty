@@ -605,8 +605,10 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
 }
 
 impl HeapItem for SimpleException {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Exceptions don't contain heap references
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Only the chain holds references; they are always exceptions, so an
+        // exception still cannot reach a container and stays a GC leaf.
+        stack.extend(self.owned_chain_ids());
     }
 }
 

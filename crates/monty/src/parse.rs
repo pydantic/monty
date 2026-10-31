@@ -811,13 +811,16 @@ impl<'a, 'i> Parser<'a, 'i> {
                 Ok(node)
             }
             Stmt::Match(m) => self.parse_match(m),
-            Stmt::Raise(ast::StmtRaise { exc, .. }) => {
-                // TODO add cause to Node::Raise
-                let expr = match exc {
+            Stmt::Raise(ast::StmtRaise { exc, cause, .. }) => {
+                let exc = match exc {
                     Some(expr) => Some(self.parse_expression(*expr)?),
                     None => None,
                 };
-                Ok(Node::Raise(expr))
+                let cause = match cause {
+                    Some(expr) => Some(self.parse_expression(*expr)?),
+                    None => None,
+                };
+                Ok(Node::Raise { exc, cause })
             }
             Stmt::Try(ast::StmtTry {
                 body,

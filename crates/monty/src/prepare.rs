@@ -659,8 +659,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     Some(expr) => Some(self.prepare_expression(expr)?),
                     None => None,
                 })),
-                Node::Raise(exc) => {
-                    let expr = match exc {
+                Node::Raise { exc, cause } => {
+                    let exc = match exc {
                         Some(expr) => {
                             let prepared = self.prepare_expression(expr)?;
                             match prepared.expr {
@@ -679,7 +679,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         }
                         None => None,
                     };
-                    new_nodes.push(Node::Raise(expr));
+                    // A bare class as the cause is instantiated at raise time, so it stays as is.
+                    let cause = match cause {
+                        Some(expr) => Some(self.prepare_expression(expr)?),
+                        None => None,
+                    };
+                    new_nodes.push(Node::Raise { exc, cause });
                 }
                 Node::Assert { test, msg } => {
                     let test = self.prepare_expression(test)?;
@@ -2719,8 +2724,13 @@ fn collect_scope_info_from_node(
             }
         }
         // Statements with expressions that may contain walrus operators
-        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_assigned_names_from_expr(expr, assigned_names, interner);
+        }
+        Node::Raise { exc, cause } => {
+            for expr in exc.iter().chain(cause) {
+                collect_assigned_names_from_expr(expr, assigned_names, interner);
+            }
         }
         Node::Assert { test, msg } => {
             collect_assigned_names_from_expr(test, assigned_names, interner);
@@ -2729,7 +2739,7 @@ fn collect_scope_info_from_node(
             }
         }
         // These don't create new names
-        Node::Pass | Node::Return(None) | Node::Raise(None) | Node::Break { .. } | Node::Continue { .. } => {}
+        Node::Pass | Node::Return(None) | Node::Break { .. } | Node::Continue { .. } => {}
     }
 }
 
@@ -3045,8 +3055,13 @@ fn collect_cell_vars_from_node(
             }
         }
         // Handle expressions that may contain lambdas
-        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+        }
+        Node::Raise { exc, cause } => {
+            for expr in exc.iter().chain(cause) {
+                collect_cell_vars_from_expr(expr, our_locals, cell_vars, interner);
+            }
         }
         Node::Assert { test, msg } => {
             collect_cell_vars_from_expr(test, our_locals, cell_vars, interner);
@@ -3098,7 +3113,6 @@ fn collect_cell_vars_from_node(
         // stores as plain stores and its later loads as cell loads.
         Node::Pass
         | Node::Return(None)
-        | Node::Raise(None)
         | Node::Break { .. }
         | Node::Continue { .. }
         | Node::Global { .. }
@@ -3452,10 +3466,15 @@ fn collect_referenced_names_from_node(
     interner: &CompileInterns<'_>,
 ) {
     match node {
-        Node::Expr(expr) | Node::Return(Some(expr)) | Node::Raise(Some(expr)) => {
+        Node::Expr(expr) | Node::Return(Some(expr)) => {
             collect_referenced_names_from_expr(expr, referenced, interner);
         }
-        Node::Return(None) | Node::Raise(None) => {}
+        Node::Raise { exc, cause } => {
+            for expr in exc.iter().chain(cause) {
+                collect_referenced_names_from_expr(expr, referenced, interner);
+            }
+        }
+        Node::Return(None) => {}
         Node::Assert { test, msg } => {
             collect_referenced_names_from_expr(test, referenced, interner);
             if let Some(m) = msg {

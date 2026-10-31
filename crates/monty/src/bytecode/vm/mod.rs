@@ -1915,6 +1915,14 @@ impl<'h> VM<'h> {
                     let error = self.assert_failed_msg(cmp_op);
                     catch!(self, error);
                 }
+                Opcode::RaiseFrom => {
+                    let cause = self.pop();
+                    let exc = self.pop();
+                    if let Some(result) = self.raise_with_cause(exc, cause) {
+                        return Err(result);
+                    }
+                    yield_if_parked!(self);
+                }
                 Opcode::Reraise => {
                     // Clone rather than pop: a locally caught bare raise must
                     // preserve its enclosing handler's active exception.
