@@ -78,6 +78,10 @@ OsFunction = Literal[
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
 """Default maximum host allocation per `urandom()` call. 1 MiB."""
+MAX_FILE_BYTES_DEFAULT: int = 10_000_000
+"""Default `OSAccess.max_file_bytes`: the largest one `MemoryFile` may grow to."""
+MAX_TOTAL_FILE_BYTES_DEFAULT: int = 50_000_000
+"""Default `OSAccess.max_total_file_bytes`: all `MemoryFile` content together."""
 
 
 class StatResult(NamedTuple):
@@ -782,6 +786,22 @@ class AbstractOS(ABC):
         return seconds if cap is None or seconds <= cap else cap
 
 
+def _content_size(content: str | bytes) -> int:
+    """Size of file content in bytes, as `stat` reports it (text counts UTF-8 encoded)."""
+    return len(content) if isinstance(content, bytes) else len(content.encode())
+
+
+def _check_byte_cap(name: str, value: int | None) -> int | None:
+    """Validate an `OSAccess` byte cap: a non-negative int, or `None` for no cap."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(f'{name} must be an int or None, not {type(value).__name__}')
+    if value < 0:
+        raise ValueError(f'{name} must be non-negative')
+    return value
+
+
 @functools.cache
 def _dispatch_takes_is_async(cls: type[AbstractOS]) -> bool:
     """Whether `cls.dispatch` accepts `is_async`, cached per subclass.
@@ -1039,6 +1059,8 @@ class OSAccess(AbstractOS):
         files: List of AbstractFile objects registered with this filesystem.
         environ: Dictionary of environment variables accessible via os.getenv().
         max_urandom_bytes: Maximum bytes per host entropy request.
+        max_file_bytes: Largest size, in bytes, a write may grow one `MemoryFile` to.
+        max_total_file_bytes: Largest total size, in bytes, writes may grow all `MemoryFile` content to.
     """
 
     files: list[AbstractFile]
@@ -1053,6 +1075,8 @@ class OSAccess(AbstractOS):
         root_dir: str | PurePosixPath = '/',
         max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT,
         max_sleep: float | None = 10,
+        max_file_bytes: int | None = MAX_FILE_BYTES_DEFAULT,
+        max_total_file_bytes: int | None = MAX_TOTAL_FILE_BYTES_DEFAULT,
     ):
         """Create a virtual filesystem with the given files.
 
@@ -1069,14 +1093,20 @@ class OSAccess(AbstractOS):
             max_sleep: Longest wait a `time.sleep()` or `asyncio.sleep()` performs,
                 in seconds (default 10); longer sleeps are cut short, `None` waits
                 the full time.
+            max_file_bytes: Largest size, in bytes, a write may grow one `MemoryFile` to
+                (default 10 MB); a larger write raises `OSError` (`EFBIG`). `None` removes the cap.
+            max_total_file_bytes: Largest total size, in bytes, of all `MemoryFile` content,
+                initial files included (default 50 MB); a write past it raises `OSError` (`ENOSPC`).
+                `None` removes the cap. Content stored by a `CallbackFile` is not counted.
 
         Raises:
             AssertionError: If root_dir is not an absolute path.
             ValueError: If a file path conflicts with another file (e.g., trying
                 to create a file inside another file's path), or `max_urandom_bytes` is negative.
-                Also if `max_sleep` is negative or `nan`, either of which would disable the cap.
+                Also if `max_sleep` is negative or `nan`, either of which would disable the cap,
+                or either file byte cap is negative.
             TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap),
-                or `max_sleep` is not a number or `None`.
+                `max_sleep` is not a number or `None`, or either file byte cap is not an int or `None`.
         """
         if not isinstance(max_urandom_bytes, int):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f'max_urandom_bytes must be an int, not {type(max_urandom_bytes).__name__}')
@@ -1092,6 +1122,8 @@ class OSAccess(AbstractOS):
             if not max_sleep >= 0:
                 raise ValueError('max_sleep must be non-negative')
         self.max_sleep = max_sleep
+        self.max_file_bytes = _check_byte_cap('max_file_bytes', max_file_bytes)
+        self.max_total_file_bytes = _check_byte_cap('max_total_file_bytes', max_total_file_bytes)
         # Initialize tree with root directory - / is always present
         self._tree = {'/': {}}
         root_dir = PurePosixPath(root_dir)
@@ -1113,6 +1145,8 @@ class OSAccess(AbstractOS):
             if _is_dir(entry):
                 raise ValueError(f'Cannot put file {file} at path of directory {entry}')
             subtree[name] = file
+        # bytes held by `MemoryFile`s in the tree, charged against `max_total_file_bytes`
+        self._memory_bytes = sum(_content_size(f.content) for f in self.files if isinstance(f, MemoryFile))
 
     def __repr__(self) -> str:
         return f'OSAccess(files={self.files}, environ={self.environ})'
@@ -1215,6 +1249,9 @@ class OSAccess(AbstractOS):
         entry = self._get_entry(path)
         if _is_file(entry):
             content = entry.read_content()
+            if isinstance(entry, MemoryFile):
+                old_size = _content_size(content)
+                self._charge(path, old_size, old_size + _content_size(data))
             if isinstance(content, str) and isinstance(data, str):
                 entry.write_content(content + data)
             else:
@@ -1229,6 +1266,8 @@ class OSAccess(AbstractOS):
     def _write_file(self, path: PurePosixPath, data: bytes | str) -> None:
         entry = self._get_entry(path)
         if _is_file(entry):
+            if isinstance(entry, MemoryFile):
+                self._charge(path, _content_size(entry.content), _content_size(data))
             entry.write_content(data)
             return
         elif _is_dir(entry):
@@ -1238,6 +1277,7 @@ class OSAccess(AbstractOS):
         parent_entry = self._parent_entry(path)
         if _is_dir(parent_entry):
             file_path = PurePosixPath(path)
+            self._charge(path, 0, _content_size(data))
             parent_entry[file_path.name] = new_file = MemoryFile(file_path, data)
             self.files.append(new_file)
         else:
@@ -1273,6 +1313,8 @@ class OSAccess(AbstractOS):
     def path_unlink(self, path: PurePosixPath) -> None:
         file = self._get_file(path)
         file.delete()
+        if isinstance(file, MemoryFile):
+            self._memory_bytes -= _content_size(file.content)
         # remove from parent
         parent_dir = self._parent_entry(path)
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
@@ -1328,6 +1370,8 @@ class OSAccess(AbstractOS):
             if _is_file(target_entry):
                 # need to mark the target as deleted as it'll be overwritten
                 target_entry.delete()
+                if isinstance(target_entry, MemoryFile):
+                    self._memory_bytes -= _content_size(target_entry.content)
 
             src_name = src_entry.path.name
             target_name = PurePosixPath(target).name
@@ -1370,6 +1414,22 @@ class OSAccess(AbstractOS):
 
     def get_environ(self) -> dict[str, str]:
         return self.environ
+
+    def _charge(self, path: PurePosixPath, old_size: int, new_size: int) -> None:
+        """Account for a `MemoryFile` (`old_size` 0 for a new one) growing or shrinking to `new_size` bytes.
+
+        Raises `OSError` before anything is written if growth would pass `max_file_bytes`
+        (`EFBIG`) or `max_total_file_bytes` (`ENOSPC`); shrinking is always allowed.
+        """
+        if new_size > old_size:
+            if self.max_file_bytes is not None and new_size > self.max_file_bytes:
+                raise OSError(f'[Errno 27] File too large: {str(path)!r}')
+            if (
+                self.max_total_file_bytes is not None
+                and self._memory_bytes + new_size - old_size > self.max_total_file_bytes
+            ):
+                raise OSError(f'[Errno 28] No space left on device: {str(path)!r}')
+        self._memory_bytes += new_size - old_size
 
     def _get_entry(self, path: PurePosixPath, *, strict: bool = True) -> Tree | AbstractFile | None:
         """Look up a file or directory, returning `None` if a component is missing.

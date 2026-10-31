@@ -286,6 +286,9 @@ caps the dump's, so a worker cannot report a looser one.
 - **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
     `max_urandom_bytes`, 1 MiB by default (`OSAccess(max_urandom_bytes=...)`).
     A custom entropy callback allocates in the host process, so it must apply its own cap.
+- **`OSAccess` files.** [`MemoryFile`][pydantic_monty.MemoryFile] content lives in the host process; `OSAccess` caps one
+    file at `max_file_bytes` (10 MB) and all of them at `max_total_file_bytes` (50 MB) by default
+    (see [write limits](limitations/filesystem.md#write-limits)).
 - **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see
