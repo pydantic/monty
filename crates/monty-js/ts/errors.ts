@@ -322,6 +322,10 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'decimal.Overflow',
   'decimal.Underflow',
   'decimal.FloatOperation',
+  'pydantic_core._pydantic_core.ValidationError',
+  'pydantic_core._pydantic_core.PydanticSerializationError',
+  'pydantic.errors.PydanticUserError',
+  'pydantic.errors.PydanticSchemaGenerationError',
 ])
 
 /**
