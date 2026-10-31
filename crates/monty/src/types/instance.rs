@@ -416,25 +416,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
 
-        // 1. An instance attribute shadows class methods; call it as-is (unbound).
-        if let Some(callable) = self
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap))
-        {
-            defer_drop!(callable, vm);
-            return vm.call_function(callable, args);
-        }
-
-        // 2. A class member: bind `self` for methods, call data attributes as-is.
-        let class_id = self.get(vm.heap).class;
-        if let Some(member) = class_member(class_id, attr_str, vm) {
+        if let Some((member, bind)) = lookup_call_member(self.get(vm.heap), attr_str, vm) {
             defer_drop!(member, vm);
-            return call_member_bound(member, self.id(), args, vm);
+            return if bind {
+                call_member_bound(member, self.id(), args, vm)
+            } else {
+                vm.call_function(member, args)
+            };
         }
 
-        // 3. `obj.__class__(...)` constructs a new instance — the callable form of
+        let class_id = self.get(vm.heap).class;
+        // `obj.__class__(...)` constructs a new instance — the callable form of
         // the `obj.__class__` special attribute (see `instance_getattr` step 3).
         // Checked after the dict/namespace lookups so a same-named member wins.
         // The class value is a fresh owned ref (inc_ref) dropped by the guard once
@@ -447,7 +439,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return vm.call_function(class_val, args);
         }
 
-        // 4. No such attribute.
         args.drop_with(vm);
         Err(ExcType::attribute_error(
             class_name(class_id, vm.heap, vm.interns),
@@ -585,7 +576,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         let instance = bound.instance.clone_with_heap(vm);
         let func = bound.func.clone_with_heap(vm);
         defer_drop!(func, vm);
-        vm.call_function(func, args.prepend(instance))
+        vm.call_bound_function(func, instance, args)
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -962,6 +953,16 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     }
 }
 
+/// Resolves calls without allocating a bound method; instance attributes stay unbound.
+#[inline]
+pub(crate) fn lookup_call_member(instance: &Instance, name: &str, vm: &VM<'_>) -> Option<(Value, bool)> {
+    if let Some(value) = instance.attrs.get_by_str(name, vm.heap, vm.interns) {
+        Some((value.clone_with_heap(vm.heap), false))
+    } else {
+        class_member(instance.class, name, vm).map(|member| (member, true))
+    }
+}
+
 /// Returns a class object's name for error messages / repr.
 ///
 /// Takes `heap` + `interns` rather than a `&VM` so heap-only contexts (e.g.
@@ -986,10 +987,15 @@ pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns
 /// other callable value is called as-is. Shared by `py_call_attr` and the
 /// context-manager and iterator hooks so special-method invocation and
 /// ordinary method calls dispatch identically.
-fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+pub(crate) fn call_member_bound(
+    member: &Value,
+    self_id: HeapId,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
     if is_method_value(member, vm) {
         vm.heap.inc_ref(self_id);
-        vm.call_function(member, args.prepend(Value::Ref(self_id)))
+        vm.call_bound_function(member, Value::Ref(self_id), args)
     } else {
         vm.call_function(member, args)
     }

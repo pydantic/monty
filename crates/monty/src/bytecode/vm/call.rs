@@ -24,7 +24,10 @@ use crate::{
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, instance::class_name},
+    types::{
+        Dict, Instance, PyTrait, Type,
+        instance::{call_member_bound, class_name, lookup_call_member},
+    },
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -195,6 +198,10 @@ impl<'h> VM<'h> {
             && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
         {
             result
+        } else if let Value::Ref(class_id) = self.stack[callable_index]
+            && let Some(result) = self.try_call_constructor(class_id, callable_index, arg_count)
+        {
+            result
         } else {
             let args = self.pop_n_args(arg_count);
             let callable = self.pop();
@@ -280,6 +287,38 @@ impl<'h> VM<'h> {
     /// Pops the object and arguments from the stack, calls the attribute,
     /// and returns a `CallResult` which may indicate an OS or external call.
     pub(super) fn exec_call_attr(&mut self, name_id: StringId, arg_count: usize) -> Result<CallResult, RunError> {
+        let receiver_index = self.stack.len() - arg_count - 1;
+        let member = match self.stack[receiver_index] {
+            Value::Ref(id) => match self.heap.get(id) {
+                HeapData::Instance(instance) => {
+                    lookup_call_member(instance, self.interns.get_str(name_id), self).map(|member| (id, member))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+
+        if let Some((receiver_id, (member, bind))) = member {
+            let this = self;
+            defer_drop!(member, this);
+            if bind && let Value::DefFunction(func_id) = member {
+                let func = this.interns.get_function(*func_id);
+                if func.exact_positional_call() == Some(ExactPositionalCall::Sync(arg_count + 1)) {
+                    // The owned receiver is already the first parameter slot.
+                    return this.push_exact_sync_frame(*func_id, func, receiver_index);
+                }
+            }
+
+            let args = this.pop_n_args(arg_count);
+            let receiver = this.pop();
+            defer_drop!(receiver, this);
+            return if bind {
+                call_member_bound(member, receiver_id, args, this)
+            } else {
+                this.call_function(member, args)
+            };
+        }
+
         let args = self.pop_n_args(arg_count);
         let obj = self.pop();
         self.call_attr(obj, name_id, args)
@@ -787,20 +826,28 @@ impl<'h> VM<'h> {
         func: &'h Function,
         callable_index: usize,
     ) -> Result<CallResult, RunError> {
+        let callable = self.stack.remove(callable_index);
+        debug_assert_exact_callable(&callable, func_id);
+
+        self.push_exact_sync_frame(func_id, func, callable_index)
+    }
+
+    /// Installs a synchronous frame whose owned parameters are already on the stack.
+    fn push_exact_sync_frame(
+        &mut self,
+        func_id: FunctionId,
+        func: &'h Function,
+        stack_base: usize,
+    ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
-        let code = &func.code;
-
-        let callable = self.stack.remove(callable_index);
-        debug_assert_exact_callable(&callable, func_id);
-        self.stack
-            .resize_with(callable_index + namespace_size, || Value::Undefined);
+        self.stack.resize_with(stack_base + namespace_size, || Value::Undefined);
 
         let exc_stack_base = self.exception_stack.len();
         self.push_frame(CallFrame::new_function(
-            code,
-            callable_index,
+            &func.code,
+            stack_base,
             locals_count,
             exc_stack_base,
             func_id,
@@ -809,6 +856,70 @@ impl<'h> VM<'h> {
         ))?;
 
         Ok(CallResult::FramePushed)
+    }
+
+    /// Bound methods and initializer fallbacks can skip prepending into an argument vector.
+    #[inline]
+    pub(crate) fn call_bound_function(
+        &mut self,
+        callable: &Value,
+        receiver: Value,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        if let Value::DefFunction(func_id) = callable
+            && let Some(count) = args.positional_count()
+        {
+            let func = self.interns.get_function(*func_id);
+            if func.exact_positional_call() == Some(ExactPositionalCall::Sync(count + 1)) {
+                let stack_base = self.stack.len();
+                self.push(receiver);
+                let (args, kwargs) = args.into_parts();
+                kwargs.drop_with(self);
+                self.stack.extend(args);
+
+                return self.push_exact_sync_frame(*func_id, func, stack_base);
+            }
+        }
+
+        self.call_function(callable, args.prepend(receiver))
+    }
+
+    /// Resolves `__init__` once; matching synchronous initializers keep arguments on the stack.
+    fn try_call_constructor(
+        &mut self,
+        class_id: HeapId,
+        callable_index: usize,
+        arg_count: usize,
+    ) -> Option<Result<CallResult, RunError>> {
+        let HeapData::Class(class) = self.heap.get(class_id) else {
+            return None;
+        };
+        let init = class
+            .namespace()
+            .get_by_str("__init__", self.heap, self.interns)
+            .map(|value| value.clone_with_heap(self));
+        if let Some(Value::DefFunction(func_id)) = init {
+            let func = self.interns.get_function(func_id);
+            if func.exact_positional_call() == Some(ExactPositionalCall::Sync(arg_count + 1)) {
+                let instance_id = self.allocate_instance(class_id);
+                let callable = mem::replace(&mut self.stack[callable_index], Value::Ref(instance_id));
+                callable.drop_with(self);
+
+                // The pending result and `self` each own a reference across suspension or failure.
+                self.heap.inc_ref(instance_id);
+                let stack_base = callable_index + 1;
+                self.stack.insert(stack_base, Value::Ref(instance_id));
+                return Some(self.push_exact_sync_frame(func_id, func, stack_base).inspect(|_| {
+                    self.current_frame_mut().is_initializer = true;
+                }));
+            }
+        }
+
+        let args = self.pop_n_args(arg_count);
+        let callable = self.pop();
+        let this = self;
+        defer_drop!(callable, this);
+        Some(this.instantiate_class_with_init(class_id, args, init))
     }
 
     /// Creates a coroutine by moving exact positional arguments into its namespace.
@@ -1054,12 +1165,6 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        let instance_id = self
-            .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
-        // The instance now owns a reference to its class object.
-        self.heap.inc_ref(class_id);
-
         // Look up `__init__` in the class namespace (cloned out to release the borrow).
         let init = match self.heap.get(class_id) {
             HeapData::Class(class) => class
@@ -1069,6 +1174,16 @@ impl<'h> VM<'h> {
             _ => None,
         };
 
+        self.instantiate_class_with_init(class_id, args, init)
+    }
+
+    fn instantiate_class_with_init(
+        &mut self,
+        class_id: HeapId,
+        args: ArgValues,
+        init: Option<Value>,
+    ) -> Result<CallResult, RunError> {
+        let instance_id = self.allocate_instance(class_id);
         match init {
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
@@ -1093,18 +1208,18 @@ impl<'h> VM<'h> {
                 // Bound methods already carry their own receiver, and builtins,
                 // classes and other values are called with the constructor
                 // arguments unchanged.
-                let init_args = if this.is_function_value(init_func) {
-                    this.heap.inc_ref(instance_id);
-                    args.prepend(Value::Ref(instance_id))
-                } else {
-                    args
-                };
                 if this.is_plain_sync_function(init_func) {
                     // Push the instance as the pending result (transferring the
                     // allocation's reference), then run __init__ as a real
                     // (suspendable) frame.
                     this.push(Value::Ref(instance_id));
-                    match this.call_function(init_func, init_args)? {
+                    let result = if this.is_function_value(init_func) {
+                        this.heap.inc_ref(instance_id);
+                        this.call_bound_function(init_func, Value::Ref(instance_id), args)
+                    } else {
+                        this.call_function(init_func, args)
+                    };
+                    match result? {
                         CallResult::FramePushed => {
                             // Mark the just-pushed frame so its return value is
                             // discarded (after the `None` check in the ReturnValue
@@ -1123,6 +1238,12 @@ impl<'h> VM<'h> {
                     // Exotic `__init__` (builtin, class, `async def`, non-callable,
                     // ...): run to completion synchronously — no pending instance is
                     // pushed — and enforce CPython's `None`-return contract.
+                    let init_args = if this.is_function_value(init_func) {
+                        this.heap.inc_ref(instance_id);
+                        args.prepend(Value::Ref(instance_id))
+                    } else {
+                        args
+                    };
                     match this.evaluate_function(init_func, init_args) {
                         Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
                         Ok(result) => {
@@ -1139,6 +1260,14 @@ impl<'h> VM<'h> {
                 }
             }
         }
+    }
+
+    fn allocate_instance(&mut self, class_id: HeapId) -> HeapId {
+        let instance_id = self
+            .heap
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
+        self.heap.inc_ref(class_id);
+        instance_id
     }
 
     /// Whether `value` is a plain Python function object (`def`, closure, or
@@ -1214,9 +1343,7 @@ fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
 /// has a `Drop` impl that panics on stray `Ref` values, so it can only be
 /// passed by value once we know we'll consume it.
 ///
-/// Adding a new dunder is just a new arm in the inner `match`; type
-/// implementations only need to override the corresponding `PyTrait`
-/// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
+/// Add hooks to both the recognition guard and dispatch match; types override the corresponding `PyTrait` method.
 fn dispatch_dunder(
     name_id: StringId,
     heap_id: HeapId,
@@ -1224,6 +1351,10 @@ fn dispatch_dunder(
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
     let static_str = vm.interns.static_string(name_id)?;
+    // Ordinary native methods need no instance check here; `CallAttr` already inspected the receiver.
+    if !matches!(static_str, StaticStrings::Enter | StaticStrings::Exit) {
+        return None;
+    }
     // User-defined instances are never intercepted: an explicit
     // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
     // ordinary method call in CPython — the instance `__dict__` can shadow
