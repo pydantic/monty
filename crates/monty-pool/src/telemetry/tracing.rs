@@ -829,6 +829,19 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
             args_cut |= cut;
             os_call!("import_stubs", args.modules = modules)
         }
+        // a class target is recorded by its `ClassType` id, as `object_id` is for method calls;
+        // the bytes are untrusted and not yet validated, so a malformed id is never formatted
+        Some(Call::GetTypeHints(h)) => match &h.target {
+            Some(pb::os_call::get_type_hints::Target::Function(name)) => {
+                os_call!("get_type_hints", args.function = string_arg!(name))
+            }
+            Some(pb::os_call::get_type_hints::Target::ClassId(id)) => {
+                let class_id = MontyUuid::try_from_slice(&id.data)
+                    .map_or_else(|| "<invalid uuid>".to_owned(), |id| id.to_string());
+                os_call!("get_type_hints", args.class_id = class_id)
+            }
+            None => os_call!("get_type_hints"),
+        },
         // the pattern is recorded joined, as the user wrote it, built only up to the cap
         Some(Call::Scan(s)) => os_call!(
             "scan",

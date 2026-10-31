@@ -29,7 +29,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request
 
-from pydantic_monty import AsyncMontyWebsocket, ExternalModule, MontyRuntimeError, MontyShutdown
+from pydantic_monty import AsyncMontyWebsocket, ExternalModule, MontyDisconnectError, MontyRuntimeError, MontyShutdown
 from pydantic_monty._binary import find_monty_binary
 
 _RELAY_SCRIPT = Path(__file__).resolve().parents[3] / 'scripts' / 'websocket_relay.py'
@@ -548,3 +548,63 @@ def test_decode_budget_rejects_values_above_ceiling(max_decode_bytes: int):
 def test_decode_budget_rejects_values_outside_usize(max_decode_bytes: int):
     with pytest.raises(OverflowError):
         AsyncMontyWebsocket('ws://127.0.0.1:1', max_decode_bytes=max_decode_bytes)
+
+
+@pytest.mark.parametrize(
+    'close_code,close_reason',
+    [(1000, ''), (1008, 'session capacity exhausted'), (1001, '再起動中 🐍'), (None, None)],
+)
+async def test_disconnect_details(close_code: int | None, close_reason: str | None):
+    """Peer Close frames and abrupt EOFs keep distinct diagnostics through the public API."""
+
+    async def handler(websocket: ServerConnection) -> None:
+        await websocket.recv()  # Configure
+        await websocket.send(_bytes_field(10, b''))  # Ok
+        await websocket.recv()  # Feed
+        if close_code is None:
+            websocket.transport.abort()
+        else:
+            assert close_reason is not None
+            await websocket.close(close_code, close_reason)
+
+    async with serve(handler, '127.0.0.1', 0) as server:
+        host, port = server.sockets[0].getsockname()[:2]
+        async with AsyncMontyWebsocket(f'ws://{host}:{port}', auto_resume=False) as pool:
+            async with pool.checkout() as session:
+                with pytest.raises(MontyDisconnectError) as caught:
+                    await session.feed_run('1 + 1')
+                err = caught.value
+                assert err.stage == 'receive'
+                assert err.close_code == close_code
+                assert err.close_reason == close_reason
+                assert err.transport_error == (
+                    'WebSocket protocol error: Connection reset without closing handshake'
+                    if close_code is None
+                    else None
+                )
+                assert str(err) == 'monty worker connection closed while waiting for a reply'
+
+
+async def test_disconnect_rejects_text_without_echoing_payload():
+    """Unexpected text stays a disconnect, and its payload is not copied into diagnostics."""
+
+    async def handler(websocket: ServerConnection) -> None:
+        await websocket.recv()
+        await websocket.send(_bytes_field(10, b''))
+        await websocket.recv()
+        await websocket.send('private peer payload')
+        await websocket.wait_closed()
+
+    async with serve(handler, '127.0.0.1', 0) as server:
+        host, port = server.sockets[0].getsockname()[:2]
+        async with AsyncMontyWebsocket(f'ws://{host}:{port}') as pool:
+            async with pool.checkout() as session:
+                with pytest.raises(MontyDisconnectError) as caught:
+                    await session.feed_run('1 + 1')
+                err = caught.value
+                assert err.stage == 'receive'
+                assert err.close_code is None
+                assert err.close_reason is None
+                assert err.transport_error == 'unexpected non-binary WebSocket message'
+                with pytest.raises(AttributeError):
+                    setattr(err, 'close_code', 1000)

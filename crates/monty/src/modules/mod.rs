@@ -226,6 +226,7 @@ pub(crate) enum ModuleFunctions {
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
     Secrets(secrets::SecretsFunctions),
+    Typing(typing::TypingFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -266,6 +267,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Tomllib(func) => write!(f, "{func}"),
             Self::Decimal(func) => write!(f, "{func}"),
             Self::Fnmatch(func) => write!(f, "{func}"),
+            Self::Typing(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -305,6 +307,7 @@ impl ModuleFunctions {
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
+            Self::Typing(functions) => typing::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

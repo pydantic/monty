@@ -12,7 +12,8 @@ use monty_types::{
     MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs,
     ProcessTime, RandomSeed, RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode,
-    SourceRange, StackFrame, TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    SourceRange, StackFrame, TimeCaller, TypeHintsTarget, UnicodeErrorData, UrandomArgs, sleep_duration,
+    sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -1061,6 +1062,8 @@ fn os_calls_round_trip_all_variants() {
             module: "pkg.sub".to_owned(),
             search_path: vec!["/proj/pkg".to_owned(), "/lib".to_owned()],
         }),
+        OsFunctionCall::GetTypeHints(TypeHintsTarget::Function("fetch".to_owned())),
+        OsFunctionCall::GetTypeHints(TypeHintsTarget::Class(MontyUuid::from_u128(7))),
     ]
     .into_iter()
     // every caller, so a new one cannot be added without a wire round trip
@@ -1202,6 +1205,23 @@ fn a_stubs_ask_repeating_a_module_is_rejected() {
     assert_eq!(
         OsFunctionCall::try_from(call).unwrap_err().to_string(),
         "invalid value for ImportStubs.modules: module \"tools\" is asked about twice"
+    );
+}
+
+/// A `get_type_hints` ask needs a target, and a class id must be a 16-byte uuid.
+#[test]
+fn a_malformed_type_hints_ask_is_rejected() {
+    let call = |target| pb::os_call::Call::GetTypeHints(pb::os_call::GetTypeHints { target });
+    assert_eq!(
+        OsFunctionCall::try_from(call(None)).unwrap_err().to_string(),
+        "missing required field GetTypeHints.target"
+    );
+    let short_id = pb::os_call::get_type_hints::Target::ClassId(pb::Uuid {
+        data: vec![1, 2, 3].into(),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call(Some(short_id))).unwrap_err().to_string(),
+        "invalid value for GetTypeHints.class_id: uuid must be 16 bytes, got 3"
     );
 }
 

@@ -36,7 +36,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Class, Dict, Module, PyTrait, TupleVec, allocate_tuple,
+        Class, ClassAnnotations, Dict, Module, PyTrait, TupleVec, allocate_tuple,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
     },
@@ -646,16 +646,9 @@ fn field_annotation<'h>(class: &HeapRead<'h, Class>, name: StringId, vm: &VM<'h>
 
 /// The class's `__annotations__` dict, or `None` for a class body with none.
 fn annotations_dict<'a, 'h>(class: &HeapRead<'h, Class>, vm: &'a VM<'h>) -> Option<&'a Dict> {
-    match class
-        .get(vm.heap)
-        .namespace()
-        .get_by_str("__annotations__", vm.heap, vm.interns)
-    {
-        Some(Value::Ref(id)) => match vm.heap.get(*id) {
-            HeapData::Dict(annotations) => Some(annotations),
-            _ => None,
-        },
-        _ => None,
+    match class.get(vm.heap).annotations(vm.heap, vm.interns) {
+        ClassAnnotations::Dict(annotations) => Some(annotations),
+        ClassAnnotations::Missing | ClassAnnotations::NotADict => None,
     }
 }
 

@@ -70,14 +70,14 @@ use tokio::{
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
         dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
     },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{
-        CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_module_call, resolve_object_attr,
+        CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_intercepted_os_call, resolve_object_attr,
         wire_call_arguments,
     },
     get_not_handled,
@@ -1557,12 +1557,13 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             })
         })?;
         let callback_guard = callback_context.enter(py, &native)?;
-        // the host's modules answer their own OS calls, ahead of mounts and `os=`
-        let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
+        // intercepted OS calls are answered here, ahead of mounts and `os=`
+        let intercepted =
+            matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
         let search = module_import_search(&event);
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
-            TurnEvent::OsCall { .. } if module_call => {
+            TurnEvent::OsCall { .. } if intercepted => {
                 match sync_turn_answer(py, event, &lookup, &instances).and_then(|answer| match (answer, &search) {
                     // no host module: the file search, `os=` then mounts
                     (TurnAnswer::Call(ResumeValue::NotFound), Some(search)) => {
@@ -1717,8 +1718,8 @@ fn sync_turn_answer(
             function_name, args, ..
         } => {
             let result = lookup
-                .module_call(&function_name, &args)
-                .expect("only a module OS call reaches here");
+                .intercepted_os_call(&function_name, &args)
+                .expect("only an intercepted OS call reaches here");
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
@@ -1827,14 +1828,15 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             .as_ref()
             .map(monty_pool::Checkout::callback_context)
             .unwrap_or_default();
-        // the host's modules answer their own OS calls, ahead of mounts and `os=`
-        let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
+        // intercepted OS calls are answered here, ahead of mounts and `os=`
+        let intercepted =
+            matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
         let search = module_import_search(&event);
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
                 return Python::attach(|py| monty_to_py(py, &value, &instances));
             }
-            TurnEvent::OsCall { .. } if module_call => {
+            TurnEvent::OsCall { .. } if intercepted => {
                 let answer =
                     async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await;
                 let answer = match (answer, &search) {
@@ -1981,7 +1983,7 @@ async fn async_turn_answer(
             )
             .await
         }
-        // a module OS call, the only kind the drive loop sends here
+        // an intercepted OS call, the only kind the drive loop sends here
         TurnEvent::OsCall {
             function_name,
             args,
@@ -1989,7 +1991,7 @@ async fn async_turn_answer(
             allow_eager_await,
             ..
         } => {
-            let dispatch = || dispatch_module_call(&function_name, &args, names, instances);
+            let dispatch = || dispatch_intercepted_os_call(&function_name, &args, names, instances);
             answer_call(
                 dispatch,
                 call_id,
@@ -2314,7 +2316,9 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
         PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => MontyCrashedError::new_err(py, message, true, None),
-        PoolError::Disconnected { .. } => MontyDisconnectError::new_err(py, message),
+        PoolError::Disconnected { websocket, .. } => {
+            MontyDisconnectError::new_err(py, message, websocket.map(|details| *details))
+        }
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),

@@ -22,7 +22,14 @@ mod pool;
 mod print_target;
 mod snapshot;
 mod telemetry;
+mod type_hints;
 mod version;
+
+// The Python API cannot construct a Rust disconnect without transport evidence.
+// Private access tests that conversion without inventing peer details.
+#[cfg(test)]
+#[path = "../tests/rust/disconnect.rs"]
+mod disconnect_tests;
 
 use std::sync::OnceLock;
 

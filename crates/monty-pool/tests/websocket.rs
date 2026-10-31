@@ -40,6 +40,7 @@ use tokio::time::timeout;
 use tungstenite::{
     Message, WebSocket,
     handshake::server::{Request, Response},
+    protocol::{CloseFrame, frame::coding::CloseCode},
 };
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -2696,7 +2697,85 @@ async fn bare_disconnect_is_never_resumed() {
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("a closed connection must fail the turn");
-    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.close_code, None);
+    assert_eq!(details.close_reason, None);
+    assert_eq!(details.transport_error, None);
+    join_server(server).await;
+}
+
+/// Peer Close details survive teardown without implying that the request did not run.
+#[tokio::test]
+async fn disconnect_preserves_peer_close_details() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        socket
+            .close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: "session capacity exhausted".into(),
+            }))
+            .expect("close");
+        while try_read_request(&mut socket).is_some() {}
+    });
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("disconnect");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.close_code, Some(1008));
+    assert_eq!(details.close_reason.as_deref(), Some("session capacity exhausted"));
+    assert_eq!(details.transport_error, None);
+    join_server(server).await;
+}
+
+/// A TCP EOF without a Close frame retains the protocol error rather than a fabricated Close code.
+#[tokio::test]
+async fn disconnect_preserves_abrupt_eof() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+    });
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("disconnect");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.close_code, None);
+    assert_eq!(details.close_reason, None);
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("WebSocket protocol error: Connection reset without closing handshake")
+    );
     join_server(server).await;
 }
 
@@ -2890,7 +2969,12 @@ async fn a_dropped_connection_is_a_disconnect() {
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         // the server drops the session while the client sits idle, then exits
-        let _ = socket.close(None);
+        socket
+            .close(Some(CloseFrame {
+                code: CloseCode::Away,
+                reason: "idle timeout".into(),
+            }))
+            .expect("close");
     });
 
     let (_pool, mut checkout) = websocket_checkout(port).await;
@@ -2909,7 +2993,16 @@ async fn a_dropped_connection_is_a_disconnect() {
         .feed("x", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("a closed connection must fail the turn");
-    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.close_code, Some(1001));
+    assert_eq!(details.close_reason.as_deref(), Some("idle timeout"));
+    assert_eq!(details.transport_error, None);
 }
 
 /// The suspension position every hand-built event carries.

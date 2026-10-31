@@ -746,9 +746,9 @@ impl Program {
                     args.drop_with(vm);
                     frame_exit_result = vm.resume_with_exception(err);
                 }
-                // An import nobody serves is a missing module.
+                // An import nobody serves is a missing module, and host hints are `{}`.
                 Ok(FrameExit::OsCall {
-                    function_call: call @ OsFunctionCall::Import(_),
+                    function_call: call @ (OsFunctionCall::Import(_) | OsFunctionCall::GetTypeHints(_)),
                     effect,
                     ..
                 }) => {

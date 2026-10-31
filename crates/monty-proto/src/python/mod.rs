@@ -2,7 +2,8 @@
 //!
 //! Bidirectional conversions between PyO3 Python objects and the boundary's
 //! value arenas (`MontyGraph`) and `MontyException`, shared by every embedder
-//! that hosts a real CPython (currently the `pydantic-monty` extension module).
+//! that hosts a real CPython: the `pydantic-monty` extension module, and the
+//! embedded-CPython worker `monty-cpython` (in the private `monty-private` repository).
 //! Sharing is preserved both ways for containers and wrappers: one such host
 //! object referenced twice in a message crosses as one node, and one node
 //! decodes to one Python object (leaves are re-encoded per reference).
@@ -25,7 +26,7 @@ pub use class_instance::{
     InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy, is_class_instance_wrapper, is_class_type_wrapper,
     uuid_to_py,
 };
-pub use convert::{PyMontyFileHandle, get_docstring};
+pub use convert::{PyMontyFileHandle, get_docstring, py_type_object_to_monty};
 pub use decode::{DecodedArena, monty_to_py};
 pub use encode::{GraphEncoder, py_to_monty, py_to_monty_value};
 pub use exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_node};

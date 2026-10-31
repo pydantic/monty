@@ -836,6 +836,7 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::AsyncSystemSleep(_)) => "async_system_sleep",
         Some(Call::Import(_)) => "import",
         Some(Call::ImportStubs(_)) => "import_stubs",
+        Some(Call::GetTypeHints(_)) => "get_type_hints",
         Some(Call::Scan(_)) => "scan",
         None => "unknown",
     }

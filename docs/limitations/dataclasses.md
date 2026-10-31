@@ -36,8 +36,8 @@ around a decoration will not catch these.
     imply.
 - **`InitVar[...]`** — raises
     `NotImplementedError: dataclass() does not yet support InitVar (field <name>), which would become an ordinary field`.
-    Detected textually, since annotations are never evaluated: the name need not
-    be imported to be rejected.
+    Detected textually, since `@dataclass` never evaluates annotations: the name
+    need not be imported to be rejected.
 - **Every `field(...)` argument except `default` and `default_factory`** —
     `init`, `repr`, `hash`, `compare`, `metadata`, `kw_only` and `doc`. Setting one
     away from its CPython default raises
@@ -64,8 +64,8 @@ field after a defaulted one
 ## Divergences from CPython
 
 - **Annotations are stringized.** Fields come from the class's
-    `__annotations__`, which Monty stores as never-evaluated source text (always
-    PEP 563); see [typing.md](typing.md). Field
+    `__annotations__`, which Monty stores as source text (always PEP 563) that
+    only [`get_type_hints`](typing.md#get_type_hints) evaluates; see [typing.md](typing.md). Field
     discovery and the generated methods are unaffected, the field *type* being
     inert metadata, but `C.__dataclass_fields__['x'].type` is the string `'int'`,
     not the `int` type object.

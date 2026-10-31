@@ -13,7 +13,7 @@ use crate::{
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
-    modules::functools,
+    modules::{functools, typing},
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
@@ -36,6 +36,9 @@ pub(crate) enum FrozenFunction {
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
+    /// Evaluate stringized annotations for `typing.get_type_hints`.
+    #[serde(rename = "typing.get_type_hints")]
+    TypingGetTypeHints,
 }
 
 impl FrozenFunction {
@@ -73,6 +76,7 @@ impl FrozenFunction {
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
+            Self::TypingGetTypeHints => typing::GET_TYPE_HINTS_SOURCE,
         }
     }
 }
@@ -82,6 +86,8 @@ impl FrozenFunction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
+    /// Evaluate one annotation string in explicit namespaces.
+    EvalHint,
     /// Call a user `__iter__` without validating its result yet.
     GetIter,
     /// Insert a successful result into a cache wrapper.
@@ -93,6 +99,7 @@ pub(crate) enum FrozenFunctions {
 /// Dispatches private helpers using the same argument ownership rules as public natives.
 pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     match function {
+        FrozenFunctions::EvalHint => typing::call_eval_hint(args, vm),
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),

@@ -3,7 +3,13 @@ use std::{
     fmt::{self, Write},
 };
 
-use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
+use crate::{
+    args::Signature,
+    bytecode::Code,
+    expressions::Identifier,
+    intern::{Interns, StringId},
+    namespace::NamespaceId,
+};
 
 /// How an exact positional call can bypass argument binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +95,9 @@ pub(crate) struct Function {
     /// than merely checked.
     #[serde(skip)]
     exact_positional_call: OnceCell<Option<ExactPositionalCall>>,
+    /// Stringized `(name, annotation)` pairs, evaluated by `typing.get_type_hints()`.
+    #[serde(rename = "H", default, skip_serializing_if = "<[_]>::is_empty")]
+    pub annotations: Box<[(StringId, StringId)]>,
     /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
     #[serde(rename = "B")]
     pub code: Code,
@@ -134,8 +143,16 @@ impl Function {
             defaults_count,
             is_async,
             exact_positional_call: OnceCell::new(),
+            annotations: Box::default(),
             code,
         }
+    }
+
+    /// Attaches the stringized parameter and return annotations.
+    #[must_use]
+    pub fn with_annotations(mut self, annotations: Box<[(StringId, StringId)]>) -> Self {
+        self.annotations = annotations;
+        self
     }
 
     /// Returns the binder-free call plan for this function, deriving and

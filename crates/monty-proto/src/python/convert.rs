@@ -22,14 +22,14 @@ use strum::{IntoEnumIterator, VariantNames};
 
 use super::exceptions::exc_class_to_py;
 
-/// Inverse of [`host_type_object`]: maps a host class passed *into* the sandbox
+/// Inverse of `host_type_object`: maps a host class passed *into* the sandbox
 /// to the Monty [`MontyType`] it represents, so it round-trips instead of degrading to
 /// a callable. Matches by type-object **identity**, not `__module__`/`__name__` —
 /// the latter is spoofable and churns across Python versions (e.g. `pathlib` paths
 /// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
-/// [`MontyType::Path`]. Returns `None` for classes Monty does not model, which the
-/// caller then represents as a function node.
-pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
+/// [`MontyType::Path`]. Returns `None` for classes Monty does not model: the encoder
+/// sends those as a function node, a type hint as the class's dotted name.
+pub fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
         if ty.is(obj) {

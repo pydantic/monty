@@ -203,6 +203,8 @@ pub enum PoolError {
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,
+        /// Transport evidence, absent when the connection task supplied no details.
+        websocket: Option<Box<WebSocketDisconnect>>,
     },
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` restores the session
@@ -244,6 +246,19 @@ pub enum CrashCause {
     },
 }
 
+/// The first recorded WebSocket failure, without a claim about whether guest code ran.
+#[derive(Debug, Clone)]
+pub struct WebSocketDisconnect {
+    /// The I/O operation that observed the failure: `send` or `receive`.
+    pub stage: &'static str,
+    /// The peer's Close frame code, if a Close frame supplied one.
+    pub close_code: Option<u16>,
+    /// The peer's Close frame reason, if a Close frame supplied one.
+    pub close_reason: Option<String>,
+    /// The transport or protocol error for this failure; absent for a peer Close frame.
+    pub transport_error: Option<String>,
+}
+
 impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -266,7 +281,7 @@ impl fmt::Display for PoolError {
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
-            Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
+            Self::Disconnected { context, .. } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
                     f.write_str("monty server is shutting down; the request did not run (restorable state attached)")

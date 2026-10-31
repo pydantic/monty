@@ -8,7 +8,7 @@ use std::{str, sync::Arc};
 
 use crate::{
     args::{ArgValues, FromArgs, Signature},
-    bytecode::{CallResult, Compiler, FrameNamespace, VM},
+    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
@@ -112,25 +112,67 @@ fn run_snippet(
     locals: Option<HeapId>,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
-    if source.contains('\0') {
-        return Err(
-            SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into(),
-        );
-    }
+    reject_null_bytes(source)?;
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
     let (names, namespace) = vm.snippet_namespace(globals, locals)?;
-    let globals_len = vm.global_names.len();
     let kind = match builtin {
         Builtin::Eval => SnippetSource::Eval,
         Builtin::Exec => SnippetSource::Exec,
     };
-    let result = compile_and_push(kind, source, names, namespace, vm);
-    if result.is_err() {
-        vm.global_names.truncate(globals_len);
+    compile_and_push(kind, source, names, namespace, vm)?;
+    Ok(CallResult::FramePushed)
+}
+
+/// Evaluates one stringized annotation for `typing.get_type_hints()`.
+///
+/// Runs in borrowed `globals` / `locals` dicts (`None` globals means the module slots),
+/// with `globals_first` letting bound slot globals shadow `locals`. A `forward_ref`
+/// compiles as CPython's `ForwardRef` does: a compile error or leading indentation
+/// raises its "must be an expression" error. Each distinct text and mode compiles once per session.
+/// The namespace is built here, not by `snippet_namespace`, which would inherit the
+/// calling frame's: the caller is frozen code.
+pub(crate) fn eval_hint(
+    source: &Value,
+    globals: Option<HeapId>,
+    locals: Option<HeapId>,
+    globals_first: bool,
+    forward_ref: bool,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let text = snippet_source("eval", source, vm)?;
+    if forward_ref && first_code_line_indented(&text) {
+        return Err(ExcType::forward_ref_not_expression(&text));
     }
-    result
+    let not_expression = |err: RunError| {
+        if forward_ref && err.is_catchable(ExcType::SyntaxError) {
+            ExcType::forward_ref_not_expression(&text)
+        } else {
+            err
+        }
+    };
+    reject_null_bytes(&text).map_err(not_expression)?;
+    for dict in globals.into_iter().chain(locals) {
+        vm.heap.inc_ref(dict);
+    }
+    let (globals, names) = match (globals, locals) {
+        (Some(dict), _) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
+        (None, Some(_)) => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
+        (None, None) => (FrameGlobals::Slots, SnippetNames::Slots),
+    };
+    let namespace = Box::new(FrameNamespace::Snippet {
+        globals,
+        locals,
+        globals_first,
+    });
+    if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
+        vm.push_snippet_frame(func_id, None, namespace)?;
+    } else {
+        let func_id = compile_and_push(SnippetSource::Eval, &text, names, namespace, vm).map_err(not_expression)?;
+        vm.interns.set_hint_snippet(names, text, func_id);
+    }
+    Ok(CallResult::FramePushed)
 }
 
 /// What runtime-compiled source is: it decides how the source parses, the
@@ -146,15 +188,77 @@ pub(crate) enum SnippetSource<'a> {
 }
 
 /// Compiles privately and publishes only after the snippet's frame is admitted.
+///
+/// Provisional global slots are released if compilation or admission fails.
 pub(crate) fn compile_and_push(
     kind: SnippetSource<'_>,
     source: &Arc<str>,
     names: SnippetNames,
     namespace: Box<FrameNamespace>,
     vm: &mut VM<'_>,
-) -> RunResult<CallResult> {
+) -> RunResult<FunctionId> {
+    let globals_len = vm.global_names.len();
     let mut namespace_guard = DropGuard::new(namespace, vm);
     let (_, vm) = namespace_guard.as_parts_mut();
+    match compile_snippet(kind, source, names, vm) {
+        Ok((func_id, overlay)) => {
+            // `push_snippet_frame` owns the namespace from here, on every path.
+            let (namespace, vm) = namespace_guard.into_parts();
+            let pushed = vm.push_snippet_frame(func_id, Some(overlay), namespace);
+            if pushed.is_ok() {
+                vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
+            } else {
+                vm.global_names.truncate(globals_len);
+            }
+            pushed.map(|()| func_id)
+        }
+        // The guard releases the namespace's dict references.
+        Err(err) => {
+            let (_, vm) = namespace_guard.as_parts_mut();
+            vm.global_names.truncate(globals_len);
+            Err(err)
+        }
+    }
+}
+
+/// The `SyntaxError` for snippet source holding a NUL, checked before any namespace is built.
+fn reject_null_bytes(source: &str) -> RunResult<()> {
+    if source.contains('\0') {
+        Err(SimpleException::new_msg(ExcType::SyntaxError, "source code string cannot contain null bytes").into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether the first line of code in `source` is indented, which `compile()` rejects
+/// but `eval()` strips. Like CPython's tokenizer, it skips blank and comment-only
+/// lines, and a form feed resets the column.
+fn first_code_line_indented(source: &str) -> bool {
+    source
+        .lines()
+        .find_map(|line| {
+            let mut indented = false;
+            for c in line.chars() {
+                match c {
+                    ' ' | '\t' => indented = true,
+                    '\x0c' => indented = false,
+                    '#' => return None,
+                    _ => return Some(indented),
+                }
+            }
+            None
+        })
+        .unwrap_or(false)
+}
+
+/// Parses, prepares and compiles `source` into an unpublished overlay, returning
+/// the snippet function's ID within it.
+fn compile_snippet<'h>(
+    kind: SnippetSource<'_>,
+    source: &Arc<str>,
+    names: SnippetNames,
+    vm: &mut VM<'h>,
+) -> RunResult<(FunctionId, CompileInterns<'h>)> {
     let mut overlay = CompileInterns::new(vm.interns);
     let filename_id = match kind {
         SnippetSource::File { path } => overlay.add_file_source(Arc::from(path), Arc::clone(source)),
@@ -219,10 +323,7 @@ pub(crate) fn compile_and_push(
     })?;
 
     overlay.push_function(function);
-    let (namespace, vm) = namespace_guard.into_parts();
-    vm.push_snippet_frame(func_id, overlay, namespace)?;
-    vm.globals.resize_with(vm.global_names.len(), || Value::Undefined);
-    Ok(CallResult::FramePushed)
+    Ok((func_id, overlay))
 }
 
 /// The snippet's text: a `str`, or `bytes` decoded as UTF-8.

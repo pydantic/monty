@@ -76,6 +76,11 @@ impl LruCache {
         }
     }
 
+    /// The wrapped callable (`__wrapped__`), or `None` for a decorator awaiting one.
+    pub(crate) fn wrapped(&self) -> Option<&Value> {
+        self.func.as_ref()
+    }
+
     /// Invokes `on_child` for each heap id this wrapper owns (GC trace hook).
     ///
     /// MUST report exactly the ids [`HeapItem::py_dec_ref_ids`] releases.
