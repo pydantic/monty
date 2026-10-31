@@ -522,6 +522,14 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_ixor_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_ixor_impl(other, vm)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn py_cmp_op(&self, other: &Self, op: CmpOperator, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_cmp_op(other, op, vm)

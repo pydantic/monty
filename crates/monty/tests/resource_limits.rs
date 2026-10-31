@@ -672,6 +672,31 @@ fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
 }
 
+/// The variadic set updates make one pass per operand inside a single call, and a
+/// pass over fewer than `LOOP_CHECK_INTERVAL` entries polls nothing, so they poll the
+/// time limit between operands. The budget leaves time to build the operands first;
+/// without the checks between them, these calls ran for a minute or more.
+#[test]
+fn timeout_in_variadic_set_updates() {
+    for call in [
+        "s.update(*([s] * 10**6))",
+        "s.intersection_update(*([s] * 10**6))",
+        "s.difference_update(*([t] * 10**6))",
+    ] {
+        let code = format!("s = set(range(50))\nt = set(range(50, 100))\n{call}");
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(1500));
+        let start = Instant::now();
+        let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+        let elapsed = start.elapsed();
+        assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError, "{call}");
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "{call}: should terminate promptly, took {elapsed:?}"
+        );
+    }
+}
+
 /// Calibrate parsing separately so this measures traversal polling, not host speed.
 #[test]
 fn timeout_in_str_format_field_access_chain() {

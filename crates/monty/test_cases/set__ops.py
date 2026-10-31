@@ -115,6 +115,205 @@ try:
 except TypeError as e:
     assert str(e) == "unsupported operand type(s) for -: 'set' and 'list'"
 
+# === In-place operators change the set itself ===
+s = {1, 2, 3}
+alias = s
+s &= {2, 3, 4}
+assert alias == {2, 3}
+s |= frozenset({5})
+assert alias == {2, 3, 5}
+s -= {2}
+assert alias == {3, 5}
+s ^= {5, 6}
+assert alias == {3, 6}
+assert s is alias
+
+# Only a `set` or `frozenset` updates in place: a `dict` view gives a new set, as
+# the binary operator does, and anything else is an error.
+s = {'a', 'c'}
+alias = s
+s |= {'b': 1, 'c': 2}.keys()
+assert s == {'a', 'b', 'c'}
+assert alias == {'a', 'c'}
+keys = {'b': 1, 'c': 2}.keys()
+s = alias = {'a', 'c'}
+s &= keys
+assert (s, alias) == ({'c'}, {'a', 'c'})
+s = alias = {'a', 'c'}
+s -= keys
+assert (s, alias) == ({'a'}, {'a', 'c'})
+s = alias = {'a', 'c'}
+s ^= keys
+assert (s, alias) == ({'a', 'b'}, {'a', 'c'})
+for operand in ([1], 'ab', None):
+    s = {1}
+    try:
+        s |= operand
+        assert False, 'expected TypeError'
+    except TypeError:
+        pass
+    assert s == {1}
+
+# Other types without an in-place `^` fall back to the binary operator
+x = 5
+x ^= 3
+assert x == 6
+items = [1]
+try:
+    items ^= [2]
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
+
+# A frozenset is immutable, so its in-place operators still build a new frozenset.
+f = frozenset({1, 2})
+alias = f
+f |= {3}
+assert f == frozenset({1, 2, 3})
+assert alias == frozenset({1, 2})
+
+# === intersection_update / difference_update / symmetric_difference_update ===
+s = {1, 2, 3, 4}
+alias = s
+assert s.intersection_update([2, 3, 4, 5], (3, 4, 6)) is None
+assert alias == {3, 4}
+s.difference_update({4}, 'x', [7])
+assert alias == {3}
+s.symmetric_difference_update(range(2, 5))
+assert alias == {2, 4}
+s.intersection_update()
+s.difference_update()
+assert alias == {2, 4}
+assert s is alias
+
+# === update() takes any number of iterables ===
+s = {1}
+s.update([2], (3,), {4: 'x'}, range(5, 7))
+assert s == {1, 2, 3, 4, 5, 6}
+s.update()
+assert s == {1, 2, 3, 4, 5, 6}
+
+for compute, message in [
+    (lambda: {1}.intersection_update([1], 2), "'int' object is not iterable"),
+    (lambda: {1}.difference_update(None), "'NoneType' object is not iterable"),
+    (
+        lambda: {1}.symmetric_difference_update(),
+        'set.symmetric_difference_update() takes exactly one argument (0 given)',
+    ),
+    (
+        lambda: {1}.symmetric_difference_update([1], [2]),
+        'set.symmetric_difference_update() takes exactly one argument (2 given)',
+    ),
+    (lambda: {1}.update([2], 3), "'int' object is not iterable"),
+    (lambda: {1}.symmetric_difference_update(2), "'int' object is not iterable"),
+    (lambda: {1}.update(x=1), 'set.update() takes no keyword arguments'),
+    (lambda: {1}.intersection_update(x=1), 'set.intersection_update() takes no keyword arguments'),
+    (lambda: {1}.difference_update(x=1), 'set.difference_update() takes no keyword arguments'),
+]:
+    try:
+        compute()
+        assert False, f'expected TypeError: {message}'
+    except TypeError as e:
+        assert str(e) == message
+
+# On an error part way, intersection_update changes nothing (CPython swaps the
+# result in at the end), while difference_update keeps the operands it applied.
+s = {1, 2, 3}
+try:
+    s.intersection_update([1, 2], 5)
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
+assert s == {1, 2, 3}
+try:
+    s.difference_update([1], 5)
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
+assert s == {2, 3}
+
+
+# update and difference_update apply each item as it arrives, so an iterator that
+# raises part way keeps the items before the error.
+class RaiseAtZero:
+    def __init__(self, items):
+        self.items = list(items)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        item = self.items.pop(0)
+        if item == 0:
+            raise ValueError('stop')
+        return item
+
+
+s = {1, 2, 3}
+try:
+    s.update(RaiseAtZero([4, 5, 0]))
+    assert False, 'expected ValueError'
+except ValueError:
+    pass
+assert s == {1, 2, 3, 4, 5}
+try:
+    s.difference_update(RaiseAtZero([1, 2, 0]))
+    assert False, 'expected ValueError'
+except ValueError:
+    pass
+assert s == {3, 4, 5}
+s.difference_update(s)
+assert s == set()
+
+
+# An `__iter__` that raises leaves the set unchanged
+class RaisingIter:
+    def __iter__(self):
+        raise ValueError('iter')
+
+
+s = {1, 2}
+for update in [lambda: s.update(RaisingIter()), lambda: s.difference_update(RaisingIter())]:
+    try:
+        update()
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == 'iter'
+assert s == {1, 2}
+
+
+# An `__eq__` that raises on a hash collision propagates from every in-place form
+class RaisingEq:
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        raise ValueError('eq')
+
+
+def ior(s, t):
+    s |= t
+
+
+def iand(s, t):
+    s &= t
+
+
+def isub(s, t):
+    s -= t
+
+
+def ixor(s, t):
+    s ^= t
+
+
+for update in [ior, iand, isub, ixor, lambda s, t: s.intersection_update(t)]:
+    try:
+        update({RaisingEq()}, {RaisingEq()})
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == 'eq'
+
 # === Issubset ===
 s1 = set([1, 2])
 s2 = set([1, 2, 3])

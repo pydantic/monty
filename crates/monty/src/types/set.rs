@@ -4,7 +4,7 @@ use monty_types::{ResourceError, ResourceTracker};
 
 use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
-    args::ArgValues,
+    args::{ArgPosIter, ArgValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -878,7 +878,7 @@ impl<'h> HeapReadMut<'h, Set> {
         Ok(true)
     }
 
-    /// Updates from a snapshotted set or an arbitrary iterable.
+    /// Updates from a snapshotted set, or from any other iterable item by item.
     fn hr_update(&self, other: Value, vm: &mut VM<'h>) -> RunResult<()> {
         // Try direct extraction from Set/FrozenSet
         let entries_opt = {
@@ -897,9 +897,67 @@ impl<'h> HeapReadMut<'h, Set> {
             return self.extend_from_entries(entries, vm);
         }
 
-        // Fall back to iterable
-        let mut temp_set = Set::from_iterable(other, vm)?;
-        self.extend_from_entries(temp_set.0.table.take_entries(), vm)
+        self.for_each_item(other, vm, |set, item, vm| set.add(item, vm).map(drop))
+    }
+
+    /// `difference_update` with one operand. A set is snapshotted first, which
+    /// covers `s.difference_update(s)`; any other iterable is removed item by item.
+    fn difference_update(&self, other: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if is_any_set(&other, vm) {
+            return self.algebra_update(other, SetAlgebra::Difference, vm);
+        }
+        self.for_each_item(other, vm, |set, item, vm| {
+            defer_drop!(item, vm);
+            set.discard(item, vm)
+        })
+    }
+
+    /// Applies `apply` to each item of `iterable` as it is yielded, as CPython's
+    /// `update` and `difference_update` do: an iterator that raises part way
+    /// keeps the items before the error.
+    fn for_each_item(
+        &self,
+        iterable: Value,
+        vm: &mut VM<'h>,
+        mut apply: impl FnMut(&Self, Value, &mut VM<'h>) -> RunResult<()>,
+    ) -> RunResult<()> {
+        let iterator = iterable.into_py_iter(vm)?.require_synchronous(vm)?;
+        defer_drop!(iterator, vm);
+        let mut iterator = iterator.read(vm);
+        while let Some(item) = iterator.py_next(vm)? {
+            apply(self, item, vm)?;
+        }
+        Ok(())
+    }
+
+    /// The in-place form of a set operation: `op` with `other` (any iterable)
+    /// replaces the elements, as CPython's `set_swap_bodies` does, and the old
+    /// elements are released. Backs `difference_update` and `symmetric_difference_update`.
+    fn algebra_update(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<()> {
+        let result = self.algebra_storage(other, op, vm)?;
+        self.replace_storage(result, vm);
+        Ok(())
+    }
+
+    /// Swaps in the result of an in-place operation and releases the old elements.
+    fn replace_storage(&self, storage: SetStorage, vm: &mut VM<'h>) {
+        let previous = mem::replace(&mut self.get_mut(vm.heap).0, storage);
+        previous.drop_with(vm);
+    }
+
+    /// Applies `difference_update` with each operand in turn, as CPython does: an
+    /// error part way keeps the operands applied so far, and the operands it does
+    /// not reach are released.
+    fn difference_update_each(&self, others: ArgPosIter, vm: &mut VM<'h>) -> RunResult<()> {
+        defer_drop_mut!(others, vm);
+        loop {
+            // As in `update`: poll the clock before each operand's pass.
+            vm.heap.tracker.check_memory_time()?;
+            let Some(other) = others.next() else {
+                return Ok(());
+            };
+            self.difference_update(other, vm)?;
+        }
     }
 
     /// Inserts owned entries in order, releasing any that are left if one fails.
@@ -926,23 +984,56 @@ impl<'h> HeapRead<'h, Set> {
         self.storage().contains(value, vm)
     }
 
+    /// The intersection of the set and every operand (any iterables), built in a
+    /// separate storage: CPython's `intersection_update(*others)` swaps it in only
+    /// at the end, so an error part way leaves the set unchanged.
+    fn intersection_all(&self, others: ArgPosIter, vm: &mut VM<'h>) -> RunResult<SetStorage> {
+        defer_drop_mut!(others, vm);
+        let mut result = clone_storage_checked(&self.get(vm.heap).0, vm)?;
+        loop {
+            // As in `update`: poll the clock before each operand's pass.
+            if let Err(error) = vm.heap.tracker.check_memory_time() {
+                result.drop_with(vm);
+                return Err(error.into());
+            }
+            let Some(other) = others.next() else {
+                return Ok(result);
+            };
+            let mut result_guard = DropGuard::new(result, vm);
+            let next = {
+                let (current, vm) = result_guard.as_parts_mut();
+                let other_storage = Set::get_storage_from_value(other, vm)?;
+                defer_drop!(other_storage, vm);
+                let current = vm.heap.protect(&*current);
+                let other_storage = vm.heap.protect(other_storage);
+                current.intersection(&other_storage, vm)?
+            };
+            let (previous, vm) = result_guard.into_parts();
+            previous.drop_with(vm);
+            result = next;
+        }
+    }
+
     /// Set algebra operations (union, intersection, difference, symmetric_difference)
-    /// via HeapRead. Snapshots the other operand once so only `self` is read
-    /// live, then calls the matching `SetStorage` method.
+    /// via HeapRead, as a new set.
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
+        let result = self.algebra_storage(other, op, vm)?;
+        let heap_id = vm.heap.allocate(HeapData::Set(Set(result)));
+        Ok(Value::Ref(heap_id))
+    }
+
+    /// The elements of `op` with `other` (any iterable). Snapshots the other operand
+    /// once so only `self` is read live, then calls the matching `SetStorage` method.
+    fn algebra_storage(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<SetStorage> {
         let other_storage = Set::get_storage_from_value(other, vm)?;
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
-
-        let result = match op {
+        Ok(match op {
             SetAlgebra::Union => self.storage().union(&other_storage, vm)?,
             SetAlgebra::Intersection => self.storage().intersection(&other_storage, vm)?,
             SetAlgebra::Difference => self.storage().difference(&other_storage, vm)?,
             SetAlgebra::SymmetricDifference => self.storage().symmetric_difference(&other_storage, vm)?,
-        };
-
-        let heap_id = vm.heap.allocate(HeapData::Set(Set(result)));
-        Ok(Value::Ref(heap_id))
+        })
     }
 
     /// Set comparison operations (issubset, issuperset, isdisjoint) via HeapRead.
@@ -1204,6 +1295,45 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
+    // The in-place operators change the set itself, so an alias sees the result.
+    // They take only a `set` or `frozenset`; anything else falls back to the binary
+    // operator, which builds a new set for a `dict` view and raises otherwise.
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        if !is_any_set(other, vm) {
+            return Ok(false);
+        }
+        self.hr_update(other.clone_with_heap(vm), vm)?;
+        Ok(true)
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        if !is_any_set(other, vm) {
+            return Ok(false);
+        }
+        let Set(result) = self.and_value(other, vm)?.expect("a set operand gives a set");
+        self.replace_storage(result, vm);
+        Ok(true)
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        if !is_any_set(other, vm) {
+            return Ok(false);
+        }
+        let Set(result) = self.sub_value(other, vm)?.expect("a set operand gives a set");
+        self.replace_storage(result, vm);
+        Ok(true)
+    }
+
+    fn py_ixor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        if !is_any_set(other, vm) {
+            return Ok(false);
+        }
+        let Set(result) = self.xor_value(other, vm)?.expect("a set operand gives a set");
+        self.replace_storage(result, vm);
+        Ok(true)
+    }
+
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
@@ -1243,8 +1373,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
                 Ok(Value::Ref(heap_id))
             }
             Some(StaticStrings::Update) => {
-                let other = args.get_one_arg("set.update", vm.heap)?;
-                self.hr_update(other, vm)?;
+                let others = args.into_pos_only("set.update", vm.heap)?;
+                defer_drop_mut!(others, vm);
+                loop {
+                    // Each operand is a full pass, so poll the clock before taking the next
+                    // one; on a timeout the guard releases the operands not reached.
+                    vm.heap.tracker.check_memory_time()?;
+                    let Some(other) = others.next() else {
+                        break Ok(Value::None);
+                    };
+                    self.hr_update(other, vm)?;
+                }
+            }
+            Some(StaticStrings::IntersectionUpdate) => {
+                let others = args.into_pos_only("set.intersection_update", vm.heap)?;
+                let result = self.intersection_all(others, vm)?;
+                self.replace_storage(result, vm);
+                Ok(Value::None)
+            }
+            Some(StaticStrings::DifferenceUpdate) => {
+                let others = args.into_pos_only("set.difference_update", vm.heap)?;
+                self.difference_update_each(others, vm)?;
+                Ok(Value::None)
+            }
+            Some(StaticStrings::SymmetricDifferenceUpdate) => {
+                let other = args.get_one_arg("set.symmetric_difference_update", vm.heap)?;
+                self.algebra_update(other, SetAlgebra::SymmetricDifference, vm)?;
                 Ok(Value::None)
             }
             Some(StaticStrings::Union) => {
@@ -1598,6 +1752,12 @@ impl HeapItem for FrozenSet {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.storage.collect_dec_ref_ids(stack);
     }
+}
+
+/// Whether `value` is a `set` or `frozenset`, the only operands CPython's in-place
+/// set operators (`set_ior` and its siblings) take.
+fn is_any_set(value: &Value, vm: &VM<'_>) -> bool {
+    matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Set(_) | HeapData::FrozenSet(_)))
 }
 
 /// Returns temporary set storage only for operator-valid set operands.

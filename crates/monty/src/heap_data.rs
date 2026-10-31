@@ -903,6 +903,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
     }
 
+    fn py_ixor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_ixor_impl(other, vm), else Ok(false))
+    }
+
     fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
     }

@@ -1518,7 +1518,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
                 Opcode::InplaceXor => {
-                    try_catch!(self, self.binary_xor());
+                    try_catch!(self, self.inplace_xor());
                 }
                 Opcode::InplaceLShift => {
                     try_catch!(self, self.binary_lshift());
