@@ -68,9 +68,16 @@ assert (
 assert Any_.dump_python(date(2020, 1, 1), mode='json') == '2020-01-01'
 assert Any_.dump_python(time(1, 2, 3, 4, tzinfo=timezone.utc), mode='json') == '01:02:03.000004Z'
 assert Any_.dump_python(
-    [timedelta(days=400, hours=1, microseconds=5), timedelta(0), timedelta(seconds=-1), timedelta(days=-1, seconds=1)],
+    [
+        timedelta(days=400, hours=1, microseconds=5),
+        timedelta(0),
+        timedelta(seconds=-1),
+        timedelta(days=-1, seconds=1),
+        timedelta(days=999_999_999),
+        timedelta(days=-999_999_999),
+    ],
     mode='json',
-) == ['P1Y35DT1H0.000005S', 'PT0S', '-PT1S', '-PT23H59M59S']
+) == ['P1Y35DT1H0.000005S', 'PT0S', '-PT1S', '-PT23H59M59S', 'P2739726Y9D', '-P2739726Y9D']
 assert Any_.dump_python(
     [Decimal('1.50'), Decimal('1E+1'), Decimal('-0'), Decimal('NaN'), Decimal('Infinity')], mode='json'
 ) == ['1.50', '1E+1', '-0', 'NaN', 'Infinity']
@@ -87,11 +94,20 @@ assert error(lambda: Any_.dump_python(len, mode='json')) == (
 
 # === JSON mode keys are strings ===
 assert Any_.dump_python(
-    {1: 1, None: 3, 1.5: 4, 'a': 5, b'b': 6, date(2020, 1, 1): 7, Decimal('1.5'): 8, (1, 2): 9}, mode='json'
-) == {'1': 1, 'None': 3, '1.5': 4, 'a': 5, 'b': 6, '2020-01-01': 7, '1.5': 8, '1,2': 9}
+    {1: 1, None: 3, 1.5: 4, 'a': 5, b'b': 6, date(2020, 1, 1): 7, Decimal('2.5'): 8, (1, 2): 9}, mode='json'
+) == {'1': 1, 'None': 3, '1.5': 4, 'a': 5, 'b': 6, '2020-01-01': 7, '2.5': 8, '1,2': 9}
 assert Any_.dump_python({True: 1, False: 2}, mode='json') == {'true': 1, 'false': 2}
 assert Any_.dump_python({float('inf'): 1}, mode='json') == {'None': 1}
 assert TypeAdapter(dict[float, int]).dump_python({float('inf'): 1}, mode='json') == {'inf': 1}
+# a key typed `float` through a union or `Optional` keeps its own text
+nan_keys = {float('nan'): 1, float('inf'): 2, float('-inf'): 3}
+assert TypeAdapter(dict[float | int, int]).dump_python(nan_keys, mode='json') == {'nan': 1, 'inf': 2, '-inf': 3}
+assert TypeAdapter(dict[str | float, int]).dump_python(nan_keys, mode='json') == {'nan': 1, 'inf': 2, '-inf': 3}
+assert TypeAdapter(dict[float | None, int]).dump_python({float('nan'): 1, None: 2}, mode='json') == {
+    'nan': 1,
+    'None': 2,
+}
+assert TypeAdapter(dict[int | str, int]).dump_python({float('nan'): 1}, mode='json') == {'None': 1}
 assert TypeAdapter(dict[float, int]).dump_json({float('nan'): 1, float('-inf'): 2}) == b'{"nan":1,"-inf":2}'
 assert TypeAdapter(dict[int, int]).dump_python({1: 1}, mode='json') == {'1': 1}
 assert TypeAdapter(dict[float, int]).dump_python({1.0: 1, 2.5: 2}, mode='json') == {'1.0': 1, '2.5': 2}

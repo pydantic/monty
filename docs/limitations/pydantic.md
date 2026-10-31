@@ -41,7 +41,8 @@ The messages, `errors()` output and `str()` format are copied from pydantic-core
 `Literal[...]`, `datetime`, `date`, `time`, `timedelta`, `Decimal`, a stdlib `@dataclass` and a
 `collections.namedtuple` class, at any nesting, including a dataclass whose fields name the class again.
 The bare `list`, `set`, `frozenset`, `tuple` and `dict` take `Any` items.
-Anything else raises `PydanticSchemaGenerationError` with pydantic's message. Divergences:
+Any other hint raises `PydanticSchemaGenerationError` with pydantic's message, and a generic with the wrong
+number of arguments (`dict[int]`) the `TypeError` pydantic raises. Divergences:
 
 - **A string hint is not evaluated.** `TypeAdapter('int')` and `TypeAdapter(list['Foo'])` raise
     `PydanticSchemaGenerationError` where pydantic resolves the name in the caller's module.
@@ -65,9 +66,10 @@ A dataclass instance passes through unchanged; a dict builds a new instance, cal
 `validate_json(data, strict=None)` takes a `str` or `bytes` document (any other type is a `json_type`
 error, a document that is not JSON a `json_invalid` one, including one nested more than 200 non-empty
 containers deep) and applies pydantic-core's JSON rules: a string is accepted for every type that reads
-text, numbers and booleans convert in lax mode only, object keys are text whatever `strict` says, a key
-given twice keeps its last value, and the document is streamed through the validators without building
-it first, so an error names the same input pydantic would show.
+text, a JSON number is a `float` in both modes while the other number and boolean conversions (`1` for
+`bool`, `1.0` for `int`) are lax only, object keys are text whatever `strict` says, a key given twice
+keeps its last value, and the document is streamed through the validators without building it first, so
+an error names the same input pydantic would show.
 Divergences:
 
 - **Aware results carry `datetime.timezone` objects.** A parsed `'...Z'` or `'...+01:00'` gives

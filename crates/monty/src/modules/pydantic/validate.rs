@@ -48,6 +48,10 @@ pub(crate) fn validate<I: Input>(
     // recursion limit rather than overflowing it.
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
+    // A smart union re-validates its input once per member, so the walk can
+    // fan out far beyond the input's size: the clock is polled by call count.
+    state.steps = state.steps.wrapping_add(1);
+    vm.heap.tracker.check_time_every(state.steps)?;
     match arena.get(id) {
         Validator::Any => {
             // In a union, `Any` is preferred to a lax coercion.
@@ -330,13 +334,14 @@ fn validate_items<I: Input>(
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Vec<Value>> {
-    let mut output = DropGuard::new(Vec::new(), vm);
-    let mut errors: Vec<LineError> = Vec::new();
+    // One guard over the output and the errors, so a parse or resource error
+    // leaving through `?` releases both.
+    let mut collected = DropGuard::new((Vec::new(), Vec::<LineError>::new()), vm);
     let mut index = 0usize;
     loop {
-        let (output, vm) = output.as_parts_mut();
-        let Some(mut element) = seq.next(vm)? else { break };
+        let ((output, errors), vm) = collected.as_parts_mut();
         vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
+        let Some(mut element) = seq.next(vm)? else { break };
         match validate(arena, item, &mut element, state, vm) {
             Ok(value) => {
                 let mut value = DropGuard::new(value, vm);
@@ -348,7 +353,6 @@ fn validate_items<I: Input>(
                 {
                     let (_, vm) = value.into_parts();
                     seq.finish_item(element, vm);
-                    errors.drop_with(vm);
                     return Err(ValError::Run(err.into()));
                 }
                 output.push(value.into_inner());
@@ -358,14 +362,13 @@ fn validate_items<I: Input>(
             }
             Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                 seq.finish_item(element, vm);
-                errors.drop_with(vm);
                 return Err(err);
             }
         }
         seq.finish_item(element, vm);
         index += 1;
     }
-    let (output, vm) = output.into_parts();
+    let ((output, errors), vm) = collected.into_parts();
     if errors.is_empty() {
         Ok(output)
     } else {
@@ -390,14 +393,13 @@ fn validate_tuple<I: Input>(
         let mut seq = input.validate_sequence(SeqKind::Tuple, state.strict, vm)?.unpack(state);
         let actual_length = seq.len();
         let fixed = if variadic { items.len() - 1 } else { items.len() };
-        let mut output = DropGuard::new(Vec::new(), vm);
-        let mut errors: Vec<LineError> = Vec::new();
+        let mut collected = DropGuard::new((Vec::new(), Vec::<LineError>::new()), vm);
         let mut index = 0usize;
         let mut too_long = false;
         loop {
-            let (output, vm) = output.as_parts_mut();
-            let Some(mut element) = seq.next(vm)? else { break };
+            let ((output, errors), vm) = collected.as_parts_mut();
             vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
+            let Some(mut element) = seq.next(vm)? else { break };
             let validator = if index < fixed {
                 items[index]
             } else if variadic {
@@ -414,7 +416,6 @@ fn validate_tuple<I: Input>(
                 }
                 Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     seq.finish_item(element, vm);
-                    errors.drop_with(vm);
                     return Err(err);
                 }
             }
@@ -422,9 +423,7 @@ fn validate_tuple<I: Input>(
             index += 1;
         }
         if too_long {
-            let (output, vm) = output.into_parts();
-            output.drop_with(vm);
-            errors.drop_with(vm);
+            drop(collected);
             // A streamed input reports its length too: the rest is walked for the count.
             let actual_length = match actual_length {
                 Some(len) => len,
@@ -439,17 +438,11 @@ fn validate_tuple<I: Input>(
                 vm,
             );
         }
-        let (output, vm) = output.into_parts();
         for missing in index..fixed {
-            match missing_error(input, missing, vm) {
-                Ok(line) => errors.push(line),
-                Err(err) => {
-                    output.drop_with(vm);
-                    errors.drop_with(vm);
-                    return Err(err);
-                }
-            }
+            let ((_, errors), vm) = collected.as_parts_mut();
+            errors.push(missing_error(input, missing, vm)?);
         }
+        let ((output, errors), vm) = collected.into_parts();
         if errors.is_empty() {
             Ok(allocate_tuple(SmallVec::from_vec(output), vm.heap))
         } else {
@@ -488,15 +481,14 @@ fn validate_dict<I: Input>(
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
         let mut map = input.validate_dict(state.strict, vm)?.unpack(state);
-        let mut output = DropGuard::new(Dict::new(), vm);
-        let mut errors: Vec<LineError> = Vec::new();
+        let mut collected = DropGuard::new((Dict::new(), Vec::<LineError>::new()), vm);
         let mut index = 0usize;
         loop {
-            let (output, vm) = output.as_parts_mut();
+            let ((output, errors), vm) = collected.as_parts_mut();
+            vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
             let Some((mut key_input, mut value_input)) = map.next(vm)? else {
                 break;
             };
-            vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
             index += 1;
             let loc = loc_item(&mut key_input, vm)?;
             let output_key = match validate(arena, key, &mut key_input, state, vm) {
@@ -510,7 +502,6 @@ fn validate_dict<I: Input>(
                 }
                 Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     map.finish_entry(key_input, value_input, vm);
-                    errors.drop_with(vm);
                     return Err(err);
                 }
             };
@@ -523,7 +514,6 @@ fn validate_dict<I: Input>(
                 Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     output_key.drop_with(vm);
                     map.finish_entry(key_input, value_input, vm);
-                    errors.drop_with(vm);
                     return Err(err);
                 }
             };
@@ -540,7 +530,7 @@ fn validate_dict<I: Input>(
                 }
             }
         }
-        let (output, vm) = output.into_parts();
+        let ((output, errors), vm) = collected.into_parts();
         if errors.is_empty() {
             Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(output))))
         } else {
@@ -770,24 +760,23 @@ fn validate_fields<I: Input>(
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Vec<Value>> {
-    let mut slots: Vec<Option<Value>> = (0..fields.len()).map(|_| None).collect();
-    let mut errors: Vec<Option<Vec<LineError>>> = (0..fields.len()).map(|_| None).collect();
+    let slots: Vec<Option<Value>> = (0..fields.len()).map(|_| None).collect();
+    let errors: Vec<Option<Vec<LineError>>> = (0..fields.len()).map(|_| None).collect();
+    // One guard over the partial results and the per-field errors, released
+    // together on every failure path.
+    let mut collected = DropGuard::new((slots, errors), vm);
     let mut index = 0usize;
     loop {
+        let ((slots, errors), vm) = collected.as_parts_mut();
+        vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
         let Some((mut key, mut value)) = map.next(vm)? else {
             break;
         };
-        if let Err(err) = vm.heap.tracker.check_memory_time_every(index) {
-            map.finish_entry(key, value, vm);
-            release_slots(slots, errors, vm);
-            return Err(ValError::Run(err.into()));
-        }
         index += 1;
         let key_value = match key.to_value(vm) {
             Ok(k) => k,
             Err(err) => {
                 map.finish_entry(key, value, vm);
-                release_slots(slots, errors, vm);
                 return Err(err);
             }
         };
@@ -807,22 +796,22 @@ fn validate_fields<I: Input>(
                 Err(ValError::Lines(lines)) => errors[field_index] = Some(lines),
                 Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     map.finish_entry(key, value, vm);
-                    release_slots(slots, errors, vm);
                     return Err(err);
                 }
             }
         } else if let Err(err) = value.to_value(vm).map(|v| v.drop_with(vm)) {
             // A JSON value must be consumed even when ignored.
             map.finish_entry(key, value, vm);
-            release_slots(slots, errors, vm);
             return Err(err);
         }
         map.finish_entry(key, value, vm);
     }
+    let ((slots, errors), vm) = collected.as_parts_mut();
     let fields_set = slots.iter().flatten().count();
     // Defaults for the unset fields, in field order; a factory may run Python.
-    let mut line_errors: Vec<LineError> = Vec::new();
+    let mut line_errors = DropGuard::new(Vec::<LineError>::new(), vm);
     for (field_index, field) in fields.iter().enumerate() {
+        let (line_errors, vm) = line_errors.as_parts_mut();
         if let Some(lines) = errors[field_index].take() {
             let name = vm.interns.get_str(field.name).to_owned();
             line_errors.extend(
@@ -837,47 +826,26 @@ fn validate_fields<I: Input>(
         }
         match &field.default {
             FieldDefault::Value(value) => slots[field_index] = Some(value.clone_with_heap(vm.heap)),
-            FieldDefault::Factory(factory) => match vm.evaluate_function(factory, ArgValues::Empty) {
-                Ok(value) => slots[field_index] = Some(value),
-                Err(err) => {
-                    line_errors.drop_with(vm);
-                    release_slots(slots, errors, vm);
-                    return Err(ValError::Run(err));
-                }
-            },
+            FieldDefault::Factory(factory) => {
+                slots[field_index] = Some(vm.evaluate_function(factory, ArgValues::Empty).map_err(ValError::Run)?);
+            }
             FieldDefault::Required => {
-                let whole = match input.to_value(vm) {
-                    Ok(whole) => whole,
-                    Err(err) => {
-                        line_errors.drop_with(vm);
-                        release_slots(slots, errors, vm);
-                        return Err(err);
-                    }
-                };
+                let whole = input.to_value(vm)?;
                 let name = vm.interns.get_str(field.name).to_owned();
                 line_errors.push(LineError::owned(ErrorType::Missing {}, whole).with_outer_loc(LocItem::Key(name)));
             }
         }
     }
     state.add_fields_set(fields_set);
+    let (line_errors, _) = line_errors.into_parts();
     if line_errors.is_empty() {
+        let ((slots, _), _) = collected.into_parts();
         Ok(slots
             .into_iter()
             .map(|slot| slot.expect("every field is set or errored"))
             .collect())
     } else {
-        release_slots(slots, errors, vm);
         Err(ValError::Lines(line_errors))
-    }
-}
-
-/// Releases the partial field results of a failed dataclass validation.
-fn release_slots(slots: Vec<Option<Value>>, errors: Vec<Option<Vec<LineError>>>, vm: &mut VM<'_>) {
-    for slot in slots.into_iter().flatten() {
-        slot.drop_with(vm);
-    }
-    for lines in errors.into_iter().flatten() {
-        lines.drop_with(vm);
     }
 }
 
