@@ -4,7 +4,7 @@
 # `Europe/London` covers northern DST, a near-zero offset and GMT/BST.
 # Every expectation is CPython 3.14 under the same `TZ`.
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 # === astimezone() on an aware value follows the instant ===
 assert (
@@ -121,3 +121,12 @@ assert time.ctime(1718451000) == 'Sat Jun 15 12:30:00 2024'
 # gmtime ignores the zone entirely
 assert time.gmtime(1718451000).tm_hour == 11
 assert time.strftime('%z', time.gmtime(1718451000)) == '+0000'
+
+# === fromtimestamp() reads the session zone at the instant ===
+assert repr(datetime.fromtimestamp(1718454600)) == 'datetime.datetime(2024, 6, 15, 13, 30)'
+assert repr(datetime.fromtimestamp(1705321800)) == 'datetime.datetime(2024, 1, 15, 12, 30)'
+assert datetime.fromtimestamp(1718454600).timestamp() == 1718454600.0
+assert repr(datetime.fromtimestamp(1718454600, timezone.utc)) == (
+    'datetime.datetime(2024, 6, 15, 12, 30, tzinfo=datetime.timezone.utc)'
+)
+assert repr(date.fromtimestamp(1718494200)) == 'datetime.date(2024, 6, 16)'

@@ -159,6 +159,22 @@ pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRes
     })
 }
 
+/// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
+/// timestamp, read in the session zone as CPython reads it in the host's.
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let value = args
+        .reject_kwargs("date.fromtimestamp", vm.heap)?
+        .get_one_arg("date.fromtimestamp", vm.heap)?;
+    defer_drop!(value, vm);
+    // `date` floors to whole seconds and uses `__index__`-style wording, where
+    // `datetime` rounds to microseconds and names both numeric types.
+    let utc = datetime::timestamp_to_utc(value, datetime::TimestampRounding::Floor, vm)?
+        .ok_or_else(|| ExcType::type_error_not_integer(&value.py_type_name(vm)))?;
+    let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
+    let local = datetime::wall_clock_at(utc, offset)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
+}
+
 /// Classmethod `date.fromisoformat(date_string)`.
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,

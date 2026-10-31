@@ -1234,6 +1234,8 @@ pub enum StaticStrings {
     Fromisoformat,
     /// `dict.fromkeys()` classmethod.
     Fromkeys,
+    /// `date.fromtimestamp()` / `datetime.fromtimestamp()` classmethod.
+    Fromtimestamp,
     /// `@dataclass(frozen=...)`.
     Frozen,
     /// `dataclasses.FrozenInstanceError` exception.
