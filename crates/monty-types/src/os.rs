@@ -303,6 +303,16 @@ impl OsFunctionCall {
         }
     }
 
+    /// Whether either raw filesystem path is `''`.
+    ///
+    /// CPython fails every such call with `FileNotFoundError` (existence
+    /// predicates return `False`), so the interpreter answers it locally rather
+    /// than resolving `''` to the working directory and asking the host.
+    #[must_use]
+    pub fn has_empty_path(&self) -> bool {
+        self.fs_primary_path().is_some_and(str::is_empty) || self.rename_destination().is_some_and(str::is_empty)
+    }
+
     /// CPython's `ValueError` message for a path containing a null byte.
     ///
     /// The wording is not uniform in CPython: it comes from whichever layer
