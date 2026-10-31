@@ -118,3 +118,20 @@ try:
     assert False, 'expected name() with 3 args to raise'
 except TypeError as exc:
     assert str(exc) == 'name expected at most 2 arguments, got 3'
+
+# category(), lookup() and combining() take one argument (`METH_O`), and CPython
+# names them with the module in their count and keyword errors.
+for call, message in [
+    (lambda: u.category(), 'unicodedata.category() takes exactly one argument (0 given)'),
+    (lambda: u.lookup('a', 'b'), 'unicodedata.lookup() takes exactly one argument (2 given)'),
+    (lambda: u.category(chr='a'), 'unicodedata.category() takes no keyword arguments'),
+    (lambda: u.combining(chr='a'), 'unicodedata.combining() takes no keyword arguments'),
+    (lambda: u.lookup(name='A'), 'unicodedata.lookup() takes no keyword arguments'),
+    (lambda: u.combining(None), 'combining() argument must be a unicode character, not None'),
+    (lambda: u.name(None), 'name() argument 1 must be a unicode character, not None'),
+]:
+    try:
+        call()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
