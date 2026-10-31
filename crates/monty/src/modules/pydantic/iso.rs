@@ -59,10 +59,12 @@ fn clock(out: &mut String, hour: u8, minute: u8, second: u8, microsecond: u32, o
     }
 }
 
-/// `speedate`'s duration form: `[-]P[nY][nD][T[nH][nM][n[.f]S]]`, `PT0S` for zero.
+/// `speedate`'s duration form: `[-]P[<years>Y][<days>D][T[<hours>H][<minutes>M][<seconds>[.f]S]]`, `PT0S` for zero.
 pub(crate) fn timedelta(delta: &MontyTimeDelta) -> String {
-    let total_micros =
-        i64::from(delta.days) * 86_400_000_000 + i64::from(delta.seconds) * 1_000_000 + i64::from(delta.microseconds);
+    // `i128`: the largest `timedelta` (999 999 999 days) overflows an `i64` of microseconds.
+    let total_micros = i128::from(delta.days) * 86_400_000_000
+        + i128::from(delta.seconds) * 1_000_000
+        + i128::from(delta.microseconds);
     let positive = total_micros >= 0;
     let total_micros = total_micros.unsigned_abs();
     let micros = total_micros % 1_000_000;
