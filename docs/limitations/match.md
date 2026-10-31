@@ -1,0 +1,44 @@
+# `match` statement (structural pattern matching)
+
+Monty implements PEP 634 `match` statements: value, singleton, capture, wildcard,
+sequence (with one `*rest`), mapping (with `**rest`), class, `as` and `|` patterns,
+with guards.
+Names are bound only after the whole pattern matches, before the guard runs, as in
+CPython, so a case whose pattern fails part-way leaves no bindings behind and a case
+whose guard fails leaves them all.
+The compile-time `SyntaxError`s match CPython's wording and location: duplicate
+captures, alternatives binding different names, an unguarded irrefutable pattern
+before the last case, duplicate constant mapping keys, repeated class-pattern attributes and
+two starred names.
+`@dataclass` classes get `__match_args__` (the field names, in order) and
+`collections.namedtuple` classes expose it too, so positional class patterns work on
+both.
+
+## Sequence and mapping patterns
+
+- **Only builtin containers match.** Sequence patterns accept `list`, `tuple`,
+    namedtuples, `range` and `deque`; mapping patterns accept `dict`, `defaultdict`
+    and `Counter`.
+    Monty has no inheritance and no `collections.abc`, so no user or host class can
+    be a `Sequence` or `Mapping`, and its instances never match these patterns.
+
+## Class patterns
+
+- **`isinstance` has no inheritance.** A class pattern on a user-defined or host class
+    matches instances of exactly that class; see [classes.md](classes.md).
+- **Host classes only have the `__match_args__` the host sent** as a class
+    attribute. Without one, a positional sub-pattern raises
+    `TypeError: Cls() accepts 0 positional sub-patterns (1 given)` even when the
+    host-side class is a dataclass; keyword sub-patterns (`case Cls(x=0)`) work.
+
+## Parse-time checks
+
+- **A pattern after `**rest`** reports `SyntaxError: Pattern cannot follow a double star pattern`
+    (Ruff's wording) where CPython says `invalid syntax`.
+- **Bytecode operand limits.** A sequence, mapping or class pattern with more
+    than 255 sub-patterns, or a pattern that captures more than 256 names, raises
+    `SyntaxError: too many sub-patterns in ... pattern` (or `too many names in pattern`)
+    at compile time; CPython has no such limit.
+- **A duplicate integer mapping key past 4300 decimal digits** (a long hex literal)
+    raises `SyntaxError: Exceeds the limit (4300 digits) for integer string conversion; ...`
+    where CPython's compiler raises `ValueError` with the same message.
