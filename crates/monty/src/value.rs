@@ -506,6 +506,14 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_imul_impl(other, vm)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn py_iand_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iand_impl(other, vm)

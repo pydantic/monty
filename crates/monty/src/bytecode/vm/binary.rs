@@ -114,6 +114,11 @@ impl VM<'_> {
         self.inplace_op(PyTrait::py_isub_impl, |lhs, rhs, vm| lhs.py_sub(rhs, vm))
     }
 
+    /// `*=` — an in-place repetition (a `list` or `deque` keeps its identity), or binary `*`.
+    pub(super) fn inplace_mul(&mut self) -> Result<(), RunError> {
+        self.inplace_op(PyTrait::py_imul_impl, |lhs, rhs, vm| lhs.py_mul(rhs, vm))
+    }
+
     /// `&=` — an in-place mutation (a `Counter` intersects counts), or binary `&`.
     pub(super) fn inplace_and(&mut self) -> Result<(), RunError> {
         self.inplace_op(PyTrait::py_iand_impl, |lhs, rhs, vm| lhs.py_and(rhs, vm))
