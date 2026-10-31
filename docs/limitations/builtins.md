@@ -175,11 +175,9 @@ These raise `NameError`:
     text as one string rather than CPython's `(34, '...')` tuple.
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
     must be passed by keyword; positional forms raise `TypeError`.
-- **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
-    clamped by sign. For floats this matches CPython (which clamps to
-    `Py_ssize_t`); for an int `n` with a hugely negative `ndigits`, CPython
-    tries to materialise `10**-ndigits` and dies with `MemoryError` where
-    Monty returns `0` immediately.
+- **`round(n, ndigits)` for an int `n`** — `ndigits` values outside the i64 range are clamped by sign.
+    For a hugely negative `ndigits`, CPython tries to materialise `10**-ndigits` and dies with `MemoryError`
+    where Monty returns `0` immediately.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
     not honoured; `sep=` and `end=` are.
 - **Identity of host-supplied callables** — host functions passed in as inputs
