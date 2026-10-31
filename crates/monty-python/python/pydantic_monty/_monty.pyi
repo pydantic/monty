@@ -183,7 +183,8 @@ class MountDir:
                 are captured in memory per feed and discarded when it ends.
             write_bytes_limit: Cap on cumulative bytes written through the
                 mount within one feed; exceeding it raises `OSError` in the
-                sandbox. `None` (default) means unlimited.
+                sandbox. Each directory created counts as 4,096 bytes. `None`
+                (default) means unlimited.
             memory_usage_limit: Per-mount budget in bytes (default: monty-fs's
                 `DEFAULT_MEMORY_USAGE_LIMIT`) shared by retained
                 overlay data and transient filesystem results; an operation that
