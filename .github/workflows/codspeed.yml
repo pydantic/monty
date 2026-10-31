@@ -15,8 +15,16 @@ env:
 
 jobs:
   build-worker:
-    name: Build release worker (x86_64)
-    runs-on: ubuntu-24.04
+    name: Build release worker (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -28,7 +36,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: worker-x86_64
+          key: worker-${{ matrix.arch }}
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Artifacts are only used for benchmarks in this workflow run
           cache-on-failure: true
           cache-workspace-crates: true
@@ -39,7 +47,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: codspeed-worker-x86_64
+          name: codspeed-worker-${{ matrix.arch }}
           path: target/release/monty
           if-no-files-found: error
           retention-days: 7
@@ -50,8 +58,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [simulation, memory]
-    runs-on: ubuntu-24.04
+        include:
+          - mode: simulation
+            arch: x86_64
+            runner: ubuntu-24.04
+          - mode: memory
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       id-token: write
@@ -80,7 +94,7 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: codspeed-worker-x86_64
+          name: codspeed-worker-${{ matrix.arch }}
           path: worker
 
       # Artifact downloads do not preserve executable permissions.
