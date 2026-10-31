@@ -83,9 +83,9 @@ pub(crate) fn create_module(vm: &mut VM<'_>) -> HeapId {
 
 pub(super) fn call(vm: &mut VM<'_>, function: SecretsFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
-        SecretsFunctions::TokenBytes => token_bytes(vm, args, Output::Bytes),
-        SecretsFunctions::TokenHex => token_bytes(vm, args, Output::Hex),
-        SecretsFunctions::TokenUrlsafe => token_bytes(vm, args, Output::UrlSafe),
+        SecretsFunctions::TokenBytes => token_bytes(vm, args, TokenOutput::Bytes),
+        SecretsFunctions::TokenHex => token_bytes(vm, args, TokenOutput::Hex),
+        SecretsFunctions::TokenUrlsafe => token_bytes(vm, args, TokenOutput::UrlSafe),
         SecretsFunctions::Randbits => randbits(vm, args),
         SecretsFunctions::Randbelow => randbelow(vm, args),
         SecretsFunctions::Choice => choice(vm, args),
@@ -101,6 +101,14 @@ pub(crate) enum Output {
     UrlSafe,
     Bits { bit_count: usize },
     Randbelow { upper: BigUint, bit_count: usize },
+}
+
+/// Output formats accepted only by the three token helper functions.
+#[derive(Clone, Copy)]
+enum TokenOutput {
+    Bytes,
+    Hex,
+    UrlSafe,
 }
 
 #[derive(FromArgs)]
@@ -124,12 +132,11 @@ struct TokenUrlSafeArgs {
     nbytes: Value,
 }
 
-fn token_bytes(vm: &mut VM<'_>, args: ArgValues, output: Output) -> RunResult<CallResult> {
-    let nbytes = match &output {
-        Output::Bytes => TokenBytesArgs::from_args(args, vm)?.nbytes,
-        Output::Hex => TokenHexArgs::from_args(args, vm)?.nbytes,
-        Output::UrlSafe => TokenUrlSafeArgs::from_args(args, vm)?.nbytes,
-        _ => unreachable!("token helper requested a non-token output"),
+fn token_bytes(vm: &mut VM<'_>, args: ArgValues, output: TokenOutput) -> RunResult<CallResult> {
+    let nbytes = match output {
+        TokenOutput::Bytes => TokenBytesArgs::from_args(args, vm)?.nbytes,
+        TokenOutput::Hex => TokenHexArgs::from_args(args, vm)?.nbytes,
+        TokenOutput::UrlSafe => TokenUrlSafeArgs::from_args(args, vm)?.nbytes,
     };
     let nbytes = if matches!(nbytes, Value::None) {
         vm.secrets_default_entropy.clone_with_heap(vm.heap)
@@ -144,11 +151,16 @@ fn token_bytes(vm: &mut VM<'_>, args: ArgValues, output: Output) -> RunResult<Ca
     let size = usize::try_from(size).map_err(|_| ExcType::overflow_c_ssize_t())?;
     vm.heap.tracker.check_allocation(size)?;
     let output_size = match output {
-        Output::Hex => size.saturating_mul(2),
-        Output::UrlSafe => size.saturating_mul(4).div_ceil(3),
-        _ => size,
+        TokenOutput::Bytes => size,
+        TokenOutput::Hex => size.saturating_mul(2),
+        TokenOutput::UrlSafe => size.saturating_mul(4).div_ceil(3),
     };
     vm.heap.tracker.check_allocation(output_size)?;
+    let output = match output {
+        TokenOutput::Bytes => Output::Bytes,
+        TokenOutput::Hex => Output::Hex,
+        TokenOutput::UrlSafe => Output::UrlSafe,
+    };
     request_entropy(vm, size, output)
 }
 

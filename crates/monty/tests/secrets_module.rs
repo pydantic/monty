@@ -316,6 +316,64 @@ fn randbelow_retries_rejected_samples_and_supports_big_bounds() {
 }
 
 #[test]
+fn entropy_reply_must_be_bytes_of_the_requested_length() {
+    for (code, reply, message) in [
+        (
+            "import secrets\nsecrets.token_bytes(1)",
+            MontyObject::bytes(vec![]),
+            "'os.urandom' returned 0 bytes, expected 1",
+        ),
+        (
+            "import secrets\nsecrets.token_bytes(1)",
+            MontyObject::int(4),
+            "'os.urandom' must return bytes, not int",
+        ),
+        (
+            "import secrets\nsecrets.choice([1])",
+            MontyObject::bytes(vec![]),
+            "'os.urandom' returned 0 bytes, expected 1",
+        ),
+        (
+            "import secrets\nsecrets.choice([1])",
+            MontyObject::int(4),
+            "'os.urandom' must return bytes, not int",
+        ),
+    ] {
+        let RunProgress::OsCall(call) = start(code) else {
+            panic!("expected an entropy request");
+        };
+        let error = call.resume(reply, PrintWriter::Stdout).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::RuntimeError);
+        assert_eq!(error.message(), Some(message));
+    }
+}
+
+#[test]
+fn choice_retries_entropy_candidates_outside_the_sequence() {
+    let RunProgress::OsCall(first) = start("import secrets\nsecrets.choice([10, 20, 30])") else {
+        panic!("expected the first entropy request");
+    };
+    let RunProgress::OsCall(second) = first
+        .resume(MontyObject::bytes(vec![0xff]), PrintWriter::Stdout)
+        .unwrap()
+    else {
+        panic!("an out-of-range sample should retry");
+    };
+    assert!(matches!(
+        &second.function_call,
+        OsFunctionCall::Urandom(UrandomArgs { size: 1 })
+    ));
+    assert_eq!(
+        second
+            .resume(MontyObject::bytes(vec![0x80]), PrintWriter::Stdout)
+            .unwrap()
+            .into_complete()
+            .unwrap(),
+        MontyObject::int(30)
+    );
+}
+
+#[test]
 fn caught_entropy_errors_release_choice_and_allow_a_subsequent_draw() {
     let RunProgress::OsCall(first) = start(
         "import secrets\nitem = []\ntry:\n    secrets.choice([item])\nexcept RuntimeError:\n    pass\nsecrets.choice([item]) is item",

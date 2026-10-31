@@ -22,6 +22,7 @@ assert secrets.randbits(k=0) == 0
 assert 0 <= secrets.randbelow(7) < 7
 assert 0 <= secrets.randbelow(2**100) < 2**100
 assert secrets.randbelow(1) == 0
+assert secrets.randbelow(True) == 0
 assert secrets.choice(['only']) == 'only'
 assert secrets.choice(seq=['only']) == 'only'
 assert secrets.choice('abc') in 'abc'

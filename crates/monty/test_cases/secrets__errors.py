@@ -16,12 +16,13 @@ for bits in (-1, -(2**100)):
     else:
         assert False, 'negative bit count should fail'
 
-try:
-    secrets.randbelow(0)
-except ValueError as exc:
-    assert str(exc) == 'Upper bound must be positive.'
-else:
-    assert False, 'zero upper bound should fail'
+for upper_bound in (0, False, -(2**100)):
+    try:
+        secrets.randbelow(upper_bound)
+    except ValueError as exc:
+        assert str(exc) == 'Upper bound must be positive.'
+    else:
+        assert False, 'non-positive upper bound should fail'
 
 try:
     secrets.choice(seq=[])
@@ -64,6 +65,13 @@ except TypeError as exc:
 else:
     assert False, 'randbelow should compare its argument to zero'
 
+try:
+    secrets.randbits(-1.2)
+except ValueError as exc:
+    assert str(exc) == 'number of bits must be non-negative'
+else:
+    assert False, 'negative float bit count should fail'
+
 for value, message in (
     ('x', "'<' not supported between instances of 'str' and 'int'"),
     (None, "'<' not supported between instances of 'NoneType' and 'int'"),
@@ -82,6 +90,13 @@ except OverflowError as exc:
     assert str(exc) == 'Python int too large to convert to C ssize_t'
 else:
     assert False, 'oversized randbits count should overflow'
+
+try:
+    secrets.randbelow(-1.2)
+except ValueError as exc:
+    assert str(exc) == 'Upper bound must be positive.'
+else:
+    assert False, 'randbelow should reject a negative float bound'
 
 try:
     secrets.randbelow(1.2)
