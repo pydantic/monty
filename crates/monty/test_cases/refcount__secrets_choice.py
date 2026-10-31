@@ -7,5 +7,5 @@ except TypeError:
     pass
 else:
     assert False, 'choice requires a sized sequence'
-unapplied = [2]
-# ref-counts={'bad': 1}
+[2]
+# ref-counts={'secrets': 1, 'bad': 1}
