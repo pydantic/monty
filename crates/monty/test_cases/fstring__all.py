@@ -32,6 +32,37 @@ assert f'{3.14}' == '3.14'
 # None value
 assert f'{None}' == 'None'
 
+# === Objects reject specs before mini-language validation ===
+for value, type_name, text in (([1], 'list', '[1]'), (None, 'NoneType', 'None')):
+    assert f'{value:}' == text
+    empty_spec = ''
+    assert f'{value:{empty_spec}}' == text
+    try:
+        f'{value:5}'
+        assert False, 'expected unsupported static format spec to fail'
+    except TypeError as e:
+        assert str(e) == f'unsupported format string passed to {type_name}.__format__'
+    try:
+        f'{value:0}'
+        assert False, 'expected unsupported zero format spec to fail'
+    except TypeError as e:
+        assert str(e) == f'unsupported format string passed to {type_name}.__format__'
+    try:
+        f'{value:０}'
+        assert False, 'expected unsupported Unicode zero format spec to fail'
+    except TypeError as e:
+        assert str(e) == f'unsupported format string passed to {type_name}.__format__'
+    for spec in ('>5', 's', '+', '#', '.', 'q', 'not-a-spec'):
+        try:
+            f'{value:{spec}}'
+            assert False, 'expected unsupported dynamic format spec to fail'
+        except TypeError as e:
+            assert str(e) == f'unsupported format string passed to {type_name}.__format__'
+
+assert f'{[1]!s:>5}' == '  [1]'
+assert f'{None!r:>5}' == ' None'
+assert f'{["é"]!a:>10}' == "  ['\\xe9']"
+
 # === Conversion flags (!s, !r, !a) ===
 # conversion !s (str)
 assert f'{42!s}' == '42'
