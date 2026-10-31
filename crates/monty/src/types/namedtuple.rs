@@ -181,6 +181,12 @@ impl NamedTuple {
         &self.items
     }
 
+    /// Returns whether an earlier `py_hash` succeeded, so the named tuple is hashable.
+    #[must_use]
+    pub(crate) fn has_cached_hash(&self) -> bool {
+        self.cached_hash.get().is_some()
+    }
+
     /// Returns the number of elements.
     #[must_use]
     pub fn len(&self) -> usize {

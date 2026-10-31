@@ -259,13 +259,14 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a TypeError for unhashable types used as dict keys.
     ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
+    /// This matches Python 3.14's error message, which names the type that did
+    /// not hash, possibly an element of the key:
+    /// `TypeError: cannot use 'tuple' as a dict key (unhashable type: 'list')`
     #[must_use]
-    fn type_error_unhashable_dict_key(type_: &str) -> RunError {
+    fn type_error_unhashable_dict_key(key_type: &str, unhashable_type: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
+            format!("cannot use '{key_type}' as a dict key (unhashable type: '{unhashable_type}')"),
         )
         .into()
     }

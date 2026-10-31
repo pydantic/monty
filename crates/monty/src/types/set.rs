@@ -16,11 +16,15 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    modules::copy::{Memo, PyDeepCopy, deep_copy},
+    modules::{
+        copy::{Memo, PyDeepCopy, deep_copy},
+        dataclasses,
+    },
     py_value::PyValue,
     types::{
         LazyHeapSet, Type,
         hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
+        instance::class_defines_not_none,
         list::repr_items_fmt,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -1786,7 +1790,7 @@ pub(crate) fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64>
     if let Some(hash) = value.py_hash(vm)? {
         Ok(hash.raw())
     } else {
-        let element_type = value.py_type_name(vm).into_owned();
+        let element_type = qualified_type_name(value, vm);
         let unhashable_type = unhashable_type_name(value, vm)?;
         Err(ExcType::type_error_unhashable_set_element(
             &element_type,
@@ -1795,15 +1799,54 @@ pub(crate) fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64>
     }
 }
 
+/// The type of `value` as CPython's `%T` writes it in a `cannot use '...'` error:
+/// qualified by its module unless that is `builtins` or `__main__`.
+///
+/// Of Monty's unhashable types, only `Counter`, a Python-level class in CPython,
+/// needs the prefix added; the C types (`collections.deque`, ...) carry it already.
+pub(crate) fn qualified_type_name(value: &Value, vm: &VM<'_>) -> String {
+    if value.py_type(vm) == Type::Counter {
+        "collections.Counter".to_owned()
+    } else {
+        value.py_type_name(vm).into_owned()
+    }
+}
+
 /// Finds the nested value responsible for a tuple-like element being unhashable.
-fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+///
+/// The failed hash reports only that some element is unhashable, so this walks
+/// the elements again and names the innermost one, as CPython's error does.
+pub(crate) fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+    let name = first_unhashable_element(value, vm)?;
+    Ok(name.unwrap_or_else(|| value.py_type_name(vm).into_owned()))
+}
+
+/// The type name of the innermost unhashable element of `value`, or `None` when
+/// the walk finds none.
+///
+/// CPython hashes each element once, so the walk runs only native hashes: an
+/// instance with a user or dataclass `__hash__` already hashed without an error
+/// (a failing one raises rather than reporting unhashable), and is skipped.
+fn first_unhashable_element(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
     let Value::Ref(id) = value else {
-        return Ok(value.py_type_name(vm).into_owned());
+        return Ok(None);
     };
     let len = match vm.heap.get(*id) {
+        // Skip tuples that already hashed, so the walk stays linear like the hash
+        HeapData::Tuple(tuple) if tuple.has_cached_hash() => return Ok(None),
+        HeapData::NamedTuple(namedtuple) if namedtuple.has_cached_hash() => return Ok(None),
         HeapData::Tuple(tuple) => tuple.as_slice().len(),
         HeapData::NamedTuple(namedtuple) => namedtuple.as_vec().len(),
-        _ => return Ok(value.py_type_name(vm).into_owned()),
+        HeapData::Instance(instance)
+            if dataclasses::generated_fields(instance.class(), "__hash__", vm).is_some()
+                || class_defines_not_none(instance.class(), "__hash__", vm) =>
+        {
+            return Ok(None);
+        }
+        _ => {
+            let unhashable = value.py_hash(vm)?.is_none();
+            return Ok(unhashable.then(|| value.py_type_name(vm).into_owned()));
+        }
     };
 
     for index in 0..len {
@@ -1813,12 +1856,11 @@ fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
             _ => unreachable!("tuple-like heap value changed type"),
         };
         defer_drop!(item, vm);
-        if item.py_hash(vm)?.is_none() {
-            return unhashable_type_name(item, vm);
+        if let Some(name) = first_unhashable_element(item, vm)? {
+            return Ok(Some(name));
         }
     }
-
-    Ok(value.py_type_name(vm).into_owned())
+    Ok(None)
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {

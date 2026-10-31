@@ -68,8 +68,7 @@ These names are absent from the module namespace rather than stubbed, so they ar
     CPython can compare colliding keys during eviction, so comparison side effects can differ.
     The number of hash and equality calls during lookup and insertion can also differ.
 - An unhashable argument is diagnosed by hashing arguments again after hashing the complete key fails.
-    A user `__hash__` can therefore run twice on a failing call.
-    For nested unhashable values, the error can name the enclosing tuple instead of its unhashable element.
+    A user `__hash__` can therefore run more than once on a failing call.
 - Applying a caching decorator to a method with `@` syntax is rejected along with other
     [method decorators](classes.md).
     Assigning `method = functools.cache(function)` in the class body is supported.

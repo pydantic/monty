@@ -81,6 +81,12 @@ try:
     assert False, 'expected the call to fail'
 except TypeError as exc:
     assert str(exc) == "unhashable type: 'list'"
+# a tuple argument names its unhashable element
+try:
+    record((1, [2]))
+    assert False, 'expected the call to fail'
+except TypeError as exc:
+    assert str(exc) == "unhashable type: 'list'"
 
 # === a key comparison that mutates the cache ===
 # Comparing keys runs `__eq__` on the arguments, which is free to empty the very
