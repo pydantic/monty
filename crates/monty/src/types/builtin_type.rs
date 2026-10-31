@@ -208,6 +208,12 @@ pub(crate) enum BuiltinType {
     DecimalSignalDict,
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    #[strum(serialize = "typing._LiteralGenericAlias")]
+    LiteralGenericAlias,
+    #[strum(serialize = "typing._AnnotatedAlias")]
+    AnnotatedAlias,
+    #[strum(serialize = "pydantic.type_adapter.TypeAdapter")]
+    TypeAdapter,
 }
 
 impl From<BuiltinType> for Type {
@@ -295,6 +301,9 @@ impl From<BuiltinType> for Type {
             BuiltinType::ItertoolsZipLongest => Self::ItertoolsZipLongest,
             BuiltinType::GenericAlias => Self::GenericAlias,
             BuiltinType::Union => Self::Union,
+            BuiltinType::LiteralGenericAlias => Self::LiteralGenericAlias,
+            BuiltinType::AnnotatedAlias => Self::AnnotatedAlias,
+            BuiltinType::TypeAdapter => Self::TypeAdapter,
             BuiltinType::ItertoolsCombinations => Self::ItertoolsCombinations,
             BuiltinType::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
             BuiltinType::ItertoolsPermutations => Self::ItertoolsPermutations,
@@ -409,6 +418,9 @@ impl TryFrom<Type> for BuiltinType {
             Type::ItertoolsZipLongest => Self::ItertoolsZipLongest,
             Type::GenericAlias => Self::GenericAlias,
             Type::Union => Self::Union,
+            Type::LiteralGenericAlias => Self::LiteralGenericAlias,
+            Type::AnnotatedAlias => Self::AnnotatedAlias,
+            Type::TypeAdapter => Self::TypeAdapter,
             Type::ItertoolsCombinations => Self::ItertoolsCombinations,
             Type::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
             Type::ItertoolsPermutations => Self::ItertoolsPermutations,

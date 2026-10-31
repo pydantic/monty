@@ -1,6 +1,7 @@
 # Standard library modules
 
-Monty provides a fixed set of stdlib modules.
+Monty provides a fixed set of stdlib modules, plus its own `pydantic` (see [pydantic.md](pydantic.md)),
+the one bundled module that is not part of CPython's standard library.
 Other imports ask the host, which answers with a [host module](#host-modules) or the module's
 [`.py` file](#modules-from-files) from the working directory, and raise `ModuleNotFoundError` if it has neither.
 There is no `sys.path` or site-packages.
@@ -40,6 +41,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `os`          | [os.md](os.md)                   |
 | `os.path`     | [os.md](os.md)                   |
 | `pathlib`     | [pathlib.md](pathlib.md)         |
+| `pydantic`    | [pydantic.md](pydantic.md)       |
 | `posixpath`   | [os.md](os.md)                   |
 | `random`      | [random.md](random.md)           |
 | `re`          | [re.md](re.md)                   |

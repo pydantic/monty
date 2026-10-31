@@ -13,6 +13,7 @@ use crate::{
     fstring::{FormatError, ascii_escape},
     heap::{DropWithContext, HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
+    modules::pydantic,
     parse::CodeRange,
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
@@ -173,6 +174,33 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn isinstance_parameterized_generic() -> RunError {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `isinstance()` raises for a subscripted `typing`
+    /// form (`Literal[1]`, `Annotated[int, 1]`) as its second argument.
+    #[must_use]
+    fn isinstance_subscripted_generic() -> RunError {
+        Self::type_error("Subscripted generics cannot be used with class and instance checks")
+    }
+
+    /// Creates the TypeError for `typing.Annotated[int]` (or fewer arguments).
+    #[must_use]
+    fn annotated_requires_two_args() -> RunError {
+        Self::type_error("Annotated[...] should be used with at least two arguments (a type and an annotation).")
+    }
+
+    /// Creates the TypeError for `typing.Annotated[(a, b), meta]`, `repr`
+    /// being the tuple's.
+    #[must_use]
+    fn annotated_type_required(repr: &str) -> RunError {
+        Self::type_error(format!("Annotated[t, ...]: t must be a type. Got {repr}."))
+    }
+
+    /// Creates the TypeError for calling a `typing` form or its subscript
+    /// (`Literal[1]()`): `Cannot instantiate typing.Literal`.
+    #[must_use]
+    fn cannot_instantiate_typing_form(form: &str) -> RunError {
+        Self::type_error(format!("Cannot instantiate typing.{form}"))
     }
 
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
@@ -2728,6 +2756,12 @@ impl<'h> HeapRead<'h, SimpleException> {
 impl SimpleException {
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+        // pydantic's `ValidationError.__repr__` is its `__str__`: the error listing.
+        if self.exc_type == ExcType::ValidationError
+            && let Some(message) = &self.arg
+        {
+            return f.write_str(message);
+        }
         let type_str: &'static str = self.exc_type.into();
         write!(f, "{type_str}(")?;
 
@@ -2780,8 +2814,30 @@ impl<'h> HeapRead<'h, SimpleException> {
                 smallvec![]
             };
             Some(CallResult::Value(allocate_tuple(elements, vm.heap)))
+        } else if let ExcData::Validation(data) = &self.get(vm.heap).data {
+            pydantic::errors::getattr(data, attr, vm).map(CallResult::Value)
         } else {
             None
+        }
+    }
+
+    /// Calls a method on this exception: only a `ValidationError` has any
+    /// (`errors()`, `error_count()`, `json()`); every other name is an
+    /// `AttributeError`.
+    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        if let ExcData::Validation(data) = &self.get(vm.heap).data {
+            if attr.static_string(vm.interns) == Some(StaticStrings::ErrorCount) {
+                // A count needs no copy; the other methods allocate while
+                // reading the payload, so they take their own.
+                let count = pydantic::errors::error_count(data);
+                args.check_zero_args("error_count", vm.heap)?;
+                return Ok(CallResult::Value(count));
+            }
+            let data = data.clone();
+            pydantic::errors::call_method(&data, attr, args, vm)
+        } else {
+            let type_name: &'static str = self.get(vm.heap).exc_type.into();
+            Err(ExcType::attribute_error_method(type_name, attr, args, vm))
         }
     }
 }

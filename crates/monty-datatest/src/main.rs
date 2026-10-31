@@ -13,7 +13,7 @@ use std::{
     convert::Infallible,
     env,
     error::Error,
-    ffi::CString,
+    ffi::{CStr, CString},
     fmt,
     fs::{self, canonicalize},
     panic::{self, AssertUnwindSafe},
@@ -114,6 +114,10 @@ struct TestConfig {
     /// This is intentionally opt-in because doing it globally changes CPython's
     /// function error messages to include `__main__.` qualifiers.
     cpython_main_module: bool,
+    /// When true, the dev virtualenv's `site-packages` joins CPython's `sys.path`
+    /// for the case, so it can import `pydantic` there. Opt-in, so no case can
+    /// depend on a third-party package by accident.
+    cpython_site_packages: bool,
     /// Resource limits applied to this test's Monty run. Defaults to
     /// `default_test_limits()`; the header's `gc-interval` overrides
     /// the interval in `parse_fixture`. The recursion ceiling is tightened from the
@@ -139,6 +143,7 @@ impl Default for TestConfig {
             mount_fs: false,
             skip_cpython_windows: false,
             cpython_main_module: false,
+            cpython_site_packages: false,
             limits: default_test_limits(),
             os_policy: OsPolicy::default(),
             timezone: None,
@@ -216,6 +221,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         mount_fs: header.mount_fs,
         skip_cpython_windows: header.skip_cpython_windows,
         cpython_main_module: header.cpython_main_module,
+        cpython_site_packages: header.cpython_site_packages,
         ..Default::default()
     };
     // Overrides one field, keeping the standard test recursion cap; the recursion
@@ -2224,6 +2230,7 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let _zone_guard = CpythonTimeZone::apply(config.timezone.as_deref());
+    let _site_guard = CpythonSitePackages::apply(config.cpython_site_packages);
     let watchdog = CpythonWatchdog::arm(test_name);
     let traceback = Python::attach(|py| {
         let _recursion_guard = RecursionLimitGuard::new(py);
@@ -2333,6 +2340,86 @@ impl CpythonTimeZone {
 impl Drop for CpythonTimeZone {
     fn drop(&mut self) {
         Python::attach(|py| Self::set(py, self.previous.as_deref()));
+    }
+}
+
+/// Appends the dev virtualenv's `site-packages` to CPython's `sys.path` for a
+/// case with `cpython-site-packages = true`, and takes it off again afterwards.
+///
+/// The embedded interpreter is the one pyo3 linked, not the virtualenv's, so
+/// the packages `uv sync` installs are otherwise invisible to it. The whole
+/// CPython side of a case runs under [`CPYTHON_TEST_LOCK`], so the edit races
+/// nothing. Modules imported meanwhile stay cached in `sys.modules`: evicting
+/// them breaks namespace packages and PyO3 extensions, which cannot re-initialise.
+struct CpythonSitePackages {
+    path: String,
+    /// Whether `apply` appended the entry, so only that one is removed.
+    added: bool,
+}
+
+impl CpythonSitePackages {
+    /// Adds the directory when `enabled`; `None` leaves `sys.path` alone.
+    ///
+    /// The virtualenv is `VIRTUAL_ENV` when set, else `.venv` in the workspace
+    /// root; a missing `site-packages` is a setup error (`make install-py`).
+    fn apply(enabled: bool) -> Option<Self> {
+        // Appends only when absent, so an interpreter that already has the
+        // directory on its path keeps it after the case.
+        const ADD: &CStr = c"import sys
+added = path not in sys.path
+if added:
+    sys.path.append(path)
+";
+        if !enabled {
+            return None;
+        }
+        let venv = env::var_os("VIRTUAL_ENV").map_or_else(|| CANONICAL_WS_DIR.join(".venv"), PathBuf::from);
+        let (path, added) = Python::attach(|py| {
+            let venv = venv.to_str().expect("virtualenv path is not UTF-8");
+            let vars = PyDict::new(py);
+            vars.set_item("base", venv).expect("failed to build sysconfig vars");
+            vars.set_item("platbase", venv).expect("failed to build sysconfig vars");
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("vars", vars).expect("failed to build sysconfig kwargs");
+            let path: String = py
+                .import("sysconfig")
+                .and_then(|sysconfig| sysconfig.call_method("get_path", ("purelib", "venv"), Some(&kwargs)))
+                .and_then(|path| path.extract())
+                .expect("sysconfig.get_path failed");
+            assert!(
+                Path::new(&path).is_dir(),
+                "cpython-site-packages needs the dev virtualenv's {path}: run `make install-py`"
+            );
+            let locals = PyDict::new(py);
+            let added: bool = locals
+                .set_item("path", &path)
+                .and_then(|()| py.run(ADD, None, Some(&locals)))
+                .and_then(|()| locals.get_item("added"))
+                .and_then(|added| added.expect("the snippet sets `added`").extract())
+                .expect("Failed to add site-packages to sys.path");
+            (path, added)
+        });
+        Some(Self { path, added })
+    }
+}
+
+impl Drop for CpythonSitePackages {
+    fn drop(&mut self) {
+        // The `in` check tolerates a case that took the entry off itself.
+        const CLEANUP: &CStr = c"import sys
+if path in sys.path:
+    sys.path.remove(path)
+";
+        if !self.added {
+            return;
+        }
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            locals
+                .set_item("path", &self.path)
+                .and_then(|()| py.run(CLEANUP, None, Some(&locals)))
+                .expect("Failed to remove site-packages from sys.path");
+        });
     }
 }
 
@@ -2597,6 +2684,7 @@ fn try_run_cpython_test(
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let _zone_guard = CpythonTimeZone::apply(config.timezone.as_deref());
+    let _site_guard = CpythonSitePackages::apply(config.cpython_site_packages);
     let watchdog = CpythonWatchdog::arm(&test_name);
     let result: CpythonResult = Python::attach(|py| {
         let _recursion_guard = RecursionLimitGuard::new(py);

@@ -155,6 +155,28 @@ pub(crate) fn from_components(
     Ok(datetime)
 }
 
+/// Allocates a `datetime` parsed from text or a timestamp, aware with a fixed
+/// offset when `offset_seconds` is given; `None` for a year outside Python's range.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn allocate_parsed(
+    year: i32,
+    month: i32,
+    day: i32,
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    offset_seconds: Option<i32>,
+    heap: &mut Heap,
+) -> Option<Value> {
+    let tzinfo = offset_seconds.map(|offset_seconds| TimeZone {
+        offset_seconds,
+        name: None,
+    });
+    let datetime = from_components(year, month, day, hour, minute, second, microsecond, tzinfo, None, heap).ok()?;
+    Some(Value::Ref(heap.allocate(HeapData::DateTime(datetime))))
+}
+
 /// Allocates a naive `datetime` from already-in-range components.
 ///
 /// For the `datetime.min` / `datetime.max` class constants; anything derived

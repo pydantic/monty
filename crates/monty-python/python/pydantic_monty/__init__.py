@@ -304,15 +304,21 @@ ExcType = Literal[
     'decimal.Overflow',
     'decimal.Underflow',
     'decimal.FloatOperation',
+    'pydantic_core._pydantic_core.ValidationError',
+    'pydantic_core._pydantic_core.PydanticSerializationError',
+    'pydantic.errors.PydanticUserError',
+    'pydantic.errors.PydanticSchemaGenerationError',
 ]
 """String names of Python exception types that Monty understands.
 
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
 exception classes, except for `json.JSONDecodeError`, `tomllib.TOMLDecodeError`,
-`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error` and the
-`decimal` signals (`decimal.InvalidOperation`, ...), which are dotted to
-disambiguate from their `ValueError` / `Exception` / `ArithmeticError` parents.
+`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, the
+`decimal` signals (`decimal.InvalidOperation`, ...) and the `pydantic` errors
+(`pydantic_core._pydantic_core.ValidationError`, ...), which are dotted to
+disambiguate from their `ValueError` / `Exception` / `ArithmeticError` /
+`RuntimeError` parents.
 """
 
 

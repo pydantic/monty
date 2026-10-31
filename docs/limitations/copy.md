@@ -60,7 +60,10 @@ for the same object (see [classes.md](classes.md)).
 Both `copy.copy` and `copy.deepcopy` return the same object for `datetime`,
 `date`, `time`, `timedelta`, `timezone`, `Path`, exception instances, generic
 aliases (`list[int]`) and unions (`int | None`), where CPython builds an equal
-new one through the pickle protocol. `timezone.utc` is the exception, a
+new one through the pickle protocol. `Literal[...]` and `Annotated[...]` are
+shared in both, except an `Annotated` whose metadata is unhashable
+(`Annotated[int, [1]]`), which CPython alone rebuilds, `deepcopy` copying the
+metadata. `timezone.utc` is the exception, a
 singleton in both, so only other offsets show it. `deepcopy` of a `slice`
 diverges the same way; `copy.copy` of one does not, CPython sharing slices too.
 Nothing in Monty can mutate any of these, so only `is` can tell the difference.

@@ -332,6 +332,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         // `operator.getitem`, see `limitations/copy.md`.
         | HeapReadOutput::GenericAlias(_)
         | HeapReadOutput::Union(_)
+        | HeapReadOutput::TypingAlias(_)
         | HeapReadOutput::FunctionDefaults(_) => Copyability::Shared,
         // Refused, with the `TypeError` CPython's pickler raises. Views and
         // iterators are positions into something else; the rest are host
@@ -360,6 +361,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DirScan(_)
         | HeapReadOutput::Itertools(_)
         | HeapReadOutput::Csv(_)
+        | HeapReadOutput::TypeAdapter(_)
         | HeapReadOutput::Module(_)
         | HeapReadOutput::Coroutine(_)
         | HeapReadOutput::GatherFuture(_)

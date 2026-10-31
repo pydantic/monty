@@ -19,6 +19,8 @@ dev = [
     "mdformat-frontmatter>=2.1.2",
     "httpx2>=2.12.0",
     "websockets>=14",
+    # the CPython side of the `cpython-site-packages` test cases and benchmarks
+    "pydantic>=2.13.4",
 ]
 # used only by `examples/`; opt in with `uv run --group examples ...`, `make dev-py` skips it, `make lint-py` needs it
 examples = [
@@ -183,6 +185,16 @@ exclude = [
     "crates/monty/test_cases/typing__get_type_hints_classes.py",
     "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
     "crates/monty/test_cases/typing__get_type_hints_functions.py",
+    # `Literal[1][2]` and bare `dict` / `list` as annotated types are runtime
+    # behaviour under test, not type expressions
+    "crates/monty/test_cases/typing__literal_annotated.py",
+    # malformed generics (`dict[str]`, `tuple[..., int]`) and bare `list` /
+    # `tuple` hints are what `TypeAdapter` is given on purpose
+    "crates/monty/test_cases/pydantic__type_adapter.py",
+    "crates/monty/test_cases/pydantic__dataclass.py",
+    "crates/monty/test_cases/pydantic__json.py",
+    "crates/monty/test_cases/pydantic__dump.py",
+    "crates/monty/test_cases/refcount__pydantic.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

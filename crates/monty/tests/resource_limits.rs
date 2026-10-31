@@ -428,6 +428,37 @@ x
     );
 }
 
+/// A smart union validates its input once per member, so a nested union of
+/// containers does exponential work in the validator with no Python frame in
+/// between: the validator polls the clock itself.
+#[test]
+fn time_limit_covers_pydantic_union_validation() {
+    let code = r"
+from dataclasses import dataclass
+from pydantic import TypeAdapter
+
+@dataclass
+class Node:
+    children: list['Node'] | tuple['Node', ...]
+
+node = {'children': []}
+for _ in range(60):
+    node = {'children': [node]}
+TypeAdapter(Node).validate_python(node)
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    let exc = result.expect_err("should exceed time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "the validator should notice the limit promptly, took {:?}",
+        start.elapsed()
+    );
+}
+
 /// `DictReader` skips blank rows in a native loop over the source, which must poll the
 /// clock: an endless source of blank lines never reaches a Python-level checkpoint.
 #[test]

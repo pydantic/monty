@@ -22,7 +22,7 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Type, spanned::Spanned};
+use syn::{Data, DataStruct, DeriveInput, Expr, Fields, Ident, LitStr, Token, Type, ext::IdentExt, spanned::Spanned};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let signature = Signature::parse(input)?;
@@ -540,7 +540,7 @@ impl Signature {
                 quote! { crate::args::ArgErrCtx::BadArgPos { func_name: #func_name, pos: #pos } }
             }
             Some(BadArgStyle::Named) => {
-                let arg_name = field.ident.to_string();
+                let arg_name = field.ident.unraw().to_string();
                 quote! { crate::args::ArgErrCtx::BadArgNamed { func_name: #func_name, arg_name: #arg_name } }
             }
         }
@@ -668,7 +668,7 @@ fn render_build_field(field: &Field) -> TokenStream {
 impl Field {
     /// The `Param` literal for the runtime spec.
     fn render_param(&self, never_matchable: bool) -> TokenStream {
-        let name = self.ident.to_string();
+        let name = self.ident.unraw().to_string();
         let keyword_name = self.keyword_name_expr(never_matchable);
         let kind = match self.kind {
             FieldKind::PosOnly => quote! { crate::args::ParamKind::PosOnly },
@@ -702,7 +702,7 @@ impl Field {
         if let Some(explicit) = &self.static_string {
             explicit.clone()
         } else {
-            let name = self.ident.to_string();
+            let name = self.ident.unraw().to_string();
             let variant = match name.as_bytes() {
                 [byte @ b'a'..=b'z'] => format!("AsciiLower{}", char::from(byte.to_ascii_uppercase())),
                 [b'A'..=b'Z'] => format!("Ascii{name}"),

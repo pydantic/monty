@@ -205,6 +205,22 @@ fn allocate_with_tz(vm: &mut VM<'_>, mut time: Time, tz_ref: Option<HeapId>) -> 
     Value::Ref(vm.heap.allocate(HeapData::Time(time)))
 }
 
+/// Allocates a `time` parsed from text or a timestamp, with a fixed-offset
+/// zone when `offset_seconds` is given. The components must be in range.
+pub(crate) fn allocate_parsed(
+    hour: i32,
+    minute: i32,
+    second: i32,
+    microsecond: i32,
+    offset_seconds: Option<i32>,
+    vm: &mut VM<'_>,
+) -> Value {
+    let mut time = from_components(hour, minute, second, microsecond, 0).expect("the parser validated the components");
+    // An owned reference, stored directly rather than through `allocate_with_tz`'s extra one.
+    time.tzinfo = offset_seconds.map(|offset| allocate_tzinfo_ref(offset, None, vm.heap));
+    Value::Ref(vm.heap.allocate(HeapData::Time(time)))
+}
+
 /// `time.fromisoformat(s)` — the inverse of `isoformat()`.
 ///
 /// Parsing is delegated to `speedate`, the same parser `date`/`datetime` use,
