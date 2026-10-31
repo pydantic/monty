@@ -17,6 +17,7 @@ pub(crate) mod iso;
 pub(crate) mod json_input;
 pub(crate) mod json_writer;
 pub(crate) mod python_input;
+pub(crate) mod serialize;
 pub(crate) mod snapshot;
 pub(crate) mod validate;
 
