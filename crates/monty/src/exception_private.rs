@@ -2738,16 +2738,6 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    /// Records a position in committed code; propagation supplies the frame name.
-    pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
-        ExceptionRaise {
-            exc: self,
-            frame: Some(RawStackFrame::from_position(position)),
-            snippet_frame: None,
-            hide_caret: false,
-        }
-    }
-
     /// Resolves a rejected snippet's location before its provisional intern IDs are discarded.
     /// Caller frames are still collected from the VM as the error propagates.
     pub(crate) fn with_snippet_position(self, position: CodeRange, source: &str) -> ExceptionRaise {
@@ -2831,21 +2821,10 @@ impl ExceptionRaise {
     /// The new frame becomes the ultimate parent (displayed first in traceback,
     /// since tracebacks show "most recent call last").
     ///
-    /// Special case: If the innermost frame has no name yet (created with `with_position`),
-    /// this sets its name instead of creating a new parent. This happens when the error
-    /// is raised from a namespace lookup - the initial frame has the position but not
-    /// the function name, which gets filled in as the error propagates.
-    ///
     /// `hide_caret` omits the added frame's carets, as CPython does under an
-    /// `import` whose module body raised; a nameless frame keeps its own.
+    /// `import` whose module body raised.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
-            // If innermost frame has no name, set it instead of adding a parent
-            // This handles errors from namespace lookups which create nameless frames
-            if frame.frame_name.is_none() {
-                frame.frame_name = Some(name);
-                return;
-            }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
             let mut current = frame;
             while current.parent.is_some() {
@@ -2954,15 +2933,6 @@ impl RawStackFrame {
             position,
             frame_name: Some(frame_name),
             parent: parent.map(|p| Box::new(p.clone())),
-            hide_caret: false,
-        }
-    }
-
-    fn from_position(position: CodeRange) -> Self {
-        Self {
-            position,
-            frame_name: None,
-            parent: None,
             hide_caret: false,
         }
     }
