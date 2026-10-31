@@ -324,12 +324,12 @@ fn compile(pat: &[char]) -> Vec<Token> {
 /// ranges whose bounds are reversed by merging the chunks around them, then
 /// escapes what remains; the members and the rendered text come from the same chunks.
 fn compile_class(stuff: &[char]) -> Token {
-    let negated = stuff.first() == Some(&'!');
+    let initially_negated = stuff.first() == Some(&'!');
     let chunks = if stuff.contains(&'-') {
         let mut chunks: Vec<Vec<char>> = Vec::new();
         let mut start = 0;
         // The hyphen right after `[` or `[!` is a member, not a range.
-        let mut k = if negated { 2 } else { 1 };
+        let mut k = if initially_negated { 2 } else { 1 };
         while let Some(offset) = stuff[k.min(stuff.len())..].iter().position(|&c| c == '-') {
             k += offset;
             chunks.push(stuff[start..k].to_vec());
@@ -361,6 +361,7 @@ fn compile_class(stuff: &[char]) -> Token {
     } else {
         vec![stuff.to_vec()]
     };
+    let negated = chunks.first().and_then(|chunk| chunk.first()) == Some(&'!');
 
     let mut chars = Vec::new();
     let mut ranges = Vec::new();
@@ -368,11 +369,16 @@ fn compile_class(stuff: &[char]) -> Token {
     for (k, chunk) in chunks.iter().enumerate() {
         let mut members = &chunk[..];
         if k > 0 {
-            // The first character ends the range the previous chunk started.
-            let hi = chunk[0];
-            let lo = chars.pop().expect("a range start was recorded");
-            ranges.push((lo, hi));
-            members = &members[1..];
+            if k == 1 && negated && chunks[0].len() == 1 {
+                // A negation marker leaves no range start, so this hyphen is literal.
+                chars.push('-');
+            } else {
+                // The first character ends the range the previous chunk started.
+                let hi = chunk[0];
+                let lo = chars.pop().expect("a range start was recorded");
+                ranges.push((lo, hi));
+                members = &members[1..];
+            }
             rendered.push('-');
         }
         if k == 0 && negated {
