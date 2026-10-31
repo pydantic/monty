@@ -98,3 +98,17 @@ except TypeError as exc:
 adapters = [TypeAdapter(list[Foo]) for _ in range(3)]
 for adapter in adapters:
     assert adapter.validate_python([{'x': '1'}]) == [Foo(1)]
+
+
+def make_adapter():
+    @dataclass
+    class Local:
+        x: int
+
+    return TypeAdapter(list[Local])
+
+
+# the class is only reachable through the adapter once the function returns
+local_adapter = make_adapter()
+assert local_adapter.validate_python([{'x': '1'}])[0].x == 1
+assert local_adapter.validate_python([{'x': '2'}])[0].x == 2

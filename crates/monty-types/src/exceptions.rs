@@ -582,9 +582,10 @@ impl ExcType {
 }
 
 /// Structured payload attached to exception types whose CPython counterparts
-/// carry more than a message. Currently unicode and json decode errors have
-/// one; the enum leaves room for future variants (e.g. `OSError`'s
-/// `errno`/`filename`) without another field on every exception.
+/// carry more than a message: unicode and json decode errors, and pydantic's
+/// `ValidationError` with its line errors. The enum leaves room for future
+/// variants (e.g. `OSError`'s `errno`/`filename`) without another field on
+/// every exception.
 #[derive(Debug, Clone, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ExcData {
     /// No structured payload — every exception type without a variant below.

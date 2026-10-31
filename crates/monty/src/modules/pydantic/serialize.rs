@@ -32,7 +32,7 @@ use crate::{
             arena::{Arena, DataclassValidator, Validator, ValidatorId},
             input::SeqKind,
             iso,
-            json_writer::{InfNan, JsonWriter},
+            json_writer::{InfNan, JsonWriter, non_finite_text},
         },
     },
     types::{
@@ -520,6 +520,20 @@ impl<'a> Serializer<'a> {
         }
     }
 
+    /// Whether `id` types `value` as a `float`, looking through the member of
+    /// a union or `Optional` that the value fits, as pydantic's key serializer does.
+    fn is_float(&self, id: ValidatorId, value: &Value, vm: &VM<'_>) -> bool {
+        match self.arena.get(id) {
+            Validator::Float => true,
+            Validator::Nullable(inner) => self.is_float(*inner, value, vm),
+            Validator::Union(choices) => choices
+                .iter()
+                .find(|choice| self.fits(**choice, value, vm))
+                .is_some_and(|choice| self.is_float(*choice, value, vm)),
+            _ => false,
+        }
+    }
+
     /// A dict key: the value itself in Python mode, pydantic's key text in
     /// JSON mode, where a key typed `float` writes a non-finite value as `inf`
     /// / `nan` and an inferred one as `None`.
@@ -533,16 +547,9 @@ impl<'a> Serializer<'a> {
         match (self.options.mode, key) {
             (Mode::Python, _) => sink.key(Key::Value(key), vm),
             (Mode::Json, Value::Float(f))
-                if !f.is_finite() && validator.is_some_and(|id| matches!(self.arena.get(id), Validator::Float)) =>
+                if !f.is_finite() && validator.is_some_and(|id| self.is_float(id, key, vm)) =>
             {
-                let text = if f.is_nan() {
-                    "nan"
-                } else if *f > 0.0 {
-                    "inf"
-                } else {
-                    "-inf"
-                };
-                sink.key(Key::Text(text), vm)
+                sink.key(Key::Text(non_finite_text(*f)), vm)
             }
             (Mode::Json, _) => {
                 let text = self.key_text(key, vm)?;

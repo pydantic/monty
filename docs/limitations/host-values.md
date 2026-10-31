@@ -74,6 +74,8 @@ The host evaluates them only then, never when the function or class crosses, and
 - **Hints other than builtin types become text.**
     A type outside the allowlist above crosses as its dotted name (`'mymod.User'`), and an alias or union as its repr (`'list[str]'`, `'int | None'`); `None` crosses as `NoneType`.
     The sandbox cannot resolve the text back to an object.
+- **`include_extras` is not sent to the host either**, so `Annotated` metadata on a host hint is stripped
+    (or kept) as the host's own `get_type_hints` call decides.
 - **`globalns` and `localns` are not sent to the host.**
     A host that stores its annotations as strings (`from __future__ import annotations`) resolves them in its own module, where CPython would use the namespaces given.
 - **An error from the host's `typing.get_type_hints` is raised in the sandbox**, as CPython raises it: a `NameError` for an unresolvable forward reference, say.

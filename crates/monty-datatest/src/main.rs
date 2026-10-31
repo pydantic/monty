@@ -13,7 +13,7 @@ use std::{
     convert::Infallible,
     env,
     error::Error,
-    ffi::CString,
+    ffi::{CStr, CString},
     fmt,
     fs::{self, canonicalize},
     panic::{self, AssertUnwindSafe},
@@ -2349,7 +2349,8 @@ impl Drop for CpythonTimeZone {
 /// The embedded interpreter is the one pyo3 linked, not the virtualenv's, so
 /// the packages `uv sync` installs are otherwise invisible to it. The whole
 /// CPython side of a case runs under [`CPYTHON_TEST_LOCK`], so the edit races
-/// nothing; modules already imported stay cached in `sys.modules`.
+/// nothing. Modules imported meanwhile stay cached in `sys.modules`: evicting
+/// them breaks namespace packages and PyO3 extensions, which cannot re-initialise.
 struct CpythonSitePackages {
     path: String,
 }
@@ -2392,10 +2393,15 @@ impl CpythonSitePackages {
 
 impl Drop for CpythonSitePackages {
     fn drop(&mut self) {
+        // Filtering rather than `remove` tolerates a case that took the entry off itself.
+        const CLEANUP: &CStr = c"import sys
+sys.path[:] = [entry for entry in sys.path if entry != path]
+";
         Python::attach(|py| {
-            let sys = py.import("sys").expect("Failed to import sys");
-            sys.getattr("path")
-                .and_then(|sys_path| sys_path.call_method1("remove", (&self.path,)))
+            let locals = PyDict::new(py);
+            locals
+                .set_item("path", &self.path)
+                .and_then(|()| py.run(CLEANUP, None, Some(&locals)))
                 .expect("Failed to remove site-packages from sys.path");
         });
     }
