@@ -793,7 +793,7 @@ fn call_list_method<'h>(
 
 /// Implements Python's `list.insert(index, item)` method.
 fn list_insert<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
+    let (index_obj, item) = args.get_two_args("list.insert", vm.heap)?;
     defer_drop!(index_obj, vm);
     let mut item_guard = DropGuard::new(item, vm);
     let vm = item_guard.ctx();

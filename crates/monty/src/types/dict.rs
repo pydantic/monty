@@ -1494,7 +1494,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             }
             StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
+                let (key, default) = args.get_one_two_args("dict.get", vm.heap)?;
                 defer_drop!(key, vm);
                 let default = default.unwrap_or(Value::None);
                 let mut default_guard = DropGuard::new(default, vm);
@@ -1527,7 +1527,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
             }
             StaticStrings::Pop => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
-                let (key, default) = args.get_one_two_args("pop", vm.heap)?;
+                let (key, default) = args.get_one_two_args("dict.pop", vm.heap)?;
                 defer_drop!(key, vm);
                 let mut default_guard = DropGuard::new(default, vm);
                 let vm = default_guard.ctx();
@@ -1920,7 +1920,7 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 /// If key is in the dict, return its value.
 /// If not, insert key with a value of default (or None) and return default.
 fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
+    let (key, default) = args.get_one_two_args("dict.setdefault", vm.heap)?;
     let default = default.unwrap_or(Value::None);
     let mut key_guard = DropGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts();
@@ -2003,7 +2003,7 @@ impl<'de> serde::Deserialize<'de> for Dict {
 pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
     // CPython names the bare method (`fromkeys expected …`), not `dict.fromkeys`,
     // for both `dict` and the inherited `defaultdict.fromkeys`.
-    let (iterable, default) = args.get_one_two_args("fromkeys", vm.heap)?;
+    let (iterable, default) = args.get_one_two_args("dict.fromkeys", vm.heap)?;
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 

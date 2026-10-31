@@ -555,7 +555,7 @@ fn math_expm1(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// With two arguments, returns `log(x) / log(base)`.
 fn math_log(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's arity errors name the bare function: `log expected at most 2 arguments, got 3`.
-    let (x_val, base_val) = args.get_one_two_args("log", vm.heap)?;
+    let (x_val, base_val) = args.get_one_two_args("math.log", vm.heap)?;
     defer_drop!(x_val, vm);
     defer_drop!(base_val, vm);
 
@@ -1172,7 +1172,7 @@ fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker
 /// (i.e., `perm(n)` returns `n!`), matching CPython behavior.
 fn math_perm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's arity errors name the bare function: `perm expected at most 2 arguments, got 3`.
-    let (n_val, k_val) = args.get_one_two_args("perm", vm.heap)?;
+    let (n_val, k_val) = args.get_one_two_args("math.perm", vm.heap)?;
     defer_drop!(n_val, vm);
 
     let n = value_to_bigint(n_val, vm)?;
