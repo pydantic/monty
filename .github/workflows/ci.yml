@@ -156,6 +156,14 @@ jobs:
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
+
+      # `cpython-site-packages` test cases import pydantic from the dev virtualenv
+      - run: uv sync --all-packages --only-dev
+
       - run: rustc --version --verbose
       - run: python3 -V
       - run: cargo llvm-cov clean --workspace
@@ -500,6 +508,14 @@ jobs:
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
+
+      # `cpython-site-packages` test cases import pydantic from the dev virtualenv
+      - run: uv sync --all-packages --only-dev
+
       - run: cargo test -p monty --features memory-model-checks
       # monty-fs does host filesystem I/O, so its mount/path-security tests must
       # pass on all three OSes (it has no memory-model-checks feature — the
@@ -552,6 +568,14 @@ jobs:
           python-version: '3.14'
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          save-cache: ${{ env.SAVE_CI_CACHE }}
+
+      # `cpython-site-packages` test cases import pydantic from the dev virtualenv
+      - run: uv sync --all-packages --only-dev
 
       - run: make dev-bench
 
