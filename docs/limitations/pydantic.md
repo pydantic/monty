@@ -17,7 +17,12 @@ The messages, `errors()` output and `str()` format are copied from pydantic-core
 - `BaseModel`, `Field`, `ConfigDict`, `validate_call`, `pydantic.dataclasses`, `field_validator`,
     `model_validator`, `computed_field`, `TypeAdapter.json_schema()` and the rest of the package raise
     `AttributeError` or `ImportError`.
-- `TypeAdapter.validate_strings()` raises `NotImplementedError`.
+- `TypeAdapter.validate_strings()` and `TypeAdapter.json_schema()` raise `NotImplementedError`.
+- `dump_python(..., include=, exclude=, fallback=, polymorphic_serialization=, context=)`, the same on
+    `dump_json`, and `exclude_unset=True`, `exclude_defaults=True`, `exclude_computed_fields=True` or
+    `serialize_as_any=True` raise `NotImplementedError` naming the argument; `mode`, `indent`, `ensure_ascii`
+    and `exclude_none` are supported, `by_alias`, `round_trip` and `warnings` are accepted and have no effect.
+- `pydantic_core` is not importable, so `PydanticSerializationError` cannot be named; it is a `ValueError`.
 - `TypeAdapter(type, config=...)` and `TypeAdapter(type, module=...)` raise `NotImplementedError`;
     `_parent_depth` is accepted and ignored.
 - `validate_python(..., extra=, from_attributes=, context=, by_alias=, by_name=)`,
@@ -80,6 +85,24 @@ Divergences:
 - **The recursion guard is keyed on identity**: a list that contains itself reports `recursion_loop`,
     like pydantic, but a deeply nested input hits Monty's recursion limit (`RecursionError`) rather than
     pydantic's 255-level `recursion_loop` error.
+
+## Serialisation
+
+`dump_python(instance, mode='python' | 'json', exclude_none=)` and
+`dump_json(instance, indent=, ensure_ascii=, exclude_none=)` follow pydantic-core's serializers for the types
+above: Python mode copies containers and keeps every value, JSON mode writes temporal values as ISO text, a
+`Decimal` as `str()`, `bytes` as UTF-8 text, sets and tuples as lists, dict keys as strings and a non-finite
+float as `None` (`null` in `dump_json`), a dataclass is a dict of its fields in order, and a value of another
+type than its hint falls back to its own type's form, as pydantic does after its warning.
+Divergences:
+
+- **No `PydanticSerializationUnexpectedValue` warning.** A value that does not match its hint is serialized
+    silently; pydantic emits a `UserWarning`, and `warnings='error'` raises there but not in Monty.
+- **A cycle raises in Python mode too.** `dump_python` of a container that holds itself raises
+    `ValueError: Circular reference detected (id repeated)`; pydantic returns a nested copy. `dump_json`
+    raises pydantic's `PydanticSerializationError` for it.
+- **The unknown-type message uses Monty's class name**: `Unable to serialize unknown type: <class 'Foo'>`
+    where pydantic prints `<class '__main__.Foo'>`.
 
 ## `ValidationError`
 
