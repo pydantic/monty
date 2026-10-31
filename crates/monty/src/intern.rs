@@ -1181,6 +1181,16 @@ pub enum StaticStrings {
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
+    /// Kwarg name `exclude` — `TypeAdapter.dump_*`.
+    Exclude,
+    /// Kwarg name `exclude_computed_fields` — `TypeAdapter.dump_*`.
+    ExcludeComputedFields,
+    /// Kwarg name `exclude_defaults` — `TypeAdapter.dump_*`.
+    ExcludeDefaults,
+    /// Kwarg name `exclude_none` — `TypeAdapter.dump_*`.
+    ExcludeNone,
+    /// Kwarg name `exclude_unset` — `TypeAdapter.dump_*`.
+    ExcludeUnset,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
@@ -1231,6 +1241,8 @@ pub enum StaticStrings {
     Fabs,
     /// `math.factorial()` function.
     Factorial,
+    /// Kwarg name `fallback` — `TypeAdapter.dump_*`.
+    Fallback,
     /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
     #[strum(serialize = "False")]
     FalseRepr,
@@ -1473,6 +1485,8 @@ pub enum StaticStrings {
     Ignorechars,
     /// `complex.imag` attribute.
     Imag,
+    /// Kwarg name `include` — `TypeAdapter.dump_*`.
+    Include,
     /// Kwarg name `include_context` — `ValidationError.errors()`.
     IncludeContext,
     /// `include_extras` parameter of `typing.get_type_hints()`.
@@ -1512,6 +1526,8 @@ pub enum StaticStrings {
     InsortRight,
     /// `sys.flags.inspect` field.
     Inspect,
+    /// Positional name `instance` — `TypeAdapter.dump_*`.
+    Instance,
     /// `sys.flags.int_max_str_digits` field.
     IntMaxStrDigits,
     /// `sys.flags.interactive` field.
@@ -2057,6 +2073,8 @@ pub enum StaticStrings {
     Platform,
     /// `sys.platlibdir` attribute.
     Platlibdir,
+    /// Kwarg name `polymorphic_serialization` — `TypeAdapter.dump_*`.
+    PolymorphicSerialization,
     /// `pop()` method, shared by `list`, `dict`, `set` and `deque`.
     Pop,
     /// `dict.popitem()` method.
@@ -2251,6 +2269,8 @@ pub enum StaticStrings {
     /// `decimal.ROUND_HALF_UP` rounding mode.
     #[strum(serialize = "ROUND_HALF_UP")]
     RoundHalfUp,
+    /// Kwarg name `round_trip` — `TypeAdapter.dump_*`.
+    RoundTrip,
     /// `decimal.ROUND_UP` rounding mode.
     #[strum(serialize = "ROUND_UP")]
     RoundUp,
@@ -2316,6 +2336,8 @@ pub enum StaticStrings {
     Sequence,
     /// `sys.version_info.serial` field.
     Serial,
+    /// Kwarg name `serialize_as_any` — `TypeAdapter.dump_*`.
+    SerializeAsAny,
     /// `typing.Set` marker.
     #[strum(serialize = "Set")]
     SetType,
@@ -2739,6 +2761,8 @@ pub enum StaticStrings {
     Walk,
     /// `sys.flags.warn_default_encoding` field.
     WarnDefaultEncoding,
+    /// Kwarg name `warnings` — `TypeAdapter.dump_*`.
+    Warnings,
     /// `@dataclass(weakref_slot=...)`.
     WeakrefSlot,
     /// `date.weekday()` / `datetime.weekday()` method.
