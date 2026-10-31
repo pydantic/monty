@@ -27,9 +27,13 @@ use crate::{
         input::State,
         json_input::JsonInput,
         python_input::PyInput,
+        serialize::{self, Mode, Options},
         validate::validate,
     },
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{
+        LazyHeapSet, PyTrait, Type,
+        decimal::py_context::{current_context, settings_of},
+    },
     value::{EitherStr, Value},
 };
 
@@ -319,6 +323,293 @@ fn finish_document(result: ValResult<Value>, input: &mut JsonInput<'_, '_>, vm: 
     }
 }
 
+/// Arguments of `dump_python(instance, /, *, mode=, exclude_none=, ...)`.
+#[derive(FromArgs)]
+#[from_args(name = "TypeAdapter.dump_python", style = def)]
+struct DumpPythonArgs {
+    #[from_args(pos_only)]
+    instance: Value,
+    #[from_args(kw_only, default = Value::None)]
+    mode: Value,
+    #[from_args(kw_only, default = Value::None)]
+    include: Value,
+    #[from_args(kw_only, default = Value::None)]
+    exclude: Value,
+    #[from_args(kw_only, default = Value::None)]
+    by_alias: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_unset: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_defaults: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_none: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_computed_fields: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    round_trip: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    warnings: Value,
+    #[from_args(kw_only, default = Value::None)]
+    fallback: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    serialize_as_any: Value,
+    #[from_args(kw_only, default = Value::None)]
+    polymorphic_serialization: Value,
+    #[from_args(kw_only, default = Value::None)]
+    context: Value,
+}
+
+/// Arguments of `dump_json(instance, /, *, indent=None, ensure_ascii=False, ...)`.
+#[derive(FromArgs)]
+#[from_args(name = "TypeAdapter.dump_json", style = def)]
+struct DumpJsonArgs {
+    #[from_args(pos_only)]
+    instance: Value,
+    #[from_args(kw_only, default = Value::None)]
+    indent: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    ensure_ascii: Value,
+    #[from_args(kw_only, default = Value::None)]
+    include: Value,
+    #[from_args(kw_only, default = Value::None)]
+    exclude: Value,
+    #[from_args(kw_only, default = Value::None)]
+    by_alias: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_unset: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_defaults: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_none: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    exclude_computed_fields: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    round_trip: Value,
+    #[from_args(kw_only, default = Value::Bool(true))]
+    warnings: Value,
+    #[from_args(kw_only, default = Value::None)]
+    fallback: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    serialize_as_any: Value,
+    #[from_args(kw_only, default = Value::None)]
+    polymorphic_serialization: Value,
+    #[from_args(kw_only, default = Value::None)]
+    context: Value,
+}
+
+/// The dump options shared by both methods, checked in pydantic's order.
+struct DumpCommon {
+    include: Value,
+    exclude: Value,
+    by_alias: Value,
+    exclude_unset: Value,
+    exclude_defaults: Value,
+    exclude_none: Value,
+    exclude_computed_fields: Value,
+    round_trip: Value,
+    warnings: Value,
+    fallback: Value,
+    serialize_as_any: Value,
+    polymorphic_serialization: Value,
+    context: Value,
+}
+
+impl DumpCommon {
+    /// Validates the options, yielding the serializer's `exclude_none`; the
+    /// bool options must be `bool`, and the rest are refused when set.
+    fn check(self, function: &str, mode: Mode, vm: &mut VM<'_>) -> RunResult<Options> {
+        let Self {
+            include,
+            exclude,
+            by_alias,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            exclude_computed_fields,
+            round_trip,
+            warnings,
+            fallback,
+            serialize_as_any,
+            polymorphic_serialization,
+            context,
+        } = self;
+        defer_drop!(include, vm);
+        defer_drop!(exclude, vm);
+        defer_drop!(by_alias, vm);
+        defer_drop!(exclude_unset, vm);
+        defer_drop!(exclude_defaults, vm);
+        defer_drop!(exclude_none, vm);
+        defer_drop!(exclude_computed_fields, vm);
+        defer_drop!(round_trip, vm);
+        defer_drop!(warnings, vm);
+        defer_drop!(fallback, vm);
+        defer_drop!(serialize_as_any, vm);
+        defer_drop!(polymorphic_serialization, vm);
+        defer_drop!(context, vm);
+        for (name, value) in [
+            ("include", include),
+            ("exclude", exclude),
+            ("fallback", fallback),
+            ("polymorphic_serialization", polymorphic_serialization),
+            ("context", context),
+        ] {
+            if !matches!(value, Value::None) {
+                return Err(unsupported_argument(function, name));
+            }
+        }
+        bool_flag("round_trip", round_trip, vm)?;
+        let exclude_none = bool_flag("exclude_none", exclude_none, vm)?;
+        for (name, value) in [
+            ("exclude_unset", exclude_unset),
+            ("exclude_defaults", exclude_defaults),
+            ("exclude_computed_fields", exclude_computed_fields),
+            ("serialize_as_any", serialize_as_any),
+        ] {
+            if bool_flag(name, value, vm)? {
+                return Err(unsupported_argument(function, name));
+            }
+        }
+        let context = current_context(vm);
+        let capitals = settings_of(vm, context).capitals;
+        Ok(Options {
+            mode,
+            exclude_none,
+            capitals,
+        })
+    }
+}
+
+impl<'h> HeapObjectRead<'h, TypeAdapter> {
+    /// `dump_python(instance, /, *, mode='python', exclude_none=False, ...)`.
+    fn dump_python(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let DumpPythonArgs {
+            instance,
+            mode,
+            include,
+            exclude,
+            by_alias,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            exclude_computed_fields,
+            round_trip,
+            warnings,
+            fallback,
+            serialize_as_any,
+            polymorphic_serialization,
+            context,
+        } = DumpPythonArgs::from_args(args, vm)?;
+        defer_drop!(instance, vm);
+        defer_drop!(mode, vm);
+        let common = DumpCommon {
+            include,
+            exclude,
+            by_alias,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            exclude_computed_fields,
+            round_trip,
+            warnings,
+            fallback,
+            serialize_as_any,
+            polymorphic_serialization,
+            context,
+        };
+        let mode = dump_mode(mode, vm)?;
+        let options = common.check("TypeAdapter.dump_python", mode, vm)?;
+        let (arena, root, _, keep_alive) = self.arena_handle(vm);
+        defer_drop!(keep_alive, vm);
+        serialize::dump_python(&arena, root, instance, options, vm)
+    }
+
+    /// `dump_json(instance, /, *, indent=None, ensure_ascii=False, exclude_none=False, ...)`.
+    fn dump_json(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let DumpJsonArgs {
+            instance,
+            indent,
+            ensure_ascii,
+            include,
+            exclude,
+            by_alias,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            exclude_computed_fields,
+            round_trip,
+            warnings,
+            fallback,
+            serialize_as_any,
+            polymorphic_serialization,
+            context,
+        } = DumpJsonArgs::from_args(args, vm)?;
+        defer_drop!(instance, vm);
+        defer_drop!(indent, vm);
+        defer_drop!(ensure_ascii, vm);
+        let common = DumpCommon {
+            include,
+            exclude,
+            by_alias,
+            exclude_unset,
+            exclude_defaults,
+            exclude_none,
+            exclude_computed_fields,
+            round_trip,
+            warnings,
+            fallback,
+            serialize_as_any,
+            polymorphic_serialization,
+            context,
+        };
+        let indent = match indent {
+            Value::None => None,
+            Value::Int(n) if *n >= 0 => Some(usize::try_from(*n).unwrap_or(usize::MAX)),
+            Value::Int(_) => {
+                return Err(SimpleException::new_msg(
+                    ExcType::OverflowError,
+                    "can't convert negative int to unsigned".to_owned(),
+                )
+                .into());
+            }
+            other => {
+                return Err(ExcType::type_error(format!(
+                    "argument 'indent': '{}' object cannot be interpreted as an integer",
+                    other.py_type_name(vm)
+                )));
+            }
+        };
+        let ensure_ascii = bool_flag("ensure_ascii", ensure_ascii, vm)?;
+        let options = common.check("TypeAdapter.dump_json", Mode::Json, vm)?;
+        let (arena, root, _, keep_alive) = self.arena_handle(vm);
+        defer_drop!(keep_alive, vm);
+        serialize::dump_json(&arena, root, instance, options, indent, ensure_ascii, vm)
+    }
+}
+
+/// `mode='json'` selects JSON mode; pydantic treats any other `str` as `'python'`.
+fn dump_mode(mode: &Value, vm: &VM<'_>) -> RunResult<Mode> {
+    match (mode, mode.as_str(vm)) {
+        (Value::None, _) => Ok(Mode::Python),
+        (_, Some("json")) => Ok(Mode::Json),
+        (_, Some(_)) => Ok(Mode::Python),
+        (other, None) => Err(ExcType::type_error(format!(
+            "argument 'mode': '{}' object is not an instance of 'str'",
+            other.py_type_name(vm)
+        ))),
+    }
+}
+
+/// A `bool` option, with pydantic-core's `TypeError` for any other type.
+fn bool_flag(name: &str, value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    match value {
+        Value::Bool(flag) => Ok(*flag),
+        other => Err(ExcType::type_error(format!(
+            "argument '{name}': '{}' object is not an instance of 'bool'",
+            other.py_type_name(vm)
+        ))),
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::TypeAdapter
@@ -341,12 +632,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::ValidatePython) => self.validate_python(args, vm).map(CallResult::Value),
             Some(StaticStrings::ValidateJson) => self.validate_json(args, vm).map(CallResult::Value),
-            Some(
-                StaticStrings::ValidateStrings
-                | StaticStrings::DumpPython
-                | StaticStrings::DumpJson
-                | StaticStrings::JsonSchema,
-            ) => {
+            Some(StaticStrings::DumpPython) => self.dump_python(args, vm).map(CallResult::Value),
+            Some(StaticStrings::DumpJson) => self.dump_json(args, vm).map(CallResult::Value),
+            Some(StaticStrings::ValidateStrings | StaticStrings::JsonSchema) => {
                 let name = attr.as_str(vm.interns).to_owned();
                 args.drop_with(vm);
                 Err(SimpleException::new_msg(
