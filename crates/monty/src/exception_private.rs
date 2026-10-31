@@ -2826,6 +2826,13 @@ impl<'h> HeapRead<'h, SimpleException> {
     /// `AttributeError`.
     pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if let ExcData::Validation(data) = &self.get(vm.heap).data {
+            if attr.static_string(vm.interns) == Some(StaticStrings::ErrorCount) {
+                // A count needs no copy; the other methods allocate while
+                // reading the payload, so they take their own.
+                let count = pydantic::errors::error_count(data);
+                args.check_zero_args("error_count", vm.heap)?;
+                return Ok(CallResult::Value(count));
+            }
             let data = data.clone();
             pydantic::errors::call_method(&data, attr, args, vm)
         } else {

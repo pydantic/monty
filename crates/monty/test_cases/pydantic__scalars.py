@@ -75,6 +75,8 @@ assert Float.validate_python(1.5) == 1.5
 assert Float.validate_python(1) == 1.0
 assert type(Float.validate_python(1)) is float
 assert Float.validate_python(True) == 1.0
+assert Float.validate_python(100000000000000000000000) == 1e23
+assert Float.validate_python(10**23) == 1e23
 assert Float.validate_python('1.5') == 1.5
 assert Float.validate_python(' 2 ') == 2.0
 assert Float.validate_python('1_5.5') == 15.5
@@ -178,6 +180,7 @@ assert DecimalAdapter.validate_python(1) == Decimal('1')
 assert DecimalAdapter.validate_python(1.5) == Decimal('1.5')
 assert DecimalAdapter.validate_python(0.1) == Decimal('0.1')
 assert DecimalAdapter.validate_python(10**30) == Decimal(10**30)
+assert DecimalAdapter.validate_python(1000000000000000000000000000000) == Decimal(10**30)
 assert DecimalAdapter.validate_python((0, (1, 5), -1)) == Decimal('1.5')
 assert errors(DecimalAdapter, 'inf') == [
     {'type': 'finite_number', 'loc': (), 'msg': 'Input should be a finite number', 'input': 'inf'}

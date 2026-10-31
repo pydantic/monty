@@ -11,6 +11,7 @@ use monty_types::{MontyObject, ValidationInputType};
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    heap::HeapData,
     modules::pydantic::snapshot::snapshot_value,
     value::Value,
 };
@@ -488,11 +489,18 @@ impl CtxField for Option<usize> {
 }
 
 impl CtxField for MontyObject {
+    /// pydantic-core extracts an int (a bool as `0` / `1`), then a float
+    /// (anything with `__float__`, so a `Decimal` becomes one), then a str.
     fn from_context(ctx: &[(String, Value)], field: &str, variant: &str, vm: &mut VM<'_>) -> RunResult<Self> {
         required_context(ctx, field, variant, "Number", vm, |value, vm| match value {
             Value::Int(_) | Value::Float(_) | Value::InternLongInt(_) => Some(snapshot_value(value, vm)),
-            Value::Ref(_) if value.as_str(vm).is_none() => Some(snapshot_value(value, vm)),
-            _ => None,
+            Value::Bool(b) => Some(Self::int(i64::from(*b))),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(_) => Some(snapshot_value(value, vm)),
+                HeapData::Decimal(decimal) => decimal.to_f64().ok().map(Self::float),
+                _ => value.as_str(vm).map(|text| Self::string(text.to_owned())),
+            },
+            _ => value.as_str(vm).map(|text| Self::string(text.to_owned())),
         })
     }
 

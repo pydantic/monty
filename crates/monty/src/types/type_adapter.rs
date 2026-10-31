@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
@@ -169,6 +169,9 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
             by_alias,
             by_name,
         } = ValidatePythonArgs::from_args(args, vm)?;
+        // The input owns `object` from here; every argument error below releases it.
+        let input = PyInput::new(object);
+        defer_drop_mut!(input, vm);
         defer_drop!(strict, vm);
         defer_drop!(extra, vm);
         defer_drop!(from_attributes, vm);
@@ -185,12 +188,10 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
         ];
         for (name, value) in unsupported {
             if !matches!(value, Value::None) {
-                object.drop_with(vm);
                 return Err(unsupported_argument("TypeAdapter.validate_python", name));
             }
         }
         if !matches!(experimental_allow_partial, Value::Bool(false)) {
-            object.drop_with(vm);
             return Err(unsupported_argument(
                 "TypeAdapter.validate_python",
                 "experimental_allow_partial",
@@ -199,11 +200,9 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
         let strict = strict_flag(strict, vm)?;
         let (arena, root, title, keep_alive) = self.arena_handle(vm);
         defer_drop!(keep_alive, vm);
-        let mut input = PyInput::new(object);
         let mut state = State::new(strict);
-        let result = validate(&arena, root, &mut input, &mut state, vm);
-        input.drop_with(vm);
-        result.map_err(|err| into_run_error(err, &title, ValidationInputType::Python, vm))
+        validate(&arena, root, input, &mut state, vm)
+            .map_err(|err| into_run_error(err, &title, ValidationInputType::Python, vm))
     }
 }
 
@@ -456,6 +455,9 @@ impl DumpCommon {
             if !matches!(value, Value::None) {
                 return Err(unsupported_argument(function, name));
             }
+        }
+        if !matches!(by_alias, Value::None) {
+            bool_flag("by_alias", by_alias, vm)?;
         }
         bool_flag("round_trip", round_trip, vm)?;
         let exclude_none = bool_flag("exclude_none", exclude_none, vm)?;

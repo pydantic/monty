@@ -154,9 +154,14 @@ impl StandardLib {
     /// The import names of every built-in module (`os.path` included), so a
     /// host can keep its own module names clear of them.
     pub fn names() -> impl Iterator<Item = &'static str> {
+        Self::static_names().map(<&'static str>::from)
+    }
+
+    /// The same names as interned strings, for `sys.builtin_module_names`.
+    pub(crate) fn static_names() -> impl Iterator<Item = StaticStrings> {
         (0..)
             .map_while(StaticStrings::from_repr)
-            .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
+            .filter(|name| Self::from_static(*name).is_some())
     }
 
     /// Creates a new instance of this module on the heap.

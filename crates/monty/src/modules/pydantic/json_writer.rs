@@ -246,6 +246,18 @@ impl<'t> JsonWriter<'t> {
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
+/// Python's `str()` of a NaN or infinity, which pydantic uses for a non-finite
+/// dict key in JSON output.
+pub(crate) fn non_finite_text(f: f64) -> &'static str {
+    if f.is_nan() {
+        "nan"
+    } else if f > 0.0 {
+        "inf"
+    } else {
+        "-inf"
+    }
+}
+
 /// A dict key as a JSON object key: strings verbatim, the rest as pydantic
 /// renders them (`None`, `true`, a number's digits, a date's ISO form).
 fn json_key(node: &MontyNode) -> String {
@@ -253,7 +265,9 @@ fn json_key(node: &MontyNode) -> String {
         MontyNode::String(s) | MontyNode::Repr(s) => s.clone(),
         MontyNode::None => "None".to_owned(),
         MontyNode::Bool(b) => if *b { "true" } else { "false" }.to_owned(),
-        MontyNode::Float(f) => zmij::Buffer::new().format_finite(*f).to_owned(),
+        MontyNode::Float(f) if f.is_finite() => zmij::Buffer::new().format_finite(*f).to_owned(),
+        // pydantic writes a non-finite key as Python's `str()` of it.
+        MontyNode::Float(f) => non_finite_text(*f).to_owned(),
         MontyNode::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
         MontyNode::Date(d) => iso::date(d),
         MontyNode::DateTime(dt) => iso::datetime(dt),

@@ -281,6 +281,11 @@ struct JsonArgs {
     include_input: Value,
 }
 
+/// `error_count()`: the number of line errors.
+pub(crate) fn error_count(data: &ValidationErrorData) -> Value {
+    Value::Int(i64::try_from(data.line_errors.len()).unwrap_or(i64::MAX))
+}
+
 /// Which optional entries `errors()` and `json()` include.
 struct Includes {
     url: bool,
@@ -307,9 +312,7 @@ pub(crate) fn call_method(
         }
         Some(StaticStrings::ErrorCount) => {
             args.check_zero_args("error_count", vm.heap)?;
-            Ok(CallResult::Value(Value::Int(
-                i64::try_from(data.line_errors.len()).unwrap_or(i64::MAX),
-            )))
+            Ok(CallResult::Value(error_count(data)))
         }
         Some(StaticStrings::Json) => {
             let JsonArgs {
@@ -321,7 +324,10 @@ pub(crate) fn call_method(
             defer_drop!(indent, vm);
             let indent = match indent {
                 Value::None => None,
-                Value::Int(n) => Some(usize::try_from(*n).unwrap_or(0)),
+                Value::Int(n) => Some(
+                    usize::try_from(*n)
+                        .map_err(|_| ExcType::overflow_error("can't convert negative int to unsigned"))?,
+                ),
                 other => {
                     return Err(ExcType::type_error(format!(
                         "argument 'indent': '{}' object cannot be interpreted as an integer",
@@ -570,22 +576,31 @@ fn line_from_dict(entry: &Value, vm: &mut VM<'_>) -> RunResult<LineError> {
     let Some(type_name) = type_value.as_str(vm).map(str::to_owned) else {
         return Err(ExcType::type_error("'type' must be a str"));
     };
-    let ctx = get("ctx", vm).unwrap_or(Value::None);
+    let ctx = get("ctx", vm);
     defer_drop!(ctx, vm);
-    let ctx_pairs: Vec<(String, Value)> = dict_pairs(ctx, vm)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(key, value)| {
-            let name = key.as_str(vm).map(str::to_owned);
-            key.drop_with(vm);
-            if let Some(name) = name {
-                Some((name, value))
-            } else {
-                value.drop_with(vm);
-                None
-            }
-        })
-        .collect();
+    let ctx_pairs: Vec<(String, Value)> = match ctx {
+        None => Vec::new(),
+        // Present, so it must be a dict; pydantic words `None` without "object".
+        Some(Value::None) => return Err(ExcType::type_error("'None' is not an instance of 'dict'")),
+        Some(ctx) => dict_pairs(ctx, vm).ok_or_else(|| {
+            ExcType::type_error(format!(
+                "'{}' object is not an instance of 'dict'",
+                ctx.py_type_name(vm)
+            ))
+        })?,
+    }
+    .into_iter()
+    .filter_map(|(key, value)| {
+        let name = key.as_str(vm).map(str::to_owned);
+        key.drop_with(vm);
+        if let Some(name) = name {
+            Some((name, value))
+        } else {
+            value.drop_with(vm);
+            None
+        }
+    })
+    .collect();
     let error_type = ErrorType::from_name(&type_name, &ctx_pairs, vm);
     for (_, value) in ctx_pairs {
         value.drop_with(vm);
