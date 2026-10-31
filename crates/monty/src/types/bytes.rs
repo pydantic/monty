@@ -2051,13 +2051,27 @@ fn extract_justify_width(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 }
 
 /// Reads a justify method's `fillbyte`, which must be exactly one byte.
+///
+/// The errors are CPython's for an Argument Clinic `char` parameter, which name
+/// the method without its type (`ljust()`, not `bytes.ljust()`).
 fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u8> {
+    let name = method.strip_prefix("bytes.").unwrap_or(method);
+    if !matches!(value.py_type(vm), Type::Bytes) {
+        let type_name = if matches!(value, Value::None) {
+            "None".into()
+        } else {
+            value.py_type_name(vm)
+        };
+        return Err(ExcType::type_error(format!(
+            "{name}() argument 2 must be a byte string of length 1, not {type_name}"
+        )));
+    }
     let fill_bytes = extract_bytes_only(value, vm)?;
     if fill_bytes.len() == 1 {
         Ok(fill_bytes[0])
     } else {
         Err(ExcType::type_error(format!(
-            "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
+            "{name}(): argument 2 must be a byte string of length 1, not a bytes object of length {}",
             fill_bytes.len()
         )))
     }

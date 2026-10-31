@@ -2122,6 +2122,16 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a TypeError for a fillchar argument that is not a `str`.
+    ///
+    /// Matches CPython's format: `TypeError: The fill character must be a unicode character, not int`
+    #[must_use]
+    fn type_error_fillchar_not_str(type_name: impl fmt::Display) -> RunError {
+        Self::type_error(format!(
+            "The fill character must be a unicode character, not {type_name}"
+        ))
+    }
+
     /// Creates a StopIteration exception for when an iterator is exhausted.
     ///
     /// Matches CPython's format: `StopIteration`

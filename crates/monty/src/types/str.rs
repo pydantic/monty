@@ -1781,6 +1781,9 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
             } else {
                 usize::try_from(w).unwrap_or(usize::MAX)
             };
+            if !matches!(fillchar_value.py_type(vm), Type::Str) {
+                return Err(ExcType::type_error_fillchar_not_str(fillchar_value.py_type_name(vm)));
+            }
             let fill_str = extract_string_arg(fillchar_value, vm)?;
             if fill_str.chars().count() != 1 {
                 return Err(ExcType::type_error_fillchar_must_be_single_char());
