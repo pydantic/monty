@@ -23,10 +23,10 @@ match CPython's, with these divergences:
     (`cannot use a string pattern on a bytes-like object`); a bytes *pattern*
     raises `first argument must be string or compiled pattern`, whereas
     CPython supports bytes patterns.
-- A non-str `repl` for `re.sub` raises `callable replacement is not yet supported in re.sub()`; CPython raises
-    `decoding to str: need a bytes-like object, int found`-style errors for non-callable non-strings.
-    Like CPython, the check runs even when a negative `count` means zero
-    substitutions.
+- A function `repl` for `re.sub` and `Pattern.sub` runs synchronously, so one that calls an external or OS function
+    cannot suspend and raises `NotImplementedError`, as `sorted(key=...)` does (see [iter.md](iter.md)). Monty finds
+    all the matches before the first call, where CPython finds each one just before its call, so a regex error late in
+    the subject raises before any call runs.
 - `re.sub` replacement templates are not generally validated: CPython parses
     the template eagerly (even with zero matches or a negative `count`) and
     raises `PatternError` for an invalid group reference (`\2` with one

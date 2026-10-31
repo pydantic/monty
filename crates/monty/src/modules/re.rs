@@ -45,7 +45,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         BoundedCompileError, BuiltinType, Module, RePattern, Type,
-        re_pattern::{extract_count, extract_maxsplit, translate_replacement},
+        re_pattern::{extract_count, extract_maxsplit, sub_template, sub_with_function, translate_replacement},
         str::allocate_string,
     },
     value::Value,
@@ -282,15 +282,13 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     // CPython parses the replacement template before its match loop, so a bad
     // replacement raises even when a negative count skips matching.
-    let Some(repl) = repl.as_str(vm) else {
-        return Err(ExcType::type_error(
-            "callable replacement is not yet supported in re.sub()",
-        ));
-    };
+    let template = sub_template(repl, vm)?;
 
     let Some(count) = count else {
-        // Reject out-of-range octal escapes even when the negative count skips matching.
-        translate_replacement(repl)?;
+        if let Some(template) = template {
+            // Reject out-of-range octal escapes even when the negative count skips matching.
+            translate_replacement(template)?;
+        }
         // Negative count — re.sub returns the input string unchanged.
         // CPython still type-checks the subject before its (empty) match
         // loop, so validate first, then just bump the refcount; no need to
@@ -300,9 +298,14 @@ fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         return Ok(string.clone_with_heap(vm.heap));
     };
 
-    resolved
-        .get(vm.heap)
-        .sub(repl, subject_str(string, vm)?, count, vm.heap)
+    let text = subject_str(string, vm)?;
+    if let Some(template) = template {
+        resolved.get(vm.heap).sub(template, text, count, vm.heap)
+    } else {
+        let limit = if count == 0 { usize::MAX } else { count };
+        let matches = resolved.get(vm.heap).finditer_limit(string, text, limit, vm.heap)?;
+        sub_with_function(matches, repl, string, count, vm)
+    }
 }
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split on pattern occurrences.

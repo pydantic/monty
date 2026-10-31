@@ -134,6 +134,11 @@ impl ReMatch {
         &self.subject
     }
 
+    /// The byte offsets `(start, end)` of the full match in the subject.
+    pub(crate) fn byte_span(&self) -> (usize, usize) {
+        (self.start, self.end)
+    }
+
     /// The `(start, end)` char offsets of the full match — what `.start()`,
     /// `.end()`, `.span()`, and `repr` report. Memoized: a non-ASCII subject is
     /// scanned once (only up to the match end) on first access, O(1) after.
