@@ -11,11 +11,11 @@ assert len(secrets.token_bytes()) == 1
 secrets.DEFAULT_ENTROPY = len
 assert secrets.DEFAULT_ENTROPY([1]) == 1
 secrets.DEFAULT_ENTROPY = old_entropy
-assert isinstance(secrets.token_bytes(), bytes)
+assert len(secrets.token_bytes()) == old_entropy
 assert len(secrets.token_bytes(0)) == 0
 assert len(secrets.token_bytes(17)) == 17
 assert len(secrets.token_hex(17)) == 34
-assert len(secrets.token_urlsafe(17)) <= 23
+assert len(secrets.token_urlsafe(17)) == 23
 assert 0 <= secrets.randbits(24) < 2**24
 assert secrets.randbits(0) == 0
 assert secrets.randbits(k=0) == 0

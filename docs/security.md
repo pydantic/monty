@@ -324,7 +324,7 @@ Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating w
 `max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
 A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
 
-Inside the sandbox, `os.urandom(n)` and the `secrets` functions both request bytes through this handler.
+Inside the sandbox, `os.urandom(n)` and the `secrets` token and random-generation functions request bytes through this handler. `secrets.compare_digest()` does not request entropy.
 A host that wants reproducible runs can provide deterministic replies to `os.urandom` requests.
 
 The `random` module calls the handler only under `random_start='call_host'`.

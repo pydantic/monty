@@ -360,6 +360,7 @@ test('an invalid module name is refused when a call reaches it', async () => {
     ['for', 'TypeError: externalModules.for is not a valid module name'],
     ['1tools', 'TypeError: externalModules.1tools is not a valid module name'],
     ['json', 'TypeError: externalModules.json is provided by the sandbox and cannot be replaced'],
+    ['secrets', 'TypeError: externalModules.secrets is provided by the sandbox and cannot be replaced'],
   ]
   for (const [name, message] of cases) {
     const probe = () => 'hidden'

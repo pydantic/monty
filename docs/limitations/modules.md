@@ -19,7 +19,7 @@ Although each import creates a new module object, `random`'s module-level genera
 session state.
 A `random.seed(...)` remains in effect after a later `import random`, in the next feed, and after a dump
 (see [random.md](random.md)).
-Changes to `secrets.DEFAULT_ENTROPY` persist across imports and REPL snippets (see [secrets.md](secrets.md)).
+Changes to `secrets.DEFAULT_ENTROPY` persist across imports, REPL snippets and session dump/load (see [secrets.md](secrets.md)).
 
 ## Modules available
 

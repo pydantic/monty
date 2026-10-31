@@ -789,6 +789,8 @@ pub enum StaticStrings {
     Commonprefix,
     /// `field(compare=...)`.
     Compare,
+    /// `secrets.compare_digest()` function.
+    CompareDigest,
     /// `re.compile()` function
     Compile,
     /// `itertools.compress()` function.
@@ -897,6 +899,9 @@ pub enum StaticStrings {
     /// `decimal.DefaultContext` template context.
     #[strum(serialize = "DefaultContext")]
     DefaultContext,
+    /// `secrets.DEFAULT_ENTROPY` constant.
+    #[strum(serialize = "DEFAULT_ENTROPY")]
+    DefaultEntropy,
     /// `defaultdict.default_factory` attribute.
     #[strum(serialize = "default_factory")]
     DefaultFactory,
@@ -1105,6 +1110,8 @@ pub enum StaticStrings {
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
+    /// `exclusive_upper_bound` parameter to `secrets.randbelow()`.
+    ExclusiveUpperBound,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
@@ -1745,6 +1752,8 @@ pub enum StaticStrings {
     Namedtuple,
     /// `names` parameter of `fnmatch.filter()`.
     Names,
+    /// `nbytes` parameter to `secrets.token_bytes()` and token helpers.
+    Nbytes,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
     /// `typing.Never` marker.
@@ -1976,6 +1985,10 @@ pub enum StaticStrings {
     Radix,
     /// `extrasaction='raise'`, the `csv.DictWriter` default.
     Raise,
+    /// `secrets.randbelow()` function.
+    Randbelow,
+    /// `secrets.randbits()` function.
+    Randbits,
     /// `random.randbytes()` function.
     Randbytes,
     /// `random.randint()` function.
@@ -2129,6 +2142,8 @@ pub enum StaticStrings {
     Second,
     /// `timedelta.seconds` attribute and constructor kwarg.
     Seconds,
+    /// Module name for `import secrets`.
+    Secrets,
     /// `random.seed()` function.
     Seed,
     /// `file.seek()` method.
@@ -2401,6 +2416,12 @@ pub enum StaticStrings {
     TmYear,
     /// `struct_time.tm_zone` field.
     TmZone,
+    /// `secrets.token_bytes()` function.
+    TokenBytes,
+    /// `secrets.token_hex()` function.
+    TokenHex,
+    /// `secrets.token_urlsafe()` function.
+    TokenUrlsafe,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
     /// `tomllib.TOMLDecodeError` exception.
@@ -2584,27 +2605,6 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
-    /// Module name for `import secrets`.
-    Secrets,
-    /// `secrets.randbits()` function.
-    Randbits,
-    /// `secrets.randbelow()` function.
-    Randbelow,
-    /// `secrets.token_bytes()` function.
-    TokenBytes,
-    /// `secrets.token_hex()` function.
-    TokenHex,
-    /// `secrets.token_urlsafe()` function.
-    TokenUrlsafe,
-    /// `secrets.compare_digest()` function.
-    CompareDigest,
-    /// `secrets.DEFAULT_ENTROPY` constant.
-    #[strum(serialize = "DEFAULT_ENTROPY")]
-    DefaultEntropy,
-    /// `exclusive_upper_bound` parameter to `secrets.randbelow()`.
-    ExclusiveUpperBound,
-    /// `nbytes` parameter to `secrets.token_bytes()` and token helpers.
-    Nbytes,
     /// `__all__` module attribute.
     #[strum(serialize = "__all__")]
     DunderAll,
