@@ -20,6 +20,9 @@ assert p.name == 'python'
 assert Path('/usr/local/bin/').name == 'bin'
 assert Path('/').name == ''
 assert Path('file.txt').name == 'file.txt'
+assert Path('.').name == ''
+assert Path('.').stem == ''
+assert Path('.').suffix == ''
 
 # === parent property ===
 assert str(p.parent) == '/usr/local/bin'
@@ -68,6 +71,54 @@ assert str(Path('file.txt').with_name('other.py')) == 'other.py'
 assert str(Path('/path/file.txt').with_suffix('.py')) == '/path/file.py'
 assert str(Path('/path/file.txt').with_suffix('')) == '/path/file'
 assert str(Path('/path/file').with_suffix('.txt')) == '/path/file.txt'
+
+# Name replacement validates before normalization, and uses Python's error order.
+for path, method, argument, expected in [
+    ('file.txt', 'with_name', '', "Invalid name ''"),
+    ('file.txt', 'with_name', '.', "Invalid name '.'"),
+    ('file.txt', 'with_name', 'a/b', "Invalid name 'a/b'"),
+    ('file.txt', 'with_name', "a'/b", 'Invalid name "a\'/b"'),
+    ('/', 'with_name', 'a/b', "Invalid name 'a/b'"),
+    ('/', 'with_name', 'file', "PosixPath('/') has an empty name"),
+    ('.', 'with_name', 'file', "PosixPath('.') has an empty name"),
+    ('', 'with_name', 'file', "PosixPath('.') has an empty name"),
+    ('file.txt', 'with_stem', '', "PosixPath('file.txt') has a non-empty suffix"),
+    ('file', 'with_stem', '', "Invalid name ''"),
+    ('file', 'with_stem', '.', "Invalid name '.'"),
+    ('file.txt', 'with_stem', 'a/b', "Invalid name 'a/b.txt'"),
+    ('/', 'with_stem', 'file', "PosixPath('/') has an empty name"),
+    ('file.txt', 'with_suffix', 'txt', "Invalid suffix 'txt'"),
+    ('file.txt', 'with_suffix', "'txt", 'Invalid suffix "\'txt"'),
+    ('file.txt', 'with_suffix', 'a/b', "Invalid suffix 'a/b'"),
+    ('file.txt', 'with_suffix', '.a/b', "Invalid name 'file.a/b'"),
+    ('/', 'with_suffix', 'txt', "PosixPath('/') has an empty name"),
+    ('.', 'with_suffix', '.txt', "PosixPath('.') has an empty name"),
+    ('', 'with_suffix', '', "PosixPath('.') has an empty name"),
+]:
+    try:
+        if method == 'with_name':
+            Path(path).with_name(argument)
+        elif method == 'with_stem':
+            Path(path).with_stem(argument)
+        else:
+            Path(path).with_suffix(argument)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == expected
+
+# A single dot is a valid suffix in Python 3.14; '..' is also a valid name.
+assert str(Path('file.txt').with_suffix('.')) == 'file.'
+assert str(Path('.bashrc').with_suffix('.txt')) == '.bashrc.txt'
+assert str(Path('file.tar.gz').with_suffix('.zip')) == 'file.tar.zip'
+assert str(Path('file.txt').with_name('..')) == '..'
+assert str(Path('file.txt').with_stem('.')) == '..txt'
+assert str(Path('file.txt').with_stem('other')) == 'other.txt'
+assert str(Path('file').with_stem('other')) == 'other'
+for name in ('..', '...', '..hidden'):
+    assert Path(name).stem == name
+    assert Path(name).suffix == ''
+    assert str(Path(name).with_suffix('.txt')) == name + '.txt'
+    assert str(Path(name).with_stem('other')) == 'other'
 
 # === / operator ===
 assert str(Path('/usr') / 'local') == '/usr/local'
