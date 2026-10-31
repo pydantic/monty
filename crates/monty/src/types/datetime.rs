@@ -495,6 +495,19 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
     Ok(Value::Ref(heap.allocate(HeapData::DateTime(dt))))
 }
 
+/// Classmethod `datetime.fromordinal(ordinal)`: midnight of the date that
+/// `date.fromordinal()` gives, with no `tzinfo`.
+pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let day = date::date_from_ordinal_args(args, vm)?;
+    let datetime = DateTime {
+        naive: day.0.and_time(NaiveTime::MIN),
+        offset_seconds: None,
+        timezone_name: None,
+        tzinfo_ref: None,
+    };
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(datetime))))
+}
+
 /// `datetime.combine(date, time, tzinfo=self.tzinfo)`.
 ///
 /// The `date` argument may itself be a `datetime` (CPython makes `datetime` a
@@ -1340,6 +1353,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 args.check_zero_args("datetime.isoweekday", vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().number_from_monday(),
+                ))))
+            }
+            Some(StaticStrings::Toordinal) => {
+                // `datetime` inherits the method from `date` in CPython, whose
+                // argument errors therefore name `date.toordinal()`.
+                args.check_zero_args("date.toordinal", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(
+                    dt.naive.date().num_days_from_ce(),
                 ))))
             }
             Some(StaticStrings::Date) => {

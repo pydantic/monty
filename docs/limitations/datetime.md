@@ -48,10 +48,10 @@ raises `hour must be in 0..23, not 25` there, and
 
 Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
-Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`.
+Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`, `toordinal`.
 
-Class methods supported: `today()`, `fromisoformat()`.
-`fromisocalendar()`, `fromtimestamp()`, `fromordinal()` are not
+Class methods supported: `today()`, `fromisoformat()`, `fromordinal()`.
+`fromisocalendar()` and `fromtimestamp()` are not
 implemented. `strptime()`, added in CPython 3.14, is not implemented
 either.
 
@@ -76,7 +76,7 @@ the stored value: Monty does not track DST-fold disambiguation.
 Attributes: `year`, `month`, `day`, `hour`, `minute`, `second`,
 `microsecond`, `tzinfo`.
 Methods: `isoformat(sep='T', timespec='auto')`, `strftime`, `replace`,
-`weekday`, `isoweekday`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
+`weekday`, `isoweekday`, `toordinal`, `date`, `time`, `timetz`, `timestamp`, `astimezone(tz=None)`,
 `utcoffset`, `tzname`, `dst`.
 
 `astimezone()` and a naive `timestamp()` read the [session zone](#reading-the-clock) where CPython uses the host's;
@@ -92,7 +92,7 @@ and with the offset from before a DST gap: CPython's `fold=0` reading, since `fo
 `AttributeError`, where CPython returns `1`.
 
 Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
-`fromisoformat(date_string)`, `combine(date, time, tzinfo=self.tzinfo)`.
+`fromisoformat(date_string)`, `fromordinal(ordinal)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
 - `now()` reads the clock — see "Reading the clock" below.
 - Host-answered `now(tz)` reconstructs `tzinfo` from its offset and name, so it equals `tz` but is a different object.
@@ -111,8 +111,7 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
     where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
-- `fromtimestamp()`, `fromordinal()` and `utcfromtimestamp()` are not
-    implemented.
+- `fromtimestamp()` and `utcfromtimestamp()` are not implemented.
 - `time()` and `timetz()` return a `time` whose `fold` is always 0, since
     `datetime` does not store the flag (above). `combine()` likewise
     discards the `fold` of the `time` it is given, where CPython carries it

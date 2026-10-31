@@ -174,6 +174,43 @@ pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &In
     Ok(Value::Ref(heap.allocate(HeapData::Date(date))))
 }
 
+/// Classmethod `date.fromordinal(ordinal)`.
+pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let date = date_from_ordinal_args(args, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(date))))
+}
+
+/// The date for the argument of `date.fromordinal()` or `datetime.fromordinal()`.
+///
+/// The ordinal is read as CPython's `PyArg_ParseTuple(args, "i:fromordinal")` reads
+/// it, and an ordinal below 1 or past 9999-12-31 gets CPython's `ValueError`.
+pub(crate) fn date_from_ordinal_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Date> {
+    let FromOrdinalArgs { ordinal } = FromOrdinalArgs::from_args(args, vm)?;
+    if ordinal < 1 {
+        return Err(SimpleException::new_msg(ExcType::ValueError, "ordinal must be >= 1").into());
+    }
+    if ordinal > MAX_ORDINAL {
+        return Err(year_out_of_range(ordinal_year(ordinal)));
+    }
+    from_ordinal(ordinal)
+}
+
+/// The ordinal of 9999-12-31, the last date.
+const MAX_ORDINAL: i32 = 3_652_059;
+
+/// The year that CPython's `ord_to_ymd` finds for an ordinal of 1 or more,
+/// which `chrono` cannot represent for most ordinals past [`MAX_ORDINAL`].
+fn ordinal_year(ordinal: i32) -> i32 {
+    let days = ordinal - 1;
+    let (cycles_400, days) = (days / 146_097, days % 146_097);
+    let (cycles_100, days) = (days / 36_524, days % 36_524);
+    let (cycles_4, days) = (days / 1_461, days % 1_461);
+    let years = days / 365;
+    let year = cycles_400 * 400 + cycles_100 * 100 + cycles_4 * 4 + years + 1;
+    // The last day of a 4-year or 400-year cycle belongs to the year before.
+    if years == 4 || cycles_100 == 4 { year - 1 } else { year }
+}
+
 /// Parses an ISO 8601 date string into a `Date`.
 ///
 /// Uses speedate for Python-compatible ISO 8601 parsing.
@@ -308,6 +345,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
                 ))))
+            }
+            Some(StaticStrings::Toordinal) => {
+                args.check_zero_args("date.toordinal", vm.heap)?;
+                Ok(CallResult::Value(Value::Int(i64::from(to_ordinal(date)))))
             }
             _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
@@ -505,6 +546,15 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 #[from_args(name = "strftime", style = c_named, at_most_total, bad_arg)]
 pub(crate) struct StrftimeArgs {
     pub(crate) format: StrArg,
+}
+
+/// `fromordinal(ordinal)` — `PyArg_ParseTuple(args, "i:fromordinal")` in CPython,
+/// for `date` and `datetime` alike.
+#[derive(FromArgs)]
+#[from_args(name = "fromordinal", style = parse_tuple)]
+struct FromOrdinalArgs {
+    #[from_args(pos_only)]
+    ordinal: i32,
 }
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields
