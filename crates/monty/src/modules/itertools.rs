@@ -327,73 +327,64 @@ fn call_islice(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))))
 }
 
-/// Resolves `islice`'s overloaded positional slots into `(start, stop, step)`.
+/// Resolves `islice`'s overloaded positional slots into `(start, stop, step)`,
+/// with the checks and errors of CPython's `islice_new`.
 ///
 /// With two arguments the second is `stop`; with three or more it is `start`.
-/// CPython words the two failures differently, so they are not interchangeable.
+/// A bound that is not an index reads as `-1`, as a failed `PyNumber_AsSsize_t`
+/// does, so the error depends on the slot: a `stop` that is not `None` but reads
+/// as `-1` is the "Stop argument" error, raised as soon as it is converted; a
+/// negative `start` or a `stop` below `-1` is the "Indices" error; the step comes last.
 fn islice_bounds(
     first: &Value,
     second: Option<&Value>,
     third: Option<&Value>,
     vm: &mut VM<'_>,
 ) -> RunResult<(usize, Option<usize>, usize)> {
-    match second {
-        None => match islice_index(first, vm)? {
-            IsliceBound::Unbounded => Ok((0, None, 1)),
-            IsliceBound::Index(stop) => Ok((0, Some(stop), 1)),
-            IsliceBound::Invalid => Err(ExcType::islice_bad_stop()),
-        },
-        Some(second) => {
-            // A `start` of `None` means "from the beginning", as in a slice.
-            let start = match islice_index(first, vm)? {
-                IsliceBound::Unbounded => 0,
-                IsliceBound::Index(start) => start,
-                IsliceBound::Invalid => return Err(ExcType::islice_bad_indices()),
-            };
-            let stop = match islice_index(second, vm)? {
-                IsliceBound::Unbounded => None,
-                IsliceBound::Index(stop) => Some(stop),
-                IsliceBound::Invalid => return Err(ExcType::islice_bad_indices()),
-            };
-            // A step of `None` is 1; zero and negatives are rejected outright.
-            let step = match third.map(|third| islice_index(third, vm)).transpose()? {
-                None | Some(IsliceBound::Unbounded) => 1,
-                Some(IsliceBound::Index(step)) if step > 0 => step,
-                Some(_) => return Err(ExcType::islice_bad_step()),
-            };
-            Ok((start, stop, step))
-        }
-    }
-}
-
-/// One parsed `islice` bound.
-///
-/// Three-way rather than `Option<usize>`: `stop` accepts an explicit `None`
-/// where `step` does not, so the two rejections must stay distinguishable.
-enum IsliceBound {
-    /// Python `None` — unbounded for `stop`, the default for `start`/`step`.
-    Unbounded,
-    /// An index in `0 ..= sys.maxsize`.
-    Index(usize),
-    /// Neither, so the caller raises.
-    Invalid,
-}
-
-/// Reads one `islice` bound; whether `Unbounded` is allowed is the caller's
-/// business, and differs per parameter.
-fn islice_index(value: &Value, vm: &mut VM<'_>) -> RunResult<IsliceBound> {
-    let index = match value {
-        Value::None => return Ok(IsliceBound::Unbounded),
-        Value::Bool(b) => i64::from(*b),
-        // A raising `__index__` propagates; only a type mismatch is `Invalid`,
-        // which the caller words per parameter.
-        other => match other.as_int(vm) {
-            Ok(index) => index,
-            Err(RunError::Exc(_)) => return Ok(IsliceBound::Invalid),
-            Err(e) => return Err(e),
-        },
+    let (start, stop_value) = match second {
+        None => (0, first),
+        Some(second) => (islice_index(first, 0, vm)?, second),
     };
-    Ok(usize::try_from(index).map_or(IsliceBound::Invalid, IsliceBound::Index))
+    let stop = islice_index(stop_value, -1, vm)?;
+    if stop == -1 && !matches!(stop_value, Value::None) {
+        return Err(ExcType::islice_bad_stop());
+    }
+    if start < 0 || stop < -1 {
+        return Err(ExcType::islice_bad_indices());
+    }
+    let step = match third {
+        Some(third) => islice_index(third, 1, vm)?,
+        None => 1,
+    };
+    if step < 1 {
+        return Err(ExcType::islice_bad_step());
+    }
+    let start = usize::try_from(start).expect("a checked start is non-negative and fits `isize`");
+    let stop = usize::try_from(stop).ok();
+    let step = usize::try_from(step).expect("a checked step is positive and fits `isize`");
+    Ok((start, stop, step))
+}
+
+/// Reads one `islice` bound as CPython's `PyNumber_AsSsize_t` does: `None` gives
+/// `default`, and a value that is not an index, or is out of `isize` range, reads as
+/// `-1` (CPython clears that failure and lets the bound checks report it).
+///
+/// `isize` is the width of `Py_ssize_t` on a CPython build for the same target, so
+/// on a 32-bit target such as wasm32 a bound past `i32` fails the same checks, and
+/// every bound that passes them fits `usize`.
+fn islice_index(value: &Value, default: i64, vm: &mut VM<'_>) -> RunResult<i64> {
+    match value {
+        Value::None => Ok(default),
+        Value::Bool(b) => Ok(i64::from(*b)),
+        // CPython clears every conversion error, also one that `__index__` raises,
+        // so any Python exception reads as `-1`. Only an uncatchable or internal
+        // error propagates.
+        other => match other.as_int(vm) {
+            Ok(index) => Ok(if isize::try_from(index).is_ok() { index } else { -1 }),
+            Err(RunError::Exc(_)) => Ok(-1),
+            Err(e) => Err(e),
+        },
+    }
 }
 
 /// `itertools.chain(*iterables)` — each argument's items, back to back.
