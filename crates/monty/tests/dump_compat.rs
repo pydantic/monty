@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 const UPDATE_FIXTURE: &str = "UPDATE_DUMP_FIXTURE";
 
 /// Builds the state the fixture holds: the common heap types, live iterators,
-/// functions, classes and a cycle, ahead of a suspension on a host call whose
-/// arguments carry heap values.
+/// functions, classes, a `TypeAdapter` arena and a cycle, ahead of a suspension
+/// on a host call whose arguments carry heap values.
 const FIXTURE_STATE: &str = r"
 import collections
 import dataclasses
@@ -28,6 +28,7 @@ import itertools
 import pathlib
 import random
 import re
+from pydantic import TypeAdapter
 
 big = 2**100
 neg = -7
@@ -51,6 +52,7 @@ class Item:
 
 
 item = Item('widget', 3)
+adapter = TypeAdapter(list[Item | None])
 
 
 class Counter:
@@ -160,7 +162,7 @@ class Pending:
 const FIXTURE_CALL: &str = "Pending(xs, d, b).result + 1";
 
 /// Fed after restoring and resuming the fixture: every value must have survived.
-const FIXTURE_CHECK: &str = r"
+const FIXTURE_CHECK: &str = r#"
 assert big == 2**100 and neg == -7 and f == 3.5 and s == 'héllo'
 assert b == b'\x00\x01bytes'
 assert xs == [1, 2.5, 'three', None, True] and t == (1, 'two')
@@ -169,6 +171,8 @@ assert st == {1, 2, 3} and fs == frozenset({'x', 'y'})
 assert list(dq) == [1, 2, 3] and dq.maxlen == 5
 assert p == Point(1, 2) and p.x == 1
 assert item == Item('widget', 3)
+assert adapter.validate_python([{'name': 'w', 'qty': '2'}, None]) == [Item('w', 2), None]
+assert adapter.dump_json([Item('w', 2)]) == b'[{"name":"w","qty":2}]'
 assert c.value == 11 and c.bump() == 12 and Counter.total == 0
 assert add5(1) == 6 and part() == 6
 assert next(it) == 2
@@ -196,7 +200,7 @@ assert with_default(1) == 2
 assert functools.reduce(lambda a, b: a + b, [1, 2, 3]) == 6
 assert add5(2) == 7
 (result, c.value)
-";
+"#;
 
 /// A dump written by an earlier build at this `DUMP_VERSION` still loads and
 /// runs. Failing here means a data-layout change broke older dumps: add a
