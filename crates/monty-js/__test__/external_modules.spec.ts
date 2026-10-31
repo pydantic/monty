@@ -386,13 +386,14 @@ test('a sandbox module name is never looked up', async () => {
   await using plain = await pool().checkout()
   const names = (await plain.feedRun('import sys\nlist(sys.builtin_module_names)')) as string[]
   t.true(names.includes('json'))
+  // `HOST_PROBE` rather than `VERSION`, which the sandbox's `pydantic` defines itself.
   const externalModules: ExternalModules = {}
   for (const name of names) {
-    externalModules[name] = new ExternalModule({ VERSION: 99 }, { stubs: 'VERSION: int\n' })
+    externalModules[name] = new ExternalModule({ HOST_PROBE: 99 }, { stubs: 'HOST_PROBE: int\n' })
   }
   await using session = await checkout(externalModules)
   for (const name of names) {
-    t.is(await session.feedRun(`import ${name}\nhasattr(${name}, 'VERSION')`), false)
+    t.is(await session.feedRun(`import ${name}\nhasattr(${name}, 'HOST_PROBE')`), false)
   }
 })
 
