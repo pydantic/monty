@@ -1845,19 +1845,7 @@ fn str_zfill<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 /// Returns a copy of the string where all tab characters are replaced by one or
 /// more spaces, depending on the current column and the given tab size.
 fn str_expandtabs<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
-
-    let tabsize = match tabsize {
-        None => 8,
-        Some(val) => {
-            // `defer_drop!` rather than a trailing `drop_with`: the conversion
-            // raises for anything outside C `int`, and that `?` would otherwise
-            // leave `val`'s reference behind.
-            defer_drop!(val, vm);
-            // A negative tabsize expands to nothing, as CPython's `<= 0` test does.
-            usize::try_from(extract_c_int_arg(val, vm)?).unwrap_or(0)
-        }
-    };
+    let tabsize = parse_expandtabs_tabsize(args, vm)?;
 
     let s = s.get(vm.heap);
     // `tabsize` is bounded by C `int` above, but a tab still amplifies into
@@ -1890,7 +1878,23 @@ fn str_expandtabs<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
     builder.finish(vm.heap)
 }
 
-/// Argument shape for `str.expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
+/// Reads the `tabsize` of `str.expandtabs()` and `bytes.expandtabs()`: 8 when absent,
+/// and 0 for a negative size, which expands tabs to nothing as CPython's `<= 0` test does.
+pub(super) fn parse_expandtabs_tabsize(args: ArgValues, vm: &mut VM<'_>) -> RunResult<usize> {
+    let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
+    Ok(match tabsize {
+        None => 8,
+        Some(val) => {
+            // `defer_drop!` rather than a trailing `drop_with`: the conversion
+            // raises for anything outside C `int`, and that `?` would otherwise
+            // leave `val`'s reference behind.
+            defer_drop!(val, vm);
+            usize::try_from(extract_c_int_arg(val, vm)?).unwrap_or(0)
+        }
+    })
+}
+
+/// Argument shape for `expandtabs(tabsize=8)`. `tabsize` is `Option<Value>`
 /// so callers can distinguish "absent" (default 8) from any explicit value
 /// without forcing the macro into a type-checked default.
 #[derive(FromArgs)]
