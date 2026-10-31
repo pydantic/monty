@@ -261,6 +261,14 @@ The session stays consistent and can be dumped; later feeds run until they suspe
 Restoring a dump preserves the limit but resets the count to zero; a `max_suspensions` set on the restoring checkout
 caps the dump's, so a worker cannot report a looser one.
 
+## Worker recycling
+
+A pool reuses each worker for later sessions, then kills and replaces it after 1000 checkouts.
+This bounds how long a slow leak or a compromised worker survives.
+Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count; `1` gives every session a
+fresh process, and `None` (`null` in JavaScript) never recycles.
+With `min_processes` above 0 the replacement is spawned in the background, so the next checkout rarely waits for it.
+
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration

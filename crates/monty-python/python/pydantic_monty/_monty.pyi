@@ -616,7 +616,7 @@ class Monty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         execution_clock: Literal['wall', 'cpu'] = 'wall',
-        max_checkouts_per_worker: int | None = None,
+        max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
@@ -641,8 +641,9 @@ class Monty:
                 delay enforcement while they run. Backstops sandbox `limits`.
             execution_clock: Clock for all sessions in this pool. Defaults to wall time.
                 CPU mode is Linux-only and requires a finite `request_timeout`.
-            max_checkouts_per_worker: Recycle a worker after this many sessions.
-                `1` runs every session in a fresh process.
+            max_checkouts_per_worker: Recycle a worker after this many sessions,
+                bounding how long a leaking or compromised worker keeps serving.
+                `1` runs every session in a fresh process; `None` never recycles.
             feed_duration_limit_grace: Seconds beyond `max_feed_duration_secs` on
                 the selected clock (`None` disables). CPU mode uses an independent OS counter.
                 This lets the sandbox raise `TimeoutError` before the worker is killed.
@@ -977,7 +978,7 @@ class AsyncMonty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         execution_clock: Literal['wall', 'cpu'] = 'wall',
-        max_checkouts_per_worker: int | None = None,
+        max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:

@@ -99,6 +99,14 @@ async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> 
     }
 }
 
+/// A subprocess pool that never recycles its worker, so warm benches don't
+/// periodically pay a respawn (`pool_create_session_run` measures that cost).
+fn non_recycling_config() -> PoolConfig {
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.max_checkouts_per_worker = None;
+    config
+}
+
 /// Full cold-start cost: build a pool (which eagerly spawns one worker
 /// process), check out a session, run `1 + 1`, and finish. Each iteration
 /// spawns and tears down a worker, so this is dominated by process startup —
@@ -123,9 +131,7 @@ fn pool_create_session_run(bench: &mut Bencher) {
 /// every request pays once the pool is warm.
 fn session_checkout_run(bench: &mut Bencher) {
     let runtime = runtime();
-    let pool = runtime
-        .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
-        .unwrap();
+    let pool = runtime.block_on(Pool::new(non_recycling_config())).unwrap();
     bench.to_async(&runtime).iter(|| async {
         let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
         let event = session
@@ -149,9 +155,7 @@ const EXT_CALL_LOOP: &str = include_str!("python/pool/ext_call_loop.py");
 /// cost `session_checkout_run` measures alone.
 fn ext_calls_1000(bench: &mut Bencher) {
     let runtime = runtime();
-    let pool = runtime
-        .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
-        .unwrap();
+    let pool = runtime.block_on(Pool::new(non_recycling_config())).unwrap();
     bench.to_async(&runtime).iter(|| async {
         let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
         let event = session
@@ -206,9 +210,7 @@ fn ext_call_rows(bench: &mut Bencher) {
     // Expected sandbox result: 20 identical calls, each summing amount * quantity.
     let per_call: i64 = (0..100).map(|i| ((i * 37) % 500 + 1) * (i % 7 + 1)).sum();
     let expected = MontyObject::int(per_call * 20);
-    let pool = runtime
-        .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
-        .unwrap();
+    let pool = runtime.block_on(Pool::new(non_recycling_config())).unwrap();
 
     // A fresh checkout per iteration, as in `ext_calls_1000`.
     bench.to_async(&runtime).iter(|| async {

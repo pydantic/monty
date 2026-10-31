@@ -145,7 +145,8 @@ see [snapshot security](../security.md#deserializing-snapshots).
     The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
     a protocol violation discards the worker.
-- **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak; with `PoolConfig::subprocess`, `Some(1)` runs every session in a fresh process.
+- **Worker recycling** — `max_checkouts_per_worker` bounds how long a slow leak or compromised worker survives.
+    It defaults to `Some(`[`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker)`)` (1000) and `None` never recycles; with `PoolConfig::subprocess`, `Some(1)` runs every session in a fresh process.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
