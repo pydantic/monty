@@ -1239,8 +1239,20 @@ fn rename(
     // A symlink anywhere in either is refused, as it is for `unlink`.
     ensure_parent_exists(state, &src_rel, ctx, src_vpath)?;
 
-    if matches!(state.get(&src_rel), Some(OverlayEntry::Deleted)) {
+    // Establish source existence before classifying its type: a missing real
+    // path would otherwise look like a file and could fail destination checks.
+    let src_exists = match state.get(&src_rel) {
+        Some(OverlayEntry::Deleted) => false,
+        Some(_) => true,
+        None => ctx.mount_dir.exists(resolve_real(src_vpath, ctx)?.for_dir_op()),
+    };
+    if !src_exists {
         return Err(MountError::not_found(src_vpath));
+    }
+
+    // POSIX makes `rename(x, x)` a no-op once `x` is known to exist.
+    if src_rel == dst_rel {
+        return Ok(MontyObject::none());
     }
 
     // Determine whether the source is a directory before removing it from state,
