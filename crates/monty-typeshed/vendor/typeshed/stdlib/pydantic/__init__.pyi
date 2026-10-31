@@ -1,6 +1,6 @@
 # Monty's `pydantic` subset: `TypeAdapter` and `ValidationError`.
 # See docs/limitations/pydantic.md for what each accepts at runtime.
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, overload
 
 T = TypeVar('T')
 
@@ -34,6 +34,10 @@ class ValidationError(ValueError):
     ) -> ValidationError: ...
 
 class TypeAdapter(Generic[T]):
+    @overload
+    def __init__(self, type: type[T], *, config: None = None, _parent_depth: int = 2, module: None = None) -> None: ...
+    # special forms (`list[int]`, `int | None`, `Literal[...]`) have no `type[T]`, as in pydantic's stub
+    @overload
     def __init__(self, type: Any, *, config: None = None, _parent_depth: int = 2, module: None = None) -> None: ...
     def validate_python(self, object: Any, /, *, strict: bool | None = None) -> T: ...
     def validate_json(self, data: str | bytes, /, *, strict: bool | None = None) -> T: ...
