@@ -1103,6 +1103,20 @@ except TypeError:
     threw = True
 assert threw
 
+
+# Any exponent but an `int`, with `__index__` or not, gets CPython's own message.
+class Exponent:
+    def __index__(self):
+        return 1
+
+
+for exponent in (1.5, '1', None, Exponent()):
+    try:
+        math.ldexp(1.0, exponent)
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'Expected an int as second argument to ldexp.'
+
 # === math.gamma() ===
 assert math.gamma(1) == 1.0
 assert math.gamma(5) == 24.0
@@ -1542,6 +1556,18 @@ for compute, message in [
     (lambda: math.log10(-1.0), 'expected a positive input, got -1.0'),
     (lambda: math.log(float('-inf')), 'expected a positive input, got -inf'),
     (lambda: math.log(10, 0.0), 'expected a positive input, got 0.0'),
+    # The value is formatted like `repr()`: a sign on the exponent and at least two exponent digits.
+    (lambda: math.log(-1e20), 'expected a positive input, got -1e+20'),
+    (lambda: math.log10(-1e-05), 'expected a positive input, got -1e-05'),
+    (lambda: math.sqrt(-1e20), 'expected a nonnegative input, got -1e+20'),
+    (lambda: math.sqrt(-(2**63)), 'expected a nonnegative input, got -9.223372036854776e+18'),
+    (lambda: math.acos(1e16), 'expected a number in range from -1 up to 1, got 1e+16'),
+    (lambda: math.asin(-2e300), 'expected a number in range from -1 up to 1, got -2e+300'),
+    (lambda: math.acosh(-1e-07), 'expected argument value not less than 1, got -1e-07'),
+    (lambda: math.atanh(1e20), 'expected a number between -1 and 1, got 1e+20'),
+    (lambda: math.log1p(-1e20), 'expected argument value > -1, got -1e+20'),
+    (lambda: math.gamma(-1e20), 'expected a noninteger or positive integer, got -1e+20'),
+    (lambda: math.lgamma(-1e20), 'expected a noninteger or positive integer, got -1e+20'),
 ]:
     try:
         compute()

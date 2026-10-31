@@ -25,7 +25,7 @@
 
 use std::f64::consts;
 
-use monty_types::ResourceTracker;
+use monty_types::{FormatFloat, ResourceTracker};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
@@ -80,7 +80,7 @@ fn require_unit_range(f: f64) -> RunResult<()> {
     if !f.is_nan() && !(-1.0..=1.0).contains(&f) {
         Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("expected a number in range from -1 up to 1, got {f:?}"),
+            format!("expected a number in range from -1 up to 1, got {}", FormatFloat(f)),
         )
         .into())
     } else {
@@ -101,7 +101,7 @@ fn check_gamma_pole(f: f64) -> RunResult<()> {
     if f <= 0.0 && f == f.floor() && f.is_finite() {
         Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("expected a noninteger or positive integer, got {f:?}"),
+            format!("expected a noninteger or positive integer, got {}", FormatFloat(f)),
         )
         .into())
     } else {
@@ -422,7 +422,11 @@ fn math_sqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     if f < 0.0 {
-        Err(SimpleException::new_msg(ExcType::ValueError, format!("expected a nonnegative input, got {f:?}")).into())
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("expected a nonnegative input, got {}", FormatFloat(f)),
+        )
+        .into())
     } else {
         Ok(Value::Float(f.sqrt()))
     }
@@ -599,10 +603,11 @@ fn log_arg(value: &Value, log: fn(f64) -> f64, vm: &VM<'_>) -> RunResult<f64> {
             None => {
                 let x = value_to_float(value, vm)?;
                 if x <= 0.0 {
-                    Err(
-                        SimpleException::new_msg(ExcType::ValueError, format!("expected a positive input, got {x:?}"))
-                            .into(),
+                    Err(SimpleException::new_msg(
+                        ExcType::ValueError,
+                        format!("expected a positive input, got {}", FormatFloat(x)),
                     )
+                    .into())
                 } else {
                     Ok(log(x))
                 }
@@ -647,9 +652,11 @@ fn math_log1p(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let f = value_to_float(value, vm)?;
     if f <= -1.0 {
-        return Err(
-            SimpleException::new_msg(ExcType::ValueError, format!("expected argument value > -1, got {f:?}")).into(),
-        );
+        return Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("expected argument value > -1, got {}", FormatFloat(f)),
+        )
+        .into());
     }
     Ok(Value::Float(f.ln_1p()))
 }
@@ -962,7 +969,7 @@ fn math_acosh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if f < 1.0 {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("expected argument value not less than 1, got {f:?}"),
+            format!("expected argument value not less than 1, got {}", FormatFloat(f)),
         )
         .into());
     }
@@ -980,7 +987,7 @@ fn math_atanh(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if f <= -1.0 || f >= 1.0 {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("expected a number between -1 and 1, got {f:?}"),
+            format!("expected a number between -1 and 1, got {}", FormatFloat(f)),
         )
         .into());
     }
@@ -1292,12 +1299,13 @@ fn math_ldexp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let x = value_to_float(x_val, vm)?;
     // An exponent beyond `i64` saturates: the result overflows or underflows either way.
+    // CPython takes only an `int` here, not `__index__`, and has its own message for the rest.
     let i = match i_val {
         Value::Int(i) => *i,
         Value::Bool(b) => i64::from(*b),
         _ => i_val
             .long_int_to_i64_saturating(vm)
-            .ok_or_else(|| not_an_integer_error(i_val, vm))?,
+            .ok_or_else(|| ExcType::type_error("Expected an int as second argument to ldexp."))?,
     };
 
     // Special cases: inf/nan/zero pass through regardless of exponent
@@ -1335,7 +1343,7 @@ fn math_gamma(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if f == f64::NEG_INFINITY {
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
-            format!("expected a noninteger or positive integer, got {f:?}"),
+            format!("expected a noninteger or positive integer, got {}", FormatFloat(f)),
         )
         .into());
     }
@@ -1435,7 +1443,11 @@ fn not_an_integer_error(value: &Value, vm: &VM<'_>) -> RunError {
 /// CPython 3.14 uses "expected a finite input, got inf" for trig functions.
 fn require_finite(f: f64) -> RunResult<()> {
     if f.is_infinite() {
-        Err(SimpleException::new_msg(ExcType::ValueError, format!("expected a finite input, got {f:?}")).into())
+        Err(SimpleException::new_msg(
+            ExcType::ValueError,
+            format!("expected a finite input, got {}", FormatFloat(f)),
+        )
+        .into())
     } else {
         Ok(())
     }
