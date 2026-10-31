@@ -172,12 +172,13 @@ impl<'h> PyInt<'h> {
         )
     }
 
-    /// Resolves a sequence repetition count, treating negatives as zero.
+    /// Resolves a sequence repetition count, treating negatives as zero. A count
+    /// outside `isize` raises in either direction, as in CPython.
     pub(crate) fn repeat_count(&self, vm: &VM<'h>) -> RunResult<usize> {
         self.with_value(
             vm,
-            |value| usize::try_from(value.max(0)).ok(),
-            |value| if value.is_negative() { Some(0) } else { value.to_usize() },
+            |value| isize::try_from(value).ok().map(|count| count.max(0).unsigned_abs()),
+            |value| value.to_isize().map(|count| count.max(0).unsigned_abs()),
         )
         .ok_or_else(|| ExcType::overflow_index_sized_int().into())
     }

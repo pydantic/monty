@@ -31,6 +31,7 @@ use crate::{
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
+            repeat_count,
         },
         namedtuple::cmp_item_seqs,
         str::{PyStr, allocate_string},
@@ -1640,20 +1641,37 @@ impl Value {
             Ok(result)
         } else {
             let lhs_type = self.py_type(vm);
-            let lhs_name = self.py_type_name(vm);
             if operator == "*" && lhs_type.has_sequence_repeat() {
-                Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)))
+                self.repeat_by_index(other, vm)
             } else if operator == "*" && other.py_type(vm).has_sequence_repeat() {
-                Err(ExcType::type_error_sequence_repeat(lhs_name))
+                other.repeat_by_index(self, vm)
             } else {
                 Err(ExcType::binary_type_error(
                     operator,
                     lhs_type,
-                    lhs_name,
+                    self.py_type_name(vm),
                     other.py_type_name(vm),
                 ))
             }
         }
+    }
+
+    /// CPython's `sequence_repeat` fallback for `*`: repeats this sequence by the
+    /// count's `__index__` (`[0] * obj`), or names the count's type in the `TypeError`.
+    fn repeat_by_index(&self, count: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        let Some(index) = count.py_index_impl(vm)? else {
+            return Err(ExcType::type_error_sequence_repeat(count.py_type_name(vm)));
+        };
+        defer_drop!(index, vm);
+        // CPython names the object it asked, not the `int` it got back, when the count is too large.
+        if repeat_count(index, vm).is_err() {
+            return Err(ExcType::overflow_error(format!(
+                "cannot fit '{}' into an index-sized integer",
+                count.py_type_name(vm)
+            )));
+        }
+        let result = self.py_mul_impl(index, vm)?;
+        Ok(result.expect("every sequence with a repeat takes an int count"))
     }
 
     /// Tries numeric slots, suppressing reflected dispatch between instances of the same class.
