@@ -6,6 +6,7 @@ use super::unicode_type_data::{
     ALPHA, CASE_IGNORABLE, CASED, DECIMAL, DIGIT, EXTENDED, EXTENDED_CASE, ID_CONTINUE, ID_START, INDEX1, INDEX2,
     LOWER, NUMERIC, PRINTABLE, RECORDS, SHIFT, SPACE, TITLE, TypeRecord, UPPER,
 };
+use crate::ascii_runs::{AsciiOrChar, AsciiRuns};
 
 /// Full lowercase of `s` with `Final_Sigma` applied; ASCII input takes the bulk path.
 pub(super) fn lowercase(s: &str) -> String {
@@ -13,37 +14,84 @@ pub(super) fn lowercase(s: &str) -> String {
         s.to_ascii_lowercase()
     } else {
         let mut out = String::with_capacity(s.len());
-        for (i, c) in s.char_indices() {
-            type_record(c).push_lower(&mut out, s, i, c);
+        for (i, chunk) in AsciiRuns::new(s) {
+            match chunk {
+                AsciiOrChar::Ascii(run) => {
+                    let start = out.len();
+                    out.push_str(run);
+                    out[start..].make_ascii_lowercase();
+                }
+                AsciiOrChar::Char(c) => type_record(c).push_lower(&mut out, s, i, c),
+            }
         }
         out
     }
 }
 
-/// Full uppercase of `s`; ASCII input takes the bulk path.
+/// Full uppercase of `s`; ASCII input and runs use bulk conversion.
 pub(super) fn uppercase(s: &str) -> String {
     if s.is_ascii() {
         s.to_ascii_uppercase()
-    } else {
+    } else if !has_ascii_word_prefix(s) {
         let mut out = String::with_capacity(s.len());
         for c in s.chars() {
             type_record(c).push_upper(&mut out, c);
         }
         out
+    } else {
+        let mut out = String::with_capacity(s.len());
+        for (_, chunk) in AsciiRuns::new(s) {
+            match chunk {
+                AsciiOrChar::Ascii(run) => {
+                    let start = out.len();
+                    out.push_str(run);
+                    out[start..].make_ascii_uppercase();
+                }
+                AsciiOrChar::Char(c) => type_record(c).push_upper(&mut out, c),
+            }
+        }
+        out
     }
 }
 
-/// Full default case folding of `s`, without normalization or locale tailoring; ASCII input takes the bulk path.
+/// Full default case folding without normalization or locale tailoring; ASCII runs fold in bulk.
 pub(super) fn casefold(s: &str) -> String {
     if s.is_ascii() {
         s.to_ascii_lowercase()
-    } else {
+    } else if !has_ascii_word_prefix(s) {
         let mut out = String::with_capacity(s.len());
         for c in s.chars() {
             type_record(c).push_fold(&mut out, c);
         }
         out
+    } else {
+        let mut out = String::with_capacity(s.len());
+        for (_, chunk) in AsciiRuns::new(s) {
+            match chunk {
+                AsciiOrChar::Ascii(run) => {
+                    let start = out.len();
+                    out.push_str(run);
+                    out[start..].make_ascii_lowercase();
+                }
+                AsciiOrChar::Char(c) => type_record(c).push_fold(&mut out, c),
+            }
+        }
+        out
     }
+}
+
+/// Samples at most 256 bytes for an aligned ASCII word worth converting in bulk.
+/// Dense Unicode was slower through `AsciiRuns`; a bounded probe keeps its original loop.
+/// Missing an ASCII span only selects the character loop, with identical mappings.
+fn has_ascii_word_prefix(s: &str) -> bool {
+    const WORD_BYTES: usize = size_of::<usize>();
+    const HIGH_BITS: usize = usize::MAX / 255 * 128;
+    s.as_bytes()
+        .as_chunks::<WORD_BYTES>()
+        .0
+        .iter()
+        .take(256 / WORD_BYTES)
+        .any(|word| usize::from_ne_bytes(*word) & HIGH_BITS == 0)
 }
 
 /// Whitespace as `str.isspace()`, `split()` and `strip()` define it, which unlike `char::is_whitespace`

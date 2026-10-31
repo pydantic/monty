@@ -1340,7 +1340,7 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError", "{code}");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 1_370_472, code);
+    assert_reported_usage(&message, 1_371_504, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
     child.shutdown();
 }

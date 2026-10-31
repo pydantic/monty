@@ -11,6 +11,13 @@ assert 'ΑΣ́'.lower() == 'ας́'
 assert 'Σ1'.lower() == 'σ1'
 assert 'AΣ1'.lower() == 'aς1'
 assert 'İ'.lower() == 'i\u0307'
+assert 'FÜR API-ÄNDERUNGEN: AΣ AΣB İ 中🐍'.lower() == 'für api-änderungen: aς aσb i\u0307 中🐍'
+assert 'İAΣ İAΣA'.lower() == 'i\u0307aς i\u0307aσa'
+
+ascii_text = ''.join(chr(i) for i in range(128))
+for marker in ('ü', '中', '🐍', 'İ'):
+    assert (marker + ascii_text).lower() == marker.lower() + ascii_text.lower()
+    assert (ascii_text + marker).lower() == ascii_text.lower() + marker.lower()
 
 # upper()
 assert 'hello'.upper() == 'HELLO'

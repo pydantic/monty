@@ -319,6 +319,7 @@ skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
     "crates/monty-bench/benches/python/pyperformance_*.py",
+    "crates/monty-bench/benches/python/data/subtitles_en.txt",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",

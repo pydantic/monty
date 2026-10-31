@@ -21,7 +21,8 @@ mod compile;
 mod storage;
 
 use std::{
-    cell::{Cell, RefCell},
+    array,
+    cell::{Cell, OnceCell, RefCell},
     collections::BTreeMap,
     mem,
     slice::from_ref,
@@ -40,6 +41,7 @@ use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     prepare::SnippetNames,
+    string_index::StringIndex,
 };
 
 /// Index into the string interner's storage.
@@ -2596,11 +2598,13 @@ pub enum StaticStrings {
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.
-/// Snapshots store only text; loading reconstructs the tag and cached hash.
+/// Snapshots store only text; loading reconstructs the tag, hash and ASCII status.
 #[derive(Debug, Clone)]
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
+    /// Cached at construction so repeated literal indexing never scans the text.
+    ascii: bool,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2628,6 +2632,7 @@ impl InternedString {
     fn static_string(value: StaticStrings) -> Self {
         Self {
             static_tag: Some(value),
+            ascii: <&str>::from(value).is_ascii(),
             text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
@@ -2636,6 +2641,7 @@ impl InternedString {
     fn owned(value: String) -> Self {
         Self {
             static_tag: None,
+            ascii: value.is_ascii(),
             text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
         }
     }
@@ -2723,11 +2729,14 @@ impl FunctionId {
 }
 
 /// Prehashed core strings reused when constructing independent interners.
-static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
+static CORE_ENTRIES: LazyLock<Vec<(StaticStrings, bool, WithHash<InternedText>)>> = LazyLock::new(|| {
     CORE_STATIC_STRINGS
         .iter()
         .copied()
-        .map(InternedString::static_string)
+        .map(|value| {
+            let entry = InternedString::static_string(value);
+            (value, entry.ascii, entry.text)
+        })
         .collect()
 });
 
@@ -2804,12 +2813,58 @@ fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<
     }
 }
 
+/// Lazily allocated outside the text table so ASCII-only sessions pay no per-entry cache cost.
+/// Append-only slots keep returned cache borrows valid when runtime compilation interns more strings.
+#[derive(Debug, Default)]
+struct StringIndexes(OnceCell<Box<SparseStringIndexes>>);
+
+const STRING_INDEX_PAGE_SIZE: usize = 256;
+type StringIndexPage = [OnceCell<Box<StringIndex>>; STRING_INDEX_PAGE_SIZE];
+
+/// Sparse pages avoid filling the gap before a late Unicode intern ID.
+#[derive(Debug, Default)]
+struct SparseStringIndexes {
+    slots: RefCell<AHashMap<usize, usize>>,
+    pages: Entries<Box<StringIndexPage>>,
+    // Nearby intern IDs share a directory lookup, including alternating string accesses.
+    last: Cell<Option<(usize, usize)>>,
+}
+
+impl Clone for StringIndexes {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl StringIndexes {
+    fn get(&self, index: usize) -> &StringIndex {
+        let table = self.0.get_or_init(Box::default);
+        let page = index / STRING_INDEX_PAGE_SIZE;
+        let slot = if let Some((last_page, slot)) = table.last.get()
+            && last_page == page
+        {
+            slot
+        } else {
+            let slot = *table.slots.borrow_mut().entry(page).or_insert_with(|| {
+                let slot = table.pages.len();
+                table.pages.push(Box::new(array::from_fn(|_| OnceCell::new())));
+                slot
+            });
+            table.last.set(Some((page, slot)));
+            slot
+        };
+        table.pages[slot][index % STRING_INDEX_PAGE_SIZE].get_or_init(Box::default)
+    }
+}
+
 /// Committed strings, literals, functions and snippet sources.
 /// Entries never move or disappear; existing sessions publish private compilation overlays on success.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
     strings: Entries<InternedString>,
+    #[serde(skip)]
+    string_indexes: StringIndexes,
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
@@ -2873,6 +2928,7 @@ impl TryFrom<InternsWire> for Interns {
         }
         Ok(Self {
             strings: wire.strings,
+            string_indexes: StringIndexes::default(),
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
@@ -2911,6 +2967,7 @@ impl Interns {
     fn placeholder() -> Self {
         Self {
             strings: Entries::default(),
+            string_indexes: StringIndexes::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -2929,6 +2986,7 @@ impl Interns {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
             strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+            string_indexes: StringIndexes::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -2940,11 +2998,15 @@ impl Interns {
             compiling: Cell::new(false),
             hint_snippets: RefCell::default(),
         };
-        for entry in CORE_ENTRIES.iter() {
-            let value = entry.static_value().expect("core entries are static");
+        for (value, ascii, text) in CORE_ENTRIES.iter() {
             let id = next_string_id(interns.strings.len());
-            interns.strings.push(entry.clone());
-            interns.static_string_ids.borrow_mut().insert(value, id);
+            // Only immutable prehashed text is shared; access caches belong to the session.
+            interns.strings.push(InternedString {
+                static_tag: Some(*value),
+                ascii: *ascii,
+                text: text.clone(),
+            });
+            interns.static_string_ids.borrow_mut().insert(*value, id);
         }
         interns
     }
@@ -3018,6 +3080,20 @@ impl Interns {
             .map(|file| &*file.source)
     }
 
+    /// Returns ASCII status without rescanning immutable literal text.
+    #[inline]
+    pub fn str_is_ascii(&self, id: StringId) -> bool {
+        id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
+    }
+
+    pub(crate) fn str_index(&self, id: StringId) -> Option<&StringIndex> {
+        let index = id.index().checked_sub(INTERN_STRING_ID_OFFSET)?;
+        if self.strings[index].ascii {
+            return None;
+        }
+        Some(self.string_indexes.get(index))
+    }
+
     /// Returns the same hash as an equal heap string.
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
@@ -3068,5 +3144,59 @@ impl Interns {
     /// Finds canonical text already interned, excluding snippet filename IDs.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
         get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
+    }
+}
+
+#[cfg(test)]
+mod cache_layout_tests {
+    use std::ptr;
+
+    use monty_types::ResourceTracker;
+
+    use super::*;
+
+    #[test]
+    fn ascii_entries_keep_the_pre_cache_footprint() {
+        assert_eq!(
+            size_of::<InternedString>(),
+            size_of::<(Option<StaticStrings>, WithHash<InternedText>)>()
+        );
+        let interns = Interns::new("");
+        for i in 0..interns.strings.len() {
+            assert!(interns.str_index(next_string_id(i)).is_none());
+        }
+        assert!(interns.string_indexes.0.get().is_none());
+    }
+
+    #[test]
+    fn late_unicode_cache_allocates_only_its_page() {
+        let indexes = StringIndexes::default();
+        indexes.get(1_000_000).char_len("é中");
+        let table = indexes.0.get().unwrap();
+        assert_eq!(table.pages.len(), 1);
+        assert_eq!(table.pages[0].iter().filter(|entry| entry.get().is_some()).count(), 1);
+        assert_eq!(table.slots.borrow().len(), 1);
+        assert_eq!(indexes.get(1_000_001).char_len("é中🐍"), 3);
+        assert_eq!(indexes.get(1_000_000).char_len("é中"), 2);
+        assert_eq!(table.pages.len(), 1);
+        assert!(!ptr::eq(indexes.get(1_000_000), indexes.get(1_000_001)));
+    }
+
+    #[test]
+    fn unicode_cache_survives_table_growth_and_resets_on_clone() {
+        let indexes = StringIndexes::default();
+        let text = "aé中🐍".repeat(4096);
+        let original = indexes.get(3);
+        let tracker = ResourceTracker::default();
+        for i in 0..1000 {
+            original.character(&text, (i * 7919) % 16384, &tracker).unwrap();
+        }
+        assert!(original.has_checkpoints());
+        for index in 1024..2048 {
+            indexes.get(index * STRING_INDEX_PAGE_SIZE).char_len("é中");
+        }
+        assert!(ptr::eq(original, indexes.get(3)));
+        assert!(original.has_checkpoints());
+        assert!(indexes.clone().0.get().is_none());
     }
 }

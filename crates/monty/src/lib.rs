@@ -5,6 +5,7 @@ mod heap;
 mod heap_traits;
 
 mod args;
+mod ascii_runs;
 mod asyncio;
 mod builtins;
 mod bytecode;
@@ -39,6 +40,7 @@ mod source_map;
 mod source_nesting;
 mod str_format;
 mod string_builder;
+mod string_index;
 mod stringize;
 mod types;
 mod value;
