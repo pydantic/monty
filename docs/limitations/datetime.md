@@ -203,7 +203,8 @@ all seven positionally.
 Attributes: `days`, `seconds`, `microseconds`.
 Methods: `total_seconds`.
 
-A non-int component raises `TypeError: '{type}' object cannot be interpreted as an integer`; CPython names the offending
+A component that is neither an int nor a float raises
+`TypeError: '{type}' object cannot be interpreted as an integer`; CPython names the offending
 component instead
 (`unsupported type for timedelta days component: str`).
 

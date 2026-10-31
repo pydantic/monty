@@ -245,13 +245,24 @@ pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         weeks,
     } = TimedeltaArgs::from_args(args, vm)?;
 
-    let total_microseconds = checked_component(weeks, 7 * DAY_MICROSECONDS)?
-        + checked_component(days, DAY_MICROSECONDS)?
-        + checked_component(hours, HOUR_MICROSECONDS)?
-        + checked_component(minutes, MINUTE_MICROSECONDS)?
-        + checked_component(seconds, MICROSECONDS_PER_SECOND)?
-        + checked_component(milliseconds, MILLISECONDS_PER_SECOND)?
-        + microseconds.0;
+    // CPython adds the components in this order, which decides how the float
+    // fractions are summed before the final rounding.
+    let mut total_microseconds = 0;
+    let mut leftover = 0.0;
+    for (component, unit_microseconds) in [
+        (microseconds, 1),
+        (milliseconds, MILLISECONDS_PER_SECOND),
+        (seconds, MICROSECONDS_PER_SECOND),
+        (minutes, MINUTE_MICROSECONDS),
+        (hours, HOUR_MICROSECONDS),
+        (days, DAY_MICROSECONDS),
+        (weeks, 7 * DAY_MICROSECONDS),
+    ] {
+        total_microseconds = component.accumulate(total_microseconds, unit_microseconds, &mut leftover)?;
+    }
+    if leftover != 0.0 {
+        total_microseconds = add_microseconds(total_microseconds, round_leftover(leftover, total_microseconds))?;
+    }
 
     let delta = from_total_microseconds(total_microseconds)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))))
@@ -280,24 +291,108 @@ struct TimedeltaArgs {
     weeks: DeltaComponent,
 }
 
-/// One `timedelta(...)` constructor component, held as `i128` so the
-/// microsecond-normalisation arithmetic in [`init`] cannot wrap.
+/// One `timedelta(...)` constructor component: an int, held as `i128` so the
+/// microsecond-normalisation arithmetic in [`init`] cannot wrap, or a float.
 ///
 /// Carries its own `FromValue` impl (rather than a generic `i128` one)
 /// because the overflow semantics are timedelta-specific: CPython's
 /// accumulator converts each component through C int, so ints wider than
 /// i64 raise `OverflowError: Python int too large to convert to C int`
 /// even though they would fit in i128.
-#[derive(Clone, Copy, Default)]
-struct DeltaComponent(i128);
+#[derive(Clone, Copy)]
+enum DeltaComponent {
+    Int(i128),
+    Float(f64),
+}
+
+impl Default for DeltaComponent {
+    fn default() -> Self {
+        Self::Int(0)
+    }
+}
+
+impl DeltaComponent {
+    /// Adds this component, counted in `unit_microseconds`, to `total` as CPython's
+    /// `accum()` does: an int exactly, and a float as its exact whole part plus
+    /// the whole microseconds of its fraction. The rest of the fraction goes into
+    /// `leftover`, which [`init`] rounds once at the end.
+    fn accumulate(self, total: i128, unit_microseconds: i128, leftover: &mut f64) -> RunResult<i128> {
+        match self {
+            Self::Int(value) => add_microseconds(total, checked_component(value, unit_microseconds)?),
+            Self::Float(value) => {
+                let whole = value.trunc();
+                let whole_microseconds = float_whole(whole)?
+                    .checked_mul(unit_microseconds)
+                    .ok_or_else(ExcType::overflow_c_int)?;
+                let total = add_microseconds(total, whole_microseconds)?;
+                let fraction = value - whole;
+                if fraction == 0.0 {
+                    return Ok(total);
+                }
+                let scaled = unit_microseconds as f64 * fraction;
+                let scaled_whole = scaled.trunc();
+                *leftover += scaled - scaled_whole;
+                #[expect(clippy::cast_possible_truncation, reason = "less than one unit, so at most 6.048e11")]
+                let scaled_whole = scaled_whole as i128;
+                add_microseconds(total, scaled_whole)
+            }
+        }
+    }
+}
+
+/// The whole part of a float component as an exact integer, with CPython's
+/// errors for infinity and NaN.
+fn float_whole(whole: f64) -> RunResult<i128> {
+    if whole.is_nan() {
+        return Err(ExcType::value_error_float_nan_to_integer());
+    }
+    if whole.is_infinite() {
+        return Err(ExcType::overflow_float_infinity_to_integer());
+    }
+    // Past 2**127 the count is far beyond the day limit, where CPython fails
+    // to convert the day count to a C int.
+    if whole.abs() >= 2f64.powi(127) {
+        return Err(ExcType::overflow_c_int());
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a whole number below 2**127 in magnitude"
+    )]
+    let whole = whole as i128;
+    Ok(whole)
+}
+
+/// CPython's rounding of the summed float fractions to whole microseconds: to
+/// the nearest, and an exact tie to the even total.
+#[expect(
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    reason = "CPython tests for an exact tie, and the sum of seven fractions is below 7 in magnitude"
+)]
+fn round_leftover(leftover: f64, total: i128) -> i128 {
+    let mut whole = leftover.round();
+    if (whole - leftover).abs() == 0.5 {
+        let odd = if (total & 1) == 1 { 1.0 } else { 0.0 };
+        // For these small values `midpoint` is exactly CPython's `(leftover + odd) * 0.5`.
+        whole = 2.0 * f64::midpoint(leftover, odd).round() - odd;
+    }
+    whole as i128
+}
+
+/// Adds microsecond counts. A sum past `i128` is far beyond the day limit, where
+/// CPython fails to convert the day count to a C int.
+fn add_microseconds(total: i128, more: i128) -> RunResult<i128> {
+    total.checked_add(more).ok_or_else(ExcType::overflow_c_int)
+}
 
 impl FromValue for DeltaComponent {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = match value {
-            Value::Bool(b) => Ok(Self(i128::from(b))),
-            Value::Int(i) => Ok(Self(i128::from(i))),
+            Value::Bool(b) => Ok(Self::Int(i128::from(b))),
+            Value::Int(i) => Ok(Self::Int(i128::from(i))),
+            Value::Float(f) => Ok(Self::Float(f)),
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
             _ => Err(FromValueFail::WrongType),
         };
@@ -310,8 +405,8 @@ impl FromValue for DeltaComponent {
     }
 }
 
-fn checked_component(value: DeltaComponent, unit_microseconds: i128) -> RunResult<i128> {
-    value.0.checked_mul(unit_microseconds).ok_or_else(|| {
+fn checked_component(value: i128, unit_microseconds: i128) -> RunResult<i128> {
+    value.checked_mul(unit_microseconds).ok_or_else(|| {
         SimpleException::new_msg(ExcType::OverflowError, "timedelta argument overflow while normalizing").into()
     })
 }
