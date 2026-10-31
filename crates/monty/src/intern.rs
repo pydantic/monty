@@ -1029,15 +1029,15 @@ pub enum StaticStrings {
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,
+    /// `__metadata__` of a `typing.Annotated[...]`.
+    #[strum(serialize = "__metadata__")]
+    DunderMetadata,
     /// `defaultdict.__missing__` method.
     #[strum(serialize = "__missing__")]
     DunderMissing,
     /// `__module__` — the defining module name, exposed on namedtuple classes.
     #[strum(serialize = "__module__")]
     DunderModule,
-    /// `__metadata__` of a `typing.Annotated[...]`.
-    #[strum(serialize = "__metadata__")]
-    DunderMetadata,
     /// `__name__` attribute of a type.
     #[strum(serialize = "__name__")]
     DunderName,

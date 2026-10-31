@@ -318,3 +318,47 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == "argument 'indent': 'str' object cannot be interpreted as an integer"
+try:
+    empty.json(indent=-1)
+    assert False, 'expected OverflowError'
+except OverflowError as exc:
+    assert str(exc) == "can't convert negative int to unsigned"
+
+# a `ctx` that is present must be a dict, even for a type that needs no context
+for ctx, message in [
+    (5, "'int' object is not an instance of 'dict'"),
+    ('x', "'str' object is not an instance of 'dict'"),
+    (None, "'None' is not an instance of 'dict'"),
+]:
+    try:
+        ValidationError.from_exception_data('T', [{'type': 'missing', 'loc': (), 'input': 1, 'ctx': ctx}])
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == message
+
+# a numeric constraint takes an int, a float, anything with `__float__` or a str
+for gt, msg, reported in [
+    (True, 'Input should be greater than 1', 1),
+    (10**30, 'Input should be greater than 1000000000000000000000000000000', 10**30),
+    (Decimal('1.5'), 'Input should be greater than 1.5', 1.5),
+    ('x', 'Input should be greater than x', 'x'),
+]:
+    entry = ValidationError.from_exception_data(
+        'T', [{'type': 'greater_than', 'loc': (), 'input': 1, 'ctx': {'gt': gt}}]
+    ).errors()[0]
+    assert entry['msg'] == msg
+    assert entry.get('ctx') == {'gt': reported}
+try:
+    ValidationError.from_exception_data('T', [{'type': 'greater_than', 'loc': (), 'input': 1, 'ctx': {'gt': [1]}}])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "GreaterThan: 'gt' context value must be a Number"
+
+# === Non-finite float keys in json() ===
+nan_keys = ValidationError.from_exception_data(
+    'T', [{'type': 'missing', 'loc': (), 'input': {float('nan'): 1, float('inf'): 2, float('-inf'): 3}}]
+)
+assert (
+    nan_keys.json(include_url=False)
+    == '[{"type":"missing","loc":[],"msg":"Field required","input":{"nan":1,"inf":2,"-inf":3}}]'
+)

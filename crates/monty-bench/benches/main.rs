@@ -13,10 +13,11 @@
 //! A script may also set the header's `cpython-site-packages = true`, which puts the dev
 //! virtualenv's `site-packages` on the embedded CPython's `sys.path` so it can `import pydantic`.
 
+#[cfg(not(feature = "codspeed"))]
+use std::sync::OnceLock;
 use std::{
     env, fs, mem,
     path::{Path, PathBuf},
-    sync::OnceLock,
     time::Duration,
 };
 
@@ -83,6 +84,7 @@ struct Script {
     /// Also benchmark over an overlay mount; requires [`Input::Mount`].
     overlay: bool,
     /// CPython runs with the dev virtualenv's `site-packages` importable.
+    #[cfg_attr(feature = "codspeed", expect(dead_code, reason = "only the CPython side reads it"))]
     site_packages: bool,
 }
 

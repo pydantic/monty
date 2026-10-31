@@ -77,6 +77,8 @@ pub(crate) struct State {
     /// The `(object, validator)` pairs on the current descent, so a value
     /// that contains itself is reported rather than walked forever.
     pub(crate) recursion: Vec<(HeapId, ValidatorId)>,
+    /// Validator calls so far, for polling the time limit every few calls.
+    pub(crate) steps: usize,
 }
 
 impl State {
@@ -86,6 +88,7 @@ impl State {
             exactness: None,
             fields_set_count: None,
             recursion: Vec::new(),
+            steps: 0,
         }
     }
 

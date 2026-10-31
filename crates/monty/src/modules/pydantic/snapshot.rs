@@ -6,8 +6,9 @@
 //! built here, and comes back out as a fresh value when `errors()` reads it.
 //! Scalars, containers, temporal values and decimals survive the round trip;
 //! anything else (an instance, a function) is kept as its repr, as is any
-//! value past the node budget, so one failing input of any size cannot pin
-//! unbounded memory in an exception.
+//! value past the node budget, so an exception holds at most a few thousand
+//! nodes plus one repr, whose size is bounded by the (tracker-allocated)
+//! input it describes.
 
 use std::mem;
 

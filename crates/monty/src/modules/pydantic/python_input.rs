@@ -91,6 +91,7 @@ impl PyInput {
         match &self.value {
             Value::Int(i) => Some(*i),
             Value::Bool(b) => Some(i64::from(*b)),
+            Value::InternLongInt(id) => vm.interns.get_long_int(*id).try_into().ok(),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::LongInt(li) => li.inner().try_into().ok(),
                 _ => None,
@@ -105,6 +106,7 @@ impl PyInput {
             Value::Int(i) => Some(*i as f64),
             Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
             Value::Float(f) => Some(*f),
+            Value::InternLongInt(id) => vm.interns.get_long_int(*id).to_f64(),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::LongInt(li) => li.inner().to_f64(),
                 _ => None,
@@ -392,6 +394,7 @@ impl Input for PyInput {
                 Value::Int(i) => Some(Ok(Some(decimal_type::Decimal::from_i64(*i)))),
                 // Through the float's repr, as pydantic's `Decimal(str(value))` does.
                 Value::Float(f) => Some(decimal_type::parse::parse_str(&FormatFloat(*f).to_string()).map(Result::ok)),
+                Value::InternLongInt(id) => Some(decimal_type::parse::from_int(vm.interns.get_long_int(*id)).map(Some)),
                 Value::Ref(id) => match vm.heap.get(*id) {
                     HeapData::LongInt(li) => Some(decimal_type::parse::from_int(li.inner()).map(Some)),
                     // `Decimal((sign, digits, exponent))`, through the constructor's own checks.
