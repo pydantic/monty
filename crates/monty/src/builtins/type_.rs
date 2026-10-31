@@ -8,7 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    types::{Class, Dict, PyTrait},
+    types::{Class, Dict, PyTrait, Type},
     value::Value,
 };
 
@@ -61,10 +61,11 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
 /// For an instance of a user-defined class the type *is* the class object
 /// itself, so `type(x) is Foo` holds via reference identity; a host class
 /// instance returns the `HostClassType` entry it owns (one per host class, so
-/// identity holds there too); everything else returns the builtin `Type`
-/// marker. Borrowing rather than consuming so callers that only need the type
-/// of a value they still own (e.g. `functools.lru_cache(typed=True)` keying)
-/// don't have to clone it first.
+/// identity holds there too); an exception returns the same `ExcType` value
+/// that its class name evaluates to, so `type(e) is ValueError` holds;
+/// everything else returns the builtin `Type` marker. Borrowing rather than
+/// consuming so callers that only need the type of a value they still own
+/// (e.g. `functools.lru_cache(typed=True)` keying) don't have to clone it first.
 pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
     if let Value::Ref(id) = value
         && let HeapData::Instance(inst) = vm.heap.get(*id)
@@ -88,12 +89,12 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
     } else {
-        Value::Builtin(Builtins::Type(
-            value
-                .py_type(vm)
-                .try_into()
-                .expect("instances return their class object"),
-        ))
+        match value.py_type(vm) {
+            Type::Exception(exc_type) => Value::Builtin(Builtins::ExcType(exc_type)),
+            other => Value::Builtin(Builtins::Type(
+                other.try_into().expect("instances return their class object"),
+            )),
+        }
     }
 }
 

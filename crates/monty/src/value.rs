@@ -1230,6 +1230,15 @@ impl Value {
                     None => Err(Type::from(*t).attribute_error(attr, vm)),
                 };
             }
+            // An exception class answers as its `Type::Exception`, so
+            // `ValueError.__name__` works as `list.__name__` does.
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let t = Type::Exception(*exc_type);
+                return match t.class_getattr(attr, vm) {
+                    Some(value) => Ok(CallResult::Value(value)),
+                    None => Err(t.attribute_error(attr, vm)),
+                };
+            }
             _ => {}
         }
         let type_name = self.py_type_name(vm);

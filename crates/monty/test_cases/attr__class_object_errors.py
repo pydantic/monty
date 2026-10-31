@@ -18,6 +18,8 @@ _classes = [
     (datetime.time, 'datetime.time'),
     (datetime.timedelta, 'datetime.timedelta'),
     (datetime.timezone, 'datetime.timezone'),
+    (ValueError, 'ValueError'),
+    (KeyError, 'KeyError'),
 ]
 
 # === attribute access ===
@@ -54,6 +56,8 @@ assert datetime.date.__name__ == 'date'
 assert datetime.time.__name__ == 'time'
 assert datetime.timedelta.__name__ == 'timedelta'
 assert int.__name__ == 'int'
+assert ValueError.__name__ == 'ValueError'
+assert sorted([ValueError, KeyError], key=lambda cls: cls.__name__) == [KeyError, ValueError]
 
 # === a known class method is unaffected ===
 assert dict.fromkeys(['a'], 1) == {'a': 1}
