@@ -762,22 +762,14 @@ fn is_size_limit_error(err: &RegexError) -> bool {
 ///
 /// # Supported translations
 ///
-/// - `\1`–`\9` → `$1`–`$9` (single-digit backreferences)
+/// - `\1`–`\99` → `${1}`–`${99}` (one or two digits, as CPython reads them; three
+///   octal digits are an octal escape instead)
 /// - `\g<N>` → `${N}` (numeric backreference with explicit syntax)
 /// - `\g<name>` → `${name}` (named group backreference)
 /// - `\\` → literal backslash
 /// - `$` → `$$` (escape literal `$` so `fancy_regex` doesn't misinterpret it)
 ///
 /// Returns a `Cow` to avoid allocation when no translation is needed.
-///
-/// # Limitations
-///
-/// TODO: Multi-digit backreferences like `\10` are not fully supported. CPython
-/// greedily reads all digits after `\` and interprets them as a group number if
-/// that group exists, otherwise falls back to octal escapes. Currently `\10` is
-/// translated as `$1` followed by literal `0`, which is wrong when 10+ groups
-/// exist. Fixing this requires passing the pattern's capture group count into
-/// this function to disambiguate.
 pub(crate) fn translate_replacement(repl: &str) -> RunResult<Cow<'_, str>> {
     // Fast path: no backslashes and no literal `$` means nothing to translate or escape.
     if !repl.contains('\\') && !repl.contains('$') {
@@ -818,12 +810,18 @@ pub(crate) fn translate_replacement(repl: &str) -> RunResult<Cow<'_, str>> {
                             result.push(decoded);
                         }
                     } else {
-                        // TODO: This only handles single-digit backrefs (\1–\9).
-                        // Multi-digit like \10 should be ${10} when group 10 exists,
-                        // but that requires knowing the group count. See docstring.
-                        result.push('$');
-                        result.push(d);
+                        // A group reference has one or two digits. The braces stop
+                        // `fancy_regex` from reading `$1b` as a group named `1b`.
                         chars.next();
+                        result.push_str("${");
+                        result.push(d);
+                        if let Some(&second) = chars.peek()
+                            && second.is_ascii_digit()
+                        {
+                            result.push(second);
+                            chars.next();
+                        }
+                        result.push('}');
                     }
                 }
                 Some(&'g') => {
