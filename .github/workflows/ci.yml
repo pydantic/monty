@@ -1260,6 +1260,12 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
+      - name: Set x64 GNU native compilers
+        if: matrix.settings.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          echo 'CC_x86_64_unknown_linux_gnu=x86_64-unknown-linux-gnu-gcc' >> "$GITHUB_ENV"
+          echo 'CXX_x86_64_unknown_linux_gnu=x86_64-unknown-linux-gnu-g++' >> "$GITHUB_ENV"
+
       # `--use-napi-cross` downloads the napi-rs cross toolchain itself.
       - name: Build the napi shared library
         run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }} ${{ matrix.settings.napi-cross && '--use-napi-cross' || '' }}
@@ -1270,9 +1276,14 @@ jobs:
       - name: Check the glibc floor
         if: matrix.settings.napi-cross
         run: |
-          newest=$(readelf --dyn-syms -W monty.${{ matrix.settings.triple }}.node | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
+          symbols=$(readelf --dyn-syms -W monty.${{ matrix.settings.triple }}.node)
+          newest=$(printf '%s\n' "$symbols" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)
           echo "newest glibc symbol: $newest"
           test "$(printf '%s\nGLIBC_2.17\n' "$newest" | sort -V | tail -n1)" = GLIBC_2.17
+          if printf '%s\n' "$symbols" | awk '$7 == "UND" && $8 ~ /^__isoc23_/ { found=1 } END { exit !found }'; then
+            echo 'undefined __isoc23_* symbol found'
+            exit 1
+          fi
         working-directory: crates/monty-js
 
       - name: Upload artifact
