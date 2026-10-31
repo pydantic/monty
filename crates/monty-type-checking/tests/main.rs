@@ -655,5 +655,5 @@ adapter = TypeAdapter(int)
 adapter.validate(1)
     ";
     let error_diagnostics = check_concise(code, "main.py").expect("expected type errors");
-    assert_snapshot!(error_diagnostics, @"main.py:4:1: error[unresolved-attribute] Object of type `TypeAdapter[Unknown]` has no attribute `validate`");
+    assert_snapshot!(error_diagnostics, @"main.py:4:1: error[unresolved-attribute] Object of type `TypeAdapter[int]` has no attribute `validate`");
 }
