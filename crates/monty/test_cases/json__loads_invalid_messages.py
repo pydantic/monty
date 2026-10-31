@@ -94,6 +94,29 @@ invalid_cases = [
         '[1,2',
         "Expecting ',' delimiter: line 1 column 5 (char 4)",
     ),
+    # an invalid literal or number is reported at its start
+    ('nul', 'Expecting value: line 1 column 1 (char 0)'),
+    ('nan', 'Expecting value: line 1 column 1 (char 0)'),
+    ('[trux]', 'Expecting value: line 1 column 2 (char 1)'),
+    ('{"a": nulx}', 'Expecting value: line 1 column 7 (char 6)'),
+    ('-', 'Expecting value: line 1 column 1 (char 0)'),
+    ('[-x]', 'Expecting value: line 1 column 2 (char 1)'),
+    ('-Inf', 'Expecting value: line 1 column 1 (char 0)'),
+    # after the longest valid number, the rest is extra data or a missing delimiter
+    ('01', 'Extra data: line 1 column 2 (char 1)'),
+    ('-01', 'Extra data: line 1 column 3 (char 2)'),
+    ('1.', 'Extra data: line 1 column 2 (char 1)'),
+    ('1e+', 'Extra data: line 1 column 2 (char 1)'),
+    ('1.5x', 'Extra data: line 1 column 4 (char 3)'),
+    ('-0.25E+3y', 'Extra data: line 1 column 9 (char 8)'),
+    ('[1.e5]', "Expecting ',' delimiter: line 1 column 3 (char 2)"),
+    ('{"a": 01}', "Expecting ',' delimiter: line 1 column 8 (char 7)"),
+    ('["]", 01]', "Expecting ',' delimiter: line 1 column 8 (char 7)"),
+    ('["a\\"b", 1x]', "Expecting ',' delimiter: line 1 column 11 (char 10)"),
+    ('[[1], 2x]', "Expecting ',' delimiter: line 1 column 8 (char 7)"),
+    # a raw control character in a string
+    ('"\t"', 'Invalid control character at: line 1 column 2 (char 1)'),
+    ('{"a\x01": 1}', 'Invalid control character at: line 1 column 4 (char 3)'),
     # positions count characters, not bytes: multibyte input before the error
     (
         '["é", x]',

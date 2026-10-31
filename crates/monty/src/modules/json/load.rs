@@ -519,8 +519,14 @@ fn json_error_to_run_error(error: &JiterError, bytes: &[u8]) -> RunError {
             "Unterminated string starting at".to_owned(),
             find_unterminated_string_start(bytes, error.index).unwrap_or(error.index),
         ),
-        JiterErrorType::JsonError(JsonErrorType::EofWhileParsingValue | JsonErrorType::ExpectedSomeValue) => {
-            ("Expecting value".to_owned(), error.index)
+        JiterErrorType::JsonError(
+            JsonErrorType::EofWhileParsingValue
+            | JsonErrorType::ExpectedSomeValue
+            | JsonErrorType::ExpectedSomeIdent
+            | JsonErrorType::InvalidNumber,
+        ) => value_error(bytes, error.index),
+        JiterErrorType::JsonError(JsonErrorType::ControlCharacterWhileParsingString) => {
+            ("Invalid control character at".to_owned(), error.index)
         }
         JiterErrorType::JsonError(JsonErrorType::ExpectedColon) => ("Expecting ':' delimiter".to_owned(), error.index),
         JiterErrorType::JsonError(
@@ -550,6 +556,73 @@ fn json_error_to_run_error(error: &JiterError, bytes: &[u8]) -> RunError {
     };
     let (pos, line, column) = error_coordinates(bytes, index);
     ExcType::json_decode_error(&message, bytes, line, column, pos)
+}
+
+/// CPython's message and position for a value that fails to parse, from the byte where `jiter`
+/// stopped, which can be inside the value or just after it.
+///
+/// CPython reads the longest valid number at the start of the value. When there is one, the text
+/// after it is extra data at the top level, or a missing `,` inside an array or object. Otherwise,
+/// as for `nul` or a `-` without digits, CPython reports `Expecting value` at the value's start.
+fn value_error(bytes: &[u8], index: usize) -> (String, usize) {
+    let mut start = index.min(bytes.len());
+    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || matches!(bytes[start - 1], b'-' | b'+' | b'.')) {
+        start -= 1;
+    }
+    match json_number_prefix_len(&bytes[start..]) {
+        0 => ("Expecting value".to_owned(), start),
+        len if open_container_count(&bytes[..start]) == 0 => ("Extra data".to_owned(), start + len),
+        len => ("Expecting ',' delimiter".to_owned(), start + len),
+    }
+}
+
+/// The length of the longest JSON number at the start of `bytes`, or 0 if there is none:
+/// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?`, as CPython's scanner matches it.
+fn json_number_prefix_len(bytes: &[u8]) -> usize {
+    let digits_from = |from: usize| bytes.iter().skip(from).take_while(|byte| byte.is_ascii_digit()).count();
+    let mut end = usize::from(bytes.first() == Some(&b'-'));
+    match bytes.get(end) {
+        Some(b'0') => end += 1,
+        Some(b'1'..=b'9') => end += digits_from(end),
+        _ => return 0,
+    }
+    if bytes.get(end) == Some(&b'.') && digits_from(end + 1) > 0 {
+        end += 1 + digits_from(end + 1);
+    }
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(bytes.get(end + 1), Some(b'-' | b'+')));
+        let exponent = digits_from(end + 1 + sign);
+        if exponent > 0 {
+            end += 1 + sign + exponent;
+        }
+    }
+    end
+}
+
+/// The number of arrays and objects still open at the end of `bytes`, a prefix that `jiter`
+/// parsed without error.
+fn open_container_count(bytes: &[u8]) -> usize {
+    let mut depth = 0_usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &byte in bytes {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+        } else {
+            match byte {
+                b'"' => in_string = true,
+                b'[' | b'{' => depth += 1,
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    depth
 }
 
 /// CPython-style error coordinates `(pos, lineno, colno)` for a byte offset
