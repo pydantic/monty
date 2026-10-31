@@ -125,7 +125,7 @@ test('with end', async () => {
 
 test('a print with end="" joins the next print', async () => {
   const { output, callback } = makePrintCollector()
-  await run('print("a", end="")\nprint("b")', { printCallback: callback })
+  await run('print("a", end="")\nprint("b")', { printCallback: callback, printFlushInterval: 0 })
   t.deepEqual(output, ['ab\n'])
 })
 

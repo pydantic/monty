@@ -778,11 +778,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
+                bases,
+                keywords,
                 body,
                 members,
                 decorators,
                 position,
-            } => self.compile_class_def(name, body, members, decorators, *position)?,
+            } => self.compile_class_def(name, bases, keywords, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::Match {
                 subject,
@@ -966,12 +968,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Modelled on CPython's class-body code object: the class body is compiled
     /// to a synthetic zero-arg function (via
     /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
-    /// statements in its own scope and returns the assembled `Class`. We emit
-    /// that function value, call it with zero args, and bind the result to the
-    /// class name.
+    /// statements in its own scope and returns the namespace `Dict`. We evaluate
+    /// decorator expressions, evaluate kwargs and bases, call the class body
+    /// function, build the `Class` object, invoke `__init_subclass__`, apply
+    /// decorators, and bind the result to the class name.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_def(
         &mut self,
         name: &Identifier,
+        bases: &[SequenceItem],
+        keywords: &[Kwarg],
         body: &PreparedFunctionDef,
         members: &[Identifier],
         decorators: &[ExprLoc],
@@ -982,14 +988,59 @@ impl<'a, 'i> Compiler<'a, 'i> {
         for decorator in decorators {
             self.compile_expr(decorator)?;
         }
-        // Build the class-body function/closure value on the stack...
-        self.emit_make_class_body(body, members, name, position)?;
-        // ...call it with zero args — it runs the body and returns the `Class`.
-        // Record the class statement as the call site so a traceback from inside
-        // the class body attributes this frame to the `class` statement (like
-        // CPython) rather than falling back to `CodeRange::default()`.
-        self.code.set_location(position, None);
-        self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+        if keywords.is_empty() {
+            // Fast path: Arguments for type(name, bases, dict):
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            // Evaluate bases in the enclosing scope in source order
+            self.compile_tuple_sequence(bases, position)?;
+
+            // Build the class-body function/closure value on the stack...
+            self.emit_make_class_body(body, members, position)?;
+            // ...call it with zero args — it runs the body and returns the namespace Dict.
+            // Record the class statement as the call site so a traceback from inside
+            // the class body attributes this frame to the `class` statement (like
+            // CPython) rather than falling back to `CodeRange::default()`.
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Call the 3-arg type() builtin, which constructs the Class object.
+            self.code.set_location(position, None);
+            self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+        } else {
+            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, kw_val_0, kw_val_1, ...]
+            let type_const = self
+                .code
+                .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)))?;
+            self.code.emit_u16(Opcode::LoadConst, type_const)?;
+
+            let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
+            self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+
+            self.compile_tuple_sequence(bases, position)?;
+
+            // Evaluate keyword arguments in the enclosing scope in source order before class body
+            let mut kwname_ids = Vec::with_capacity(keywords.len());
+            for kw in keywords {
+                self.compile_expr(&kw.value)?;
+                kwname_ids.push(check_name_index_u16(kw.key.name_id, position)?);
+            }
+
+            self.emit_make_class_body(body, members, position)?;
+            self.code.set_location(position, None);
+            self.code.emit_u8(Opcode::CallFunction, 0)?;
+
+            // Move the class namespace dict beneath the keyword arguments on the stack
+            let kw_count = u8::try_from(keywords.len())
+                .map_err(|_| CompileError::new("too many keyword arguments in class definition", position))?;
+            self.code.emit_u8(Opcode::SinkTop, kw_count)?;
+
+            self.code.set_location(position, None);
+            self.code.emit_call_function_kw(3, &kwname_ids)?;
+        }
+
         // Each call consumes the callable below the current value: `deco(value)`.
         // Reversed so the bottom-most (last pushed) applies first, and located at
         // its own decorator so a traceback pins the one that raised, like CPython.
@@ -1008,35 +1059,57 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Sibling of [`emit_make_function`](Self::emit_make_function): identical
     /// closure/cell handling, but compiles the body with
     /// [`compile_class_body`](Self::compile_class_body) so the emitted code ends
-    /// by assembling the namespace and returning the `Class`.
+    /// by assembling and returning the namespace `Dict`.
     fn emit_make_class_body(
         &mut self,
         body: &PreparedFunctionDef,
         members: &[Identifier],
-        class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
-            Self::compile_class_body(
-                &body.body,
-                members,
-                class_name,
-                position,
-                interns,
-                namespace_size,
-                flags,
-            )
+            Self::compile_class_body(&body.body, members, position, interns, namespace_size, flags)
         })
+    }
+
+    /// Compiles a sequence of elements into a tuple on top of the stack,
+    /// supporting `*unpack` elements via PEP 448 list conversion.
+    fn compile_tuple_sequence(&mut self, elements: &[SequenceItem], position: CodeRange) -> Result<(), CompileError> {
+        if has_unpack_seq(elements) {
+            // Generalized path: build via list then convert for PEP 448 *unpacks
+            self.code.emit_u16(Opcode::BuildList, 0)?;
+            for item in elements {
+                match item {
+                    SequenceItem::Value(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit_u8(Opcode::ListAppend, 0)?;
+                    }
+                    SequenceItem::Unpack(e) => {
+                        self.compile_expr(e)?;
+                        self.code.emit(Opcode::ListExtend)?;
+                    }
+                }
+            }
+            self.code.emit(Opcode::ListToTuple)?;
+        } else {
+            // Fast path: all values, single BuildTuple.
+            for item in elements {
+                if let SequenceItem::Value(e) = item {
+                    self.compile_expr(e)?;
+                }
+            }
+            let count = check_collection_size_u16(elements.len(), position)?;
+            self.code.emit_u16(Opcode::BuildTuple, count)?;
+        }
+        Ok(())
     }
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
-    /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the 3-arg
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    /// implicit `LoadNone; ReturnValue` tail with code that builds the namespace
+    /// `Dict` and returns it: for each member (in source order) push
+    /// `LoadConst <name>` and the member's value from its class-body slot, build
+    /// the namespace dict, then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1045,7 +1118,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
-        class_name: &Identifier,
         position: CodeRange,
         interns: &mut CompileInterns<'_>,
         num_locals: u16,
@@ -1058,12 +1130,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type(name, (), {members...}): push the name and empty bases tuple...
-        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
-        compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
-        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
-
-        // ...then the namespace dict: (name, value) for each member in order.
+        // Build the namespace dict: (name, value) for each member in order.
         for member in members {
             let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
@@ -1071,11 +1138,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
         let member_count = check_collection_size_u16(members.len(), position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
-
-        // ...and call the 3-arg type() builtin, which builds the class object.
-        compiler
-            .code
-            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok(compiler.code.build())
@@ -1228,34 +1290,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
 
             Expr::Tuple(elements) => {
-                if has_unpack_seq(elements) {
-                    // Generalized path: build via list then convert for PEP 448 *unpacks
-                    self.code.emit_u16(Opcode::BuildList, 0)?;
-                    for item in elements {
-                        match item {
-                            SequenceItem::Value(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit_u8(Opcode::ListAppend, 0)?;
-                            }
-                            SequenceItem::Unpack(e) => {
-                                self.compile_expr(e)?;
-                                self.code.emit(Opcode::ListExtend)?;
-                            }
-                        }
-                    }
-                    self.code.emit(Opcode::ListToTuple)?;
-                } else {
-                    // Fast path: all values, single BuildTuple.
-                    // SAFETY: has_unpack_seq(elements) is false, so every item is Value.
-                    for item in elements {
-                        let SequenceItem::Value(e) = item else {
-                            unreachable!("tuple fast path: only Value items")
-                        };
-                        self.compile_expr(e)?;
-                    }
-                    let count = check_collection_size_u16(elements.len(), expr_loc.position)?;
-                    self.code.emit_u16(Opcode::BuildTuple, count)?;
-                }
+                self.compile_tuple_sequence(elements, expr_loc.position)?;
             }
 
             Expr::Dict(dict_items) => {

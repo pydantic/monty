@@ -4,10 +4,23 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::DropGuard,
-    types::PyTrait,
+    heap::{DropGuard, Heap, HeapData},
+    intern::Interns,
+    types::{PyTrait, str::concat_allocate_str},
     value::Value,
 };
+
+#[inline]
+fn as_str<'a>(value: &'a Value, interns: &'a Interns, heap: &'a Heap) -> Option<&'a str> {
+    match value {
+        Value::InternString(id) => Some(interns.get_str(*id)),
+        Value::Ref(id) => match heap.get(*id) {
+            HeapData::Str(s) => Some(s.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 impl VM<'_> {
     /// Unary minus (`-x`).
@@ -28,17 +41,70 @@ impl VM<'_> {
 
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
-        self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs)
+            && let Some(res) = a.checked_add(*b)
+        {
+            this.push(Value::Int(res));
+            return Ok(());
+        }
+        if let (Some(s1), Some(s2)) = (
+            as_str(lhs, this.interns, this.heap),
+            as_str(rhs, this.interns, this.heap),
+        ) {
+            let res = concat_allocate_str(s1, s2, this.heap)?;
+            this.push(res);
+            return Ok(());
+        }
+
+        let result = lhs.py_add(rhs, this)?;
+        this.push(result);
+        Ok(())
     }
 
     /// Binary subtraction.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
-        self.binary_op(|lhs, rhs, vm| lhs.py_sub(rhs, vm))
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs)
+            && let Some(res) = a.checked_sub(*b)
+        {
+            this.push(Value::Int(res));
+            return Ok(());
+        }
+
+        let result = lhs.py_sub(rhs, this)?;
+        this.push(result);
+        Ok(())
     }
 
     /// Binary multiplication.
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
-        self.binary_op(|lhs, rhs, vm| lhs.py_mul(rhs, vm))
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs)
+            && let Some(res) = a.checked_mul(*b)
+        {
+            this.push(Value::Int(res));
+            return Ok(());
+        }
+
+        let result = lhs.py_mul(rhs, this)?;
+        this.push(result);
+        Ok(())
     }
 
     /// Binary division.
@@ -53,7 +119,28 @@ impl VM<'_> {
 
     /// Binary modulo.
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
-        self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs) {
+            if *b == 0 {
+                return Err(ExcType::zero_division().into());
+            }
+            let res = match a.checked_rem(*b) {
+                Some(rem) if rem != 0 && (*a < 0) != (*b < 0) => rem + *b,
+                Some(rem) => rem,
+                None => 0,
+            };
+            this.push(Value::Int(res));
+            return Ok(());
+        }
+
+        let result = lhs.py_mod(rhs, this)?;
+        this.push(result);
+        Ok(())
     }
 
     /// Binary power.
@@ -94,19 +181,47 @@ impl VM<'_> {
     /// the update; immutable ones fall back to ordinary addition. Uses lazy type
     /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
-        self.inplace_op(PyTrait::py_iadd_impl, |lhs, rhs, vm| {
-            if let Some(value) = lhs.py_add_result(rhs, vm)? {
-                Ok(value)
-            } else {
-                let lhs_type = lhs.py_type(vm);
-                Err(ExcType::binary_type_error(
-                    "+=",
-                    lhs_type,
-                    lhs.py_type_name(vm),
-                    rhs.py_type_name(vm),
-                ))
-            }
-        })
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let mut lhs_guard = DropGuard::new(this.pop(), this);
+        let (lhs, this) = lhs_guard.as_parts_mut();
+
+        if let (Value::Int(a), Value::Int(b)) = (&*lhs, rhs)
+            && let Some(sum) = a.checked_add(*b)
+        {
+            *lhs = Value::Int(sum);
+            let (lhs, this) = lhs_guard.into_parts();
+            this.push(lhs);
+            return Ok(());
+        }
+
+        if let (Some(s1), Some(s2)) = (
+            as_str(lhs, this.interns, this.heap),
+            as_str(rhs, this.interns, this.heap),
+        ) {
+            let res = concat_allocate_str(s1, s2, this.heap)?;
+            let (lhs, this) = lhs_guard.into_parts();
+            lhs.drop_with(this);
+            this.push(res);
+            return Ok(());
+        }
+
+        if lhs.py_iadd_impl(rhs, this)? {
+            let (lhs, this) = lhs_guard.into_parts();
+            this.push(lhs);
+            Ok(())
+        } else if let Some(value) = lhs.py_add_result(rhs, this)? {
+            let (lhs, this) = lhs_guard.into_parts();
+            lhs.drop_with(this);
+            this.push(value);
+            Ok(())
+        } else {
+            let lhs_type = lhs.py_type(this);
+            let lhs_name = lhs.py_type_name(this);
+            let rhs_name = rhs.py_type_name(this);
+            Err(ExcType::binary_type_error("+=", lhs_type, lhs_name, rhs_name))
+        }
     }
 
     /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.

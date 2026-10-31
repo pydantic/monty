@@ -102,3 +102,4 @@ Decimal 102
 DecimalContext 103
 DecimalSignalDict 104
 DecimalContextManager 105
+Super 106

@@ -1634,6 +1634,14 @@ fn str_rpartition<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
 /// Returns a copy with all occurrences of substring old replaced by new.
 /// If count is given, only the first count occurrences are replaced.
 fn str_replace<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    if let ArgValues::Two(Value::InternString(old_id), Value::InternString(new_id)) = args {
+        let old_str = vm.interns.get_str(old_id);
+        let new_str = vm.interns.get_str(new_id);
+        let s_str = s.get(vm.heap);
+        check_replace_size(s_str.len(), old_str.len(), new_str.len(), -1, &vm.heap.tracker)?;
+        let result = s_str.replace(old_str, new_str);
+        return Ok(allocate_string(result, vm.heap));
+    }
     let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
     let s = s.get(vm.heap);
 
@@ -1909,6 +1917,30 @@ struct ExpandtabsArgs {
 /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
 /// the handler to do.
 fn str_encode<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    match args {
+        ArgValues::Empty => {
+            let codec = Codec::find("utf-8").expect("utf-8 codec exists");
+            let bytes = codec.encode(s.get(vm.heap), "strict", &vm.heap.tracker)?;
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
+            return Ok(Value::Ref(heap_id));
+        }
+        ArgValues::One(Value::InternString(enc_id)) => {
+            let enc = vm.interns.get_str(enc_id);
+            let codec = Codec::find(enc).ok_or_else(|| ExcType::lookup_error_unknown_encoding(enc))?;
+            let bytes = codec.encode(s.get(vm.heap), "strict", &vm.heap.tracker)?;
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
+            return Ok(Value::Ref(heap_id));
+        }
+        ArgValues::Two(Value::InternString(enc_id), Value::InternString(err_id)) => {
+            let enc = vm.interns.get_str(enc_id);
+            let err = vm.interns.get_str(err_id);
+            let codec = Codec::find(enc).ok_or_else(|| ExcType::lookup_error_unknown_encoding(enc))?;
+            let bytes = codec.encode(s.get(vm.heap), err, &vm.heap.tracker)?;
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
+            return Ok(Value::Ref(heap_id));
+        }
+        _ => {}
+    }
     let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
     defer_drop!(encoding, vm);
     defer_drop!(errors, vm);

@@ -18,13 +18,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::FrozenFunction,
     function::{ExactPositionalCall, Function},
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, instance::class_name},
+    types::{Dict, Instance, PyTrait, Type, allocate_tuple, instance::class_name},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -1054,88 +1054,223 @@ impl<'h> VM<'h> {
     /// on external/OS calls; the `is_initializer` flag is threaded through frame
     /// serialization so a suspended initializer resumes correctly.
     pub(crate) fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        let instance_id = self
-            .heap
-            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))));
-        // The instance now owns a reference to its class object.
-        self.heap.inc_ref(class_id);
+        let custom_new = match self.heap.get(class_id) {
+            HeapData::Class(class) => class.mro_getattr("__new__", self.heap, self.interns),
+            _ => None,
+        };
+        if let Some(new_func) = custom_new {
+            let this = self;
+            defer_drop!(new_func, this);
+            let (args_for_new, args_for_init) = match &args {
+                ArgValues::Empty => (ArgValues::Empty, ArgValues::Empty),
+                _ => (args.clone_with_heap(this.heap), args),
+            };
+            this.heap.inc_ref(class_id);
+            let mut args_for_init = DropGuard::new(args_for_init, this);
+            let instance = args_for_init
+                .ctx()
+                .evaluate_function(new_func, args_for_new.prepend(Value::Ref(class_id)))?;
+            let (args_for_init, this) = args_for_init.into_parts();
+            let is_instance_of_cls = match &instance {
+                Value::Ref(inst_id) => match this.heap.get(*inst_id) {
+                    HeapData::Instance(inst) => {
+                        let actual = inst.class();
+                        actual == class_id || {
+                            if let HeapData::Class(c) = this.heap.get(actual) {
+                                c.is_subclass_of(class_id)
+                            } else {
+                                false
+                            }
+                        }
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !is_instance_of_cls {
+                args_for_init.drop_with(this);
+                return Ok(CallResult::Value(instance));
+            }
+            let instance_id = instance.into_ref_id().unwrap();
+            let actual_class = match this.heap.get(instance_id) {
+                HeapData::Instance(inst) => inst.class(),
+                _ => class_id,
+            };
+            let init = match this.heap.get(actual_class) {
+                HeapData::Class(class) => class.mro_getattr("__init__", this.heap, this.interns),
+                _ => None,
+            };
+            let actual_base_exc = match this.heap.get(actual_class) {
+                HeapData::Class(class) => class.base_exception(),
+                _ => None,
+            };
+            return match init {
+                None if actual_base_exc.is_some() => {
+                    let has_kwargs = match &args_for_init {
+                        ArgValues::Kwargs(k) => !k.is_empty(),
+                        ArgValues::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
+                        _ => false,
+                    };
+                    if has_kwargs {
+                        let name = class_name(actual_class, this.heap, this.interns);
+                        args_for_init.drop_with(this);
+                        Value::Ref(instance_id).drop_with(this);
+                        return Err(ExcType::type_error(format!("{name}() takes no keyword arguments")));
+                    }
+                    let pos_items: Vec<Value> = match &args_for_init {
+                        ArgValues::Empty => vec![],
+                        ArgValues::One(v) => vec![v.clone_with_heap(this.heap)],
+                        ArgValues::Two(a, b) => vec![a.clone_with_heap(this.heap), b.clone_with_heap(this.heap)],
+                        ArgValues::ArgsKargs { args, .. } => {
+                            args.iter().map(|v| v.clone_with_heap(this.heap)).collect()
+                        }
+                        ArgValues::Kwargs(_) => vec![],
+                    };
+                    args_for_init.drop_with(this);
+                    let args_tuple = allocate_tuple(pos_items.into(), this.heap);
+                    let key = Value::InternString(this.interns.intern_static(StaticStrings::Args));
+                    let HeapReadOutput::Instance(inst) = this.heap.read(instance_id) else {
+                        unreachable!("instance_id is an Instance");
+                    };
+                    let replaced = inst.set_attr_unchecked(key, args_tuple, this)?;
+                    replaced.drop_with(this);
+                    Ok(CallResult::Value(Value::Ref(instance_id)))
+                }
+                None => {
+                    args_for_init.drop_with(this);
+                    Ok(CallResult::Value(Value::Ref(instance_id)))
+                }
+                Some(init_func) if dataclasses::is_generated_init(&init_func, this) => {
+                    defer_drop!(init_func, this);
+                    dataclasses::run_init(this, init_func, Value::Ref(instance_id), args_for_init)
+                        .map(CallResult::Value)
+                }
+                Some(init_func) => this.dispatch_init(actual_class, instance_id, init_func, args_for_init),
+            };
+        }
 
-        // Look up `__init__` in the class namespace (cloned out to release the borrow).
-        let init = match self.heap.get(class_id) {
-            HeapData::Class(class) => class
-                .namespace()
-                .get_by_str("__init__", self.heap, self.interns)
-                .map(|v| v.clone_with_heap(self)),
+        let base_exc = match self.heap.get(class_id) {
+            HeapData::Class(class) => class.base_exception(),
+            _ => None,
+        };
+        let mut args_guard = DropGuard::new(args, self);
+        let attrs = if base_exc.is_some() {
+            let (args, this) = args_guard.as_parts();
+            let pos_items: Vec<Value> = match args {
+                ArgValues::Empty => vec![],
+                ArgValues::One(v) => vec![v.clone_with_heap(this.heap)],
+                ArgValues::Two(a, b) => vec![a.clone_with_heap(this.heap), b.clone_with_heap(this.heap)],
+                ArgValues::ArgsKargs { args, .. } => args.iter().map(|v| v.clone_with_heap(this.heap)).collect(),
+                ArgValues::Kwargs(_) => vec![],
+            };
+            let args_tuple = allocate_tuple(pos_items.into(), this.heap);
+            let key = Value::InternString(this.interns.intern_static(StaticStrings::Args));
+            Dict::from_pairs(vec![(key, args_tuple)], this)?
+        } else {
+            Dict::new()
+        };
+        let (args, this) = args_guard.into_parts();
+        let instance_id = this
+            .heap
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, attrs))));
+        // The instance now owns a reference to its class object.
+        this.heap.inc_ref(class_id);
+
+        // Look up `__init__` in the class namespace or base classes (MRO).
+        let init = match this.heap.get(class_id) {
+            HeapData::Class(class) => class.mro_getattr("__init__", this.heap, this.interns),
             _ => None,
         };
 
         match init {
+            None if base_exc.is_some() => {
+                let has_kwargs = match &args {
+                    ArgValues::Kwargs(k) => !k.is_empty(),
+                    ArgValues::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
+                    _ => false,
+                };
+                if has_kwargs {
+                    args.drop_with(this);
+                    Value::Ref(instance_id).drop_with(this);
+                    let name = class_name(class_id, this.heap, this.interns);
+                    return Err(ExcType::type_error(format!("{name}() takes no keyword arguments")));
+                }
+                args.drop_with(this);
+                Ok(CallResult::Value(Value::Ref(instance_id)))
+            }
             None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
-                args.drop_with(self);
-                let name = class_name(class_id, self.heap, self.interns);
-                Value::Ref(instance_id).drop_with(self);
+                args.drop_with(this);
+                let name = class_name(class_id, this.heap, this.interns);
+                Value::Ref(instance_id).drop_with(this);
                 Err(ExcType::type_error(format!("{name}() takes no arguments")))
             }
             // A `@dataclass`-generated `__init__` binds its fields natively,
             // with no generated bytecode; holding `init_func` keeps its plan
             // alive while factories run.
-            Some(init_func) if dataclasses::is_generated_init(&init_func, self) => {
-                let this = self;
+            Some(init_func) if dataclasses::is_generated_init(&init_func, this) => {
                 defer_drop!(init_func, this);
                 dataclasses::run_init(this, init_func, Value::Ref(instance_id), args).map(CallResult::Value)
             }
-            Some(init_func) => {
-                let this = self;
-                defer_drop!(init_func, this);
-                // CPython's `type.__call__` looks up `__init__` with descriptor
-                // binding: only plain functions bind the new instance as `self`.
-                // Bound methods already carry their own receiver, and builtins,
-                // classes and other values are called with the constructor
-                // arguments unchanged.
-                let init_args = if this.is_function_value(init_func) {
-                    this.heap.inc_ref(instance_id);
-                    args.prepend(Value::Ref(instance_id))
-                } else {
-                    args
-                };
-                if this.is_plain_sync_function(init_func) {
-                    // Push the instance as the pending result (transferring the
-                    // allocation's reference), then run __init__ as a real
-                    // (suspendable) frame.
-                    this.push(Value::Ref(instance_id));
-                    match this.call_function(init_func, init_args)? {
-                        CallResult::FramePushed => {
-                            // Mark the just-pushed frame so its return value is
-                            // discarded (after the `None` check in the ReturnValue
-                            // handler) and the pending instance becomes the result.
-                            this.current_frame_mut().is_initializer = true;
-                            Ok(CallResult::FramePushed)
-                        }
-                        other => {
-                            // Defensive: `is_plain_sync_function` guarantees a frame push.
-                            other.drop_with(this);
-                            this.pop().drop_with(this);
-                            Err(ExcType::type_error("__init__() must be a regular function"))
-                        }
-                    }
-                } else {
-                    // Exotic `__init__` (builtin, class, `async def`, non-callable,
-                    // ...): run to completion synchronously — no pending instance is
-                    // pushed — and enforce CPython's `None`-return contract.
-                    match this.evaluate_function(init_func, init_args) {
-                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
-                        Ok(result) => {
-                            let type_name = result.py_type_name(this);
-                            result.drop_with(this);
-                            Value::Ref(instance_id).drop_with(this);
-                            Err(ExcType::type_error_init_return(type_name))
-                        }
-                        Err(e) => {
-                            Value::Ref(instance_id).drop_with(this);
-                            Err(e)
-                        }
-                    }
+            Some(init_func) => this.dispatch_init(class_id, instance_id, init_func, args),
+        }
+    }
+
+    fn dispatch_init(
+        &mut self,
+        _class_id: HeapId,
+        instance_id: HeapId,
+        init_func: Value,
+        args: ArgValues,
+    ) -> Result<CallResult, RunError> {
+        let this = self;
+        defer_drop!(init_func, this);
+        // CPython's `type.__call__` looks up `__init__` with descriptor
+        // binding: only plain functions bind the new instance as `self`.
+        // Bound methods already carry their own receiver, and builtins,
+        // classes and other values are called with the constructor
+        // arguments unchanged.
+        let init_args = if this.is_function_value(init_func) {
+            this.heap.inc_ref(instance_id);
+            args.prepend(Value::Ref(instance_id))
+        } else {
+            args
+        };
+        if this.is_plain_sync_function(init_func) {
+            // Push the instance as the pending result (transferring the
+            // allocation's reference), then run __init__ as a real
+            // (suspendable) frame.
+            this.push(Value::Ref(instance_id));
+            match this.call_function(init_func, init_args)? {
+                CallResult::FramePushed => {
+                    // Mark the just-pushed frame so its return value is
+                    // discarded (after the `None` check in the ReturnValue
+                    // handler) and the pending instance becomes the result.
+                    this.current_frame_mut().is_initializer = true;
+                    Ok(CallResult::FramePushed)
+                }
+                other => {
+                    // Defensive: `is_plain_sync_function` guarantees a frame push.
+                    other.drop_with(this);
+                    this.pop().drop_with(this);
+                    Err(ExcType::type_error("__init__() must be a regular function"))
+                }
+            }
+        } else {
+            // Exotic `__init__` (builtin, class, `async def`, non-callable,
+            // ...): run to completion synchronously — no pending instance is
+            // pushed — and enforce CPython's `None`-return contract.
+            match this.evaluate_function(init_func, init_args) {
+                Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
+                Ok(result) => {
+                    let type_name = result.py_type_name(this);
+                    result.drop_with(this);
+                    Value::Ref(instance_id).drop_with(this);
+                    Err(ExcType::type_error_init_return(type_name))
+                }
+                Err(e) => {
+                    Value::Ref(instance_id).drop_with(this);
+                    Err(e)
                 }
             }
         }

@@ -12,7 +12,7 @@ use num_bigint::BigInt;
 
 use crate::{
     args::ArgValues,
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::{Builtins, BuiltinsFunctions, object_new::builtin_object_new},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -23,7 +23,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
+        BuiltinType, GenericAlias, LazyHeapSet, List, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
@@ -532,6 +532,88 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let method = attr.as_str(vm.interns);
+                if method == "mro" {
+                    let type_name: &'static str = (*exc_type).into();
+                    let pos = args.into_pos_only(&format!("{type_name}.mro"), vm.heap)?;
+                    if !pos.as_slice().is_empty() {
+                        let count = pos.as_slice().len();
+                        pos.drop_with(vm.heap);
+                        return Err(ExcType::type_error(format!(
+                            "{type_name}.mro() takes no arguments ({count} given)"
+                        )));
+                    }
+                    let mut items: Vec<Value> = exc_type
+                        .mro()
+                        .into_iter()
+                        .map(|b| Value::Builtin(Builtins::ExcType(b)))
+                        .collect();
+                    items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
+                    let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+                    Ok(CallResult::Value(Value::Ref(list_id)))
+                } else if method == "__new__" {
+                    let exc_str: &'static str = (*exc_type).into();
+                    let exc_name = exc_str.rsplit_once('.').map_or(exc_str, |(_, b)| b);
+                    if let Some(target_val) = args.first_positional() {
+                        let (is_subtype, target_name) = match target_val {
+                            Value::Builtin(Builtins::ExcType(t)) => {
+                                let name: &'static str = (*t).into();
+                                let bare = name.rsplit_once('.').map_or(name, |(_, b)| b);
+                                (t.is_subclass_of(*exc_type), bare.to_owned())
+                            }
+                            Value::Ref(id) => {
+                                if let HeapData::Class(cls) = vm.heap.get(*id) {
+                                    let name = cls.name().as_str(vm.interns).to_owned();
+                                    let ok = cls.base_exception().is_some_and(|b| b.is_subclass_of(*exc_type));
+                                    (ok, name)
+                                } else {
+                                    (false, target_val.py_type_name(vm).into_owned())
+                                }
+                            }
+                            other => (false, other.py_type_name(vm).into_owned()),
+                        };
+                        if !is_subtype {
+                            args.drop_with(vm);
+                            return Err(ExcType::type_error(format!(
+                                "{exc_name}.__new__({target_name}): {target_name} is not a subtype of {exc_name}"
+                            )));
+                        }
+                    } else {
+                        args.drop_with(vm);
+                        return Err(ExcType::type_error(format!(
+                            "{exc_name}.__new__(): not enough arguments"
+                        )));
+                    }
+                    builtin_object_new(vm, args).map(CallResult::Value)
+                } else {
+                    let type_name: &'static str = (*exc_type).into();
+                    args.drop_with(vm);
+                    Err(ExcType::attribute_error_type(type_name, method))
+                }
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let method = attr.as_str(vm.interns);
+                if method == "mro" {
+                    let pos = args.into_pos_only("type.mro", vm.heap)?;
+                    if !pos.as_slice().is_empty() {
+                        let count = pos.as_slice().len();
+                        pos.drop_with(vm.heap);
+                        return Err(ExcType::type_error(format!(
+                            "type.mro() takes no arguments ({count} given)"
+                        )));
+                    }
+                    let items = vec![
+                        Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                    ];
+                    let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+                    Ok(CallResult::Value(Value::Ref(list_id)))
+                } else {
+                    args.drop_with(vm);
+                    Err(ExcType::attribute_error_type("type", method))
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))

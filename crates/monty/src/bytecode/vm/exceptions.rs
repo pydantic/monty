@@ -10,7 +10,7 @@ use crate::{
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, class::ClassBase},
     value::Value,
 };
 
@@ -117,6 +117,12 @@ impl VM<'_> {
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
                     exc.clone()
+                } else if let HeapData::Instance(inst) = self.heap.get(*heap_id)
+                    && let HeapData::Class(cls) = self.heap.get(inst.class())
+                    && let Some(base_exc) = cls.base_exception()
+                {
+                    let custom_name = cls.name().as_str(self.interns).to_owned();
+                    SimpleException::new_none(base_exc).with_custom_type_name(Some(custom_name))
                 } else {
                     // Not an exception type
                     SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
@@ -328,11 +334,27 @@ impl VM<'_> {
             if let Some(raised) = raised {
                 raised.drop_with(self);
             }
+            if let Some(exc) = self.unwinding_exception.take() {
+                exc.drop_with(self);
+            }
             return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error));
         }
 
         let exc_value = if let Some(raised) = raised {
+            if let Some(old) = self.unwinding_exception.take() {
+                old.drop_with(self);
+            }
             raised
+        } else if let Some(unwinding) = self.unwinding_exception.take() {
+            if exception_value_matches_error(&unwinding, &error, self) {
+                unwinding
+            } else {
+                unwinding.drop_with(self);
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("terminal errors returned above")
+                };
+                self.create_exception_value(exc)
+            }
         } else {
             // Nothing to reuse: build it from `error`, borrowed rather than
             // cloned since it is a local and so cannot alias `self`.
@@ -412,6 +434,8 @@ impl VM<'_> {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
+                format_unhandled_custom_exception(&mut error, &mut exc_guard);
+
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
 
@@ -456,6 +480,11 @@ impl VM<'_> {
                 }
             }
             if should_return {
+                format_unhandled_custom_exception(&mut error, &mut exc_guard);
+                let (exc_value, this) = exc_guard.into_parts();
+                if let Some(old) = this.unwinding_exception.replace(exc_value) {
+                    old.drop_with(this);
+                }
                 return ExceptionHandlingResult::Unhandled(error);
             }
         }
@@ -526,49 +555,69 @@ impl VM<'_> {
     /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
     /// raising `TypeError` still raises the `TypeError` about catching classes).
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self);
-        match exc_type {
-            // Single exception class.
-            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                Ok(Self::exc_matches_handler(exc_type_enum, *handler_type))
+        if let Value::Ref(id) = exc_type
+            && let HeapData::Tuple(tuple) = self.heap.get(*id)
+        {
+            let mut matched = false;
+            for v in tuple.as_slice() {
+                let this_match = self.check_single_handler(exception, v)?;
+                if !matched && this_match {
+                    matched = true;
+                }
             }
-            // Flat tuple of exception classes. CPython does not descend into
-            // nested tuples in this position, so neither do we.
-            Value::Ref(id) => {
-                if let HeapData::Tuple(tuple) = self.heap.get(*id) {
-                    let mut matched = false;
-                    for v in tuple.as_slice() {
-                        match v {
-                            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                                if !matched && Self::exc_matches_handler(exc_type_enum, *handler_type) {
-                                    matched = true;
+            return Ok(matched);
+        }
+        self.check_single_handler(exception, exc_type)
+    }
+
+    fn check_single_handler(&self, exception: &Value, handler: &Value) -> Result<bool, RunError> {
+        match handler {
+            Value::Builtin(Builtins::ExcType(handler_type)) => {
+                let matched = match exception {
+                    Value::Ref(id) => match self.heap.get(*id) {
+                        HeapData::Exception(e) => e.exc_type().is_subclass_of(*handler_type),
+                        HeapData::Instance(inst) => {
+                            if let HeapData::Class(cls) = self.heap.get(inst.class()) {
+                                cls.mro().iter().any(
+                                    |b| matches!(b, ClassBase::BuiltinExc(exc) if exc.is_subclass_of(*handler_type)),
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                Ok(matched)
+            }
+            Value::Ref(class_id) => {
+                if let HeapData::Class(handler_cls) = self.heap.get(*class_id)
+                    && handler_cls.base_exception().is_some()
+                {
+                    let matched = match exception {
+                        Value::Ref(id) => match self.heap.get(*id) {
+                            HeapData::Instance(inst) => {
+                                let inst_cls_id = inst.class();
+                                if inst_cls_id == *class_id {
+                                    true
+                                } else if let HeapData::Class(inst_cls) = self.heap.get(inst_cls_id) {
+                                    inst_cls.is_subclass_of(*class_id)
+                                } else {
+                                    false
                                 }
                             }
-                            // A nested tuple or any non-exception value is
-                            // rejected exactly as CPython rejects it, even if a
-                            // previous element already matched.
-                            _ => return Err(ExcType::except_invalid_type_error()),
-                        }
-                    }
+                            _ => false,
+                        },
+                        _ => false,
+                    };
                     Ok(matched)
                 } else {
-                    // A non-tuple heap value (e.g. an exception instance) is not
-                    // a valid exception type for an `except` clause.
                     Err(ExcType::except_invalid_type_error())
                 }
             }
-            // Any other value is invalid for an `except` clause.
             _ => Err(ExcType::except_invalid_type_error()),
         }
-    }
-
-    /// Returns whether a raised exception's type is caught by `handler_type`.
-    ///
-    /// Helper shared by the single-class and flat-tuple arms of
-    /// [`check_exc_match`]; the raised value only matches when its type is an
-    /// exception that is a subclass of the handler's class.
-    fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
-        matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
     }
 }
 
@@ -641,5 +690,51 @@ impl Write for TruncatingWriter {
             self.truncated = true;
             Err(fmt::Error)
         }
+    }
+}
+
+fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropGuard<'_, VM<'_>, Value>) {
+    if let RunError::Exc(raise) = error
+        && raise.exc.arg().is_none()
+        && raise.exc.custom_type_name().is_some()
+    {
+        let (exc_val, this) = exc_guard.as_parts();
+        if let Ok(text) = exc_val.py_str(this) {
+            defer_drop!(text, this);
+            if let Some(s) = text.as_str(this)
+                && !s.is_empty()
+            {
+                raise.exc.set_arg(Some(s.to_owned()));
+            }
+        } else {
+            this.clear_unwinding_exception();
+        }
+    }
+}
+
+fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>) -> bool {
+    let RunError::Exc(raise) = error else {
+        return false;
+    };
+    match exc_val {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Exception(e) => {
+                e.exc_type() == raise.exc.exc_type()
+                    && e.custom_type_name() == raise.exc.custom_type_name()
+                    && e.arg() == raise.exc.arg()
+            }
+            HeapData::Instance(inst) => {
+                if let HeapData::Class(cls) = vm.heap.get(inst.class()) {
+                    cls.mro()
+                        .iter()
+                        .any(|b| matches!(b, ClassBase::BuiltinExc(exc) if *exc == raise.exc.exc_type()))
+                        && raise.exc.custom_type_name() == Some(cls.name().as_str(vm.interns))
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }

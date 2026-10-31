@@ -52,9 +52,8 @@ around a decoration will not catch these.
     `dataclasses._FIELD`), the objects behind them being unimplemented.
 - **Module helpers** — `fields`, `asdict`, `astuple` and `replace` do not exist: accessing them raises
     `AttributeError`, not `NotImplementedError`, since the module has no such attribute.
-- **`__match_args__` and `__replace__`** are never generated, so `C.__match_args__` and `C.__replace__` raise
-    `AttributeError` where CPython gives `('x', 'y')` and a method. Monty has no `match` statement to use the
-    first (see [language.md](language.md)), and `copy.replace` is covered in [copy.md](copy.md).
+- **`__replace__`** is never generated, so `C.__replace__` raises
+    `AttributeError` where CPython gives a method. `copy.replace` is covered in [copy.md](copy.md).
 
 Mutable defaults are rejected as CPython rejects them
 (`ValueError: mutable default <class 'list'> for field xs is not allowed: use default_factory`), and so is a non-default
@@ -148,8 +147,19 @@ field after a defaulted one
     or `Q.__setattr__ = F.__setattr__` followed by `Q().w = 1`, raises
     `FrozenInstanceError` where CPython raises a `TypeError` from `super()`.
 
+## Inheritance
+
+- **Field inheritance across dataclasses is not supported.** Monty constructs dataclass
+    instances by binding fields directly off `__dataclass_fields__` without synthesizing
+    bytecode `__init__` methods:
+    - Subclassing with `@dataclass` (e.g. `@dataclass class Child(Parent): y: int`) only
+        includes fields declared directly on the child class; parent fields are omitted from
+        the synthesized constructor and `__dataclass_fields__`. Decorating a subclass with `@dataclass`
+        does not yet merge parent dataclass fields or validate frozen/non-frozen inheritance mismatch at decoration time.
+    - Plain subclasses without `@dataclass` (e.g. `class Sub(Parent): pass`) inherit the parent dataclass's
+        synthesized methods (`__init__`, `__repr__`, `__eq__`) via standard MRO lookup.
+
 ## Architectural gaps (cannot match)
 
-- **No inheritance**, so field inheritance across base dataclasses is
-    unsupported (Monty has no class inheritance at all).
+- **Dataclass inheritance** — see [above](#inheritance).
 - **`slots=True` / `weakref_slot=True`** — no `__slots__`, no weakrefs.

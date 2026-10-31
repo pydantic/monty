@@ -2022,6 +2022,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Class(class) => {
+            // Base classes kept alive by this class's bases tuple.
+            // MUST stay in sync with Class::py_dec_ref_ids.
+            for &base_id in class.bases() {
+                on_child(base_id);
+            }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {
@@ -2049,6 +2054,14 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
             if let Value::Ref(id) = &bm.func {
+                on_child(*id);
+            }
+        }
+        HeapData::Super(s) => {
+            if let Value::Ref(id) = &s.type_arg {
+                on_child(*id);
+            }
+            if let Some(Value::Ref(id)) = &s.obj_arg {
                 on_child(*id);
             }
         }
@@ -2224,6 +2237,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
+        HeapData::Super(s) => s.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
         HeapData::DataclassMethod(method) => method.py_dec_ref_ids(stack),
         HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),

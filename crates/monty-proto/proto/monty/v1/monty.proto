@@ -311,6 +311,8 @@ message RaisedException {
   // Structured payload for exception types that carry more than a message;
   // absent for most exceptions. Mirrors monty's `ExcData`.
   ExcData data = 4;
+  // Custom type name for user-defined exception subclasses.
+  optional string custom_type_name = 5;
 }
 
 // Structured exception payload, mirroring monty's `ExcData` enum. Future

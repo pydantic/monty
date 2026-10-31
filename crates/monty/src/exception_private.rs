@@ -175,6 +175,25 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates a TypeError for issubclass() arg 1.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates a TypeError for issubclass() arg 2.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
+    }
+
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
     /// is neither annotated nor callable: `5 does not have annotations`.
     fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
@@ -1389,6 +1408,11 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn value_error_precision_too_big() -> RunError {
         SimpleException::new_msg(ExcType::ValueError, "precision too big").into()
+    }
+
+    #[must_use]
+    fn runtime_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, msg).into()
     }
 
     /// Creates a TypeError for isinstance() arg 2.
@@ -2638,6 +2662,8 @@ impl ExcTypeExt for ExcType {
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
+    #[serde(default)]
+    custom_type_name: Option<Box<str>>,
     /// Structured payload (e.g. unicode-error constructor fields), carried
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
@@ -2654,6 +2680,7 @@ impl From<MontyException> for SimpleException {
         Self {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
+            custom_type_name: exc.custom_type_name().map(Into::into),
             arg: exc.into_message(),
         }
     }
@@ -2666,6 +2693,7 @@ impl SimpleException {
         Self {
             exc_type,
             arg,
+            custom_type_name: None,
             data: ExcData::None,
         }
     }
@@ -2676,6 +2704,7 @@ impl SimpleException {
         Self {
             exc_type,
             arg: Some(arg.to_string()),
+            custom_type_name: None,
             data: ExcData::None,
         }
     }
@@ -2686,8 +2715,25 @@ impl SimpleException {
         Self {
             exc_type,
             arg: None,
+            custom_type_name: None,
             data: ExcData::None,
         }
+    }
+
+    /// Attaches a custom type name for user-defined exception subclasses.
+    #[must_use]
+    pub fn with_custom_type_name(mut self, name: Option<String>) -> Self {
+        self.custom_type_name = name.map(String::into_boxed_str);
+        self
+    }
+
+    #[must_use]
+    pub fn custom_type_name(&self) -> Option<&str> {
+        self.custom_type_name.as_deref()
+    }
+
+    pub fn set_arg(&mut self, arg: Option<String>) {
+        self.arg = arg;
     }
 
     /// Attaches a structured payload — see [`ExcData`].
@@ -2728,7 +2774,7 @@ impl<'h> HeapRead<'h, SimpleException> {
 impl SimpleException {
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
-        let type_str: &'static str = self.exc_type.into();
+        let type_str: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         write!(f, "{type_str}(")?;
 
         if let Some(arg) = &self.arg {
@@ -2926,7 +2972,9 @@ impl ExceptionRaise {
             traceback.push(*frame);
         }
 
-        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
+        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback)
+            .with_data(self.exc.data)
+            .with_custom_type_name(self.exc.custom_type_name.map(Into::into))
     }
 }
 

@@ -142,9 +142,9 @@ impl Pool {
     /// up to `checkout_timeout` (forever when `None`) before failing with
     /// [`PoolError::Exhausted`].
     pub async fn checkout_with(&self, repl: &ReplConfig, options: CheckoutOptions) -> Result<Checkout, PoolError> {
+        // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
         let mut options = options;
-        // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &options.telemetry {
             options.connect_headers.splice(0..0, telemetry.propagation_headers());

@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapId},
+    heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     modules::{
         ModuleFunctions, collections, csv,
@@ -18,18 +18,20 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
+        Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
+        class::validate_init_subclass_args,
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
         path,
         str::{StringRepr, allocate_string},
-        time,
+        super_, time,
         timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
         timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
+        tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
@@ -342,6 +344,8 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `super`, the proxy type created by `super(...)`.
+    Super,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -435,6 +439,7 @@ impl Type {
             Self::Iterator => Some("iter"),
             Self::Type => Some("type"),
             Self::Property => Some("property"),
+            Self::Super => Some("super"),
             _ => None,
         }
     }
@@ -467,6 +472,7 @@ impl Type {
             "type" => Some(Self::Type),
             "property" => Some(Self::Property),
             "object" => Some(Self::Object),
+            "super" => Some(Self::Super),
             _ => None,
         }
     }
@@ -701,6 +707,51 @@ impl Type {
                     vm,
                 )))
             }
+            _ if attr.as_str(vm.interns) == "mro" => {
+                let type_name = self.name(vm.heap, vm.interns);
+                let pos = args.into_pos_only(&format!("{type_name}.mro"), vm.heap)?;
+                if !pos.as_slice().is_empty() {
+                    let count = pos.as_slice().len();
+                    pos.drop_with(vm.heap);
+                    return Err(ExcType::type_error(format!(
+                        "{type_name}.mro() takes no arguments ({count} given)"
+                    )));
+                }
+                let self_builtin: BuiltinType = self.try_into().expect("builtin type");
+                let items = if self == Self::Object {
+                    vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
+                } else if self == Self::Bool {
+                    vec![
+                        Value::Builtin(Builtins::Type(BuiltinType::Bool)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Int)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                    ]
+                } else if self == Self::DateTime {
+                    vec![
+                        Value::Builtin(Builtins::Type(BuiltinType::DateTime)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Date)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                    ]
+                } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                    vec![
+                        Value::Builtin(Builtins::Type(self_builtin)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                    ]
+                } else {
+                    vec![
+                        Value::Builtin(Builtins::Type(self_builtin)),
+                        Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                    ]
+                };
+                let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+                Ok(CallResult::Value(Value::Ref(list_id)))
+            }
+            _ if attr.as_str(vm.interns) == "__init_subclass__" => {
+                let type_name = self.name(vm.heap, vm.interns);
+                validate_init_subclass_args(&type_name, args, vm.heap)?;
+                Ok(CallResult::Value(Value::None))
+            }
             // The type's plain attributes (`list.__name__`); a missing name
             // raises the lookup's `type object 'list' has no attribute` error.
             _ => {
@@ -725,6 +776,50 @@ impl Type {
         );
         if is_dunder_name {
             Some(allocate_string(self.dunder_name(vm.heap, vm.interns), vm.heap))
+        } else if attr.as_str(vm.interns) == "__class__" {
+            Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)))
+        } else if attr.as_str(vm.interns) == "__bases__" {
+            let items = if self == Self::Object {
+                vec![]
+            } else if self == Self::Bool {
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Int))]
+            } else if self == Self::DateTime {
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Date))]
+            } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Dict))]
+            } else {
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
+            };
+            Some(allocate_tuple(items.into(), vm.heap))
+        } else if attr.as_str(vm.interns) == "__mro__" {
+            let self_builtin: BuiltinType = self.try_into().expect("builtin type");
+            let items = if self == Self::Object {
+                vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
+            } else if self == Self::Bool {
+                vec![
+                    Value::Builtin(Builtins::Type(BuiltinType::Bool)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Int)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                ]
+            } else if self == Self::DateTime {
+                vec![
+                    Value::Builtin(Builtins::Type(BuiltinType::DateTime)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Date)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                ]
+            } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                vec![
+                    Value::Builtin(Builtins::Type(self_builtin)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                ]
+            } else {
+                vec![
+                    Value::Builtin(Builtins::Type(self_builtin)),
+                    Value::Builtin(Builtins::Type(BuiltinType::Object)),
+                ]
+            };
+            Some(allocate_tuple(items.into(), vm.heap))
         } else if let Some(constant) = self.class_constant(attr, vm) {
             Some(constant)
         } else if self == Self::ItertoolsChain && attr.static_string(vm.interns) == Some(StaticStrings::FromIterable) {
@@ -739,6 +834,8 @@ impl Type {
             // exists so a class that hooks attribute writes has a way to
             // perform one (see `limitations/classes.md`).
             Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectSetattr)))
+        } else if self == Self::Object && attr.as_str(vm.interns) == "__new__" {
+            Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew)))
         } else {
             None
         }
@@ -860,6 +957,7 @@ impl Type {
             Self::CsvDictReader => csv::dict_reader_init(vm, args),
             Self::CsvDictWriter => csv::dict_writer_init(vm, args),
             Self::CsvDialect => csv::dialect_init(vm, args),
+            Self::Super => super_::builtin_super(vm, args),
             Self::Decimal => decimal::py::init(vm, args),
             Self::DecimalContext => decimal::py_context::init(vm, args),
 

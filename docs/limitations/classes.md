@@ -41,7 +41,9 @@ and function-attributes-become-methods), bound methods, class variables
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional, see
-[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+[typing.md](typing.md)), `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`,
+`super()`, `issubclass(cls, classinfo)`, `__init_subclass__`,
+`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
 
@@ -50,13 +52,17 @@ and function-attributes-become-methods), bound methods, class variables
 The 3-arg `type()` form creates classes at runtime with CPython's validation
 order and error wording, but with these divergences:
 
-- **`bases` must be the empty tuple `()`.** Any non-empty bases tuple, even
-    `(object,)`, raises `TypeError: type() bases are not supported`, the
-    runtime counterpart of the parse-time `class Foo(Bar)` rejection.
-- **Keywords are always rejected.** CPython forwards extra keywords to
-    `__init_subclass__`; Monty has no `__init_subclass__`, but the error
-    message matches what `object.__init_subclass__` produces
-    (`A.__init_subclass__() takes no keyword arguments`).
+- **`bases` must be user-defined classes, built-in exception types, or `object`.** Other built-in types
+    like `int` or `list` cannot be subclassed and raise
+    `TypeError: type '<name>' is not an acceptable base type`. Non-types raise
+    `TypeError: type.__new__(X): <type> is not a type object`. Non-conflicting built-in exception
+    types (such as `KeyError` and `AttributeError`) may be combined in multiple inheritance, while
+    conflicting built-in layouts (such as `OSError` with `SyntaxError` or `SystemExit`) raise
+    `TypeError: multiple bases have instance lay-out conflict`.
+- Extra keywords (such as `type("Sub", (Base,), {}, extra="foo")`) are forwarded
+    to the base classes' `__init_subclass__`. If no base defines
+    `__init_subclass__`, passing keywords raises
+    `TypeError: <name>.__init_subclass__() takes no keyword arguments`.
 - Only `__doc__` is synthesized into the namespace when absent (as `None`,
     matching CPython). CPython also sets `__module__`, `__qualname__`,
     `__dict__`, `__weakref__`, etc.; those attributes raise `AttributeError`
@@ -76,11 +82,9 @@ order and error wording, but with these divergences:
     `Foo.__init__() missing ...`.
 - **`type(obj)`** returns the class object (so identity works), but its own
     `repr` is `<class 'Foo'>` with the bare name; CPython qualifies it.
-- **The class object is not itself a `type` instance.** The bare name `type`
-    resolves to the builtin `type` *function*, not a type object, so
-    `type(Foo) is type` is `False` (CPython: `True`) and `isinstance(Foo, type)`
-    raises `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union` (CPython: `True`). There is no
-    metaclass.
+- **Metaclasses are not supported.** `type(Foo) is type` and `isinstance(Foo, type)`
+    return `True`, matching CPython, but custom metaclasses (`class Foo(metaclass=Meta):`)
+    are not supported.
 - **Bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
@@ -110,6 +114,28 @@ order and error wording, but with these divergences:
     `__trunc__`, binary numeric dunders (including reflected forms), `__getitem__` and `__setitem__` run synchronously.
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
+- **`__new__` and `__init_subclass__` cannot suspend**: like `__repr__`/`__str__`,
+    they run to completion synchronously via `evaluate_function`, so calling an
+    external function or OS call from inside `__new__` or `__init_subclass__` raises
+    `NotImplementedError` rather than suspending to the host (inherited synchronous
+    `__init__` does support suspension and snapshotting).
+- **Subclass reflected operator precedence**: In `Base() + Sub()` and `Base() == Sub()`, Monty currently tries `Base.__add__` / `Base.__eq__` before `Sub.__radd__` / `Sub.__eq__`.
+- **Zero-argument `super()` in nested closures & lexical `__class__`**: Zero-arg `super()` works directly inside methods and comprehensions in methods, not yet inside nested `def` / `lambda` closures within methods, and reading `__class__` as a free variable is not yet synthesized by the compiler.
+- **Attribute reads vs direct calls on built-in descriptors**: `super().__init__()`, `Cls.__init_subclass__()`, and `Cls.mro()` work as direct calls, whereas reading `super().__init__`, `Cls.__new__` (when not overridden), or `Cls.mro` via `getattr` raises `AttributeError`.
+- **Protocol dunders on `super()` do not fall back to `object`.** When attribute
+    lookup on a `super()` object misses in all user-defined base classes, only
+    `__init__`, `__new__`, and `__init_subclass__` dispatch to `object`. Built-in
+    protocol methods (`__repr__`, `__str__`, `__eq__`, `__hash__`) raise
+    `AttributeError` rather than falling back to `object`'s implementations.
+- **Zero-argument `super()` in dynamic class factories skips re-applied mixin levels.**
+    Monty identifies the defining class of a zero-argument `super()` call by inspecting
+    the `__class__` cell closure or falling back to matching `FunctionId` against class
+    namespaces. When a class factory dynamically generates multiple classes sharing the same
+    function body without an implicit `__class__` cell (e.g. `add_one(add_one(A))`), the
+    method resolves to the earlier class, bypassing the intermediate subclass.
+- **Dataclass inheritance does not inherit fields**: subclassing a `@dataclass`
+    only discovers fields declared directly on the subclass body; ancestor fields
+    are not included in the synthesized `__init__` or `__dataclass_fields__`.
 - **Ordering dunders are still not dispatched**; see the entry above.
     Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access
@@ -122,11 +148,8 @@ order and error wording, but with these divergences:
     where `type.__name__` is a metaclass descriptor whose setter renames the
     class, it does not rename the class, so `Foo.__name__` reads and `repr(Foo)`
     keep the original name while instances see the member.
-- **Assigning `obj.__class__`** stores an ordinary instance attribute rather
-    than reassigning the object's class. `obj.__class__ = X` then reads back `X`,
-    but `type(obj)` and `isinstance` still report the original class, leaving an
-    internally inconsistent object. CPython either reassigns the class (for a
-    compatible class) or raises `TypeError: __class__ must be set to a class, not '...' object`.
+- **Assigning `obj.__class__` raises `TypeError`** (`TypeError: __class__ assignment not supported`).
+    Monty instances have a fixed class identity and do not support dynamic class reassignment.
 - **Recursive/deep `__repr__`/`__str__` raises `RecursionError` earlier than
     CPython.** A `__repr__` (or `__str__`) that reprs `self`, or a deep chain of
     instances whose reprs nest (e.g. a long linked list), re-enters the
@@ -227,7 +250,7 @@ value). Divergences from real CPython objects:
     when the class is registered in the session.
 - **`isinstance(x, Point)` matches by exact class id only**: the host never
     sends bases, so an instance of a subclass is not an instance of `Point` in
-    the sandbox, and `issubclass` does not exist.
+    the sandbox.
 - **`repr()` shows all eager attrs in order** (`Point(x=1, y=2)`). After
     sandbox code sets a new attribute, that attribute appears in the repr too —
     CPython's dataclass repr shows declared fields only.
@@ -362,26 +385,22 @@ every construction request. Divergences:
 
 ## What does NOT exist for user code
 
-- `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
-    parse time: "class inheritance and metaclasses"; the runtime equivalent
-    `type('Foo', (Bar,), {})` raises `TypeError`, see above).
-- Metaclasses, `__init_subclass__`, `__set_name__`, and any other
-    metaclass-driven namespace customization.
+- Metaclasses (and metaclass keyword arguments in class definitions) are
+    rejected at parse time as not-implemented.
+- Metaclasses, `__set_name__`, and other metaclass-driven namespace customization.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
 - Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
-- **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
-    are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
-    latter with stringized values, see [typing.md](typing.md)). A class decorator
-    can therefore discover fields and nothing else.
+- `__dict__` and `dir()` are unavailable on classes (`cls.__name__`,
+    `cls.__bases__`, `cls.__mro__`, `cls.mro()`, and `cls.__annotations__` work).
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
-- Dunder protocols not dispatched for user-defined instances include `__new__`, `__ne__`, ordering comparisons,
+- Dunder protocols not dispatched for user-defined instances include `__ne__`, ordering comparisons,
     `__bool__`, `__len__`, `__complex__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
     except `@=`, which is rejected at compile time.
@@ -441,9 +460,9 @@ every construction request. Divergences:
     `@dataclass(frozen=True)` instance, which it writes to and `obj.x = v`
     refuses — the same escape hatch CPython's generated `__init__` uses. On a
     class object it does not write at all, where `Foo.x = v` sets a class member.
-- Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
-    and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
-    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
+- Introspection attributes other than `__name__`, `__doc__`, `__annotations__`,
+    `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`, and `obj.__class__`: `Foo.__dict__`,
+    `obj.__dict__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
@@ -463,19 +482,15 @@ every construction request. Divergences:
 
 ## `object`
 
-The name resolves, but it is a carrier for `object.__setattr__` rather than a
-type: Monty has no inheritance, so there is no base class for it to be.
 `isinstance(x, object)` is `True` for every value, as in CPython.
 
 - **`object()` cannot be constructed** — raises `TypeError: cannot create 'object' instances`, where CPython returns a
     featureless instance.
-- **`class Foo(object):` is still rejected**, like any base list (see above),
-    so the idiom carries no more weight than `class Foo:`.
-- **Only `__setattr__` and `__name__` resolve.** Every other member CPython's
-    `object` carries — `__doc__`, `__init__`, `__eq__`, `__getattribute__`,
-    `__class__`, `__mro__`, `__bases__`, `__qualname__`, `__module__`,
-    `__dict__` — raises `AttributeError`, with Monty's generic `'type' object has no attribute 'x'` where CPython says
-    `type object 'object' has no attribute 'x'`.
+- **`class Foo(object):` is accepted**, equivalent to `class Foo:`.
+- **Members on `object`**: `__name__`, `__class__`, `__bases__`, `__mro__`, `mro()`,
+    `__new__`, `__init_subclass__`, and `__setattr__` resolve. Other members CPython's
+    `object` carries (`__doc__`, `__init__`, `__eq__`, `__getattribute__`,
+    `__qualname__`, `__module__`, `__dict__`) raise `AttributeError`.
 - **`object.__setattr__` accepts only instances of sandbox-defined classes.**
     Anything else raises CPython's
     `AttributeError: '<type>' object has no attribute '<name>' and no __dict__ for setting new attributes` — including

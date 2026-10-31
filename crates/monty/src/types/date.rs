@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     string_builder::StringBuilder,
     types::{
@@ -276,6 +276,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                 )))
             }
             Some(StaticStrings::Strftime) => {
+                if let ArgValues::One(Value::InternString(id)) = &args {
+                    let format_str = vm.interns.get_str(*id);
+                    let formatted = format_date_strftime(date, format_str, &vm.heap.tracker)?;
+                    args.drop_with(vm);
+                    return Ok(CallResult::Value(allocate_string(formatted, vm.heap)));
+                }
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
                 defer_drop!(format, vm);
                 let formatted = format_date_strftime(date, format.as_str(vm), &vm.heap.tracker)?;
@@ -360,6 +366,14 @@ fn offset_days(date: Date, days: i32) -> RunResult<Date> {
 /// `ValueError` path remains for the rare directive that parses but can't be
 /// rendered (so [`render_strftime`] never has to panic).
 pub(crate) fn format_date_strftime(date: Date, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
+    let y = date.0.year();
+    if (1..=9999).contains(&y) {
+        match format {
+            "%Y-%m" => return Ok(format!("{y:04}-{:02}", date.0.month())),
+            "%Y-%m-%d" => return Ok(format!("{y:04}-{:02}-{:02}", date.0.month(), date.0.day())),
+            _ => {}
+        }
+    }
     // Anchored at midnight so time directives render CPython's zeros
     // (`date(2024, 6, 15).strftime('%H:%M')` is `'00:00'` on both) rather than
     // failing for want of a time component.
@@ -474,7 +488,7 @@ pub(crate) fn rewrite_microsecond_directive(format: &str) -> Cow<'_, str> {
 /// panic — unacceptable for untrusted sandbox input. Writing into our own
 /// buffer surfaces the failure as `None` so the caller can raise instead.
 pub(crate) fn render_strftime(formatted: impl fmt::Display) -> Option<String> {
-    let mut out = String::new();
+    let mut out = String::with_capacity(32);
     write!(out, "{formatted}").ok().map(|()| out)
 }
 

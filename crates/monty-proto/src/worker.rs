@@ -1173,6 +1173,7 @@ pub fn protocol_violation(message: &str) -> pb::ChildEvent {
             message: Some(format!("protocol violation: {message}")),
             traceback: BudgetVec::new(),
             data: None,
+            custom_type_name: None,
         }),
     }))
 }
@@ -1201,6 +1202,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
             message: Some(message.to_owned()),
             traceback: BudgetVec::new(),
             data: None,
+            custom_type_name: None,
         }),
     }))
 }

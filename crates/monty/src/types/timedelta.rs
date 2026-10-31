@@ -547,11 +547,21 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let (days, seconds, microseconds) = components(self.get(vm.heap));
         match attr.static_string(vm.interns) {
-            Some(StaticStrings::Days) => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
-            Some(StaticStrings::Seconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),
-            Some(StaticStrings::Microseconds) => Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds))))),
+            Some(StaticStrings::Days) => {
+                let total = total_microseconds(self.get(vm.heap));
+                let days = total.div_euclid(DAY_MICROSECONDS);
+                let days = i32::try_from(days).expect("chrono day range fits CPython i32 day bounds");
+                Ok(Some(CallResult::Value(Value::Int(i64::from(days)))))
+            }
+            Some(StaticStrings::Seconds) => {
+                let (_, seconds, _) = components(self.get(vm.heap));
+                Ok(Some(CallResult::Value(Value::Int(i64::from(seconds)))))
+            }
+            Some(StaticStrings::Microseconds) => {
+                let (_, _, microseconds) = components(self.get(vm.heap));
+                Ok(Some(CallResult::Value(Value::Int(i64::from(microseconds)))))
+            }
             _ => Ok(None),
         }
     }

@@ -59,9 +59,17 @@ pub(crate) trait MontyObjectExt: Sized {
 
 impl MontyObjectExt for MontyObject {
     fn export(value: Value, vm: &mut VM<'_>) -> Self {
-        let mut exporter = GraphExporter::new();
-        let root = exporter.push_owned(value, vm);
-        unstable::object_from_graph(exporter.finish(vm), root).expect("exported root is valid")
+        match value {
+            Value::None => Self::none(),
+            Value::Bool(b) => Self::bool(b),
+            Value::Int(i) => Self::int(i),
+            Value::Float(f) => Self::float(f),
+            _ => {
+                let mut exporter = GraphExporter::new();
+                let root = exporter.push_owned(value, vm);
+                unstable::object_from_graph(exporter.finish(vm), root).expect("exported root is valid")
+            }
+        }
     }
 
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
@@ -785,6 +793,7 @@ impl MontyTypeExt for MontyType {
             | Type::CsvDictReader
             | Type::CsvDictWriter
             | Type::CsvDialect
+            | Type::Super
             | Type::DecimalContext
             | Type::DecimalSignalDict
             | Type::DecimalContextManager => return None,
