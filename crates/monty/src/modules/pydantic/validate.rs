@@ -44,6 +44,10 @@ pub(crate) fn validate<I: Input>(
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
+    // Nesting recurses on the native stack, so a deep input is cut off at the
+    // recursion limit rather than overflowing it.
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
     match arena.get(id) {
         Validator::Any => {
             // In a union, `Any` is preferred to a lax coercion.
@@ -51,8 +55,9 @@ pub(crate) fn validate<I: Input>(
             input.to_value(vm)
         }
         Validator::None => {
+            // `to_value` consumes a JSON `null`; a Python `None` is free to copy.
             if input.is_none() {
-                Ok(Value::None)
+                input.to_value(vm)
             } else {
                 input.error(ErrorType::NoneRequired {}, vm)
             }
@@ -75,7 +80,7 @@ pub(crate) fn validate<I: Input>(
         Validator::Union(choices) => validate_union(arena, choices, input, state, vm),
         Validator::Nullable(inner) => {
             if input.is_none() {
-                Ok(Value::None)
+                input.to_value(vm)
             } else {
                 validate(arena, *inner, input, state, vm)
             }
@@ -351,10 +356,10 @@ fn validate_items<I: Input>(
             Err(ValError::Lines(lines)) => {
                 errors.extend(lines.into_iter().map(|line| line.with_outer_loc(index_loc(index))));
             }
-            Err(ValError::Run(err)) => {
+            Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                 seq.finish_item(element, vm);
                 errors.drop_with(vm);
-                return Err(ValError::Run(err));
+                return Err(err);
             }
         }
         seq.finish_item(element, vm);
@@ -407,10 +412,10 @@ fn validate_tuple<I: Input>(
                 Err(ValError::Lines(lines)) => {
                     errors.extend(lines.into_iter().map(|line| line.with_outer_loc(index_loc(index))));
                 }
-                Err(ValError::Run(err)) => {
+                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     seq.finish_item(element, vm);
                     errors.drop_with(vm);
-                    return Err(ValError::Run(err));
+                    return Err(err);
                 }
             }
             seq.finish_item(element, vm);
@@ -420,11 +425,16 @@ fn validate_tuple<I: Input>(
             let (output, vm) = output.into_parts();
             output.drop_with(vm);
             errors.drop_with(vm);
+            // A streamed input reports its length too: the rest is walked for the count.
+            let actual_length = match actual_length {
+                Some(len) => len,
+                None => drain_count::<I>(&mut seq, index + 1, vm)?,
+            };
             return input.error(
                 ErrorType::TooLong {
                     field_type: "Tuple".to_owned(),
                     max_length: items.len(),
-                    actual_length,
+                    actual_length: Some(actual_length),
                 },
                 vm,
             );
@@ -447,6 +457,16 @@ fn validate_tuple<I: Input>(
             Err(ValError::Lines(errors))
         }
     })
+}
+
+/// The length of a sequence with `seen` items already read, walking the rest.
+fn drain_count<I: Input>(seq: &mut impl Sequence<I>, seen: usize, vm: &mut VM<'_>) -> ValResult<usize> {
+    let mut count = seen;
+    while let Some(item) = seq.next(vm)? {
+        seq.finish_item(item, vm);
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// A `missing` error for the tuple position `index`, on the whole input.
@@ -488,10 +508,10 @@ fn validate_dict<I: Input>(
                     }));
                     None
                 }
-                Err(ValError::Run(err)) => {
+                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     map.finish_entry(key_input, value_input, vm);
                     errors.drop_with(vm);
-                    return Err(ValError::Run(err));
+                    return Err(err);
                 }
             };
             let output_value = match validate(arena, value, &mut value_input, state, vm) {
@@ -500,11 +520,11 @@ fn validate_dict<I: Input>(
                     errors.extend(lines.into_iter().map(|line| line.with_outer_loc(loc.clone())));
                     None
                 }
-                Err(ValError::Run(err)) => {
+                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     output_key.drop_with(vm);
                     map.finish_entry(key_input, value_input, vm);
                     errors.drop_with(vm);
-                    return Err(ValError::Run(err));
+                    return Err(err);
                 }
             };
             map.finish_entry(key_input, value_input, vm);
@@ -739,8 +759,9 @@ fn validate_dataclass<I: Input>(
 }
 
 /// Validates the entries of `map` into one slot per field, in field order:
-/// unknown keys are ignored, missing fields take their default or report
-/// `missing`, and a field's errors are located by its name.
+/// unknown keys are ignored, a key given twice (JSON allows it) keeps its
+/// last value, missing fields take their default or report `missing`, and a
+/// field's errors are located by its name.
 fn validate_fields<I: Input>(
     arena: &Arena,
     fields: &[FieldValidator],
@@ -751,7 +772,6 @@ fn validate_fields<I: Input>(
 ) -> ValResult<Vec<Value>> {
     let mut slots: Vec<Option<Value>> = (0..fields.len()).map(|_| None).collect();
     let mut errors: Vec<Option<Vec<LineError>>> = (0..fields.len()).map(|_| None).collect();
-    let mut fields_set = 0usize;
     let mut index = 0usize;
     loop {
         let Some((mut key, mut value)) = map.next(vm)? else {
@@ -775,20 +795,20 @@ fn validate_fields<I: Input>(
             .as_str(vm)
             .and_then(|name| fields.iter().position(|field| vm.interns.get_str(field.name) == name));
         key_value.drop_with(vm);
-        if let Some(field_index) = field_index
-            && slots[field_index].is_none()
-            && errors[field_index].is_none()
-        {
+        if let Some(field_index) = field_index {
+            if let Some(earlier) = slots[field_index].take() {
+                earlier.drop_with(vm);
+            }
+            if let Some(earlier) = errors[field_index].take() {
+                earlier.drop_with(vm);
+            }
             match validate(arena, fields[field_index].validator, &mut value, state, vm) {
-                Ok(v) => {
-                    slots[field_index] = Some(v);
-                    fields_set += 1;
-                }
+                Ok(v) => slots[field_index] = Some(v),
                 Err(ValError::Lines(lines)) => errors[field_index] = Some(lines),
-                Err(ValError::Run(err)) => {
+                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
                     map.finish_entry(key, value, vm);
                     release_slots(slots, errors, vm);
-                    return Err(ValError::Run(err));
+                    return Err(err);
                 }
             }
         } else if let Err(err) = value.to_value(vm).map(|v| v.drop_with(vm)) {
@@ -799,6 +819,7 @@ fn validate_fields<I: Input>(
         }
         map.finish_entry(key, value, vm);
     }
+    let fields_set = slots.iter().flatten().count();
     // Defaults for the unset fields, in field order; a factory may run Python.
     let mut line_errors: Vec<LineError> = Vec::new();
     for (field_index, field) in fields.iter().enumerate() {
@@ -990,6 +1011,8 @@ fn validate_named_tuple<I: Input>(
         unreachable!("a namedtuple validator holds its class")
     };
     let defaults_start = field_count - named_tuple.defaults;
+    // Missing arguments are reported before unexpected ones, as pydantic orders them.
+    let mut missing: Vec<LineError> = Vec::new();
     for (position, slot) in slots.iter_mut().enumerate() {
         if slot.is_some() {
             continue;
@@ -1003,19 +1026,21 @@ fn validate_named_tuple<I: Input>(
             let whole = match input.to_value(vm) {
                 Ok(whole) => whole,
                 Err(err) => {
+                    missing.drop_with(vm);
                     release_named(slots, errors, vm);
                     return Err(err);
                 }
             };
-            errors.push(
+            missing.push(
                 LineError::owned(ErrorType::MissingArgument {}, whole)
                     .with_outer_loc(LocItem::Key(named_tuple.field_names[position].clone())),
             );
         }
     }
-    if !errors.is_empty() {
+    if !missing.is_empty() || !errors.is_empty() {
         release_named(slots, Vec::new(), vm);
-        return Err(ValError::Lines(errors));
+        missing.append(&mut errors);
+        return Err(ValError::Lines(missing));
     }
     state.floor_exactness(Exactness::Strict);
     let items: Vec<Value> = slots

@@ -20,8 +20,13 @@ The messages, `errors()` output and `str()` format are copied from pydantic-core
 - `TypeAdapter.validate_strings()` raises `NotImplementedError`.
 - `TypeAdapter(type, config=...)` and `TypeAdapter(type, module=...)` raise `NotImplementedError`;
     `_parent_depth` is accepted and ignored.
-- `validate_python(..., extra=, from_attributes=, context=, by_alias=, by_name=)` and
-    `experimental_allow_partial=True` raise `NotImplementedError` naming the argument; `strict` is supported.
+- `validate_python(..., extra=, from_attributes=, context=, by_alias=, by_name=)`,
+    `validate_json(..., extra=, context=, by_alias=, by_name=)` and `experimental_allow_partial=True` raise
+    `NotImplementedError` naming the argument; `strict` is supported.
+- **Signature errors do not count `self`.** `TypeAdapter.validate_python(1, 2)` reports
+    `takes 1 positional argument but 2 were given` and `validate_python(object=1)` an unexpected keyword
+    argument, where pydantic's methods count the instance (`takes 2 positional arguments but 3 were given`)
+    and name positional-only arguments passed as keywords.
 - `Annotated[T, ...]` validates as `T`: the metadata is ignored until `Field` exists.
 
 ## Type hints
@@ -52,6 +57,12 @@ Anything else raises `PydanticSchemaGenerationError` with pydantic's message. Di
 `bool`, ISO 8601 text, timestamps and dates for `datetime`, and so on, with the same error types and
 messages.
 A dataclass instance passes through unchanged; a dict builds a new instance, calling `__post_init__`.
+`validate_json(data, strict=None)` takes a `str` or `bytes` document (any other type is a `json_type`
+error, a document that is not JSON a `json_invalid` one, including one nested more than 200 non-empty
+containers deep) and applies pydantic-core's JSON rules: a string is accepted for every type that reads
+text, numbers and booleans convert in lax mode only, object keys are text whatever `strict` says, a key
+given twice keeps its last value, and the document is streamed through the validators without building
+it first, so an error names the same input pydantic would show.
 Divergences:
 
 - **Aware results carry `datetime.timezone` objects.** A parsed `'...Z'` or `'...+01:00'` gives

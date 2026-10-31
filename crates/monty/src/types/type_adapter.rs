@@ -6,8 +6,9 @@
 //! the heap entry; the adapter object is kept alive for the call so the
 //! values the arena owns stay valid.
 
-use std::{fmt::Write, rc::Rc};
+use std::{cell::RefCell, fmt::Write, rc::Rc};
 
+use jiter::Jiter;
 use monty_types::ValidationInputType;
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +22,10 @@ use crate::{
     modules::pydantic::{
         arena::{Arena, ValidatorId},
         build,
-        errors::into_run_error,
+        catalogue::ErrorType,
+        errors::{ValError, ValResult, into_run_error, json_invalid_error},
         input::State,
+        json_input::JsonInput,
         python_input::PyInput,
         validate::validate,
     },
@@ -189,7 +192,7 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
                 "experimental_allow_partial",
             ));
         }
-        let strict = strict.py_bool(vm)?;
+        let strict = strict_flag(strict, vm)?;
         let (arena, root, title, keep_alive) = self.arena_handle(vm);
         defer_drop!(keep_alive, vm);
         let mut input = PyInput::new(object);
@@ -197,6 +200,122 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
         let result = validate(&arena, root, &mut input, &mut state, vm);
         input.drop_with(vm);
         result.map_err(|err| into_run_error(err, &title, ValidationInputType::Python, vm))
+    }
+}
+
+/// Arguments of `validate_json(data, /, *, strict=None, ...)`.
+#[derive(FromArgs)]
+#[from_args(name = "TypeAdapter.validate_json", style = def)]
+struct ValidateJsonArgs {
+    #[from_args(pos_only)]
+    data: Value,
+    #[from_args(kw_only, default = Value::None)]
+    strict: Value,
+    #[from_args(kw_only, default = Value::None)]
+    extra: Value,
+    #[from_args(kw_only, default = Value::None)]
+    context: Value,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    experimental_allow_partial: Value,
+    #[from_args(kw_only, default = Value::None)]
+    by_alias: Value,
+    #[from_args(kw_only, default = Value::None)]
+    by_name: Value,
+}
+
+impl<'h> HeapObjectRead<'h, TypeAdapter> {
+    /// `validate_json(data, /, *, strict=None)`: `data` is `str` or `bytes`,
+    /// streamed through the validators; any other type is a `json_type` error
+    /// and a document that is not JSON a `json_invalid` one.
+    fn validate_json(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let ValidateJsonArgs {
+            data,
+            strict,
+            extra,
+            context,
+            experimental_allow_partial,
+            by_alias,
+            by_name,
+        } = ValidateJsonArgs::from_args(args, vm)?;
+        defer_drop!(data, vm);
+        defer_drop!(strict, vm);
+        defer_drop!(extra, vm);
+        defer_drop!(context, vm);
+        defer_drop!(experimental_allow_partial, vm);
+        defer_drop!(by_alias, vm);
+        defer_drop!(by_name, vm);
+        for (name, value) in [
+            ("extra", extra),
+            ("context", context),
+            ("by_alias", by_alias),
+            ("by_name", by_name),
+        ] {
+            if !matches!(value, Value::None) {
+                return Err(unsupported_argument("TypeAdapter.validate_json", name));
+            }
+        }
+        if !matches!(experimental_allow_partial, Value::Bool(false)) {
+            return Err(unsupported_argument(
+                "TypeAdapter.validate_json",
+                "experimental_allow_partial",
+            ));
+        }
+        let strict = strict_flag(strict, vm)?;
+        let (arena, root, title, keep_alive) = self.arena_handle(vm);
+        defer_drop!(keep_alive, vm);
+        // The document is copied out so the parser does not borrow the heap
+        // while validators allocate on it.
+        let Some(document) = json_document(data, vm) else {
+            let line = ValError::owned(ErrorType::JsonType {}, data.clone_with_heap(vm.heap));
+            return Err(into_run_error(line, &title, ValidationInputType::Json, vm));
+        };
+        let parser = RefCell::new(Jiter::new(&document).with_allow_inf_nan());
+        let mut state = State::new(strict);
+        let result = JsonInput::root(&parser).map_err(ValError::Json).and_then(|mut input| {
+            let result = validate(&arena, root, &mut input, &mut state, vm);
+            finish_document(result, &mut input, vm)
+        });
+        result.map_err(|err| match err {
+            ValError::Json(err) => {
+                let description = err.description(&parser.borrow());
+                json_invalid_error(&title, description, data.clone_with_heap(vm.heap), vm)
+            }
+            other => into_run_error(other, &title, ValidationInputType::Json, vm),
+        })
+    }
+}
+
+/// The bytes of a `str` or `bytes` document, or `None` for any other value.
+fn json_document(data: &Value, vm: &VM<'_>) -> Option<Vec<u8>> {
+    if let Some(text) = data.as_str(vm) {
+        return Some(text.as_bytes().to_vec());
+    }
+    match data {
+        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id).to_vec()),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Bytes(bytes) => Some(bytes.as_slice().to_vec()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Checks the document ends where the root value does, once validation has
+/// finished with it: a document that is not JSON is `json_invalid` whatever
+/// the validators made of the part they read, as pydantic parses it whole.
+fn finish_document(result: ValResult<Value>, input: &mut JsonInput<'_, '_>, vm: &mut VM<'_>) -> ValResult<Value> {
+    match result {
+        Err(err @ (ValError::Run(_) | ValError::Json(_))) => Err(err),
+        result => match input.finish() {
+            Ok(()) => result,
+            Err(err) => {
+                match result {
+                    Ok(value) => value.drop_with(vm),
+                    Err(failure) => failure.drop_with(vm),
+                }
+                Err(ValError::Json(err))
+            }
+        },
     }
 }
 
@@ -221,9 +340,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::ValidatePython) => self.validate_python(args, vm).map(CallResult::Value),
+            Some(StaticStrings::ValidateJson) => self.validate_json(args, vm).map(CallResult::Value),
             Some(
-                StaticStrings::ValidateJson
-                | StaticStrings::ValidateStrings
+                StaticStrings::ValidateStrings
                 | StaticStrings::DumpPython
                 | StaticStrings::DumpJson
                 | StaticStrings::JsonSchema,
@@ -238,6 +357,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
             }
             _ => Err(ExcType::attribute_error_method("TypeAdapter", attr, args, vm)),
         }
+    }
+}
+
+/// `strict=None` or a `bool`, with pydantic-core's `TypeError` for anything else.
+fn strict_flag(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    match value {
+        Value::None => Ok(false),
+        Value::Bool(strict) => Ok(*strict),
+        other => Err(ExcType::type_error(format!(
+            "argument 'strict': '{}' object is not an instance of 'bool'",
+            other.py_type_name(vm)
+        ))),
     }
 }
 

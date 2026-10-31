@@ -7,7 +7,8 @@
 //! and stored as the exception's message; `errors()`, `error_count()`, `json()`
 //! and `title` read the stored [`ValidationErrorData`].
 
-use monty_types::{ExcData, LocItem, ValidationErrorData, ValidationInputType, ValidationLineError};
+use jiter::JiterError;
+use monty_types::{ExcData, LocItem, ResourceError, ValidationErrorData, ValidationInputType, ValidationLineError};
 use smallvec::SmallVec;
 
 use crate::{
@@ -65,12 +66,15 @@ impl LineError {
     }
 }
 
-/// Why a validator failed: one or more line errors, or an interpreter error
-/// (a resource limit, a recursion limit) that aborts validation outright.
+/// Why a validator failed: one or more line errors, an interpreter error (a
+/// resource limit, a recursion limit) that aborts validation outright, or
+/// malformed JSON, which `validate_json` reports as `json_invalid` on the
+/// whole document in place of any line errors.
 #[derive(Debug)]
 pub(crate) enum ValError {
     Lines(Vec<LineError>),
     Run(RunError),
+    Json(JiterError),
 }
 
 impl ValError {
@@ -83,6 +87,12 @@ impl ValError {
 impl From<RunError> for ValError {
     fn from(err: RunError) -> Self {
         Self::Run(err)
+    }
+}
+
+impl From<ResourceError> for ValError {
+    fn from(err: ResourceError) -> Self {
+        Self::Run(err.into())
     }
 }
 
@@ -107,7 +117,15 @@ pub(crate) fn into_run_error(
     match error {
         ValError::Lines(lines) => build(title, input_type, lines, false, vm).into(),
         ValError::Run(err) => err,
+        ValError::Json(_) => unreachable!("validate_json reports malformed JSON before raising"),
     }
+}
+
+/// The `ValidationError` for malformed JSON: one `json_invalid` line error on
+/// the whole document, as pydantic raises before any validation.
+pub(crate) fn json_invalid_error(title: &str, description: String, document: Value, vm: &mut VM<'_>) -> RunError {
+    let line = LineError::owned(ErrorType::JsonInvalid { error: description }, document);
+    build(title, ValidationInputType::Json, vec![line], false, vm).into()
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for LineError {

@@ -136,3 +136,12 @@ for source in ['\ufeff[1]', '\ufeff']:
         assert False, 'a str BOM should raise JSONDecodeError'
     except json.JSONDecodeError as exc:
         assert str(exc) == 'Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)'
+
+# === nesting at the depth limit ===
+# only a non-empty container beyond 200 levels is refused, so empty nesting parses
+nested = json.loads('[' * 201 + ']' * 201)
+depth = 0
+while nested:
+    nested = nested[0]
+    depth += 1
+assert depth == 200
