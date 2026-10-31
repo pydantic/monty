@@ -3106,6 +3106,171 @@ fn reset_returns_child_to_idle_for_reuse() {
     child.shutdown();
 }
 
+#[test]
+fn reset_discards_suspended_progress_name_lookup() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    create_reset_test_repl(&mut child);
+
+    let (_, event) = child.feed("[1] + missing");
+    let pb::child_event::Kind::NameLookup(lookup) = event else {
+        panic!("expected NameLookup for missing, got {event:?}");
+    };
+    assert_eq!(lookup.name, "missing");
+
+    reset_child(&mut child);
+    assert_reset_removed_old_global(&mut child);
+    child.shutdown();
+}
+
+#[test]
+fn reset_discards_suspended_progress_function_call() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    create_reset_test_repl(&mut child);
+
+    let (_, event) = child.feed("([1], fetch([2]))");
+    let pb::child_event::Kind::FunctionCall(call) = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    assert_eq!(call.function_name, "fetch");
+    assert_eq!(call_args(&call), [MontyObject::list([MontyObject::int(2)])]);
+
+    reset_child(&mut child);
+    assert_reset_removed_old_global(&mut child);
+    child.shutdown();
+}
+
+#[test]
+fn reset_discards_suspended_progress_os_call() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl_with_os_policy(&call_host());
+    assert_eq!(child.feed_complete("old_global = 7"), MontyObject::none());
+    assert_eq!(child.feed_complete("import time"), MontyObject::none());
+
+    let (_, event) = child.feed("([1], time.sleep(1))");
+    let pb::child_event::Kind::OsCall(call) = event else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(
+        call.call,
+        Some(pb::os_call::Call::Sleep(pb::os_call::Sleep { seconds: 1.0 }))
+    );
+
+    reset_child(&mut child);
+    assert_reset_removed_old_global(&mut child);
+    child.shutdown();
+}
+
+#[test]
+fn reset_discards_suspended_progress_resolve_futures() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    create_reset_test_repl(&mut child);
+    assert_eq!(
+        child.feed_complete(
+            "import asyncio\nasync def first():\n    return await fetch([1])\nasync def second():\n    return await fetch([2])",
+        ),
+        MontyObject::none()
+    );
+
+    let (_, event) = child.feed("([1], asyncio.run(asyncio.gather(first(), second())))");
+    let pb::child_event::Kind::FunctionCall(first) = event else {
+        panic!("expected first FunctionCall, got {event:?}");
+    };
+    assert_eq!(first.function_name, "fetch");
+    assert_eq!(call_args(&first), [MontyObject::list([MontyObject::int(1)])]);
+
+    let (_, event) = child.resume_call(first.call_id, pb::ext_function_result::Kind::Future(first.call_id));
+    let pb::child_event::Kind::FunctionCall(second) = event else {
+        panic!("expected second FunctionCall, got {event:?}");
+    };
+    assert_eq!(second.function_name, "fetch");
+    assert_eq!(call_args(&second), [MontyObject::list([MontyObject::int(2)])]);
+
+    let (_, event) = child.resume_call(second.call_id, pb::ext_function_result::Kind::Future(second.call_id));
+    let pb::child_event::Kind::ResolveFutures(futures) = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    assert_eq!(futures.pending_call_ids.len(), 2);
+
+    reset_child(&mut child);
+    assert_reset_removed_old_global(&mut child);
+    child.shutdown();
+}
+
+#[test]
+fn reset_works_from_unconfigured_ready_and_awaiting_stubs_states() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    reset_child(&mut child);
+
+    create_reset_test_repl(&mut child);
+    reset_child(&mut child);
+    reset_child(&mut child);
+    child.create_repl();
+    let (_, event) = child.feed("old_global");
+    let pb::child_event::Kind::NameLookup(lookup) = event else {
+        panic!("expected old_global to be absent after repeated reset, got {event:?}");
+    };
+    assert_eq!(lookup.name, "old_global");
+    reset_child(&mut child);
+
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        type_check: true,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    });
+    assert_eq!(child.feed_complete("old_global = 7"), MontyObject::none());
+    assert_eq!(child.feed_complete("old_global"), MontyObject::int(7));
+    let (_, event) = child.feed("from external_pkg import value");
+    assert!(matches!(
+        event,
+        pb::child_event::Kind::OsCall(call) if call.call_id == IMPORT_STUBS_CALL_ID
+    ));
+    reset_child(&mut child);
+    assert_reset_removed_old_global(&mut child);
+    child.shutdown();
+}
+
+fn reset_child(child: &mut ChildProc) {
+    child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+    let reply = child.reader.read::<pb::ChildEvent>().expect("read Reset reply");
+    let Some(reply) = reply else {
+        child.expect_death();
+        let (status, stderr) = child.reap_with_stderr();
+        panic!("Reset closed the worker pipe: status={status:?}; stderr:\n{stderr}");
+    };
+    if let Some(pb::child_event::Kind::FatalError(fatal)) = &reply.kind {
+        let deadline = Instant::now() + DEATH_TIMEOUT;
+        while child.child.try_wait().expect("failed to poll child").is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "FatalError did not terminate the worker within {DEATH_TIMEOUT:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let (status, stderr) = child.reap_with_stderr();
+        panic!("Reset returned FatalError {fatal:?}; worker status={status:?}; stderr:\n{stderr}");
+    }
+    assert!(
+        matches!(reply.kind, Some(pb::child_event::Kind::Ok(_))),
+        "unexpected Reset reply: {reply:?}"
+    );
+}
+
+fn assert_reset_removed_old_global(child: &mut ChildProc) {
+    child.create_repl();
+    let (_, event) = child.feed("old_global");
+    let pb::child_event::Kind::NameLookup(lookup) = event else {
+        panic!("expected old_global to be absent after reset, got {event:?}");
+    };
+    assert_eq!(lookup.name, "old_global");
+}
+
+fn create_reset_test_repl(child: &mut ChildProc) {
+    child.create_repl();
+    assert_eq!(child.feed_complete("old_global = 7"), MontyObject::none());
+}
+
 /// Closes the child's stdin without dropping the rest of the harness.
 fn drop_stdin(_child: &mut ChildProc) {
     // ChildProc owns ChildStdin; nothing to do — the test just stops
