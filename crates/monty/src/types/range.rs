@@ -9,17 +9,19 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use num_bigint::BigInt;
 use num_integer::div_ceil;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, is_long_int},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    types::{LazyHeapSet, PyTrait, Type},
-    value::Value,
+    intern::StaticStrings,
+    types::{LazyHeapSet, LongInt, PyTrait, Type},
+    value::{EitherStr, Value},
 };
 
 /// Python range object representing an immutable sequence of integers.
@@ -110,6 +112,28 @@ impl Range {
         (i128::from(n) - i128::from(self.start)) % i128::from(self.step) == 0
     }
 
+    /// Implements `range.index(value)`: the position of `value` in O(1), as CPython computes it.
+    ///
+    /// CPython's error message depends on the type: an int or bool takes its
+    /// arithmetic path, and any other value its generic sequence search.
+    fn index(self, value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+        let Some(n) = member_value(value).filter(|n| self.contains(*n)) else {
+            let message = if matches!(value, Value::Int(_) | Value::Bool(_)) || is_long_int(value, vm) {
+                "range.index(x): x not in range"
+            } else {
+                "sequence.index(x): x not in sequence"
+            };
+            return Err(SimpleException::new_msg(ExcType::ValueError, message).into());
+        };
+        // `contains` checked that `n` is an item, so the division is exact. The index can
+        // pass `i64::MAX` in a range like `range(-2**63, 2**63 - 1)`.
+        let index = (i128::from(n) - i128::from(self.start)) / i128::from(self.step);
+        Ok(match i64::try_from(index) {
+            Ok(index) => Value::Int(index),
+            Err(_) => LongInt::new(BigInt::from(index)).into_value(vm.heap),
+        })
+    }
+
     /// Creates a range from the `range()` constructor call.
     ///
     /// Supports:
@@ -195,26 +219,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
     /// items can never be members, matching CPython's fast path.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let range = self.get(vm.heap);
-        let n = match item {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            Value::Float(f) => {
-                if f.fract() != 0.0 {
-                    return Ok(Some(false));
-                }
-                let int_val = f.trunc();
-                // Exclusive upper bound: `i64::MAX as f64` rounds up to 2^63, which
-                // `int_val as i64` would saturate back down to `i64::MAX`.
-                if int_val < i64::MIN as f64 || int_val >= i64::MAX as f64 {
-                    return Ok(Some(false));
-                }
-                #[expect(clippy::cast_possible_truncation)]
-                let n = int_val as i64;
-                n
-            }
-            _ => return Ok(Some(false)),
-        };
-        Ok(Some(range.contains(n)))
+        Ok(Some(member_value(item).is_some_and(|n| range.contains(n))))
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -320,6 +325,74 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Range> {
         } else {
             Ok(write!(f, "range({}, {}, {})", this.start, this.stop, this.step)?)
         }
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let range = self.get(vm.heap);
+        Ok(match attr.static_string(vm.interns) {
+            Some(StaticStrings::Start) => Some(CallResult::Value(Value::Int(range.start))),
+            Some(StaticStrings::Stop) => Some(CallResult::Value(Value::Int(range.stop))),
+            Some(StaticStrings::Step) => Some(CallResult::Value(Value::Int(range.step))),
+            _ => None,
+        })
+    }
+
+    /// `start`, `stop` and `step` exist but are read-only, which CPython words differently
+    /// from a missing attribute.
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        Err(match name.static_string(vm.interns) {
+            Some(StaticStrings::Start | StaticStrings::Stop | StaticStrings::Step) => {
+                ExcType::attribute_error_readonly()
+            }
+            _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
+        })
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let range = *self.get(vm.heap);
+        match attr.static_string(vm.interns) {
+            Some(StaticStrings::Index) => {
+                let value = args
+                    .reject_kwargs("range.index", vm.heap)?
+                    .get_one_arg("range.index", vm.heap)?;
+                defer_drop!(value, vm);
+                range.index(value, vm).map(CallResult::Value)
+            }
+            Some(StaticStrings::Count) => {
+                let value = args
+                    .reject_kwargs("range.count", vm.heap)?
+                    .get_one_arg("range.count", vm.heap)?;
+                defer_drop!(value, vm);
+                let found = member_value(value).is_some_and(|n| range.contains(n));
+                Ok(CallResult::Value(Value::Int(i64::from(found))))
+            }
+            _ => Err(ExcType::attribute_error_method(Type::Range, attr, args, vm)),
+        }
+    }
+}
+
+/// The integer that `item` equals, if it can be an item of a range: an int, a bool, or an
+/// integral float in the `i64` range. Other values never equal an item.
+fn member_value(item: &Value) -> Option<i64> {
+    match item {
+        Value::Int(i) => Some(*i),
+        Value::Bool(b) => Some(i64::from(*b)),
+        Value::Float(f) => {
+            if f.fract() != 0.0 {
+                return None;
+            }
+            let int_val = f.trunc();
+            // Exclusive upper bound: `i64::MAX as f64` rounds up to 2^63, which
+            // `int_val as i64` would saturate back down to `i64::MAX`.
+            if int_val < i64::MIN as f64 || int_val >= i64::MAX as f64 {
+                return None;
+            }
+            #[expect(clippy::cast_possible_truncation)]
+            let n = int_val as i64;
+            Some(n)
+        }
+        _ => None,
     }
 }
 
