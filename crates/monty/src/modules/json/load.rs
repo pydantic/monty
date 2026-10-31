@@ -30,7 +30,7 @@ use crate::{
 /// JSON syntax failures remain as raw `JiterError` values until
 /// `parse_json_bytes()`, while ordinary VM/runtime failures still propagate
 /// immediately without being misreported as `JSONDecodeError`.
-enum JsonLoadError {
+pub(crate) enum JsonLoadError {
     Parse(JiterError),
     Run(RunError),
 }
@@ -221,6 +221,27 @@ fn parse_json_bytes(bytes: &[u8], hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> R
     Ok(value)
 }
 
+/// Builds the value of the JSON token `peek` names, consuming it from `jiter`,
+/// with `json.loads`'s own conversions and limits; `depth` is the nesting
+/// the token already sits at. For callers that stream a document themselves
+/// (pydantic's JSON validation) and need one sub-tree as a value: an error
+/// report, or an `Any`.
+pub(crate) fn materialize_json_value(
+    peek: Peek,
+    jiter: &mut Jiter<'_>,
+    depth: usize,
+    vm: &mut VM<'_>,
+) -> Result<Value, JsonLoadError> {
+    let hooks = NumberHooks {
+        parse_float: None,
+        parse_int: None,
+    };
+    let mut cache = mem::take(&mut vm.json_string_cache);
+    let result = parse_json_value_from_peek(peek, jiter, depth, &mut cache, &hooks, vm);
+    vm.json_string_cache = cache;
+    result
+}
+
 /// Parses the next JSON value from a `Jiter` and converts it into a Monty value.
 ///
 /// Strings are allocated immediately because `jiter` may reuse its internal
@@ -329,12 +350,11 @@ fn parse_json_array(
     hooks: &NumberHooks<'_>,
     vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
-    check_json_recursion_limit(jiter, depth)?;
-
     let Some(mut next) = jiter.known_array()? else {
         let list_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
         return Ok(Value::Ref(list_id));
     };
+    check_json_recursion_limit(jiter, depth)?;
 
     let values = Vec::new();
     let mut values_guard = DropGuard::new(values, vm);
@@ -389,12 +409,12 @@ fn parse_json_object(
     hooks: &NumberHooks<'_>,
     vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
-    check_json_recursion_limit(jiter, depth)?;
-
     let Some(mut key) = parse_first_object_key(jiter)? else {
         let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()));
         return Ok(Value::Ref(dict_id));
     };
+    jiter.peek()?;
+    check_json_recursion_limit(jiter, depth)?;
 
     let mut dict_guard = DropGuard::new(Dict::new(), vm);
     {
@@ -435,8 +455,10 @@ fn parse_next_object_key(jiter: &mut Jiter<'_>) -> ParseResult<Option<String>> {
 
 /// Rejects JSON that nests arrays/objects more deeply than Monty supports.
 ///
-/// The limit matches `jiter`'s `JsonValue` parser so this lower-level iterator
-/// implementation preserves the same stack-safety boundary.
+/// The rule is `jiter`'s `JsonValue` parser's, so this lower-level iterator
+/// implementation (and pydantic's JSON validation, which shares the error)
+/// preserves the same stack-safety boundary and reports it at the same
+/// place: a non-empty container at the limit, at its first item.
 fn check_json_recursion_limit(jiter: &Jiter<'_>, depth: usize) -> ParseResult<()> {
     if depth >= JSON_RECURSION_LIMIT {
         return Err(JsonLoadError::Parse(JiterError {

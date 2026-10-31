@@ -14,6 +14,7 @@ pub(crate) mod coerce;
 pub(crate) mod errors;
 pub(crate) mod input;
 pub(crate) mod iso;
+pub(crate) mod json_input;
 pub(crate) mod json_writer;
 pub(crate) mod python_input;
 pub(crate) mod snapshot;

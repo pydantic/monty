@@ -190,6 +190,7 @@ exclude = [
     # `tuple` hints are what `TypeAdapter` is given on purpose
     "crates/monty/test_cases/pydantic__type_adapter.py",
     "crates/monty/test_cases/pydantic__dataclass.py",
+    "crates/monty/test_cases/pydantic__json.py",
     "crates/monty/test_cases/refcount__pydantic.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally

@@ -1203,6 +1203,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_167_196),
+        // A validated JSON array is far larger than its text: the output list
+        // preflights each doubling like `List.append`.
+        (
+            "from pydantic import TypeAdapter\nTypeAdapter(list[int]).validate_json('[' + '1,' * 150_000 + '1]')",
+            1_169_164,
+        ),
         // `randbytes` charges its word buffer and the byte buffer it fills.
         ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
