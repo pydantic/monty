@@ -32,6 +32,8 @@ pub(crate) struct JsonWriter<'t> {
     /// Spaces per nesting level, `None` for compact output.
     indent: Option<usize>,
     inf_nan: InfNan,
+    /// Escape every non-ASCII character as `\uXXXX` (`ensure_ascii=True`).
+    ensure_ascii: bool,
     /// The current nesting level, for indentation.
     depth: usize,
     /// Whether the innermost open container has had a member written.
@@ -44,9 +46,16 @@ impl<'t> JsonWriter<'t> {
             out: StringBuilder::new(tracker),
             indent,
             inf_nan,
+            ensure_ascii: false,
             depth: 0,
             has_member: Vec::new(),
         }
+    }
+
+    /// Escapes non-ASCII text when `ensure_ascii` is set.
+    pub(crate) fn with_ensure_ascii(mut self, ensure_ascii: bool) -> Self {
+        self.ensure_ascii = ensure_ascii;
+        self
     }
 
     /// The finished document.
@@ -88,27 +97,33 @@ impl<'t> JsonWriter<'t> {
     pub(crate) fn string(&mut self, value: &str) -> RunResult<()> {
         self.out.push('"')?;
         let mut start = 0;
-        for (index, byte) in value.bytes().enumerate() {
-            let escape: &str = match byte {
-                b'"' => "\\\"",
-                b'\\' => "\\\\",
-                b'\n' => "\\n",
-                b'\r' => "\\r",
-                b'\t' => "\\t",
-                0x08 => "\\b",
-                0x0c => "\\f",
-                0x00..=0x1f => "",
+        for (index, c) in value.char_indices() {
+            let escape: &str = match c {
+                '"' => "\\\"",
+                '\\' => "\\\\",
+                '\n' => "\\n",
+                '\r' => "\\r",
+                '\t' => "\\t",
+                '\u{8}' => "\\b",
+                '\u{c}' => "\\f",
+                '\0'..='\u{1f}' => "",
+                _ if self.ensure_ascii && !c.is_ascii() => "",
                 _ => continue,
             };
             self.out.push_str(&value[start..index])?;
             if escape.is_empty() {
-                self.out.push_str("\\u00")?;
-                self.out.push(HEX[usize::from(byte >> 4)] as char)?;
-                self.out.push(HEX[usize::from(byte & 0xf)] as char)?;
+                // `\uXXXX`, as a surrogate pair past the BMP.
+                let mut units = [0u16; 2];
+                for unit in c.encode_utf16(&mut units) {
+                    self.out.push_str("\\u")?;
+                    for shift in [12, 8, 4, 0] {
+                        self.out.push(HEX[usize::from((*unit >> shift) & 0xf)] as char)?;
+                    }
+                }
             } else {
                 self.out.push_str(escape)?;
             }
-            start = index + 1;
+            start = index + c.len_utf8();
         }
         self.out.push_str(&value[start..])?;
         Ok(self.out.push('"')?)
