@@ -1825,6 +1825,7 @@ dev = [
     { name = "mdformat-mkdocs" },
     { name = "mdformat-tables" },
     { name = "mypy" },
+    { name = "pydantic" },
     { name = "ruff" },
     { name = "types-grpcio" },
 ]
@@ -1860,6 +1861,7 @@ dev = [
     { name = "mdformat-mkdocs", specifier = ">=5.2.1" },
     { name = "mdformat-tables", specifier = ">=1.0.0" },
     { name = "mypy", specifier = ">=2.1.0" },
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "ruff", specifier = ">=0.14.7" },
     { name = "types-grpcio", specifier = ">=1.0.0.20250603" },
 ]
