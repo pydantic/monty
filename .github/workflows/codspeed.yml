@@ -4,8 +4,8 @@ name: CodSpeed
 # all its instruments; separate workflows made separate runs, and a PR could then be
 # compared against a main run that lacked its instrument and carried stale values.
 #
-# Simulation runs everywhere. Memory and walltime are opt-in on a PR through the
-# `Full Codspeed` label, so `labeled` is a trigger.
+# Simulation and memory run everywhere. Walltime needs the CodSpeed bare-metal runner,
+# so it is opt-in on a PR through the `Full Codspeed` label, and `labeled` is a trigger.
 on:
   push:
     branches:
@@ -23,7 +23,7 @@ env:
 jobs:
   build-worker:
     name: Build release worker (x86_64)
-    # Adding any other label must not rerun the benchmarks; the dependent jobs follow this one.
+    # Adding any other label must not rerun the benchmarks; `benchmarks` follows this one.
     if: github.event.action != 'labeled' || github.event.label.name == 'Full Codspeed'
     runs-on: ubuntu-24.04
     steps:
@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: ${{ fromJSON(contains(github.event.pull_request.labels.*.name, 'Full Codspeed') && '["simulation", "memory"]' || '["simulation"]') }}
+        mode: [simulation, memory]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -113,7 +113,10 @@ jobs:
 
   build-worker-aarch64:
     name: Build release worker (aarch64)
-    if: contains(github.event.pull_request.labels.*.name, 'Full Codspeed')
+    # Only a labelled PR, and not a rerun for some other label being added to it; `walltime` follows this one.
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'Full Codspeed')
+      && (github.event.action != 'labeled' || github.event.label.name == 'Full Codspeed')
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
