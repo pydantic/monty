@@ -12,6 +12,7 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use monty_types::MontyTimeDelta;
 use smallvec::smallvec;
 
 use crate::{
@@ -77,6 +78,17 @@ pub(crate) fn components(delta: &TimeDelta) -> (i32, i32, i32) {
         i32::try_from(seconds).expect("seconds are bounded by one day"),
         i32::try_from(micros).expect("microseconds are bounded by one second"),
     )
+}
+
+/// The host-value form of a timedelta: CPython's normalised `days`, `seconds` and `microseconds`.
+#[must_use]
+pub(crate) fn to_monty_timedelta(delta: &TimeDelta) -> MontyTimeDelta {
+    let (days, seconds, microseconds) = components(delta);
+    MontyTimeDelta {
+        days,
+        seconds,
+        microseconds,
+    }
 }
 
 /// Returns the duration as total microseconds.
