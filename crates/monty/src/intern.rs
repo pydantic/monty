@@ -1049,19 +1049,151 @@ pub enum StaticStrings {
     /// The uncached callable.
     #[strum(serialize = "__wrapped__")]
     DunderWrapped,
+    #[strum(serialize = "E2BIG")]
+    E2big,
+    #[strum(serialize = "EACCES")]
+    Eacces,
+    #[strum(serialize = "EADDRINUSE")]
+    Eaddrinuse,
+    #[strum(serialize = "EADDRNOTAVAIL")]
+    Eaddrnotavail,
+    #[strum(serialize = "EADV")]
+    Eadv,
+    #[strum(serialize = "EAFNOSUPPORT")]
+    Eafnosupport,
+    #[strum(serialize = "EAGAIN")]
+    Eagain,
+    #[strum(serialize = "EALREADY")]
+    Ealready,
+    #[strum(serialize = "EBADE")]
+    Ebade,
+    #[strum(serialize = "EBADF")]
+    Ebadf,
+    #[strum(serialize = "EBADFD")]
+    Ebadfd,
+    #[strum(serialize = "EBADMSG")]
+    Ebadmsg,
+    #[strum(serialize = "EBADR")]
+    Ebadr,
+    #[strum(serialize = "EBADRQC")]
+    Ebadrqc,
+    #[strum(serialize = "EBADSLT")]
+    Ebadslt,
+    #[strum(serialize = "EBFONT")]
+    Ebfont,
+    #[strum(serialize = "EBUSY")]
+    Ebusy,
+    #[strum(serialize = "ECANCELED")]
+    Ecanceled,
+    #[strum(serialize = "ECHILD")]
+    Echild,
+    #[strum(serialize = "ECHRNG")]
+    Echrng,
+    #[strum(serialize = "ECOMM")]
+    Ecomm,
+    #[strum(serialize = "ECONNABORTED")]
+    Econnaborted,
+    #[strum(serialize = "ECONNREFUSED")]
+    Econnrefused,
+    #[strum(serialize = "ECONNRESET")]
+    Econnreset,
+    #[strum(serialize = "EDEADLK")]
+    Edeadlk,
+    #[strum(serialize = "EDEADLOCK")]
+    Edeadlock,
+    #[strum(serialize = "EDESTADDRREQ")]
+    Edestaddrreq,
+    #[strum(serialize = "EDOM")]
+    Edom,
+    #[strum(serialize = "EDOTDOT")]
+    Edotdot,
+    #[strum(serialize = "EDQUOT")]
+    Edquot,
+    #[strum(serialize = "EEXIST")]
+    Eexist,
+    #[strum(serialize = "EFAULT")]
+    Efault,
+    #[strum(serialize = "EFBIG")]
+    Efbig,
+    #[strum(serialize = "EHOSTDOWN")]
+    Ehostdown,
+    #[strum(serialize = "EHOSTUNREACH")]
+    Ehostunreach,
+    #[strum(serialize = "EHWPOISON")]
+    Ehwpoison,
+    #[strum(serialize = "EIDRM")]
+    Eidrm,
+    #[strum(serialize = "EILSEQ")]
+    Eilseq,
+    #[strum(serialize = "EINPROGRESS")]
+    Einprogress,
+    #[strum(serialize = "EINTR")]
+    Eintr,
+    #[strum(serialize = "EINVAL")]
+    Einval,
+    #[strum(serialize = "EIO")]
+    Eio,
+    #[strum(serialize = "EISCONN")]
+    Eisconn,
+    #[strum(serialize = "EISDIR")]
+    Eisdir,
+    #[strum(serialize = "EISNAM")]
+    Eisnam,
+    #[strum(serialize = "EKEYEXPIRED")]
+    Ekeyexpired,
+    #[strum(serialize = "EKEYREJECTED")]
+    Ekeyrejected,
+    #[strum(serialize = "EKEYREVOKED")]
+    Ekeyrevoked,
+    #[strum(serialize = "EL2HLT")]
+    El2hlt,
+    #[strum(serialize = "EL2NSYNC")]
+    El2nsync,
+    #[strum(serialize = "EL3HLT")]
+    El3hlt,
+    #[strum(serialize = "EL3RST")]
+    El3rst,
     /// `Counter.elements()` method.
     Elements,
+    #[strum(serialize = "ELIBACC")]
+    Elibacc,
+    #[strum(serialize = "ELIBBAD")]
+    Elibbad,
+    #[strum(serialize = "ELIBEXEC")]
+    Elibexec,
+    #[strum(serialize = "ELIBMAX")]
+    Elibmax,
+    #[strum(serialize = "ELIBSCN")]
+    Elibscn,
     /// `repr()`/`str()` text of `Ellipsis`, interned so rendering allocates nothing.
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+    #[strum(serialize = "ELNRNG")]
+    Elnrng,
+    #[strum(serialize = "ELOOP")]
+    Eloop,
     /// Kwarg name `Emax` — `decimal.Context()`.
     #[strum(serialize = "Emax")]
     Emax,
+    #[strum(serialize = "EMEDIUMTYPE")]
+    Emediumtype,
+    #[strum(serialize = "EMFILE")]
+    Emfile,
     /// Kwarg name `Emin` — `decimal.Context()`.
     #[strum(serialize = "Emin")]
     Emin,
+    #[strum(serialize = "EMLINK")]
+    Emlink,
+    #[strum(serialize = "EMSGSIZE")]
+    Emsgsize,
+    #[strum(serialize = "EMULTIHOP")]
+    Emultihop,
     /// `gc.enable()` function.
     Enable,
+    #[strum(serialize = "ENAMETOOLONG")]
+    Enametoolong,
+    #[strum(serialize = "ENAVAIL")]
+    Enavail,
     /// `str.encode()` method.
     Encode,
     /// `base64.encodebytes()` function.
@@ -1073,6 +1205,74 @@ pub enum StaticStrings {
     End,
     /// `endswith()` method, shared by `str` and `bytes`.
     Endswith,
+    #[strum(serialize = "ENETDOWN")]
+    Enetdown,
+    #[strum(serialize = "ENETRESET")]
+    Enetreset,
+    #[strum(serialize = "ENETUNREACH")]
+    Enetunreach,
+    #[strum(serialize = "ENFILE")]
+    Enfile,
+    #[strum(serialize = "ENOANO")]
+    Enoano,
+    #[strum(serialize = "ENOBUFS")]
+    Enobufs,
+    #[strum(serialize = "ENOCSI")]
+    Enocsi,
+    #[strum(serialize = "ENODATA")]
+    Enodata,
+    #[strum(serialize = "ENODEV")]
+    Enodev,
+    #[strum(serialize = "ENOENT")]
+    Enoent,
+    #[strum(serialize = "ENOEXEC")]
+    Enoexec,
+    #[strum(serialize = "ENOKEY")]
+    Enokey,
+    #[strum(serialize = "ENOLCK")]
+    Enolck,
+    #[strum(serialize = "ENOLINK")]
+    Enolink,
+    #[strum(serialize = "ENOMEDIUM")]
+    Enomedium,
+    #[strum(serialize = "ENOMEM")]
+    Enomem,
+    #[strum(serialize = "ENOMSG")]
+    Enomsg,
+    #[strum(serialize = "ENONET")]
+    Enonet,
+    #[strum(serialize = "ENOPKG")]
+    Enopkg,
+    #[strum(serialize = "ENOPROTOOPT")]
+    Enoprotoopt,
+    #[strum(serialize = "ENOSPC")]
+    Enospc,
+    #[strum(serialize = "ENOSR")]
+    Enosr,
+    #[strum(serialize = "ENOSTR")]
+    Enostr,
+    #[strum(serialize = "ENOSYS")]
+    Enosys,
+    #[strum(serialize = "ENOTBLK")]
+    Enotblk,
+    #[strum(serialize = "ENOTCONN")]
+    Enotconn,
+    #[strum(serialize = "ENOTDIR")]
+    Enotdir,
+    #[strum(serialize = "ENOTEMPTY")]
+    Enotempty,
+    #[strum(serialize = "ENOTNAM")]
+    Enotnam,
+    #[strum(serialize = "ENOTRECOVERABLE")]
+    Enotrecoverable,
+    #[strum(serialize = "ENOTSOCK")]
+    Enotsock,
+    #[strum(serialize = "ENOTSUP")]
+    Enotsup,
+    #[strum(serialize = "ENOTTY")]
+    Enotty,
+    #[strum(serialize = "ENOTUNIQ")]
+    Enotuniq,
     /// `json.dumps(ensure_ascii=...)` keyword.
     #[strum(serialize = "ensure_ascii")]
     EnsureAscii,
@@ -1081,14 +1281,50 @@ pub enum StaticStrings {
     Enter,
     /// `os.environ` attribute.
     Environ,
+    #[strum(serialize = "ENXIO")]
+    Enxio,
+    #[strum(serialize = "EOPNOTSUPP")]
+    Eopnotsupp,
+    #[strum(serialize = "EOVERFLOW")]
+    Eoverflow,
+    #[strum(serialize = "EOWNERDEAD")]
+    Eownerdead,
+    #[strum(serialize = "EPERM")]
+    Eperm,
+    #[strum(serialize = "EPFNOSUPPORT")]
+    Epfnosupport,
+    #[strum(serialize = "EPIPE")]
+    Epipe,
+    #[strum(serialize = "EPROTO")]
+    Eproto,
+    #[strum(serialize = "EPROTONOSUPPORT")]
+    Eprotonosupport,
+    #[strum(serialize = "EPROTOTYPE")]
+    Eprototype,
     /// `sys.float_info.epsilon` field.
     Epsilon,
     /// `@dataclass(eq=...)`.
     Eq,
+    #[strum(serialize = "ERANGE")]
+    Erange,
+    #[strum(serialize = "EREMCHG")]
+    Eremchg,
+    #[strum(serialize = "EREMOTE")]
+    Eremote,
+    #[strum(serialize = "EREMOTEIO")]
+    Eremoteio,
+    #[strum(serialize = "ERESTART")]
+    Erestart,
     /// `math.erf()` function.
     Erf,
     /// `math.erfc()` function.
     Erfc,
+    #[strum(serialize = "ERFKILL")]
+    Erfkill,
+    #[strum(serialize = "EROFS")]
+    Erofs,
+    /// Module name for Linux error-number constants.
+    Errno,
     /// `re.error` exception alias (same as `re.PatternError`)
     #[strum(serialize = "error")]
     Error,
@@ -1096,20 +1332,56 @@ pub enum StaticStrings {
     /// is the lowercase `re.error` alias.
     #[strum(serialize = "Error")]
     ErrorClass,
+    /// Numeric errno values mapped to their symbolic names.
+    Errorcode,
     /// Kwarg name `errors` — `open(errors=...)`.
     Errors,
     /// `re.escape()` function
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    #[strum(serialize = "ESHUTDOWN")]
+    Eshutdown,
+    #[strum(serialize = "ESOCKTNOSUPPORT")]
+    Esocktnosupport,
+    #[strum(serialize = "ESPIPE")]
+    Espipe,
+    #[strum(serialize = "ESRCH")]
+    Esrch,
+    #[strum(serialize = "ESRMNT")]
+    Esrmnt,
+    #[strum(serialize = "ESTALE")]
+    Estale,
+    #[strum(serialize = "ESTRPIPE")]
+    Estrpipe,
+    #[strum(serialize = "ETIME")]
+    Etime,
+    #[strum(serialize = "ETIMEDOUT")]
+    Etimedout,
+    #[strum(serialize = "ETOOMANYREFS")]
+    Etoomanyrefs,
+    #[strum(serialize = "ETXTBSY")]
+    Etxtbsy,
+    #[strum(serialize = "EUCLEAN")]
+    Euclean,
+    #[strum(serialize = "EUNATCH")]
+    Eunatch,
+    #[strum(serialize = "EUSERS")]
+    Eusers,
+    #[strum(serialize = "EWOULDBLOCK")]
+    Ewouldblock,
     /// `csv.excel` dialect.
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
+    #[strum(serialize = "EXDEV")]
+    Exdev,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
     Executable,
+    #[strum(serialize = "EXFULL")]
+    Exfull,
     /// Kwarg name `exist_ok` — `Path.mkdir(exist_ok=...)`.
     ExistOk,
     /// `Path.exists()` method — yields a host call.
