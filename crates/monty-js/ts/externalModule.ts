@@ -128,6 +128,7 @@ const SANDBOX_MODULES = new Set([
   'dataclasses',
   'datetime',
   'decimal',
+  'errno',
   'fnmatch',
   'functools',
   'gc',
