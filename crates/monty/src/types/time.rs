@@ -19,7 +19,7 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_types::ResourceTracker;
+use monty_types::{MontyTime, ResourceTracker};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -111,6 +111,22 @@ pub(crate) fn attached_timezone(time: &Time, heap: &HeapReader<'_>) -> Option<Ti
         HeapReadOutput::TimeZone(tz) => Some(tz.get(heap).clone()),
         // Constructors only ever attach a `timezone`.
         _ => unreachable!("a time's tzinfo reference always points at a timezone"),
+    }
+}
+
+/// The host-value form of a time, carrying its zone's offset and name when it has one.
+#[must_use]
+pub(crate) fn to_monty_time(time: &Time, heap: &HeapReader<'_>) -> MontyTime {
+    let (hour, minute, second, microsecond, fold) = time.to_components();
+    let tz = attached_timezone(time, heap);
+    MontyTime {
+        hour,
+        minute,
+        second,
+        microsecond,
+        offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
+        timezone_name: tz.and_then(|tz| tz.name),
+        fold,
     }
 }
 

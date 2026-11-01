@@ -14,7 +14,7 @@ use std::mem;
 
 use ahash::AHashSet;
 use monty_types::{
-    MontyDate, MontyObject, MontyTime, MontyTimeDelta,
+    MontyObject,
     unstable::{self, MontyNode},
 };
 
@@ -161,39 +161,14 @@ fn snapshot_node(value: &Value, walk: &mut Walk, vm: &mut VM<'_>) -> MontyObject
                 defer_drop!(children, vm);
                 MontyObject::named_tuple(type_name, field_names, snapshot_all(children, budget, vm))
             }
-            HeapReadOutput::Date(d) => {
-                let (year, month, day) = date_type::to_ymd(*d.get(vm.heap));
-                MontyObject::date(MontyDate {
-                    year,
-                    month: u8::try_from(month).expect("month is always 1..=12"),
-                    day: u8::try_from(day).expect("day is always 1..=31"),
-                })
-            }
+            HeapReadOutput::Date(d) => MontyObject::date(date_type::to_monty_date(*d.get(vm.heap))),
             HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
                 Some(datetime) => MontyObject::datetime(datetime),
                 None => repr_object(value, vm),
             },
-            HeapReadOutput::Time(t) => {
-                let time = t.get(vm.heap);
-                let (hour, minute, second, microsecond, fold) = time.to_components();
-                let tz = time_type::attached_timezone(time, vm.heap);
-                MontyObject::time(MontyTime {
-                    hour,
-                    minute,
-                    second,
-                    microsecond,
-                    offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
-                    timezone_name: tz.and_then(|tz| tz.name),
-                    fold,
-                })
-            }
+            HeapReadOutput::Time(t) => MontyObject::time(time_type::to_monty_time(t.get(vm.heap), vm.heap)),
             HeapReadOutput::TimeDelta(td) => {
-                let (days, seconds, microseconds) = timedelta_type::components(td.get(vm.heap));
-                MontyObject::timedelta(MontyTimeDelta {
-                    days,
-                    seconds,
-                    microseconds,
-                })
+                MontyObject::timedelta(timedelta_type::to_monty_timedelta(td.get(vm.heap)))
             }
             HeapReadOutput::Decimal(d) => MontyObject::decimal(d.get(vm.heap).to_sci_string(false, true)),
             _ => repr_object(value, vm),

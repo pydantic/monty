@@ -8,6 +8,8 @@ use std::fmt::Write;
 
 use monty_types::{MontyDate, MontyDateTime, MontyTime, MontyTimeDelta};
 
+use crate::types::time::TimeSpec;
+
 /// `YYYY-MM-DD`.
 pub(crate) fn date(date: &MontyDate) -> String {
     format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
@@ -41,12 +43,11 @@ pub(crate) fn time(time: &MontyTime) -> String {
     out
 }
 
-/// The time of day and offset shared by [`datetime`] and [`time`].
+/// The time of day and offset shared by [`datetime`] and [`time`]: the clock
+/// as `isoformat()` writes it, then pydantic's offset, which differs from
+/// CPython's in writing `Z` for zero and never the offset's seconds.
 fn clock(out: &mut String, hour: u8, minute: u8, second: u8, microsecond: u32, offset_seconds: Option<i32>) {
-    write!(out, "{hour:02}:{minute:02}:{second:02}").expect("writing to String cannot fail");
-    if microsecond != 0 {
-        write!(out, ".{microsecond:06}").expect("writing to String cannot fail");
-    }
+    TimeSpec::Auto.write_clock(out, u32::from(hour), u32::from(minute), u32::from(second), microsecond);
     match offset_seconds {
         Some(0) => out.push('Z'),
         Some(offset) => {
