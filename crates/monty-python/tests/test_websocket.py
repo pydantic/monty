@@ -16,7 +16,8 @@ import importlib.util
 import struct
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from types import MappingProxyType, ModuleType
@@ -24,6 +25,7 @@ from typing import Any
 
 import pytest
 from inline_snapshot import snapshot
+from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
@@ -42,6 +44,13 @@ async def ws_url() -> AsyncIterator[str]:
     Runs the script as a subprocess, the way it ships, and reads back the URL
     it prints once listening.
     """
+    async with _relay_process() as url:
+        yield url
+
+
+@asynccontextmanager
+async def _relay_process(*args: str) -> AsyncGenerator[str]:
+    """Run the script with explicit limits and retain its startup handshake."""
     relay = await asyncio.create_subprocess_exec(
         sys.executable,
         str(_RELAY_SCRIPT),
@@ -49,6 +58,7 @@ async def ws_url() -> AsyncIterator[str]:
         '0',
         '--monty-bin',
         find_monty_binary(),
+        *args,
         stdout=asyncio.subprocess.PIPE,
     )
     assert relay.stdout is not None
@@ -245,6 +255,102 @@ async def test_feed_run_over_websocket(ws_url: str):
             # session state persists across feeds within a single checkout
             await session.feed_run('x = 21')
             assert await session.feed_run('x * 2') == snapshot(42)
+
+
+async def test_relay_rejects_oversized_messages_and_recovers():
+    """A refused host frame does not prevent the next SDK journey."""
+    async with _relay_process('--max-message-bytes', '1024') as url:
+        async with connect(url, compression=None) as websocket:
+            await websocket.send(b'x' * 1025)
+            with pytest.raises(ConnectionClosed) as error:
+                await websocket.recv()
+            assert error.value.rcvd is not None
+            assert error.value.rcvd.code == 1009
+        async with AsyncMontyWebsocket(url, request_timeout=30) as pool, pool.checkout() as session:
+            assert await session.feed_run('21 * 2') == snapshot(42)
+
+
+async def test_relay_session_cap_refuses_excess_and_recovers():
+    """Excess connections cannot disturb a live session or retain its slot."""
+    async with _relay_process('--max-sessions', '1') as url:
+        async with AsyncMontyWebsocket(url, request_timeout=30) as pool, pool.checkout() as session:
+            assert await session.feed_run('21 * 2') == snapshot(42)
+            async with connect(url) as excess:
+                with pytest.raises(ConnectionClosed) as error:
+                    await excess.recv()
+                assert error.value.rcvd is not None
+                assert error.value.rcvd.code == 1013
+            assert await session.feed_run('6 * 7') == snapshot(42)
+        deadline = asyncio.get_running_loop().time() + 5
+        while True:
+            try:
+                async with AsyncMontyWebsocket(url, request_timeout=30) as pool, pool.checkout() as session:
+                    assert await session.feed_run('6 * 7') == snapshot(42)
+                break
+            except MontyDisconnectError as error:
+                assert error.close_code == 1013
+                assert error.close_reason == snapshot('relay is at capacity')
+                assert asyncio.get_running_loop().time() < deadline, 'relay did not release the reaped child slot'
+                await asyncio.sleep(0.01)
+
+
+async def test_relay_rejects_worker_length_before_reading_payload(monkeypatch: pytest.MonkeyPatch):
+    """A corrupt worker length is refused without waiting for its payload."""
+    relay = _load_relay_script()
+    spawn = asyncio.create_subprocess_exec
+    children: list[asyncio.subprocess.Process] = []
+
+    async def corrupt_worker(*_args: Any, **kwargs: Any):
+        child = await spawn(
+            sys.executable,
+            '-c',
+            'import struct,sys,time; sys.stdout.buffer.write(struct.pack("<I", 1025)); '
+            'sys.stdout.buffer.flush(); time.sleep(60)',
+            **kwargs,
+        )
+        children.append(child)
+        return child
+
+    async def handler(websocket: ServerConnection):
+        await relay.bridge_connection(websocket, 'unused', 1024)
+
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', corrupt_worker)
+    async with serve(handler, '127.0.0.1', 0) as server:
+        host, port = server.sockets[0].getsockname()[:2]
+        async with connect(relay.format_ws_url(host, port)) as websocket:
+            with pytest.raises(ConnectionClosed) as error:
+                await asyncio.wait_for(websocket.recv(), timeout=5)
+            assert error.value.rcvd is not None
+            assert error.value.rcvd.code == 1009
+    assert len(children) == 1
+    assert children[0].returncode is not None
+
+
+async def test_relay_rejects_nonpositive_limits_at_startup():
+    """Invalid bounds fail before the relay announces a listening socket."""
+    errors: list[str] = []
+    for flag in ('--max-message-bytes', '--max-sessions'):
+        for value in ('0', '-1'):
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(_RELAY_SCRIPT),
+                flag,
+                value,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            assert process.returncode == 2
+            assert stdout == b''
+            errors.append(stderr.decode().splitlines()[-1])
+    assert errors == snapshot(
+        [
+            'websocket_relay.py: error: argument --max-message-bytes: must be a positive integer',
+            'websocket_relay.py: error: argument --max-message-bytes: must be a positive integer',
+            'websocket_relay.py: error: argument --max-sessions: must be a positive integer',
+            'websocket_relay.py: error: argument --max-sessions: must be a positive integer',
+        ]
+    )
 
 
 async def test_inputs_and_async_external_function_over_websocket(ws_url: str):
