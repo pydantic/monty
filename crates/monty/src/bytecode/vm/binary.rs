@@ -120,10 +120,13 @@ impl VM<'_> {
         let Value::Ref(id) = self.stack[len - 2] else {
             return Ok(false);
         };
-        if !self.heap.has_binding_and_operand_only(id) || !self.stack[len - 1].is_str(self.heap) {
+        let HeapData::Str(text) = self.heap.get(id) else {
             return Ok(false);
-        }
-        if !matches!(self.heap.get(id), HeapData::Str(text) if text.can_reuse_append_buffer(self.heap)) {
+        };
+        if !self.heap.has_binding_and_operand_only(id)
+            || !self.stack[len - 1].is_str(self.heap)
+            || !text.can_reuse_append_buffer(self.heap)
+        {
             return Ok(false);
         }
 

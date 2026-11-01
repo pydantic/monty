@@ -615,7 +615,9 @@ impl<'h> HeapReadMut<'h, Str> {
         // Restore the original text even when growth is rejected, before the VM handles the exception.
         let string = self.get_mut(vm.heap);
         string.0 = StringData::Owned(buffer);
-        string.1.set(None);
+        if result.is_ok() {
+            string.1.set(None);
+        }
         string.2.set(if result.is_ok() { appended_ascii } else { old_ascii });
         result.map_err(Into::into)
     }
@@ -2383,6 +2385,31 @@ mod tests {
 
     use super::*;
     use crate::run::{Program, SessionTables};
+
+    #[test]
+    fn rejected_append_preserves_cached_hash() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let value = allocate_string("x".repeat(80), vm.heap);
+            defer_drop!(value, vm);
+            let hash = value.py_hash(vm).unwrap();
+            let Value::Ref(id) = value else { unreachable!() };
+            let string = vm.heap.read_as::<Str>(*id).unwrap();
+            assert!(string.get(vm.heap).is_ascii(vm.heap));
+
+            vm.heap.tracker = ResourceTracker::new(monty_types::ResourceLimits::default().max_memory(0));
+            let suffix = Value::InlineString(InlineStr::new("tail").unwrap());
+            assert!(string.append_unobserved(&suffix, vm).is_err());
+
+            let text = string.get(vm.heap);
+            assert_eq!(text.as_str(vm.heap), "x".repeat(80));
+            assert_eq!(text.1.get(), hash);
+            assert_eq!(text.2.get(), Some(true));
+        });
+    }
 
     #[test]
     fn append_ownership_check_excludes_readers_and_aliases() {
