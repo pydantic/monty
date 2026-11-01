@@ -110,6 +110,26 @@ assert TypeAdapter(dict[int, int]).dump_python({1: 1}, mode='json') == {'1': 1}
 assert TypeAdapter(dict[float, int]).dump_python({1.0: 1, 2.5: 2}, mode='json') == {'1.0': 1, '2.5': 2}
 assert TypeAdapter(dict[int, int]).dump_python({1: 1}) == {1: 1}
 assert TypeAdapter(dict[date, int]).dump_python({date(2020, 1, 1): 1}) == {date(2020, 1, 1): 1}
+# an int key meets CPython's int string limit, as pydantic's `str()` of it does; a value does not
+wide = 1 << 100_000
+try:
+    TypeAdapter(dict[int, int]).dump_python({wide: 1}, mode='json')
+    assert False, 'expected a ValueError'
+except ValueError as exc:
+    assert str(exc) == (
+        'Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit'
+    )
+try:
+    TypeAdapter(dict[int, int]).dump_json({wide: 1})
+    assert False, 'expected a ValueError'
+except ValueError as exc:
+    assert str(exc) == (
+        'Error serializing to JSON: ValueError: Exceeds the limit (4300 digits) for integer string conversion; '
+        'use sys.set_int_max_str_digits() to increase the limit'
+    )
+assert TypeAdapter(dict[int, int]).dump_python({wide: 1}) == {wide: 1}
+assert len(TypeAdapter(int).dump_json(wide)) == 30103
+assert TypeAdapter(int).dump_python(wide, mode='json') == wide
 
 # === dump_json ===
 assert Any_.dump_json(1) == b'1'
