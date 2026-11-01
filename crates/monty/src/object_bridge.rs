@@ -11,8 +11,8 @@ use std::mem;
 
 use ahash::{AHashMap, AHashSet};
 use monty_types::{
-    CallArgs, InvalidInputError, MontyComplex, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
-    MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
+    CallArgs, InvalidInputError, MontyComplex, MontyDateTime, MontyFileHandle, MontyObject, MontyTime, MontyTimeZone,
+    MontyType, MontyUuid,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 
@@ -340,40 +340,13 @@ impl GraphExporter {
             HeapReadOutput::Cell(_) | HeapReadOutput::HostClassType(_) => {
                 unreachable!("cells and host class types are routed by push_ref")
             }
-            HeapReadOutput::Date(d) => {
-                let (year, month, day) = date_type::to_ymd(*d.get(vm.heap));
-                MontyNode::Date(MontyDate {
-                    year,
-                    month: u8::try_from(month).expect("month is always 1..=12"),
-                    day: u8::try_from(day).expect("day is always 1..=31"),
-                })
-            }
+            HeapReadOutput::Date(d) => MontyNode::Date(date_type::to_monty_date(*d.get(vm.heap))),
             HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
                 Some(datetime) => MontyNode::DateTime(datetime),
                 None => repr_node(value, vm),
             },
-            HeapReadOutput::Time(t) => {
-                let time = t.get(vm.heap);
-                let (hour, minute, second, microsecond, fold) = time.to_components();
-                let tz = time_type::attached_timezone(time, vm.heap);
-                MontyNode::Time(MontyTime {
-                    hour,
-                    minute,
-                    second,
-                    microsecond,
-                    offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
-                    timezone_name: tz.and_then(|tz| tz.name),
-                    fold,
-                })
-            }
-            HeapReadOutput::TimeDelta(td) => {
-                let (days, seconds, microseconds) = timedelta_type::components(td.get(vm.heap));
-                MontyNode::TimeDelta(MontyTimeDelta {
-                    days,
-                    seconds,
-                    microseconds,
-                })
-            }
+            HeapReadOutput::Time(t) => MontyNode::Time(time_type::to_monty_time(t.get(vm.heap), vm.heap)),
+            HeapReadOutput::TimeDelta(td) => MontyNode::TimeDelta(timedelta_type::to_monty_timedelta(td.get(vm.heap))),
             // The canonical string, with an upper-case exponent whatever the context's
             // `capitals`, so the host parses back the exact value.
             HeapReadOutput::Decimal(d) => MontyNode::Decimal(d.get(vm.heap).to_sci_string(false, true)),

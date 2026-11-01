@@ -17,7 +17,6 @@
 use std::str;
 
 use ahash::AHashSet;
-use monty_types::{MontyDate, MontyTime, MontyTimeDelta};
 use num_bigint::BigInt;
 use smallvec::SmallVec;
 
@@ -638,37 +637,10 @@ fn heap_data<'v>(value: &Value, vm: &'v VM<'_>) -> Option<(HeapId, &'v HeapData)
 /// has no fixed offset to write.
 fn temporal_text(id: HeapId, vm: &VM<'_>) -> Option<String> {
     match vm.heap.read(id) {
-        HeapReadOutput::Date(d) => {
-            let (year, month, day) = date_type::to_ymd(*d.get(vm.heap));
-            Some(iso::date(&MontyDate {
-                year,
-                month: u8::try_from(month).expect("month is always 1..=12"),
-                day: u8::try_from(day).expect("day is always 1..=31"),
-            }))
-        }
+        HeapReadOutput::Date(d) => Some(iso::date(&date_type::to_monty_date(*d.get(vm.heap)))),
         HeapReadOutput::DateTime(dt) => datetime_type::to_monty_datetime(dt.get(vm.heap)).map(|dt| iso::datetime(&dt)),
-        HeapReadOutput::Time(t) => {
-            let time = t.get(vm.heap);
-            let (hour, minute, second, microsecond, fold) = time.to_components();
-            let tz = time_type::attached_timezone(time, vm.heap);
-            Some(iso::time(&MontyTime {
-                hour,
-                minute,
-                second,
-                microsecond,
-                offset_seconds: tz.as_ref().map(|tz| tz.offset_seconds),
-                timezone_name: tz.and_then(|tz| tz.name),
-                fold,
-            }))
-        }
-        HeapReadOutput::TimeDelta(td) => {
-            let (days, seconds, microseconds) = timedelta_type::components(td.get(vm.heap));
-            Some(iso::timedelta(&MontyTimeDelta {
-                days,
-                seconds,
-                microseconds,
-            }))
-        }
+        HeapReadOutput::Time(t) => Some(iso::time(&time_type::to_monty_time(t.get(vm.heap), vm.heap))),
+        HeapReadOutput::TimeDelta(td) => Some(iso::timedelta(&timedelta_type::to_monty_timedelta(td.get(vm.heap)))),
         _ => None,
     }
 }
