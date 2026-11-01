@@ -38,8 +38,6 @@ orders = [
     }
     for n in range(20)
 ]
-document = adapter.dump_json(adapter.validate_python(orders))
-
 count = 0
 for _ in range(20):
     count += len(adapter.validate_python(orders))

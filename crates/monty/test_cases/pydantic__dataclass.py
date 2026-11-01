@@ -221,6 +221,32 @@ class Outer:
 assert TypeAdapter(Outer).validate_python(poked) == Outer(1, Inner(0), 0)
 assert poked == {'x': 1, 'inner': {}, 'extra': 1}
 
+# A factory that adds, changes or removes a later field's key: the walk reads the dict as it is.
+keyed = {'inner': {}, 'x': 1, 'later': 1}
+
+
+def rewrite():
+    keyed['tail'] = 5
+    keyed['later'] = 9
+    keyed.pop('x')
+    return 0
+
+
+@dataclass
+class Rewriter:
+    n: int = field(default_factory=rewrite)
+
+
+@dataclass
+class Rewritten:
+    inner: Rewriter
+    x: int = 0
+    later: int = 0
+    tail: int = 0
+
+
+assert TypeAdapter(Rewritten).validate_python(keyed) == Rewritten(Rewriter(0), 0, 9, 5)
+
 # === namedtuple ===
 Point = namedtuple('Point', ['x', 'y'])
 PointAdapter = TypeAdapter(Point)
