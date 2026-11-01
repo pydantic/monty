@@ -28,6 +28,11 @@ Implemented: `name`, `parent`, `stem`, `suffix`, `suffixes`, `parts`,
 `is_absolute()`, `joinpath(*other)`, `with_name(name)`, `with_stem(stem)`,
 `with_suffix(suffix)`, `as_posix()`, `__fspath__()`.
 
+`with_name`, `with_stem` and `with_suffix` also accept a `Path` argument, where CPython expects a string.
+Errors for other non-string arguments can differ from CPython.
+`suffixes` still counts extra leading dots as suffix separators: `Path('..hidden').suffixes` is `['.hidden']`,
+where CPython returns `[]`.
+
 The `/` operator works in both directions (`Path("a") / "b"`,
 `Path("a") / Path("b")`, `"a" / Path("b")`).
 

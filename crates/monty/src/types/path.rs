@@ -27,7 +27,7 @@ use crate::{
     types::{
         LazyHeapSet, List, PyTrait, Type, allocate_tuple,
         dir_scan::{glob_call, walk_call},
-        str::allocate_string,
+        str::{StringRepr, allocate_string},
     },
     value::{EitherStr, Value},
 };
@@ -79,10 +79,14 @@ impl Path {
 
     /// Returns the final component of the path.
     ///
-    /// Returns an empty string if the path ends with a separator or is empty.
+    /// Roots, the current directory and empty paths have no name.
     #[must_use]
     pub fn name(&self) -> &str {
-        self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+        if self.path == "." {
+            ""
+        } else {
+            self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+        }
     }
 
     /// Returns the path without its final component (parent directory).
@@ -107,11 +111,7 @@ impl Path {
     #[must_use]
     pub fn stem(&self) -> &str {
         let name = self.name();
-        if name.starts_with('.') && !name[1..].contains('.') {
-            // Hidden file without extension (e.g., ".bashrc")
-            return name;
-        }
-        name.rsplit_once('.').map_or(name, |(stem, _)| stem)
+        &name[..name.len() - self.suffix().len()]
     }
 
     /// Returns the file extension (last suffix), including the leading dot.
@@ -119,11 +119,7 @@ impl Path {
     /// Returns an empty string if there is no extension.
     #[must_use]
     pub fn suffix(&self) -> &str {
-        let name = self.name();
-        if name.starts_with('.') && !name[1..].contains('.') {
-            // Hidden file without extension (e.g., ".bashrc")
-            return "";
-        }
+        let name = self.name().trim_start_matches('.');
         name.rfind('.').map_or("", |idx| &name[idx..])
     }
 
@@ -199,16 +195,13 @@ impl Path {
     /// Returns a new path with the name changed.
     ///
     /// # Errors
-    /// Returns an error if the path has no name or if the new name is empty.
+    /// Returns an error for an invalid name or a path without a final component.
     pub fn with_name(&self, name: &str) -> Result<String, String> {
-        if name.is_empty() {
-            return Err("Invalid name: empty string".to_owned());
-        }
-        if name.contains('/') {
-            return Err(format!("Invalid name: {name:?} contains path separator"));
+        if name.is_empty() || name == "." || name.contains('/') {
+            return Err(format!("Invalid name {}", StringRepr(name)));
         }
         if self.name().is_empty() {
-            return Err("Path has no name".to_owned());
+            return Err(self.empty_name_error());
         }
 
         if let Some(parent) = self.parent() {
@@ -230,43 +223,35 @@ impl Path {
     /// # Errors
     /// Returns an error if the path has no name or if the new stem is empty.
     pub fn with_stem(&self, stem: &str) -> Result<String, String> {
-        if stem.is_empty() {
-            return Err("Invalid stem: empty string".to_owned());
-        }
-        if stem.contains('/') {
-            return Err(format!("Invalid stem: {stem:?} contains path separator"));
-        }
-        if self.name().is_empty() {
-            return Err("Path has no name".to_owned());
-        }
-
         let suffix = self.suffix();
-        let new_name = format!("{stem}{suffix}");
-        self.with_name(&new_name)
+        if suffix.is_empty() {
+            self.with_name(stem)
+        } else if stem.is_empty() {
+            Err(format!("PosixPath({}) has a non-empty suffix", StringRepr(&self.path)))
+        } else {
+            self.with_name(&format!("{stem}{suffix}"))
+        }
     }
 
     /// Returns a new path with the suffix changed.
     ///
-    /// If the suffix is empty, removes the existing suffix.
-    /// If the suffix doesn't start with '.', it's added.
+    /// An empty suffix removes the existing suffix; other suffixes must start with `.`.
     pub fn with_suffix(&self, suffix: &str) -> Result<String, String> {
-        if self.name().is_empty() {
-            return Err("Path has no name".to_owned());
-        }
-
-        let suffix = if suffix.is_empty() || suffix.starts_with('.') {
-            suffix.to_owned()
-        } else {
-            format!(".{suffix}")
-        };
-
-        if suffix.contains('/') {
-            return Err(format!("Invalid suffix: {suffix:?} contains path separator"));
-        }
-
         let stem = self.stem();
+        if stem.is_empty() {
+            return Err(self.empty_name_error());
+        }
+        if !suffix.is_empty() && !suffix.starts_with('.') {
+            return Err(format!("Invalid suffix {}", StringRepr(suffix)));
+        }
         let new_name = format!("{stem}{suffix}");
         self.with_name(&new_name)
+    }
+
+    /// Explains why a root or current-directory path cannot have its name replaced.
+    fn empty_name_error(&self) -> String {
+        let path = if self.path.is_empty() { "." } else { self.as_posix() };
+        format!("PosixPath({}) has an empty name", StringRepr(path))
     }
 
     /// Returns the path as a POSIX string (forward slashes).
