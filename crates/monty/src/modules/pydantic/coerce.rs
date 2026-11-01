@@ -236,24 +236,19 @@ pub(crate) fn bytes_as_date(bytes: &[u8], heap: &Heap) -> Result<Value, ErrorTyp
     }
 }
 
-/// Text as a `time`.
-pub(crate) fn bytes_as_time(bytes: &[u8], vm: &mut VM<'_>) -> Result<Value, ErrorType> {
-    match SpeedTime::parse_bytes_with_config(bytes, &time_config()) {
-        Ok(time) => Ok(time_value(&time, vm)),
-        Err(err) => Err(ErrorType::TimeParsing {
-            error: parse_error_text(&err),
-        }),
-    }
+/// Text as a parsed `time`, for [`time_value`] once the text's borrow is released:
+/// building the value needs the VM, which the text may be borrowed from.
+pub(crate) fn parse_time(bytes: &[u8]) -> Result<SpeedTime, ErrorType> {
+    SpeedTime::parse_bytes_with_config(bytes, &time_config()).map_err(|err| ErrorType::TimeParsing {
+        error: parse_error_text(&err),
+    })
 }
 
-/// Text as a `datetime`.
-pub(crate) fn bytes_as_datetime(bytes: &[u8], vm: &mut VM<'_>) -> Result<Value, ErrorType> {
-    match SpeedDateTime::parse_bytes_with_config(bytes, &datetime_config()) {
-        Ok(dt) => datetime_value(&dt, vm),
-        Err(err) => Err(ErrorType::DatetimeParsing {
-            error: parse_error_text(&err),
-        }),
-    }
+/// Text as a parsed `datetime`, for [`datetime_value`]; see [`parse_time`].
+pub(crate) fn parse_datetime(bytes: &[u8]) -> Result<SpeedDateTime, ErrorType> {
+    SpeedDateTime::parse_bytes_with_config(bytes, &datetime_config()).map_err(|err| ErrorType::DatetimeParsing {
+        error: parse_error_text(&err),
+    })
 }
 
 /// Text as a `timedelta`: ISO 8601 durations and `HH:MM:SS` forms.
@@ -376,7 +371,7 @@ fn date_value(date: SpeedDate, heap: &Heap) -> Result<Value, ErrorType> {
 const YEAR_OUT_OF_RANGE: &str = "year is out of range";
 
 /// A `speedate` time as a `datetime.time`, with a fixed-offset zone when it has one.
-fn time_value(time: &SpeedTime, vm: &mut VM<'_>) -> Value {
+pub(crate) fn time_value(time: &SpeedTime, vm: &mut VM<'_>) -> Value {
     time_type::allocate_parsed(
         i32::from(time.hour),
         i32::from(time.minute),
@@ -388,7 +383,7 @@ fn time_value(time: &SpeedTime, vm: &mut VM<'_>) -> Value {
 }
 
 /// A `speedate` datetime as a `datetime.datetime`, aware when it carries an offset.
-fn datetime_value(dt: &SpeedDateTime, vm: &mut VM<'_>) -> Result<Value, ErrorType> {
+pub(crate) fn datetime_value(dt: &SpeedDateTime, vm: &mut VM<'_>) -> Result<Value, ErrorType> {
     datetime_type::allocate_parsed(
         i32::from(dt.date.year),
         i32::from(dt.date.month),
