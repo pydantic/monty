@@ -36,7 +36,8 @@ use crate::{
     },
     types::{
         Dict, List, Set, allocate_string, allocate_tuple, bytes::allocate_bytes, date as date_type,
-        datetime as datetime_type, set::FrozenSet, time as time_type, timedelta as timedelta_type,
+        datetime as datetime_type, long_int::check_bigint_str_digits_limit, set::FrozenSet, time as time_type,
+        timedelta as timedelta_type,
     },
     value::Value,
 };
@@ -571,10 +572,10 @@ impl<'a> Serializer<'a> {
             Value::Float(f) if f.is_finite() => Ok(zmij::Buffer::new().format_finite(*f).to_owned()),
             Value::Float(_) => Ok("None".to_owned()),
             Value::InternBytes(id) => self.bytes_text(vm.interns.get_bytes(*id)),
-            Value::InternLongInt(id) => Ok(vm.interns.get_long_int(*id).to_string()),
+            Value::InternLongInt(id) => self.bigint_text(vm.interns.get_long_int(*id)),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Bytes(bytes) => self.bytes_text(bytes.as_slice()),
-                HeapData::LongInt(big) => Ok(big.inner().to_string()),
+                HeapData::LongInt(big) => self.bigint_text(big.inner()),
                 HeapData::Decimal(decimal) => Ok(decimal.to_sci_string(false, self.options.capitals)),
                 HeapData::Date(_) | HeapData::DateTime(_) | HeapData::Time(_) | HeapData::TimeDelta(_) => {
                     temporal_text(*id, vm).ok_or_else(|| Self::unknown_type(key, vm))
@@ -594,6 +595,19 @@ impl<'a> Serializer<'a> {
             .map(|item| self.key_text(item, vm))
             .collect::<RunResult<_>>()?;
         Ok(parts.join(","))
+    }
+
+    /// A big-int key's digits, under CPython's `int` string limit, which pydantic
+    /// meets through `str()` of the key; `dump_json` reports it as its own error.
+    fn bigint_text(&self, big: &BigInt) -> RunResult<String> {
+        match check_bigint_str_digits_limit(big) {
+            Ok(()) => Ok(big.to_string()),
+            Err(_) if self.json_text => Err(serialization_error(format!(
+                "Error serializing to JSON: ValueError: {}",
+                ExcType::int_too_large_for_str_message()
+            ))),
+            Err(err) => Err(err),
+        }
     }
 
     /// Bytes as UTF-8 text, with the error for the mode.
