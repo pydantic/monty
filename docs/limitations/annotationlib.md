@@ -32,6 +32,8 @@ equals no constructed reference, and `evaluate()` without `globals` or an `owner
 Divergences:
 
 - **`type_params` is accepted and ignored**: Monty has no type parameters.
+- **`is_argument` and `is_class` are stored as `bool`**, so `ForwardRef('a', is_argument=1).__forward_is_argument__`
+    is `True` where CPython keeps the `1`.
 - **`__globals__`, `__cell__`, `__extra_names__`, `__code__` and `__ast_node__` raise `AttributeError`.**
 - **`__forward_arg__` is the resolved text** of a reference an evaluation built, and a class is written by its bare
     name; see [typing.md](typing.md#get_type_hints).

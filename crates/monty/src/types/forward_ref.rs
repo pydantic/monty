@@ -185,12 +185,15 @@ impl ForwardRef {
         } else {
             Precedence::Tuple
         };
+        // Converted before any field is cloned, so a failing `__bool__` leaks nothing.
+        let is_argument = is_argument.py_bool(vm)?;
+        let is_class = is_class.py_bool(vm)?;
         let forward_ref = Self {
             arg: arg.clone_with_heap(vm),
             module: module.clone_with_heap(vm),
             owner: owner.clone_with_heap(vm),
-            is_argument: is_argument.py_bool(vm)?,
-            is_class: is_class.py_bool(vm)?,
+            is_argument,
+            is_class,
             precedence,
             globals: None,
         };
@@ -369,12 +372,13 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
         defer_drop!(type_params, vm);
         defer_drop!(owner, vm);
         defer_drop!(format, vm);
-        let (arg, own_owner, is_class) = {
+        let (arg, own_owner, is_class, own_globals) = {
             let this = self.get(vm.heap);
             (
                 this.arg.clone_with_heap(vm.heap),
                 this.owner.clone_with_heap(vm.heap),
                 this.is_class,
+                this.globals,
             )
         };
         defer_drop!(arg, vm);
@@ -394,9 +398,16 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
             }
         };
         let owner = if matches!(owner, Value::None) { own_owner } else { owner };
-        let globals = match globals {
-            Value::None => typing::owner_globals(owner, vm),
-            dict => dict.clone_with_heap(vm),
+        // As CPython, `__globals__` (the dict a stringifier was composed against)
+        // comes before the owner's globals.
+        let globals = match (globals, own_globals) {
+            (Value::None, Some(FrameGlobals::Dict(id))) => {
+                vm.heap.inc_ref(id);
+                Value::Ref(id)
+            }
+            (Value::None, Some(FrameGlobals::Slots)) => Value::None,
+            (Value::None, None) => typing::owner_globals(owner, vm),
+            (dict, _) => dict.clone_with_heap(vm),
         };
         defer_drop!(globals, vm);
         let locals = match locals {
@@ -440,6 +451,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         let Some(HeapReadOutput::ForwardRef(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
+        // The owner may itself be a reference, so a deep chain recurses.
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let (mine, theirs) = {
             let (this, that) = (self.get(vm.heap), other.get(vm.heap));
             if this.is_class != that.is_class || this.globals != that.globals {
@@ -471,6 +485,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     /// Hashes what [`Self::py_eq_impl`] compares; an unhashable owner makes the
     /// reference unhashable, as CPython's `hash((..., owner))` raises.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let (parts, is_class, globals) = {
             let this = self.get(vm.heap);
             (
@@ -503,7 +519,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     }
 
     /// `ForwardRef('Later')`, then `module=`, `is_class=True` and `owner=` when set.
+    /// During a `FORWARDREF` evaluation it is the bare text, as CPython's
+    /// `_Stringifier.__repr__`, so `f'{Later!r}'` and `str(Later)` render `Later`.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        if vm.in_forward_ref_evaluation() {
+            return Ok(f.write_str(&self.text(vm))?);
+        }
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let (text, module, owner, is_class) = {
             let this = self.get(vm.heap);
             (
@@ -597,11 +620,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         self.write_operand(Precedence::Atom, vm, &mut text);
         text.push('[');
         match key {
-            // A tuple key lists its items bare, as `ast.unparse` writes a subscript.
+            // A tuple key lists its items bare, as `ast.unparse` writes a subscript,
+            // keeping the `()` and trailing comma that make `Later[()]` and `Later[int,]` tuples.
             Value::Ref(id) if let HeapData::Tuple(tuple) = vm.heap.get(*id) => {
                 let items = clone_items(tuple.as_slice(), vm)?;
                 defer_drop!(items, vm);
-                render_items(items, vm, &mut text)?;
+                if items.is_empty() {
+                    text.push_str("()");
+                } else {
+                    render_items(items, vm, &mut text)?;
+                    if items.len() == 1 {
+                        text.push(',');
+                    }
+                }
             }
             Value::Ref(id) if let HeapData::Slice(slice) = vm.heap.get(*id) => {
                 let (start, stop, step) = (slice.start, slice.stop, slice.step);
@@ -686,6 +717,7 @@ fn write_call(text: &mut String, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     text.push('(');
     render_items(positional, vm, text)?;
     for (index, (name, value)) in keywords.iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(index)?;
         if index > 0 || !positional.is_empty() {
             text.push_str(", ");
         }
@@ -697,9 +729,12 @@ fn write_call(text: &mut String, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     Ok(())
 }
 
-/// Appends `items` comma-separated, each rendered as an argument.
+/// Appends `items` comma-separated, each rendered as an argument. The buffer
+/// is allocator-backed, so the periodic poll sees it grow, as `repr()` of a
+/// container is checked (see `repr_sequence_fmt`).
 fn render_items(items: &[Value], vm: &mut VM<'_>, text: &mut String) -> RunResult<()> {
     for (index, item) in items.iter().enumerate() {
+        vm.heap.tracker.check_memory_time_every(index)?;
         if index > 0 {
             text.push_str(", ");
         }
@@ -774,6 +809,7 @@ fn render_operand(value: &Value, demanded: Precedence, vm: &mut VM<'_>, text: &m
         Container::Dict(pairs) => {
             text.push('{');
             for (index, (key, value)) in pairs.iter().enumerate() {
+                vm.heap.tracker.check_memory_time_every(index)?;
                 if index > 0 {
                     text.push_str(", ");
                 }

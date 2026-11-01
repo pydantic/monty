@@ -28,8 +28,8 @@ use crate::{
     modules::ModuleFunctions,
     stringize::string_literal_text,
     types::{
-        BuiltinType, ClassAnnotations, Dict, List, Module, PyTrait, allocate_string, allocate_tuple,
-        forward_ref::format_code,
+        BuiltinType, ClassAnnotations, Dict, LazyHeapSet, List, Module, PyTrait, allocate_string, allocate_tuple,
+        forward_ref::format_code, generic_alias::repr_type_arg,
     },
     value::{Marker, Value},
 };
@@ -513,6 +513,8 @@ fn evaluate_hints(
                 Some(literal) => allocate_string(literal, vm.heap),
                 None => hint.clone_with_heap(vm),
             },
+            // A value assigned to `__annotations__`, which `annotations_to_string` stringizes.
+            None if request.format == HintFormat::String => type_repr(hint, vm)?,
             _ => hint.clone_with_heap(vm),
         };
         let entry = List::new(vec![name.clone_with_heap(vm), hint]);
@@ -544,6 +546,13 @@ fn evaluate_hints(
             Value::Builtin(Builtins::ExcType(ExcType::SyntaxError)),
         ],
     )
+}
+
+/// CPython's `annotationlib.type_repr`: a type by its name, anything else by its repr.
+fn type_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let mut text = String::new();
+    repr_type_arg(value, &mut text, vm, &mut LazyHeapSet::default())?;
+    Ok(allocate_string(text, vm.heap))
 }
 
 /// A fresh empty dict.

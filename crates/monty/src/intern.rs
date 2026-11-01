@@ -591,9 +591,9 @@ pub enum StaticStrings {
     AppendText,
     /// `deque.appendleft()` method.
     Appendleft,
-    /// `BaseException.args` attribute.
     /// `arg` parameter of `annotationlib.ForwardRef()`.
     Arg,
+    /// `BaseException.args` attribute.
     Args,
     /// `sys.argv` attribute.
     Argv,
@@ -1124,11 +1124,11 @@ pub enum StaticStrings {
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
-    /// `csv.excel` dialect.
     /// `eval_str` parameter of `annotationlib.get_annotations()`.
     EvalStr,
     /// `ForwardRef.evaluate()` method.
     Evaluate,
+    /// `csv.excel` dialect.
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
@@ -1310,9 +1310,9 @@ pub enum StaticStrings {
     Generic,
     /// `dict.get()` method.
     Get,
-    /// `csv.get_dialect()` function.
     /// `annotationlib.get_annotations()` function.
     GetAnnotations,
+    /// `csv.get_dialect()` function.
     GetDialect,
     /// `typing.get_type_hints()` function.
     GetTypeHints,
@@ -1455,11 +1455,11 @@ pub enum StaticStrings {
     InvalidOperation,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
-    /// `dataclasses.is_dataclass()` function.
     /// `is_argument` parameter of `annotationlib.ForwardRef()`.
     IsArgument,
     /// `is_class` parameter of `annotationlib.ForwardRef()`.
     IsClass,
+    /// `dataclasses.is_dataclass()` function.
     IsDataclass,
     /// `Path.is_dir()` method — yields a host call.
     IsDir,

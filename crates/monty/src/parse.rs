@@ -338,8 +338,11 @@ pub struct Parser<'a, 'i> {
     /// [`Parser::class_keyword_range`].
     class_keyword_offsets: Vec<TextSize>,
     /// Whether `from __future__ import annotations` has been parsed, so the
-    /// definitions after it evaluate their annotations as PEP 563 strings.
+    /// module's definitions evaluate their annotations as PEP 563 strings.
     future_annotations: bool,
+    /// Whether a `__future__` import may still appear: only a docstring and
+    /// other `__future__` imports precede one, at module level.
+    future_allowed: bool,
 }
 
 impl<'a, 'i> Parser<'a, 'i> {
@@ -356,6 +359,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             depth_remaining: MAX_NESTING_DEPTH,
             class_keyword_offsets,
             future_annotations: false,
+            future_allowed: true,
         }
     }
 
@@ -374,7 +378,12 @@ impl<'a, 'i> Parser<'a, 'i> {
         // pass either `Vec<Stmt>` or ruff's `ThinVec<Stmt>` without an intermediate copy.
         let iter = statements.into_iter();
         let mut out = Vec::with_capacity(iter.len());
-        for stmt in iter {
+        for (index, stmt) in iter.enumerate() {
+            // Any other statement, including one whose body this is, ends the
+            // stretch of the file where `__future__` imports are allowed.
+            if self.future_allowed && !(is_future_import(&stmt) || (index == 0 && is_docstring(&stmt))) {
+                self.future_allowed = false;
+            }
             out.push(self.parse_statement(stmt)?);
         }
         Ok(out)
@@ -901,6 +910,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // what it says. `level == 0` keeps `from .__future__ import x` an
                 // ordinary relative import, falling through to the `ImportError`.
                 if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__future__") {
+                    if !self.future_allowed {
+                        return Err(ParseError::syntax(
+                            "from __future__ imports must occur at the beginning of the file",
+                            position,
+                        ));
+                    }
                     return match names
                         .iter()
                         .find(|a| a.asname.is_some() || !SUPPORTED_FUTURES.contains(&a.name.id.as_str()))
@@ -2660,6 +2675,17 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
 /// Does `expr` contain a `:=` that binds in the enclosing (class-body) scope?
 ///
 /// Like ruff's `any_over_expr`, but scope-aware for lambdas: a walrus inside a
+/// Whether `stmt` is a `from __future__ import ...` directive; a relative
+/// `from .__future__` is an ordinary import and ends the stretch like any other.
+fn is_future_import(stmt: &Stmt) -> bool {
+    matches!(stmt, Stmt::ImportFrom(ast::StmtImportFrom { module: Some(module), level: 0, .. }) if module.as_str() == "__future__")
+}
+
+/// Whether `stmt` is a bare string literal, the docstring when it comes first.
+fn is_docstring(stmt: &Stmt) -> bool {
+    matches!(stmt, Stmt::Expr(ast::StmtExpr { value, .. }) if matches!(**value, AstExpr::StringLiteral(_)))
+}
+
 /// lambda *body* binds in the lambda's own scope (legal CPython, e.g.
 /// `class C: f = lambda: (z := 1)`) and is skipped, while lambda parameter
 /// *defaults* evaluate in the enclosing scope and are still searched.

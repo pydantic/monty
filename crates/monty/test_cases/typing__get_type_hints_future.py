@@ -124,6 +124,19 @@ assert get_annotations(C, eval_str=True, globals={'Later': int, 'Foo': Foo}) == 
 }
 
 
+# a namespace handed to `type()` holds real values, so its strings are forward
+# references wherever the call is made
+Built = type('Built', (), {'__annotations__': {'x': 'Missing', 'y': int}})
+assert get_type_hints(Built, {'Missing': str}) == {'x': str, 'y': int}
+
+
+def build():
+    return type('Inner', (), {'__annotations__': {'x': 'Missing'}})
+
+
+assert get_type_hints(build(), {'Missing': bytes}) == {'x': bytes}
+
+
 # a class namespace still shadows the module for its own names
 class Shadowed:
     Later = str

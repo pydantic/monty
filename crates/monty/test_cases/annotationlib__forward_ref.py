@@ -133,6 +133,38 @@ assert ForwardRef('Missing').evaluate(format=Format.FORWARDREF, globals={'Missin
 nested = ForwardRef('list[Missing]').evaluate(format=Format.FORWARDREF)
 assert nested.__origin__ is list
 assert nested.__args__[0].__forward_arg__ == 'Missing'
+# a reference an evaluation built keeps the globals it was composed against,
+# which `evaluate()` uses before the owner's
+composed_empty = ForwardRef('Foo.attr', owner=owner).evaluate(globals={}, format=Format.FORWARDREF)
+assert composed_empty.__forward_arg__ == 'Foo.attr'
+assert composed_empty.evaluate(format=Format.FORWARDREF) == composed_empty
+try:
+    composed_empty.evaluate()
+    assert False, 'expected NameError'
+except NameError as exc:
+    assert str(exc) == "name 'Foo' is not defined"
+# subscripts keep the shape of a tuple key
+shapes = ForwardRef('(Missing[()], Missing[int,], Missing[int, str], Missing[1:2], Missing[::3])').evaluate(
+    format=Format.FORWARDREF
+)
+assert [ref.__resolved_str__ for ref in shapes] == [
+    'Missing[()]',
+    'Missing[int,]',
+    'Missing[int, str]',
+    'Missing[1:2]',
+    'Missing[::3]',
+]
+assert ForwardRef('Missing[()]').evaluate(format=Format.FORWARDREF).evaluate(globals={'Missing': dict}) == dict[()]
+# a chain of owners recurses in hashing, equality and repr
+deep = ForwardRef('x')
+for _ in range(2000):
+    deep = ForwardRef('x', owner=deep)
+for operation in [hash, repr, lambda ref: ref == ForwardRef('x', owner=ref)]:
+    try:
+        operation(deep)
+        assert False, 'expected RecursionError'
+    except RecursionError as exc:
+        assert str(exc) == 'maximum recursion depth exceeded'
 assert nested.__args__[0].__owner__ is None
 assert nested.__args__[0] != ForwardRef('Missing')
 assert ForwardRef('list[Missing]').evaluate(format=Format.FORWARDREF, globals={'Missing': int}) == list[int]
@@ -151,7 +183,8 @@ assert (
 # an evaluation that raises for another reason is also kept
 broken = ForwardRef('Foo.missing')
 assert broken.evaluate(format=Format.FORWARDREF, globals={'Foo': Foo}) is broken
-assert ForwardRef('1 / 0').evaluate(format=Format.FORWARDREF) is not None
+failing = ForwardRef('1 / 0')
+assert failing.evaluate(format=Format.FORWARDREF) is failing
 try:
     ForwardRef('1 / 0').evaluate()
     assert False, 'expected ZeroDivisionError'
@@ -220,6 +253,31 @@ for fmt, message in [
 assert get_annotations(f) is not get_annotations(f)
 
 
+# a conversion renders an unresolved name as its text; formatting it directly cannot
+def converted(a: f'{Missing!r}', b: f'{Missing!s:>10}', c: f'{Missing!a}', d: repr(Missing), e: str(Missing)):
+    pass
+
+
+assert get_annotations(converted, format=Format.FORWARDREF) == {
+    'a': 'Missing',
+    'b': '   Missing',
+    'c': 'Missing',
+    'd': 'Missing',
+    'e': 'Missing',
+}
+
+
+def formatted(a: f'{Missing:>10}'):
+    pass
+
+
+try:
+    get_annotations(formatted, format=Format.FORWARDREF)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'Cannot stringify annotation containing string formatting'
+
+
 class C:
     x: int
     y: 'Later2'
@@ -230,6 +288,17 @@ assert get_annotations(C) == {'x': int, 'y': 'Later2', 'z': None}
 assert get_annotations(C, format=Format.STRING) == {'x': 'int', 'y': 'Later2', 'z': 'None'}
 assert get_annotations(C, eval_str=True, locals={'Later2': str}) == {'x': int, 'y': str, 'z': None}
 assert get_annotations(C, eval_str=True, globals={'Later2': bytes}) == {'x': int, 'y': bytes, 'z': None}
+
+
+# STRING writes a value assigned to `__annotations__` as `type_repr` does
+class Assigned:
+    pass
+
+
+Assigned.__annotations__ = {'a': int, 'b': 'Later2', 'c': None, 'd': list[int], 'e': 3}
+assigned_strings = {'a': 'int', 'b': 'Later2', 'c': 'None', 'd': 'list[int]', 'e': '3'}
+assert get_annotations(Assigned, format=Format.STRING) == assigned_strings
+assert typing.get_type_hints(Assigned, format=Format.STRING) == assigned_strings
 
 
 def unannotated(a, b=1):

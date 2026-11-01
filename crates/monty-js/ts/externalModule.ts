@@ -119,6 +119,7 @@ const SANDBOX_MODULES = new Set([
   'asyncio',
   'base64',
   'binascii',
+  'bisect',
   'collections',
   'copy',
   'csv',

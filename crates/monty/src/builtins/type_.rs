@@ -183,10 +183,13 @@ fn create_class(
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
     // A compiled class body ends in this call, so its frame's function carries
-    // the body's `from __future__ import annotations` state.
+    // the body's `from __future__ import annotations` state. A namespace built
+    // by hand holds real values, so its strings are forward references, as they
+    // are in CPython, whatever the caller's module declared.
     let future_annotations = vm
         .current_function_id()
-        .is_some_and(|id| vm.interns.get_function(id).future_annotations);
+        .map(|id| vm.interns.get_function(id))
+        .is_none_or(|function| !function.is_class_body || function.future_annotations);
     let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
         class_name,
         namespace_dict,

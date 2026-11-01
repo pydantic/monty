@@ -109,7 +109,9 @@ impl VM<'_> {
         conversion: u8,
         format_spec: Option<&str>,
     ) -> Result<String, RunError> {
-        self.reject_stringifier(value)?;
+        if conversion == 0 {
+            self.reject_stringifier(value)?;
+        }
         if conversion != 0 {
             let converted = self.convert_value(value, conversion)?;
             if let Some(format_spec) = format_spec {
@@ -145,8 +147,8 @@ impl VM<'_> {
         conversion: u8,
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
-        self.reject_stringifier(value)?;
         if conversion == 0 {
+            self.reject_stringifier(value)?;
             // Only a `Decimal` needs the spec back as text; checking first keeps the
             // render off every other value's path.
             if decimal::py::as_decimal(value, self).is_some()
@@ -163,6 +165,8 @@ impl VM<'_> {
 
     /// CPython's `_Stringifier.__format__` error: an f-string cannot render an
     /// unresolved name while a `FORWARDREF` annotation evaluation composes text.
+    /// A `!r` / `!s` / `!a` conversion goes through the stringifier's repr instead,
+    /// which is its text, so only the unconverted paths check this.
     fn reject_stringifier(&self, value: &Value) -> Result<(), RunError> {
         if matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::ForwardRef(_)))
             && self.in_forward_ref_evaluation()

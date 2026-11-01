@@ -109,6 +109,9 @@ extra-standard-library = ["tomllib"]
     "F506", # mixed positional and named placeholders - tests CPython's argument consumption order
     "F507", # placeholder/argument count mismatch - the point of the argument-count tests
 ]
+"crates/monty/test_cases/import__future_{late,nested}.py" = [
+    "F404", # late `__future__` import - the SyntaxError these cases expect
+]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
     "E711", # Comparison to `None` should be `cond is None`

@@ -4,7 +4,6 @@
 module and its members are plain ints; see `limitations/annotationlib.md`."""
 
 import types
-from collections.abc import Mapping
 from typing import Any, final
 
 __all__ = ['Format', 'ForwardRef', 'get_annotations']
@@ -34,7 +33,7 @@ class ForwardRef:
         self,
         *,
         globals: dict[str, Any] | None = None,
-        locals: Mapping[str, Any] | None = None,
+        locals: dict[str, Any] | None = None,
         type_params: tuple[Any, ...] | None = None,
         owner: object = None,
         format: Format = ...,
@@ -51,8 +50,8 @@ class ForwardRef:
 def get_annotations(
     obj: Any,  # any object with __annotations__ or __annotate__
     *,
-    globals: dict[str, object] | None = None,
-    locals: Mapping[str, object] | None = None,
+    globals: dict[str, Any] | None = None,
+    locals: dict[str, Any] | None = None,
     eval_str: bool = False,
     format: Format = ...,
 ) -> dict[str, Any]: ...

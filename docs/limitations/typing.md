@@ -28,7 +28,8 @@ Annotations are unaffected, being stringized rather than evaluated (see below).
 - Annotation introspection on **functions and modules**: `__annotations__` is
     not populated there. Class `__annotations__` **is** populated; see below.
     Function annotations are read only through
-    [`get_type_hints`](#get_type_hints).
+    [`get_type_hints`](#get_type_hints) and
+    [`annotationlib.get_annotations`](annotationlib.md#get_annotations).
 
 ## Class annotations are stringized
 
@@ -100,7 +101,8 @@ Divergences:
 - **`globalns` / `localns` must be a dict or `None`.**
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.
 - **A string stored in a class's `__annotations__` evaluates as annotation source, not as a forward reference**, unless the class body ran under `from __future__ import annotations`.
-    Monty's stored annotations are already strings, so one assigned directly (`C.__annotations__['x'] = 'Missing'`) is indistinguishable from `x: Missing`: it evaluates in the class and session namespaces, so `get_type_hints(C, {'Missing': int})` raises `NameError` where CPython returns `{'x': int}`.
+    Monty's stored annotations are already strings, so one assigned directly to such a class (`C.__annotations__['x'] = 'Missing'`) is indistinguishable from `x: Missing`: it evaluates in the class and session namespaces, so `get_type_hints(C, {'Missing': int})` raises `NameError` where CPython returns `{'x': int}`.
+    A class built by `type()` holds the values it was given, so its strings are forward references, as in CPython.
 - **Annotations are re-evaluated on every call**, including any side effects, where CPython evaluates a non-string annotation once and caches the result.
     A builtin rebound after the first call (`exec('int = str')`) is therefore seen by the next one.
 - **Modules record no annotations**, so `get_type_hints(module)` is `{}`.

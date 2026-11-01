@@ -865,7 +865,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(func_def, what, |interns, namespace_size| {
+        self.emit_make_callable(func_def, what, false, |interns, namespace_size| {
             Self::compile_function_body(func_def, interns, namespace_size, flags)
         })
     }
@@ -887,6 +887,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
+        is_class_body: bool,
         compile_body: impl FnOnce(&mut CompileInterns<'_>, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
@@ -929,6 +930,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.annotations.clone().into_boxed_slice(),
             func_def.future_annotations,
         );
+        let function = if is_class_body {
+            function.with_class_body()
+        } else {
+            function
+        };
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -1020,7 +1026,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(body, "class body", |interns, namespace_size| {
+        self.emit_make_callable(body, "class body", true, |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
