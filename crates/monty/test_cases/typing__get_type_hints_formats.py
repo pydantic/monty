@@ -1,4 +1,4 @@
-from annotationlib import Format, ForwardRef
+from annotationlib import Format, ForwardRef, get_annotations
 from typing import Optional, get_type_hints
 
 NoneType = type(None)
@@ -175,6 +175,27 @@ assert get_type_hints(C, localns={'Later2': int}, format=Format.FORWARDREF) == {
     'v': int,
 }
 assert get_type_hints(C, {'Later2': bytes}, format=Format.FORWARDREF)['x'] is bytes
+
+
+# === Only the evaluation's own references compose text ===
+# a ForwardRef built by code the annotation calls stays an ordinary one, and a
+# composed text embeds it by its repr
+def union_with_int(x):
+    return ForwardRef('y') | int
+
+
+def render(x):
+    return repr(ForwardRef('q')) + f'{ForwardRef("z")}'
+
+
+def constructed(a: union_with_int(Later4), b: Later4 | ForwardRef('y'), c: render(Later4)):
+    pass
+
+
+constructed_hints = get_annotations(constructed, format=Format.FORWARDREF)
+assert constructed_hints['a'] == ForwardRef('y') | int
+assert text(constructed_hints['b']) == ("Later4 | ForwardRef('y')", constructed, False)
+assert constructed_hints['c'] == "ForwardRef('q')ForwardRef('z')"
 
 
 # === An annotation that raises falls back to its text ===

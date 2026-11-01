@@ -99,9 +99,10 @@ exactly, except for the comprehension target restriction in
 `from __future__ import ...` is a compiler directive, not a real import: it
 binds nothing. Of CPython's ten features, eight became mandatory in Python 3.7
 or earlier and so are inert there too. `annotations` is recorded on the
-module's functions and classes, which `typing.get_type_hints()` then
-evaluates as PEP 563 strings (see [typing.md](typing.md#get_type_hints)); class
-`__annotations__` are strings either way. Divergences:
+module's code, and on the `exec()` snippets and later REPL feeds that inherit
+it, so `typing.get_type_hints()` evaluates their annotations as PEP 563 strings
+(see [typing.md](typing.md#get_type_hints)); class `__annotations__` are strings
+either way. Divergences:
 
 - **`barry_as_FLUFL`** (PEP 401) raises
     `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.

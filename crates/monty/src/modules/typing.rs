@@ -389,7 +389,7 @@ pub(crate) fn collect_hints(obj: &Value, request: &HintsRequest, vm: &mut VM<'_>
     match hint_source(obj, vm) {
         HintSource::Function(func_id, globals) => {
             let function = vm.interns.get_function(func_id);
-            let future = function.future_annotations;
+            let future = function.code.future_annotations();
             let pairs: Vec<(Value, Value)> = function
                 .annotations
                 .iter()

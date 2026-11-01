@@ -52,8 +52,8 @@ pub const MAX_IMPORT_COMPONENTS: usize = 32;
 /// `from __future__ import ...` features Monty accepts.
 ///
 /// All but the last are inert in CPython too, having become mandatory by 3.7.
-/// `annotations` binds nothing either, but is recorded on the definitions that
-/// follow it so `typing.get_type_hints()` applies PEP 563's namespace rules.
+/// `annotations` binds nothing either, but is recorded on the module's code so
+/// `typing.get_type_hints()` applies PEP 563's namespace rules.
 const SUPPORTED_FUTURES: [&str; 9] = [
     "nested_scopes",
     "generators",
@@ -150,8 +150,6 @@ pub struct RawFunctionDef {
     /// `(parameter or "return", stringized annotation)` pairs in CPython's order,
     /// read back by `typing.get_type_hints()`.
     pub annotations: Vec<(StringId, StringId)>,
-    /// Whether the definition follows `from __future__ import annotations`.
-    pub future_annotations: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -202,29 +200,40 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
     }
 }
 
+/// A parsed module body.
+pub(crate) struct ParsedModule {
+    pub nodes: Vec<ParseNode>,
+    /// Whether the module runs under `from __future__ import annotations`,
+    /// inherited or imported; the compiler stamps it on every `Code`.
+    pub future_annotations: bool,
+}
+
 /// Parses code into a private interner overlay, discarded if any compilation stage fails.
+/// `future_annotations` is the flag inherited from an earlier REPL feed.
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
     interner: &mut CompileInterns<'_>,
-) -> Result<Vec<ParseNode>, ParseError> {
+    future_annotations: bool,
+) -> Result<ParsedModule, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
     // Module sources are scanned for nesting by their entry points
     // (`MontyRun::new`, the REPL feeds), not here.
-    parse_module_with_filename_id(code, filename_id, interner, usize::MAX)
+    parse_module_with_filename_id(code, filename_id, interner, usize::MAX, future_annotations)
 }
 
 /// [`parse_with_interner`] for a filename already interned — an `exec()`
 /// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
-/// snippets apart.
+/// snippets apart, and which inherits its caller's `future_annotations`.
 pub(crate) fn parse_module_with_filename_id(
     code: &str,
     filename_id: StringId,
     interner: &mut CompileInterns<'_>,
     source_scan_threshold: usize,
-) -> Result<Vec<ParseNode>, ParseError> {
+    future_annotations: bool,
+) -> Result<ParsedModule, ParseError> {
     check_source_nesting(code, Mode::Module, filename_id, source_scan_threshold)?;
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
@@ -235,8 +244,12 @@ pub(crate) fn parse_module_with_filename_id(
         .filter(|token| token.kind() == TokenKind::Class)
         .map(Ranged::start)
         .collect();
-    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
-    parser.parse_statements(parsed.into_syntax().body)
+    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets, future_annotations);
+    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
+    Ok(ParsedModule {
+        nodes,
+        future_annotations: parser.future_annotations,
+    })
 }
 
 /// Parses `code` as a single expression, as `eval()` does.
@@ -253,7 +266,8 @@ pub(crate) fn parse_expression_with_interner(
     let parsed = parse_expression(code)
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // No `class` keywords can occur in a bare expression.
-    let mut parser = Parser::new(code, filename_id, interner, Vec::new());
+    // An expression holds no annotations, so the `__future__` state is moot.
+    let mut parser = Parser::new(code, filename_id, interner, Vec::new(), false);
     parser.parse_expression(*parsed.into_syntax().body)
 }
 
@@ -337,8 +351,8 @@ pub struct Parser<'a, 'i> {
     /// class's traceback frame needs the concrete position. Read only by
     /// [`Parser::class_keyword_range`].
     class_keyword_offsets: Vec<TextSize>,
-    /// Whether `from __future__ import annotations` has been parsed, so the
-    /// module's definitions evaluate their annotations as PEP 563 strings.
+    /// Whether the module runs under `from __future__ import annotations`:
+    /// inherited by an `exec()` snippet or REPL feed, or set by the import.
     future_annotations: bool,
     /// Whether a `__future__` import may still appear: only a docstring and
     /// other `__future__` imports precede one, at module level.
@@ -351,6 +365,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         filename_id: StringId,
         interner: &'a mut CompileInterns<'i>,
         class_keyword_offsets: Vec<TextSize>,
+        future_annotations: bool,
     ) -> Self {
         Self {
             code,
@@ -358,7 +373,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
             class_keyword_offsets,
-            future_annotations: false,
+            future_annotations,
             future_allowed: true,
         }
     }
@@ -1080,7 +1095,6 @@ impl<'a, 'i> Parser<'a, 'i> {
                 body,
                 is_async,
                 annotations,
-                future_annotations: self.future_annotations,
             },
             decorators,
         ))
@@ -1331,7 +1345,6 @@ impl<'a, 'i> Parser<'a, 'i> {
             body,
             is_async: false,
             annotations: Vec::new(),
-            future_annotations: self.future_annotations,
         };
 
         Ok(Node::ClassDef {
@@ -2672,9 +2685,6 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
     }
 }
 
-/// Does `expr` contain a `:=` that binds in the enclosing (class-body) scope?
-///
-/// Like ruff's `any_over_expr`, but scope-aware for lambdas: a walrus inside a
 /// Whether `stmt` is a `from __future__ import ...` directive; a relative
 /// `from .__future__` is an ordinary import and ends the stretch like any other.
 fn is_future_import(stmt: &Stmt) -> bool {
@@ -2686,6 +2696,9 @@ fn is_docstring(stmt: &Stmt) -> bool {
     matches!(stmt, Stmt::Expr(ast::StmtExpr { value, .. }) if matches!(**value, AstExpr::StringLiteral(_)))
 }
 
+/// Does `expr` contain a `:=` that binds in the enclosing (class-body) scope?
+///
+/// Like ruff's `any_over_expr`, but scope-aware for lambdas: a walrus inside a
 /// lambda *body* binds in the lambda's own scope (legal CPython, e.g.
 /// `class C: f = lambda: (z := 1)`) and is skipped, while lambda parameter
 /// *defaults* evaluate in the enclosing scope and are still searched.

@@ -1,13 +1,13 @@
 //! `annotationlib.ForwardRef` — an annotation kept as source text.
 //!
 //! A `ForwardRef` is what `typing.get_type_hints(format=Format.FORWARDREF)`
-//! returns for a name it cannot resolve. While such an evaluation runs, every
-//! `ForwardRef` doubles as CPython's `_Stringifier`: an unresolved name loads
-//! as one, and subscripting, attribute access, calls and operators on it build
-//! a new `ForwardRef` holding the composed source text, so `Later | None`
-//! becomes `ForwardRef('Later | None')`. Outside such an evaluation the object
-//! has the plain `ForwardRef` behaviour: equality by text, `|` builds a union,
-//! and `evaluate()` compiles the text.
+//! returns for a name it cannot resolve. An unresolved name loads as a
+//! stringifier, a `ForwardRef` holding the evaluation's globals: while such an
+//! evaluation runs it doubles as CPython's `_Stringifier`, and subscripting,
+//! attribute access, calls and operators on it build a new stringifier holding
+//! the composed source text, so `Later | None` becomes `ForwardRef('Later | None')`.
+//! A constructed `ForwardRef`, and any one once no evaluation runs, has the plain
+//! behaviour: equality by text, `|` builds a union, and `evaluate()` compiles the text.
 
 use std::{
     fmt::Write,
@@ -216,6 +216,12 @@ impl ForwardRef {
         }
     }
 
+    /// Whether an evaluation made this reference for an unresolved name, so it
+    /// composes text while one runs; a constructed reference never does.
+    pub(crate) fn is_stringifier(&self) -> bool {
+        self.globals.is_some()
+    }
+
     /// The globals dict this reference owns, if any.
     fn globals_dict(&self) -> Option<HeapId> {
         match self.globals {
@@ -259,8 +265,8 @@ impl HeapItem for ForwardRef {
     }
 }
 
-/// Generates a pair of binary-operator hooks that compose text while a
-/// `FORWARDREF` evaluation runs and decline (`NotImplemented`) otherwise.
+/// Generates a pair of binary-operator hooks that compose text on a stringifier
+/// and decline (`NotImplemented`) otherwise.
 macro_rules! composing_binop {
     ($method:ident, $reflected:ident, $op:literal, $precedence:expr) => {
         fn $method(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -273,12 +279,12 @@ macro_rules! composing_binop {
     };
 }
 
-/// Generates a unary-operator hook that composes text while a `FORWARDREF`
-/// evaluation runs and declines otherwise.
+/// Generates a unary-operator hook that composes text on a stringifier and
+/// declines otherwise.
 macro_rules! composing_unary {
     ($method:ident, $op:literal) => {
         fn $method(&self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-            if vm.in_forward_ref_evaluation() {
+            if self.composes(vm) {
                 let mut text = String::from($op);
                 self.write_operand(Precedence::Factor, vm, &mut text);
                 Ok(Some(self.compose(text, Precedence::Factor, vm)))
@@ -290,6 +296,12 @@ macro_rules! composing_unary {
 }
 
 impl<'h> HeapObjectRead<'h, ForwardRef> {
+    /// Whether this reference acts as a stringifier: one an evaluation made,
+    /// while a `FORWARDREF` evaluation is running.
+    fn composes(&self, vm: &VM<'h>) -> bool {
+        self.get(vm.heap).is_stringifier() && vm.in_forward_ref_evaluation()
+    }
+
     /// `__forward_arg__` as a Rust string.
     fn text(&self, vm: &VM<'h>) -> String {
         self.get(vm.heap).arg.as_str(vm).unwrap_or_default().to_owned()
@@ -326,7 +338,7 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
     }
 
     /// `self op other` (or `other op self` when `reflected`) as composed text,
-    /// following `ast.unparse`'s parenthesization; `None` outside a `FORWARDREF` evaluation.
+    /// following `ast.unparse`'s parenthesization; `None` unless this reference [composes](Self::composes).
     fn compose_binop(
         &self,
         other: &Value,
@@ -335,7 +347,7 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
         reflected: bool,
         vm: &mut VM<'h>,
     ) -> RunResult<Option<Value>> {
-        if !vm.in_forward_ref_evaluation() {
+        if !self.composes(vm) {
             return Ok(None);
         }
         // `**` is right-associative, so its left operand is the one that needs parentheses.
@@ -519,10 +531,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     }
 
     /// `ForwardRef('Later')`, then `module=`, `is_class=True` and `owner=` when set.
-    /// During a `FORWARDREF` evaluation it is the bare text, as CPython's
+    /// A stringifier during a `FORWARDREF` evaluation is the bare text, as CPython's
     /// `_Stringifier.__repr__`, so `f'{Later!r}'` and `str(Later)` render `Later`.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        if vm.in_forward_ref_evaluation() {
+        if self.composes(vm) {
             return Ok(f.write_str(&self.text(vm))?);
         }
         let mut guard = vm.recursion_guard()?;
@@ -554,7 +566,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
     }
 
     /// The `__forward_*__` introspection attributes; any other name composes
-    /// `Later.attr` during a `FORWARDREF` evaluation and is an `AttributeError` otherwise.
+    /// `Later.attr` on a stringifier and is an `AttributeError` otherwise.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let this = self.get(vm.heap);
         let value = match attr.static_string(vm.interns) {
@@ -565,7 +577,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
             Some(StaticStrings::DunderOwner) => this.owner.clone_with_heap(vm.heap),
             Some(StaticStrings::DunderForwardIsArgument) => Value::Bool(this.is_argument),
             Some(StaticStrings::DunderForwardIsClass) => Value::Bool(this.is_class),
-            _ if vm.in_forward_ref_evaluation() => {
+            _ if self.composes(vm) => {
                 let mut text = String::new();
                 self.write_operand(Precedence::Atom, vm, &mut text);
                 text.push('.');
@@ -578,12 +590,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    /// `evaluate(...)`; any other method composes `Later.method(...)` during a
-    /// `FORWARDREF` evaluation.
+    /// `evaluate(...)`; any other method composes `Later.method(...)` on a stringifier.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if attr.static_string(vm.interns) == Some(StaticStrings::Evaluate) {
             self.evaluate(args, vm)
-        } else if vm.in_forward_ref_evaluation() {
+        } else if self.composes(vm) {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             text.push('.');
@@ -596,10 +607,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         }
     }
 
-    /// `Later(1, x=Foo)` composes during a `FORWARDREF` evaluation; a plain
-    /// reference is not callable.
+    /// `Later(1, x=Foo)` composes on a stringifier; a plain reference is not callable.
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        if vm.in_forward_ref_evaluation() {
+        if self.composes(vm) {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             write_call(&mut text, args, vm)?;
@@ -610,10 +620,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         }
     }
 
-    /// `Later[int]`, `Later[int, str]` and `Later[1:2]` compose during a
-    /// `FORWARDREF` evaluation; a plain reference is not subscriptable.
+    /// `Later[int]`, `Later[int, str]` and `Later[1:2]` compose on a stringifier;
+    /// a plain reference is not subscriptable.
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        if !vm.in_forward_ref_evaluation() {
+        if !self.composes(vm) {
             return Err(ExcType::type_error_not_sub("ForwardRef"));
         }
         let mut text = String::new();
@@ -654,8 +664,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         Ok(self.compose(text, Precedence::Atom, vm))
     }
 
-    /// `|` composes during a `FORWARDREF` evaluation; otherwise, as CPython's
-    /// `ForwardRef.__or__`, it builds a union with any right operand.
+    /// `|` composes on a stringifier; otherwise, as CPython's `ForwardRef.__or__`,
+    /// it builds a union with any right operand.
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if let Some(composed) = self.compose_binop(other, "|", Precedence::BitOr, false, vm)? {
             Ok(Some(composed))
@@ -744,14 +754,15 @@ fn render_items(items: &[Value], vm: &mut VM<'_>, text: &mut String) -> RunResul
 }
 
 /// Appends `value` as CPython's `_Stringifier` would unparse it: another
-/// reference by its text (parenthesized when `demanded` binds tighter), a tuple,
-/// list, set or dict item by item, a type by its name and anything else by its repr.
+/// stringifier by its text (parenthesized when `demanded` binds tighter), a tuple,
+/// list, set or dict item by item, a type by its name and anything else, including
+/// a constructed `ForwardRef`, by its repr.
 fn render_operand(value: &Value, demanded: Precedence, vm: &mut VM<'_>, text: &mut String) -> RunResult<()> {
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     let container = match value {
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::ForwardRef(forward_ref) => {
+            HeapData::ForwardRef(forward_ref) if forward_ref.is_stringifier() => {
                 let inner = forward_ref.arg.as_str_heap(vm.heap, vm.interns).unwrap_or_default();
                 if demanded > forward_ref.precedence {
                     write!(text, "({inner})")?;

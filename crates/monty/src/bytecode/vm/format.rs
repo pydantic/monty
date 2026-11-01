@@ -109,9 +109,6 @@ impl VM<'_> {
         conversion: u8,
         format_spec: Option<&str>,
     ) -> Result<String, RunError> {
-        if conversion == 0 {
-            self.reject_stringifier(value)?;
-        }
         if conversion != 0 {
             let converted = self.convert_value(value, conversion)?;
             if let Some(format_spec) = format_spec {
@@ -119,18 +116,21 @@ impl VM<'_> {
             } else {
                 Ok(converted)
             }
-        } else if let Some(format_spec) = format_spec {
-            if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
-                Ok(formatted)
-            } else if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
-                Ok(formatted)
-            } else {
-                let value_type = value.py_type_name(self);
-                let spec = self.parse_runtime_spec(format_spec, &value_type)?;
-                self.format_parsed_value(value, 0, &spec)
-            }
         } else {
-            self.convert_value(value, 0)
+            self.reject_stringifier(value)?;
+            if let Some(format_spec) = format_spec {
+                if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
+                    Ok(formatted)
+                } else if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
+                    Ok(formatted)
+                } else {
+                    let value_type = value.py_type_name(self);
+                    let spec = self.parse_runtime_spec(format_spec, &value_type)?;
+                    self.format_parsed_value(value, 0, &spec)
+                }
+            } else {
+                self.convert_value(value, 0)
+            }
         }
     }
 
@@ -168,7 +168,7 @@ impl VM<'_> {
     /// A `!r` / `!s` / `!a` conversion goes through the stringifier's repr instead,
     /// which is its text, so only the unconverted paths check this.
     fn reject_stringifier(&self, value: &Value) -> Result<(), RunError> {
-        if matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::ForwardRef(_)))
+        if matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::ForwardRef(r) if r.is_stringifier()))
             && self.in_forward_ref_evaluation()
         {
             Err(ExcType::type_error(

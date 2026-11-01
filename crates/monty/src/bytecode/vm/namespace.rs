@@ -356,6 +356,12 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Whether the running code was compiled under `from __future__ import
+    /// annotations`, which an `eval()` / `exec()` it calls inherits.
+    pub(crate) fn frame_future_annotations(&self) -> bool {
+        self.current_frame.code.future_annotations()
+    }
+
     /// Whether the current frame stringifies unresolved names, and if so whether
     /// it stringifies every name (see [`MissingNames::ForwardRef`]).
     fn frame_stringifies_names(&self) -> Option<bool> {
@@ -391,7 +397,7 @@ impl<'h> VM<'h> {
     }
 
     /// Whether a `FORWARDREF` annotation evaluation is on the stack, during
-    /// which every `ForwardRef` composes source text (see `types/forward_ref.rs`).
+    /// which every stringifier composes source text (see `types/forward_ref.rs`).
     pub(crate) fn in_forward_ref_evaluation(&self) -> bool {
         self.suspended_frames
             .iter()

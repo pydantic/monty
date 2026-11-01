@@ -294,6 +294,10 @@ pub struct Compiler<'a, 'i> {
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches copied into nested scopes"
+)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -304,6 +308,9 @@ struct ScopeFlags {
     /// Rejects `await` at snippet top level and in its class bodies.
     /// Nested function bodies reset this restriction.
     forbid_await: bool,
+    /// Whether the compile unit runs under `from __future__ import annotations`,
+    /// stamped on every `Code` it produces.
+    future_annotations: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -536,8 +543,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -549,8 +557,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(
+            nodes,
+            interns,
+            globals,
+            options,
+            Some(globals_by_name),
+            future_annotations,
+        )
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
@@ -560,6 +576,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
         check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
@@ -569,6 +586,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
+            future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
 
@@ -581,7 +599,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
+    }
+
+    /// Builds the compiled `Code`, stamped with the unit's `__future__` state.
+    fn finish(self) -> Code {
+        self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -622,7 +645,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -925,10 +948,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         )
-        .with_annotations(
-            func_def.annotations.clone().into_boxed_slice(),
-            func_def.future_annotations,
-        );
+        .with_annotations(func_def.annotations.clone().into_boxed_slice());
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -1021,7 +1041,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ) -> Result<(), CompileError> {
         let flags = self.flags;
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
-            Self::compile_class_body(body, members, class_name, position, interns, namespace_size, flags)
+            Self::compile_class_body(
+                &body.body,
+                members,
+                class_name,
+                position,
+                interns,
+                namespace_size,
+                flags,
+            )
         })
     }
 
@@ -1039,7 +1067,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
     fn compile_class_body(
-        body: &PreparedFunctionDef,
+        body: &[PreparedNode],
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
@@ -1048,7 +1076,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
-        compiler.compile_block(&body.body)?;
+        compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
         // should point at the class statement, not the last member's line.
@@ -1068,14 +1096,14 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
 
         // ...then the PEP 563 state, and the hidden builtin that builds the class object.
-        let future_const = compiler.code.add_const(Value::Bool(body.future_annotations))?;
+        let future_const = compiler.code.add_const(Value::Bool(flags.future_annotations))?;
         compiler.code.emit_u16(Opcode::LoadConst, future_const)?;
         compiler
             .code
             .emit_call_builtin_function(BuiltinsFunctions::BuildClass as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.

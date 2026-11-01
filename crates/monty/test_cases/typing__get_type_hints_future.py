@@ -146,6 +146,17 @@ class Shadowed:
 assert get_type_hints(Shadowed, {'Later': int}) == {'plain': str}
 
 
+# === exec() inherits the import ===
+# as CPython's `exec` does, the snippet's definitions store PEP 563 strings, and
+# so do those of an `exec` nested in it
+namespace = {}
+exec("def snippet(x: 'Foo'): pass\nexec(\"def nested(y: 'Foo'): pass\")", namespace)
+assert get_annotations(namespace['snippet']) == {'x': "'Foo'"}
+assert get_annotations(namespace['nested']) == {'y': "'Foo'"}
+exec('class SnippetClass:\n    x: Missing', namespace)
+assert get_type_hints(namespace['SnippetClass'], {'Missing': int}) == {'x': int}
+
+
 # === Dataclasses keep working ===
 @dataclass
 class D:

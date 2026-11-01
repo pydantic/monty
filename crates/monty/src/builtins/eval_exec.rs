@@ -16,7 +16,7 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
-    parse::{CodeRange, ParseError, parse_expression_with_interner, parse_module_with_filename_id},
+    parse::{CodeRange, ParseError, ParsedModule, parse_expression_with_interner, parse_module_with_filename_id},
     prepare::{SnippetNames, prepare_snippet},
     types::{Type, py_trait::PyTrait},
     value::Value,
@@ -278,15 +278,31 @@ fn compile_snippet<'h>(
         SnippetSource::File { path } => e.into_file_run_error(path, source),
         SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
     };
-    let nodes = match kind {
-        SnippetSource::Exec | SnippetSource::File { .. } => {
-            parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
-        }
+    // `eval()` / `exec()` inherit the caller's `from __future__ import annotations`,
+    // as CPython's do; an imported file starts afresh.
+    let inherited_future = match kind {
+        SnippetSource::Eval | SnippetSource::Exec => vm.frame_future_annotations(),
+        SnippetSource::File { .. } => false,
+    };
+    let ParsedModule {
+        nodes,
+        future_annotations,
+    } = match kind {
+        SnippetSource::Exec | SnippetSource::File { .. } => parse_module_with_filename_id(
+            source,
+            filename_id,
+            &mut overlay,
+            options.source_scan_threshold,
+            inherited_future,
+        ),
         SnippetSource::Eval => {
             let trimmed = source.trim_start();
             let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
             parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
-                .map(|expr| vec![Node::Return(Some(expr))])
+                .map(|expr| ParsedModule {
+                    nodes: vec![Node::Return(Some(expr))],
+                    future_annotations: inherited_future,
+                })
                 .map_err(|e| e.shifted(skipped))
         }
     }
@@ -300,11 +316,18 @@ fn compile_snippet<'h>(
         &mut *vm.global_names
     };
     let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(compile_error)?;
-    let code =
-        Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name).map_err(|e| match kind {
-            SnippetSource::File { path } => e.into_file_run_error(path, source),
-            SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
-        })?;
+    let code = Compiler::compile_snippet(
+        &nodes,
+        &mut overlay,
+        globals,
+        options,
+        globals_by_name,
+        future_annotations,
+    )
+    .map_err(|e| match kind {
+        SnippetSource::File { path } => e.into_file_run_error(path, source),
+        SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
+    })?;
 
     let position = CodeRange {
         filename: filename_id,

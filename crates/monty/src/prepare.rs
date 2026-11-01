@@ -847,7 +847,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             body,
                             is_async,
                             annotations,
-                            future_annotations,
                         },
                     decorators,
                 } => {
@@ -858,8 +857,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func =
-                        self.prepare_function_def(name, &signature, body, is_async, annotations, future_annotations)?;
+                    let func = self.prepare_function_def(name, &signature, body, is_async, annotations)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1711,7 +1709,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
         body: Vec<ParseNode>,
         is_async: bool,
         annotations: Vec<(StringId, StringId)>,
-        future_annotations: bool,
     ) -> Result<PreparedFunctionDef, ParseError> {
         // A `def` (top-level, nested, or method — class bodies are function scopes
         // too) binds its name in the enclosing scope.
@@ -1852,7 +1849,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             default_exprs,
             is_async,
             annotations,
-            future_annotations,
         })
     }
 
@@ -1893,7 +1889,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let RawFunctionDef {
             name: body_name,
             body: body_nodes,
-            future_annotations,
             ..
         } = body;
         let param_names: Vec<StringId> = Vec::new();
@@ -2009,7 +2004,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             default_exprs: Vec::new(),
             is_async: false,
             annotations: Vec::new(),
-            future_annotations,
         };
 
         Ok(Node::ClassDef {
@@ -2175,7 +2169,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             default_exprs,
             is_async: false,
             annotations: Vec::new(),
-            future_annotations: false,
         };
 
         Ok(ExprLoc::new(

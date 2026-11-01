@@ -37,6 +37,10 @@ Divergences:
 - **`__globals__`, `__cell__`, `__extra_names__`, `__code__` and `__ast_node__` raise `AttributeError`.**
 - **`__forward_arg__` is the resolved text** of a reference an evaluation built, and a class is written by its bare
     name; see [typing.md](typing.md#get_type_hints).
+- **A reference an earlier evaluation returned still composes text** when a later `FORWARDREF` evaluation passes it
+    to code it calls: with `old = get_annotations(g, format=Format.FORWARDREF)['a']`, an annotation calling
+    `def use(x): return old | int` gives `ForwardRef('Later | int')` where CPython gives `ForwardRef('Later') | int`.
+    CPython turns its stringifiers into plain references when their evaluation ends.
 - **A class owner supplies the session globals** to `evaluate()`, where CPython reads the class's module from
     `sys.modules`.
 - **`NotImplementedError` for an unsupported `format` carries the text**, so `repr(exc)` is
