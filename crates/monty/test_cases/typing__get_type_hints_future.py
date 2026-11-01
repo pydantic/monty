@@ -155,6 +155,9 @@ assert get_annotations(namespace['snippet']) == {'x': "'Foo'"}
 assert get_annotations(namespace['nested']) == {'y': "'Foo'"}
 exec('class SnippetClass:\n    x: Missing', namespace)
 assert get_type_hints(namespace['SnippetClass'], {'Missing': int}) == {'x': int}
+# `eval()` passes it on too, to an `exec` it runs
+eval('exec("def evaluated(z: \'Foo\'): pass")', namespace)
+assert get_annotations(namespace['evaluated']) == {'z': "'Foo'"}
 
 
 # === Dataclasses keep working ===

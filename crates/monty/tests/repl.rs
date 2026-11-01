@@ -219,6 +219,13 @@ fn repl_future_annotations_persist_across_feeds() {
         output,
         MontyObject::tuple([MontyObject::string("Foo"), MontyObject::string("'Foo'")])
     );
+
+    // A host `call_function` of `exec` runs in a synthetic frame that carries the flag too.
+    feed_run_print(&mut repl, "run = exec").unwrap();
+    let source = MontyObject::string("def called(x: 'Foo'): pass");
+    repl.call_function("run", vec![source], PrintWriter::Stdout).unwrap();
+    let output = feed_run_print(&mut repl, "get_annotations(called)['x']").unwrap();
+    assert_eq!(output, MontyObject::string("'Foo'"));
 }
 
 #[test]

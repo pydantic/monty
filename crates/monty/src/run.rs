@@ -514,7 +514,8 @@ impl Executor {
             .emit(Opcode::ReturnValue)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
-        let module_code = builder.build();
+        // A callable bound to `exec` / `eval` inherits the session's `__future__` state from this frame.
+        let module_code = builder.build().with_future_annotations(session.future_annotations);
         overlay.commit();
         let tables = SessionTables {
             global_names: existing_globals,

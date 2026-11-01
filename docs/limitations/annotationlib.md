@@ -38,8 +38,8 @@ Divergences:
 - **`__forward_arg__` is the resolved text** of a reference an evaluation built, and a class is written by its bare
     name; see [typing.md](typing.md#get_type_hints).
 - **A reference an earlier evaluation returned still composes text** when a later `FORWARDREF` evaluation passes it
-    to code it calls: with `old = get_annotations(g, format=Format.FORWARDREF)['a']`, an annotation calling
-    `def use(x): return old | int` gives `ForwardRef('Later | int')` where CPython gives `ForwardRef('Later') | int`.
+    to code it calls: with `old = get_annotations(g, format=Format.FORWARDREF)['a']`, an annotation `use(old)` with
+    `def use(x): return x | int` gives `ForwardRef('Later | int')` where CPython gives `ForwardRef('Later') | int`.
     CPython turns its stringifiers into plain references when their evaluation ends.
 - **`evaluate()` takes a dict or `None` for `globals` / `locals`.**
     Anything else raises `TypeError: ForwardRef.evaluate() globals must be a dict, not list`, where CPython accepts
