@@ -19,11 +19,11 @@ use crate::{
     intern::StaticStrings,
     modules::pydantic::{
         arena::{
-            Arena, DataclassValidator, FieldDefault, FieldValidator, LiteralValidator, NamedTupleValidator, Validator,
-            ValidatorId,
+            Arena, DataclassValidator, FieldDefault, LiteralValidator, NamedTupleValidator, Validator, ValidatorId,
         },
         catalogue::ErrorType,
         coerce::datetime_is_midnight,
+        constraints::validate_constrained,
         errors::{LineError, ValError, ValResult},
         input::{Exactness, Input, InputKind, Mapping, SeqKind, Sequence, State},
         snapshot::repr_string,
@@ -66,15 +66,17 @@ pub(crate) fn validate<I: Input>(
                 input.error(ErrorType::NoneRequired {}, vm)
             }
         }
-        Validator::Bool => Ok(Value::Bool(input.validate_bool(state.strict, vm)?.unpack(state))),
-        Validator::Int => Ok(input.validate_int(state.strict, vm)?.unpack(state)),
-        Validator::Float => Ok(Value::Float(input.validate_float(state.strict, vm)?.unpack(state))),
-        Validator::Str => Ok(input.validate_str(state.strict, vm)?.unpack(state)),
-        Validator::Bytes => Ok(input.validate_bytes(state.strict, vm)?.unpack(state)),
+        Validator::Bool => Ok(Value::Bool(input.validate_bool(state.leaf_strict(), vm)?.unpack(state))),
+        Validator::Int => Ok(input.validate_int(state.leaf_strict(), vm)?.unpack(state)),
+        Validator::Float => Ok(Value::Float(
+            input.validate_float(state.leaf_strict(), vm)?.unpack(state),
+        )),
+        Validator::Str => Ok(input.validate_str(state.leaf_strict(), vm)?.unpack(state)),
+        Validator::Bytes => Ok(input.validate_bytes(state.leaf_strict(), vm)?.unpack(state)),
         Validator::DateTime => validate_datetime(input, state, vm),
         Validator::Date => validate_date(input, state, vm),
-        Validator::Time => Ok(input.validate_time(state.strict, vm)?.unpack(state)),
-        Validator::TimeDelta => Ok(input.validate_timedelta(state.strict, vm)?.unpack(state)),
+        Validator::Time => Ok(input.validate_time(state.leaf_strict(), vm)?.unpack(state)),
+        Validator::TimeDelta => Ok(input.validate_timedelta(state.leaf_strict(), vm)?.unpack(state)),
         Validator::Decimal => validate_decimal(input, state, vm),
         Validator::List(item) => validate_list(arena, id, *item, input, state, vm),
         Validator::Set(item) => validate_set(arena, id, *item, false, input, state, vm),
@@ -92,12 +94,31 @@ pub(crate) fn validate<I: Input>(
         Validator::Literal(literal) => validate_literal(literal, input, vm),
         Validator::Dataclass(dataclass) => validate_dataclass(arena, id, dataclass, input, state, vm),
         Validator::NamedTuple(named_tuple) => validate_named_tuple(named_tuple, input, state, vm),
+        Validator::Strict {
+            inner,
+            strict,
+            scope: true,
+        } => {
+            let outer = state.strict;
+            state.strict = *strict;
+            let result = validate(arena, *inner, input, state, vm);
+            state.strict = outer;
+            result
+        }
+        Validator::Strict { inner, strict, .. } => {
+            state.field_strict = Some(*strict);
+            validate(arena, *inner, input, state, vm)
+        }
+        Validator::Meta { inner, .. } => validate(arena, *inner, input, state, vm),
+        Validator::Constrained { inner, constraints } => {
+            validate_constrained(arena, *inner, constraints, input, state, vm)
+        }
     }
 }
 
 /// A `Decimal`; pydantic refuses a non-finite one unless `allow_inf_nan` is set.
 fn validate_decimal<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>) -> ValResult<Value> {
-    let decimal = input.validate_decimal(state.strict, vm)?.unpack(state);
+    let decimal = input.validate_decimal(state.leaf_strict(), vm)?.unpack(state);
     let finite = py_decimal::as_decimal(&decimal, vm).is_some_and(Decimal::is_finite);
     if finite {
         Ok(decimal)
@@ -110,9 +131,10 @@ fn validate_decimal<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>)
 /// A `datetime`; in lax mode a date (text or value) is accepted at midnight,
 /// and a date that fails to parse reports `datetime_from_date_parsing`.
 fn validate_datetime<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>) -> ValResult<Value> {
-    match input.validate_datetime(state.strict, vm) {
+    let strict = state.leaf_strict();
+    match input.validate_datetime(strict, vm) {
         Ok(matched) => Ok(matched.unpack(state)),
-        Err(ValError::Lines(datetime_errors)) if !state.strict && is_parsing_error(&datetime_errors) => {
+        Err(ValError::Lines(datetime_errors)) if !strict && is_parsing_error(&datetime_errors) => {
             state.floor_exactness(Exactness::Lax);
             match input.validate_date(false, vm) {
                 Ok(matched) => {
@@ -156,9 +178,10 @@ fn validate_datetime<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>
 /// A `date`; in lax mode a datetime (text or value) at midnight is accepted
 /// and one with a time of day reports `date_from_datetime_inexact`.
 fn validate_date<I: Input>(input: &mut I, state: &mut State, vm: &mut VM<'_>) -> ValResult<Value> {
-    match input.validate_date(state.strict, vm) {
+    let strict = state.leaf_strict();
+    match input.validate_date(strict, vm) {
         Ok(matched) => Ok(matched.unpack(state)),
-        Err(ValError::Lines(lines)) if !state.strict => {
+        Err(ValError::Lines(lines)) if !strict => {
             let date_errors = lines;
             state.floor_exactness(Exactness::Lax);
             match input.validate_datetime(false, vm) {
@@ -232,7 +255,7 @@ fn midnight(date: &Value, vm: &mut VM<'_>) -> Value {
 }
 
 /// A sequence index as a location step.
-fn index_loc(index: usize) -> LocItem {
+pub(crate) fn index_loc(index: usize) -> LocItem {
     LocItem::Index(i64::try_from(index).unwrap_or(i64::MAX))
 }
 
@@ -279,7 +302,9 @@ fn validate_list<I: Input>(
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
-        let seq = input.validate_sequence(SeqKind::List, state.strict, vm)?.unpack(state);
+        let seq = input
+            .validate_sequence(SeqKind::List, state.leaf_strict(), vm)?
+            .unpack(state);
         defer_drop_mut!(seq, vm);
         let items = validate_items::<I>(arena, item, seq, state, vm)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
@@ -299,7 +324,7 @@ fn validate_set<I: Input>(
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
         let kind = if frozen { SeqKind::FrozenSet } else { SeqKind::Set };
-        let seq = input.validate_sequence(kind, state.strict, vm)?.unpack(state);
+        let seq = input.validate_sequence(kind, state.leaf_strict(), vm)?.unpack(state);
         defer_drop_mut!(seq, vm);
         let items = validate_items::<I>(arena, item, seq, state, vm)?;
         defer_drop_mut!(items, vm);
@@ -392,7 +417,9 @@ fn validate_tuple<I: Input>(
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
-        let seq = input.validate_sequence(SeqKind::Tuple, state.strict, vm)?.unpack(state);
+        let seq = input
+            .validate_sequence(SeqKind::Tuple, state.leaf_strict(), vm)?
+            .unpack(state);
         defer_drop_mut!(seq, vm);
         let actual_length = seq.len();
         let fixed = if variadic { items.len() - 1 } else { items.len() };
@@ -483,7 +510,7 @@ fn validate_dict<I: Input>(
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
-        let map = input.validate_dict(state.strict, vm)?.unpack(state);
+        let map = input.validate_dict(state.leaf_strict(), vm)?.unpack(state);
         defer_drop_mut!(map, vm);
         let mut collected = DropGuard::new((Dict::new(), Vec::<LineError>::new()), vm);
         let mut index = 0usize;
@@ -674,6 +701,10 @@ fn might_match(arena: &Arena, id: ValidatorId, kind: InputKind) -> bool {
         }
         (Validator::Dict { .. } | Validator::Dataclass(_), kind) => kind == InputKind::Object,
         (Validator::NamedTuple(_), kind) => matches!(kind, InputKind::Array | InputKind::Object),
+        (
+            Validator::Strict { inner, .. } | Validator::Constrained { inner, .. } | Validator::Meta { inner, .. },
+            kind,
+        ) => might_match(arena, *inner, kind),
         (_, InputKind::Null | InputKind::Array | InputKind::Object) => false,
         _ => true,
     }
@@ -736,7 +767,7 @@ fn validate_dataclass<I: Input>(
     if let Some(instance) = input.instance_of(class_id, vm) {
         return Ok(instance);
     }
-    if state.strict && I::INPUT_TYPE == monty_types::ValidationInputType::Python {
+    if state.leaf_strict() && I::INPUT_TYPE == monty_types::ValidationInputType::Python {
         return input.error(
             ErrorType::DataclassExactType {
                 class_name: dataclass.name.clone(),
@@ -747,72 +778,105 @@ fn validate_dataclass<I: Input>(
     guarded(id, input, state, vm, |input, state, vm| {
         let map = input.validate_dataclass_args(&dataclass.name, vm)?;
         defer_drop_mut!(map, vm);
-        let fields = validate_fields(arena, &dataclass.fields, map, input, state, vm)?;
+        let fields = validate_fields(arena, dataclass, map, input, state, vm)?;
         state.floor_exactness(Exactness::Strict);
         build_instance(class_id, dataclass, fields, vm).map_err(ValError::Run)
     })
 }
 
 /// Validates the entries of `map` into one slot per field, in field order:
-/// unknown keys are ignored, a key given twice (JSON allows it) keeps its
-/// last value, missing fields take their default or report `missing`, and a
-/// field's errors are located by its name.
+/// unknown keys are ignored (or, with `extra='forbid'`, reported), a key given
+/// twice (JSON allows it) keeps its last value, an alias beats the field's
+/// name when both are given, missing fields take their default or report
+/// `missing`, and a field's errors are located by its alias or name.
 fn validate_fields<I: Input>(
     arena: &Arena,
-    fields: &[FieldValidator],
+    dataclass: &DataclassValidator,
     map: &mut I::Map,
     input: &mut I,
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Vec<Value>> {
+    let fields = &dataclass.fields;
     let slots: Vec<Option<Value>> = (0..fields.len()).map(|_| None).collect();
     let errors: Vec<Option<Vec<LineError>>> = (0..fields.len()).map(|_| None).collect();
-    // One guard over the partial results and the per-field errors, released
-    // together on every failure path.
-    let mut collected = DropGuard::new((slots, errors), vm);
+    // Unknown keys kept for `extra='forbid'`: their names here, their values in the guard.
+    let mut extra_names: Vec<String> = Vec::new();
+    let extras: Vec<Value> = Vec::new();
+    // One guard over the partial results, the per-field errors and the extra
+    // values, released together on every failure path.
+    let mut collected = DropGuard::new(((slots, errors), extras), vm);
+    let mut by_alias = vec![false; fields.len()];
     let mut index = 0usize;
     loop {
-        let ((slots, errors), vm) = collected.as_parts_mut();
+        let (((slots, errors), extras), vm) = collected.as_parts_mut();
         vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
         let Some((key, mut value)) = map.next(vm)? else {
             break;
         };
         index += 1;
-        if let Some(field_index) = field_position(fields, &key, vm) {
-            if let Some(earlier) = slots[field_index].take() {
-                earlier.drop_with(vm);
-            }
-            if let Some(earlier) = errors[field_index].take() {
-                earlier.drop_with(vm);
-            }
-            match validate(arena, fields[field_index].validator, &mut value, state, vm) {
-                Ok(v) => slots[field_index] = Some(v),
-                Err(ValError::Lines(lines)) => errors[field_index] = Some(lines),
-                Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
+        match field_position(dataclass, &key, vm) {
+            // A name match never displaces the value the alias supplied.
+            Some((field_index, false)) if by_alias[field_index] => {
+                if let Err(err) = value.to_value(vm).map(|v| v.drop_with(vm)) {
                     map.finish_entry(key, value, vm);
                     return Err(err);
                 }
             }
-        } else if let Err(err) = value.to_value(vm).map(|v| v.drop_with(vm)) {
+            Some((field_index, aliased)) => {
+                by_alias[field_index] = aliased;
+                if let Some(earlier) = slots[field_index].take() {
+                    earlier.drop_with(vm);
+                }
+                if let Some(earlier) = errors[field_index].take() {
+                    earlier.drop_with(vm);
+                }
+                match validate(arena, fields[field_index].validator, &mut value, state, vm) {
+                    Ok(v) => slots[field_index] = Some(v),
+                    Err(ValError::Lines(lines)) => errors[field_index] = Some(lines),
+                    Err(err @ (ValError::Run(_) | ValError::Json(_))) => {
+                        map.finish_entry(key, value, vm);
+                        return Err(err);
+                    }
+                }
+            }
+            None if dataclass.extra_forbid => {
+                let text = key.key_value().and_then(|key| key.as_str(vm)).map(str::to_owned);
+                let name = match text {
+                    Some(text) => text,
+                    None => repr_string(key.key_value().expect("a mapping key"), vm),
+                };
+                match value.to_value(vm) {
+                    Ok(v) => {
+                        extra_names.push(name);
+                        extras.push(v);
+                    }
+                    Err(err) => {
+                        map.finish_entry(key, value, vm);
+                        return Err(err);
+                    }
+                }
+            }
             // A JSON value must be consumed even when ignored.
-            map.finish_entry(key, value, vm);
-            return Err(err);
+            None => {
+                if let Err(err) = value.to_value(vm).map(|v| v.drop_with(vm)) {
+                    map.finish_entry(key, value, vm);
+                    return Err(err);
+                }
+            }
         }
         map.finish_entry(key, value, vm);
     }
-    let ((slots, errors), vm) = collected.as_parts_mut();
+    let (((slots, errors), extras), vm) = collected.as_parts_mut();
     let fields_set = slots.iter().flatten().count();
     // Defaults for the unset fields, in field order; a factory may run Python.
     let mut line_errors = DropGuard::new(Vec::<LineError>::new(), vm);
     for (field_index, field) in fields.iter().enumerate() {
         let (line_errors, vm) = line_errors.as_parts_mut();
+        let loc = || LocItem::Key(field.lookup_name(vm.interns).to_owned());
         if let Some(lines) = errors[field_index].take() {
-            let name = vm.interns.get_str(field.name).to_owned();
-            line_errors.extend(
-                lines
-                    .into_iter()
-                    .map(|line| line.with_outer_loc(LocItem::Key(name.clone()))),
-            );
+            let loc = loc();
+            line_errors.extend(lines.into_iter().map(|line| line.with_outer_loc(loc.clone())));
             continue;
         }
         if slots[field_index].is_some() {
@@ -825,15 +889,20 @@ fn validate_fields<I: Input>(
             }
             FieldDefault::Required => {
                 let whole = input.to_value(vm)?;
-                let name = vm.interns.get_str(field.name).to_owned();
-                line_errors.push(LineError::owned(ErrorType::Missing {}, whole).with_outer_loc(LocItem::Key(name)));
+                line_errors.push(LineError::owned(ErrorType::Missing {}, whole).with_outer_loc(loc()));
             }
         }
+    }
+    // pydantic reports the extra keys after the fields, in input order.
+    for (name, value) in extra_names.drain(..).zip(extras.drain(..)) {
+        let (line_errors, _) = line_errors.as_parts_mut();
+        line_errors
+            .push(LineError::owned(ErrorType::UnexpectedKeywordArgument {}, value).with_outer_loc(LocItem::Key(name)));
     }
     state.add_fields_set(fields_set);
     let (line_errors, _) = line_errors.into_parts();
     if line_errors.is_empty() {
-        let ((slots, _), _) = collected.into_parts();
+        let (((slots, _), _), _) = collected.into_parts();
         Ok(slots
             .into_iter()
             .map(|slot| slot.expect("every field is set or errored"))
@@ -843,17 +912,29 @@ fn validate_fields<I: Input>(
     }
 }
 
-/// The field `key` names, if any: an interned key by id, since field names are
-/// interned and equal text interns once; any other string by text.
-fn field_position<I: Input>(fields: &[FieldValidator], key: &I, vm: &VM<'_>) -> Option<usize> {
+/// The field `key` names and whether through its alias. An unaliased field
+/// matches an interned key by id, since field names are interned and equal
+/// text interns once; aliases and other keys compare as text. With
+/// `populate_by_name` an aliased field answers to its name too.
+pub(crate) fn field_position<I: Input>(dataclass: &DataclassValidator, key: &I, vm: &VM<'_>) -> Option<(usize, bool)> {
     let key = key.key_value()?;
-    let by_id = match key {
-        Value::InternString(id) => fields.iter().position(|field| field.name == *id),
-        _ => None,
-    };
-    by_id.or_else(|| {
-        let name = key.as_str(vm)?;
-        fields.iter().position(|field| vm.interns.get_str(field.name) == name)
+    let fields = &dataclass.fields;
+    if let Value::InternString(id) = key
+        && let Some(index) = fields
+            .iter()
+            .position(|field| field.alias.is_none() && field.name == *id)
+    {
+        return Some((index, false));
+    }
+    let name = key.as_str(vm)?;
+    fields.iter().enumerate().find_map(|(index, field)| {
+        if field.lookup_name(vm.interns) == name {
+            Some((index, field.alias.is_some()))
+        } else if dataclass.populate_by_name && field.alias.is_some() && vm.interns.get_str(field.name) == name {
+            Some((index, false))
+        } else {
+            None
+        }
     })
 }
 

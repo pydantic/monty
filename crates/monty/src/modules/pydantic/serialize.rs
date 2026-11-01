@@ -55,6 +55,8 @@ pub(crate) struct Options {
     pub(crate) mode: Mode,
     /// Skip a dataclass field whose value is `None`.
     pub(crate) exclude_none: bool,
+    /// Write a dataclass field under its serialization alias when it has one.
+    pub(crate) by_alias: bool,
     /// The `decimal` context's `capitals`, which `str(Decimal)` follows.
     pub(crate) capitals: bool,
 }
@@ -211,6 +213,10 @@ impl<'a> Serializer<'a> {
                 }
                 _ => self.infer(value, sink, vm),
             },
+            // Constraints and strictness only validate; the value is written as its type.
+            Validator::Strict { inner, .. } | Validator::Constrained { inner, .. } | Validator::Meta { inner, .. } => {
+                self.value(*inner, value, sink, vm)
+            }
             // Every scalar validator writes what inference writes for a value
             // of its type, and inference is the fallback for any other.
             _ => self.infer(value, sink, vm),
@@ -249,6 +255,9 @@ impl<'a> Serializer<'a> {
                 Some(HeapData::Instance(instance)) => is_class(dataclass, instance.class()),
                 _ => false,
             },
+            Validator::Strict { inner, .. } | Validator::Constrained { inner, .. } | Validator::Meta { inner, .. } => {
+                self.fits(*inner, value, vm)
+            }
         }
     }
 
@@ -453,7 +462,7 @@ impl<'a> Serializer<'a> {
         self.enter(id)?;
         let written = (|| {
             sink.begin_map()?;
-            for field in &dataclass.fields {
+            for field in dataclass.fields.iter().filter(|field| !field.exclude) {
                 let name = vm.interns.get_str(field.name);
                 let Some(value) = instance.attrs().get_by_str(name, vm.heap, vm.interns) else {
                     continue;
@@ -461,7 +470,11 @@ impl<'a> Serializer<'a> {
                 if self.options.exclude_none && matches!(value, Value::None) {
                     continue;
                 }
-                sink.key(Key::Text(name), vm)?;
+                let key = match field.serialization_alias.as_deref().filter(|_| self.options.by_alias) {
+                    Some(alias) => alias,
+                    None => name,
+                };
+                sink.key(Key::Text(key), vm)?;
                 self.value(field.validator, value, sink, vm)?;
             }
             sink.end_map()

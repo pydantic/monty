@@ -398,7 +398,7 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0xae37_e621_f8cb_a34b,
+            0x2c2c_9aae_27b1_44f8,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );

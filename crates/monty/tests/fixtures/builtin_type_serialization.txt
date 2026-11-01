@@ -105,3 +105,4 @@ DecimalContextManager 105
 LiteralGenericAlias 106
 AnnotatedAlias 107
 TypeAdapter 108
+FieldInfo 109

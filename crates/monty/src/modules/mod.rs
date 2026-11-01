@@ -105,8 +105,10 @@ pub(crate) enum StandardLib {
     Decimal,
     /// The `fnmatch` module: shell-style pattern matching.
     Fnmatch,
-    /// The `pydantic` module: `TypeAdapter` and `ValidationError`.
+    /// The `pydantic` module: `TypeAdapter`, `Field`, `ConfigDict` and `ValidationError`.
     Pydantic,
+    /// The `pydantic.dataclasses` module: the validating `dataclass` decorator.
+    PydanticDataclasses,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -145,6 +147,7 @@ impl StandardLib {
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Pydantic => Some(Self::Pydantic),
+            StaticStrings::PydanticDataclasses => Some(Self::PydanticDataclasses),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -194,6 +197,7 @@ impl StandardLib {
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Pydantic => pydantic::create_module(vm),
+            Self::PydanticDataclasses => pydantic::dataclasses::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -231,6 +235,7 @@ pub(crate) enum ModuleFunctions {
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
     Typing(typing::TypingFunctions),
+    Pydantic(pydantic::PydanticFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -271,6 +276,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Decimal(func) => write!(f, "{func}"),
             Self::Fnmatch(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
+            Self::Pydantic(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -310,6 +316,7 @@ impl ModuleFunctions {
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
+            Self::Pydantic(functions) => pydantic::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

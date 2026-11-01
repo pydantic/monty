@@ -19,6 +19,7 @@ pub mod dict;
 pub mod dict_view;
 pub mod dir_scan;
 pub mod ext_function;
+pub mod field_info;
 pub mod file;
 pub mod generic_alias;
 pub mod hash_table;
@@ -55,6 +56,7 @@ pub mod typing_alias;
 mod unicode_type;
 mod unicode_type_data;
 pub mod union;
+pub mod validate_call;
 
 pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
@@ -66,6 +68,7 @@ pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
 pub(crate) use dir_scan::DirScan;
 pub(crate) use ext_function::ExtFunction;
+pub(crate) use field_info::FieldInfo;
 pub(crate) use file::OpenFile;
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use hashlib::HashObject;
@@ -96,3 +99,4 @@ pub(crate) use r#type::Type;
 pub(crate) use type_adapter::TypeAdapter;
 pub(crate) use typing_alias::TypingAlias;
 pub(crate) use union::Union;
+pub(crate) use validate_call::ValidateCall;

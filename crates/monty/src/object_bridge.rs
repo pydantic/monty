@@ -753,6 +753,7 @@ impl MontyTypeExt for MontyType {
             | Type::LiteralGenericAlias
             | Type::AnnotatedAlias
             | Type::TypeAdapter
+            | Type::FieldInfo
             | Type::DirEntry
             | Type::ScandirIterator
             | Type::WalkGenerator

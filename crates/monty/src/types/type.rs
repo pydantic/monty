@@ -351,6 +351,9 @@ pub enum Type {
     /// `pydantic.TypeAdapter`, qualified like `functools.partial`.
     #[strum(serialize = "pydantic.type_adapter.TypeAdapter")]
     TypeAdapter,
+    /// `pydantic.fields.FieldInfo`, what `pydantic.Field()` returns.
+    #[strum(serialize = "pydantic.fields.FieldInfo")]
+    FieldInfo,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

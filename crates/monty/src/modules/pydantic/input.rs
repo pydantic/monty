@@ -79,6 +79,9 @@ pub(crate) struct State {
     pub(crate) recursion: Vec<(HeapId, ValidatorId)>,
     /// Validator calls so far, for polling the time limit every few calls.
     pub(crate) steps: usize,
+    /// A `Field(strict=)` waiting for the next validator that reads strictness;
+    /// set by a `Strict` wrapper and taken by [`leaf_strict`](Self::leaf_strict).
+    pub(crate) field_strict: Option<bool>,
 }
 
 impl State {
@@ -89,7 +92,14 @@ impl State {
             fields_set_count: None,
             recursion: Vec::new(),
             steps: 0,
+            field_strict: None,
         }
+    }
+
+    /// The strictness a leaf or container validates with: a pending field
+    /// setting once, otherwise the call's.
+    pub(crate) fn leaf_strict(&mut self) -> bool {
+        self.field_strict.take().unwrap_or(self.strict)
     }
 
     /// Lowers the running exactness to `exactness` when inside a union.

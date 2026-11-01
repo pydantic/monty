@@ -214,6 +214,8 @@ pub(crate) enum BuiltinType {
     AnnotatedAlias,
     #[strum(serialize = "pydantic.type_adapter.TypeAdapter")]
     TypeAdapter,
+    #[strum(serialize = "pydantic.fields.FieldInfo")]
+    FieldInfo,
 }
 
 impl From<BuiltinType> for Type {
@@ -304,6 +306,7 @@ impl From<BuiltinType> for Type {
             BuiltinType::LiteralGenericAlias => Self::LiteralGenericAlias,
             BuiltinType::AnnotatedAlias => Self::AnnotatedAlias,
             BuiltinType::TypeAdapter => Self::TypeAdapter,
+            BuiltinType::FieldInfo => Self::FieldInfo,
             BuiltinType::ItertoolsCombinations => Self::ItertoolsCombinations,
             BuiltinType::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
             BuiltinType::ItertoolsPermutations => Self::ItertoolsPermutations,
@@ -421,6 +424,7 @@ impl TryFrom<Type> for BuiltinType {
             Type::LiteralGenericAlias => Self::LiteralGenericAlias,
             Type::AnnotatedAlias => Self::AnnotatedAlias,
             Type::TypeAdapter => Self::TypeAdapter,
+            Type::FieldInfo => Self::FieldInfo,
             Type::ItertoolsCombinations => Self::ItertoolsCombinations,
             Type::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
             Type::ItertoolsPermutations => Self::ItertoolsPermutations,

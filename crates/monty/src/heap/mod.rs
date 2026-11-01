@@ -2094,6 +2094,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Union(union) => union.for_each_child_id(on_child),
         HeapData::TypingAlias(alias) => alias.for_each_child_id(on_child),
         HeapData::TypeAdapter(adapter) => adapter.for_each_child_id(on_child),
+        HeapData::FieldInfo(info) => info.for_each_child_id(on_child),
+        HeapData::ValidateCall(wrapper) => wrapper.for_each_child_id(on_child),
         HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
         // Attrs and, for a file module, its namespace dict.
         HeapData::Module(m) => m.for_each_child_id(on_child),
@@ -2248,6 +2250,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::TypingAlias(alias) => alias.py_dec_ref_ids(stack),
         HeapData::TypeAdapter(adapter) => adapter.py_dec_ref_ids(stack),
+        HeapData::FieldInfo(info) => info.py_dec_ref_ids(stack),
+        HeapData::ValidateCall(wrapper) => wrapper.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {

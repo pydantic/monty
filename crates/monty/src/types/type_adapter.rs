@@ -19,16 +19,21 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
-    modules::pydantic::{
-        arena::{Arena, ValidatorId},
-        build,
-        catalogue::ErrorType,
-        errors::{ValError, ValResult, into_run_error, json_invalid_error},
-        input::State,
-        json_input::JsonInput,
-        python_input::PyInput,
-        serialize::{self, Mode, Options},
-        validate::validate,
+    modules::{
+        dataclasses::is_dataclass_class,
+        pydantic::{
+            arena::{Arena, ValidatorId},
+            build,
+            catalogue::ErrorType,
+            config::Config,
+            errors::{ValError, ValResult, into_run_error, json_invalid_error},
+            input::State,
+            json_input::JsonInput,
+            json_schema,
+            python_input::PyInput,
+            serialize::{self, Mode, Options},
+            validate::validate,
+        },
     },
     types::{
         LazyHeapSet, PyTrait, Type,
@@ -42,10 +47,13 @@ use crate::{
 pub(crate) struct TypeAdapter {
     arena: Rc<Arena>,
     root: ValidatorId,
-    /// The root validator's name: the `ValidationError` title.
+    /// The `ValidationError` title: the config's `title`, else the root validator's name.
     title: String,
     /// `display_as_type` of the hint, for `repr()`.
     type_display: String,
+    /// The config's `strict`, the default when a call passes `strict=None`.
+    #[serde(default)]
+    strict: bool,
 }
 
 /// Arguments of `TypeAdapter(type, /, *, config=None, _parent_depth=2, module=None)`.
@@ -76,28 +84,44 @@ impl TypeAdapter {
         defer_drop!(config, vm);
         defer_drop!(parent_depth, vm);
         defer_drop!(module, vm);
-        if !matches!(config, Value::None) {
-            return Err(unsupported_argument("TypeAdapter.__init__", "config"));
-        }
         if !matches!(module, Value::None) {
             return Err(unsupported_argument("TypeAdapter.__init__", "module"));
         }
+        // A dataclass carries its own `__pydantic_config__`, which pydantic refuses to shadow.
+        if !matches!(config, Value::None) && matches!(hint, Value::Ref(id) if is_dataclass_class(*id, vm)) {
+            return Err(SimpleException::new_msg(
+                ExcType::PydanticUserError,
+                "Cannot use `config` when the type is a BaseModel, dataclass or TypedDict. These types can have \
+                 their own config and setting the config via the `config` parameter to TypeAdapter will not \
+                 override it, thus the `config` you passed to TypeAdapter becomes meaningless, which is probably \
+                 not what you want."
+                    .to_owned(),
+            )
+            .into());
+        }
+        let config = Config::parse(config, vm)?;
         let mut arena = Arena::default();
-        let root = match build::build(hint, &mut arena, vm) {
+        let root = match build::build(hint, &config, &mut arena, vm) {
             Ok(root) => root,
             Err(err) => {
                 arena.drop_with(vm);
                 return Err(err);
             }
         };
-        let title = arena.name(root);
+        let title = config.title.clone().unwrap_or_else(|| arena.name(root));
         let adapter = Self {
             arena: Rc::new(arena),
             root,
             title,
             type_display: build::display_as_type(hint, vm),
+            strict: config.strict,
         };
         Ok(Value::Ref(vm.heap.allocate(HeapData::TypeAdapter(Box::new(adapter)))))
+    }
+
+    /// The arena, its root and the error title, for a pydantic dataclass's `__init__`.
+    pub(crate) fn parts(&self) -> (Rc<Arena>, ValidatorId, String) {
+        (Rc::clone(&self.arena), self.root, self.title.clone())
     }
 
     /// Invokes `on_child` for every heap id the arena owns (GC trace hook).
@@ -157,6 +181,11 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
         (parts.0, parts.1, parts.2, keep_alive)
     }
 
+    /// The strictness a call validates with: its `strict=` when given, else the config's.
+    fn call_strict(&self, strict: &Value, vm: &VM<'h>) -> RunResult<bool> {
+        Ok(strict_flag(strict, vm)?.unwrap_or(self.get(vm.heap).strict))
+    }
+
     /// `validate_python(object, /, *, strict=None)`.
     fn validate_python(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let ValidatePythonArgs {
@@ -197,7 +226,7 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
                 "experimental_allow_partial",
             ));
         }
-        let strict = strict_flag(strict, vm)?;
+        let strict = self.call_strict(strict, vm)?;
         let (arena, root, title, keep_alive) = self.arena_handle(vm);
         defer_drop!(keep_alive, vm);
         let mut state = State::new(strict);
@@ -263,7 +292,7 @@ impl<'h> HeapObjectRead<'h, TypeAdapter> {
                 "experimental_allow_partial",
             ));
         }
-        let strict = strict_flag(strict, vm)?;
+        let strict = self.call_strict(strict, vm)?;
         let (arena, root, title, keep_alive) = self.arena_handle(vm);
         defer_drop!(keep_alive, vm);
         // The document is copied out so the parser does not borrow the heap
@@ -456,9 +485,7 @@ impl DumpCommon {
                 return Err(unsupported_argument(function, name));
             }
         }
-        if !matches!(by_alias, Value::None) {
-            bool_flag("by_alias", by_alias, vm)?;
-        }
+        let by_alias = !matches!(by_alias, Value::None) && bool_flag("by_alias", by_alias, vm)?;
         bool_flag("round_trip", round_trip, vm)?;
         let exclude_none = bool_flag("exclude_none", exclude_none, vm)?;
         for (name, value) in [
@@ -476,6 +503,7 @@ impl DumpCommon {
         Ok(Options {
             mode,
             exclude_none,
+            by_alias,
             capitals,
         })
     }
@@ -612,6 +640,84 @@ fn bool_flag(name: &str, value: &Value, vm: &VM<'_>) -> RunResult<bool> {
     }
 }
 
+/// Arguments of `json_schema(*, by_alias=None, ref_template=..., union_format='any_of',
+/// schema_generator=GenerateJsonSchema, mode='validation')`.
+#[derive(FromArgs)]
+#[from_args(name = "TypeAdapter.json_schema", style = def)]
+struct JsonSchemaArgs {
+    #[from_args(kw_only, default = Value::None)]
+    by_alias: Value,
+    #[from_args(kw_only, default = Value::None)]
+    ref_template: Value,
+    #[from_args(kw_only, default = Value::None)]
+    union_format: Value,
+    #[from_args(kw_only, default = Value::None)]
+    schema_generator: Value,
+    #[from_args(kw_only, default = Value::None)]
+    mode: Value,
+}
+
+impl<'h> HeapObjectRead<'h, TypeAdapter> {
+    /// `json_schema(...)`: the schema `json_schema::generate` builds from the arena.
+    fn json_schema(&self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let JsonSchemaArgs {
+            by_alias,
+            ref_template,
+            union_format,
+            schema_generator,
+            mode,
+        } = JsonSchemaArgs::from_args(args, vm)?;
+        defer_drop!(by_alias, vm);
+        defer_drop!(ref_template, vm);
+        defer_drop!(union_format, vm);
+        defer_drop!(schema_generator, vm);
+        defer_drop!(mode, vm);
+        if !matches!(schema_generator, Value::None) {
+            return Err(unsupported_argument("TypeAdapter.json_schema", "schema_generator"));
+        }
+        if !matches!(union_format, Value::None) && union_format.as_str(vm) != Some("any_of") {
+            return Err(unsupported_argument("TypeAdapter.json_schema", "union_format"));
+        }
+        let by_alias = match by_alias {
+            Value::None => None,
+            Value::Bool(flag) => Some(*flag),
+            other => {
+                return Err(ExcType::type_error(format!(
+                    "argument 'by_alias': '{}' object is not an instance of 'bool'",
+                    other.py_type_name(vm)
+                )));
+            }
+        };
+        // pydantic calls `ref_template.format(model=...)`, so a non-string fails on `.format`.
+        let ref_template = match ref_template {
+            Value::None => json_schema::DEFAULT_REF_TEMPLATE.to_owned(),
+            other => other
+                .as_str(vm)
+                .ok_or_else(|| ExcType::attribute_error(other.py_type_name(vm), "format"))?
+                .to_owned(),
+        };
+        let serialization = match mode {
+            Value::None => false,
+            other => match other.as_str(vm) {
+                Some("validation") => false,
+                Some("serialization") => true,
+                _ => {
+                    let mut shown = String::new();
+                    other.py_repr_fmt(&mut shown, vm, &mut LazyHeapSet::default())?;
+                    return Err(SimpleException::new_msg(
+                        ExcType::AssertionError,
+                        format!("Expected code to be unreachable, but got: {shown}"),
+                    )
+                    .into());
+                }
+            },
+        };
+        let (arena, root, _, keep_alive) = self.arena_handle(vm);
+        defer_drop!(keep_alive, vm);
+        json_schema::generate(&arena, root, by_alias, &ref_template, serialization, vm)
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
     fn py_type(&self, _: &VM<'h>) -> Type {
         Type::TypeAdapter
@@ -636,12 +742,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
             Some(StaticStrings::ValidateJson) => self.validate_json(args, vm).map(CallResult::Value),
             Some(StaticStrings::DumpPython) => self.dump_python(args, vm).map(CallResult::Value),
             Some(StaticStrings::DumpJson) => self.dump_json(args, vm).map(CallResult::Value),
-            Some(StaticStrings::ValidateStrings | StaticStrings::JsonSchema) => {
-                let name = attr.as_str(vm.interns).to_owned();
+            Some(StaticStrings::JsonSchema) => self.json_schema(args, vm).map(CallResult::Value),
+            Some(StaticStrings::ValidateStrings) => {
                 args.drop_with(vm);
                 Err(SimpleException::new_msg(
                     ExcType::NotImplementedError,
-                    format!("TypeAdapter.{name}() is not supported"),
+                    "TypeAdapter.validate_strings() is not supported".to_owned(),
                 )
                 .into())
             }
@@ -651,10 +757,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TypeAdapter> {
 }
 
 /// `strict=None` or a `bool`, with pydantic-core's `TypeError` for anything else.
-fn strict_flag(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
+fn strict_flag(value: &Value, vm: &VM<'_>) -> RunResult<Option<bool>> {
     match value {
-        Value::None => Ok(false),
-        Value::Bool(strict) => Ok(*strict),
+        Value::None => Ok(None),
+        Value::Bool(strict) => Ok(Some(*strict)),
         other => Err(ExcType::type_error(format!(
             "argument 'strict': '{}' object is not an instance of 'bool'",
             other.py_type_name(vm)

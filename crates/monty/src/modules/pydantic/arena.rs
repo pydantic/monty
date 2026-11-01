@@ -7,11 +7,15 @@
 //! (literal choices, dataclass defaults, class objects) are reference-counted
 //! and cycle-collected with it, and the whole arena persists in dumps.
 
+use std::cell::OnceCell;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, HeapId},
-    intern::StringId,
+    intern::{Interns, StringId},
+    types::re_pattern::RePattern,
     value::Value,
 };
 
@@ -60,6 +64,165 @@ pub(crate) enum Validator {
     Literal(LiteralValidator),
     Dataclass(DataclassValidator),
     NamedTuple(NamedTupleValidator),
+    /// `Field(strict=)` or a config's `strict` around `inner`: with `scope`
+    /// the whole subtree (a dataclass config), otherwise the next validator
+    /// that reads strictness (one field).
+    Strict {
+        inner: ValidatorId,
+        strict: bool,
+        scope: bool,
+    },
+    /// `Field(...)` constraints checked on `inner`'s output.
+    Constrained {
+        inner: ValidatorId,
+        constraints: Box<Constraints>,
+    },
+    /// `Field(...)` settings that only `json_schema()` reads; validation passes through.
+    Meta {
+        inner: ValidatorId,
+        meta: Box<SchemaMeta>,
+    },
+}
+
+/// The `Field(...)` settings a JSON schema shows; every `Value` is an OWNED reference.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct SchemaMeta {
+    pub(crate) title: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) examples: Option<Value>,
+    pub(crate) json_schema_extra: Option<Value>,
+    /// `Field(default=)`, shown as the schema's `default`.
+    pub(crate) default: Option<Value>,
+}
+
+impl SchemaMeta {
+    /// Whether anything is set.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.description.is_none()
+            && self.examples.is_none()
+            && self.json_schema_extra.is_none()
+            && self.default.is_none()
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Value> {
+        [&self.examples, &self.json_schema_extra, &self.default]
+            .into_iter()
+            .flatten()
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
+        [&mut self.examples, &mut self.json_schema_extra, &mut self.default]
+            .into_iter()
+            .flatten()
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for SchemaMeta {
+    fn drop_with(self, ctx: &mut C) {
+        for value in [self.examples, self.json_schema_extra, self.default]
+            .into_iter()
+            .flatten()
+        {
+            value.drop_with(ctx);
+        }
+    }
+}
+
+/// The constraints a `Field(...)` or a config puts on one validator, grouped by
+/// the kind of value they apply to; a constraint pydantic ignores for the type
+/// is dropped at build time, as pydantic drops it.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) enum Constraints {
+    /// `gt`, `ge`, `lt`, `le` and `multiple_of` on an `int`, `float` or `Decimal`.
+    Number(NumberConstraints),
+    /// Length, pattern and case rules on a `str`.
+    Str(Box<StrConstraints>),
+    /// Length bounds on `bytes`.
+    Bytes {
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+    },
+    /// Length bounds on a container, checked after its items validate.
+    Length {
+        min_length: Option<usize>,
+        max_length: Option<usize>,
+    },
+}
+
+/// Numeric bounds, each an OWNED value already coerced to the validator's type,
+/// so a bound compares as pydantic-core's does and appears in `ctx` as pydantic shows it.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct NumberConstraints {
+    pub(crate) multiple_of: Option<Value>,
+    pub(crate) le: Option<Value>,
+    pub(crate) lt: Option<Value>,
+    pub(crate) ge: Option<Value>,
+    pub(crate) gt: Option<Value>,
+}
+
+impl NumberConstraints {
+    /// The bounds that are set.
+    pub(crate) fn values(&self) -> impl Iterator<Item = &Value> {
+        [&self.multiple_of, &self.le, &self.lt, &self.ge, &self.gt]
+            .into_iter()
+            .flatten()
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Value> {
+        [
+            &mut self.multiple_of,
+            &mut self.le,
+            &mut self.lt,
+            &mut self.ge,
+            &mut self.gt,
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
+/// String rules in the order pydantic-core applies them: numbers coerced to
+/// text, whitespace stripped, length checked, the pattern searched, then case changed.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[expect(clippy::struct_excessive_bools, reason = "one bool per string rule")]
+pub(crate) struct StrConstraints {
+    pub(crate) coerce_numbers_to_str: bool,
+    pub(crate) strip_whitespace: bool,
+    pub(crate) to_lower: bool,
+    pub(crate) to_upper: bool,
+    pub(crate) min_length: Option<usize>,
+    pub(crate) max_length: Option<usize>,
+    pub(crate) pattern: Option<Pattern>,
+}
+
+/// A `pattern=` regex, compiled on first use and again after a dump is loaded;
+/// the source is what the arena persists and the error reports.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Pattern {
+    pub(crate) source: String,
+    #[serde(skip)]
+    compiled: OnceCell<RePattern>,
+}
+
+impl Pattern {
+    /// Compiles `source` now, so an invalid pattern fails while the adapter is built.
+    pub(crate) fn new(source: String) -> RunResult<Self> {
+        let compiled = RePattern::compile(source.clone(), 0)?;
+        Ok(Self {
+            source,
+            compiled: OnceCell::from(compiled),
+        })
+    }
+
+    /// Whether the pattern matches anywhere in `text`, as pydantic-core's `search` does.
+    pub(crate) fn is_match(&self, text: &str) -> RunResult<bool> {
+        if self.compiled.get().is_none() {
+            let compiled = RePattern::compile(self.source.clone(), 0)?;
+            self.compiled.get_or_init(|| compiled);
+        }
+        self.compiled.get().expect("set above").is_match(text)
+    }
 }
 
 /// `Literal[...]`: the accepted values, matched by value and type.
@@ -84,6 +247,15 @@ pub(crate) struct DataclassValidator {
     pub(crate) fields: Vec<FieldValidator>,
     /// Whether the class defined `__post_init__`, called after the fields are set.
     pub(crate) post_init: bool,
+    /// `__pydantic_config__['populate_by_name']`: an aliased field is also read by its name.
+    #[serde(default)]
+    pub(crate) populate_by_name: bool,
+    /// `__pydantic_config__['extra'] == 'forbid'`: an unknown key is an error.
+    #[serde(default)]
+    pub(crate) extra_forbid: bool,
+    /// `__pydantic_config__['title']`: the JSON schema's title in place of the class name.
+    #[serde(default)]
+    pub(crate) title: Option<String>,
 }
 
 /// One dataclass field.
@@ -92,6 +264,24 @@ pub(crate) struct FieldValidator {
     pub(crate) name: StringId,
     pub(crate) validator: ValidatorId,
     pub(crate) default: FieldDefault,
+    /// `Field(alias=)` or `validation_alias=`: the input key looked up instead
+    /// of the name, and the location errors report. Text, as the VM cannot
+    /// intern a string while it runs.
+    #[serde(default)]
+    pub(crate) alias: Option<String>,
+    /// `Field(serialization_alias=)` or `alias=`: the key `dump_*(by_alias=True)` writes.
+    #[serde(default)]
+    pub(crate) serialization_alias: Option<String>,
+    /// `Field(exclude=True)`: left out of `dump_*`.
+    #[serde(default)]
+    pub(crate) exclude: bool,
+}
+
+impl FieldValidator {
+    /// The input key the field is read from: its alias, else its name.
+    pub(crate) fn lookup_name<'a>(&'a self, interns: &'a Interns) -> &'a str {
+        self.alias.as_deref().unwrap_or_else(|| interns.get_str(self.name))
+    }
 }
 
 /// What a dataclass field gets when the input omits it.
@@ -182,6 +372,12 @@ impl Arena {
             Validator::Literal(literal) => literal.name.clone(),
             Validator::Dataclass(dataclass) => dataclass.name.clone(),
             Validator::NamedTuple(named_tuple) => format!("call[{}]", named_tuple.name),
+            Validator::Strict { inner, .. } | Validator::Meta { inner, .. } => self.name(*inner),
+            // pydantic-core names a constrained scalar; a bounded container keeps its name.
+            Validator::Constrained { inner, constraints } => match (self.get(*inner), constraints.as_ref()) {
+                (Validator::Decimal, _) | (_, Constraints::Length { .. }) => self.name(*inner),
+                _ => format!("constrained-{}", self.name(*inner)),
+            },
         }
     }
 
@@ -218,6 +414,12 @@ impl Validator {
                 }
             }
             Self::NamedTuple(named_tuple) => visit(&mut named_tuple.class),
+            Self::Constrained { constraints, .. } => {
+                if let Constraints::Number(number) = constraints.as_mut() {
+                    number.values_mut().for_each(&mut *visit);
+                }
+            }
+            Self::Meta { meta, .. } => meta.values_mut().for_each(&mut *visit),
             _ => {}
         }
     }
@@ -235,6 +437,12 @@ impl Validator {
                 }
             }
             Self::NamedTuple(named_tuple) => visit(&named_tuple.class),
+            Self::Constrained { constraints, .. } => {
+                if let Constraints::Number(number) = constraints.as_ref() {
+                    number.values().for_each(&mut *visit);
+                }
+            }
+            Self::Meta { meta, .. } => meta.values().for_each(&mut *visit),
             _ => {}
         }
     }
@@ -251,7 +459,35 @@ impl<C: ContainsHeap> DropWithContext<C> for Validator {
                 dataclass.fields.drop_with(ctx);
             }
             Self::NamedTuple(named_tuple) => named_tuple.class.drop_with(ctx),
+            Self::Constrained { constraints, .. } => {
+                if let Constraints::Number(number) = *constraints {
+                    number.drop_with(ctx);
+                }
+            }
+            Self::Meta { meta, .. } => meta.drop_with(ctx),
             _ => {}
+        }
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for NumberConstraints {
+    fn drop_with(self, ctx: &mut C) {
+        for value in [self.multiple_of, self.le, self.lt, self.ge, self.gt]
+            .into_iter()
+            .flatten()
+        {
+            value.drop_with(ctx);
+        }
+    }
+}
+
+impl FieldDefault {
+    /// A copy holding its own reference.
+    pub(crate) fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        match self {
+            Self::Required => Self::Required,
+            Self::Value(value) => Self::Value(value.clone_with_heap(heap)),
+            Self::Factory(factory) => Self::Factory(factory.clone_with_heap(heap)),
         }
     }
 }

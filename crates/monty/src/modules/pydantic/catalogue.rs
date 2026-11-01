@@ -377,12 +377,15 @@ impl ErrorType {
     }
 }
 
-/// How a context value appears inside a message: strings verbatim, numbers
-/// as Python prints them, an absent `too_long` length as `more`.
+/// How a context value appears inside a message: strings and decimals as
+/// their text, a float as Rust prints it (`1` for `1.0`, as pydantic-core's
+/// `Number` does), an absent `too_long` length as `more`, the rest by repr.
 fn context_display(value: &MontyObject) -> String {
     let value = value.as_ref();
-    if let Some(s) = value.as_str() {
+    if let Some(s) = value.as_str().or_else(|| value.as_decimal()) {
         s.to_owned()
+    } else if let Some(float) = value.as_float() {
+        float.to_string()
     } else if value.type_name() == "NoneType" {
         "more".to_owned()
     } else {

@@ -561,6 +561,12 @@ pub enum StaticStrings {
     AlgorithmsAvailable,
     /// `hashlib.algorithms_guaranteed`.
     AlgorithmsGuaranteed,
+    /// Kwarg name `alias` — `pydantic.Field()`.
+    Alias,
+    /// Kwarg name `alias_priority` — `pydantic.Field()`.
+    AliasPriority,
+    /// Kwarg name `allow_inf_nan` — `pydantic.Field()`.
+    AllowInfNan,
     /// `json.dumps(allow_nan=...)` keyword.
     #[strum(serialize = "allow_nan")]
     AllowNan,
@@ -773,6 +779,8 @@ pub enum StaticStrings {
     /// The class parameter of the decorator `@dataclass(...)` returns, which
     /// CPython spells `def wrap(cls)` and so accepts by keyword.
     Cls,
+    /// Kwarg name `coerce_numbers_to_str` — `pydantic.Field()` and `ConfigDict`.
+    CoerceNumbersToStr,
     /// `gc.collect()` function.
     Collect,
     /// Module name for `import collections`.
@@ -800,6 +808,9 @@ pub enum StaticStrings {
     Compress,
     /// Kwarg name `config` — `TypeAdapter()`.
     Config,
+    /// `pydantic.ConfigDict`.
+    #[strum(serialize = "ConfigDict")]
+    ConfigDict,
     /// `complex.conjugate()` method.
     Conjugate,
     /// Kwarg name `context` — the `decimal` methods.
@@ -886,6 +897,8 @@ pub enum StaticStrings {
     /// Module name for `import decimal`.
     #[strum(serialize = "decimal")]
     DecimalMod,
+    /// Kwarg name `decimal_places` — `pydantic.Field()`.
+    DecimalPlaces,
     /// `decimal.DecimalTuple`, the named tuple `Decimal.as_tuple()` returns.
     #[strum(serialize = "DecimalTuple")]
     DecimalTuple,
@@ -922,10 +935,14 @@ pub enum StaticStrings {
     Delay,
     /// `delimiter` dialect attribute and `csv` format parameter.
     Delimiter,
+    /// Kwarg name `deprecated` — `pydantic.Field()`.
+    Deprecated,
     /// `depth` parameter of `hashlib.blake2b()`.
     Depth,
     /// The `collections.deque` type.
     Deque,
+    /// Kwarg name `description` — `pydantic.Field()`.
+    Description,
     /// `sys.flags.dev_mode` field.
     DevMode,
     /// Value of `os.devnull`.
@@ -965,6 +982,8 @@ pub enum StaticStrings {
     Disable,
     /// `set.discard()` method.
     Discard,
+    /// Kwarg name `discriminator` — `pydantic.Field()`.
+    Discriminator,
     /// `math.dist()` function.
     Dist,
     /// `decimal.DivisionByZero` signal.
@@ -1047,6 +1066,12 @@ pub enum StaticStrings {
     /// `__parameters__` of a `types.GenericAlias`.
     #[strum(serialize = "__parameters__")]
     DunderParameters,
+    /// A dataclass's `__pydantic_config__` attribute.
+    #[strum(serialize = "__pydantic_config__")]
+    DunderPydanticConfig,
+    /// A pydantic dataclass's `__pydantic_validator__` attribute.
+    #[strum(serialize = "__pydantic_validator__")]
+    DunderPydanticValidator,
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
@@ -1117,6 +1142,8 @@ pub enum StaticStrings {
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    /// Kwarg name `examples` — `pydantic.Field()`.
+    Examples,
     /// `csv.excel` dialect.
     Excel,
     /// `csv.excel_tab` dialect.
@@ -1127,6 +1154,8 @@ pub enum StaticStrings {
     ExcludeComputedFields,
     /// Kwarg name `exclude_defaults` — `TypeAdapter.dump_*`.
     ExcludeDefaults,
+    /// Kwarg name `exclude_if` — `pydantic.Field()`.
+    ExcludeIf,
     /// Kwarg name `exclude_none` — `TypeAdapter.dump_*`.
     ExcludeNone,
     /// Kwarg name `exclude_unset` — `TypeAdapter.dump_*`.
@@ -1181,6 +1210,8 @@ pub enum StaticStrings {
     Fabs,
     /// `math.factorial()` function.
     Factorial,
+    /// Kwarg name `fail_fast` — `pydantic.Field()`.
+    FailFast,
     /// Kwarg name `fallback` — `TypeAdapter.dump_*`.
     Fallback,
     /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
@@ -1190,11 +1221,16 @@ pub enum StaticStrings {
     Fanout,
     /// `dataclasses.field()` function, and the `Field` type name.
     Field,
+    /// `pydantic.fields.FieldInfo` class.
+    #[strum(serialize = "FieldInfo")]
+    FieldInfo,
     /// `namedtuple(field_names=...)` keyword argument.
     #[strum(serialize = "field_names")]
     FieldNames,
     /// `csv.field_size_limit()` function.
     FieldSizeLimit,
+    /// Kwarg name `field_title_generator` — `pydantic.Field()`.
+    FieldTitleGenerator,
     /// `fieldnames` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
     Fieldnames,
     /// Kwarg name `file` — `open(file=...)`.
@@ -1300,6 +1336,8 @@ pub enum StaticStrings {
     Gc,
     /// `math.gcd()` function.
     Gcd,
+    /// Kwarg name `ge` — `pydantic.Field()`.
+    Ge,
     /// `typing.Generator` marker.
     #[strum(serialize = "Generator")]
     Generator,
@@ -1351,6 +1389,8 @@ pub enum StaticStrings {
     Grouper,
     /// `match.groups()` method
     Groups,
+    /// Kwarg name `gt` — `pydantic.Field()`.
+    Gt,
     /// `field(hash=...)`.
     Hash,
     /// `hash_name` parameter of `hashlib.pbkdf2_hmac()`.
@@ -1432,6 +1472,8 @@ pub enum StaticStrings {
     Inexact,
     /// `@dataclass(init=...)`.
     Init,
+    /// Kwarg name `init_var` — `pydantic.Field()`.
+    InitVar,
     /// `initial` keyword argument of `functools.reduce()` and
     /// `itertools.accumulate()`.
     Initial,
@@ -1478,6 +1520,10 @@ pub enum StaticStrings {
     /// `unicodedata.is_normalized()` function.
     #[strum(serialize = "is_normalized")]
     IsNormalized,
+    /// `pydantic.dataclasses.is_pydantic_dataclass()`.
+    IsPydanticDataclass,
+    /// `is_required()` method of `pydantic.fields.FieldInfo`.
+    IsRequired,
     /// `Path.is_symlink()` method — yields a host call.
     IsSymlink,
     /// `os.path.isabs()` function.
@@ -1575,6 +1621,8 @@ pub enum StaticStrings {
     JsonDecodeError,
     /// `json_schema()` method of `pydantic.TypeAdapter`.
     JsonSchema,
+    /// Kwarg name `json_schema_extra` — `pydantic.Field()`.
+    JsonSchemaExtra,
     /// `kappa` parameter of `random.vonmisesvariate()`.
     Kappa,
     /// Kwarg name `keepends` — `str.splitlines(keepends=...)`.
@@ -1595,6 +1643,8 @@ pub enum StaticStrings {
     Lcm,
     /// `math.ldexp()` function.
     Ldexp,
+    /// Kwarg name `le` — `pydantic.Field()`.
+    Le,
     /// `leaf_size` parameter of `hashlib.blake2b()`.
     LeafSize,
     /// `length` parameter of a SHAKE `digest()`.
@@ -1663,6 +1713,8 @@ pub enum StaticStrings {
     LruCache,
     /// `lstrip()` method, shared by `str` and `bytes`.
     Lstrip,
+    /// Kwarg name `lt` — `pydantic.Field()`.
+    Lt,
     /// `sys.version_info.major` field.
     Major,
     /// `os.makedirs()` function.
@@ -1704,6 +1756,8 @@ pub enum StaticStrings {
     /// `blake2b.MAX_DIGEST_SIZE` class constant.
     #[strum(serialize = "MAX_DIGEST_SIZE")]
     MaxDigestSize,
+    /// Kwarg name `max_digits` — `pydantic.Field()`.
+    MaxDigits,
     /// `decimal.MAX_EMAX` constant.
     #[strum(serialize = "MAX_EMAX")]
     MaxEmax,
@@ -1712,6 +1766,8 @@ pub enum StaticStrings {
     /// `blake2b.MAX_KEY_SIZE` class constant.
     #[strum(serialize = "MAX_KEY_SIZE")]
     MaxKeySize,
+    /// Kwarg name `max_length` — `pydantic.Field()`.
+    MaxLength,
     /// `base64.MAXLINESIZE` module constant.
     #[strum(serialize = "MAXLINESIZE")]
     MaxLineSize,
@@ -1753,6 +1809,8 @@ pub enum StaticStrings {
     MinEtiny,
     /// `sys.float_info.min_exp` field.
     MinExp,
+    /// Kwarg name `min_length` — `pydantic.Field()`.
+    MinLength,
     /// `sys.version_info.minor` field.
     Minor,
     /// `datetime` / `time` `minute` attribute and constructor kwarg.
@@ -1807,6 +1865,8 @@ pub enum StaticStrings {
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
+    /// Kwarg name `multiple_of` — `pydantic.Field()`.
+    MultipleOf,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
     /// The `collections.namedtuple` factory function.
@@ -1988,6 +2048,8 @@ pub enum StaticStrings {
     Popitem,
     /// `deque.popleft()` method.
     Popleft,
+    /// Key `populate_by_name` — `pydantic.ConfigDict`.
+    PopulateByName,
     /// `population` parameter of `random.choices()` and `random.sample()`.
     Population,
     /// Value of `os.name`.
@@ -2018,6 +2080,12 @@ pub enum StaticStrings {
     PycachePrefix,
     /// The `pydantic` module.
     Pydantic,
+    /// The `pydantic.dataclasses` module.
+    #[strum(serialize = "pydantic.dataclasses")]
+    PydanticDataclasses,
+    /// `pydantic.Field()`.
+    #[strum(serialize = "Field")]
+    PydanticField,
     /// `pydantic.PydanticSchemaGenerationError` exception class.
     #[strum(serialize = "PydanticSchemaGenerationError")]
     PydanticSchemaGenerationError,
@@ -2074,6 +2142,8 @@ pub enum StaticStrings {
     RandomVersion,
     /// `random.randrange()` function.
     Randrange,
+    /// `raw_function` attribute of a `pydantic.validate_call` wrapper.
+    RawFunction,
     /// Module name for `import re`.
     Re,
     /// `file.read()` method.
@@ -2098,6 +2168,8 @@ pub enum StaticStrings {
     RecurseSymlinks,
     /// `functools.reduce()` function.
     Reduce,
+    /// Kwarg name `ref_template` — `TypeAdapter.json_schema()`.
+    RefTemplate,
     /// Kwarg name `rel_tol` — `math.isclose(rel_tol=...)`.
     RelTol,
     /// `sys.version_info.releaselevel` field.
@@ -2209,6 +2281,8 @@ pub enum StaticStrings {
     Sample,
     /// `os.scandir()` function — yields a host scan.
     Scandir,
+    /// Kwarg name `schema_generator` — `TypeAdapter.json_schema()`.
+    SchemaGenerator,
     /// `re.search()` / `pattern.search()` method
     Search,
     /// `datetime` / `time` `second` attribute and constructor kwarg.
@@ -2237,6 +2311,8 @@ pub enum StaticStrings {
     Sequence,
     /// `sys.version_info.serial` field.
     Serial,
+    /// Kwarg name `serialization_alias` — `pydantic.Field()`.
+    SerializationAlias,
     /// Kwarg name `serialize_as_any` — `TypeAdapter.dump_*`.
     SerializeAsAny,
     /// `typing.Set` marker.
@@ -2374,6 +2450,16 @@ pub enum StaticStrings {
     Stop,
     /// Private cache insertion primitive.
     Store,
+    /// Key `str_max_length` — `pydantic.ConfigDict`.
+    StrMaxLength,
+    /// Key `str_min_length` — `pydantic.ConfigDict`.
+    StrMinLength,
+    /// Key `str_strip_whitespace` — `pydantic.ConfigDict`.
+    StrStripWhitespace,
+    /// Key `str_to_lower` — `pydantic.ConfigDict`.
+    StrToLower,
+    /// Key `str_to_upper` — `pydantic.ConfigDict`.
+    StrToUpper,
     /// `date.strftime()` / `datetime.strftime()` method.
     Strftime,
     /// Kwarg name `strict` — `zip(strict=...)`.
@@ -2580,6 +2666,10 @@ pub enum StaticStrings {
     Uniform,
     /// `set.union()` method.
     Union,
+    /// Kwarg name `union_format` — `TypeAdapter.json_schema()`.
+    UnionFormat,
+    /// Kwarg name `union_mode` — `pydantic.Field()`.
+    UnionMode,
     /// `typing.Union` marker.
     #[strum(serialize = "Union")]
     UnionType,
@@ -2617,12 +2707,22 @@ pub enum StaticStrings {
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
+    /// `pydantic.validate_call()`.
+    ValidateCall,
+    /// Kwarg name `validate_default` — `pydantic.Field()`.
+    ValidateDefault,
     /// `validate_json()` method of `pydantic.TypeAdapter`.
     ValidateJson,
+    /// Kwarg name `validate_on_init` — `pydantic.dataclasses.dataclass()`.
+    ValidateOnInit,
     /// `validate_python()` method of `pydantic.TypeAdapter`.
     ValidatePython,
+    /// Kwarg name `validate_return` — `pydantic.validate_call()`.
+    ValidateReturn,
     /// `validate_strings()` method of `pydantic.TypeAdapter`.
     ValidateStrings,
+    /// Kwarg name `validation_alias` — `pydantic.Field()`.
+    ValidationAlias,
     /// `pydantic.ValidationError` exception class.
     #[strum(serialize = "ValidationError")]
     ValidationError,

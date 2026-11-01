@@ -170,6 +170,10 @@ macro_rules! heap_payloads {
             TypingAlias(inline $crate::types::TypingAlias),
             /// A `pydantic.TypeAdapter` and its validator arena.
             TypeAdapter(boxed $crate::types::TypeAdapter),
+            /// What `pydantic.Field(...)` returns.
+            FieldInfo(boxed $crate::types::FieldInfo),
+            /// The function `pydantic.validate_call` wraps a function in.
+            ValidateCall(boxed $crate::types::ValidateCall),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -278,6 +282,8 @@ impl HeapData {
             | Self::Union(_)
             | Self::TypingAlias(_)
             | Self::TypeAdapter(_)
+            | Self::FieldInfo(_)
+            | Self::ValidateCall(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -359,6 +365,9 @@ impl HeapData {
             Self::Union(_) => Type::Union,
             Self::TypingAlias(alias) => alias.py_type(),
             Self::TypeAdapter(_) => Type::TypeAdapter,
+            Self::FieldInfo(_) => Type::FieldInfo,
+            // pydantic's wrapper is a plain function to Python.
+            Self::ValidateCall(_) => Type::Function,
             Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
@@ -724,6 +733,8 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Union($value) => $body,
             Self::TypingAlias($value) => $body,
             Self::TypeAdapter($value) => $body,
+            Self::FieldInfo($value) => $body,
+            Self::ValidateCall($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
@@ -1026,6 +1037,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Union(_)
             | Self::TypingAlias(_)
             | Self::TypeAdapter(_)
+            | Self::FieldInfo(_)
+            | Self::ValidateCall(_)
             | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)
