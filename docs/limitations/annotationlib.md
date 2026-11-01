@@ -41,7 +41,7 @@ Divergences:
     to code it calls: with `old = get_annotations(g, format=Format.FORWARDREF)['a']`, an annotation `use(old)` with
     `def use(x): return x | int` gives `ForwardRef('Later | int')` where CPython gives `ForwardRef('Later') | int`.
     CPython turns its stringifiers into plain references when their evaluation ends.
-- **`evaluate()` takes a dict or `None` for `globals` / `locals`.**
+- **`evaluate()` in `VALUE` or `FORWARDREF` format takes a dict or `None` for `globals` / `locals`.**
     Anything else raises `TypeError: ForwardRef.evaluate() globals must be a dict, not list`, where CPython accepts
     some non-dicts (a list behaves as empty) and fails inside `eval()` on others.
 - **`module=` names a bundled module whether or not it was imported**, so `ForwardRef('pi', module='math')`

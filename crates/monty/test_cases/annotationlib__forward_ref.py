@@ -105,6 +105,8 @@ assert ForwardRef('pi', module='math').evaluate() == math.pi
 assert ForwardRef('sqrt(4)', module='math').evaluate() == 2.0
 assert ForwardRef('pi', module='math').evaluate(globals={'pi': 1}) == 1
 assert ForwardRef('pi', module='math').evaluate(format=Format.STRING) == 'pi'
+# `STRING` returns the text before the namespaces are looked at
+assert ForwardRef('pi').evaluate(globals=[], locals=1, format=Format.STRING) == 'pi'
 try:
     ForwardRef('pi', module='no_such_module').evaluate()
     assert False, 'expected NameError'
