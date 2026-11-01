@@ -2601,6 +2601,8 @@ pub enum StaticStrings {
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
+    // Immutable text needs only one ASCII scan, including after snapshot loading.
+    ascii: bool,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2628,6 +2630,7 @@ impl InternedString {
     fn static_string(value: StaticStrings) -> Self {
         Self {
             static_tag: Some(value),
+            ascii: <&str>::from(value).is_ascii(),
             text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
@@ -2636,6 +2639,7 @@ impl InternedString {
     fn owned(value: String) -> Self {
         Self {
             static_tag: None,
+            ascii: value.is_ascii(),
             text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
         }
     }
@@ -3016,6 +3020,12 @@ impl Interns {
             .checked_sub(FILE_SOURCE_ID_BASE)
             .and_then(|index| self.file_sources.get(index))
             .map(|file| &*file.source)
+    }
+
+    /// Returns ASCII status without rescanning immutable literal text.
+    #[inline]
+    pub fn str_is_ascii(&self, id: StringId) -> bool {
+        id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
     }
 
     /// Returns the same hash as an equal heap string.
