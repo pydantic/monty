@@ -1633,6 +1633,10 @@ assert repr(_dt) == (
 assert _dt.tzinfo is _ist
 assert _dt.timestamp() == 1700000000.0
 assert datetime.datetime.fromtimestamp(1700000000.5, datetime.timezone.utc).timestamp() == 1700000000.5
+# a classmethod, so an instance reaches it too
+assert datetime.datetime(2020, 1, 1).fromtimestamp(0, datetime.timezone.utc) == datetime.datetime(
+    1970, 1, 1, tzinfo=datetime.timezone.utc
+)
 
 for _bad, _exc, _msg in [
     (('x',), TypeError, 'argument must be int or float, not str'),

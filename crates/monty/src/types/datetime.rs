@@ -394,26 +394,51 @@ pub(crate) fn timestamp_to_utc(
     };
     chrono::DateTime::from_timestamp(seconds, microseconds * 1_000)
         .map(|instant| Some(instant.naive_utc()))
-        .ok_or_else(timestamp_out_of_range)
+        .ok_or_else(|| beyond_chrono_range(seconds))
+}
+
+/// The error for a timestamp past chrono's ±262143 years. CPython's `localtime()` still
+/// holds the year while `year - 1900` fits a C `int`, so it raises the year error;
+/// past that it raises `OSError`, which Monty words as the `time_t` overflow.
+/// The zone offset is ignored: it can only move the year within hours of a new year.
+#[cold]
+fn beyond_chrono_range(seconds: i64) -> RunError {
+    let year = civil_year(seconds);
+    if i32::try_from(year - 1900).is_ok() {
+        date::year_out_of_range(year)
+    } else {
+        timestamp_out_of_range()
+    }
+}
+
+/// The proleptic Gregorian year of the instant `seconds` after the Unix epoch, for any
+/// `i64` (Howard Hinnant's `civil_from_days`), where chrono stops at ±262143 years.
+fn civil_year(seconds: i64) -> i64 {
+    let shifted = seconds.div_euclid(86_400) + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    // Years run March to February here, so January and February belong to the next one.
+    let march_based_month = (5 * day_of_year + 2) / 153;
+    year_of_era + era * 400 + i64::from(march_based_month >= 10)
 }
 
 /// Whole seconds and microseconds of a timestamp argument, or `None` when it is
 /// not a number and has no `__index__`.
 fn timestamp_parts(value: &Value, rounding: TimestampRounding, vm: &mut VM<'_>) -> RunResult<Option<(i64, u32)>> {
-    let parts = match value.py_value(vm) {
-        PyValue::Bool(b) => Some((i64::from(b), 0)),
-        PyValue::Int(integer) => Some((integer.to_i64(vm).ok_or_else(timestamp_out_of_range)?, 0)),
-        PyValue::Float(f) => Some(split_float_timestamp(f, rounding)?),
-        _ => None,
-    };
-    if parts.is_some() {
-        return Ok(parts);
+    match value.py_value(vm) {
+        PyValue::Bool(b) => Ok(Some((i64::from(b), 0))),
+        PyValue::Int(integer) => Ok(Some((integer.to_i64(vm).ok_or_else(timestamp_out_of_range)?, 0))),
+        PyValue::Float(f) => split_float_timestamp(f, rounding).map(Some),
+        _ => match value.py_index_impl(vm)? {
+            Some(index) => {
+                defer_drop!(index, vm);
+                timestamp_parts(index, rounding, vm)
+            }
+            None => Ok(None),
+        },
     }
-    let Some(index) = value.py_index_impl(vm)? else {
-        return Ok(None);
-    };
-    defer_drop!(index, vm);
-    timestamp_parts(index, rounding, vm)
 }
 
 /// Splits a float timestamp into whole seconds and microseconds in `0..1_000_000`,
@@ -449,14 +474,10 @@ fn split_float_timestamp(value: f64, rounding: TimestampRounding) -> RunResult<(
 /// The wall clock at `offset_seconds` from the UTC instant `utc`, raising CPython's
 /// `year must be in 1..9999` when the result leaves `datetime`'s range.
 pub(crate) fn wall_clock_at(utc: NaiveDateTime, offset_seconds: i32) -> RunResult<NaiveDateTime> {
-    let local = utc
-        .checked_add_signed(ChronoTimeDelta::seconds(i64::from(offset_seconds)))
-        .ok_or_else(timestamp_out_of_range)?;
-    if year_in_python_range(local.year()) {
-        Ok(local)
-    } else {
-        Err(date::year_out_of_range(local.year()))
-    }
+    local_wall_clock(utc, offset_seconds).ok_or_else(|| {
+        // Computed from seconds, since the shifted instant may be past chrono's range.
+        date::year_out_of_range(civil_year(utc.and_utc().timestamp() + i64::from(offset_seconds)))
+    })
 }
 
 #[cold]
@@ -1528,6 +1549,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
                 Ok(CallResult::Value(Value::Float(ts)))
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
+            // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))

@@ -66,7 +66,8 @@ pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
 
 /// `date`'s year-range error, raised both by construction and by the probe
 /// [`datetime.astimezone`](super::datetime) makes a day either side of a value.
-pub(crate) fn year_out_of_range(year: i32) -> RunError {
+pub(crate) fn year_out_of_range(year: impl Into<i64>) -> RunError {
+    let year = year.into();
     SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into()
 }
 
@@ -325,6 +326,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
+            // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
     }

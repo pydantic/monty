@@ -97,8 +97,31 @@ for _bad, _exc, _msg in [
         assert str(e) == _msg
 assert datetime.fromtimestamp(-62135596800, _plus_one) == datetime(1, 1, 1, 1, tzinfo=_plus_one)
 
+# instants past chrono's ±262143 years still raise the year error while C's `tm_year` holds the year
+for _bad, _msg in [
+    ((1e13,), 'year must be in 1..9999, not 318857'),
+    ((-1e13,), 'year must be in 1..9999, not -314918'),
+    ((6.7e16,), 'year must be in 1..9999, not 2123147449'),
+    ((10**13, timezone.utc), 'year must be in 1..9999, not 318857'),
+    ((-(10**13), _plus_one), 'year must be in 1..9999, not -314918'),
+]:
+    try:
+        datetime.fromtimestamp(*_bad)
+        assert False, 'expected ValueError'
+    except ValueError as e:
+        assert str(e) == _msg
+
+assert date(2020, 1, 1).fromtimestamp(0) == date(1970, 1, 1)
+assert datetime(2020, 1, 1).fromtimestamp(0) == datetime(1970, 1, 1)
+
 try:
     date.fromtimestamp(-62135596801)
     assert False, 'expected ValueError'
 except ValueError as e:
     assert str(e) == 'year must be in 1..9999, not 0'
+
+try:
+    date.fromtimestamp(1e13)
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'year must be in 1..9999, not 318857'

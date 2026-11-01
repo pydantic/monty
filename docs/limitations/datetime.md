@@ -57,9 +57,10 @@ either.
 `today()` reads the clock, so it depends on the embedder granting one —
 see "Reading the clock" below.
 `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
-A timestamp the platform's `localtime()` rejects raises `OSError` in CPython (`date.fromtimestamp(1e18)`, and on Windows
-every negative timestamp); Monty raises `OverflowError: timestamp out of range for platform time_t` when the value does
-not fit a 64-bit `time_t` and the year-range `ValueError` for any other instant outside years 1 to 9999.
+Its errors differ as `datetime.fromtimestamp()`'s do (below).
+`today()` and `fromisoformat()` can only be called on the class: `date(2020, 1, 1).today()` raises `AttributeError`.
+`fromtimestamp()` also works on an instance.
+No class method can be read without calling it (see [builtins.md](builtins.md)).
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -114,11 +115,16 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
     where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
+- `now()`, `strptime()`, `fromisoformat()` and `combine()` can only be called on the class:
+    `datetime(2020, 1, 1).now()` raises `AttributeError`. `fromtimestamp()` also works on an instance.
+    No class method can be read without calling it (see [builtins.md](builtins.md)).
 - A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
-    Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython, except that an instant
-    the platform's `localtime()` rejects raises `OSError` there (`fromtimestamp(1e18)`, and on Windows every negative
-    timestamp) where Monty raises `OverflowError: timestamp out of range for platform time_t` for a value outside a
-    64-bit `time_t` and the year-range `ValueError` otherwise.
+    Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython on Linux and macOS,
+    except where the platform's `gmtime()` / `localtime()` fails and CPython raises `OSError`:
+    - A year whose `year - 1900` does not fit a C `int` (`fromtimestamp(1e18)`) raises
+        `OverflowError: timestamp out of range for platform time_t`.
+    - On Windows, where those functions reject negative timestamps and years after 3000, Monty raises the
+        year-range `ValueError` for a year outside 1 to 9999 and returns a result for any other.
 - `fromordinal()` and `utcfromtimestamp()` (deprecated in CPython) are not implemented.
 - `time()` and `timetz()` return a `time` whose `fold` is always 0, since
     `datetime` does not store the flag (above). `combine()` likewise
