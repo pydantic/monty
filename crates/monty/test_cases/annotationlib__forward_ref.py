@@ -1,4 +1,5 @@
 import annotationlib
+import math
 import sys
 import typing
 from annotationlib import Format, ForwardRef, get_annotations
@@ -99,6 +100,16 @@ assert ForwardRef('Later').evaluate(locals={'Later': str}) is str
 assert ForwardRef('Later').evaluate(globals={'Later': int}, locals={'Later': str}) is str
 assert ForwardRef('list[Later]').evaluate(globals={'Later': int}) == list[int]
 assert ForwardRef('Later | None').evaluate(globals={'Later': Foo}) == Foo | None
+# `module=` evaluates in that module's namespace unless `globals` is given
+assert ForwardRef('pi', module='math').evaluate() == math.pi
+assert ForwardRef('sqrt(4)', module='math').evaluate() == 2.0
+assert ForwardRef('pi', module='math').evaluate(globals={'pi': 1}) == 1
+assert ForwardRef('pi', module='math').evaluate(format=Format.STRING) == 'pi'
+try:
+    ForwardRef('pi', module='no_such_module').evaluate()
+    assert False, 'expected NameError'
+except NameError as exc:
+    assert str(exc) == "name 'pi' is not defined"
 assert ForwardRef('int').evaluate() is int
 assert ForwardRef('None').evaluate() is None
 assert ForwardRef('1 + 1').evaluate() == 2

@@ -12,6 +12,7 @@
 use std::{
     fmt::Write,
     hash::{Hash, Hasher},
+    str::FromStr,
 };
 
 use ahash::AHasher;
@@ -27,9 +28,9 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    modules::{ModuleFunctions, typing},
+    modules::{ModuleFunctions, StandardLib, typing},
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, Union,
+        BuiltinType, Dict, LazyHeapSet, PyTrait, Type, Union,
         generic_alias::repr_type_arg,
         str::{StringRepr, allocate_string},
     },
@@ -384,16 +385,18 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
         defer_drop!(type_params, vm);
         defer_drop!(owner, vm);
         defer_drop!(format, vm);
-        let (arg, own_owner, is_class, own_globals) = {
+        let (arg, module, own_owner, is_class, own_globals) = {
             let this = self.get(vm.heap);
             (
                 this.arg.clone_with_heap(vm.heap),
+                this.module.clone_with_heap(vm.heap),
                 this.owner.clone_with_heap(vm.heap),
                 this.is_class,
                 this.globals,
             )
         };
         defer_drop!(arg, vm);
+        defer_drop!(module, vm);
         defer_drop!(own_owner, vm);
         let forwardref = match format_code(format) {
             Some(4) => return Ok(CallResult::Value(arg.clone_with_heap(vm))),
@@ -409,22 +412,33 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
                 .into());
             }
         };
+        let globals = typing::namespace_dict(globals, "ForwardRef.evaluate", "globals", vm)?;
+        let locals = typing::namespace_dict(locals, "ForwardRef.evaluate", "locals", vm)?;
         let owner = if matches!(owner, Value::None) { own_owner } else { owner };
-        // As CPython, `__globals__` (the dict a stringifier was composed against)
-        // comes before the owner's globals.
-        let globals = match (globals, own_globals) {
-            (Value::None, Some(FrameGlobals::Dict(id))) => {
-                vm.heap.inc_ref(id);
-                Value::Ref(id)
+        // As CPython: explicit globals, then `__forward_module__`'s namespace, then
+        // `__globals__` (the dict a stringifier was composed against), then the owner's.
+        let globals = if let Some(id) = globals {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        } else if let Some(module_globals) = module_globals(module, vm)? {
+            module_globals
+        } else {
+            match own_globals {
+                Some(FrameGlobals::Dict(id)) => {
+                    vm.heap.inc_ref(id);
+                    Value::Ref(id)
+                }
+                Some(FrameGlobals::Slots) => Value::None,
+                None => typing::owner_globals(owner, vm),
             }
-            (Value::None, Some(FrameGlobals::Slots)) => Value::None,
-            (Value::None, None) => typing::owner_globals(owner, vm),
-            (dict, _) => dict.clone_with_heap(vm),
         };
         defer_drop!(globals, vm);
         let locals = match locals {
-            Value::None => typing::owner_locals(owner, vm)?,
-            dict => dict.clone_with_heap(vm),
+            Some(id) => {
+                vm.heap.inc_ref(id);
+                Value::Ref(id)
+            }
+            None => typing::owner_locals(owner, vm)?,
         };
         defer_drop!(locals, vm);
         vm.call_frozen_exact(
@@ -445,6 +459,47 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
             ],
         )
     }
+}
+
+/// The globals a `module=` name selects for `ForwardRef.evaluate()`, as CPython's
+/// `sys.modules[module].__dict__`: `None` (the session slots) for `__main__`, a file
+/// module's namespace, or a copy of a bundled module's attributes. Bundled modules
+/// need no prior import; a host module or unknown name gives `Ok(None)`.
+fn module_globals(module: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    let Some(name) = module.as_str(vm) else {
+        return Ok(None);
+    };
+    let file_namespace = vm.modules.get_id(name).and_then(|id| match vm.heap.get(id) {
+        HeapData::Module(module) => module.namespace(),
+        _ => None,
+    });
+    if name == "__main__" {
+        Ok(Some(Value::None))
+    } else if let Some(namespace) = file_namespace {
+        vm.heap.inc_ref(namespace);
+        Ok(Some(Value::Ref(namespace)))
+    } else if let Some(bundled) = StaticStrings::from_str(name).ok().and_then(StandardLib::from_static) {
+        bundled_module_dict(bundled, vm).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// A fresh dict holding a newly created bundled module's attributes.
+fn bundled_module_dict(bundled: StandardLib, vm: &mut VM<'_>) -> RunResult<Value> {
+    let module_id = bundled.create(vm);
+    let module = Value::Ref(module_id);
+    defer_drop!(module, vm);
+    let HeapData::Module(module) = vm.heap.get(module_id) else {
+        unreachable!("StandardLib::create allocates a module");
+    };
+    let pairs = module
+        .attrs()
+        .iter()
+        .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
+        .collect();
+    let dict = Dict::from_pairs(pairs, vm)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {

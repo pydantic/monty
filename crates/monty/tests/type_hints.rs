@@ -225,3 +225,30 @@ hints = get_type_hints(g, format=Format.FORWARDREF)
         );
     }
 }
+
+/// `ForwardRef.evaluate()` takes dict namespaces only, where CPython accepts some
+/// non-dicts and fails later on others; `module='__main__'` reads the session globals.
+#[test]
+fn forward_ref_evaluate_namespaces() {
+    let code = "\
+from annotationlib import ForwardRef
+pi = 'session pi'
+results = [ForwardRef('pi', module='__main__').evaluate()]
+for kwargs in [{'globals': []}, {'globals': 1}, {'locals': []}]:
+    try:
+        ForwardRef('int').evaluate(**kwargs)
+    except TypeError as exc:
+        results.append(str(exc))
+results";
+    let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = runner.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::list([
+            MontyObject::string("session pi"),
+            MontyObject::string("ForwardRef.evaluate() globals must be a dict, not list"),
+            MontyObject::string("ForwardRef.evaluate() globals must be a dict, not int"),
+            MontyObject::string("ForwardRef.evaluate() locals must be a dict, not list"),
+        ]),
+    );
+}

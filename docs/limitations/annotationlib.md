@@ -41,6 +41,12 @@ Divergences:
     to code it calls: with `old = get_annotations(g, format=Format.FORWARDREF)['a']`, an annotation calling
     `def use(x): return old | int` gives `ForwardRef('Later | int')` where CPython gives `ForwardRef('Later') | int`.
     CPython turns its stringifiers into plain references when their evaluation ends.
+- **`evaluate()` takes a dict or `None` for `globals` / `locals`.**
+    Anything else raises `TypeError: ForwardRef.evaluate() globals must be a dict, not list`, where CPython accepts
+    some non-dicts (a list behaves as empty) and fails inside `eval()` on others.
+- **`module=` names a bundled module whether or not it was imported**, so `ForwardRef('pi', module='math')`
+    evaluates without `import math`, where CPython requires the module in `sys.modules`.
+    A host module is never found, so its name falls back to the reference's other globals.
 - **A class owner supplies the session globals** to `evaluate()`, where CPython reads the class's module from
     `sys.modules`.
 - **`NotImplementedError` for an unsupported `format` carries the text**, so `repr(exc)` is
