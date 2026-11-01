@@ -33,3 +33,16 @@ True
         .unwrap();
     assert_eq!(output, MontyObject::bool(true));
 }
+
+/// The sys tuple must advertise every built-in, including feature-gated modules and aliases.
+#[test]
+fn sys_builtin_names_match_import_registry() {
+    let mut expected = monty::builtin_module_names();
+    expected.sort_unstable();
+    let code = format!("import sys\nassert sys.builtin_module_names == tuple({expected:?})\nTrue");
+    let output = MontyRun::new(code, "builtin_names.py", vec![], CompileOptions::default())
+        .unwrap()
+        .run_no_limits(vec![])
+        .unwrap();
+    assert_eq!(output, MontyObject::bool(true));
+}
