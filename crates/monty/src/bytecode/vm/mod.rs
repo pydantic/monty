@@ -2781,11 +2781,6 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// The function whose frame is executing, `None` for module-level code.
-    pub(crate) fn current_function_id(&self) -> Option<FunctionId> {
-        self.current_frame.function_id
-    }
-
     /// Returns the interned name of a module-level global at `slot`, if known.
     ///
     /// Read from the live name map rather than the module `Code`, so slots

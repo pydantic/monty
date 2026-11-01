@@ -1021,35 +1021,25 @@ impl<'a, 'i> Compiler<'a, 'i> {
     ) -> Result<(), CompileError> {
         let flags = self.flags;
         self.emit_make_callable(body, "class body", |interns, namespace_size| {
-            Self::compile_class_body(
-                &body.body,
-                members,
-                class_name,
-                position,
-                interns,
-                namespace_size,
-                flags,
-            )
+            Self::compile_class_body(body, members, class_name, position, interns, namespace_size, flags)
         })
     }
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
-    /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`. A fourth
-    /// `Undefined` argument, which no Python code can pass, tells `type()` this
-    /// is a compiled body whose `from __future__ import annotations` state it
-    /// should keep (see `builtin_type`).
+    /// implicit `LoadNone; ReturnValue` tail with a
+    /// `type.__build_class__(name, {...}, future_annotations)` call: push the
+    /// class name, then for each member (in source order) `LoadConst <name>`
+    /// and the member's value from its class-body slot, build the namespace
+    /// dict, push the body's `from __future__ import annotations` state, and
+    /// call the hidden builtin (which builds the `Class`), then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
     fn compile_class_body(
-        body: &[PreparedNode],
+        body: &PreparedFunctionDef,
         members: &[Identifier],
         class_name: &Identifier,
         position: CodeRange,
@@ -1058,16 +1048,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         flags: ScopeFlags,
     ) -> Result<Code, CompileError> {
         let mut compiler = Compiler::new(interns, false, num_locals, flags);
-        compiler.compile_block(body)?;
+        compiler.compile_block(&body.body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type(name, (), {members...}): push the name and empty bases tuple...
+        // type.__build_class__(name, {members...}, future): push the name...
         let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
         compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
-        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
 
         // ...then the namespace dict: (name, value) for each member in order.
         for member in members {
@@ -1078,13 +1067,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let member_count = check_collection_size_u16(members.len(), position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
 
-        // ...and the sentinel that marks this as the compiled body's own call,
-        // then call the type() builtin, which builds the class object.
-        let sentinel = compiler.code.add_const(Value::Undefined)?;
-        compiler.code.emit_u16(Opcode::LoadConst, sentinel)?;
+        // ...then the PEP 563 state, and the hidden builtin that builds the class object.
+        let future_const = compiler.code.add_const(Value::Bool(body.future_annotations))?;
+        compiler.code.emit_u16(Opcode::LoadConst, future_const)?;
         compiler
             .code
-            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 4)?;
+            .emit_call_builtin_function(BuiltinsFunctions::BuildClass as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok(compiler.code.build())

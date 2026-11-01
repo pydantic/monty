@@ -119,4 +119,11 @@ pub enum BuiltinsFunctions {
     Exec,
     /// `locals()`, appended after [`Self::Exec`].
     Locals,
+    /// `type.__build_class__(name, namespace, future_annotations)`, the call a
+    /// compiled class body ends with, appended after [`Self::Locals`]. Like
+    /// [`Self::ObjectSetattr`] its name is not an identifier, so Python code
+    /// never reaches it and `type()` stays CPython's.
+    #[strum(serialize = "type.__build_class__")]
+    #[serde(rename = "type.__build_class__")]
+    BuildClass,
 }
