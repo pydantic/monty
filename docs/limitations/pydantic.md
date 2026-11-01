@@ -85,7 +85,8 @@ Divergences:
 - **A dataclass field with `init=False` does not exist in Monty**, so every field is read from the input.
 - **A `dict[K, V]` input that changes size during validation raises `RuntimeError`**, as a `for` loop over
     it would, where pydantic-core's iterator fails with a `PanicException`. Dataclass arguments read from
-    a dict that a `default_factory` mutates are validated in both, with any key added treated as unknown.
+    a dict that a `default_factory` mutates are validated in both: a key the factory adds or changes is read
+    when the walk reaches it, and a removed one is missing.
 - **Set results iterate in insertion order**, as Monty's sets do, where CPython's order depends on hashes.
 - **The recursion guard is keyed on identity**: a list that contains itself reports `recursion_loop`,
     like pydantic, but a deeply nested input hits Monty's recursion limit (`RecursionError`) rather than

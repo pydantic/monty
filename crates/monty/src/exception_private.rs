@@ -1814,13 +1814,16 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
     #[must_use]
     fn value_error_int_too_large_for_str() -> RunError {
-        SimpleException::new_msg(
-            ExcType::ValueError,
-            format!(
-                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit"
-            ),
+        SimpleException::new_msg(ExcType::ValueError, Self::int_too_large_for_str_message()).into()
+    }
+
+    /// The message of [`value_error_int_too_large_for_str`](Self::value_error_int_too_large_for_str),
+    /// for errors that quote it.
+    #[must_use]
+    fn int_too_large_for_str_message() -> String {
+        format!(
+            "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit"
         )
-        .into()
     }
 
     /// Creates a ValueError when a decimal string has too many digits for `int()` conversion.
