@@ -345,14 +345,15 @@ pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult
         }
     } else {
         let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
-        // CPython detects a DST fold by also converting the instant a day earlier,
+        let naive = wall_clock_at(utc, offset)?;
+        // CPython detects a DST fold by then converting the instant a day earlier,
         // so the first representable day raises its year error; reproduce that.
         let probe = utc
             .checked_sub_signed(ChronoTimeDelta::days(1))
             .ok_or_else(|| date::year_out_of_range(utc.year()))?;
         wall_clock_at(probe, offset)?;
         DateTime {
-            naive: wall_clock_at(utc, offset)?,
+            naive,
             offset_seconds: None,
             timezone_name: None,
             tzinfo_ref: None,
