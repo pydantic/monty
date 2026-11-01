@@ -1100,7 +1100,7 @@ pub enum StaticStrings {
     /// `__suppress_context__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__suppress_context__")]
     DunderSuppressContext,
-    /// `decimal.__version__` attribute.
+    /// `decimal.__version__` and `pydantic.__version__` attributes.
     #[strum(serialize = "__version__")]
     DunderVersion,
     /// The uncached callable.
