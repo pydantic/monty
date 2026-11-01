@@ -24,6 +24,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
+    modules::pydantic::dataclasses::validated_init,
     types::{
         LazyHeapSet, PyTrait, Type,
         host_class::write_dataclass_repr,
@@ -68,6 +69,10 @@ pub(crate) enum MethodKind {
     FrozenSetattr,
     /// `frozen=True`'s `__delattr__`: refuses every deletion.
     FrozenDelattr,
+    /// `pydantic.dataclasses`' `__init__`: validates the arguments through the
+    /// class's `__pydantic_validator__`, then stores and runs `__post_init__`
+    /// as [`Init`](Self::Init) does.
+    ValidatedInit { frozen: bool, post_init: bool },
 }
 
 impl MethodKind {
@@ -81,7 +86,7 @@ impl MethodKind {
                     .iter()
                     .map(|field| (interns.get_str(field.name), field.init.is_optional())),
             ),
-            Self::Repr(_) | Self::Hash(_) => {}
+            Self::Repr(_) | Self::Hash(_) | Self::ValidatedInit { .. } => {}
             Self::Eq(_) => params.push(("other", false)),
             Self::FrozenSetattr => params.extend([("name", false), ("value", false)]),
             Self::FrozenDelattr => params.push(("name", false)),
@@ -103,7 +108,7 @@ impl MethodKind {
     /// The dunder this method is stored under, and named by.
     pub fn dunder(&self) -> StaticStrings {
         match self {
-            Self::Init(_) => StaticStrings::DunderInit,
+            Self::Init(_) | Self::ValidatedInit { .. } => StaticStrings::DunderInit,
             Self::Repr(_) => StaticStrings::DunderRepr,
             Self::Eq(_) => StaticStrings::DunderEq,
             Self::Hash(_) => StaticStrings::DunderHash,
@@ -301,6 +306,27 @@ fn call_method(method_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult
     let method = method_at(method_id, vm);
     let qualname = method.qualname();
     let dunder = method.dunder();
+    if let MethodKind::ValidatedInit { frozen, post_init } = method.kind {
+        // `self` is the first positional argument; the rest are the fields' arguments.
+        let (mut positional, kwargs) = args.into_parts();
+        let Some(this) = positional.next() else {
+            kwargs.drop_with(vm);
+            return Err(ExcType::type_error(format!(
+                "{qualname}() missing 1 required positional argument: 'self'"
+            )));
+        };
+        defer_drop!(this, vm);
+        let rest = ArgValues::from_parts(positional.collect(), kwargs);
+        let self_id = match require_instance(this, &qualname, vm) {
+            Ok(id) => id,
+            Err(err) => {
+                rest.drop_with(vm);
+                return Err(err);
+            }
+        };
+        validated_init(self_id, frozen, post_init, rest, vm)?;
+        return Ok(Value::None);
+    }
     let params = method.kind.params(interns);
     // Binding leaves every required slot filled, `self` among them; only an
     // `__init__` field with a default can still be empty.
@@ -397,7 +423,7 @@ pub(crate) fn generated_fields(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> O
 pub(crate) fn is_generated_init(value: &Value, vm: &VM<'_>) -> bool {
     matches!(value, Value::Ref(id) if matches!(
         vm.heap.get(*id),
-        HeapData::DataclassMethod(method) if matches!(method.kind, MethodKind::Init(_))
+        HeapData::DataclassMethod(method) if matches!(method.kind, MethodKind::Init(_) | MethodKind::ValidatedInit { .. })
     ))
 }
 
@@ -441,6 +467,10 @@ pub(crate) fn run_init(vm: &mut VM<'_>, init: &Value, instance: Value, args: Arg
         unreachable!("the caller just allocated the instance")
     };
     let method = method_at(method_id, vm);
+    if let MethodKind::ValidatedInit { frozen, post_init } = method.kind {
+        validated_init(instance_id, frozen, post_init, args, vm)?;
+        return Ok(guard.into_inner());
+    }
     let qualname = method.qualname();
     let params = method.kind.params(vm.interns);
     // `self` is the new instance, already bound; its slot holds a placeholder.
@@ -535,6 +565,23 @@ fn run_post_init(instance_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
     defer_drop!(post_init, vm);
     let result = vm.evaluate_function(post_init, ArgValues::Empty)?;
     result.drop_with(vm);
+    Ok(())
+}
+
+/// A validating `__init__`'s body: the field values `pydantic.dataclasses`
+/// validated from the arguments, stored as [`init_instance`] stores bound ones.
+pub(crate) fn assign_fields(
+    instance_id: HeapId,
+    names: &[StringId],
+    values: Vec<Value>,
+    frozen: bool,
+    post_init: bool,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    store_fields(instance_id, names, values, frozen, vm)?;
+    if post_init {
+        run_post_init(instance_id, vm)?;
+    }
     Ok(())
 }
 
