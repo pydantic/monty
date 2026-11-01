@@ -160,6 +160,9 @@ extra-standard-library = ["tomllib"]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
+"crates/monty-type-checking/tests/bad_types.py" = [
+    "E402", # an import next to its cases keeps the earlier line numbers in the snapshot unchanged
+]
 
 [tool.ruff.format]
 docstring-code-format = true
