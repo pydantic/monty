@@ -408,7 +408,7 @@ fn beyond_chrono_range(seconds: i64) -> RunError {
     if i32::try_from(year - 1900).is_ok() {
         date::year_out_of_range(year)
     } else {
-        timestamp_out_of_range()
+        ExcType::timestamp_out_of_range()
     }
 }
 
@@ -425,12 +425,20 @@ fn civil_year(seconds: i64) -> i64 {
     year_of_era + era * 400 + i64::from(march_based_month >= 10)
 }
 
-/// Whole seconds and microseconds of a timestamp argument, or `None` when it is
-/// not a number and has no `__index__`.
-fn timestamp_parts(value: &Value, rounding: TimestampRounding, vm: &mut VM<'_>) -> RunResult<Option<(i64, u32)>> {
+/// Whole seconds and microseconds of a timestamp argument, as CPython's
+/// `_PyTime_ObjectToTimeval` / `_PyTime_ObjectToTime_t` read it; shared with the
+/// `time` module. `None` when it is not a number and has no `__index__`.
+pub(crate) fn timestamp_parts(
+    value: &Value,
+    rounding: TimestampRounding,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<(i64, u32)>> {
     match value.py_value(vm) {
         PyValue::Bool(b) => Ok(Some((i64::from(b), 0))),
-        PyValue::Int(integer) => Ok(Some((integer.to_i64(vm).ok_or_else(timestamp_out_of_range)?, 0))),
+        PyValue::Int(integer) => Ok(Some((
+            integer.to_i64(vm).ok_or_else(ExcType::timestamp_out_of_range)?,
+            0,
+        ))),
         PyValue::Float(f) => split_float_timestamp(f, rounding).map(Some),
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
@@ -449,7 +457,7 @@ fn timestamp_parts(value: &Value, rounding: TimestampRounding, vm: &mut VM<'_>) 
 #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn split_float_timestamp(value: f64, rounding: TimestampRounding) -> RunResult<(i64, u32)> {
     if value.is_nan() {
-        return Err(SimpleException::new_msg(ExcType::ValueError, "Invalid value NaN (not a number)").into());
+        return Err(ExcType::invalid_nan());
     }
     let (mut whole, mut fraction) = match rounding {
         TimestampRounding::HalfEven => {
@@ -467,7 +475,7 @@ fn split_float_timestamp(value: f64, rounding: TimestampRounding) -> RunResult<(
     }
     // `time_t` is 64 bits on every supported platform; the comparison also rejects infinities.
     if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&whole) {
-        return Err(timestamp_out_of_range());
+        return Err(ExcType::timestamp_out_of_range());
     }
     Ok((whole as i64, fraction as u32))
 }
@@ -479,11 +487,6 @@ pub(crate) fn wall_clock_at(utc: NaiveDateTime, offset_seconds: i32) -> RunResul
         // Computed from seconds, since the shifted instant may be past chrono's range.
         date::year_out_of_range(civil_year(utc.and_utc().timestamp() + i64::from(offset_seconds)))
     })
-}
-
-#[cold]
-fn timestamp_out_of_range() -> RunError {
-    SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
 }
 
 #[cold]
