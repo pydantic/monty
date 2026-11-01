@@ -52,7 +52,9 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::Builtin(Builtins::Type(BuiltinType::TypeAdapter)),
         vm,
     );
+    // `VERSION` and `__version__` are the same string, as in pydantic.
     let version = allocate_string(PYDANTIC_VERSION, vm.heap);
+    module.set_attr(StaticStrings::DunderVersion, version.clone_with_heap(vm.heap), vm);
     module.set_attr(StaticStrings::RandomVersion, version, vm);
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }

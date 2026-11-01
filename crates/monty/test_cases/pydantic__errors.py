@@ -14,6 +14,8 @@ except PydanticUserError as exc:
     assert isinstance(exc, RuntimeError)
     assert isinstance(exc, PydanticSchemaGenerationError)
 assert pydantic.VERSION == '2.13.4'
+assert pydantic.__version__ == '2.13.4'
+assert pydantic.__version__ is pydantic.VERSION
 
 # === Building one from line errors ===
 URL = 'https://errors.pydantic.dev/2.13/v/'
