@@ -865,7 +865,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(func_def, what, false, |interns, namespace_size| {
+        self.emit_make_callable(func_def, what, |interns, namespace_size| {
             Self::compile_function_body(func_def, interns, namespace_size, flags)
         })
     }
@@ -887,7 +887,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         &mut self,
         func_def: &PreparedFunctionDef,
         what: &'static str,
-        is_class_body: bool,
         compile_body: impl FnOnce(&mut CompileInterns<'_>, u16) -> Result<Code, CompileError>,
     ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
@@ -930,11 +929,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.annotations.clone().into_boxed_slice(),
             func_def.future_annotations,
         );
-        let function = if is_class_body {
-            function.with_class_body()
-        } else {
-            function
-        };
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -1026,7 +1020,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         position: CodeRange,
     ) -> Result<(), CompileError> {
         let flags = self.flags;
-        self.emit_make_callable(body, "class body", true, |interns, namespace_size| {
+        self.emit_make_callable(body, "class body", |interns, namespace_size| {
             Self::compile_class_body(
                 &body.body,
                 members,
@@ -1044,8 +1038,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
     /// call: push the class name and an empty bases tuple, then for each
     /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the 3-arg
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    /// from its class-body slot, build the namespace dict, and call the
+    /// `type()` builtin (which builds the `Class`), then `ReturnValue`. A fourth
+    /// `Undefined` argument, which no Python code can pass, tells `type()` this
+    /// is a compiled body whose `from __future__ import annotations` state it
+    /// should keep (see `builtin_type`).
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1081,10 +1078,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let member_count = check_collection_size_u16(members.len(), position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
 
-        // ...and call the 3-arg type() builtin, which builds the class object.
+        // ...and the sentinel that marks this as the compiled body's own call,
+        // then call the type() builtin, which builds the class object.
+        let sentinel = compiler.code.add_const(Value::Undefined)?;
+        compiler.code.emit_u16(Opcode::LoadConst, sentinel)?;
         compiler
             .code
-            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 4)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok(compiler.code.build())

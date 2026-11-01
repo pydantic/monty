@@ -36,11 +36,29 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 Err(ExcType::type_error_no_kwargs("type"))
             }
         }
-        3 => {
+        3 | 4 => {
             let name = pos.next().expect("length checked");
             let bases = pos.next().expect("length checked");
             let namespace = pos.next().expect("length checked");
-            create_class(vm, name, bases, namespace, kwargs)
+            match pos.next() {
+                // A namespace built by hand holds real values, so its strings are
+                // forward references, as in CPython, whatever the caller's module declared.
+                None => create_class(vm, name, bases, namespace, kwargs, true),
+                // A compiled class body's tail call (see `compile_class_body`) marks
+                // itself with an `Undefined` no Python code can pass, and the class
+                // keeps the body's `from __future__ import annotations` state.
+                Some(Value::Undefined) => {
+                    let future_annotations = vm
+                        .current_function_id()
+                        .is_some_and(|id| vm.interns.get_function(id).future_annotations);
+                    create_class(vm, name, bases, namespace, kwargs, future_annotations)
+                }
+                Some(extra) => {
+                    vec![name, bases, namespace, extra].drop_with(vm);
+                    kwargs.drop_with(vm);
+                    Err(ExcType::type_error("type() takes 1 or 3 arguments"))
+                }
+            }
         }
         _ => {
             pos.drop_with(vm);
@@ -113,6 +131,7 @@ fn create_class(
     bases: Value,
     namespace: Value,
     kwargs: KwargsValues,
+    future_annotations: bool,
 ) -> RunResult<Value> {
     defer_drop!(name, vm);
     defer_drop!(bases, vm);
@@ -182,14 +201,6 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    // A compiled class body ends in this call, so its frame's function carries
-    // the body's `from __future__ import annotations` state. A namespace built
-    // by hand holds real values, so its strings are forward references, as they
-    // are in CPython, whatever the caller's module declared.
-    let future_annotations = vm
-        .current_function_id()
-        .map(|id| vm.interns.get_function(id))
-        .is_none_or(|function| !function.is_class_body || function.future_annotations);
     let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
         class_name,
         namespace_dict,

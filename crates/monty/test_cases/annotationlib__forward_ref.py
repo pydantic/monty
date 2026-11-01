@@ -1,4 +1,5 @@
 import annotationlib
+import sys
 import typing
 from annotationlib import Format, ForwardRef, get_annotations
 from typing import Optional
@@ -155,7 +156,8 @@ assert [ref.__resolved_str__ for ref in shapes] == [
     'Missing[::3]',
 ]
 assert ForwardRef('Missing[()]').evaluate(format=Format.FORWARDREF).evaluate(globals={'Missing': dict}) == dict[()]
-# a chain of owners recurses in hashing, equality and repr
+# a chain of owners recurses in hashing, equality and repr; CPython's message
+# depends on whether its depth counter or its C-stack guard fires first
 deep = ForwardRef('x')
 for _ in range(2000):
     deep = ForwardRef('x', owner=deep)
@@ -164,7 +166,8 @@ for operation in [hash, repr, lambda ref: ref == ForwardRef('x', owner=ref)]:
         operation(deep)
         assert False, 'expected RecursionError'
     except RecursionError as exc:
-        assert str(exc) == 'maximum recursion depth exceeded'
+        if sys.platform == 'monty':
+            assert str(exc) == 'maximum recursion depth exceeded'
 assert nested.__args__[0].__owner__ is None
 assert nested.__args__[0] != ForwardRef('Missing')
 assert ForwardRef('list[Missing]').evaluate(format=Format.FORWARDREF, globals={'Missing': int}) == list[int]

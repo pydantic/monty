@@ -275,6 +275,14 @@ assert get_type_hints(Built, {'Missing': str}) == {'x': str, 'y': int, 'z': list
 assert get_type_hints(Built, None, {'Missing': bytes}) == {'x': bytes, 'y': int, 'z': list[bytes]}
 
 
+# the same inside a class body, which ends in its own type() call
+class Outer:
+    Inner = type('Inner', (), {'__module__': 'built', '__annotations__': {'x': 'Missing'}})
+
+
+assert get_type_hints(Outer.Inner, {'Missing': int}) == {'x': int}
+
+
 # === Classes as hints ===
 class Holder:
     exc: ValueError

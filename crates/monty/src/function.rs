@@ -103,11 +103,6 @@ pub(crate) struct Function {
     /// `get_type_hints()` treats [`Self::annotations`] as PEP 563 forward references.
     #[serde(rename = "U", default, skip_serializing_if = "Not::not")]
     pub future_annotations: bool,
-    /// Whether this is a compiled class body, whose tail `type()` call builds
-    /// the class with [`Self::future_annotations`]; a namespace handed to
-    /// `type()` by hand holds real values, so its strings are forward references.
-    #[serde(rename = "K", default, skip_serializing_if = "Not::not")]
-    pub is_class_body: bool,
     /// Compiled body borrowed by active frames, which track body-relative instruction offsets.
     #[serde(rename = "B")]
     pub code: Code,
@@ -155,7 +150,6 @@ impl Function {
             exact_positional_call: OnceCell::new(),
             annotations: Box::default(),
             future_annotations: false,
-            is_class_body: false,
             code,
         }
     }
@@ -166,13 +160,6 @@ impl Function {
     pub fn with_annotations(mut self, annotations: Box<[(StringId, StringId)]>, future_annotations: bool) -> Self {
         self.annotations = annotations;
         self.future_annotations = future_annotations;
-        self
-    }
-
-    /// Marks a compiled class body (see [`Self::is_class_body`]).
-    #[must_use]
-    pub fn with_class_body(mut self) -> Self {
-        self.is_class_body = true;
         self
     }
 
