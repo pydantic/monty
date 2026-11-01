@@ -302,11 +302,16 @@ fn int_max_str_digits() -> Value {
 
 /// Builds the `sys.builtin_module_names` tuple: every module compiled into the
 /// interpreter, sorted as CPython's is. Read from the module registry so the
-/// tuple cannot drift from what `import` accepts; the `os.path` spellings are
-/// left out, CPython's tuple holding top-level names only.
+/// tuple cannot drift from what `import` accepts; the `os.path` spellings and
+/// `pydantic.dataclasses` are left out, CPython's tuple holding top-level names only.
 fn builtin_module_names(vm: &VM<'_>) -> Value {
     let mut names: Vec<StaticStrings> = StandardLib::static_names()
-        .filter(|name| !matches!(name, StaticStrings::OsPath | StaticStrings::Posixpath))
+        .filter(|name| {
+            !matches!(
+                name,
+                StaticStrings::OsPath | StaticStrings::Posixpath | StaticStrings::PydanticDataclasses
+            )
+        })
         .collect();
     names.sort_unstable_by_key(|name| <&'static str>::from(*name));
     let names: SmallVec<_> = names
