@@ -40,6 +40,7 @@ mod source_map;
 mod source_nesting;
 mod str_format;
 mod string_builder;
+mod string_index;
 mod stringize;
 mod types;
 mod value;
