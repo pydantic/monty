@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 from collections import deque
 from typing import Any, Literal, Optional
 

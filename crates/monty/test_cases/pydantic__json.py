@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 from collections import namedtuple
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone

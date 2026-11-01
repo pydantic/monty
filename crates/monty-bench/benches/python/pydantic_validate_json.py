@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 # `TypeAdapter.validate_json` on the 20-order nested dataclass payload of
 # `pydantic_validate_python.py`, serialised once and parsed 20 times per run.
 from dataclasses import dataclass, field

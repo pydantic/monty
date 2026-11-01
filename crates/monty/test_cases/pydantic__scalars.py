@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 from decimal import Decimal
 from typing import Any
 
