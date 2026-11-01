@@ -5,6 +5,7 @@ from typing import Any, Generic, Literal, TypeVar, overload
 T = TypeVar('T')
 
 VERSION: str
+__version__: str
 
 class PydanticUserError(RuntimeError): ...
 class PydanticSchemaGenerationError(PydanticUserError): ...

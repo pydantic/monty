@@ -50,7 +50,9 @@ pub fn create_module(vm: &mut VM<'_>) -> Module {
         Value::Builtin(Builtins::Type(Type::TypeAdapter)),
         vm,
     );
+    // `VERSION` and `__version__` are the same string, as in pydantic.
     let version = allocate_string(PYDANTIC_VERSION, vm.heap);
+    module.set_attr(StaticStrings::DunderVersion, version.clone_with_heap(vm.heap), vm);
     module.set_attr(StaticStrings::RandomVersion, version, vm);
     module
 }

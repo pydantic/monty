@@ -10,7 +10,7 @@ The messages, `errors()` output and `str()` format are copied from pydantic-core
 
 ## Names defined
 
-`TypeAdapter`, `ValidationError`, `PydanticUserError`, `PydanticSchemaGenerationError`, `VERSION`.
+`TypeAdapter`, `ValidationError`, `PydanticUserError`, `PydanticSchemaGenerationError`, `VERSION`, `__version__`.
 
 ## Not implemented
 
