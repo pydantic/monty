@@ -3,11 +3,15 @@
 //!
 //! A `PyInput` owns one reference to its value, so a sequence's items and a
 //! mapping's entries are taken as new references and released after each
-//! is validated; the containers themselves are snapshotted before iteration,
-//! since a validator may run Python (a `default_factory`, `__post_init__`)
-//! that mutates them.
+//! is validated. Lists, tuples and dicts are read in place, one step at a
+//! time, since a validator may run Python (a `default_factory`,
+//! `__post_init__`) that mutates them; [`PySequence`] and [`PyMapping`] say
+//! what each tolerates.
 
-use std::{mem, str};
+use std::{
+    mem,
+    str::{self, Utf8Error},
+};
 
 use monty_types::{FormatFloat, ValidationInputType};
 use num_traits::ToPrimitive;
@@ -19,9 +23,9 @@ use crate::{
     modules::pydantic::{
         catalogue::ErrorType,
         coerce::{
-            bigint_value, bytes_as_date, bytes_as_datetime, bytes_as_time, bytes_as_timedelta, float_as_datetime,
-            float_as_duration, float_as_int, float_as_time, int_as_bool, int_as_datetime, int_as_duration, int_as_time,
-            str_as_bool, str_as_float, str_as_int,
+            bigint_value, bytes_as_date, bytes_as_timedelta, datetime_value, float_as_datetime, float_as_duration,
+            float_as_int, float_as_time, int_as_bool, int_as_datetime, int_as_duration, int_as_time, parse_datetime,
+            parse_time, str_as_bool, str_as_float, str_as_int, time_value,
         },
         errors::{ValError, ValResult},
         input::{Input, InputKind, Mapping, Match, SeqKind, Sequence},
@@ -31,6 +35,7 @@ use crate::{
         bytes::allocate_bytes,
         date as date_type, datetime as datetime_type,
         decimal::{self as decimal_type, py as py_decimal},
+        hash_table::{TableCursor, TableScan},
     },
     value::Value,
 };
@@ -46,18 +51,20 @@ impl PyInput {
         Self { value }
     }
 
-    /// The text of a `str` input, or the decoded text of a `bytes` input;
-    /// `unicode_error` is raised for bytes that are not UTF-8.
-    fn maybe_text(&mut self, unicode_error: ErrorType, vm: &mut VM<'_>) -> ValResult<Option<String>> {
-        if let Some(text) = self.value.as_str(vm) {
-            return Ok(Some(text.to_owned()));
+    /// The text of a `str` input, or of a `bytes` input decoded as UTF-8:
+    /// `Some(Err(_))` for bytes that are not UTF-8, `None` for any other type.
+    fn text<'s>(&'s self, vm: &'s VM<'_>) -> Option<Result<&'s str, Utf8Error>> {
+        match self.value.as_str(vm) {
+            Some(text) => Some(Ok(text)),
+            None => self.bytes_slice(vm).map(str::from_utf8),
         }
-        match self.bytes_slice(vm) {
-            Some(bytes) => match str::from_utf8(bytes) {
-                Ok(text) => Ok(Some(text.to_owned())),
-                Err(_) => self.error(unicode_error, vm),
-            },
-            None => Ok(None),
+    }
+
+    /// A lax coercion's result as a match, or its error on this input.
+    fn lax(&mut self, result: Result<Value, ErrorType>, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
+        match result {
+            Ok(value) => Ok(Match::lax(value)),
+            Err(err) => self.error(err, vm),
         }
     }
 
@@ -116,10 +123,10 @@ impl PyInput {
     }
 
     /// The bytes of a `str` or `bytes` input, which the temporal parsers read.
-    fn temporal_bytes(&self, vm: &VM<'_>) -> Option<Vec<u8>> {
+    fn temporal_bytes<'s>(&'s self, vm: &'s VM<'_>) -> Option<&'s [u8]> {
         match self.value.as_str(vm) {
-            Some(text) => Some(text.as_bytes().to_vec()),
-            None => self.bytes_slice(vm).map(<[u8]>::to_vec),
+            Some(text) => Some(text.as_bytes()),
+            None => self.bytes_slice(vm),
         }
     }
 }
@@ -149,8 +156,8 @@ impl Input for PyInput {
             return Ok(Match::exact(b));
         }
         if !strict {
-            if let Some(text) = self.maybe_text(ErrorType::BoolParsing {}, vm)? {
-                return match str_as_bool(&text) {
+            if let Some(text) = self.text(vm) {
+                return match text.map_or(Err(ErrorType::BoolParsing {}), str_as_bool) {
                     Ok(b) => Ok(Match::lax(b)),
                     Err(err) => self.error(err, vm),
                 };
@@ -190,11 +197,9 @@ impl Input for PyInput {
             _ => {}
         }
         if !strict {
-            if let Some(text) = self.maybe_text(ErrorType::IntParsing {}, vm)? {
-                return match str_as_int(&text, vm.heap) {
-                    Ok(int) => Ok(Match::lax(int)),
-                    Err(err) => self.error(err, vm),
-                };
+            if let Some(text) = self.text(vm) {
+                let parsed = text.map_or(Err(ErrorType::IntParsing {}), |text| str_as_int(text, vm.heap));
+                return self.lax(parsed, vm);
             }
             if let Value::Float(f) = self.value {
                 return match float_as_int(f) {
@@ -221,8 +226,8 @@ impl Input for PyInput {
         if let Value::Float(f) = self.value {
             return Ok(Match::exact(f));
         }
-        if !strict && let Some(text) = self.maybe_text(ErrorType::FloatParsing {}, vm)? {
-            return match str_as_float(&text) {
+        if !strict && let Some(text) = self.text(vm) {
+            return match text.map_or(Err(ErrorType::FloatParsing {}), str_as_float) {
                 Ok(f) => Ok(Match::lax(f)),
                 Err(err) => self.error(err, vm),
             };
@@ -270,25 +275,18 @@ impl Input for PyInput {
         }
         if !strict {
             if let Some(bytes) = self.temporal_bytes(vm) {
-                return match bytes_as_datetime(&bytes, vm) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                let parsed = parse_datetime(bytes);
+                let value = parsed.and_then(|dt| datetime_value(&dt, vm));
+                return self.lax(value, vm);
             }
             if matches!(self.value, Value::Bool(_)) {
                 return self.error(ErrorType::DatetimeType {}, vm);
             }
             if let Some(int) = self.as_int(vm) {
-                return match int_as_datetime(int, 0, vm) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                return self.lax(int_as_datetime(int, 0, vm), vm);
             }
             if let Value::Float(f) = self.value {
-                return match float_as_datetime(f, vm) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                return self.lax(float_as_datetime(f, vm), vm);
             }
             if let Some(HeapData::Date(date)) = self.heap_data(vm) {
                 let (year, month, day) = date_type::to_ymd(*date);
@@ -309,10 +307,8 @@ impl Input for PyInput {
             _ => {}
         }
         if !strict && let Some(bytes) = self.temporal_bytes(vm) {
-            return match bytes_as_date(&bytes, vm.heap) {
-                Ok(value) => Ok(Match::lax(value)),
-                Err(err) => self.error(err, vm),
-            };
+            let parsed = bytes_as_date(bytes, vm.heap);
+            return self.lax(parsed, vm);
         }
         self.error(ErrorType::DateType {}, vm)
     }
@@ -323,25 +319,18 @@ impl Input for PyInput {
         }
         if !strict {
             if let Some(bytes) = self.temporal_bytes(vm) {
-                return match bytes_as_time(&bytes, vm) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                let parsed = parse_time(bytes);
+                let value = parsed.map(|time| time_value(&time, vm));
+                return self.lax(value, vm);
             }
             if matches!(self.value, Value::Bool(_)) {
                 return self.error(ErrorType::TimeType {}, vm);
             }
             if let Some(int) = self.as_int(vm) {
-                return match int_as_time(int, 0, vm) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                return self.lax(int_as_time(int, 0, vm), vm);
             }
             if let Value::Float(f) = self.value {
-                return match float_as_time(f, vm) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                return self.lax(float_as_time(f, vm), vm);
             }
         }
         self.error(ErrorType::TimeType {}, vm)
@@ -353,22 +342,14 @@ impl Input for PyInput {
         }
         if !strict {
             if let Some(bytes) = self.temporal_bytes(vm) {
-                return match bytes_as_timedelta(&bytes, vm.heap) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                let parsed = bytes_as_timedelta(bytes, vm.heap);
+                return self.lax(parsed, vm);
             }
             if let Some(int) = self.as_int(vm) {
-                return match int_as_duration(int, vm.heap) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                return self.lax(int_as_duration(int, vm.heap), vm);
             }
             if let Value::Float(f) = self.value {
-                return match float_as_duration(f, vm.heap) {
-                    Ok(value) => Ok(Match::lax(value)),
-                    Err(err) => self.error(err, vm),
-                };
+                return self.lax(float_as_duration(f, vm.heap), vm);
             }
         }
         self.error(ErrorType::TimeDeltaType {}, vm)
@@ -419,52 +400,33 @@ impl Input for PyInput {
     }
 
     fn validate_sequence(&mut self, kind: SeqKind, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<PySequence>> {
-        let (actual, items) = match self.heap_data(vm) {
-            Some(HeapData::List(list)) => (SeqKind::List, clone_all(list.as_slice(), vm)),
-            Some(HeapData::Tuple(tuple)) => (SeqKind::Tuple, clone_all(tuple.as_slice(), vm)),
-            Some(HeapData::NamedTuple(tuple)) => (SeqKind::Tuple, clone_all(tuple.items(), vm)),
-            Some(HeapData::Set(set)) => (SeqKind::Set, set.iter().map(|v| v.clone_with_heap(vm.heap)).collect()),
-            Some(HeapData::FrozenSet(set)) => (
-                SeqKind::FrozenSet,
-                set.storage().iter().map(|v| v.clone_with_heap(vm.heap)).collect(),
-            ),
-            Some(HeapData::Deque(deque)) => (
-                SeqKind::List,
-                deque.iter().map(|v| v.clone_with_heap(vm.heap)).collect(),
-            ),
+        let (actual, seq) = match self.heap_data(vm) {
+            Some(HeapData::List(list)) => (SeqKind::List, PySequence::indexed(self, list.as_slice().len(), vm)),
+            Some(HeapData::Tuple(tuple)) => (SeqKind::Tuple, PySequence::indexed(self, tuple.as_slice().len(), vm)),
+            Some(HeapData::NamedTuple(tuple)) => (SeqKind::Tuple, PySequence::indexed(self, tuple.items().len(), vm)),
+            Some(HeapData::Set(set)) => (SeqKind::Set, PySequence::items(set.iter(), vm)),
+            Some(HeapData::FrozenSet(set)) => (SeqKind::FrozenSet, PySequence::items(set.storage().iter(), vm)),
+            Some(HeapData::Deque(deque)) => (SeqKind::List, PySequence::items(deque.iter(), vm)),
             _ => return self.error(sequence_error(kind), vm),
         };
         let exact = actual == kind || (kind == SeqKind::List && matches!(self.heap_data(vm), Some(HeapData::List(_))));
         if !exact && strict {
-            items.drop_with(vm);
+            seq.drop_with(vm);
             return self.error(sequence_error(kind), vm);
         }
-        let seq = PySequence { items, index: 0 };
         Ok(if exact { Match::exact(seq) } else { Match::lax(seq) })
     }
 
     fn validate_dict(&mut self, _strict: bool, vm: &mut VM<'_>) -> ValResult<Match<PyMapping>> {
         match self.heap_data(vm) {
-            Some(HeapData::Dict(dict)) => {
-                let pairs = dict
-                    .iter()
-                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                    .collect();
-                Ok(Match::exact(PyMapping { pairs, index: 0 }))
-            }
+            Some(HeapData::Dict(dict)) => Ok(Match::exact(PyMapping::guarded(self, dict.len(), vm))),
             _ => self.error(ErrorType::DictType {}, vm),
         }
     }
 
     fn validate_dataclass_args(&mut self, class_name: &str, vm: &mut VM<'_>) -> ValResult<PyMapping> {
         match self.heap_data(vm) {
-            Some(HeapData::Dict(dict)) => {
-                let pairs = dict
-                    .iter()
-                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                    .collect();
-                Ok(PyMapping { pairs, index: 0 })
-            }
+            Some(HeapData::Dict(_)) => Ok(PyMapping::tolerant(self, vm)),
             _ => self.error(
                 ErrorType::DataclassType {
                     class_name: class_name.to_owned(),
@@ -504,6 +466,10 @@ impl Input for PyInput {
         matches!(self.heap_data(vm), Some(HeapData::Dict(_)))
     }
 
+    fn key_value(&self) -> Option<&Value> {
+        Some(&self.value)
+    }
+
     fn heap_id(&self) -> Option<HeapId> {
         match &self.value {
             Value::Ref(id) => Some(*id),
@@ -522,36 +488,77 @@ fn sequence_error(kind: SeqKind) -> ErrorType {
     }
 }
 
-/// New references to every item.
-fn clone_all(items: &[Value], vm: &VM<'_>) -> Vec<Value> {
-    items.iter().map(|item| item.clone_with_heap(vm.heap)).collect()
+/// The items of a sequence input, handed out one at a time.
+pub(crate) enum PySequence {
+    /// A list or tuple read in place by index, so its items are not copied up
+    /// front; `len`, the length when validation began, bounds the walk as
+    /// pydantic-core's does, so a validator that appends cannot prolong it.
+    Indexed { container: Value, len: usize, index: usize },
+    /// A set, frozenset or deque, which has no index to read by: a snapshot.
+    Items { items: Vec<Value>, index: usize },
 }
 
-/// A snapshot of a sequence input's items, handed out one at a time.
-pub(crate) struct PySequence {
-    items: Vec<Value>,
-    index: usize,
+impl PySequence {
+    /// Reads `input`'s container in place, holding a reference to it.
+    fn indexed(input: &PyInput, len: usize, vm: &VM<'_>) -> Self {
+        Self::Indexed {
+            container: input.clone_value(vm),
+            len,
+            index: 0,
+        }
+    }
+
+    /// Snapshots `items`, taking a reference to each.
+    fn items<'v>(items: impl Iterator<Item = &'v Value>, vm: &VM<'_>) -> Self {
+        Self::Items {
+            items: items.map(|item| item.clone_with_heap(vm.heap)).collect(),
+            index: 0,
+        }
+    }
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for PySequence {
     fn drop_with(self, ctx: &mut C) {
-        self.items.drop_with(ctx);
+        match self {
+            Self::Indexed { container, .. } => container.drop_with(ctx),
+            Self::Items { items, .. } => items.drop_with(ctx),
+        }
     }
 }
 
 impl Sequence<PyInput> for PySequence {
     fn len(&self) -> Option<usize> {
-        Some(self.items.len())
+        Some(match self {
+            Self::Indexed { len, .. } => *len,
+            Self::Items { items, .. } => items.len(),
+        })
     }
 
-    fn next(&mut self, _vm: &mut VM<'_>) -> ValResult<Option<PyInput>> {
-        if self.index < self.items.len() {
-            let value = mem::replace(&mut self.items[self.index], Value::None);
-            self.index += 1;
-            Ok(Some(PyInput::new(value)))
-        } else {
-            Ok(None)
-        }
+    fn next(&mut self, vm: &mut VM<'_>) -> ValResult<Option<PyInput>> {
+        let item = match self {
+            Self::Indexed { container, len, index } => {
+                let Value::Ref(id) = container else {
+                    unreachable!("an indexed sequence is a heap container")
+                };
+                // Also bounded by the current length: a validator may have run Python that shrank it.
+                let item = match vm.heap.get(*id) {
+                    _ if *index >= *len => None,
+                    HeapData::List(list) => list.as_slice().get(*index),
+                    HeapData::Tuple(tuple) => tuple.as_slice().get(*index),
+                    HeapData::NamedTuple(tuple) => tuple.items().get(*index),
+                    _ => unreachable!("an indexed sequence is a list or tuple"),
+                };
+                let item = item.map(|item| item.clone_with_heap(vm.heap));
+                *index += usize::from(item.is_some());
+                item
+            }
+            Self::Items { items, index } => {
+                let item = items.get_mut(*index).map(|slot| mem::replace(slot, Value::None));
+                *index += usize::from(item.is_some());
+                item
+            }
+        };
+        Ok(item.map(PyInput::new))
     }
 
     fn finish_item(&mut self, item: PyInput, vm: &mut VM<'_>) {
@@ -559,30 +566,61 @@ impl Sequence<PyInput> for PySequence {
     }
 }
 
-/// A snapshot of a dict input's entries, handed out one at a time.
+/// The entries of a dict input, read in place one at a time.
 pub(crate) struct PyMapping {
-    pairs: Vec<(Value, Value)>,
-    index: usize,
+    /// The dict; an OWNED reference.
+    dict: Value,
+    walk: DictWalk,
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for PyMapping {
-    fn drop_with(self, ctx: &mut C) {
-        for (key, value) in self.pairs {
-            key.drop_with(ctx);
-            value.drop_with(ctx);
+/// How a [`PyMapping`] steps through a dict a validator may have mutated.
+enum DictWalk {
+    /// For `dict[K, V]`: a size change raises as `for` over the dict would.
+    Guarded(TableCursor),
+    /// For dataclass arguments, which pydantic-core looks up rather than
+    /// iterates and so validates whatever a `default_factory` did to the dict.
+    Tolerant(TableScan),
+}
+
+impl PyMapping {
+    /// Reads `input`'s dict of `len` entries in place, raising if its size changes.
+    fn guarded(input: &PyInput, len: usize, vm: &VM<'_>) -> Self {
+        Self {
+            dict: input.clone_value(vm),
+            walk: DictWalk::Guarded(TableCursor::new(len)),
+        }
+    }
+
+    /// Reads `input`'s dict in place, tolerating mutation between steps.
+    fn tolerant(input: &PyInput, vm: &VM<'_>) -> Self {
+        Self {
+            dict: input.clone_value(vm),
+            walk: DictWalk::Tolerant(TableScan::default()),
         }
     }
 }
 
+impl<C: ContainsHeap> DropWithContext<C> for PyMapping {
+    fn drop_with(self, ctx: &mut C) {
+        self.dict.drop_with(ctx);
+    }
+}
+
 impl Mapping<PyInput> for PyMapping {
-    fn next(&mut self, _vm: &mut VM<'_>) -> ValResult<Option<(PyInput, PyInput)>> {
-        if self.index < self.pairs.len() {
-            let (key, value) = mem::replace(&mut self.pairs[self.index], (Value::None, Value::None));
-            self.index += 1;
-            Ok(Some((PyInput::new(key), PyInput::new(value))))
-        } else {
-            Ok(None)
-        }
+    fn next(&mut self, vm: &mut VM<'_>) -> ValResult<Option<(PyInput, PyInput)>> {
+        let Value::Ref(id) = self.dict else {
+            unreachable!("a mapping input is a dict")
+        };
+        let HeapData::Dict(dict) = vm.heap.get(id) else {
+            unreachable!("a mapping input is a dict")
+        };
+        let pair = match &mut self.walk {
+            DictWalk::Guarded(cursor) => dict.clone_next_pair(cursor, vm.heap).map_err(ValError::Run)?,
+            DictWalk::Tolerant(scan) => dict
+                .scan_next(scan)
+                .map(|(key, value)| (key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap))),
+        };
+        Ok(pair.map(|(key, value)| (PyInput::new(key), PyInput::new(value))))
     }
 
     fn finish_entry(&mut self, key: PyInput, value: PyInput, vm: &mut VM<'_>) {
