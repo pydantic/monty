@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 from datetime import date, datetime, time, timedelta, timezone
 
 from pydantic import TypeAdapter, ValidationError

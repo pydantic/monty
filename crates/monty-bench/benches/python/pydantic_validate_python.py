@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 # `TypeAdapter.validate_python` on a 20-order nested dataclass payload, 20 times per run, with
 # the adapter built once so schema generation does not dominate; `pydantic_validate_json.py` is
 # the JSON counterpart.

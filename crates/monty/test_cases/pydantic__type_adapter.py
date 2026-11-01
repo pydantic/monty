@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 

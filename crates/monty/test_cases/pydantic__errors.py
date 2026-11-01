@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 import datetime
 from decimal import Decimal
 
