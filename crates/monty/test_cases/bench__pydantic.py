@@ -1,6 +1,3 @@
-# /// monty
-# cpython-site-packages = true
-# ///
 # Every `bench__*.py` test case is also a `monty-bench` benchmark (benches/main.rs):
 # validation and serialisation of a nested dataclass, in Python and JSON mode.
 from dataclasses import dataclass, field
