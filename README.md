@@ -65,6 +65,9 @@ with Monty() as pool:
 
 `nutrition` ran on the host and the sandbox saw only its return value.
 
+The built-in `errno` module exposes Linux error numbers and `errorcode` on every host platform.
+See [errno limitations](docs/limitations/errno.md) for differences from host CPython.
+
 ## Documentation
 
 - [Introduction](https://pydantic.dev/docs/monty/) with the latency measurements
