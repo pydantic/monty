@@ -280,6 +280,7 @@ fn validate_list<I: Input>(
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
         let seq = input.validate_sequence(SeqKind::List, state.strict, vm)?.unpack(state);
+        defer_drop_mut!(seq, vm);
         let items = validate_items::<I>(arena, item, seq, state, vm)?;
         Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items)))))
     })
@@ -299,6 +300,7 @@ fn validate_set<I: Input>(
     guarded(id, input, state, vm, |input, state, vm| {
         let kind = if frozen { SeqKind::FrozenSet } else { SeqKind::Set };
         let seq = input.validate_sequence(kind, state.strict, vm)?.unpack(state);
+        defer_drop_mut!(seq, vm);
         let items = validate_items::<I>(arena, item, seq, state, vm)?;
         defer_drop_mut!(items, vm);
         let mut set = Set::new();
@@ -330,7 +332,7 @@ fn validate_set<I: Input>(
 fn validate_items<I: Input>(
     arena: &Arena,
     item: ValidatorId,
-    mut seq: I::Seq,
+    seq: &mut I::Seq,
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Vec<Value>> {
@@ -390,7 +392,8 @@ fn validate_tuple<I: Input>(
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
-        let mut seq = input.validate_sequence(SeqKind::Tuple, state.strict, vm)?.unpack(state);
+        let seq = input.validate_sequence(SeqKind::Tuple, state.strict, vm)?.unpack(state);
+        defer_drop_mut!(seq, vm);
         let actual_length = seq.len();
         let fixed = if variadic { items.len() - 1 } else { items.len() };
         let mut collected = DropGuard::new((Vec::new(), Vec::<LineError>::new()), vm);
@@ -427,7 +430,7 @@ fn validate_tuple<I: Input>(
             // A streamed input reports its length too: the rest is walked for the count.
             let actual_length = match actual_length {
                 Some(len) => len,
-                None => drain_count::<I>(&mut seq, index + 1, vm)?,
+                None => drain_count::<I>(seq, index + 1, vm)?,
             };
             return input.error(
                 ErrorType::TooLong {
@@ -480,7 +483,8 @@ fn validate_dict<I: Input>(
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
     guarded(id, input, state, vm, |input, state, vm| {
-        let mut map = input.validate_dict(state.strict, vm)?.unpack(state);
+        let map = input.validate_dict(state.strict, vm)?.unpack(state);
+        defer_drop_mut!(map, vm);
         let mut collected = DropGuard::new((Dict::new(), Vec::<LineError>::new()), vm);
         let mut index = 0usize;
         loop {
@@ -741,8 +745,9 @@ fn validate_dataclass<I: Input>(
         );
     }
     guarded(id, input, state, vm, |input, state, vm| {
-        let mut map = input.validate_dataclass_args(&dataclass.name, vm)?;
-        let fields = validate_fields(arena, &dataclass.fields, &mut map, input, state, vm)?;
+        let map = input.validate_dataclass_args(&dataclass.name, vm)?;
+        defer_drop_mut!(map, vm);
+        let fields = validate_fields(arena, &dataclass.fields, map, input, state, vm)?;
         state.floor_exactness(Exactness::Strict);
         build_instance(class_id, dataclass, fields, vm).map_err(ValError::Run)
     })
@@ -769,22 +774,11 @@ fn validate_fields<I: Input>(
     loop {
         let ((slots, errors), vm) = collected.as_parts_mut();
         vm.heap.tracker.check_memory_time_every(index).map_err(RunError::from)?;
-        let Some((mut key, mut value)) = map.next(vm)? else {
+        let Some((key, mut value)) = map.next(vm)? else {
             break;
         };
         index += 1;
-        let key_value = match key.to_value(vm) {
-            Ok(k) => k,
-            Err(err) => {
-                map.finish_entry(key, value, vm);
-                return Err(err);
-            }
-        };
-        let field_index = key_value
-            .as_str(vm)
-            .and_then(|name| fields.iter().position(|field| vm.interns.get_str(field.name) == name));
-        key_value.drop_with(vm);
-        if let Some(field_index) = field_index {
+        if let Some(field_index) = field_position(fields, &key, vm) {
             if let Some(earlier) = slots[field_index].take() {
                 earlier.drop_with(vm);
             }
@@ -849,6 +843,20 @@ fn validate_fields<I: Input>(
     }
 }
 
+/// The field `key` names, if any: an interned key by id, since field names are
+/// interned and equal text interns once; any other string by text.
+fn field_position<I: Input>(fields: &[FieldValidator], key: &I, vm: &VM<'_>) -> Option<usize> {
+    let key = key.key_value()?;
+    let by_id = match key {
+        Value::InternString(id) => fields.iter().position(|field| field.name == *id),
+        _ => None,
+    };
+    by_id.or_else(|| {
+        let name = key.as_str(vm)?;
+        fields.iter().position(|field| vm.interns.get_str(field.name) == name)
+    })
+}
+
 /// Allocates an instance of `class_id` with `values` stored as its fields,
 /// then calls `__post_init__` when the class defines one.
 fn build_instance(
@@ -857,13 +865,12 @@ fn build_instance(
     values: Vec<Value>,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
-    let mut attrs = DropGuard::new(Dict::new(), vm);
+    // Field names are distinct interned strings, so each is appended without a probe.
+    let mut attrs = DropGuard::new(Dict::with_capacity(dataclass.fields.len()), vm);
     {
         let (attrs, vm) = attrs.as_parts_mut();
         for (field, value) in dataclass.fields.iter().zip(values) {
-            if let Some(old) = attrs.set(Value::InternString(field.name), value, vm)? {
-                old.drop_with(vm);
-            }
+            attrs.set_new_interned(field.name, value, vm)?;
         }
     }
     let (attrs, vm) = attrs.into_parts();
@@ -905,7 +912,8 @@ fn validate_named_tuple<I: Input>(
     let mut errors: Vec<LineError> = Vec::new();
     if input.is_mapping(vm) {
         {
-            let mut map = input.validate_dict(state.strict, vm)?.value;
+            let map = input.validate_dict(state.strict, vm)?.value;
+            defer_drop_mut!(map, vm);
             loop {
                 let Some((mut key, mut value)) = map.next(vm)? else {
                     break;
@@ -943,7 +951,7 @@ fn validate_named_tuple<I: Input>(
         }
     } else {
         {
-            let mut seq = match input.validate_sequence(SeqKind::Tuple, false, vm) {
+            let seq = match input.validate_sequence(SeqKind::Tuple, false, vm) {
                 Ok(seq) => seq.value,
                 Err(ValError::Lines(lines)) => {
                     lines.drop_with(vm);
@@ -951,6 +959,7 @@ fn validate_named_tuple<I: Input>(
                 }
                 Err(err) => return Err(err),
             };
+            defer_drop_mut!(seq, vm);
             let mut index = 0usize;
             loop {
                 let Some(mut element) = seq.next(vm)? else { break };
