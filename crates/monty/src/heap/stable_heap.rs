@@ -180,7 +180,6 @@ impl<T> StableHeap<T> {
     }
 
     /// Iterates the live values
-    #[cfg(any(feature = "ref-count-return", test))]
     pub fn iter(&self) -> impl Iterator<Item = (HeapId, &T)> {
         // SAFETY: [DH] - iterating only the live entries ensures that caller
         // can never observe `None` entries which could be invalidated by

@@ -1118,9 +1118,10 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
             Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))))
         }
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(text) if translate && text.as_str().contains('\r') => {
-                Some(allocate_string_on_heap(translate_newlines(text.as_str()), vm.heap))
-            }
+            HeapData::Str(text) if translate && text.as_str(vm.heap).contains('\r') => Some(allocate_string_on_heap(
+                translate_newlines(text.as_str(vm.heap)),
+                vm.heap,
+            )),
             _ => None,
         },
         _ => {
@@ -1340,7 +1341,7 @@ fn compute_slice_text<'h>(
     // so we cannot call it until this scope ends and the borrow is released.
     let (value, new_position, new_byte_position, eof) = {
         let buffer = match vm.heap.get(buffer_id) {
-            HeapData::Str(s) => s.as_str(),
+            HeapData::Str(s) => s.as_str(vm.heap),
             _ => return Err(RunError::internal("compute_slice_text: buffer is not a Str")),
         };
         debug_assert!(byte_position <= buffer.len());
@@ -1620,7 +1621,7 @@ fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -
             }
         }
         (HeapData::Str(s), false) => {
-            let s = s.as_str();
+            let s = s.as_str(vm.heap);
             let char_count = s.chars().count();
             let pos_clamped = usize::try_from(position).unwrap_or(usize::MAX).min(char_count);
             BufferMeta {

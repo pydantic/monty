@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Write, ops, str};
+use std::{cell::Cell, fmt::Write, mem, ops, str};
 
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
@@ -18,7 +18,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{
-        DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView, heap_read_ref_as_field,
+        DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadMut, HeapReadOutput,
+        HeapReader, HeapView,
     },
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
@@ -40,21 +41,62 @@ use crate::{
 ///
 /// Caches its Python hash and whether it is ASCII, both computed on first use and
 /// never serialized. ASCII text has one byte per character, so `len()` and
-/// indexing are O(1) instead of a UTF-8 walk. Both caches assume the text never changes.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// indexing are O(1) instead of a UTF-8 walk. Both caches describe the current logical value.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub(crate) struct Str(
-    Box<str>,
+    StringData,
     #[serde(skip)] Cell<Option<HashValue>>,
     #[serde(skip)] Cell<Option<bool>>,
 );
 
-impl PartialEq for Str {
-    /// Compares only the string content — the cached fields are pure
-    /// optimisations and must not affect equality.
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+/// Unsliced strings own their buffer; views retain a separate heap storage entry.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum StringData {
+    Owned(String),
+    Shared {
+        #[serde(rename = "B")]
+        storage: HeapId,
+        #[serde(rename = "S")]
+        start: usize,
+        #[serde(rename = "L")]
+        len: usize,
+    },
+}
+
+/// Growable UTF-8 backing, accessed only through the heap's branded reader.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct StringStorage(pub(crate) String);
+
+impl Default for StringData {
+    fn default() -> Self {
+        Self::Owned(String::new())
     }
+}
+
+impl StringData {
+    fn as_str<'a>(&'a self, heap: &'a Heap) -> &'a str {
+        match self {
+            Self::Owned(text) => text,
+            Self::Shared { storage, start, len } => &storage_text(heap, *storage)[*start..*start + *len],
+        }
+    }
+
+    fn backing_capacity(&self, heap: &Heap) -> usize {
+        match self {
+            Self::Owned(text) => text.capacity(),
+            Self::Shared { storage, .. } => storage_text(heap, *storage).capacity(),
+        }
+    }
+}
+
+fn storage_text(heap: &Heap, id: HeapId) -> &String {
+    let HeapData::StringStorage(storage) = heap.get(id) else {
+        unreachable!("string view must reference string storage")
+    };
+    &storage.0
 }
 
 impl Str {
@@ -63,32 +105,54 @@ impl Str {
     /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
     fn new(s: impl Into<Box<str>>) -> Self {
-        Self(s.into(), Cell::new(None), Cell::new(None))
+        Self(
+            StringData::Owned(s.into().into_string()),
+            Cell::new(None),
+            Cell::new(None),
+        )
     }
 
     /// Returns a reference to the inner string.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn as_str<'a>(&'a self, heap: &'a Heap) -> &'a str {
+        self.0.as_str(heap)
     }
 
-    /// Whether every character is ASCII, scanning the text only on the first call.
-    pub fn is_ascii(&self) -> bool {
+    /// Reuse requires exclusive backing and a view covering the entire buffer.
+    pub(crate) fn can_reuse_append_buffer(&self, heap: &Heap) -> bool {
+        match &self.0 {
+            StringData::Owned(text) => text.len() > 15,
+            StringData::Shared { storage, start, len } => {
+                *start == 0
+                    && *len == storage_text(heap, *storage).len()
+                    && heap.has_references_without_readers(*storage, 1)
+            }
+        }
+    }
+
+    /// Whether every visible character is ASCII, scanning only on the first call.
+    pub fn is_ascii(&self, heap: &Heap) -> bool {
         if let Some(ascii) = self.2.get() {
             ascii
         } else {
-            let ascii = self.0.is_ascii();
+            let ascii = self.as_str(heap).is_ascii();
             self.2.set(Some(ascii));
             ascii
         }
     }
 
-    /// The length in Unicode code points, as Python's `len()` reports it.
-    pub fn char_len(&self) -> usize {
-        if self.is_ascii() {
-            self.0.len()
+    pub fn char_len(&self, heap: &Heap) -> usize {
+        if self.is_ascii(heap) {
+            self.as_str(heap).len()
         } else {
-            self.0.chars().count()
+            self.as_str(heap).chars().count()
+        }
+    }
+
+    pub(crate) fn storage_id(&self) -> Option<HeapId> {
+        match self.0 {
+            StringData::Owned(_) => None,
+            StringData::Shared { storage, .. } => Some(storage),
         }
     }
 
@@ -171,7 +235,7 @@ impl<'h> PyStr<'h> {
         match self {
             Self::Interned(id) => vm.interns.get_str(*id),
             Self::Inline(text) => text.as_str(),
-            Self::Heap(value) => value.get(vm.heap).as_str(),
+            Self::Heap(value) => value.get(vm.heap).as_str(vm.heap),
         }
     }
 }
@@ -236,7 +300,10 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        str_add(self.as_str(vm), other, vm)
+        match self {
+            Self::Heap(value) => value.py_add_impl(other, vm),
+            _ => str_add(self.as_str(vm), other, vm),
+        }
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -402,11 +469,155 @@ pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
     }
 }
 
-impl ops::Deref for Str {
-    type Target = str;
+impl<'h> HeapView<'h, str> for HeapRead<'h, Str> {
+    fn get<'r>(&'r self, reader: &'r HeapReader<'h>) -> &'r str {
+        HeapRead::get(self, reader).as_str(reader)
+    }
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl<'h> HeapReadMut<'h, Str> {
+    fn append_shared(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(suffix) = PyStr::from_value(other, vm) else {
+            return Ok(None);
+        };
+        let source = self.get(vm.heap);
+        let (start, len, capacity, physical_len, single_view) = match &source.0 {
+            StringData::Owned(text) => (0, text.len(), text.capacity(), text.len(), true),
+            StringData::Shared { storage, start, len } => {
+                let backing = storage_text(vm.heap, *storage);
+                (
+                    *start,
+                    *len,
+                    backing.capacity(),
+                    backing.len(),
+                    vm.heap.has_references_without_readers(*storage, 1),
+                )
+            }
+        };
+        if len <= 64 || start + len != physical_len {
+            return Ok(None);
+        }
+        let suffix_len = suffix.as_str(vm).len();
+        let needed = physical_len.saturating_add(suffix_len);
+        if needed > capacity {
+            let grown_capacity = capacity.saturating_mul(2).max(needed);
+            // Existing views retain this allocation. Detach on shared growth or excessive retention.
+            if !single_view || grown_capacity > len.saturating_mul(4) {
+                return Ok(None);
+            }
+        }
+        let ascii = match source.2.get() {
+            Some(true) => Some(suffix.as_str(vm).is_ascii()),
+            other => other,
+        };
+        let storage = self.ensure_shared(vm.heap);
+        let within = match &suffix {
+            PyStr::Heap(value) => match value.get(vm.heap).0 {
+                StringData::Shared {
+                    storage: rhs_storage,
+                    start,
+                    len,
+                } if rhs_storage == storage => Some(start..start + len),
+                _ => None,
+            },
+            _ => None,
+        };
+        let HeapReadOutput::StringStorage(backing) = vm.heap.read(storage) else {
+            unreachable!("string storage was promoted")
+        };
+        let buffer = mem::take(&mut backing.get_mut(vm.heap).0);
+        let mut builder = StringBuilder::from_existing(buffer, &vm.heap.tracker);
+        let result = match within {
+            Some(range) => builder.extend_from_within(range),
+            None => builder.push_str(suffix.as_str(vm)),
+        };
+        let buffer = builder.finish_raw().expect("direct builder writes do not stash errors");
+        backing.get_mut(vm.heap).0 = buffer;
+        result?;
+
+        vm.heap.inc_ref(storage);
+        let value = Str(
+            StringData::Shared {
+                storage,
+                start,
+                len: len + suffix_len,
+            },
+            Cell::new(None),
+            Cell::new(ascii),
+        );
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(value)))))
+    }
+
+    fn slice_bytes(&self, range: ops::Range<usize>, ascii: bool, heap: &mut HeapReader<'h>) -> Value {
+        if range.len() <= 64 || range.len() < self.get(heap).0.backing_capacity(heap) / 4 {
+            return allocate_string(&self.get(heap).as_str(heap)[range], heap);
+        }
+        let result = self.shared_slice(range, heap);
+        result.2.set(ascii.then_some(true));
+        Value::Ref(heap.allocate(HeapData::Str(result)))
+    }
+
+    fn ensure_shared(&self, heap: &mut HeapReader<'h>) -> HeapId {
+        if let Some(storage) = self.get(heap).storage_id() {
+            return storage;
+        }
+        let StringData::Owned(buffer) = mem::take(&mut self.get_mut(heap).0) else {
+            unreachable!("owned storage was checked")
+        };
+        let len = buffer.len();
+        let storage = heap.allocate(HeapData::StringStorage(StringStorage(buffer)));
+        self.get_mut(heap).0 = StringData::Shared { storage, start: 0, len };
+        storage
+    }
+
+    fn shared_slice(&self, range: ops::Range<usize>, heap: &mut HeapReader<'h>) -> Str {
+        let storage = self.ensure_shared(heap);
+        let StringData::Shared { start, .. } = self.get(heap).0 else {
+            unreachable!("string backing was promoted")
+        };
+        heap.inc_ref(storage);
+        Str(
+            StringData::Shared {
+                storage,
+                start: start + range.start,
+                len: range.len(),
+            },
+            Cell::new(None),
+            Cell::new(None),
+        )
+    }
+
+    /// The VM must prove that only the target binding and operand retain this string, and fuse its store.
+    pub(crate) fn append_unobserved(&self, rhs: &Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let suffix = PyStr::from_value(rhs, vm).expect("append fast path requires a string operand");
+        let old_ascii = self.get(vm.heap).2.get();
+        let appended_ascii = match old_ascii {
+            Some(true) => Some(suffix.as_str(vm).is_ascii()),
+            other => other,
+        };
+        let data = mem::take(&mut self.get_mut(vm.heap).0);
+        let buffer = match data {
+            StringData::Owned(text) => text,
+            StringData::Shared { storage, .. } => {
+                let HeapReadOutput::StringStorage(backing) = vm.heap.read(storage) else {
+                    unreachable!("string storage was checked")
+                };
+                let buffer = mem::take(&mut backing.get_mut(vm.heap).0);
+                drop(backing);
+                vm.heap.dec_ref(storage);
+                buffer
+            }
+        };
+        let mut builder = StringBuilder::from_existing(buffer, &vm.heap.tracker);
+        let result = builder.push_str(suffix.as_str(vm));
+        let buffer = builder.finish_raw().expect("direct builder writes do not stash errors");
+
+        // Restore the original text even when growth is rejected, before the VM handles the exception.
+        let string = self.get_mut(vm.heap);
+        string.0 = StringData::Owned(buffer);
+        string.1.set(None);
+        string.2.set(if result.is_ok() { appended_ascii } else { old_ascii });
+        result.map_err(Into::into)
     }
 }
 
@@ -417,7 +628,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
     /// Substring search; `in` on a str requires a str on the left.
     fn py_contains_impl(&self, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let container = self.get(vm.heap).as_str();
+        let container = self.get(vm.heap).as_str(vm.heap);
         str_contains(container, item, vm.heap, vm.interns).map(Some)
     }
 
@@ -428,24 +639,50 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::Value(StringIterator::from_heap(
             self.id(),
-            self.get(vm.heap).as_str().is_ascii(),
+            self.get(vm.heap).as_str(vm.heap).is_ascii(),
             vm,
         )))
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).char_len())
+        Some(self.get(vm.heap).char_len(vm.heap))
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-        let ascii = self.get(vm.heap).is_ascii();
-        let s = heap_read_ref_as_field!(self, Str, 0);
-        str_getitem(&s.as_box_value(), ascii, key, vm)
+        let ascii = self.get(vm.heap).is_ascii(vm.heap);
+        if let Value::Ref(id) = key
+            && let HeapData::Slice(slice) = vm.heap.get(*id)
+        {
+            let (start, stop, step) = slice.indices(self.get(vm.heap).char_len(vm.heap))?;
+            if step == 1 {
+                let text = self.get(vm.heap).as_str(vm.heap);
+                let start = usize::try_from(start).expect("positive-step slice start is nonnegative");
+                let stop = usize::try_from(stop)
+                    .expect("positive-step slice stop is nonnegative")
+                    .max(start);
+                let range = if ascii {
+                    start..stop
+                } else {
+                    let boundary = |index| {
+                        text.char_indices()
+                            .map(|(offset, _)| offset)
+                            .nth(index)
+                            .unwrap_or(text.len())
+                    };
+                    boundary(start)..boundary(stop)
+                };
+
+                return Ok(self.slice_bytes(range, ascii, vm.heap));
+            }
+        }
+
+        let s: &HeapRead<'h, Str> = self;
+        str_getitem(s, ascii, key, vm)
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A heap string equals an interned or heap string with the same content.
-        Ok(eq_str(self.get(vm.heap).as_str(), other, vm))
+        Ok(eq_str(self.get(vm.heap).as_str(vm.heap), other, vm))
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
@@ -456,33 +693,41 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         // Delegates to the canonical helper used by both heap and intern paths;
         // an interned `"foo"` and a heap `"foo"` must hash identically for dict
         // lookup to work.
-        let hash = hash_python_str(s.as_str());
+        let hash = hash_python_str(s.as_str(vm.heap));
         s.1.set(Some(hash));
         Ok(Some(hash))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
-        Ok(!self.get(vm.heap).0.is_empty())
+        Ok(!self.get(vm.heap).as_str(vm.heap).is_empty())
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+        Ok(CmpOrder::Ordered(
+            self.get(vm.heap)
+                .as_str(vm.heap)
+                .cmp(other.get(vm.heap).as_str(vm.heap)),
+        ))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(string_repr_fmt(&self.get(vm.heap).0, f)?)
+        Ok(string_repr_fmt(self.get(vm.heap).as_str(vm.heap), f)?)
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
-        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap))
+        Ok(allocate_string(self.get(vm.heap).as_str(vm.heap), vm.heap))
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        str_add(self.get(vm.heap).as_str(), other, vm)
+        if let Some(result) = self.append_shared(other, vm)? {
+            Ok(Some(result))
+        } else {
+            str_add(self.get(vm.heap).as_str(vm.heap), other, vm)
+        }
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_str(self.get(vm.heap).as_str(), other, vm)
+        repeat_str(self.get(vm.heap).as_str(vm.heap), other, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -491,7 +736,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
     /// `str % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
+        let template = copy_format_template(self.get(vm.heap).as_str(vm.heap), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
     }
 
@@ -501,9 +746,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
 
-        let s = heap_read_ref_as_field!(self, Str, 0);
-        let s = s.as_box_value();
-        call_str_method_impl(&s, method, args, vm).map(CallResult::Value)
+        let s: &HeapRead<'h, Str> = self;
+        call_str_method_impl(s, method, args, vm).map(CallResult::Value)
     }
 }
 
@@ -538,8 +782,10 @@ fn str_getitem<'h>(s: &impl HeapView<'h, str>, ascii: bool, key: &Value, vm: &mu
 }
 
 impl HeapItem for Str {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No-op: strings don't hold Value references
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(storage) = self.storage_id() {
+            stack.push(storage);
+        }
     }
 }
 
@@ -2049,7 +2295,7 @@ impl StringIterator {
             StringIteratorSource::Intern(id) => vm.interns.get_str(*id),
             StringIteratorSource::Inline(text) => text.as_str(),
             StringIteratorSource::Heap(id) => match vm.heap.get(*id) {
-                HeapData::Str(string) => string.as_str(),
+                HeapData::Str(string) => string.as_str(vm.heap),
                 _ => unreachable!("string iterator must retain a string"),
             },
         };
@@ -2137,6 +2383,182 @@ mod tests {
 
     use super::*;
     use crate::run::{Program, SessionTables};
+
+    #[test]
+    fn append_ownership_check_excludes_readers_and_aliases() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let value = allocate_string("x".repeat(100), reader);
+            defer_drop!(value, reader);
+            let copy = value.clone_with_heap(reader);
+            defer_drop!(copy, reader);
+            let Value::Ref(id) = value else { unreachable!() };
+            assert!(reader.has_binding_and_operand_only(*id));
+            let borrowed = reader.read(*id);
+            assert!(!reader.has_binding_and_operand_only(*id));
+            drop(borrowed);
+            assert!(reader.has_binding_and_operand_only(*id));
+            let alias = copy.clone_with_heap(reader);
+            defer_drop!(alias, reader);
+            assert!(!reader.has_binding_and_operand_only(*id));
+        });
+    }
+
+    #[test]
+    fn addition_shares_tail_storage_and_preserves_old_views() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let original = allocate_string("a".repeat(100), vm.heap);
+            defer_drop!(original, vm);
+            let old_hash = original.py_hash(vm).unwrap();
+            let suffix = Value::InlineString(InlineStr::new("tail").unwrap());
+            let first = original.py_add(&suffix, vm).unwrap();
+            defer_drop!(first, vm);
+            let Value::Ref(original_id) = original else {
+                unreachable!()
+            };
+            let Value::Ref(first_id) = first else { unreachable!() };
+            let HeapData::Str(original_text) = vm.heap.get(*original_id) else {
+                unreachable!()
+            };
+            let storage = original_text.storage_id().expect("original is a view after addition");
+            assert_eq!(original_text.as_str(vm.heap), "a".repeat(100));
+            assert!(storage_text(vm.heap, storage).capacity() >= 200);
+            let HeapData::Str(first_text) = vm.heap.get(*first_id) else {
+                unreachable!()
+            };
+            assert_eq!(first_text.storage_id(), Some(storage));
+            assert_eq!(first_text.as_str(vm.heap), format!("{}tail", "a".repeat(100)));
+            assert_eq!(original.py_hash(vm).unwrap(), old_hash);
+
+            let second = first.py_add(&suffix, vm).unwrap();
+            defer_drop!(second, vm);
+            let Value::Ref(second_id) = second else { unreachable!() };
+            let HeapData::Str(second_text) = vm.heap.get(*second_id) else {
+                unreachable!()
+            };
+            assert_eq!(second_text.storage_id(), Some(storage));
+            let branch = original.py_add(&suffix, vm).unwrap();
+            defer_drop!(branch, vm);
+            let Value::Ref(branch_id) = branch else { unreachable!() };
+            let HeapData::Str(branch_text) = vm.heap.get(*branch_id) else {
+                unreachable!()
+            };
+            assert_ne!(branch_text.storage_id(), Some(storage));
+
+            let capacity = storage_text(vm.heap, storage).capacity();
+            let large_suffix = allocate_string("x".repeat(capacity), vm.heap);
+            defer_drop!(large_suffix, vm);
+            let grown = second.py_add(large_suffix, vm).unwrap();
+            defer_drop!(grown, vm);
+            let Value::Ref(grown_id) = grown else { unreachable!() };
+            let HeapData::Str(grown_text) = vm.heap.get(*grown_id) else {
+                unreachable!()
+            };
+            assert!(grown_text.storage_id().is_none());
+            assert_eq!(storage_text(vm.heap, storage).capacity(), capacity);
+        });
+        #[cfg(feature = "ref-count-return")]
+        assert_eq!(heap.entry_count(), 0);
+    }
+
+    #[test]
+    fn string_views_flatten_and_keep_backing_alive() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let parent = allocate_string("0123456789".repeat(100), reader).into_ref_id().unwrap();
+            let source = reader.read_as::<Str>(parent).unwrap();
+            let first = source.slice_bytes(100..900, true, reader).into_ref_id().unwrap();
+            drop(source);
+            let first_view = reader.read_as::<Str>(first).unwrap();
+            let second = first_view.slice_bytes(100..600, true, reader).into_ref_id().unwrap();
+            drop(first_view);
+            let second_view = reader.read_as::<Str>(second).unwrap();
+            let StringData::Shared { storage, start, len } = second_view.get(reader).0 else {
+                panic!("expected shared storage")
+            };
+            assert_eq!((start, len), (200, 500));
+            assert!(reader.has_references_without_readers(storage, 3));
+            reader.dec_ref(parent);
+            reader.dec_ref(first);
+            assert_eq!(second_view.get(reader).as_str(reader), "0123456789".repeat(50));
+            assert!(reader.has_references_without_readers(storage, 1));
+            drop(second_view);
+            reader.dec_ref(second);
+            #[cfg(feature = "ref-count-return")]
+            assert_eq!(reader.entry_count(), 0);
+        });
+    }
+
+    #[test]
+    fn owned_string_dump_keeps_legacy_text_encoding() {
+        let heap = Heap::new(16, ResourceTracker::default());
+        let text = Str::new("visible text");
+        let bytes = minicbor_serde::to_vec(&text).unwrap();
+        assert_eq!(bytes, minicbor_serde::to_vec("visible text").unwrap());
+        let restored: Str = minicbor_serde::from_slice(&bytes).unwrap();
+        assert_eq!(restored.as_str(&heap), "visible text");
+        assert!(matches!(restored.0, StringData::Owned(_)));
+    }
+
+    #[test]
+    fn heap_dump_excludes_backing_bytes_outside_views() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let (bytes, view) = HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let text = format!(
+                "{}{}{}",
+                "private prefix".repeat(30),
+                "a".repeat(1000),
+                "private suffix".repeat(30)
+            );
+            let parent = allocate_string(text, reader).into_ref_id().unwrap();
+            let source = reader.read_as::<Str>(parent).unwrap();
+            let start = "private prefix".len() * 30;
+            let view = source
+                .slice_bytes(start..start + 1000, true, reader)
+                .into_ref_id()
+                .unwrap();
+            drop(source);
+            reader.dec_ref(parent);
+            let bytes = minicbor_serde::to_vec(&**reader).unwrap();
+            assert!(!bytes.windows(7).any(|window| window == b"private"));
+            reader.dec_ref(view);
+            (bytes, view)
+        });
+        let restored: Heap = minicbor_serde::from_slice(&bytes).unwrap();
+        let HeapData::Str(text) = restored.get(view) else {
+            unreachable!()
+        };
+        assert!(matches!(text.0, StringData::Owned(_)));
+        assert_eq!(text.as_str(&restored), "a".repeat(1000));
+        assert_eq!(minicbor_serde::to_vec(&restored).unwrap(), bytes);
+    }
+
+    #[test]
+    fn small_extracts_do_not_retain_shared_backing() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let parent = allocate_string("x".repeat(4096), reader).into_ref_id().unwrap();
+            let source = reader.read_as::<Str>(parent).unwrap();
+            let large = source.slice_bytes(1024..3072, true, reader).into_ref_id().unwrap();
+            drop(source);
+            let large_view = reader.read_as::<Str>(large).unwrap();
+            let small = large_view.slice_bytes(0..128, true, reader).into_ref_id().unwrap();
+            drop(large_view);
+            reader.dec_ref(parent);
+            reader.dec_ref(large);
+            let small_view = reader.read_as::<Str>(small).unwrap();
+            assert!(matches!(small_view.get(reader).0, StringData::Owned(_)));
+            assert_eq!(small_view.get(reader).as_str(reader), "x".repeat(128));
+            drop(small_view);
+            reader.dec_ref(small);
+            #[cfg(feature = "ref-count-return")]
+            assert_eq!(reader.entry_count(), 0);
+        });
+    }
 
     #[test]
     fn characters_use_reserved_or_inline_storage() {

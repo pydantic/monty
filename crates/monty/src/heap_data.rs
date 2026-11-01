@@ -41,6 +41,8 @@ macro_rules! heap_payloads {
         $consumer! {
             #[serde(rename = "S")]
             Str(inline $crate::types::Str),
+            #[serde(rename = "H")]
+            StringStorage(inline $crate::types::str::StringStorage),
             #[serde(rename = "B")]
             Bytes(inline $crate::types::Bytes),
             #[serde(rename = "L")]
@@ -223,12 +225,8 @@ const _: () = assert!(mem::size_of::<HeapData>() <= MAX_HEAP_DATA_SIZE);
 impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
     ///
-    /// Only container types that can hold references to other heap objects need to be
-    /// tracked for GC purposes. Leaf types like Str, Bytes, Range, and Exception cannot
-    /// form cycles and should not count toward the GC allocation threshold.
-    ///
-    /// This optimization allows programs that allocate many leaf objects (like strings)
-    /// to avoid triggering unnecessary GC cycles.
+    /// Strings and some iterators retain only leaves, so they cannot close a cycle
+    /// and do not count toward the GC allocation threshold.
     ///
     /// Matched exhaustively so new variants must choose.
     #[inline]
@@ -277,6 +275,7 @@ impl HeapData {
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
+            | Self::StringStorage(_)
             | Self::Bytes(_)
             | Self::Range(_)
             | Self::Slice(_)
@@ -338,7 +337,7 @@ impl HeapData {
     #[must_use]
     pub(crate) fn py_type(&self) -> Type {
         match self {
-            Self::Str(_) => Type::Str,
+            Self::Str(_) | Self::StringStorage(_) => Type::Str,
             Self::Bytes(_) => Type::Bytes,
             Self::List(_) => Type::List,
             Self::Deque(_) => Type::Deque,
@@ -680,6 +679,7 @@ macro_rules! heap_read_output_py_trait_forward {
             $self, |$value| $body, {
                 Self::LongInt($value) => $body,
                 Self::Cell(_)
+                | Self::StringStorage(_)
                 | Self::Exception(_)
                 | Self::Module(_)
                 | Self::Coroutine(_)
@@ -1015,6 +1015,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Union(_)
             | Self::LruCache(_)
             | Self::Cell(_)
+            | Self::StringStorage(_)
             | Self::Exception(_)
             | Self::LongInt(_)
             | Self::Complex(_)

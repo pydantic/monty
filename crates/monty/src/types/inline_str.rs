@@ -28,7 +28,7 @@ impl InlineStr {
             Value::InlineString(other) => Some(self == other),
             Value::InternString(id) => Some(self.as_bytes() == vm.interns.get_str(*id).as_bytes()),
             Value::Ref(id) if let HeapData::Str(other) = vm.heap.get(*id) => {
-                Some(self.as_bytes() == other.as_str().as_bytes())
+                Some(self.as_bytes() == other.as_str(vm.heap).as_bytes())
             }
             _ => None,
         }

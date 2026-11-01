@@ -801,7 +801,7 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::InlineString(text) => eq_str(text.as_str(), key, vm),
             Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
             Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::Str(s) => eq_str(s.as_str(), key, vm),
+                HeapData::Str(s) => eq_str(s.as_str(vm.heap), key, vm),
                 HeapData::Bytes(b) => eq_bytes(b.as_slice(), key, vm),
                 HeapData::LongInt(li) => eq_bigint(li.inner(), key, vm),
                 _ => None,
