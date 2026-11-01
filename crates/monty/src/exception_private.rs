@@ -1111,12 +1111,19 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
     }
 
-    /// The `OverflowError` the `time` conversion functions raise for epoch
-    /// seconds outside the range a broken-down time can hold:
+    /// The `OverflowError` the `time` conversion functions and `fromtimestamp()`
+    /// raise for epoch seconds outside the range a broken-down time can hold:
     /// `timestamp out of range for platform time_t`.
     #[must_use]
     fn timestamp_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
+    }
+
+    /// The `ValueError` CPython's time conversions raise for a NaN length or
+    /// timestamp: `Invalid value NaN (not a number)`.
+    #[must_use]
+    fn invalid_nan() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Invalid value NaN (not a number)").into()
     }
 
     /// `time.mktime()`'s `OverflowError` for a wall clock it cannot place on
