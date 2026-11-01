@@ -6,7 +6,8 @@
 //! the token the parser stood on plus a copy of the parser at that point
 //! (`Jiter::clone` is a few words; it shares the data and starts an empty
 //! tape). A validator consumes its token through `scalar`, or by iterating a
-//! container; a validator that then needs the whole input back (an error
+//! container, whose keys are read once into string values (inline for the
+//! short keys fields have); a validator that then needs the whole input back (an error
 //! report, an `Any`) rewinds to the copy and reads the token again. A union
 //! member runs from a checkpoint that `attempt` restores on failure, and a
 //! container item a failed member left unread is skipped when the item is
@@ -19,15 +20,15 @@ use monty_types::ValidationInputType;
 
 use crate::{
     bytecode::VM,
-    heap::HeapId,
+    heap::{DropGuard, DropWithContext, HeapId},
     modules::{
         json::load::{JsonLoadError, materialize_json_value},
         pydantic::{
             catalogue::ErrorType,
             coerce::{
-                bigint_value, bytes_as_date, bytes_as_datetime, bytes_as_time, bytes_as_timedelta, float_as_datetime,
-                float_as_duration, float_as_int, float_as_time, int_as_bool, int_as_datetime, int_as_duration,
-                int_as_time, str_as_bool, str_as_float, str_as_int,
+                bigint_value, bytes_as_date, bytes_as_timedelta, datetime_value, float_as_datetime, float_as_duration,
+                float_as_int, float_as_time, int_as_bool, int_as_datetime, int_as_duration, int_as_time,
+                parse_datetime, parse_time, str_as_bool, str_as_float, str_as_int, time_value,
             },
             errors::{ValError, ValResult},
             input::{Input, InputKind, Mapping, Match, SeqKind, Sequence},
@@ -60,8 +61,9 @@ pub(crate) enum JsonInput<'j, 'a> {
         /// Containers enclosing the token.
         depth: usize,
     },
-    /// An object key, already read as text; `strict` does not apply to keys.
-    Key(String),
+    /// An object key, read as a string value; an OWNED reference, released by
+    /// [`Mapping::finish_entry`]. `strict` does not apply to keys.
+    Key(Value),
 }
 
 /// A consumed scalar token, or the text of a key.
@@ -71,6 +73,13 @@ enum Scalar {
     Int(NumberInt),
     Float(f64),
     Str(String),
+}
+
+/// What [`JsonInput::scalar_with`] read: a string token or key through the
+/// reader, or any other scalar.
+enum Read<R> {
+    Text(R),
+    Scalar(Scalar),
 }
 
 impl<'j, 'a> JsonInput<'j, 'a> {
@@ -130,26 +139,37 @@ impl<'j, 'a> JsonInput<'j, 'a> {
     /// Consumes a scalar token, or reads a key; `None` leaves an array or
     /// object where it is. Reading starts from the token's first byte, so a
     /// fallback can read a token another coercion consumed.
-    fn scalar(&mut self) -> ValResult<Option<Scalar>> {
+    fn scalar(&mut self, vm: &VM<'_>) -> ValResult<Option<Scalar>> {
+        Ok(self.scalar_with(vm, str::to_owned)?.map(|read| match read {
+            Read::Text(text) => Scalar::Str(text),
+            Read::Scalar(scalar) => scalar,
+        }))
+    }
+
+    /// [`scalar`](Self::scalar) with a string lent to `on_text` rather than
+    /// copied, for coercions that parse it or allocate it straight into the heap.
+    fn scalar_with<R>(&mut self, vm: &VM<'_>, on_text: impl FnOnce(&str) -> R) -> ValResult<Option<Read<R>>> {
         self.rewind();
         match self {
-            Self::Key(key) => Ok(Some(Scalar::Str(key.clone()))),
+            Self::Key(key) => Ok(Some(Read::Text(on_text(key.as_str(vm).expect("a key is a string"))))),
             Self::Token { parser, peek, .. } => {
                 let mut jiter = parser.borrow_mut();
-                let scalar = match *peek {
+                let read = match *peek {
                     Peek::Null => {
                         jiter.known_null().map_err(ValError::Json)?;
-                        Scalar::Null
+                        Read::Scalar(Scalar::Null)
                     }
-                    Peek::True | Peek::False => Scalar::Bool(jiter.known_bool(*peek).map_err(ValError::Json)?),
-                    Peek::String => Scalar::Str(jiter.known_str().map_err(ValError::Json)?.to_owned()),
+                    Peek::True | Peek::False => {
+                        Read::Scalar(Scalar::Bool(jiter.known_bool(*peek).map_err(ValError::Json)?))
+                    }
+                    Peek::String => Read::Text(on_text(jiter.known_str().map_err(ValError::Json)?)),
                     Peek::Array | Peek::Object => return Ok(None),
-                    _ => match jiter.known_number(*peek).map_err(ValError::Json)? {
+                    _ => Read::Scalar(match jiter.known_number(*peek).map_err(ValError::Json)? {
                         NumberAny::Int(int) => Scalar::Int(int),
                         NumberAny::Float(float) => Scalar::Float(float),
-                    },
+                    }),
                 };
-                Ok(Some(scalar))
+                Ok(Some(read))
             }
         }
     }
@@ -222,7 +242,7 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
             Self::Token {
                 parser, peek, depth, ..
             } => materialize_json_value(*peek, &mut parser.borrow_mut(), *depth, vm).map_err(load_failure),
-            Self::Key(key) => Ok(allocate_string(key.clone(), vm.heap)),
+            Self::Key(key) => Ok(key.clone_with_heap(vm.heap)),
         }
     }
 
@@ -232,7 +252,7 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
 
     fn validate_bool(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<bool>> {
         let strict = self.strict(strict);
-        let result = match self.scalar()? {
+        let result = match self.scalar(vm)? {
             Some(Scalar::Bool(b)) => Ok(Match::exact(b)),
             Some(Scalar::Str(text)) if !strict => str_as_bool(&text).map(Match::lax),
             Some(Scalar::Int(NumberInt::Int(int))) if !strict => int_as_bool(int).map(Match::lax),
@@ -247,7 +267,7 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
 
     fn validate_int(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
         let strict = self.strict(strict);
-        let result = match self.scalar()? {
+        let result = match self.scalar(vm)? {
             Some(Scalar::Int(NumberInt::Int(int))) => Ok(Match::exact(Value::Int(int))),
             Some(Scalar::Int(NumberInt::BigInt(big))) => Ok(Match::exact(bigint_value(big, vm.heap))),
             Some(Scalar::Bool(b)) if !strict => Ok(Match::lax(Value::Int(i64::from(b)))),
@@ -260,7 +280,7 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
 
     fn validate_float(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<f64>> {
         let strict = self.strict(strict);
-        let result = match self.scalar()? {
+        let result = match self.scalar(vm)? {
             Some(Scalar::Float(float)) => Ok(Match::exact(float)),
             Some(Scalar::Int(int)) => Ok(Match::strict(f64::from(int))),
             Some(Scalar::Bool(b)) if !strict => Ok(Match::lax(if b { 1.0 } else { 0.0 })),
@@ -273,16 +293,16 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
     /// A JSON string is a strict, not exact, match: in JSON text is also how
     /// dates and the like are written, so `str` must not win a union outright.
     fn validate_str(&mut self, _strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
-        let result = match self.scalar()? {
-            Some(Scalar::Str(text)) => Ok(Match::strict(allocate_string(text, vm.heap))),
+        let result = match self.scalar_with(vm, |text| allocate_string(text, vm.heap))? {
+            Some(Read::Text(value)) => Ok(Match::strict(value)),
             _ => Err(ErrorType::StringType {}),
         };
         self.outcome(result, vm)
     }
 
     fn validate_bytes(&mut self, _strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
-        let result = match self.scalar()? {
-            Some(Scalar::Str(text)) => Ok(Match::strict(allocate_bytes(text.into_bytes(), vm.heap))),
+        let result = match self.scalar_with(vm, |text| allocate_bytes(text.as_bytes().to_vec(), vm.heap))? {
+            Some(Read::Text(value)) => Ok(Match::strict(value)),
             _ => Err(ErrorType::BytesType {}),
         };
         self.outcome(result, vm)
@@ -290,18 +310,20 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
 
     fn validate_datetime(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
         let strict = self.strict(strict);
-        let result = match self.scalar()? {
-            Some(Scalar::Str(text)) => bytes_as_datetime(text.as_bytes(), vm).map(Match::strict),
-            Some(Scalar::Int(NumberInt::Int(int))) if !strict => int_as_datetime(int, 0, vm).map(Match::lax),
-            Some(Scalar::Float(float)) if !strict => float_as_datetime(float, vm).map(Match::lax),
+        let result = match self.scalar_with(vm, |text| parse_datetime(text.as_bytes()))? {
+            Some(Read::Text(parsed)) => parsed.and_then(|dt| datetime_value(&dt, vm)).map(Match::strict),
+            Some(Read::Scalar(Scalar::Int(NumberInt::Int(int)))) if !strict => {
+                int_as_datetime(int, 0, vm).map(Match::lax)
+            }
+            Some(Read::Scalar(Scalar::Float(float))) if !strict => float_as_datetime(float, vm).map(Match::lax),
             _ => Err(ErrorType::DatetimeType {}),
         };
         self.outcome(result, vm)
     }
 
     fn validate_date(&mut self, _strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
-        let result = match self.scalar()? {
-            Some(Scalar::Str(text)) => bytes_as_date(text.as_bytes(), vm.heap).map(Match::strict),
+        let result = match self.scalar_with(vm, |text| bytes_as_date(text.as_bytes(), vm.heap))? {
+            Some(Read::Text(parsed)) => parsed.map(Match::strict),
             _ => Err(ErrorType::DateType {}),
         };
         self.outcome(result, vm)
@@ -309,10 +331,10 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
 
     fn validate_time(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
         let strict = self.strict(strict);
-        let result = match self.scalar()? {
-            Some(Scalar::Str(text)) => bytes_as_time(text.as_bytes(), vm).map(Match::strict),
-            Some(Scalar::Int(NumberInt::Int(int))) if !strict => int_as_time(int, 0, vm).map(Match::lax),
-            Some(Scalar::Float(float)) if !strict => float_as_time(float, vm).map(Match::lax),
+        let result = match self.scalar_with(vm, |text| parse_time(text.as_bytes()))? {
+            Some(Read::Text(parsed)) => parsed.map(|time| Match::strict(time_value(&time, vm))),
+            Some(Read::Scalar(Scalar::Int(NumberInt::Int(int)))) if !strict => int_as_time(int, 0, vm).map(Match::lax),
+            Some(Read::Scalar(Scalar::Float(float))) if !strict => float_as_time(float, vm).map(Match::lax),
             _ => Err(ErrorType::TimeType {}),
         };
         self.outcome(result, vm)
@@ -320,10 +342,12 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
 
     fn validate_timedelta(&mut self, strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
         let strict = self.strict(strict);
-        let result = match self.scalar()? {
-            Some(Scalar::Str(text)) => bytes_as_timedelta(text.as_bytes(), vm.heap).map(Match::strict),
-            Some(Scalar::Int(NumberInt::Int(int))) if !strict => int_as_duration(int, vm.heap).map(Match::lax),
-            Some(Scalar::Float(float)) if !strict => float_as_duration(float, vm.heap).map(Match::lax),
+        let result = match self.scalar_with(vm, |text| bytes_as_timedelta(text.as_bytes(), vm.heap))? {
+            Some(Read::Text(parsed)) => parsed.map(Match::strict),
+            Some(Read::Scalar(Scalar::Int(NumberInt::Int(int)))) if !strict => {
+                int_as_duration(int, vm.heap).map(Match::lax)
+            }
+            Some(Read::Scalar(Scalar::Float(float))) if !strict => float_as_duration(float, vm.heap).map(Match::lax),
             _ => Err(ErrorType::TimeDeltaType {}),
         };
         self.outcome(result, vm)
@@ -332,7 +356,7 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
     /// Text and numbers parse as decimals; a float goes through its shortest
     /// text, as pydantic-core's `f64::to_string` writes it.
     fn validate_decimal(&mut self, _strict: bool, vm: &mut VM<'_>) -> ValResult<Match<Value>> {
-        let text = match self.scalar()? {
+        let text = match self.scalar(vm)? {
             Some(Scalar::Str(text)) => text,
             Some(Scalar::Int(NumberInt::Int(int))) => int.to_string(),
             Some(Scalar::Int(NumberInt::BigInt(big))) => big.to_string(),
@@ -420,6 +444,13 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
         matches!(self, Self::Token { peek: Peek::Object, .. })
     }
 
+    fn key_value(&self) -> Option<&Value> {
+        match self {
+            Self::Key(key) => Some(key),
+            Self::Token { .. } => None,
+        }
+    }
+
     fn heap_id(&self) -> Option<HeapId> {
         None
     }
@@ -444,6 +475,10 @@ impl<'j, 'a> JsonSequence<'j, 'a> {
             pending: None,
         }
     }
+}
+
+impl<C> DropWithContext<C> for JsonSequence<'_, '_> {
+    fn drop_with(self, _ctx: &mut C) {}
 }
 
 impl<'j, 'a> Sequence<JsonInput<'j, 'a>> for JsonSequence<'j, 'a> {
@@ -501,8 +536,12 @@ impl<'j, 'a> JsonMapping<'j, 'a> {
     }
 }
 
+impl<C> DropWithContext<C> for JsonMapping<'_, '_> {
+    fn drop_with(self, _ctx: &mut C) {}
+}
+
 impl<'j, 'a> Mapping<JsonInput<'j, 'a>> for JsonMapping<'j, 'a> {
-    fn next(&mut self, _vm: &mut VM<'_>) -> ValResult<Option<(JsonInput<'j, 'a>, JsonInput<'j, 'a>)>> {
+    fn next(&mut self, vm: &mut VM<'_>) -> ValResult<Option<(JsonInput<'j, 'a>, JsonInput<'j, 'a>)>> {
         if let Some(err) = self.pending.take() {
             return Err(ValError::Json(err));
         }
@@ -511,21 +550,26 @@ impl<'j, 'a> Mapping<JsonInput<'j, 'a>> for JsonMapping<'j, 'a> {
         let key = {
             let mut jiter = self.parser.borrow_mut();
             let key = if first { jiter.known_object() } else { jiter.next_key() };
-            key.map(|key| key.map(ToOwned::to_owned))
+            key.map(|key| key.map(|key| allocate_string(key, vm.heap)))
         };
         match key.map_err(ValError::Json)? {
             Some(key) => {
+                // Released if the value cannot be positioned; owned by the entry otherwise.
+                let key = DropGuard::new(key, vm);
                 let value = JsonInput::at(self.parser, self.depth).map_err(ValError::Json)?;
                 if first {
                     value.check_depth().map_err(ValError::Json)?;
                 }
-                Ok(Some((JsonInput::Key(key), value)))
+                Ok(Some((JsonInput::Key(key.into_inner()), value)))
             }
             None => Ok(None),
         }
     }
 
-    fn finish_entry(&mut self, _key: JsonInput<'j, 'a>, mut value: JsonInput<'j, 'a>, _vm: &mut VM<'_>) {
+    fn finish_entry(&mut self, key: JsonInput<'j, 'a>, mut value: JsonInput<'j, 'a>, vm: &mut VM<'_>) {
+        if let JsonInput::Key(key) = key {
+            key.drop_with(vm);
+        }
         if let Err(err) = value.skip_unread() {
             self.pending = Some(err);
         }

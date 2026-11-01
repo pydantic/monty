@@ -169,6 +169,61 @@ class Loose:
 
 assert TypeAdapter(Loose).validate_python({'data': {'k': [1]}, 'tags': (1, 'a')}) == Loose({'k': [1]}, [1, 'a'])
 
+# === The input may be mutated while it is validated ===
+# A default_factory that appends to the list under validation: the walk is bounded by the
+# list's length when validation began, as pydantic-core's is.
+grown = [{'a': 1}, {'a': 2}]
+
+
+def grow():
+    grown.append({'a': 99})
+    return 0
+
+
+@dataclass
+class Grower:
+    a: int
+    b: int = field(default_factory=grow)
+
+
+assert len(TypeAdapter(list[Grower]).validate_python(grown)) == 2
+assert len(grown) == 4
+
+shrunk = [{'a': 1}, {'a': 2}, {'a': 3}]
+
+
+@dataclass
+class Shrinker:
+    a: int
+    b: int = field(default_factory=lambda: shrunk.pop() and 0)
+
+
+assert len(TypeAdapter(list[Shrinker]).validate_python(shrunk)) == 2
+
+# A factory that adds a key to the dict under validation: the new key is an unknown field, ignored.
+poked = {'x': 1, 'inner': {}}
+
+
+def poke():
+    poked['extra'] = 1
+    return 0
+
+
+@dataclass
+class Inner:
+    n: int = field(default_factory=poke)
+
+
+@dataclass
+class Outer:
+    x: int
+    inner: Inner
+    tail: int = 0
+
+
+assert TypeAdapter(Outer).validate_python(poked) == Outer(1, Inner(0), 0)
+assert poked == {'x': 1, 'inner': {}, 'extra': 1}
+
 # === namedtuple ===
 Point = namedtuple('Point', ['x', 'y'])
 PointAdapter = TypeAdapter(Point)

@@ -11,7 +11,7 @@ use monty_types::ValidationInputType;
 
 use crate::{
     bytecode::VM,
-    heap::HeapId,
+    heap::{DropWithContext, HeapId},
     modules::pydantic::{
         arena::ValidatorId,
         catalogue::ErrorType,
@@ -124,8 +124,8 @@ pub(crate) enum SeqKind {
 pub(crate) trait Input: Sized {
     /// Items of a sequence input, each an `Input` of the same mode.
     type Seq: Sequence<Self>;
-    /// Entries of a mapping input: keys are strings for a JSON object and
-    /// values for a Python dict, so each is an `Input` too.
+    /// Entries of a mapping input: keys are string values for a JSON object
+    /// and any value for a Python dict, so each is an `Input` too.
     type Map: Mapping<Self>;
 
     const INPUT_TYPE: ValidationInputType;
@@ -192,6 +192,11 @@ pub(crate) trait Input: Sized {
     /// and for immediate values.
     fn heap_id(&self) -> Option<HeapId>;
 
+    /// The key this input is, when a mapping yielded it: the Python value, or
+    /// the string a JSON object key was read into; `None` for a JSON token.
+    /// Dataclass fields are matched through this without materialising the key.
+    fn key_value(&self) -> Option<&Value>;
+
     /// The error `error_type` on this input, consuming a JSON input.
     fn error<T>(&mut self, error_type: ErrorType, vm: &mut VM<'_>) -> ValResult<T> {
         let value = self.to_value(vm)?;
@@ -212,8 +217,9 @@ pub(crate) enum InputKind {
     Other,
 }
 
-/// The items of a sequence input, in order.
-pub(crate) trait Sequence<I: Input>: Sized {
+/// The items of a sequence input, in order. A cursor may hold references, so
+/// it is released through `drop_with`; callers guard it with `defer_drop_mut!`.
+pub(crate) trait Sequence<I: Input>: Sized + for<'h> DropWithContext<VM<'h>> {
     /// The item count when known up front.
     fn len(&self) -> Option<usize>;
 
@@ -226,8 +232,8 @@ pub(crate) trait Sequence<I: Input>: Sized {
     fn finish_item(&mut self, item: I, vm: &mut VM<'_>);
 }
 
-/// The entries of a mapping input, in order.
-pub(crate) trait Mapping<I: Input>: Sized {
+/// The entries of a mapping input, in order; released like a [`Sequence`].
+pub(crate) trait Mapping<I: Input>: Sized + for<'h> DropWithContext<VM<'h>> {
     /// The next `(key, value)` entry, or `None` at the end.
     fn next(&mut self, vm: &mut VM<'_>) -> ValResult<Option<(I, I)>>;
 
