@@ -21,7 +21,7 @@ dev = [
     # the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes
     "grpcio>=1.75",
     "types-grpcio>=1.0.0.20250603",
-    # the CPython side of the `cpython-site-packages` test cases and benchmarks
+    # the CPython side of the pydantic test cases and benchmarks
     "pydantic>=2.13.4",
 ]
 # used only by `examples/`; opt in with `uv run --group examples ...`, `make dev-py` skips it, `make lint-py` needs it

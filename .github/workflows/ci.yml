@@ -161,7 +161,7 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
 
-      # `cpython-site-packages` test cases import pydantic from the dev virtualenv
+      # the pydantic test cases import pydantic from the dev virtualenv
       - run: uv sync --all-packages --only-dev
 
       - run: rustc --version --verbose
@@ -513,7 +513,7 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
 
-      # `cpython-site-packages` test cases import pydantic from the dev virtualenv
+      # the pydantic test cases import pydantic from the dev virtualenv
       - run: uv sync --all-packages --only-dev
 
       - run: cargo test -p monty --features memory-model-checks
@@ -574,7 +574,7 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
 
-      # `cpython-site-packages` test cases import pydantic from the dev virtualenv
+      # the pydantic test cases import pydantic from the dev virtualenv
       - run: uv sync --all-packages --only-dev
 
       - run: make dev-bench
