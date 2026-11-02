@@ -962,15 +962,19 @@ class AsyncMonty:
     external functions may be coroutines.
 
     At interpreter shutdown, Monty cancels pending Rust bridge tasks and permanently
-    closes async admission. Later pool, session and snapshot operations raise
-    `RuntimeError("Monty async runtime is shutting down")`. For imports before
-    shutdown, an atexit callback registered before the import runs after the drain.
-    Finish async work and exit pool/session contexts before interpreter shutdown.
+    closes async admission. Submitting new async work (context entry, feeds or
+    snapshot resumes) then raises `RuntimeError("Monty async runtime is shutting down")`.
+    Synchronous `checkout()` and snapshot `dump()` do not use this admission check.
+    For imports before shutdown, an atexit callback registered before the import
+    runs after the drain and cannot submit new async work.
+    Let async feeds finish and exit pool/session contexts before interpreter shutdown.
+    Cancel and await any additional host tasks you create yourself separately.
     Pending Python host coroutines are not cancelled or settled by the drain;
     they may emit pending-task warnings and run finally blocks during Python teardown.
     A synchronous host callback already executing must return before draining can
     finish; `request_timeout` cannot preempt it, so exit can wait indefinitely.
-    The async runtime cannot be reused after fork; child calls raise `RuntimeError`.
+    After fork, entering or driving async pools/sessions raises `RuntimeError` in
+    the child; preparing a checkout alone does not enter the runtime.
 
     ```python
     async with AsyncMonty() as pool:

@@ -229,15 +229,20 @@ Snapshots without a clock use wall time.
 
 ## Python async shutdown
 
-Finish async work and leave pool/session contexts before the interpreter exits.
+Let async feeds finish and leave pool/session contexts before the interpreter exits.
 Monty's shutdown hook cancels pending Rust bridge tasks, drains their Python references, and permanently closes async
 admission for `AsyncMonty`, `AsyncMontyWebsocket`, async sessions and async snapshots.
-Later async operations raise `RuntimeError("Monty async runtime is shutting down")`.
+Submitting new async work, such as context entry, feeds or snapshot resumes, then raises
+`RuntimeError("Monty async runtime is shutting down")`.
+Synchronous `checkout()` and snapshot `dump()` do not use this admission check.
 With an import before shutdown, an `atexit` callback registered before that import runs after the hook
-and cannot use the async API.
+and cannot submit new async work.
 A first import inside an exit callback is also cleaned up when CPython releases the newly registered hook.
-The async runtime cannot be reused after `fork`; child calls raise `RuntimeError`.
+After `fork`, entering or driving async pools/sessions raises `RuntimeError` in the child.
+Preparing a checkout alone does not enter the runtime.
 
+Monty does not expose task handles for host coroutines it schedules internally.
+Cancelling a feed does not settle those coroutines; cancel and await any host tasks you create yourself separately.
 The drain does not cancel or settle Python host coroutine tasks.
 Pending coroutines may emit destroyed-pending-task warnings and execute their `finally` blocks during Python teardown.
 An already executing synchronous host callback must return before draining can finish.

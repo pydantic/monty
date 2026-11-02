@@ -268,13 +268,18 @@ When embedded in a current-thread Tokio runtime, sync methods raise `RuntimeErro
 
 ### Interpreter shutdown
 
-Finish async work and leave the pool/session contexts before interpreter exit.
+Let async feeds finish and leave the pool/session contexts before interpreter exit.
 Monty's exit hook cancels pending Rust bridge tasks and permanently closes async admission for pools, sessions and snapshots.
-Later async operations raise `RuntimeError("Monty async runtime is shutting down")`.
+Submitting new async work, such as context entry, feeds or snapshot resumes, then raises
+`RuntimeError("Monty async runtime is shutting down")`.
+Synchronous `checkout()` and snapshot `dump()` do not use this admission check.
 With an import before shutdown, an `atexit` callback registered before that import runs after the hook
-and cannot use the async API.
-The async runtime cannot be reused in a fork child; calls there raise `RuntimeError`.
+and cannot submit new async work.
+After `fork`, entering or driving async pools/sessions raises `RuntimeError` in the child.
+Preparing a checkout alone does not enter the runtime.
 
+Monty does not expose task handles for internally scheduled host coroutines, and cancelling a feed does not settle them.
+Cancel and await any host tasks you create yourself separately.
 Pending Python host coroutines are abandoned, rather than cancelled or settled by this hook.
 They may emit destroyed-pending-task warnings and run `finally` blocks during Python teardown.
 An executing synchronous host callback must return before shutdown can finish; `request_timeout` cannot preempt it.
