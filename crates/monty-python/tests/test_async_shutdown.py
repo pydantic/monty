@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 
 import pytest
+
+from pydantic_monty import AsyncMonty
 
 
 def test_async_result_delivery_finishes_before_interpreter_shutdown():
@@ -396,6 +399,10 @@ if pid == 0:
         else:
             raise AssertionError('fork child admitted async work')
     asyncio.run(try_reuse())
+    if not paused:
+        operation.cancel()
+        while loop._ready:
+            loop._ready.popleft()._run()
     # Use normal exit so inherited atexit hooks actually run.
     sys.exit(0)
 
@@ -427,3 +434,19 @@ print('parent finished', flush=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout == 'child rejected\nparent finished\n', result.stderr
     assert 'PanicException' not in result.stderr
+    assert 'Exception in callback' not in result.stderr
+
+
+async def test_sync_callback_can_return_nested_async_future():
+    async with AsyncMonty(max_processes=2) as pool:
+        async with pool.checkout() as outer, pool.checkout() as inner:
+
+            async def await_future(future):
+                assert isinstance(future, asyncio.Future)
+                return await future
+
+            def nested():
+                return await_future(inner.feed_run('42'))
+
+            result = await outer.feed_run('await nested()', external_lookup={'nested': nested})
+            assert result == 42

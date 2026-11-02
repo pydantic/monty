@@ -961,6 +961,17 @@ class AsyncMonty:
     The async counterpart of `Monty`: worker I/O runs off the event loop, and
     external functions may be coroutines.
 
+    At interpreter shutdown, Monty cancels pending Rust bridge tasks and permanently
+    closes async admission. Later pool, session and snapshot operations raise
+    `RuntimeError("Monty async runtime is shutting down")`. For imports before
+    shutdown, an atexit callback registered before the import runs after the drain.
+    Finish async work and exit pool/session contexts before interpreter shutdown.
+    Pending Python host coroutines are not cancelled or settled by the drain;
+    they may emit pending-task warnings and run finally blocks during Python teardown.
+    A synchronous host callback already executing must return before draining can
+    finish; `request_timeout` cannot preempt it, so exit can wait indefinitely.
+    The async runtime cannot be reused after fork; child calls raise `RuntimeError`.
+
     ```python
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
@@ -1046,6 +1057,9 @@ class AsyncMontyWebsocket:
         async with pool.checkout() as session:
             result = await session.feed_run('1 + 1')
     ```
+
+    Async operations follow the interpreter-shutdown and post-fork contract
+    documented on `AsyncMonty`.
     """
 
     def __new__(
@@ -1157,6 +1171,9 @@ class AsyncMontySession:
     Obtained from `AsyncMonty.checkout()` or `AsyncMontyWebsocket.checkout()`
     and used as an async context manager. Session state (globals, functions) persists across
     `feed_run` calls within the session.
+
+    Async operations follow the interpreter-shutdown and post-fork contract
+    documented on `AsyncMonty`.
     """
 
     async def __aenter__(self) -> Self: ...
@@ -1519,7 +1536,10 @@ class FutureSnapshot:
 
 @final
 class AsyncFunctionSnapshot:
-    """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
+    """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable.
+    Async operations follow the interpreter-shutdown and post-fork contract
+    documented on `AsyncMonty`.
+    """
 
     @property
     def allow_eager_await(self) -> bool:
@@ -1558,7 +1578,10 @@ class AsyncFunctionSnapshot:
 
 @final
 class AsyncNameLookupSnapshot:
-    """Async sibling of `NameLookupSnapshot`."""
+    """Async sibling of `NameLookupSnapshot`.
+    Async operations follow the interpreter-shutdown and post-fork contract
+    documented on `AsyncMonty`.
+    """
 
     @property
     def script_name(self) -> str: ...
@@ -1583,7 +1606,10 @@ class AsyncNameLookupSnapshot:
 
 @final
 class AsyncFutureSnapshot:
-    """Async sibling of `FutureSnapshot`."""
+    """Async sibling of `FutureSnapshot`.
+    Async operations follow the interpreter-shutdown and post-fork contract
+    documented on `AsyncMonty`.
+    """
 
     @property
     def script_name(self) -> str: ...

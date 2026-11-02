@@ -226,3 +226,19 @@ CPU restore approximates prior supervisor usage from saved VM consumption.
 The snapshot does not record protocol CPU or supervisor grace separately.
 Load them through a pool with the same execution clock.
 Snapshots without a clock use wall time.
+
+## Python async shutdown
+
+Finish async work and leave pool/session contexts before the interpreter exits.
+Monty's shutdown hook cancels pending Rust bridge tasks, drains their Python references, and permanently closes async
+admission for `AsyncMonty`, `AsyncMontyWebsocket`, async sessions and async snapshots.
+Later async operations raise `RuntimeError("Monty async runtime is shutting down")`.
+With an import before shutdown, an `atexit` callback registered before that import runs after the hook
+and cannot use the async API.
+A first import inside an exit callback is also cleaned up when CPython releases the newly registered hook.
+The async runtime cannot be reused after `fork`; child calls raise `RuntimeError`.
+
+The drain does not cancel or settle Python host coroutine tasks.
+Pending coroutines may emit destroyed-pending-task warnings and execute their `finally` blocks during Python teardown.
+An already executing synchronous host callback must return before draining can finish.
+`request_timeout` cannot preempt that callback, so an unbounded callback can keep process exit waiting indefinitely.

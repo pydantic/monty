@@ -4,12 +4,14 @@
 //! and start finalizing before the delivery thread regains the GIL; older CPython
 //! versions then terminate that thread while it still owns Python objects.
 //! Track bridge creation, pending tasks and blocking deliveries. Before finalization,
-//! an `atexit` hook cancels pending tasks and drains their Python references along
+//! an `atexit` hook cancels pending Rust tasks and drains their Python references along
 //! with admitted deliveries. Later bridge calls fail instead of returning an unresolved future.
 //! Admission stays closed: PyO3 does not support loading this extension in another
 //! interpreter, and resetting the barrier here would allow tasks to race finalization.
 //! Cancellation takes effect between polls: a synchronous host callback already
 //! executing inside a poll must return before its task can release its references.
+//! Python coroutine tasks are not cancelled or settled here; their finally blocks
+//! can run during later Python teardown, with destroyed-pending-task warnings.
 
 use std::{
     future::Future,
@@ -29,6 +31,7 @@ use tokio::{
     task::{JoinError, JoinHandle},
 };
 
+mod cancellation;
 mod coroutine;
 
 pub(crate) use coroutine::into_future_with_locals;
@@ -58,7 +61,7 @@ where
     let _creation = DELIVERIES
         .begin()
         .ok_or_else(|| PyRuntimeError::new_err("Monty async runtime is shutting down"))?;
-    let future = generic::future_into_py::<DrainingRuntime, _, _>(py, future)?;
+    let future = cancellation::future_into_py(py, future)?;
     // A rejected spawn returns no error through the upstream Runtime trait.
     // Detect shutdown here instead of returning a future that cannot complete.
     if DELIVERIES.lock().closing {

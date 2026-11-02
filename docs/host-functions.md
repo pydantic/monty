@@ -243,6 +243,13 @@ Host tracebacks are not preserved.
 With [`AsyncMonty`][pydantic_monty.AsyncMonty], callables in `external_lookup` may be coroutine functions.
 They are awaited on your event loop, so blocking work inside one blocks it exactly as it would anywhere else in your
 async code — what `AsyncMonty` moves off the loop is worker I/O, not your callbacks.
+Python interpreter shutdown cancels pending Rust bridge work, but does not cancel or settle Python host coroutine tasks.
+Finish or cancel and await host coroutines before leaving your application's event loop; otherwise they may emit
+pending-task warnings and run `finally` blocks during later Python teardown.
+Synchronous host callbacks must return before Monty's shutdown drain can finish.
+Neither `request_timeout` nor sandbox resource limits can preempt a synchronous host callback; an unbounded callback
+can therefore prevent process exit.
+
 In JavaScript every host function may be async, and there is no separate pool class.
 `asyncio.gather` inside the sandbox lets several run concurrently:
 
