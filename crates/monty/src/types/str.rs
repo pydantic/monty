@@ -532,13 +532,13 @@ fn str_getitem<'h>(s: &impl HeapView<'h, str>, ascii: bool, key: &Value, vm: &mu
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
-            let (start, stop) = if ascii {
-                (start, stop)
+            let result = if ascii {
+                &text[start..stop]
             } else {
-                (string_byte_offset(text, start), string_byte_offset(text, stop))
+                slice_string(text, start, stop)
             };
             // Contiguous slices copy UTF-8 directly, without collecting characters.
-            return Ok(allocate_string(&text[start..stop], vm.heap));
+            return Ok(allocate_string(result, vm.heap));
         }
         let result: Box<str> = if ascii {
             // Byte iterators count and skip in O(1), unlike `chars()`.
@@ -937,13 +937,12 @@ fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
         return Ok(Value::Int(-1));
     };
     let s = s.get(vm.heap);
-    let start_byte = string_byte_offset(s, start);
-    let end_byte = string_byte_offset(s, end);
-    let slice = &s[start_byte..end_byte];
+    let slice = slice_string(s, start, end);
     let result = match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, start_byte + pos);
-            i64::try_from(char_pos).unwrap_or(i64::MAX)
+            // Convert byte offset to char offset, then add start offset
+            let char_pos = slice[..pos].chars().count();
+            i64::try_from(start + char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
     };
@@ -961,13 +960,12 @@ fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
         return Ok(Value::Int(-1));
     };
     let s = s.get(vm.heap);
-    let start_byte = string_byte_offset(s, start);
-    let end_byte = string_byte_offset(s, end);
-    let slice = &s[start_byte..end_byte];
+    let slice = slice_string(s, start, end);
     let result = match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, start_byte + pos);
-            i64::try_from(char_pos).unwrap_or(i64::MAX)
+            // Convert byte offset to char offset, then add start offset
+            let char_pos = slice[..pos].chars().count();
+            i64::try_from(start + char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
     };
@@ -984,13 +982,11 @@ fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
         return Err(ExcType::value_error_substring_not_found());
     };
     let s = s.get(vm.heap);
-    let start_byte = string_byte_offset(s, start);
-    let end_byte = string_byte_offset(s, end);
-    let slice = &s[start_byte..end_byte];
+    let slice = slice_string(s, start, end);
     match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, start_byte + pos);
-            let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
+            let char_pos = slice[..pos].chars().count();
+            let result = i64::try_from(start + char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
         None => Err(ExcType::value_error_substring_not_found()),
@@ -1007,13 +1003,11 @@ fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
         return Err(ExcType::value_error_substring_not_found());
     };
     let s = s.get(vm.heap);
-    let start_byte = string_byte_offset(s, start);
-    let end_byte = string_byte_offset(s, end);
-    let slice = &s[start_byte..end_byte];
+    let slice = slice_string(s, start, end);
     match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, start_byte + pos);
-            let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
+            let char_pos = slice[..pos].chars().count();
+            let result = i64::try_from(start + char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
         None => Err(ExcType::value_error_substring_not_found()),
@@ -1031,16 +1025,10 @@ fn str_count<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
         return Ok(Value::Int(0));
     };
     let s = s.get(vm.heap);
-    let start_byte = string_byte_offset(s, start);
-    let end_byte = string_byte_offset(s, end);
-    let slice = &s[start_byte..end_byte];
+    let slice = slice_string(s, start, end);
     let count = if sub.is_empty() {
-        // Empty needles match at every character boundary, including the end.
-        if end == usize::MAX {
-            s.chars().count() + 1
-        } else {
-            end - start + 1
-        }
+        // Empty string matches between every character, plus start and end
+        slice.chars().count() + 1
     } else {
         slice.matches(&sub).count()
     };
@@ -1066,9 +1054,11 @@ fn str_endswith<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>
 
 /// Shared implementation of `str.startswith`/`str.endswith`.
 ///
-/// Unbounded checks compare UTF-8 directly; explicit bounds use character offsets.
-/// Convert bounds before validating affixes, matching CPython's exception order.
-/// Tuple validation is lazy: a match skips later invalid items. Affixes are borrowed.
+/// Argument handling mirrors CPython's order: arg count, then start/end index
+/// conversion (bad indices raise before the affix is even looked at), then the
+/// affix itself — where tuple elements are validated lazily and in order, so a
+/// match short-circuits before later elements are type-checked. Affix strings
+/// are borrowed straight from interns/heap, never copied.
 fn str_starts_ends_with<'h>(
     s: &impl HeapView<'h, str>,
     method: &'static str,
@@ -1088,16 +1078,8 @@ fn str_starts_ends_with<'h>(
         // `start` past `end` matches nothing, but each affix is still type-checked
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
-    let text = s.get(vm.heap);
-    let start = string_byte_offset(text, start);
-    let end = string_byte_offset(text, end);
-    Ok(Value::Bool(affix_matches(
-        affix,
-        &text[start..end],
-        method,
-        matcher,
-        vm,
-    )?))
+    let slice = slice_string(s.get(vm.heap), start, end);
+    Ok(Value::Bool(affix_matches(affix, slice, method, matcher, vm)?))
 }
 
 /// Tests `matcher(slice, affix)` (`str::starts_with` or `str::ends_with`) against
@@ -1169,8 +1151,6 @@ fn parse_search_args<'h>(
 }
 
 /// Normalizes explicit character bounds; omitted bounds cover the original UTF-8.
-/// Counting characters and walking the entire range before an unbounded match dominated
-/// the old Chinese search cost. Only explicit bounds need length normalization.
 fn string_search_range<'h>(s: &impl HeapView<'h, str>, bounds: &[Value], vm: &mut VM<'h>) -> RunResult<SearchRange> {
     // Omitted bounds need neither a character count nor offset conversion.
     if bounds.iter().all(|bound| matches!(bound, Value::None)) {
@@ -1183,29 +1163,6 @@ fn string_search_range<'h>(s: &impl HeapView<'h, str>, bounds: &[Value], vm: &mu
         text.chars().count()
     };
     search_range(bounds.first(), bounds.get(1), length, vm)
-}
-
-fn string_byte_offset(text: &str, target: usize) -> usize {
-    if target == 0 {
-        return 0;
-    }
-    if target == usize::MAX {
-        return text.len();
-    }
-    if text.is_ascii() {
-        return target.min(text.len());
-    }
-    text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte)
-}
-
-fn string_char_offset(text: &str, byte: usize) -> usize {
-    if byte == 0 {
-        return 0;
-    }
-    if text.is_ascii() {
-        return byte;
-    }
-    text[..byte].chars().count()
 }
 
 /// Extracts a string from a Value, returning an error if not a string.
@@ -1236,6 +1193,35 @@ fn extract_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
 fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
     let as_i64 = value.as_int_with_overflow(vm, ExcType::overflow_c_int)?;
     i32::try_from(as_i64).map_err(|_| ExcType::overflow_c_int())
+}
+
+/// Returns a substring of s from character index start to end; ASCII text is sliced by byte offset.
+fn slice_string(s: &str, start: usize, end: usize) -> &str {
+    // Omitted bounds refer to the original UTF-8, without a character-count scan.
+    if start == 0 && end == usize::MAX {
+        return s;
+    }
+    if start >= end {
+        return "";
+    }
+    if s.is_ascii() {
+        return &s[start.min(s.len())..end.min(s.len())];
+    }
+
+    let mut start_byte = s.len();
+    let mut end_byte = s.len();
+
+    for (char_idx, (byte_idx, _)) in s.char_indices().enumerate() {
+        if char_idx == start {
+            start_byte = byte_idx;
+        }
+        if char_idx == end {
+            end_byte = byte_idx;
+            break;
+        }
+    }
+
+    &s[start_byte..end_byte]
 }
 
 // =============================================================================
