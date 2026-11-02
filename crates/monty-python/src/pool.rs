@@ -42,8 +42,8 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Persistence, Pool, PoolConfig,
-    PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
+    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -136,10 +136,10 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         execution_clock = "wall",
-        max_checkouts_per_worker = None,
+        max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ))]
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -538,10 +538,10 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         execution_clock = "wall",
-        max_checkouts_per_worker = None,
+        max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ))]
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -1317,6 +1317,13 @@ fn parse_websocket_config(
 const _: () = assert!(
     DEFAULT_DURATION_LIMIT_GRACE.as_secs() == 1 && DEFAULT_DURATION_LIMIT_GRACE.subsec_nanos() == 0,
     "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
+);
+
+// pyo3 renders the `Some(..)` default of `max_checkouts_per_worker` as `...`,
+// so the constructors spell their signatures out; this pins its `1000`.
+const _: () = assert!(
+    DEFAULT_MAX_CHECKOUTS_PER_WORKER == 1000,
+    "the pool's default recycle count changed: update `max_checkouts_per_worker=1000` in the text signatures"
 );
 
 /// Both duration-backstop graces as a pool constructor takes them, in

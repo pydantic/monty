@@ -24,8 +24,8 @@ use std::{
 
 use insta::assert_snapshot;
 use monty_pool::{
-    MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-    on_print_sync,
+    DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
+    ResumeValue, TurnEvent, on_print_sync,
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
@@ -2291,6 +2291,45 @@ async fn workers_are_recycled_after_max_checkouts() {
     assert_ne!(session.pid().unwrap(), first_pid);
     assert_ne!(session.worker_id().unwrap(), first_id);
     session.finish().await.unwrap();
+}
+
+/// Without an explicit setting a worker serves `DEFAULT_MAX_CHECKOUTS_PER_WORKER`
+/// sessions, then is retired so no child outlives that many tenants.
+#[tokio::test]
+async fn workers_are_recycled_after_the_default_checkout_count() {
+    let mut config = config();
+    config.max_processes = 1;
+    assert_eq!(config.max_checkouts_per_worker, Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER));
+    let pool = Pool::new(config).await.unwrap();
+
+    let mut first_id = None;
+    for _ in 0..DEFAULT_MAX_CHECKOUTS_PER_WORKER {
+        let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let id = session.worker_id().unwrap();
+        assert_eq!(*first_id.get_or_insert(id), id);
+        session.finish().await.unwrap();
+    }
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_ne!(session.worker_id(), first_id);
+    session.finish().await.unwrap();
+}
+
+/// `None` opts out of recycling: one worker serves past the default count.
+#[tokio::test]
+async fn no_recycle_limit_keeps_the_worker() {
+    let mut config = config();
+    config.max_processes = 1;
+    config.max_checkouts_per_worker = None;
+    let pool = Pool::new(config).await.unwrap();
+
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let first_id = session.worker_id();
+    session.finish().await.unwrap();
+    for _ in 0..DEFAULT_MAX_CHECKOUTS_PER_WORKER {
+        let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        assert_eq!(session.worker_id(), first_id);
+        session.finish().await.unwrap();
+    }
 }
 
 /// With one checkout per process, every session gets a fresh worker, and the
