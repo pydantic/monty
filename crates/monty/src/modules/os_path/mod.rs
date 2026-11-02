@@ -719,14 +719,18 @@ fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let LexistsArgs { path } = LexistsArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let path = extract_os_path(path, "lstat", "path", PathAccepts::NoFd, vm)?;
-    // `''` needs no special case: `prepare_os_call` answers `Exists('')` with `False`.
-    Ok(CallResult::OsCallWithEffect {
-        effect: PreConversionEffect::Lexists {
-            path: path.as_str().to_owned(),
-        }
-        .into(),
-        call: OsFunctionCall::Exists(path),
-    })
+    // answered locally: a call made from a builtin such as `map()` cannot suspend
+    if path.is_empty() {
+        Ok(CallResult::Value(Value::Bool(false)))
+    } else {
+        Ok(CallResult::OsCallWithEffect {
+            effect: PreConversionEffect::Lexists {
+                path: path.as_str().to_owned(),
+            }
+            .into(),
+            call: OsFunctionCall::Exists(path),
+        })
+    }
 }
 
 /// Completes `os.path.lexists` from the `Path.exists` reply — the resume half
@@ -759,9 +763,12 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let SamefileArgs { f1, f2 } = SamefileArgs::from_args(args, vm)?;
     defer_drop!(f1, vm);
     defer_drop!(f2, vm);
-    // An empty path needs no check here: `prepare_os_call` rejects `Stat('')` with
-    // CPython's `FileNotFoundError`, for this call and the second `Stat`.
     let first = extract_os_path(f1, "stat", "path", PathAccepts::Fd, vm)?;
+    // raised locally, as a call from a builtin such as `map()` cannot suspend;
+    // `prepare_os_call` rejects an empty second path
+    if first.is_empty() {
+        return Err(ExcType::file_not_found_error(""));
+    }
     let second = extract_accepted_path(f2, PathAccepts::Fd, vm).map(|path| path.as_str().to_owned());
     Ok(CallResult::OsCallWithEffect {
         effect: PreConversionEffect::SamefileFirst {
@@ -908,13 +915,18 @@ fn getctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Shared body of the stat getters: the `Path.stat` host call with a
 /// [`PreConversionEffect::StatField`] that keeps one field of the reply. The
-/// empty path is rejected by `prepare_os_call`, as CPython's `stat('')` is.
+/// empty path fails as CPython's `stat('')` does, without suspending, so a call
+/// from a builtin such as `map()` still raises `FileNotFoundError`.
 fn stat_field(path: &Value, field: StatField, vm: &VM<'_>) -> RunResult<CallResult> {
     let path = extract_os_path(path, "stat", "path", PathAccepts::Fd, vm)?;
-    Ok(CallResult::OsCallWithEffect {
-        call: OsFunctionCall::Stat(path),
-        effect: PreConversionEffect::StatField(field).into(),
-    })
+    if path.is_empty() {
+        Err(ExcType::file_not_found_error(""))
+    } else {
+        Ok(CallResult::OsCallWithEffect {
+            call: OsFunctionCall::Stat(path),
+            effect: PreConversionEffect::StatField(field).into(),
+        })
+    }
 }
 
 /// The `os.stat` result field an `os.path` getter returns.

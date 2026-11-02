@@ -192,6 +192,23 @@ try:
     assert Path('hello.txt').exists()
     assert not Path('renamed.txt').exists()
 
+    # called from a builtin, which cannot suspend for an OS call
+    assert list(map(os.path.exists, [''])) == [False]
+    assert list(map(os.path.lexists, [''])) == [False]
+    mapped_empty_path_calls = [
+        lambda: list(map(os.path.getsize, [''])),
+        lambda: list(map(os.path.getmtime, [''])),
+        lambda: list(map(os.path.samefile, [''], ['hello.txt'])),
+    ]
+    for call in mapped_empty_path_calls:
+        try:
+            call()
+            assert False, 'expected OSError'
+        except OSError as e:
+            if not is_windows:
+                assert isinstance(e, FileNotFoundError)
+                assert str(e) == "[Errno 2] No such file or directory: ''"
+
     # `Path('')` is `Path('.')`, the working directory
     assert Path('') == Path('.')
     assert str(Path('')) == '.'
