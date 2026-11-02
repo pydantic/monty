@@ -1159,9 +1159,10 @@ fn parse_search_args<'h>(
     }
 }
 
-/// Normalizes explicit character bounds; omitted bounds cover the original UTF-8.
+/// Normalizes explicit character bounds; omitted bounds return `(0, usize::MAX)`.
+/// `slice_string` treats that sentinel as the original UTF-8 without counting characters.
+/// Explicit Python `None` bounds go through `search_range` and use the actual character length.
 fn string_search_range<'h>(s: &impl HeapView<'h, str>, bounds: &[Value], vm: &mut VM<'h>) -> RunResult<SearchRange> {
-    // Omitted bounds need neither a character count nor offset conversion.
     if bounds.is_empty() {
         return Ok(Some((0, usize::MAX)));
     }
