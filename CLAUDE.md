@@ -1068,8 +1068,8 @@ where they are. Change one and you must change all of them:
     `crates/monty-runtime/README.md` (`--max-sleep`, `--max-total-sleep`), the `checkout()` docstrings in
     `_monty.pyi` and `crates/monty-js/ts/pool.ts`.
 - **The default `max_checkouts_per_worker`** (1000) — `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER` (authoritative;
-    compile- and test-time checks pin the JS constant and Python `text_signature`s to it), `_monty.pyi`, `ts/pool.ts`,
-    the `monty-pool` README, `docs/resource-limits.md`, `docs/security.md` and `docs/quickstart/`.
+    compile- and test-time checks pin the JS constant and Python `text_signature`s to it), `_monty.pyi`, `crates/monty-js/ts/options.ts`,
+    `crates/monty-js/ts/pool.ts`, the `monty-pool` README, `docs/resource-limits.md`, `docs/security.md` and `docs/quickstart/`.
 - **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
     the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
 

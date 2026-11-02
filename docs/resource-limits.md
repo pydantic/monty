@@ -264,8 +264,8 @@ caps the dump's, so a worker cannot report a looser one.
 ## Worker recycling
 
 Local pools replace a worker after 1000 checkouts, bounding how long a slow leak or a compromised worker survives.
-Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count: `1` gives every session a
-fresh worker, and `None` (`null`) never recycles.
+Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count: `0` and `1` both give
+every session a fresh worker, and `None` (`null`) never recycles.
 WebSocket checkouts are single-use, so the count does not apply to them.
 
 ## What is not covered

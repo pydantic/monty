@@ -99,7 +99,7 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, bounding
     /// how long a slow leak or a compromised child survives. Defaults to
     /// [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`]; `None` never recycles. With the
-    /// subprocess transport, `Some(1)` gives every session a fresh process — the
+    /// subprocess transport, `Some(1)` (or `Some(0)`) gives every session a fresh process — the
     /// setting for mutually untrusted callers — usually spawned before it asked
     /// when `min_processes > 0`.
     pub max_checkouts_per_worker: Option<u32>,

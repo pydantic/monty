@@ -627,7 +627,7 @@ class Monty:
                 CPU mode is Linux-only and requires a finite `request_timeout`.
             max_checkouts_per_worker: Recycle a worker after this many sessions,
                 bounding how long a leaking or compromised worker keeps serving.
-                `1` runs every session in a fresh process; `None` never recycles.
+                `0` and `1` both run every session in a fresh process; `None` never recycles.
             feed_duration_limit_grace: Seconds beyond `max_feed_duration_secs` on
                 the selected clock (`None` disables). CPU mode uses an independent OS counter.
                 This lets the sandbox raise `TimeoutError` before the worker is killed.
