@@ -83,7 +83,7 @@ jobs:
           save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-codspeed@5.0.1
 
@@ -184,7 +184,7 @@ jobs:
           save-if: ${{ env.SAVE_CI_CACHE }}
 
       - name: Install cargo-codspeed
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-codspeed@5.0.1
 
