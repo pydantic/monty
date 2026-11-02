@@ -484,8 +484,7 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
 - [`MemoryFile`][pydantic_monty.MemoryFile] content written through `OSAccess` lives in the host process, outside
     `max_memory`.
-    `OSAccess` caps what writes can grow it to: `max_file_bytes` (10 MB) per file and `max_total_file_bytes` (50 MB) in
-    total by default (see [write limits](limitations/filesystem.md#write-limits)).
+    `OSAccess` caps what writes can grow it to: `max_total_file_bytes`, 50 MB by default (see [write limits](limitations/filesystem.md#write-limits)).
 
 ## Where the guarantees weaken
 

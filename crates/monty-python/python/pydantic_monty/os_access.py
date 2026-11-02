@@ -79,8 +79,6 @@ OsFunction = Literal[
 
 MAX_URANDOM_BYTES_DEFAULT: int = 1_048_576
 """Default maximum host allocation per `urandom()` call. 1 MiB."""
-MAX_FILE_BYTES_DEFAULT: int = 10_000_000
-"""Default `OSAccess.max_file_bytes`: the largest one `MemoryFile` may grow to."""
 MAX_TOTAL_FILE_BYTES_DEFAULT: int = 50_000_000
 """Default `OSAccess.max_total_file_bytes`: all `MemoryFile` content together."""
 
@@ -1060,7 +1058,6 @@ class OSAccess(AbstractOS):
         files: List of AbstractFile objects registered with this filesystem.
         environ: Dictionary of environment variables accessible via os.getenv().
         max_urandom_bytes: Maximum bytes per host entropy request.
-        max_file_bytes: Largest size, in bytes, a write may grow one `MemoryFile` to.
         max_total_file_bytes: Largest total size, in bytes, writes may grow all `MemoryFile` content to.
     """
 
@@ -1076,7 +1073,6 @@ class OSAccess(AbstractOS):
         root_dir: str | PurePosixPath = '/',
         max_urandom_bytes: int = MAX_URANDOM_BYTES_DEFAULT,
         max_sleep: float | None = 10,
-        max_file_bytes: int | None = MAX_FILE_BYTES_DEFAULT,
         max_total_file_bytes: int | None = MAX_TOTAL_FILE_BYTES_DEFAULT,
     ):
         """Create a virtual filesystem with the given files.
@@ -1094,12 +1090,10 @@ class OSAccess(AbstractOS):
             max_sleep: Longest wait a `time.sleep()` or `asyncio.sleep()` performs,
                 in seconds (default 10); longer sleeps are cut short, `None` waits
                 the full time.
-            max_file_bytes: Largest size, in bytes, a write may grow one `MemoryFile` to
-                (default 10 MB); a larger write raises `OSError` (`EFBIG`). `None` removes the cap.
             max_total_file_bytes: Largest total size, in bytes, of all `MemoryFile` content,
                 initial files included (default 50 MB); a write past it raises `OSError` (`ENOSPC`).
                 `None` removes the cap. Content stored by a `CallbackFile` is not counted.
-                Initial files are not checked against either cap, so content that starts over one
+                Initial files are not checked against the cap, so content that starts over it
                 only blocks writes that would grow it.
 
         Raises:
@@ -1107,9 +1101,9 @@ class OSAccess(AbstractOS):
             ValueError: If a file path conflicts with another file (e.g., trying
                 to create a file inside another file's path), or `max_urandom_bytes` is negative.
                 Also if `max_sleep` is negative or `nan`, either of which would disable the cap,
-                or either file byte cap is negative.
+                or `max_total_file_bytes` is negative.
             TypeError: If `max_urandom_bytes` is not an int (a float `nan` would disable the cap),
-                `max_sleep` is not a number or `None`, or either file byte cap is not an int or `None`.
+                `max_sleep` is not a number or `None`, or `max_total_file_bytes` is not an int or `None`.
         """
         if not isinstance(max_urandom_bytes, int):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise TypeError(f'max_urandom_bytes must be an int, not {type(max_urandom_bytes).__name__}')
@@ -1125,7 +1119,6 @@ class OSAccess(AbstractOS):
             if not max_sleep >= 0:
                 raise ValueError('max_sleep must be non-negative')
         self.max_sleep = max_sleep
-        self.max_file_bytes = _check_byte_cap('max_file_bytes', max_file_bytes)
         self.max_total_file_bytes = _check_byte_cap('max_total_file_bytes', max_total_file_bytes)
         # Initialize tree with root directory - / is always present
         self._tree = {'/': {}}
@@ -1412,17 +1405,15 @@ class OSAccess(AbstractOS):
     def _charge(self, path: PurePosixPath, old_size: int, new_size: int) -> None:
         """Account for a `MemoryFile` (`old_size` 0 for a new one) growing or shrinking to `new_size` bytes.
 
-        Raises `OSError` before anything is written if growth would pass `max_file_bytes`
-        (`EFBIG`) or `max_total_file_bytes` (`ENOSPC`); shrinking is always allowed.
+        Raises `OSError` (`ENOSPC`) before anything is written if growth would pass
+        `max_total_file_bytes`; shrinking is always allowed.
         """
-        if new_size > old_size:
-            if self.max_file_bytes is not None and new_size > self.max_file_bytes:
-                raise OSError(errno.EFBIG, 'File too large', str(path))
-            if (
-                self.max_total_file_bytes is not None
-                and self._memory_bytes + new_size - old_size > self.max_total_file_bytes
-            ):
-                raise OSError(errno.ENOSPC, 'No space left on device', str(path))
+        if (
+            new_size > old_size
+            and self.max_total_file_bytes is not None
+            and self._memory_bytes + new_size - old_size > self.max_total_file_bytes
+        ):
+            raise OSError(errno.ENOSPC, 'No space left on device', str(path))
         self._memory_bytes += new_size - old_size
 
     def _release(self, file: AbstractFile) -> None:

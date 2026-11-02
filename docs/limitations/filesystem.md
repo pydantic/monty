@@ -127,11 +127,10 @@ file into the in-memory overlay, so the existing file bytes count against
 the limit along with the newly appended bytes.
 
 Python's [`OSAccess`][pydantic_monty.OSAccess] caps [`MemoryFile`][pydantic_monty.MemoryFile] content instead.
-A write that would grow one file past `max_file_bytes` (10 MB by default) raises `OSError` with `[Errno 27] File too large`.
 A write that would grow all `MemoryFile` content past `max_total_file_bytes` (50 MB by default, initial files
 included) raises `OSError` with `[Errno 28] No space left on device`.
 Text counts as its UTF-8 size; the file is left unchanged, and deleting or shrinking a file frees its bytes.
-Initial files are not checked against either cap: they count toward the total, so content that starts over a cap only
+Initial files are not checked against the cap: they count toward the total, so content that starts over it only
 blocks writes that would grow it.
 `CallbackFile` content is not counted.
 

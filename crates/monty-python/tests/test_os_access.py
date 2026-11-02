@@ -200,15 +200,13 @@ def test_sleep_override_sees_the_requested_length(monty_run: RunMonty):
     assert waited == snapshot([3600.0])
 
 
-def test_file_byte_caps_default_and_none():
-    fs = OSAccess()
-    assert (fs.max_file_bytes, fs.max_total_file_bytes) == snapshot((10_000_000, 50_000_000))
-    fs = OSAccess(max_file_bytes=None, max_total_file_bytes=None)
+def test_file_byte_cap_default_and_none():
+    assert OSAccess().max_total_file_bytes == snapshot(50_000_000)
+    fs = OSAccess(max_total_file_bytes=None)
     fs.path_write_bytes(P('/big.bin'), b'x' * 60_000_000)
     assert fs.path_stat(P('/big.bin')).st_size == 60_000_000
 
 
-@pytest.mark.parametrize('name', ['max_file_bytes', 'max_total_file_bytes'])
 @pytest.mark.parametrize(
     ('limit', 'error'),
     [
@@ -219,20 +217,20 @@ def test_file_byte_caps_default_and_none():
         ('8', TypeError),
     ],
 )
-def test_file_byte_caps_validation(name: str, limit: Any, error: type[Exception]):
+def test_file_byte_cap_validation(limit: Any, error: type[Exception]):
     with pytest.raises(error) as exc_info:
-        OSAccess(**{name: limit})
+        OSAccess(max_total_file_bytes=limit)
     expected = (
-        f'{name} must be non-negative'
+        'max_total_file_bytes must be non-negative'
         if error is ValueError
-        else f'{name} must be an int or None, not {type(limit).__name__}'
+        else f'max_total_file_bytes must be an int or None, not {type(limit).__name__}'
     )
     assert str(exc_info.value) == expected
 
 
-def test_max_file_bytes(monty_run: RunMonty):
-    """A write growing one file past `max_file_bytes` fails with EFBIG and leaves it unchanged."""
-    fs = OSAccess([MemoryFile('/a.txt', 'start')], max_file_bytes=10)
+def test_rejected_write_leaves_file_unchanged(monty_run: RunMonty):
+    """A write past `max_total_file_bytes` fails with ENOSPC and leaves the file unchanged."""
+    fs = OSAccess([MemoryFile('/a.txt', 'start')], max_total_file_bytes=10)
     code = """
 from pathlib import Path
 p = Path('/a.txt')
@@ -248,19 +246,15 @@ results
     assert monty_run(code, os=fs) == snapshot(
         [
             10,
-            "[Errno 27] File too large: '/a.txt'",
-            "[Errno 27] File too large: '/a.txt'",
-            "[Errno 27] File too large: '/a.txt'",
+            "[Errno 28] No space left on device: '/a.txt'",
+            "[Errno 28] No space left on device: '/a.txt'",
+            "[Errno 28] No space left on device: '/a.txt'",
             '0123456789',
         ]
     )
     with pytest.raises(OSError) as exc_info:
-        fs.path_write_text(P('/new.txt'), 'x' * 11)
-    assert str(exc_info.value) == snapshot("[Errno 27] File too large: '/new.txt'")
-    assert (exc_info.value.errno, exc_info.value.filename) == (errno.EFBIG, '/new.txt')
+        fs.path_write_text(P('/new.txt'), 'x')
     assert not fs.path_exists(P('/new.txt'))
-    with pytest.raises(OSError) as exc_info:
-        OSAccess(max_total_file_bytes=1).path_write_text(P('/new.txt'), 'xx')
     assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/new.txt'")
     assert (exc_info.value.errno, exc_info.value.filename) == (errno.ENOSPC, '/new.txt')
 
@@ -301,20 +295,20 @@ results
     )
 
 
-def test_file_byte_caps_count_encoded_text():
+def test_file_byte_cap_counts_encoded_text():
     """Text counts as its UTF-8 size, matching `stat`; appends are charged before concatenating."""
-    fs = OSAccess([MemoryFile('/a.txt', 'é' * 4)], max_file_bytes=10)
+    fs = OSAccess([MemoryFile('/a.txt', 'é' * 4)], max_total_file_bytes=10)
     assert fs.path_append_text(P('/a.txt'), 'é') == 1
     with pytest.raises(OSError) as exc_info:
         fs.path_append_text(P('/a.txt'), 'é')
-    assert str(exc_info.value) == snapshot("[Errno 27] File too large: '/a.txt'")
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/a.txt'")
     assert fs.path_append_bytes(P('/a.txt'), b'') == 0
     assert fs.path_read_text(P('/a.txt')) == 'é' * 5
 
 
 @pytest.mark.parametrize('remove', ['overwrite', 'unlink', 'rename_over'])
 def test_released_content_is_not_retained(remove: str):
-    """Accounting must not keep old payloads alive, or the host grows past both caps."""
+    """Accounting must not keep old payloads alive, or the host grows past the cap."""
     fs = OSAccess(max_total_file_bytes=2_000_000)
     tracemalloc.start()
     try:
@@ -366,11 +360,11 @@ results
 
 
 def test_initial_content_over_cap_only_blocks_growth():
-    """Initial files are not rejected; content already over a cap can shrink but not grow."""
-    fs = OSAccess([MemoryFile('/a.txt', 'x' * 20)], max_file_bytes=10, max_total_file_bytes=10)
+    """Initial files are not rejected; content already over the cap can shrink but not grow."""
+    fs = OSAccess([MemoryFile('/a.txt', 'x' * 20)], max_total_file_bytes=10)
     with pytest.raises(OSError) as exc_info:
         fs.path_append_text(P('/a.txt'), 'x')
-    assert str(exc_info.value) == snapshot("[Errno 27] File too large: '/a.txt'")
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/a.txt'")
     assert fs.path_write_text(P('/a.txt'), 'x' * 15) == 15
     with pytest.raises(OSError) as exc_info:
         fs.path_write_text(P('/b.txt'), 'y')
@@ -379,11 +373,11 @@ def test_initial_content_over_cap_only_blocks_growth():
     assert fs.path_write_text(P('/b.txt'), 'y' * 6) == 6
 
 
-def test_file_byte_caps_ignore_callback_files():
-    """A `CallbackFile` stores its content itself, so it is outside both caps."""
+def test_file_byte_cap_ignores_callback_files():
+    """A `CallbackFile` stores its content itself, so it is outside the cap."""
     stored: list[str | bytes] = []
     callback = CallbackFile('/cb.txt', read=lambda _: '', write=lambda _, content: stored.append(content))
-    fs = OSAccess([callback], max_file_bytes=1, max_total_file_bytes=1)
+    fs = OSAccess([callback], max_total_file_bytes=1)
     assert fs.path_write_text(P('/cb.txt'), 'x' * 100) == 100
     assert stored == ['x' * 100]
 
