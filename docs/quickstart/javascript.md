@@ -438,8 +438,9 @@ Differences from the native path:
 - **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
     is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
     spawns a cold one.
-    With the default `maxCheckoutsPerWorker`, that means the checkout after each worker's 1000th spawns a cold worker,
-    about 90 ms in Node against under 1 ms for a warm checkout; `null` keeps workers instead.
+    With the default `maxCheckoutsPerWorker` a worker retires after its 1000th checkout, and a later checkout that finds
+    no other idle worker spawns a cold one, about 90 ms in Node against under 1 ms for a warm checkout; `null` keeps
+    workers instead.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

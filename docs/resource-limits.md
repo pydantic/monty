@@ -263,11 +263,15 @@ caps the dump's, so a worker cannot report a looser one.
 
 ## Worker recycling
 
-A pool reuses each worker for later sessions, then kills and replaces it after 1000 checkouts.
+Subprocess and WebAssembly pools reuse each worker for later sessions, then kill and replace it after 1000 checkouts.
 This bounds how long a slow leak or a compromised worker survives.
 Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count; `1` gives every session a
-fresh process, and `None` (`null` in JavaScript) never recycles.
-With `min_processes` above 0 the replacement is spawned in the background, so the next checkout rarely waits for it.
+fresh worker (a fresh process in a subprocess pool), and `None` (`null` in JavaScript) never recycles.
+In a subprocess pool with `min_processes` above 0 the replacement is spawned in the background, so the next checkout
+rarely waits for it.
+The WebAssembly pool spawns a replacement only for a checkout that finds no idle worker (see
+[browsers and WebAssembly](quickstart/javascript.md#browsers-and-webassembly)).
+WebSocket checkouts are single-use connections, so the count does not apply to them.
 
 ## What is not covered
 

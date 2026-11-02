@@ -428,9 +428,11 @@ Two more properties of the subprocess worker boundary matter:
     for what the per-frame budget counts and excludes.
 - **Workers are reused, then recycled.** A worker serves later sessions after a reset, so a compromised worker could
     see them.
-    The pool kills and replaces a worker after 1000 checkouts by default (`max_checkouts_per_worker`,
-    `maxCheckoutsPerWorker` in JavaScript).
-    Set it to 1 to give every session a fresh process when callers do not trust each other.
+    Subprocess and WebAssembly pools kill and replace a worker after 1000 checkouts by default
+    (`max_checkouts_per_worker`, `maxCheckoutsPerWorker` in JavaScript).
+    Set it to 1 to give every session a fresh worker when callers do not trust each other: a fresh process in a
+    subprocess pool, a fresh Web Worker or worker thread in the WebAssembly pool.
+    WebSocket checkouts are single-use connections, so the count does not apply to them.
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.
