@@ -580,6 +580,103 @@ ext_fn(0)
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
+/// Live `typing.Literal` and `typing.Annotated` aliases on the heap survive a
+/// round-trip with their arguments intact — the only coverage that carries
+/// `HeapData::TypingAlias` through the dump codec.
+#[test]
+fn run_progress_round_trip_preserves_typing_aliases() {
+    let code = r"
+from typing import Annotated, Literal
+Choice = Literal['a', 'b']
+Count = Annotated[int, 'positive']
+ext_fn(0)
+[repr(Choice), Choice.__args__, Choice == Literal['b', 'a'], repr(Count), Count.__metadata__, Count('3'), Count.__origin__]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with both aliases built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::list([
+        MontyObject::string("typing.Literal['a', 'b']".to_owned()),
+        MontyObject::tuple([MontyObject::string("a".to_owned()), MontyObject::string("b".to_owned())]),
+        MontyObject::bool(true),
+        MontyObject::string("typing.Annotated[int, 'positive']".to_owned()),
+        MontyObject::tuple([MontyObject::string("positive".to_owned())]),
+        MontyObject::int(3),
+        MontyObject::type_object(MontyType::Int),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
+/// A live `TypeAdapter` on the heap survives a round-trip with its arena intact:
+/// the literal choices, the dataclass it validates and its field defaults.
+#[test]
+fn run_progress_round_trip_preserves_type_adapter() {
+    let code = r"
+from dataclasses import dataclass, field
+from typing import Literal
+from pydantic import TypeAdapter, ValidationError
+
+@dataclass
+class Foo:
+    x: int
+    tags: list[Literal['a', 'b']] = field(default_factory=list)
+
+adapter = TypeAdapter(list[Foo])
+ext_fn(0)
+try:
+    adapter.validate_python([{'x': 1, 'tags': ['c']}])
+except ValidationError as exc:
+    error = exc.errors(include_url=False)[0]
+[repr(adapter), adapter.validate_python([{'x': '1'}]) == [Foo(1)], error['loc'], error['msg']]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with the adapter built and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::list([
+        MontyObject::string("TypeAdapter(list[Foo])".to_owned()),
+        MontyObject::bool(true),
+        MontyObject::tuple([
+            MontyObject::int(0),
+            MontyObject::string("tags".to_owned()),
+            MontyObject::int(0),
+        ]),
+        MontyObject::string("Input should be 'a' or 'b'".to_owned()),
+    ]);
+
+    // Both are resumed for the reason given in the itertools round-trip above.
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
 /// A live `typing.Union` on the heap survives a round-trip with its members
 /// intact — the only coverage that carries `HeapData::Union` through the dump codec.
 #[test]

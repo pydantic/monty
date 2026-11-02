@@ -35,6 +35,7 @@ pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod os_path;
 pub(crate) mod pathlib;
+pub(crate) mod pydantic;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sys;
@@ -104,6 +105,10 @@ pub(crate) enum StandardLib {
     Decimal,
     /// The `fnmatch` module: shell-style pattern matching.
     Fnmatch,
+    /// The `pydantic` module: `TypeAdapter`, `Field`, `ConfigDict` and `ValidationError`.
+    Pydantic,
+    /// The `pydantic.dataclasses` module: the validating `dataclass` decorator.
+    PydanticDataclasses,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -141,6 +146,8 @@ impl StandardLib {
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Pydantic => Some(Self::Pydantic),
+            StaticStrings::PydanticDataclasses => Some(Self::PydanticDataclasses),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -150,9 +157,14 @@ impl StandardLib {
     /// The import names of every built-in module (`os.path` included), so a
     /// host can keep its own module names clear of them.
     pub fn names() -> impl Iterator<Item = &'static str> {
+        Self::static_names().map(<&'static str>::from)
+    }
+
+    /// The same names as interned strings, for `sys.builtin_module_names`.
+    pub(crate) fn static_names() -> impl Iterator<Item = StaticStrings> {
         (0..)
             .map_while(StaticStrings::from_repr)
-            .filter_map(|name| Self::from_static(name).map(|_| <&'static str>::from(name)))
+            .filter(|name| Self::from_static(*name).is_some())
     }
 
     /// Creates a new instance of this module on the heap.
@@ -184,6 +196,8 @@ impl StandardLib {
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Pydantic => pydantic::create_module(vm),
+            Self::PydanticDataclasses => pydantic::dataclasses::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -221,6 +235,7 @@ pub(crate) enum ModuleFunctions {
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
     Typing(typing::TypingFunctions),
+    Pydantic(pydantic::PydanticFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -261,6 +276,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Decimal(func) => write!(f, "{func}"),
             Self::Fnmatch(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
+            Self::Pydantic(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -300,6 +316,7 @@ impl ModuleFunctions {
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
+            Self::Pydantic(functions) => pydantic::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

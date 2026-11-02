@@ -633,6 +633,10 @@ impl<'a> ObjectRef<'a> {
             MontyNode::Tuple(ids) => {
                 pieces.push(Text("("));
                 push_repr_items(&mut pieces, ids);
+                // Python writes `(1,)` so a one-item tuple reads back as a tuple.
+                if ids.len() == 1 {
+                    pieces.push(Text(","));
+                }
                 pieces.push(Text(")"));
             }
             MontyNode::NamedTuple {

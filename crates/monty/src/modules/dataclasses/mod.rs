@@ -17,8 +17,8 @@ pub(crate) use self::{
     field::DataclassField,
     legacy::{LEGACY_DUMP_VERSION, upgrade_legacy_classes},
     method::{
-        DataclassMethod, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error, generated_fields,
-        is_generated_init, run_init,
+        DataclassMethod, assign_fields, dataclass_eq, dataclass_hash, dataclass_repr_fmt, frozen_assignment_error,
+        generated_fields, is_generated_init, run_init,
     },
     options::{DataclassOptions, DataclassParams},
 };
@@ -245,7 +245,7 @@ struct ConfiguredArgs {
 /// Ownership of `cls` passes straight through to the return value, so no extra
 /// refcount work is needed on the happy path; the guard releases it on every
 /// path that rejects the class instead.
-fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> RunResult<Value> {
+pub(crate) fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> RunResult<Value> {
     let mut guard = DropGuard::new(cls, vm);
     let (cls, vm) = guard.as_parts();
     // Read once and pass the handle down: everything below then works from a
@@ -270,6 +270,22 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     install_generated_methods(*class_id, &class, fields_id, options, &mut Installer::Decorate(vm))?;
     store_match_args(&class, fields_id, vm)?;
     Ok(guard.into_inner())
+}
+
+/// Replaces a decorated class's `__init__` with `pydantic.dataclasses`' validating
+/// one, which reads the class's `__pydantic_validator__` at each construction.
+pub(crate) fn install_validated_init(
+    class_id: HeapId,
+    frozen: bool,
+    post_init: bool,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    let HeapReadOutput::Class(class) = vm.heap.read(class_id) else {
+        unreachable!("apply_dataclass checked the class")
+    };
+    let class_name = class.get(vm.heap).name().as_str(vm.interns).to_owned();
+    let init = DataclassMethod::new(class_name, MethodKind::ValidatedInit { frozen, post_init });
+    Installer::Decorate(vm).set_method(&class, init)
 }
 
 /// `dataclass()` applied to something that is not a class.

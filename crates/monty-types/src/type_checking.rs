@@ -212,6 +212,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "os",
     "pathlib",
     "posixpath",
+    "pydantic",
     "random",
     "re",
     "sys",

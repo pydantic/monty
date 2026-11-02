@@ -116,6 +116,25 @@ pub(crate) struct Signature {
     bind_mode: OnceCell<BindMode>,
 }
 
+/// One parameter of a [`Signature`], as [`Signature::parameters`] lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Parameter {
+    pub(crate) name: StringId,
+    pub(crate) kind: ParameterKind,
+    /// Where the parameter's default sits in the function's defaults array, if it has one.
+    pub(crate) default_index: Option<usize>,
+}
+
+/// How a parameter is passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum ParameterKind {
+    PositionalOnly,
+    PositionalOrKeyword,
+    VarArgs,
+    KeywordOnly,
+    VarKwargs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BindMode {
     /// If this is a simple signature (no defaults, no *args/**kwargs).
@@ -628,6 +647,61 @@ impl Signature {
     /// Returns the number of keyword-only parameters.
     fn kwarg_count(&self) -> usize {
         self.kwargs.as_ref().map_or(0, Vec::len)
+    }
+
+    /// Every parameter in declaration order with its kind and, when it has a
+    /// default, the index of that default in the function's defaults array.
+    ///
+    /// For `pydantic.validate_call`, which binds a call itself to report
+    /// pydantic's errors rather than CPython's `TypeError`s.
+    pub(crate) fn parameters(&self) -> Vec<Parameter> {
+        let mut params = Vec::with_capacity(self.total_slots());
+        let pos_args = self.pos_args.as_deref().unwrap_or_default();
+        let pos_required = pos_args.len() - self.pos_defaults_count;
+        for (index, name) in pos_args.iter().enumerate() {
+            params.push(Parameter {
+                name: *name,
+                kind: ParameterKind::PositionalOnly,
+                default_index: index.checked_sub(pos_required),
+            });
+        }
+        let args = self.args.as_deref().unwrap_or_default();
+        let arg_required = args.len() - self.arg_defaults_count;
+        for (index, name) in args.iter().enumerate() {
+            params.push(Parameter {
+                name: *name,
+                kind: ParameterKind::PositionalOrKeyword,
+                default_index: index.checked_sub(arg_required).map(|i| i + self.pos_defaults_count),
+            });
+        }
+        if let Some(name) = self.var_args {
+            params.push(Parameter {
+                name,
+                kind: ParameterKind::VarArgs,
+                default_index: None,
+            });
+        }
+        let kwarg_defaults_start = self.pos_defaults_count + self.arg_defaults_count;
+        let default_map = self.kwarg_default_map.as_deref().unwrap_or_default();
+        for (index, name) in self.kwargs.as_deref().unwrap_or_default().iter().enumerate() {
+            params.push(Parameter {
+                name: *name,
+                kind: ParameterKind::KeywordOnly,
+                default_index: default_map
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|i| i + kwarg_defaults_start),
+            });
+        }
+        if let Some(name) = self.var_kwargs {
+            params.push(Parameter {
+                name,
+                kind: ParameterKind::VarKwargs,
+                default_index: None,
+            });
+        }
+        params
     }
 
     /// Returns parameter names in the slot order filled by `bind`:

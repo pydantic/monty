@@ -1,11 +1,12 @@
 # Standard library modules
 
-Monty provides a fixed set of stdlib modules.
+Monty provides a fixed set of stdlib modules, plus its own `pydantic` (see [pydantic.md](pydantic.md)),
+the one bundled module that is not part of CPython's standard library.
 Other imports ask the host, which answers with a [host module](#host-modules) or the module's
 [`.py` file](#modules-from-files) from the working directory, and raise `ModuleNotFoundError` if it has neither.
 There is no `sys.path` or site-packages.
 
-`os.path` (also importable as `posixpath`) is the only submodule.
+`os.path` (also importable as `posixpath`) and `pydantic.dataclasses` are the only submodules.
 
 Every bundled import builds a fresh module object; there is no `sys.modules` cache, except for
 [modules from files](#modules-from-files).
@@ -19,35 +20,37 @@ in the next feed, and after a dump (see [random.md](random.md)).
 
 ## Modules available
 
-| Module        | See                              |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `decimal`     | [decimal.md](decimal.md)         |
-| `fnmatch`     | [fnmatch.md](fnmatch.md)         |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
+| Module                 | See                              |
+| ---------------------- | -------------------------------- |
+| `asyncio`              | [asyncio.md](asyncio.md)         |
+| `base64`               | [base64.md](base64.md)           |
+| `binascii`             | [base64.md](base64.md)           |
+| `bisect`               | [bisect.md](bisect.md)           |
+| `collections`          | [collections.md](collections.md) |
+| `copy`                 | [copy.md](copy.md)               |
+| `csv`                  | [csv.md](csv.md)                 |
+| `dataclasses`          | [dataclasses.md](dataclasses.md) |
+| `datetime`             | [datetime.md](datetime.md)       |
+| `decimal`              | [decimal.md](decimal.md)         |
+| `fnmatch`              | [fnmatch.md](fnmatch.md)         |
+| `functools`            | [functools.md](functools.md)     |
+| `hashlib`              | [hashlib.md](hashlib.md)         |
+| `itertools`            | [itertools.md](itertools.md)     |
+| `json`                 | [json.md](json.md)               |
+| `math`                 | [math.md](math.md)               |
+| `os`                   | [os.md](os.md)                   |
+| `os.path`              | [os.md](os.md)                   |
+| `pathlib`              | [pathlib.md](pathlib.md)         |
+| `pydantic`             | [pydantic.md](pydantic.md)       |
+| `pydantic.dataclasses` | [pydantic.md](pydantic.md)       |
+| `posixpath`            | [os.md](os.md)                   |
+| `random`               | [random.md](random.md)           |
+| `re`                   | [re.md](re.md)                   |
+| `sys`                  | [sys.md](sys.md)                 |
+| `time`                 | [time.md](time.md)               |
+| `tomllib`              | [tomllib.md](tomllib.md)         |
+| `typing`               | [typing.md](typing.md)           |
+| `unicodedata`          | [unicodedata.md](unicodedata.md) |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`

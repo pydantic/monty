@@ -18,6 +18,7 @@ fn reads_every_key() {
 # /// monty
 # call-external = true
 # xfail = ['monty', 'cpython']
+# cpython-main-module = true
 # gc-interval = 200
 # timezone = 'Europe/London'  # trailing comment
 #
@@ -32,6 +33,7 @@ x = 1
         header,
         Header {
             call_external: true,
+            cpython_main_module: true,
             xfail: vec![Interpreter::Monty, Interpreter::Cpython],
             gc_interval: Some(200),
             timezone: Some("Europe/London".to_owned()),

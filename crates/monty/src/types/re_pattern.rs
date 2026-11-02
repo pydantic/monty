@@ -121,6 +121,11 @@ impl RePattern {
         })
     }
 
+    /// The source text the pattern was compiled from.
+    pub(crate) fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
     /// True when this was compiled from exactly `(pattern, flags)`.
     ///
     /// Lets the `re` module's pattern cache confirm a slot on a hash hit without
@@ -183,6 +188,11 @@ impl RePattern {
     fn build_match(&self, caps: &fancy_regex::Captures<'_>, subject: &Value, all_ascii: bool, heap: &Heap) -> Value {
         let m = ReMatch::from_captures(caps, subject.clone_with_heap(heap), all_ascii, &self.compiled);
         Value::Ref(heap.allocate(HeapData::ReMatch(Box::new(m))))
+    }
+
+    /// Whether the pattern matches anywhere in `text`, without building a match object.
+    pub(crate) fn is_match(&self, text: &str) -> RunResult<bool> {
+        self.compiled.is_match(text).map_err(ExcType::re_pattern_error)
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.

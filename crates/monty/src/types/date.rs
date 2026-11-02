@@ -11,7 +11,7 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
-use monty_types::{OsFunctionCall, ResourceTracker};
+use monty_types::{MontyDate, OsFunctionCall, ResourceTracker};
 
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
@@ -123,6 +123,17 @@ pub(crate) fn to_ordinal(date: Date) -> i32 {
 #[must_use]
 pub(crate) fn to_ymd(date: Date) -> (i32, u32, u32) {
     (date.0.year(), date.0.month(), date.0.day())
+}
+
+/// The host-value form of a date.
+#[must_use]
+pub(crate) fn to_monty_date(date: Date) -> MontyDate {
+    let (year, month, day) = to_ymd(date);
+    MontyDate {
+        year,
+        month: u8::try_from(month).expect("month is always 1..=12"),
+        day: u8::try_from(day).expect("day is always 1..=31"),
+    }
 }
 
 /// Constructor for `date(year, month, day)`.

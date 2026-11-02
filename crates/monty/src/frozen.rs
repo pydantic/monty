@@ -13,7 +13,7 @@ use crate::{
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
-    modules::{functools, typing},
+    modules::{functools, pydantic::validate_call, typing},
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
@@ -39,6 +39,9 @@ pub(crate) enum FrozenFunction {
     /// Evaluate stringized annotations for `typing.get_type_hints`.
     #[serde(rename = "typing.get_type_hints")]
     TypingGetTypeHints,
+    /// Call the function `pydantic.validate_call` wraps, then check its result.
+    #[serde(rename = "pydantic.validate_call")]
+    PydanticValidateCall,
 }
 
 impl FrozenFunction {
@@ -77,6 +80,7 @@ impl FrozenFunction {
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
             Self::TypingGetTypeHints => typing::GET_TYPE_HINTS_SOURCE,
+            Self::PydanticValidateCall => validate_call::VALIDATE_CALL_SOURCE,
         }
     }
 }
@@ -94,6 +98,8 @@ pub(crate) enum FrozenFunctions {
     Store,
     /// Check the result returned by a user `__iter__` method.
     ValidateIterator,
+    /// Validate a wrapped function's return value for `pydantic.validate_call`.
+    ValidateReturn,
 }
 
 /// Dispatches private helpers using the same argument ownership rules as public natives.
@@ -103,5 +109,6 @@ pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut V
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),
+        FrozenFunctions::ValidateReturn => validate_call::call_validate_return(args, vm).map(CallResult::Value),
     }
 }

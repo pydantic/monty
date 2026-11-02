@@ -40,7 +40,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
     directory instead, see [modules from files](modules.md#modules-from-files)
 - Starred unpacking everywhere CPython allows it
-- Runtime generic aliases (`list[int]`) and `|` unions (`int | None`), see [typing.md](typing.md)
+- Runtime generic aliases (`list[int]`), `|` unions (`int | None`), `Literal[...]` and `Annotated[...]`,
+    see [typing.md](typing.md)
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
@@ -71,35 +72,37 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 The following modules are present:
 
-| Module        | Divergences                      |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `decimal`     | [decimal.md](decimal.md)         |
-| `fnmatch`     | [fnmatch.md](fnmatch.md)         |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
+| Module                 | Divergences                      |
+| ---------------------- | -------------------------------- |
+| `asyncio`              | [asyncio.md](asyncio.md)         |
+| `base64`               | [base64.md](base64.md)           |
+| `binascii`             | [base64.md](base64.md)           |
+| `bisect`               | [bisect.md](bisect.md)           |
+| `collections`          | [collections.md](collections.md) |
+| `copy`                 | [copy.md](copy.md)               |
+| `csv`                  | [csv.md](csv.md)                 |
+| `dataclasses`          | [dataclasses.md](dataclasses.md) |
+| `datetime`             | [datetime.md](datetime.md)       |
+| `decimal`              | [decimal.md](decimal.md)         |
+| `fnmatch`              | [fnmatch.md](fnmatch.md)         |
+| `functools`            | [functools.md](functools.md)     |
+| `hashlib`              | [hashlib.md](hashlib.md)         |
+| `itertools`            | [itertools.md](itertools.md)     |
+| `json`                 | [json.md](json.md)               |
+| `math`                 | [math.md](math.md)               |
+| `os`                   | [os.md](os.md)                   |
+| `os.path`              | [os.md](os.md)                   |
+| `pathlib`              | [pathlib.md](pathlib.md)         |
+| `pydantic`             | [pydantic.md](pydantic.md)       |
+| `pydantic.dataclasses` | [pydantic.md](pydantic.md)       |
+| `posixpath`            | [os.md](os.md)                   |
+| `random`               | [random.md](random.md)           |
+| `re`                   | [re.md](re.md)                   |
+| `sys`                  | [sys.md](sys.md)                 |
+| `time`                 | [time.md](time.md)               |
+| `tomllib`              | [tomllib.md](tomllib.md)         |
+| `typing`               | [typing.md](typing.md)           |
+| `unicodedata`          | [unicodedata.md](unicodedata.md) |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
 `hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every

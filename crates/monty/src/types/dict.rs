@@ -574,6 +574,33 @@ impl Dict {
     pub fn set_without_growth_check(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         vm.heap.protect_mut(self).set_without_growth_check(key, value, vm)
     }
+
+    /// Appends an interned-string key the dict is known not to hold, skipping the
+    /// probe [`Dict::set`] makes: for filling an object's attributes from a field
+    /// list, whose names are distinct. A key already present would be stored twice
+    /// and found once, so the caller must guarantee its absence.
+    pub(crate) fn set_new_interned(&mut self, key: StringId, value: Value, vm: &mut VM<'_>) -> RunResult<()> {
+        debug_assert!(
+            self.get_by_str(vm.interns.get_str(key), vm.heap, vm.interns).is_none(),
+            "set_new_interned on a key the dict holds"
+        );
+        self.contains_refs |= matches!(value, Value::Ref(_));
+        let entry = DictEntry {
+            key: Value::InternString(key),
+            value,
+            hash: vm.interns.str_hash(key).raw(),
+        };
+        match self.table.check_growth(&vm.heap.tracker) {
+            Ok(()) => {
+                self.table.push(entry);
+                Ok(())
+            }
+            Err(err) => {
+                entry.drop_with(vm);
+                Err(err.into())
+            }
+        }
+    }
 }
 
 impl<'h> HeapReadMut<'h, Dict> {

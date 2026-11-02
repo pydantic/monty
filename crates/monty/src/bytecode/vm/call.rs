@@ -1149,7 +1149,10 @@ impl<'h> VM<'h> {
             Value::DefFunction(_) => true,
             Value::Ref(id) => matches!(
                 self.heap.get(*id),
-                HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::DataclassMethod(_)
+                HeapData::Closure(_)
+                    | HeapData::FunctionDefaults(_)
+                    | HeapData::DataclassMethod(_)
+                    | HeapData::ValidateCall(_)
             ),
             _ => false,
         }

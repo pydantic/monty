@@ -166,6 +166,14 @@ macro_rules! heap_payloads {
             GenericAlias(inline $crate::types::GenericAlias),
             /// A `typing.Union` such as `int | None`.
             Union(inline $crate::types::Union),
+            /// A `typing.Literal[...]` or `typing.Annotated[...]`.
+            TypingAlias(inline $crate::types::TypingAlias),
+            /// A `pydantic.TypeAdapter` and its validator arena.
+            TypeAdapter(boxed $crate::types::TypeAdapter),
+            /// What `pydantic.Field(...)` returns.
+            FieldInfo(boxed $crate::types::FieldInfo),
+            /// The function `pydantic.validate_call` wraps a function in.
+            ValidateCall(boxed $crate::types::ValidateCall),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -272,6 +280,10 @@ impl HeapData {
             | Self::Partial(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::TypingAlias(_)
+            | Self::TypeAdapter(_)
+            | Self::FieldInfo(_)
+            | Self::ValidateCall(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -326,6 +338,7 @@ impl HeapData {
                 | Self::ExtFunction(_)
                 | Self::Partial(_)
                 | Self::GenericAlias(_)
+                | Self::TypingAlias(_)
                 | Self::LruCache(_)
         )
     }
@@ -350,6 +363,11 @@ impl HeapData {
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
+            Self::TypingAlias(alias) => alias.py_type(),
+            Self::TypeAdapter(_) => Type::TypeAdapter,
+            Self::FieldInfo(_) => Type::FieldInfo,
+            // pydantic's wrapper is a plain function to Python.
+            Self::ValidateCall(_) => Type::Function,
             Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
@@ -713,6 +731,10 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
+            Self::TypingAlias($value) => $body,
+            Self::TypeAdapter($value) => $body,
+            Self::FieldInfo($value) => $body,
+            Self::ValidateCall($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
@@ -1013,6 +1035,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::HashObject(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::TypingAlias(_)
+            | Self::TypeAdapter(_)
+            | Self::FieldInfo(_)
+            | Self::ValidateCall(_)
             | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)
