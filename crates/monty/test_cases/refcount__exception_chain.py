@@ -30,6 +30,8 @@ def deep():
 try:
     deep()
 except TypeError as exc:
+    outer = exc
     kept = exc.__cause__.__context__
 assert str(kept) == 'first'
-# ref-counts={'kept': 1}
+assert outer.__cause__.__context__ is kept
+# ref-counts={'outer': 1, 'kept': 2}

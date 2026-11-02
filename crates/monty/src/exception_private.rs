@@ -2636,44 +2636,6 @@ pub(crate) struct ExceptionChain {
     suppress_context: bool,
 }
 
-impl SimpleException {
-    /// The `__cause__`, borrowed.
-    pub(crate) fn cause(&self) -> Option<HeapId> {
-        self.chain.as_ref().and_then(|chain| chain.cause)
-    }
-
-    /// The `__context__`, borrowed.
-    pub(crate) fn context(&self) -> Option<HeapId> {
-        self.chain.as_ref().and_then(|chain| chain.context)
-    }
-
-    /// `__suppress_context__`: whether this exception was raised with `from`.
-    pub(crate) fn suppress_context(&self) -> bool {
-        self.chain.as_ref().is_some_and(|chain| chain.suppress_context)
-    }
-
-    /// Replaces the cause with an owned reference and sets `__suppress_context__`,
-    /// returning the previous owned cause for the caller to release.
-    pub(crate) fn set_cause(&mut self, cause: Option<HeapId>) -> Option<HeapId> {
-        let chain = self.chain.get_or_insert_default();
-        chain.suppress_context = true;
-        mem::replace(&mut chain.cause, cause)
-    }
-
-    /// Replaces the context with an owned reference, returning the previous owned
-    /// context for the caller to release.
-    pub(crate) fn set_context(&mut self, context: Option<HeapId>) -> Option<HeapId> {
-        mem::replace(&mut self.chain.get_or_insert_default().context, context)
-    }
-
-    /// Both owned chain references, for `py_dec_ref_ids`.
-    pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> {
-        self.chain
-            .iter()
-            .flat_map(|chain| chain.cause.into_iter().chain(chain.context))
-    }
-}
-
 impl fmt::Display for SimpleException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.py_repr_fmt(f)
@@ -2751,15 +2713,43 @@ impl SimpleException {
             (_, None) => String::new(),
         }
     }
-}
 
-impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    /// The `__cause__`, borrowed.
+    pub(crate) fn cause(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.cause)
     }
-}
 
-impl SimpleException {
+    /// The `__context__`, borrowed.
+    pub(crate) fn context(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.context)
+    }
+
+    /// `__suppress_context__`: whether this exception was raised with `from`.
+    pub(crate) fn suppress_context(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| chain.suppress_context)
+    }
+
+    /// Replaces the cause with an owned reference and sets `__suppress_context__`,
+    /// returning the previous owned cause for the caller to release.
+    pub(crate) fn set_cause(&mut self, cause: Option<HeapId>) -> Option<HeapId> {
+        let chain = self.chain.get_or_insert_default();
+        chain.suppress_context = true;
+        mem::replace(&mut chain.cause, cause)
+    }
+
+    /// Replaces the context with an owned reference, returning the previous owned
+    /// context for the caller to release.
+    pub(crate) fn set_context(&mut self, context: Option<HeapId>) -> Option<HeapId> {
+        mem::replace(&mut self.chain.get_or_insert_default().context, context)
+    }
+
+    /// Both owned chain references, for `py_dec_ref_ids`.
+    pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> {
+        self.chain
+            .iter()
+            .flat_map(|chain| chain.cause.into_iter().chain(chain.context))
+    }
+
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         let type_str: &'static str = self.exc_type.into();
@@ -2796,6 +2786,10 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
+        Type::Exception(self.get(vm.heap).exc_type)
+    }
+
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
     /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
     /// for all other attributes.
