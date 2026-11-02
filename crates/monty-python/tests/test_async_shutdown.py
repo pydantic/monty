@@ -176,3 +176,89 @@ print('pending', flush=True)
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == 'pending\nreentrant rejected\nreleased\n', result.stderr
+
+
+def test_shutdown_racing_with_future_creation_rejects_the_call():
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-X',
+            'faulthandler',
+            '-c',
+            """
+import atexit
+import asyncio
+import threading
+import time
+
+original_register = atexit.register
+hooks = []
+def register(function, *args, **kwargs):
+    if function.__name__ == 'drain_deliveries':
+        hooks.append(function)
+    return original_register(function, *args, **kwargs)
+atexit.register = register
+from pydantic_monty import AsyncMonty
+atexit.register = original_register
+assert len(hooks) == 1
+
+entered = threading.Event()
+release = threading.Event()
+outcome = []
+
+def create_bridge():
+    loop = asyncio.new_event_loop()
+    original_create = loop.create_future
+    def paused_create():
+        entered.set()
+        assert release.wait(10)
+        return original_create()
+    loop.create_future = paused_create
+    async def run():
+        try:
+            AsyncMonty().__aenter__()
+        except RuntimeError as error:
+            outcome.append(str(error))
+        else:
+            outcome.append('returned an unresolved future')
+    try:
+        loop.run_until_complete(run())
+    finally:
+        loop.close()
+
+creator = threading.Thread(target=create_bridge)
+creator.start()
+assert entered.wait(10)
+drainer = threading.Thread(target=hooks[0])
+drainer.start()
+
+async def wait_until_closed():
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            future = AsyncMonty().__aenter__()
+        except RuntimeError as error:
+            assert 'Monty async runtime is shutting down' in str(error)
+            return
+        future.cancel()
+        await asyncio.sleep(0)
+    raise AssertionError('shutdown did not close admission')
+
+try:
+    # Observe closed admission before allowing the paused call to reach spawn.
+    asyncio.run(wait_until_closed())
+finally:
+    release.set()
+creator.join(10)
+drainer.join(10)
+assert not creator.is_alive() and not drainer.is_alive()
+assert outcome == ['Monty async runtime is shutting down'], outcome
+print('rejected', flush=True)
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=40,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'rejected\n', result.stderr

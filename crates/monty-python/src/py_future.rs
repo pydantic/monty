@@ -3,7 +3,7 @@
 //! `call_soon_threadsafe` releases the GIL while waking the loop. Python can finish
 //! and start finalizing before the delivery thread regains the GIL; older CPython
 //! versions then terminate that thread while it still owns Python objects.
-//! Track both pending bridge tasks and blocking deliveries. Before finalization,
+//! Track bridge creation, pending tasks and blocking deliveries. Before finalization,
 //! an `atexit` hook cancels pending tasks and drains their Python references along
 //! with admitted deliveries. Later bridge calls fail instead of returning an unresolved future.
 //! Admission stays closed: PyO3 does not support loading this extension in another
@@ -39,12 +39,18 @@ where
     F: Future<Output = PyResult<T>> + Send + 'static,
     T: for<'a> IntoPyObject<'a> + Send + 'static,
 {
-    // This check runs with the GIL held, as does the Python shutdown hook.
-    // An earlier-registered atexit handler must get an error, never a hanging future.
+    // Event-loop methods can release the GIL while the bridge is being created.
+    // Keep its Python references registered even if shutdown rejects its spawn.
+    let _creation = DELIVERIES
+        .begin()
+        .ok_or_else(|| PyRuntimeError::new_err("Monty async runtime is shutting down"))?;
+    let future = generic::future_into_py::<DrainingRuntime, _, _>(py, future)?;
+    // A rejected spawn returns no error through the upstream Runtime trait.
+    // Detect shutdown here instead of returning a future that cannot complete.
     if DELIVERIES.lock().closing {
         return Err(PyRuntimeError::new_err("Monty async runtime is shutting down"));
     }
-    generic::future_into_py::<DrainingRuntime, _, _>(py, future)
+    Ok(future)
 }
 
 /// Coroutine conversion must read the same task locals that the result bridge scopes.
@@ -172,7 +178,7 @@ impl Default for Deliveries {
 
 #[derive(Default)]
 struct DeliveryState {
-    /// Pending async tasks and queued/running deliveries still owning Python references.
+    /// Bridge creation, pending tasks and deliveries still owning Python references.
     in_flight: usize,
     /// Permanent admission barrier for this process; reopening would race finalization.
     closing: bool,
