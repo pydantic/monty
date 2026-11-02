@@ -45,7 +45,6 @@ use pyo3::{
     sync::PyOnceLock,
     types::{PyBytes, PyDict, PyTuple},
 };
-use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::{sync::Mutex, task::JoinSet};
 
 #[cfg(test)]
@@ -68,6 +67,7 @@ use crate::{
         dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
+    py_future::future_into_py,
     telemetry::{capture_otel_context, snapshot_trace_context},
 };
 

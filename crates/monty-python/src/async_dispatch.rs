@@ -15,14 +15,17 @@ use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
-use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
+use pyo3_async_runtimes::into_future_with_locals;
 use tokio::{
     task::{JoinError, JoinSet},
     time::sleep,
 };
 
-use crate::external::{
-    AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
+use crate::{
+    external::{
+        AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
+    },
+    py_future::get_current_locals,
 };
 
 /// Answers an intercepted OS call (see
