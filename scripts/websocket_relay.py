@@ -55,6 +55,7 @@ async def bridge_connection(
     frame is length-prefixed on stdio, so the only work is adding/stripping the
     prefix.
     """
+    validate_limits(max_message_bytes)
     child = await asyncio.create_subprocess_exec(
         monty_bin,
         'subprocess',
@@ -117,6 +118,7 @@ async def serve_relay(
 ) -> None:
     """Serves the relay until cancelled, printing the bound `ws://` URL once up."""
 
+    validate_limits(max_message_bytes, max_sessions)
     active = 0
 
     async def handler(websocket: ServerConnection) -> None:
@@ -168,6 +170,14 @@ def positive_int(value: str) -> int:
     return number
 
 
+def validate_limits(max_message_bytes: int, max_sessions: int | None = None) -> None:
+    """Refuse invalid bounds before opening a listener or spawning a worker."""
+    if not 1 <= max_message_bytes <= MAX_MESSAGE_BYTES:
+        raise ValueError(f'message limit must be between 1 and {MAX_MESSAGE_BYTES} bytes')
+    if max_sessions is not None and max_sessions <= 0:
+        raise ValueError('session limit must be a positive integer')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Bridge WebSocket connections to monty subprocess children.')
     parser.add_argument('--host', default='127.0.0.1')
@@ -181,6 +191,10 @@ def main() -> None:
     )
     parser.add_argument('--max-sessions', type=positive_int, default=None, help='concurrent children (default: no cap)')
     args = parser.parse_args()
+    try:
+        validate_limits(args.max_message_bytes, args.max_sessions)
+    except ValueError as error:
+        parser.error(str(error))
     try:
         asyncio.run(
             serve_relay(

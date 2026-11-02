@@ -176,6 +176,7 @@ uv run scripts/websocket_relay.py --monty-bin /path/to/monty --max-sessions 8
 The script prints its WebSocket URL to stdout.
 `--port 0` selects an ephemeral port.
 `--max-message-bytes` bounds messages in both directions and defaults to the protocol's 256 MiB ceiling.
+The message limit must be positive and cannot exceed that ceiling.
 An excess session closes with WebSocket status `1013`; an oversized message closes with status `1009`.
 The relay reaps a session's subprocess when either transport direction ends.
 Use the server and worker deployment above when you need persistence, server-side limits or drain.

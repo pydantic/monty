@@ -353,6 +353,47 @@ async def test_relay_rejects_nonpositive_limits_at_startup():
     )
 
 
+async def test_relay_rejects_limits_above_the_protocol_ceiling_at_startup():
+    """An override cannot make the relay buffer an invalid protocol-sized message."""
+    relay = _load_relay_script()
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(_RELAY_SCRIPT),
+        '--max-message-bytes',
+        str(relay.MAX_MESSAGE_BYTES + 1),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 2
+    assert stdout == b''
+    assert stderr.decode().splitlines()[-1] == snapshot(
+        'websocket_relay.py: error: message limit must be between 1 and 268435456 bytes'
+    )
+
+
+async def test_relay_direct_calls_validate_before_acquiring_resources(monkeypatch: pytest.MonkeyPatch):
+    """Invalid direct-call bounds cannot create a listener or subprocess."""
+    relay = _load_relay_script()
+
+    def unexpected_listener(*_args: Any, **_kwargs: Any):
+        pytest.fail('invalid configuration opened a listener')
+
+    async def unexpected_worker(*_args: Any, **_kwargs: Any):
+        pytest.fail('invalid configuration spawned a worker')
+
+    monkeypatch.setattr(relay, 'serve', unexpected_listener)
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', unexpected_worker)
+    for limit in (0, -1, relay.MAX_MESSAGE_BYTES + 1):
+        with pytest.raises(ValueError, match='^message limit must be between 1 and 268435456 bytes$'):
+            await relay.serve_relay('127.0.0.1', 0, 'unused', max_message_bytes=limit)
+        with pytest.raises(ValueError, match='^message limit must be between 1 and 268435456 bytes$'):
+            await relay.bridge_connection(None, 'unused', max_message_bytes=limit)
+    for sessions in (0, -1):
+        with pytest.raises(ValueError, match='^session limit must be a positive integer$'):
+            await relay.serve_relay('127.0.0.1', 0, 'unused', max_sessions=sessions)
+
+
 async def test_inputs_and_async_external_function_over_websocket(ws_url: str):
     # exercises an external-function suspension being driven over the WebSocket
     async def double(x: int) -> int:
