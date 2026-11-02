@@ -355,7 +355,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           name: rust-coverage
 
-      - uses: getsentry/codecov-action@88418cdae07a8bac2beaec1550bcafff9ec55c8b # 0.4.3
+      - uses: getsentry/codecov-action@b3db4e382bd9859c913a96093a3d369b67f59177 # 0.4.4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: coverage-reports/merged.info
