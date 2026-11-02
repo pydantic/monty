@@ -358,3 +358,4 @@ note in [open.md](open.md).
 
 [`OSAccess`][pydantic_monty.OSAccess] raises filesystem `OSError`s (including subclasses) with a message only.
 In direct host-Python calls, `errno`, `filename` and `filename2` are `None`; the error number and paths appear only in the message.
+The `max_total_file_bytes` error is the exception: it sets `errno` to `ENOSPC` and `filename` to the path.
