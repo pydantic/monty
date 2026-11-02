@@ -137,6 +137,10 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
 `typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
 answer is the call's result, and running without a host gives `{}`.
 
+The built-in `errno` module provides 134 Linux error-number names and the `errorcode` reverse lookup dictionary.
+Its constants and aliases are identical on Linux, macOS, and Windows; importing it requires no host handler.
+The reverse mappings follow CPython on Linux, including `EDEADLOCK` for 35 and `ENOTSUP` for 95.
+
 ## Other pieces
 
 - `MontyRepl` — a REPL-style interface: feed code snippet by snippet with state persisting between snippets.

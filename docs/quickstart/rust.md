@@ -216,6 +216,10 @@ Errors come back as [`MontyException`](../api/rust/monty-types.md#montyexception
 [`PrintWriter`](../api/rust/monty-types.md#printwriter) controls where `print()` output goes: `Stdout`, `Disabled`, or collected — into a `String`, or into a
 `CollectedStreams` buffer whose `entries()` label each run `stdout` or `stderr`.
 
+The built-in `errno` module is available without an import handler and uses Linux error numbers on every host.
+`from errno import ENOENT, errorcode` provides the constant and its reverse name, `errorcode[ENOENT] == 'ENOENT'`.
+See [errno limitations](../limitations/errno.md) for differences from host CPython.
+
 ### Resource limits
 
 ```rust

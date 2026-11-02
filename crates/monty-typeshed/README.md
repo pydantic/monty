@@ -31,6 +31,8 @@ crate.
 - `build.rs` — zips the vendored stubs into the compiled binary at build time,
   so Monty ships type checking with no files on disk.
 
+The `errno` stub exposes Monty's fixed Linux constants on every platform, with `errorcode: dict[int, str]`.
+
 ## API
 
 The crate exposes a single entry point: `file_system()` returns a static

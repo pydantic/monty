@@ -629,3 +629,10 @@ fn bisect_does_not_declare_runtime_all_metadata() {
     let diagnostics = check_concise("import bisect\nbisect.__all__", "main.py").expect("__all__ is absent at runtime");
     assert_snapshot!(diagnostics, @"main.py:2:1: error[unresolved-attribute] Module `bisect` has no member `__all__`");
 }
+
+/// The errno stub describes both constants and the mutable reverse lookup table.
+#[test]
+fn errno_constants_and_reverse_lookup_type_check() {
+    let code = "from errno import EACCES, EEXIST, errorcode\nnumber: int = EACCES\nname: str = errorcode[EEXIST]\nerrorcode[999] = 'CUSTOM'\n";
+    assert_eq!(check_concise(code, "main.py"), None);
+}

@@ -31,6 +31,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `dataclasses` | [dataclasses.md](dataclasses.md) |
 | `datetime`    | [datetime.md](datetime.md)       |
 | `decimal`     | [decimal.md](decimal.md)         |
+| `errno`       | [errno.md](errno.md)             |
 | `fnmatch`     | [fnmatch.md](fnmatch.md)         |
 | `functools`   | [functools.md](functools.md)     |
 | `hashlib`     | [hashlib.md](hashlib.md)         |
