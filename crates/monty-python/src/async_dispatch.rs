@@ -25,7 +25,7 @@ use crate::{
     external::{
         AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
     },
-    py_future::get_current_locals,
+    py_future::{get_current_locals, track},
 };
 
 /// Answers an intercepted OS call (see
@@ -203,7 +203,13 @@ fn dispatch_future(
     match mode {
         CoroutineMode::Eager => Dispatched::Eager(future),
         CoroutineMode::Future => {
-            join_set.spawn(async move { (call_id, future.await) });
+            if let Some(task) = track(async move { (call_id, future.await) }) {
+                join_set.spawn(async move {
+                    // Shutdown cancels the consumer too; this placeholder is never resumed.
+                    task.await
+                        .unwrap_or((call_id, ExtFunctionResult::Return(MontyObject::none())))
+                });
+            }
             Dispatched::Done(ResumeValue::Future)
         }
         CoroutineMode::AsValue => Dispatched::AsValue(future),
