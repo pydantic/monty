@@ -168,8 +168,7 @@ mod _monty {
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
         // cache the binary resolver now so pool construction never imports
         binary_finder(py)?;
-        py.import("atexit")?
-            .call_method1("register", (wrap_pyfunction!(super::py_future::drain_deliveries, m)?,))?;
+        super::py_future::register_shutdown(py)?;
         Ok(())
     }
 }

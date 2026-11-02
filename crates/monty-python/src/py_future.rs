@@ -14,7 +14,11 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Condvar, LazyLock, Mutex, MutexGuard, PoisonError},
+    process,
+    sync::{
+        Condvar, LazyLock, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicU32, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -25,6 +29,11 @@ use tokio::{
     task::{JoinError, JoinHandle},
 };
 
+mod coroutine;
+
+pub(crate) use coroutine::into_future_with_locals;
+
+static OWNER_PID: AtomicU32 = AtomicU32::new(0);
 static DELIVERIES: LazyLock<Deliveries> = LazyLock::new(Deliveries::default);
 
 tokio::task_local! {
@@ -39,6 +48,11 @@ where
     F: Future<Output = PyResult<T>> + Send + 'static,
     T: for<'a> IntoPyObject<'a> + Send + 'static,
 {
+    if !original_process() {
+        return Err(PyRuntimeError::new_err(
+            "Monty async runtime cannot be reused after fork",
+        ));
+    }
     // Event-loop methods can release the GIL while the bridge is being created.
     // Keep its Python references registered even if shutdown rejects its spawn.
     let _creation = DELIVERIES
@@ -59,11 +73,68 @@ pub(crate) fn get_current_locals(py: Python<'_>) -> PyResult<TaskLocals> {
 }
 
 /// Waits before Python finalization, releasing the GIL so deliveries can finish.
-#[pyfunction]
-pub(crate) fn drain_deliveries(py: Python<'_>) {
+fn drain_deliveries(py: Python<'_>) {
+    // A fork child has no parent runtime threads, and even inherited locks may be held.
+    if !original_process() {
+        return;
+    }
     // Holding the GIL here would prevent the threads we wait for from finishing.
     // Reattaching also flushes PyO3's deferred decrefs from cancelled Rust tasks.
     py.detach(|| DELIVERIES.close());
+}
+
+/// Check before touching a pool's inherited locks or moving it into a rejected future.
+pub(crate) fn ensure_original_process() -> PyResult<()> {
+    if original_process() {
+        Ok(())
+    } else {
+        Err(PyRuntimeError::new_err(
+            "Monty async runtime cannot be reused after fork",
+        ))
+    }
+}
+
+fn original_process() -> bool {
+    OWNER_PID.load(Ordering::Relaxed) == process::id()
+}
+
+/// Register an exclusively atexit-owned hook so clearing a skipped callback drains too.
+pub(crate) fn register_shutdown(py: Python<'_>) -> PyResult<()> {
+    let pid = process::id();
+    if OWNER_PID
+        .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err_and(|owner| owner != pid)
+    {
+        return Err(PyRuntimeError::new_err(
+            "Monty async runtime cannot be reused after fork",
+        ));
+    }
+    // Initialize before publishing the hook; fork children check OWNER_PID before this LazyLock.
+    LazyLock::force(&DELIVERIES);
+    py.import("atexit")?
+        .call_method1("register", (Py::new(py, ShutdownHook)?,))?;
+    Ok(())
+}
+
+#[pyclass(frozen)]
+struct ShutdownHook;
+
+#[pymethods]
+impl ShutdownHook {
+    #[expect(clippy::unused_self, reason = "a Python callable must take &self")]
+    fn __call__(&self, py: Python<'_>) {
+        drain_deliveries(py);
+    }
+}
+
+impl Drop for ShutdownHook {
+    fn drop(&mut self) {
+        if original_process() {
+            // CPython clears its callback registry before marking the interpreter finalizing.
+            // A hook registered by an active exit handler is skipped but released here.
+            Python::try_attach(drain_deliveries);
+        }
+    }
 }
 
 /// Uses the shared Tokio executor, tracking all bridge-owned Python references.
@@ -110,6 +181,9 @@ pub(crate) fn track<F>(future: F) -> Option<impl Future<Output = Option<F::Outpu
 where
     F: Future + Send + 'static,
 {
+    if !original_process() {
+        return None;
+    }
     let mut closing = DELIVERIES.shutdown.subscribe();
     // On rejection, the caller still holds either the GIL or a parent registration.
     let delivery = DELIVERIES.begin()?;
@@ -160,6 +234,7 @@ impl<F: Future> Future for TrackedTask<'_, F> {
 }
 
 struct Deliveries {
+    pid: u32,
     // Admission and shutdown share one lock so close cannot miss a queued delivery.
     state: Mutex<DeliveryState>,
     idle: Condvar,
@@ -169,6 +244,7 @@ struct Deliveries {
 impl Default for Deliveries {
     fn default() -> Self {
         Self {
+            pid: process::id(),
             state: Mutex::default(),
             idle: Condvar::new(),
             shutdown: watch::channel(false).0,
@@ -186,6 +262,9 @@ struct DeliveryState {
 
 impl Deliveries {
     fn begin(&self) -> Option<Delivery<'_>> {
+        if self.pid != process::id() {
+            return None;
+        }
         let mut state = self.lock();
         if state.closing {
             return None;
@@ -195,6 +274,9 @@ impl Deliveries {
     }
 
     fn close(&self) {
+        if self.pid != process::id() {
+            return;
+        }
         let mut state = self.lock();
         state.closing = true;
         // Wake pending async tasks so an unfinished operation cannot stall shutdown.
@@ -217,6 +299,9 @@ struct Delivery<'a>(&'a Deliveries);
 
 impl Drop for Delivery<'_> {
     fn drop(&mut self) {
+        if self.0.pid != process::id() {
+            return;
+        }
         self.0.lock().in_flight -= 1;
         self.0.idle.notify_all();
     }

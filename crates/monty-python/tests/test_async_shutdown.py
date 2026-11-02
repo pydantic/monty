@@ -194,7 +194,7 @@ import time
 original_register = atexit.register
 hooks = []
 def register(function, *args, **kwargs):
-    if function.__name__ == 'drain_deliveries':
+    if type(function).__name__ == 'ShutdownHook':
         hooks.append(function)
     return original_register(function, *args, **kwargs)
 atexit.register = register
@@ -262,3 +262,168 @@ print('rejected', flush=True)
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == 'rejected\n', result.stderr
+
+
+def test_first_import_from_exit_handler_drains_pending_callback():
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-X',
+            'faulthandler',
+            '-c',
+            """
+import atexit
+import sys
+
+@atexit.register
+def late_import():
+    global pool, operation, loop
+    import asyncio
+    from pydantic_monty import AsyncMonty
+
+    class Sink:
+        def __call__(self, stream, text):
+            pass
+        def __del__(self):
+            print('released' if not sys.is_finalizing() else 'released too late', flush=True)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    started = asyncio.Event()
+    async def wait_forever():
+        started.set()
+        await asyncio.Event().wait()
+    async def setup():
+        pool = AsyncMonty()
+        await pool.__aenter__()
+        session = await pool.checkout().__aenter__()
+        operation = asyncio.ensure_future(session.feed_run(
+            'await wait_forever()',
+            external_lookup={'wait_forever': wait_forever},
+            print_callback=Sink(),
+        ))
+        await started.wait()
+        return pool, operation
+    pool, operation = loop.run_until_complete(setup())
+    print('late import pending', flush=True)
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'late import pending\nreleased\n', result.stderr
+    assert 'PanicException' not in result.stderr
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='os.fork is unavailable on Windows')
+@pytest.mark.parametrize('paused_creation', [True, False])
+def test_fork_child_rejects_async_reuse_and_exits(paused_creation: bool):
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-X',
+            'faulthandler',
+            '-c',
+            """
+import asyncio
+import os
+import signal
+import sys
+import threading
+import time
+from pydantic_monty import AsyncMonty
+
+paused = sys.argv[1] == 'True'
+entered = threading.Event()
+release = threading.Event()
+
+def create_bridge():
+    loop = asyncio.new_event_loop()
+    original_create = loop.create_future
+    def create_future():
+        entered.set()
+        assert release.wait(10)
+        return original_create()
+    loop.create_future = create_future
+    async def run():
+        AsyncMonty().__aenter__()
+    try:
+        loop.run_until_complete(run())
+    finally:
+        loop.close()
+
+async def pending_callback():
+    entered.set()
+    await asyncio.Event().wait()
+
+async def setup():
+    pool = AsyncMonty()
+    await pool.__aenter__()
+    session = await pool.checkout().__aenter__()
+    operation = asyncio.ensure_future(session.feed_run(
+        'await pending_callback()', external_lookup={'pending_callback': pending_callback},
+    ))
+    while not entered.is_set():
+        await asyncio.sleep(0)
+    return pool, session, operation
+
+if paused:
+    creator = threading.Thread(target=create_bridge)
+    creator.start()
+    assert entered.wait(10)
+else:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    pool, session, operation = loop.run_until_complete(setup())
+
+pid = os.fork()
+if pid == 0:
+    async def try_reuse():
+        try:
+            AsyncMonty().__aenter__()
+        except RuntimeError as error:
+            assert 'cannot be reused after fork' in str(error)
+            if not paused:
+                try:
+                    pool.__aexit__(None, None, None)
+                except RuntimeError as close_error:
+                    assert 'cannot be reused after fork' in str(close_error)
+                else:
+                    raise AssertionError('fork child closed inherited pool')
+            print('child rejected', flush=True)
+        else:
+            raise AssertionError('fork child admitted async work')
+    asyncio.run(try_reuse())
+    # Use normal exit so inherited atexit hooks actually run.
+    sys.exit(0)
+
+try:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        waited, status = os.waitpid(pid, os.WNOHANG)
+        if waited:
+            assert os.waitstatus_to_exitcode(status) == 0, status
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+        raise AssertionError('fork child hung while exiting')
+finally:
+    if paused:
+        release.set()
+        creator.join(10)
+        assert not creator.is_alive()
+print('parent finished', flush=True)
+""",
+            str(paused_creation),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'child rejected\nparent finished\n', result.stderr
+    assert 'PanicException' not in result.stderr
