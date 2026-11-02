@@ -60,7 +60,7 @@ jobs:
           save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -280,7 +280,7 @@ jobs:
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -390,7 +390,7 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Artifacts are only used for tests in this workflow run
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -442,7 +442,7 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -688,7 +688,7 @@ jobs:
           save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -767,7 +767,7 @@ jobs:
           tar -xzf crates/monty-python/dist/pydantic_monty_client-*.tar.gz -C sdist-check --strip-components=1
           cargo check --manifest-path sdist-check/crates/monty-python/Cargo.toml
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -864,7 +864,7 @@ jobs:
           name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         if: matrix.os != 'linux' && matrix.pgo-runtime
         with:
           enable-cache: false
@@ -1053,7 +1053,7 @@ jobs:
           echo "Found $count files; expected 112 (8 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
           test "$count" -eq 112
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
 
@@ -1083,7 +1083,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
 
