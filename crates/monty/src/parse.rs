@@ -147,9 +147,12 @@ pub struct RawFunctionDef {
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
-    /// `(parameter or "return", stringized annotation)` pairs in CPython's order,
-    /// read back by `typing.get_type_hints()`.
-    pub annotations: Vec<(StringId, StringId)>,
+    /// The `__annotate__(format)` function of an annotated `def` (PEP 649), built by
+    /// [`Parser::synthesize_annotate`]; `None` when nothing is annotated.
+    pub annotate: Option<Box<Self>>,
+    /// Whether this is a synthesized `__annotate__`: every name but the `format`
+    /// parameter resolves by name at run time and nothing is captured as a cell.
+    pub is_annotate: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -1059,7 +1062,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         mut function: ast::StmtFunctionDef,
     ) -> Result<(RawFunctionDef, Vec<ExprLoc>), ParseError> {
         let decorators = self.parse_decorators(function.decorator_list)?;
-        let annotations = self.parse_function_annotations(&mut function.parameters, function.returns.as_deref_mut())?;
+        let annotations = self.take_function_annotations(&mut function.parameters, function.returns.take());
 
         let params = &function.parameters;
 
@@ -1087,6 +1090,16 @@ impl<'a, 'i> Parser<'a, 'i> {
         };
 
         let name = self.identifier(&function.name.id, function.name.range);
+        let annotate = if annotations.is_empty() {
+            None
+        } else {
+            let annotate_id = self.interner.intern("__annotate__");
+            Some(Box::new(self.synthesize_annotate(
+                annotations,
+                annotate_id,
+                name.position,
+            )?))
+        };
         // Parse function body recursively
         let body = self.parse_statements(function.body)?;
         let is_async = function.is_async;
@@ -1097,20 +1110,21 @@ impl<'a, 'i> Parser<'a, 'i> {
                 signature,
                 body,
                 is_async,
-                annotations,
+                annotate,
+                is_annotate: false,
             },
             decorators,
         ))
     }
 
-    /// Stringizes a `def`'s parameter and return annotations, in the order
-    /// CPython stores them: regular parameters before positional-only ones,
-    /// then `*args`, keyword-only, `**kwargs` and `return`.
-    fn parse_function_annotations(
+    /// Takes a `def`'s parameter and return annotations out of the signature, in
+    /// the order CPython stores them: regular parameters before positional-only
+    /// ones, then `*args`, keyword-only, `**kwargs` and `return`.
+    fn take_function_annotations(
         &mut self,
         params: &mut ast::Parameters,
-        returns: Option<&mut AstExpr>,
-    ) -> Result<Vec<(StringId, StringId)>, ParseError> {
+        returns: Option<Box<AstExpr>>,
+    ) -> Vec<(StringId, Box<AstExpr>)> {
         let ast::Parameters {
             posonlyargs,
             args,
@@ -1119,22 +1133,106 @@ impl<'a, 'i> Parser<'a, 'i> {
             kwarg,
             ..
         } = params;
-        let annotated = args
+        let mut annotations: Vec<(StringId, Box<AstExpr>)> = args
             .iter_mut()
             .chain(posonlyargs.iter_mut())
             .map(|p| &mut p.parameter)
             .chain(vararg.as_deref_mut())
             .chain(kwonlyargs.iter_mut().map(|p| &mut p.parameter))
             .chain(kwarg.as_deref_mut())
-            .filter_map(|p| Some((p.name.id.as_str(), p.annotation.as_deref_mut()?)))
-            .chain(returns.map(|r| ("return", r)));
-        let mut annotations = Vec::new();
-        for (name, annotation) in annotated {
-            self.check_annotation(annotation)?;
-            let text = stringize_annotation(annotation);
-            annotations.push((self.interner.intern(name), self.interner.intern(&text)));
+            .filter_map(|p| Some((self.interner.intern(&p.name.id), p.annotation.take()?)))
+            .collect();
+        if let Some(returns) = returns {
+            annotations.push((self.interner.intern("return"), returns));
         }
-        Ok(annotations)
+        annotations
+    }
+
+    /// Builds the `__annotate__(format)` function CPython's compiler emits for an
+    /// annotated `def` or class body (PEP 649):
+    ///
+    /// ```python test="skip"
+    /// def __annotate__(format):
+    ///     if format > 2:
+    ///         raise NotImplementedError
+    ///     return {'x': <annotation>, ...}
+    /// ```
+    ///
+    /// Under `from __future__ import annotations` the dict holds the stringized
+    /// text instead, so `__annotations__` reads as PEP 563 strings.
+    fn synthesize_annotate(
+        &mut self,
+        annotations: Vec<(StringId, Box<AstExpr>)>,
+        name_id: StringId,
+        position: CodeRange,
+    ) -> Result<RawFunctionDef, ParseError> {
+        let items = self.annotation_items(annotations, position)?;
+        let format_id = self.interner.intern("format");
+        let name = |parser: &mut Self, text: &str| {
+            let id = parser.interner.intern(text);
+            ExprLoc::new(position, Expr::Name(Identifier::new(id, position)))
+        };
+        let test = ExprLoc::new(
+            position,
+            Expr::CmpOp {
+                left: Box::new(name(self, "format")),
+                op: CmpOperator::Gt,
+                right: Box::new(ExprLoc::new(position, Expr::Literal(Literal::Int(2)))),
+            },
+        );
+        let raise = Node::Raise {
+            exc: Some(name(self, "NotImplementedError")),
+            cause: None,
+        };
+        let body = vec![
+            Node::If {
+                test,
+                body: vec![raise],
+                or_else: Vec::new(),
+            },
+            Node::Return(Some(ExprLoc::new(position, Expr::Dict(items)))),
+        ];
+        Ok(RawFunctionDef {
+            name: Identifier::new(name_id, position),
+            signature: ParsedSignature {
+                args: vec![ParsedParam {
+                    name: format_id,
+                    default: None,
+                }],
+                ..ParsedSignature::default()
+            },
+            body,
+            is_async: false,
+            annotate: None,
+            is_annotate: true,
+        })
+    }
+
+    /// The `'name': annotation` pairs of an `__annotations__` dict: each
+    /// annotation parsed as an expression, or under `from __future__ import
+    /// annotations` stringized to the text CPython would store.
+    ///
+    /// A stringized annotation never reaches [`Parser::parse_expression`], so
+    /// the depth check guarding stringization's recursive passes is made here.
+    fn annotation_items(
+        &mut self,
+        annotations: Vec<(StringId, Box<AstExpr>)>,
+        position: CodeRange,
+    ) -> Result<Vec<DictItem>, ParseError> {
+        let mut items = Vec::with_capacity(annotations.len());
+        for (name, mut annotation) in annotations {
+            self.check_annotation(&annotation)?;
+            let key = ExprLoc::new(position, Expr::Literal(Literal::Str(name)));
+            let value = if self.future_annotations {
+                let range = self.convert_range(annotation.range());
+                let text_id = self.interner.intern(&stringize_annotation(&mut annotation));
+                ExprLoc::new(range, Expr::Literal(Literal::Str(text_id)))
+            } else {
+                self.parse_expression(*annotation)?
+            };
+            items.push(DictItem::Pair(key, value));
+        }
+        Ok(items)
     }
 
     /// Parses decorator expressions in source order.
@@ -1164,7 +1262,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// recorded in `members`, in source order, for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
-    /// member, and annotated names a stringized `__annotations__`. Class
+    /// member, and annotated names the class's `__annotate__` function. Class
     /// decorators are supported (enclosing scope, applied bottom-up);
     /// inheritance, function/method decorators, and anything else in the body
     /// are rejected as not-implemented, reserving the syntax for later.
@@ -1190,9 +1288,10 @@ impl<'a, 'i> Parser<'a, 'i> {
         // namespace dict from the body's locals.
         let mut body = Vec::new();
         let mut members = Vec::new();
-        // `(name, "source text")` pairs assembled into `__annotations__` below;
-        // always stringized (PEP 563). See `limitations/typing.md`.
-        let mut annotations: Vec<DictItem> = Vec::new();
+        // `(name, annotation)` pairs, compiled into the class's `__annotate__`
+        // below (or, under `from __future__ import annotations`, stringized
+        // into `__annotations__`).
+        let mut annotations: Vec<(StringId, Box<AstExpr>)> = Vec::new();
 
         // CPython stores the class docstring as a real `__doc__` entry in the
         // class dict (`None` when absent), so synthesize a `__doc__ = <docstring
@@ -1250,12 +1349,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                     self.parse_class_var(ident, *value, &mut members, &mut body)?;
                 }
                 // `name: T [= <expr>]` — an annotated class-level name. The
-                // annotation is recorded (stringized) in `__annotations__`; a
+                // annotation goes into the class's `__annotate__` (see below); a
                 // value additionally makes it a class variable. A bare `name: T`
                 // records the annotation but binds no value (matching CPython).
                 Stmt::AnnAssign(ast::StmtAnnAssign {
                     target,
-                    mut annotation,
+                    annotation,
                     value,
                     range,
                     ..
@@ -1265,7 +1364,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     }) = *target
                     {
                         let ident = self.identifier(&id, name_range);
-                        annotations.push(self.parse_class_annotation(ident, &mut annotation)?);
+                        annotations.push((ident.name_id, annotation));
                         if let Some(value) = value {
                             self.parse_class_var(ident, *value, &mut members, &mut body)?;
                         }
@@ -1316,26 +1415,36 @@ impl<'a, 'i> Parser<'a, 'i> {
         );
 
         // Last statement so the values are assembled after all members exist.
-        // Always present (empty dict) to match `Cls.__annotations__ == {}`.
-        let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
-        let body_binds_annotations = members.iter().any(|m| m.name_id == annotations_target.name_id);
-        if body_binds_annotations && !annotations.is_empty() {
-            // Being last, the synthetic assignment would clobber the body's own
-            // binding and lose these entries. CPython stores into whatever the name
-            // holds instead — merging into a dict, `TypeError` otherwise.
-            return Err(ParseError::not_implemented(
-                "assigning `__annotations__` in a class body with annotated names",
-                position,
-            ));
-        }
-        // With nothing to store, the body's own binding stands — synthesizing an
-        // empty dict over it would break class bodies CPython accepts.
-        if !body_binds_annotations {
-            members.push(annotations_target);
-            body.push(Node::Assign {
-                target: annotations_target,
-                object: ExprLoc::new(position, Expr::Dict(annotations)),
-            });
+        // CPython's compiler stores the class's `__annotate__` under
+        // `__annotate_func__`; under `from __future__ import annotations` it
+        // stores the stringized dict as `__annotations__` instead.
+        if !annotations.is_empty() {
+            if self.future_annotations {
+                let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
+                if members.iter().any(|m| m.name_id == annotations_target.name_id) {
+                    // Being last, the synthetic assignment would clobber the body's own
+                    // binding and lose these entries. CPython stores into whatever the name
+                    // holds instead — merging into a dict, `TypeError` otherwise.
+                    return Err(ParseError::not_implemented(
+                        "assigning `__annotations__` in a class body with annotated names",
+                        position,
+                    ));
+                }
+                let items = self.annotation_items(annotations, position)?;
+                members.push(annotations_target);
+                body.push(Node::Assign {
+                    target: annotations_target,
+                    object: ExprLoc::new(position, Expr::Dict(items)),
+                });
+            } else {
+                let annotate_target = Identifier::new(self.interner.intern("__annotate_func__"), position);
+                let def = self.synthesize_annotate(annotations, annotate_target.name_id, position)?;
+                members.push(annotate_target);
+                body.push(Node::FunctionDef {
+                    def,
+                    decorators: Vec::new(),
+                });
+            }
         }
 
         // Wrap the body statements in a synthetic zero-arg function. The class
@@ -1347,7 +1456,8 @@ impl<'a, 'i> Parser<'a, 'i> {
             signature: ParsedSignature::default(),
             body,
             is_async: false,
-            annotations: Vec::new(),
+            annotate: None,
+            is_annotate: false,
         };
 
         Ok(Node::ClassDef {
@@ -1389,24 +1499,6 @@ impl<'a, 'i> Parser<'a, 'i> {
             start_byte: start,
             end_byte: class.range.end().into(),
         }
-    }
-
-    /// Builds the `'name': 'annotation'` pair for one annotated class-body name.
-    ///
-    /// The annotation is stringized rather than evaluated (see
-    /// `limitations/typing.md`); [`stringize_annotation`] owns rendering it back
-    /// to the text CPython would store.
-    ///
-    /// The annotation never reaches [`Parser::parse_expression`], so the depth
-    /// check guarding stringization's two recursive passes is made here.
-    fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> Result<DictItem, ParseError> {
-        self.check_annotation(annotation)?;
-        let ann_range = annotation.range();
-        let ann_id = self.interner.intern(&stringize_annotation(annotation));
-        Ok(DictItem::Pair(
-            ExprLoc::new(ident.position, Expr::Literal(Literal::Str(ident.name_id))),
-            ExprLoc::new(self.convert_range(ann_range), Expr::Literal(Literal::Str(ann_id))),
-        ))
     }
 
     /// Parses a class-variable value and records the binding: rejects class-scope

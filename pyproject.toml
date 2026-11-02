@@ -138,7 +138,7 @@ extra-standard-library = ["tomllib"]
     "I001", # Import block unsorted - needed for testing `import a, b` syntax
 ]
 
-"crates/monty/test_cases/class__annotations.py" = [
+"crates/monty/test_cases/class__annotations_future.py" = [
     # Scoped to this file so the single-quote convention stays enforced across
     # the other test cases: these tests exist to prove that double-quoted
     # annotations normalize to single quotes exactly as CPython's does.
@@ -182,7 +182,7 @@ exclude = [
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
-    "crates/monty/test_cases/class__annotations.py",
+    "crates/monty/test_cases/class__annotations_future.py",
     # the argument errors of typing forms (`Annotated[int]`, `ClassVar[int, str]`,
     # `Any[int]`) are the behaviour under test
     "crates/monty/test_cases/typing__special_forms.py",

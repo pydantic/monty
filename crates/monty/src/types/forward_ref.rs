@@ -219,6 +219,11 @@ impl ForwardRef {
 
     /// Whether an evaluation made this reference for an unresolved name, so it
     /// composes text while one runs; a constructed reference never does.
+    /// `__forward_arg__`: the reference's source text, borrowed.
+    pub(crate) fn arg(&self) -> &Value {
+        &self.arg
+    }
+
     pub(crate) fn is_stringifier(&self) -> bool {
         self.globals.is_some()
     }

@@ -50,6 +50,9 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
 
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(CallResult::Value(value)),
+        // The attribute exists but a frame computes it (`__annotations__`), so
+        // the default never applies and the frame's result is the value.
+        Ok(CallResult::FramePushed) => Ok(CallResult::FramePushed),
         Ok(CallResult::AttrLookup {
             name,
             class_name,

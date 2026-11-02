@@ -11,6 +11,7 @@ use std::{
 use num_bigint::BigInt;
 
 use crate::{
+    annotations,
     args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
@@ -532,6 +533,12 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))

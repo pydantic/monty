@@ -125,7 +125,7 @@ fn run_snippet(
     Ok(CallResult::FramePushed)
 }
 
-/// Evaluates one stringized annotation for `typing.get_type_hints()`.
+/// Evaluates one annotation string (a forward reference) for `typing.get_type_hints()`.
 ///
 /// Runs in borrowed `globals` / `locals` dicts (`None` globals means the module slots),
 /// with `globals_first` letting bound slot globals shadow `locals`, and `missing`

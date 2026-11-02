@@ -995,6 +995,19 @@ pub enum StaticStrings {
     Dump,
     /// `json.dumps()` function.
     Dumps,
+    /// `__annotate__` — a function's PEP 649 annotate function, and the key a
+    /// namespace handed to `type()` may store a class's under.
+    #[strum(serialize = "__annotate__")]
+    DunderAnnotate,
+    /// `__annotate_func__` — where a compiled class body stores its `__annotate__`.
+    #[strum(serialize = "__annotate_func__")]
+    DunderAnnotateFunc,
+    /// `__annotations__` — a class's stored annotations dict.
+    #[strum(serialize = "__annotations__")]
+    DunderAnnotations,
+    /// `__annotations_cache__` — a class's evaluated annotations, cached on first access.
+    #[strum(serialize = "__annotations_cache__")]
+    DunderAnnotationsCache,
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,

@@ -12,6 +12,7 @@ use serde::de::Error as _;
 use smallvec::smallvec;
 
 use crate::{
+    annotations,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -1229,6 +1230,12 @@ impl Value {
                     Some(value) => Ok(CallResult::Value(value)),
                     None => Err(Type::from(*t).attribute_error(attr, vm)),
                 };
+            }
+            // A plain `def` has its PEP 649 attributes and nothing else.
+            Self::DefFunction(func_id) => {
+                if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
+                    return result;
+                }
             }
             _ => {}
         }

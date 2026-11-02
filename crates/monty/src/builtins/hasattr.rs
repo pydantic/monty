@@ -52,6 +52,13 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             value.drop_with(vm);
             true
         }
+        // A frame computes the attribute (`__annotations__`): run it for its
+        // exceptions, as CPython's `getattr` would, and discard the value.
+        Ok(CallResult::FramePushed) => {
+            let value = CallResult::FramePushed.require_synchronous(vm)?;
+            value.drop_with(vm);
+            true
+        }
         Ok(CallResult::AttrLookup {
             name,
             class_name,

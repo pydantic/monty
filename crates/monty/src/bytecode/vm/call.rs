@@ -8,7 +8,10 @@ use std::mem;
 
 use monty_types::{MontyUuid, OsFunctionCall};
 
-use super::{CallFrame, VM, attr::PendingLookupEffect, function_namespace, recursion::RunReentryGuard};
+use super::{
+    CallFrame, FrameGlobals, FrameNamespace, MissingNames, VM, attr::PendingLookupEffect, function_namespace,
+    recursion::RunReentryGuard,
+};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -891,8 +894,70 @@ impl<'h> VM<'h> {
         if func.is_async {
             self.create_coroutine(func_id, func, cells, defaults, globals, args)
         } else {
-            self.call_sync_function(func_id, func, cells, defaults, globals, args)
+            let namespace = function_namespace(globals, &*self.heap);
+            self.call_sync_function(func_id, func, cells, defaults, namespace, args)
         }
+    }
+
+    /// Calls an `__annotate__` function with `format` (PEP 649).
+    ///
+    /// A `def` runs under [`FrameNamespace::Annotate`]: names resolve through
+    /// `classdict` (a borrowed class-namespace copy, for a class's annotations),
+    /// then its globals, with `missing` standing in for CPython's "fake globals"
+    /// in `FORWARDREF` and `STRING` format. Any other callable runs plainly.
+    /// Takes ownership of `missing`.
+    pub(crate) fn call_annotate(
+        &mut self,
+        annotate: &Value,
+        format: i64,
+        classdict: Option<HeapId>,
+        missing: MissingNames,
+    ) -> Result<CallResult, RunError> {
+        let this = self;
+        let args = ArgValues::One(Value::Int(format));
+        let (func_id, cells, defaults, globals) = match annotate {
+            Value::DefFunction(func_id) => (*func_id, Box::default(), Vec::new(), None),
+            Value::Ref(id) => match this.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => {
+                    let defaults = function.defaults.iter().map(|v| v.clone_with_heap(this)).collect();
+                    (function.func_id, Box::default(), defaults, function.globals)
+                }
+                HeapData::Closure(closure) => {
+                    let defaults = closure.defaults.iter().map(|v| v.clone_with_heap(this)).collect();
+                    (closure.func_id, closure.cells.clone(), defaults, closure.globals)
+                }
+                _ => {
+                    missing.drop_with(this);
+                    return this.call_function(annotate, args);
+                }
+            },
+            _ => {
+                missing.drop_with(this);
+                return this.call_function(annotate, args);
+            }
+        };
+        defer_drop!(defaults, this);
+        let func = this.interns.get_function(func_id);
+        if func.is_async {
+            missing.drop_with(this);
+            return this.create_coroutine(func_id, func, &cells, defaults, globals, args);
+        }
+        let globals = match globals {
+            Some(dict) => {
+                this.heap.inc_ref(dict);
+                FrameGlobals::Dict(dict)
+            }
+            None => FrameGlobals::Slots,
+        };
+        if let Some(dict) = classdict {
+            this.heap.inc_ref(dict);
+        }
+        let namespace = Box::new(FrameNamespace::Annotate {
+            globals,
+            classdict,
+            missing,
+        });
+        this.call_sync_function(func_id, func, &cells, defaults, Some(namespace), args)
     }
 
     /// Creates a Coroutine for an async function call.
@@ -968,7 +1033,8 @@ impl<'h> VM<'h> {
     /// Calls a sync function by pushing a new frame.
     ///
     /// Sets up the function's namespace with bound arguments, cell variables,
-    /// and free variables (captured from enclosing scope for closures).
+    /// and free variables (captured from enclosing scope for closures), and
+    /// installs `frame_namespace` (owned; released here if binding fails).
     ///
     /// Locals are built in the reusable `namespace_scratch` buffer (under a
     /// [`DropGuard`] for cleanup on error) and moved onto the VM stack, where
@@ -979,7 +1045,7 @@ impl<'h> VM<'h> {
         func: &'h Function,
         cells: &[HeapId],
         defaults: &[Value],
-        globals: Option<HeapId>,
+        frame_namespace: Option<Box<FrameNamespace>>,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
         let call_offset = self.current_offset();
@@ -988,25 +1054,24 @@ impl<'h> VM<'h> {
         let namespace_size = func.namespace_size;
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
+        let mut frame_namespace_guard = DropGuard::new(frame_namespace, self);
+        let (_, this) = frame_namespace_guard.as_parts_mut();
+
         // 1. Build the namespace in the reusable scratch buffer to avoid a
         //    per-call allocation. On error `DropGuard` drops the buffer, so the
         //    pool just restarts empty next call.
-        let mut namespace = mem::take(&mut self.namespace_scratch);
+        let mut namespace = mem::take(&mut this.namespace_scratch);
         namespace.reserve(namespace_size);
-        let mut namespace_guard = DropGuard::new(namespace, self);
+        let mut namespace_guard = DropGuard::new(namespace, this);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
-        {
-            let bind_result = func.signature.bind(args, defaults, this, func.name, namespace);
-
-            bind_result?;
-        }
+        func.signature.bind(args, defaults, this, func.name, namespace)?;
 
         // 3. Install owned cells and captured free-var cells at their slots.
         this.install_closure_cells(func, cells, namespace);
 
-        // 6. Commit the guard (no rollback) and push the frame. The operand
+        // 4. Commit the guards (no rollback) and push the frame. The operand
         // stack starts immediately above the locals region — comprehensions
         // emit their own push/pop bytecode, so no frame-level region is
         // reserved here. `append` empties the buffer (keeping its allocation)
@@ -1014,9 +1079,9 @@ impl<'h> VM<'h> {
         let (mut namespace, this) = namespace_guard.into_parts();
         this.stack.append(&mut namespace);
         this.namespace_scratch = namespace;
+        let (frame_namespace, this) = frame_namespace_guard.into_parts();
 
         let exc_stack_base = this.exception_stack.len();
-        let namespace = function_namespace(globals, &*this.heap);
         this.push_frame(CallFrame::new_function(
             &func.code,
             stack_base,
@@ -1024,7 +1089,7 @@ impl<'h> VM<'h> {
             exc_stack_base,
             func_id,
             call_offset,
-            namespace,
+            frame_namespace,
         ))?;
 
         Ok(CallResult::FramePushed)

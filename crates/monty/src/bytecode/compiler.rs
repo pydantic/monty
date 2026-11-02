@@ -29,7 +29,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, StringId},
+    intern::{CompileInterns, FunctionId, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -924,7 +924,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the body recursively.
+        // 1. Compile the `__annotate__` function (PEP 649) and the body
+        //    recursively; nested functions are pushed first, so they get lower ids.
+        let annotate = func_def
+            .annotate
+            .as_deref()
+            .map(|annotate| self.compile_annotate(annotate))
+            .transpose()?;
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
         let body_code = compile_body(self.interns, namespace_size)?;
 
@@ -953,7 +959,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         )
-        .with_annotations(func_def.annotations.clone().into_boxed_slice());
+        .with_annotate(annotate);
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -987,6 +993,36 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
 
         Ok(())
+    }
+
+    /// Compiles a `def`'s `__annotate__(format)` body and interns it, returning
+    /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
+    /// function value is built on `f.__annotate__` access from the owner's
+    /// globals, since it has no defaults or captured cells of its own.
+    fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
+        debug_assert!(
+            annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
+            "an annotate function captures nothing and has no defaults"
+        );
+        let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
+        let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
+        let function = Function::new(
+            annotate.name,
+            annotate.signature.clone(),
+            annotate.namespace_size,
+            Vec::new(),
+            annotate.free_var_slots.clone(),
+            annotate.cell_var_slots.clone(),
+            annotate.cell_param_indices.clone(),
+            0,
+            false,
+            code,
+        );
+        let func_id = self.interns.push_function(function);
+        Ok(FunctionId::from_index(check_function_count_u16(
+            func_id,
+            annotate.name.position,
+        )?))
     }
 
     /// Compiles a `class Foo: ...` definition.
@@ -1060,12 +1096,11 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a
-    /// `type.__build_class__(name, {...}, future_annotations)` call: push the
-    /// class name, then for each member (in source order) `LoadConst <name>`
-    /// and the member's value from its class-body slot, build the namespace
-    /// dict, push the body's `from __future__ import annotations` state, and
-    /// call the hidden builtin (which builds the `Class`), then `ReturnValue`.
+    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
+    /// call: push the class name and an empty bases tuple, then for each member
+    /// (in source order) `LoadConst <name>` and the member's value from its
+    /// class-body slot, build the namespace dict, call the 3-arg `type()`
+    /// builtin (which builds the `Class`), then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1087,9 +1122,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type.__build_class__(name, {members...}, future): push the name...
+        // type(name, (), {members...}): push the name and empty bases tuple...
         let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
         compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
 
         // ...then the namespace dict: (name, value) for each member in order.
         for member in members {
@@ -1100,12 +1136,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let member_count = check_collection_size_u16(members.len(), position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
 
-        // ...then the PEP 563 state, and the hidden builtin that builds the class object.
-        let future_const = compiler.code.add_const(Value::Bool(flags.future_annotations))?;
-        compiler.code.emit_u16(Opcode::LoadConst, future_const)?;
+        // ...and call the 3-arg type() builtin, which builds the class object.
         compiler
             .code
-            .emit_call_builtin_function(BuiltinsFunctions::BuildClass as u8, 3)?;
+            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok(compiler.finish())

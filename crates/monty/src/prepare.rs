@@ -205,6 +205,10 @@ struct Prepare<'i, 'g> {
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
+    /// Whether this is a synthesized `__annotate__` scope: every name but its
+    /// parameters resolves by name at run time (`NameScope::Name`), through the
+    /// class namespace it runs under and then the globals, and nothing is captured.
+    is_annotate: bool,
 }
 
 /// Insertion-ordered bindings for one active comprehension's lexical scope.
@@ -521,6 +525,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
+            is_annotate: false,
         }
     }
 
@@ -635,6 +640,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
+            is_annotate: false,
         })
     }
 
@@ -851,7 +857,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
                             signature,
                             body,
                             is_async,
-                            annotations,
+                            annotate,
+                            is_annotate,
                         },
                     decorators,
                 } => {
@@ -862,7 +869,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                         .into_iter()
                         .map(|d| self.prepare_expression(d))
                         .collect::<Result<Vec<_>, ParseError>>()?;
-                    let func = self.prepare_function_def(name, &signature, body, is_async, annotations)?;
+                    let func = self.prepare_function_def(name, &signature, body, is_async, annotate, is_annotate)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1713,12 +1720,50 @@ impl<'i, 'g> Prepare<'i, 'g> {
         parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
         is_async: bool,
-        annotations: Vec<(StringId, StringId)>,
+        annotate: Option<Box<RawFunctionDef>>,
+        is_annotate: bool,
     ) -> Result<PreparedFunctionDef, ParseError> {
         // A `def` (top-level, nested, or method — class bodies are function scopes
         // too) binds its name in the enclosing scope.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+        self.prepare_function_scope(name, parsed_sig, body, is_async, annotate, is_annotate)
+    }
+
+    /// Prepares a `def`'s `__annotate__` (see `Parser::synthesize_annotate`) in
+    /// this scope, like its defaults. It binds no name: the function is reached
+    /// through the `Function` that owns it, never through a namespace.
+    fn prepare_annotate(&mut self, def: RawFunctionDef) -> Result<Box<PreparedFunctionDef>, ParseError> {
+        let RawFunctionDef {
+            name, signature, body, ..
+        } = def;
+        let name = Identifier::new_with_scope(
+            name.name_id,
+            name.position,
+            NamespaceId::new(0).expect("slot 0 fits in u16"),
+            NameScope::Local,
+        );
+        self.prepare_function_scope(name, &signature, body, false, None, true)
+            .map(Box::new)
+    }
+
+    /// Prepares a function scope whose `name` is already resolved: the body of a
+    /// `def`, a method or an `__annotate__`.
+    ///
+    /// `is_annotate` makes the child an annotate scope (see [`Prepare::is_annotate`]):
+    /// it captures nothing, so an enclosing local named in an annotation resolves
+    /// by name at run time (a documented divergence, see `limitations/typing.md`).
+    fn prepare_function_scope(
+        &mut self,
+        name: Identifier,
+        parsed_sig: &ParsedSignature,
+        body: Vec<ParseNode>,
+        is_async: bool,
+        annotate: Option<Box<RawFunctionDef>>,
+        is_annotate: bool,
+    ) -> Result<PreparedFunctionDef, ParseError> {
+        // The annotate function evaluates in this scope, like the defaults.
+        let annotate = annotate.map(|def| self.prepare_annotate(*def)).transpose()?;
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
@@ -1728,8 +1773,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         // Build `enclosing_locals` for the new function: the union of every
         // ancestor function scope's locals (see `child_enclosing_locals` for the
-        // transitive-closure and class-scope-skipping rationale).
-        let enclosing_locals = self.child_enclosing_locals();
+        // transitive-closure and class-scope-skipping rationale). An annotate
+        // scope sees none, so nothing becomes a cell.
+        let enclosing_locals = if is_annotate {
+            AHashSet::new()
+        } else {
+            self.child_enclosing_locals()
+        };
 
         // Filter potential_captures to get actual implicit captures.
         // Only names that are ALSO in enclosing_locals are true implicit captures.
@@ -1757,6 +1807,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             &scope_info.cell_var_names,
             self.interner,
         )?;
+
+        inner_prepare.is_annotate = is_annotate;
 
         // Prepare the function body
         let prepared_body = inner_prepare.prepare_nodes(body)?;
@@ -1853,7 +1905,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
-            annotations,
+            annotate,
         })
     }
 
@@ -2008,7 +2060,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs: Vec::new(),
             is_async: false,
-            annotations: Vec::new(),
+            annotate: None,
         };
 
         Ok(Node::ClassDef {
@@ -2173,7 +2225,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async: false,
-            annotations: Vec::new(),
+            annotate: None,
         };
 
         Ok(ExprLoc::new(
@@ -2343,9 +2395,15 @@ impl<'i, 'g> Prepare<'i, 'g> {
         //    already there (an implicit global read of a module-level binding)
         //    or we allocate a fresh slot for it (typo, builtin, external
         //    function — runtime resolution will find `Undefined` and either
-        //    pick up a builtin or yield to the host).
+        //    pick up a builtin or yield to the host). An annotate scope loads
+        //    it by name instead, through the class namespace it runs under.
         let slot = self.globals.ensure_slot(name_id, position)?;
-        Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global))
+        let scope = if self.is_annotate {
+            NameScope::Name
+        } else {
+            NameScope::Global
+        };
+        Ok(Identifier::new_with_scope(name_id, position, slot, scope))
     }
 
     /// Prepares an f-string part by resolving names in interpolated expressions.
@@ -2947,6 +3005,11 @@ fn collect_cell_vars_from_node(
     interner: &CompileInterns<'_>,
 ) {
     match node {
+        // A class body's `__annotate__` captures nothing (see `Prepare::is_annotate`).
+        Node::FunctionDef {
+            def: RawFunctionDef { is_annotate: true, .. },
+            ..
+        } => {}
         Node::FunctionDef {
             def: RawFunctionDef { signature, body, .. },
             decorators,
@@ -3556,6 +3619,11 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
+        // A class body's `__annotate__` references nothing from enclosing scopes.
+        Node::FunctionDef {
+            def: RawFunctionDef { is_annotate: true, .. },
+            ..
+        } => {}
         Node::FunctionDef {
             def: RawFunctionDef { signature, body, .. },
             decorators,
