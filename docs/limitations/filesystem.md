@@ -129,6 +129,14 @@ Each directory `mkdir` creates, parents included, counts 4,096 bytes against the
 The total is checked before anything is created, so a `mkdir(parents=True)` that would exceed the limit creates
 nothing.
 
+Python's [`OSAccess`][pydantic_monty.OSAccess] caps [`MemoryFile`][pydantic_monty.MemoryFile] content instead.
+A write that would grow all `MemoryFile` content past `max_total_file_bytes` (50 MB by default, initial files
+included) raises `OSError` with `[Errno 28] No space left on device`.
+Text counts as its UTF-8 size; the file is left unchanged, and deleting or shrinking a file frees its bytes.
+Initial files are not checked against the cap: they count toward the total, so content that starts over it only
+blocks writes that would grow it.
+`CallbackFile` content is not counted.
+
 ## Sandbox guarantees
 
 A mount opens a descriptor on its host directory once, at mount time, and
@@ -353,3 +361,4 @@ note in [open.md](open.md).
 
 [`OSAccess`][pydantic_monty.OSAccess] raises filesystem `OSError`s (including subclasses) with a message only.
 In direct host-Python calls, `errno`, `filename` and `filename2` are `None`; the error number and paths appear only in the message.
+The `max_total_file_bytes` error is the exception: it sets `errno` to `ENOSPC` and `filename` to the path.

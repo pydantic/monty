@@ -482,6 +482,9 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     A snippet can otherwise retry a rejected host call while the duration budgets are paused.
     Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
+- [`MemoryFile`][pydantic_monty.MemoryFile] content written through `OSAccess` lives in the host process, outside
+    `max_memory`.
+    `OSAccess` caps what writes can grow it to: `max_total_file_bytes`, 50 MB by default (see [write limits](limitations/filesystem.md#write-limits)).
 
 ## Where the guarantees weaken
 

@@ -434,6 +434,10 @@ The write callback then receives the full content (existing plus appended) in th
 
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
+Because that content lives in host memory, `OSAccess` caps all `MemoryFile` content, initial files included, at
+`max_total_file_bytes` (50 MB by default).
+A write past it raises `OSError` in the sandbox, and `None` removes the cap; see
+[write limits](limitations/filesystem.md#write-limits).
 
 [`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
