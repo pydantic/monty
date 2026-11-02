@@ -719,6 +719,7 @@ fn lexists(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let LexistsArgs { path } = LexistsArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     let path = extract_os_path(path, "lstat", "path", PathAccepts::NoFd, vm)?;
+    // answered locally: a call made from a builtin such as `map()` cannot suspend
     if path.is_empty() {
         Ok(CallResult::Value(Value::Bool(false)))
     } else {
@@ -763,6 +764,8 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     defer_drop!(f1, vm);
     defer_drop!(f2, vm);
     let first = extract_os_path(f1, "stat", "path", PathAccepts::Fd, vm)?;
+    // raised locally, as a call from a builtin such as `map()` cannot suspend;
+    // `prepare_os_call` rejects an empty second path
     if first.is_empty() {
         return Err(ExcType::file_not_found_error(""));
     }
@@ -779,8 +782,7 @@ fn samefile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Moves `os.path.samefile` from its first `Path.stat` to its second — the
 /// resume half of [`PreConversionEffect::SamefileFirst`]. The second path's
-/// deferred converter error and `FileNotFoundError` for the empty path raise
-/// here, where CPython's `os.stat(f2)` raises them.
+/// deferred converter error raises here, where CPython's `os.stat(f2)` raises it.
 pub(crate) fn samefile_first_reply(
     value: &MontyObject,
     first: String,
@@ -788,11 +790,7 @@ pub(crate) fn samefile_first_reply(
 ) -> Result<Reshaped, RunError> {
     let first_identity =
         stat_identity(value).ok_or_else(|| invalid_reply("os.path.samefile", "a stat result", value))?;
-    let second = match second {
-        Ok(second) if second.is_empty() => return Err(ExcType::file_not_found_error("")),
-        Ok(second) => second,
-        Err(err) => return Err(err.into_error("stat", "path")),
-    };
+    let second = second.map_err(|err| err.into_error("stat", "path"))?;
     Ok(Reshaped::Call {
         call: OsFunctionCall::Stat(MontyPath::new(second.clone())),
         effect: Some(
@@ -917,7 +915,8 @@ fn getctime(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Shared body of the stat getters: the `Path.stat` host call with a
 /// [`PreConversionEffect::StatField`] that keeps one field of the reply. The
-/// empty path fails as CPython's `stat('')` does, without consulting the host.
+/// empty path fails as CPython's `stat('')` does, without suspending, so a call
+/// from a builtin such as `map()` still raises `FileNotFoundError`.
 fn stat_field(path: &Value, field: StatField, vm: &VM<'_>) -> RunResult<CallResult> {
     let path = extract_os_path(path, "stat", "path", PathAccepts::Fd, vm)?;
     if path.is_empty() {

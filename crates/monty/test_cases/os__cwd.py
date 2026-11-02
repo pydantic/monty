@@ -154,5 +154,73 @@ try:
     except TypeError as e:
         if not is_windows:
             assert str(e) == 'chdir: path should be string, bytes, os.PathLike or integer, not float'
+
+    # === the empty path is not the working directory ===
+    assert os.path.exists('') is False
+    assert os.path.isfile('') is False
+    assert os.path.isdir('') is False
+    assert os.path.islink('') is False
+    assert os.path.lexists('') is False
+    assert list(os.walk('')) == []
+    empty_path_calls = [
+        (lambda: os.stat(''), "''"),
+        (lambda: os.path.getsize(''), "''"),
+        (lambda: os.listdir(''), "''"),
+        (lambda: os.scandir(''), "''"),
+        (lambda: open(''), "''"),
+        (lambda: open('', 'w'), "''"),
+        (lambda: open('', 'rb'), "''"),
+        (lambda: os.remove(''), "''"),
+        (lambda: os.unlink(''), "''"),
+        (lambda: os.rmdir(''), "''"),
+        (lambda: os.mkdir(''), "''"),
+        (lambda: os.makedirs('', exist_ok=True), "''"),
+        (lambda: os.rename('', 'renamed.txt'), "'' -> 'renamed.txt'"),
+        (lambda: os.rename('hello.txt', ''), "'hello.txt' -> ''"),
+        (lambda: os.replace('', 'renamed.txt'), "'' -> 'renamed.txt'"),
+        (lambda: os.replace('hello.txt', ''), "'hello.txt' -> ''"),
+    ]
+    for call, spelled in empty_path_calls:
+        try:
+            call()
+            assert False, 'expected OSError'
+        except OSError as e:
+            # Windows CPython raises WinError subclasses and messages for the empty path.
+            if not is_windows:
+                assert isinstance(e, FileNotFoundError)
+                assert str(e) == f'[Errno 2] No such file or directory: {spelled}'
+    assert Path('hello.txt').exists()
+    assert not Path('renamed.txt').exists()
+
+    # called from a builtin, which cannot suspend for an OS call
+    assert list(map(os.path.exists, [''])) == [False]
+    assert list(map(os.path.lexists, [''])) == [False]
+    mapped_empty_path_calls = [
+        lambda: list(map(os.path.getsize, [''])),
+        lambda: list(map(os.path.getmtime, [''])),
+        lambda: list(map(os.path.samefile, [''], ['hello.txt'])),
+    ]
+    for call in mapped_empty_path_calls:
+        try:
+            call()
+            assert False, 'expected OSError'
+        except OSError as e:
+            if not is_windows:
+                assert isinstance(e, FileNotFoundError)
+                assert str(e) == "[Errno 2] No such file or directory: ''"
+
+    # `Path('')` is `Path('.')`, the working directory
+    assert Path('') == Path('.')
+    assert str(Path('')) == '.'
+    assert Path('').name == ''
+    assert Path('').parts == ()
+    assert Path('.').parts == ()
+    assert str(Path('', 'a')) == 'a'
+    assert str(Path('a') / '') == 'a'
+    assert Path('').exists()
+    assert Path('').is_dir()
+    assert Path('').absolute() == Path.cwd()
+    assert Path('').resolve() == resolved_root
+    assert set(Path('').iterdir()) == set(Path('.').iterdir())
 finally:
     os.chdir(original)

@@ -56,8 +56,8 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
-        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, release_pending_effect, resolve_call_paths,
-        urandom_reply_error,
+        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, check_raw_call_paths,
+        release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
     run::{Program, SessionTables, VmEnv},
@@ -1088,23 +1088,23 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Joins paths to cwd and rejects NUL bytes before yielding an OS call.
+    /// Rejects NUL-byte and empty paths, then joins the rest to cwd before yielding an OS call.
     /// Rejected calls release their pending effect; existence predicates finish locally.
     fn prepare_os_call(
         &mut self,
         mut call: OsFunctionCall,
         effect: Option<PendingEffect>,
     ) -> RunResult<Option<FrameExit>> {
-        resolve_call_paths(&mut call, &self.env.cwd);
-        if let Err(message) = call.check_path_null_bytes() {
+        if let Err(err) = check_raw_call_paths(&call) {
             release_pending_effect(effect, self.heap);
             if call.is_existence_check() {
                 self.push(Value::Bool(false));
                 Ok(None)
             } else {
-                Err(ExcType::value_error(message))
+                Err(err)
             }
         } else {
+            resolve_call_paths(&mut call, &self.env.cwd);
             // The effect is armed only after this exit is accepted for dispatch.
             Ok(Some(FrameExit::OsCall {
                 function_call: call,

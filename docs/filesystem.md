@@ -82,6 +82,8 @@ Pass `cwd=` to switch to another absolute virtual path before a feed.
 Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
 For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
 Both rename arguments are normalized.
+An empty string path never reaches a callback or mount: `os.stat('')` and the like raise `FileNotFoundError` in the interpreter, and `os.path.exists('')` returns `False`.
+`Path('')` is `Path('.')`, as in CPython, so `Path('').exists()` checks the working directory.
 Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
 Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
 

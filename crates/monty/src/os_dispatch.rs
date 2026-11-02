@@ -441,14 +441,31 @@ pub(crate) fn release_pending_effect(effect: Option<PendingEffect>, heap: &mut i
     }
 }
 
+/// The error CPython raises for `call`'s paths as the user wrote them, before any I/O:
+/// `ValueError` for a NUL byte, else `FileNotFoundError` for `''`.
+///
+/// Must run before [`resolve_call_paths`], which would turn `''` into the working directory.
+pub(crate) fn check_raw_call_paths(call: &OsFunctionCall) -> RunResult<()> {
+    if let Err(message) = call.check_path_null_bytes() {
+        Err(ExcType::value_error(message))
+    } else if call.has_empty_path() {
+        Err(match (call.fs_primary_path(), call.rename_destination()) {
+            (Some(src), Some(dst)) => ExcType::file_not_found_error_pair(src, dst),
+            (path, _) => ExcType::file_not_found_error(path.unwrap_or_default()),
+        })
+    } else {
+        Ok(())
+    }
+}
+
 /// Resolves every relative path in `call` against `cwd` (see [`posix_join`]).
 ///
-/// Runs at the VM's single OS-call exit, so builtins and `Path` methods can
-/// hand over paths exactly as the user wrote them. Absolute and empty paths
-/// are left untouched, not copied.
+/// Runs at the VM's single OS-call exit, after [`check_raw_call_paths`] has
+/// rejected `''`, so builtins and `Path` methods can hand over paths exactly as
+/// the user wrote them. Absolute paths are left untouched, not copied.
 pub(crate) fn resolve_call_paths(call: &mut OsFunctionCall, cwd: &str) {
     for path in call.fs_paths_mut() {
-        if !path.is_empty() && !path.starts_with('/') {
+        if !path.starts_with('/') {
             *path = MontyPath::new(posix_join(cwd, path));
         }
     }

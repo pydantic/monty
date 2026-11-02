@@ -807,12 +807,27 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 
     /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{path}'`,
-    /// as raised by `os.chdir('')` without consulting the host.
+    /// as raised for an empty path without consulting the host.
     #[must_use]
     fn file_not_found_error(path: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::FileNotFoundError,
             format!("[Errno 2] No such file or directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
+    /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{src}' -> '{dst}'`,
+    /// CPython's two-path form for `os.rename` / `os.replace` with an empty path.
+    #[must_use]
+    fn file_not_found_error_pair(src: &str, dst: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::FileNotFoundError,
+            format!(
+                "[Errno 2] No such file or directory: {} -> {}",
+                StringRepr(src),
+                StringRepr(dst)
+            ),
         )
         .into()
     }
