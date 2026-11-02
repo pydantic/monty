@@ -54,6 +54,7 @@ libm = "0.2"
 # `random.seed(str | bytes)`, which extends the seed with a SHA-512 digest as CPython does
 sha1 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
+subtle = { workspace = true }
 chrono = { workspace = true }
 speedate = "0.17.0"
 itertools = "0.14.0"

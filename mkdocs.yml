@@ -78,6 +78,7 @@ nav:
       - pathlib: 'limitations/pathlib.md'
       - random: 'limitations/random.md'
       - re: 'limitations/re.md'
+      - secrets: 'limitations/secrets.md'
       - sys: 'limitations/sys.md'
       - time: 'limitations/time.md'
       - tomllib: 'limitations/tomllib.md'

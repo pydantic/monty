@@ -72,6 +72,7 @@ const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
     StaticStrings::Pathlib,
     StaticStrings::Random,
     StaticStrings::Re,
+    StaticStrings::Secrets,
     StaticStrings::Sys,
     StaticStrings::Typing,
     StaticStrings::Unicodedata,

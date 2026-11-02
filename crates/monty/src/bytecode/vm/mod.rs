@@ -51,6 +51,7 @@ use crate::{
         json::{JsonStringCache, apply_json_load},
         random::apply_seed_random,
         re::RePatternCache,
+        secrets::default_entropy_value,
         time::apply_clock_reading,
     },
     name_map::NameMap,
@@ -689,6 +690,9 @@ pub struct VMSnapshot {
     cwd: String,
     /// The session's `random` state at the pause.
     random: SessionRandom,
+    /// Mutable `secrets.DEFAULT_ENTROPY`, shared by built-in functions.
+    #[serde(default = "default_entropy_value")]
+    secrets_default_entropy: Value,
     /// The session's file modules at the pause.
     #[serde(default)]
     modules: ModuleCache,
@@ -700,6 +704,7 @@ pub(crate) struct AbandonedState {
     pub globals: Vec<Value>,
     pub cwd: String,
     pub random: SessionRandom,
+    pub secrets_default_entropy: Value,
     pub modules: ModuleCache,
 }
 
@@ -721,6 +726,7 @@ impl VMSnapshot {
             pending_lookup_effect,
             cwd,
             random,
+            secrets_default_entropy,
             mut modules,
             ..
         } = self;
@@ -740,6 +746,7 @@ impl VMSnapshot {
             globals,
             cwd,
             random,
+            secrets_default_entropy,
             modules,
         }
     }
@@ -883,6 +890,9 @@ pub struct VM<'h> {
     /// Preserved across snapshots and REPL feeds, including `random.seed()` changes.
     pub(crate) random: SessionRandom,
 
+    /// Mutable `secrets.DEFAULT_ENTROPY`, shared across REPL snippets.
+    pub(crate) secrets_default_entropy: Value,
+
     /// Modules imported from files, preserved across snapshots and REPL feeds.
     pub(crate) modules: ModuleCache,
 
@@ -928,6 +938,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: SessionRandom::default(),
+            secrets_default_entropy: default_entropy_value(),
             modules: ModuleCache::default(),
             env: program.vm_env(),
         }
@@ -1000,6 +1011,7 @@ impl<'h> VM<'h> {
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
             random: snapshot.random,
+            secrets_default_entropy: snapshot.secrets_default_entropy,
             modules: snapshot.modules,
             env: {
                 let mut env = program.vm_env();
@@ -1057,6 +1069,7 @@ impl<'h> VM<'h> {
             // string), so a later `take_changed_cwd` on this VM stays honest.
             cwd: mem::replace(&mut self.env.cwd, Cow::Borrowed(self.env.initial_cwd)).into_owned(),
             random: mem::take(&mut self.random),
+            secrets_default_entropy: mem::replace(&mut self.secrets_default_entropy, default_entropy_value()),
             modules: mem::take(&mut self.modules),
         }
     }
@@ -1076,6 +1089,12 @@ impl<'h> VM<'h> {
     /// any remaining globals with `drop_with`.
     pub fn take_globals(&mut self) -> Vec<Value> {
         mem::take(&mut self.globals)
+    }
+
+    /// Replaces the shared `secrets.DEFAULT_ENTROPY` state, releasing its old value.
+    pub(crate) fn replace_secrets_default_entropy(&mut self, value: Value) {
+        let old = mem::replace(&mut self.secrets_default_entropy, value);
+        old.drop_with(self);
     }
 
     /// Takes the working directory if this run owns one: after an `os.chdir`,
@@ -2115,11 +2134,26 @@ impl<'h> VM<'h> {
         // Pre-conversion effects reshape the raw host object; a post-conversion
         // effect waits in the slot until the value exists to apply it to.
         let obj = match self.pending_effect.take() {
-            Some(PendingEffect::Pre(effect)) => match effect.reshape(obj, self) {
-                Ok(Reshaped::Value(obj)) => obj,
-                Ok(Reshaped::Call { call, effect }) => return self.suspend_again(call, effect),
-                Err(err) => return self.resume_with_exception(err),
-            },
+            Some(PendingEffect::Pre(effect)) => {
+                self.heap.tracker.on_execution_start();
+                let reshaped = effect.reshape(obj, self);
+                self.heap.tracker.on_execution_stop();
+                match reshaped {
+                    Ok(Reshaped::Value(obj)) => obj,
+                    Ok(Reshaped::VmValue(value)) => {
+                        self.push(value);
+                        return self.run_external();
+                    }
+                    Ok(Reshaped::Call { call, effect }) => {
+                        if let Err(error) = self.finish_host_turn(Ok(Value::None)) {
+                            release_pending_effect(effect, self.heap);
+                            return self.resume_with_exception(error);
+                        }
+                        return self.suspend_again(call, effect);
+                    }
+                    Err(err) => return self.resume_with_exception(err),
+                }
+            }
             // Builds its result straight from the raw reply, never converting it.
             Some(PendingEffect::Scan(effect)) => {
                 return match effect.apply(Ok(obj), self) {
@@ -2356,8 +2390,8 @@ impl<'h> VM<'h> {
                 PendingEffect::Scan(effect) => effect.release(self.heap),
                 PendingEffect::Import(_) => {}
                 // Hold no state or heap references — nothing to roll back.
-                PendingEffect::Pre(_)
-                | PendingEffect::Post(
+                PendingEffect::Pre(effect) => effect.release(self.heap),
+                PendingEffect::Post(
                     PostConversionEffect::OpenName { .. }
                     | PostConversionEffect::DiscardResult
                     | PostConversionEffect::ClockReading { .. },
@@ -2942,6 +2976,7 @@ impl Drop for VM<'_> {
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with(self.heap);
+        mem::replace(&mut self.secrets_default_entropy, default_entropy_value()).drop_with(self.heap);
         mem::take(&mut self.modules).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
     }

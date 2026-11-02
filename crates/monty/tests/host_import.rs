@@ -65,6 +65,29 @@ fn an_unknown_import_suspends_and_binds_the_answer() {
 }
 
 #[test]
+fn host_module_named_secrets_uses_its_own_attributes_and_rejects_assignment() {
+    let module = host_module("secrets", 91, vec![("DEFAULT_ENTROPY", MontyObject::int(7))]);
+    let mut read = MontyRun::new(
+        "secrets.DEFAULT_ENTROPY".to_owned(),
+        "test.py",
+        vec!["secrets".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(read.run_no_limits(vec![module.clone()]).unwrap(), MontyObject::int(7));
+
+    let mut write = MontyRun::new(
+        "secrets.DEFAULT_ENTROPY = 1".to_owned(),
+        "test.py",
+        vec!["secrets".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let error = write.run_no_limits(vec![module]).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::AttributeError);
+}
+
+#[test]
 fn a_host_module_is_a_module_object() {
     let code = "import tools\n(type(tools).__name__, repr(tools), hasattr(tools, '__name__'))";
     let done = answer_import(start(code), "tools", host_module("tools", 1, vec![]));

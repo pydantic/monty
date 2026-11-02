@@ -155,6 +155,8 @@ COPY_FILES = [
     '_io.pyi',
     # narrowed to Monty's surface by custom/random.pyi
     'random.pyi',
+    # custom surface implemented by Monty
+    'secrets.pyi',
     # `os.path` is always `posixpath` (custom/os/path.pyi), which re-exports
     # the host-backed functions from `genericpath`
     'posixpath.pyi',
@@ -196,6 +198,7 @@ pathlib: 3.4-
 pathlib.types: 3.14-
 posixpath: 3.0-
 random: 3.0-
+secrets: 3.0-
 re: 3.0-
 sys: 3.0-
 time: 3.0-
