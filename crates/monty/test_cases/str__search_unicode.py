@@ -25,6 +25,15 @@ for text in ('', 'abcdef', 'äbc中文🐍def', 'aé中🐍' * 200):
                 assert text.endswith(needle, start, stop) == expected_end
                 if not needle:
                     assert text.count(needle, start, stop) == len(matches)
+        for bounds in ((), (None,), (None, None)):
+            assert text.find(needle, *bounds) == text.find(needle)
+            assert text.rfind(needle, *bounds) == text.rfind(needle)
+            assert text.count(needle, *bounds) == text.count(needle)
+            assert text.startswith(needle, *bounds) == text.startswith(needle)
+            assert text.endswith(needle, *bounds) == text.endswith(needle)
+            if needle in text:
+                assert text.index(needle, *bounds) == text.index(needle)
+                assert text.rindex(needle, *bounds) == text.rindex(needle)
     assert text.find('not-present') == -1
     assert text.count('not-present') == 0
     assert text.find('') == 0
