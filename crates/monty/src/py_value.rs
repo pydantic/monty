@@ -545,6 +545,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(BuiltinType::Type, key.clone_with_heap(vm), vm)),
             Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
+            Self::Marker(form) if form.is_generic_form() => GenericAlias::subscript_special(*form, key.clone_with_heap(vm), vm),
+            // CPython's wording per kind of `typing` object: `Any` and `TypeVar`
+            // are classes, `Self` and friends special forms, the two bases generic.
+            Self::Marker(Marker(StaticStrings::Any)) => Err(ExcType::type_error_type_not_subscriptable("Any")),
+            Self::Marker(Marker(StaticStrings::TypeVar)) => Err(ExcType::type_error_type_not_subscriptable("typing.TypeVar")),
+            Self::Marker(Marker(form @ (StaticStrings::Generic | StaticStrings::Protocol))) => Err(ExcType::type_error(format!(
+                "Parameters to {}[...] must all be type variables or parameter specification variables.",
+                <&str>::from(*form)
+            ))),
+            Self::Marker(form) if form.py_type() == Type::SpecialForm => {
+                Err(ExcType::type_error(format!("typing.{} is not subscriptable", <&str>::from(form.0))))
+            }
             Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
             Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),

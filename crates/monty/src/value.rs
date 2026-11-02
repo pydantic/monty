@@ -2086,6 +2086,31 @@ impl Marker {
         }
     }
 
+    /// Whether this `typing` form is subscriptable (`List[int]`, `ClassVar[int]`),
+    /// building a [`GenericAlias`](crate::types::GenericAlias); `Optional[X]`
+    /// builds a union instead, and `Any`, `TypeVar` and the rest are not generic.
+    pub(crate) fn is_generic_form(self) -> bool {
+        matches!(
+            self.0,
+            StaticStrings::ListType
+                | StaticStrings::DictType
+                | StaticStrings::TupleType
+                | StaticStrings::SetType
+                | StaticStrings::FrozenSet
+                | StaticStrings::Callable
+                | StaticStrings::Type
+                | StaticStrings::Sequence
+                | StaticStrings::Mapping
+                | StaticStrings::Iterable
+                | StaticStrings::IteratorType
+                | StaticStrings::Generator
+                | StaticStrings::ClassVar
+                | StaticStrings::FinalType
+                | StaticStrings::Literal
+                | StaticStrings::Annotated
+        )
+    }
+
     /// Writes the Python repr for this marker.
     ///
     /// System markers have special repr formats ("<stdout>", "<stderr>");

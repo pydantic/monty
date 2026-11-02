@@ -1,9 +1,12 @@
 //! `types.GenericAlias` — the runtime value of `list[int]`, `dict[str, int]`,
-//! `tuple[int, ...]` and the other parameterized builtin types.
+//! `tuple[int, ...]` and the other parameterized builtin types — and, sharing
+//! the type, CPython's `typing._GenericAlias`: `typing.List[int]`,
+//! `ClassVar[int]`, `Annotated[int, 'meta']` and the other subscripted
+//! `typing` special forms.
 //!
-//! An alias records which type was subscripted and with what, and otherwise
-//! behaves like the type it parameterizes: calling `list[int](x)` calls
-//! `list(x)`, and any attribute other than `__origin__`, `__args__` and
+//! An alias records which type or form was subscripted and with what, and
+//! otherwise behaves like the type it parameterizes: calling `list[int](x)`
+//! calls `list(x)`, and any attribute other than `__origin__`, `__args__` and
 //! `__parameters__` is looked up on the origin. Nothing inspects the
 //! arguments, so `list[int]` and `list[3.5]` are equally valid, as in CPython.
 
@@ -17,33 +20,48 @@ use serde::{Deserialize, Serialize};
 use smallvec::smallvec;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{
+        ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
+    },
     intern::StaticStrings,
     types::{
         BuiltinType, LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time,
         tuple::allocate_tuple,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, Marker, Value},
 };
 
-/// A parameterized builtin type such as `list[int]`.
+/// What an alias parameterizes: a builtin type (`list[int]`) or a `typing`
+/// special form (`typing.List[int]`, `ClassVar[int]`), CPython's
+/// `types.GenericAlias` and `typing._GenericAlias` in one type. Untagged so a
+/// builtin origin dumps as the bare type it always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum AliasOrigin {
+    /// A builtin type satisfying [`Type::has_class_getitem`]; never a class object.
+    Builtin(BuiltinType),
+    /// A `typing` marker satisfying [`Marker::is_generic_form`].
+    Special(Marker),
+}
+
+/// A parameterized builtin type such as `list[int]`, or `typing` form such as `List[int]`.
 ///
 /// `args` is an OWNED ref to the `__args__` tuple — the subscript itself when
 /// it was a tuple (`dict[str, int]`), otherwise a one-item tuple wrapping it —
-/// so `py_dec_ref_ids` and `for_each_child_id` must both release it.
+/// so `py_dec_ref_ids` and `for_each_child_id` must both release it. For
+/// `Annotated[T, *metadata]` it holds `T` and the metadata together, which
+/// `__args__` and `__metadata__` split.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct GenericAlias {
-    /// The subscripted type, `list` in `list[int]`. Never a class object:
-    /// only the builtin types in [`Type::has_class_getitem`] are subscriptable.
-    origin: BuiltinType,
-    /// The `__args__` tuple, always a `Value::Ref` to a `HeapData::Tuple`,
-    /// shared with every read of that attribute.
+    /// The subscripted type or form, `list` in `list[int]`.
+    origin: AliasOrigin,
+    /// The subscript as a tuple, always a `Value::Ref` to a `HeapData::Tuple`.
     args: Value,
 }
 
@@ -54,6 +72,49 @@ impl GenericAlias {
     /// `type 'int' is not subscriptable` error for the rest.
     pub(crate) fn subscript(origin: BuiltinType, key: Value, vm: &mut VM<'_>) -> Value {
         debug_assert!(Type::from(origin).has_class_getitem(), "{origin} is not a generic type");
+        Self::allocate(AliasOrigin::Builtin(origin), key, vm)
+    }
+
+    /// Builds `typing.Form[key]` for a form satisfying [`Marker::is_generic_form`],
+    /// taking ownership of `key`, with the argument checks CPython makes.
+    pub(crate) fn subscript_special(form: Marker, key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+        debug_assert!(form.is_generic_form(), "{form:?} is not subscriptable");
+        let mut key_guard = DropGuard::new(key, vm);
+        let (key, vm) = key_guard.as_parts();
+        let count = match key {
+            Value::Ref(id) if let HeapData::Tuple(items) = vm.heap.get(*id) => items.as_slice().len(),
+            _ => 1,
+        };
+        match form.0 {
+            StaticStrings::Annotated if count < 2 => {
+                return Err(ExcType::type_error(
+                    "Annotated[...] should be used with at least two arguments (a type and an annotation).",
+                ));
+            }
+            StaticStrings::ClassVar | StaticStrings::FinalType if count != 1 => {
+                let repr = key.py_repr(vm)?;
+                defer_drop!(repr, vm);
+                return Err(ExcType::type_error(format!(
+                    "typing.{} accepts only single type. Got {}.",
+                    <&str>::from(form.0),
+                    repr.as_str(vm).unwrap_or_default()
+                )));
+            }
+            _ => {}
+        }
+        let (key, vm) = key_guard.into_parts();
+        // `typing` forms normalise a `None` argument to `NoneType`, as CPython's
+        // `_type_check` does — except `Literal` values and `Annotated` metadata.
+        let key = match form.0 {
+            StaticStrings::Literal => key,
+            StaticStrings::Annotated => none_to_none_type(key, 1, vm),
+            _ => none_to_none_type(key, usize::MAX, vm),
+        };
+        Ok(Self::allocate(AliasOrigin::Special(form), key, vm))
+    }
+
+    /// Allocates the alias, wrapping a non-tuple `key` as a one-item `__args__`.
+    fn allocate(origin: AliasOrigin, key: Value, vm: &mut VM<'_>) -> Value {
         // A tuple key is `__args__` itself, as in CPython, so `tuple[()]`
         // has empty args and `list[int, str]` two.
         let is_tuple = matches!(&key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Tuple(_)));
@@ -65,16 +126,49 @@ impl GenericAlias {
         Value::Ref(vm.heap.allocate(HeapData::GenericAlias(Self { origin, args })))
     }
 
-    /// The value `__origin__` reports and a call dispatches to.
+    /// The subscripted type or form.
+    pub(crate) fn origin(&self) -> AliasOrigin {
+        self.origin
+    }
+
+    /// The value `__origin__` reports and a call dispatches to, as an owned value.
     ///
     /// `type` is a builtin function rather than a `Type` value in Monty, so
     /// `type[int]` hands back that function: `type[int].__origin__ is type`
-    /// holds and `type[int](x)` reaches `type()`.
-    pub(crate) fn origin_value(&self) -> Value {
+    /// holds and `type[int](x)` reaches `type()`. A `typing` alias of a builtin
+    /// (`typing.List[int]`) reports that builtin; `Annotated[T, ...]` reports
+    /// `T`; the other forms report themselves.
+    pub(crate) fn origin_value(&self, heap: &Heap) -> Value {
         match self.origin {
-            BuiltinType::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
-            origin => Value::Builtin(Builtins::Type(origin)),
+            AliasOrigin::Builtin(BuiltinType::Type) => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+            AliasOrigin::Builtin(origin) => Value::Builtin(Builtins::Type(origin)),
+            AliasOrigin::Special(form) => match form.0 {
+                StaticStrings::ListType => Value::Builtin(Builtins::Type(BuiltinType::List)),
+                StaticStrings::DictType => Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+                StaticStrings::TupleType => Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                StaticStrings::SetType => Value::Builtin(Builtins::Type(BuiltinType::Set)),
+                StaticStrings::FrozenSet => Value::Builtin(Builtins::Type(BuiltinType::FrozenSet)),
+                StaticStrings::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                StaticStrings::Annotated => self.annotated_type(heap),
+                _ => Value::Marker(form),
+            },
         }
+    }
+
+    /// Whether this is `Annotated[T, *metadata]`.
+    fn is_annotated(&self) -> bool {
+        matches!(self.origin, AliasOrigin::Special(Marker(StaticStrings::Annotated)))
+    }
+
+    /// The `T` of `Annotated[T, *metadata]`, owned.
+    fn annotated_type(&self, heap: &Heap) -> Value {
+        let Value::Ref(id) = self.args else {
+            unreachable!("GenericAlias::args is always a tuple")
+        };
+        let HeapData::Tuple(items) = heap.get(id) else {
+            unreachable!("GenericAlias::args is always a tuple")
+        };
+        items.as_slice()[0].clone_with_heap(heap)
     }
 
     /// Invokes `on_child` for the heap id this alias owns (GC trace hook).
@@ -100,10 +194,21 @@ impl HeapItem for GenericAlias {
 }
 
 impl<'h> HeapObjectRead<'h, GenericAlias> {
-    /// The origin type and an owned ref to the `__args__` tuple.
-    fn parts(&self, vm: &mut VM<'h>) -> (BuiltinType, Value) {
+    /// The origin and an owned ref to the stored args tuple.
+    fn parts(&self, vm: &mut VM<'h>) -> (AliasOrigin, Value) {
         let this = self.get(vm.heap);
         (this.origin, this.args.clone_with_heap(vm))
+    }
+
+    /// `__args__`, owned: the stored tuple, or for `Annotated` its type alone.
+    fn dunder_args(&self, vm: &mut VM<'h>) -> Value {
+        let this = self.get(vm.heap);
+        if this.is_annotated() {
+            let item = this.annotated_type(vm.heap);
+            allocate_tuple(smallvec![item], vm.heap)
+        } else {
+            this.args.clone_with_heap(vm)
+        }
     }
 
     /// The alias's repr as a plain string, for error messages that name it.
@@ -116,10 +221,40 @@ impl<'h> HeapObjectRead<'h, GenericAlias> {
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// `list[int](x)` is `list(x)`: the subscript is erased at runtime, so the
-    /// arguments go straight to the origin type.
+    /// arguments go straight to the origin type. A `typing` form refuses, with
+    /// CPython's message for a bare generic, an abstract class or a special form.
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let origin = self.get(vm.heap).origin_value();
-        vm.call_function(&origin, args)
+        let this = self.get(vm.heap);
+        if let AliasOrigin::Special(form) = this.origin
+            && !this.is_annotated()
+        {
+            args.drop_with(vm);
+            let name: &str = form.0.into();
+            let message = match form.0 {
+                StaticStrings::ListType
+                | StaticStrings::DictType
+                | StaticStrings::TupleType
+                | StaticStrings::SetType
+                | StaticStrings::FrozenSet
+                | StaticStrings::Type => {
+                    format!(
+                        "Type {name} cannot be instantiated; use {}() instead",
+                        name.to_lowercase()
+                    )
+                }
+                StaticStrings::Callable => abstract_class_error(name, "'__call__'"),
+                StaticStrings::Sequence => abstract_class_error(name, "'__getitem__', '__len__'"),
+                StaticStrings::Mapping => abstract_class_error(name, "'__getitem__', '__iter__', '__len__'"),
+                StaticStrings::Iterable => abstract_class_error(name, "'__iter__'"),
+                StaticStrings::IteratorType => abstract_class_error(name, "'__next__'"),
+                StaticStrings::Generator => abstract_class_error(name, "'send', 'throw'"),
+                _ => format!("Cannot instantiate typing.{name}"),
+            };
+            return Err(ExcType::type_error(message));
+        }
+        let origin = this.origin_value(vm.heap);
+        defer_drop!(origin, vm);
+        vm.call_function(origin, args)
     }
 
     fn py_type(&self, _: &VM<'h>) -> Type {
@@ -158,8 +293,12 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             return Ok(None);
         };
         let mut hasher = AHasher::default();
-        // Dicts and sets persist hashes; retain Type's original discriminants.
-        Type::from(origin).hash(&mut hasher);
+        // Dicts and sets persist hashes: a builtin origin hashes by Type's
+        // original discriminant, a form by its name, which never move.
+        match origin {
+            AliasOrigin::Builtin(origin) => Type::from(origin).hash(&mut hasher),
+            AliasOrigin::Special(form) => <&str>::from(form.0).hash(&mut hasher),
+        }
         args_hash.hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
@@ -179,7 +318,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             unreachable!("GenericAlias::args is always a tuple")
         };
 
-        write!(f, "{}[", Type::from(origin).name(vm.heap, vm.interns))?;
+        match origin {
+            AliasOrigin::Builtin(origin) => write!(f, "{}[", Type::from(origin).name(vm.heap, vm.interns))?,
+            AliasOrigin::Special(form) => {
+                form.py_repr_fmt(f)?;
+                f.write_char('[')?;
+            }
+        }
         let count = args.get(vm.heap).as_slice().len();
         if count == 0 {
             f.write_str("()")?;
@@ -199,17 +344,34 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         Ok(f.write_char(']')?)
     }
 
-    /// `__origin__`, `__args__` and `__parameters__` (always `()`, Monty
-    /// having no `TypeVar`s); everything else resolves on the origin type, so
-    /// `list[int].__name__` is `'list'` and unknown names report `list`.
+    /// `__origin__`, `__args__`, `__parameters__` (always `()`, Monty having
+    /// no `TypeVar`s) and, for `Annotated`, `__metadata__`; everything else
+    /// resolves on a builtin origin type, so `list[int].__name__` is `'list'`
+    /// and unknown names report `list`, and is an error on a `typing` form.
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
-        let (origin, args) = self.parts(vm);
-        defer_drop!(args, vm);
+        let origin = self.get(vm.heap).origin;
         match attr.static_string(vm.interns) {
-            Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value()))),
-            Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(args.clone_with_heap(vm)))),
+            Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(self.get(vm.heap).origin_value(vm.heap)))),
+            Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.dunder_args(vm)))),
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
-            _ => Value::Builtin(Builtins::Type(origin)).py_getattr(attr, vm).map(Some),
+            Some(StaticStrings::DunderMetadata) if self.get(vm.heap).is_annotated() => {
+                let (_, args) = self.parts(vm);
+                defer_drop!(args, vm);
+                let Some(HeapReadOutput::Tuple(args)) = args.read_heap(vm) else {
+                    unreachable!("GenericAlias::args is always a tuple")
+                };
+                let metadata = args.get(vm.heap).as_slice()[1..]
+                    .iter()
+                    .map(|item| item.clone_with_heap(vm.heap))
+                    .collect();
+                Ok(Some(CallResult::Value(allocate_tuple(metadata, vm.heap))))
+            }
+            _ => match origin {
+                AliasOrigin::Builtin(origin) => Value::Builtin(Builtins::Type(origin)).py_getattr(attr, vm).map(Some),
+                AliasOrigin::Special(_) => {
+                    Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                }
+            },
         }
     }
 
@@ -218,18 +380,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     /// dispatch to the origin's classmethods, and `list[int].__name__()` to
     /// the origin's own attributes.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if matches!(
+        let own_attribute = matches!(
             attr.static_string(vm.interns),
-            Some(StaticStrings::DunderOrigin | StaticStrings::DunderArgs | StaticStrings::DunderParameters)
-        ) {
-            let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {
-                unreachable!("the alias's own attributes are always plain values")
-            };
-            defer_drop!(value, vm);
-            return vm.call_function(value, args);
+            Some(
+                StaticStrings::DunderOrigin
+                    | StaticStrings::DunderArgs
+                    | StaticStrings::DunderParameters
+                    | StaticStrings::DunderMetadata
+            )
+        );
+        match self.get(vm.heap).origin {
+            AliasOrigin::Builtin(origin) if !own_attribute => Type::from(origin).call_class_method(attr, args, vm),
+            _ => {
+                let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {
+                    unreachable!("the alias's own attributes are always plain values")
+                };
+                defer_drop!(value, vm);
+                vm.call_function(value, args)
+            }
         }
-        let origin = Type::from(self.get(vm.heap).origin);
-        origin.call_class_method(attr, args, vm)
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -248,9 +417,90 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
     }
 }
 
+/// Replaces `None` with `NoneType` in the first `limit` items of a subscript
+/// (`key` itself when it is not a tuple), taking and returning ownership.
+fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> Value {
+    let none_type = || Value::Builtin(Builtins::Type(BuiltinType::NoneType));
+    let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
+        return if matches!(key, Value::None) { none_type() } else { key };
+    };
+    let count = items.get(vm.heap).as_slice().len();
+    let mut converted = smallvec![];
+    for index in 0..count {
+        let item = items.clone_item(index, vm);
+        converted.push(if index < limit && matches!(item, Value::None) {
+            none_type()
+        } else {
+            item
+        });
+    }
+    defer_drop!(key, vm);
+    allocate_tuple(converted, vm.heap)
+}
+
+/// CPython's `TypeError` for instantiating one of `collections.abc`'s classes.
+fn abstract_class_error(name: &str, methods: &str) -> String {
+    let noun = if methods.contains(',') { "methods" } else { "method" };
+    format!("Can't instantiate abstract class {name} without an implementation for abstract {noun} {methods}")
+}
+
+/// Frozen helper for `typing.get_type_hints`: `alias_with(alias, args, include_extras)`
+/// rebuilds `alias` around the resolved `args` tuple (the alias itself when they
+/// are unchanged), and strips `Annotated[T, ...]` to `T` unless `include_extras`.
+pub(crate) fn call_alias_with(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    let AliasWithArgs {
+        alias,
+        resolved,
+        include_extras,
+    } = AliasWithArgs::from_args(args, vm)?;
+    defer_drop!(alias, vm);
+    defer_drop!(resolved, vm);
+    let Some(HeapReadOutput::GenericAlias(generic)) = alias.read_heap(vm) else {
+        unreachable!("frozen code passes a generic alias")
+    };
+    let (origin, args) = generic.parts(vm);
+    defer_drop!(args, vm);
+    if generic.get(vm.heap).is_annotated() {
+        let Some(HeapReadOutput::Tuple(resolved_items)) = resolved.read_heap(vm) else {
+            unreachable!("frozen code passes the resolved args as a tuple")
+        };
+        let inner = resolved_items.clone_item(0, vm);
+        if !matches!(include_extras, Value::Bool(true)) {
+            return Ok(inner);
+        }
+        let Some(HeapReadOutput::Tuple(stored)) = args.read_heap(vm) else {
+            unreachable!("GenericAlias::args is always a tuple")
+        };
+        let mut items = smallvec![inner];
+        for index in 1..stored.get(vm.heap).as_slice().len() {
+            items.push(stored.clone_item(index, vm));
+        }
+        let key = allocate_tuple(items, vm.heap);
+        return Ok(GenericAlias::allocate(origin, key, vm));
+    }
+    if resolved.py_eq(args, vm)? {
+        Ok(alias.clone_with_heap(vm))
+    } else {
+        Ok(GenericAlias::allocate(origin, resolved.clone_with_heap(vm), vm))
+    }
+}
+
+/// Arguments of the private `alias_with` helper.
+#[derive(FromArgs)]
+#[from_args(name = "alias_with")]
+struct AliasWithArgs {
+    #[from_args(pos_only)]
+    alias: Value,
+    #[from_args(pos_only)]
+    resolved: Value,
+    #[from_args(pos_only)]
+    include_extras: Value,
+}
+
 /// Writes one `__args__` item the way CPython's `ga_repr_item` does: a type
 /// by its qualified name (`int`, `collections.deque`, a class's bare name),
-/// `...` for `Ellipsis`, and the ordinary repr for anything else.
+/// `...` for `Ellipsis`, a list item by item (`Callable[[int], str]`), and the
+/// ordinary repr for anything else.
 pub(crate) fn repr_type_arg(
     item: &Value,
     f: &mut impl Write,
@@ -266,6 +516,21 @@ pub(crate) fn repr_type_arg(
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
             HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
             HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.interns))?),
+            HeapData::List(_) => {
+                let Some(HeapReadOutput::List(list)) = item.read_heap(vm) else {
+                    unreachable!("matched a list")
+                };
+                f.write_char('[')?;
+                for index in 0..list.get(vm.heap).as_slice().len() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    let element = list.clone_item(index, vm);
+                    defer_drop!(element, vm);
+                    repr_type_arg(element, f, vm, heap_ids)?;
+                }
+                Ok(f.write_char(']')?)
+            }
             _ => item.py_repr_fmt(f, vm, heap_ids),
         },
         _ => item.py_repr_fmt(f, vm, heap_ids),
@@ -295,7 +560,10 @@ mod tests {
             let bytes = minicbor_serde::to_vec(&legacy).unwrap();
             let alias: GenericAlias = minicbor_serde::from_slice(&bytes).unwrap();
 
-            assert_eq!(alias.origin, BuiltinType::try_from(origin).unwrap());
+            assert_eq!(
+                alias.origin,
+                AliasOrigin::Builtin(BuiltinType::try_from(origin).unwrap())
+            );
             assert_eq!(minicbor_serde::to_vec(&alias).unwrap(), bytes);
         }
     }

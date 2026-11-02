@@ -1041,6 +1041,9 @@ pub enum StaticStrings {
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,
+    /// `__metadata__` of `typing.Annotated[T, *metadata]`.
+    #[strum(serialize = "__metadata__")]
+    DunderMetadata,
     /// `defaultdict.__missing__` method.
     #[strum(serialize = "__missing__")]
     DunderMissing,
