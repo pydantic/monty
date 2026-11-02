@@ -1346,13 +1346,13 @@ class OSAccess(AbstractOS):
 
             src_name = PurePosixPath(path).name
             target_name = PurePosixPath(target).name
+            updates = self._renamed_file_paths(src_entry, PurePosixPath(path), PurePosixPath(target))
             # remove it from the old directory
             del parent_dir[src_name]
             # and put it in the new directory
             target_parent[target_name] = src_entry
-
-            # Update paths for all files in the renamed directory
-            self._update_paths_recursive(src_entry, PurePosixPath(path), PurePosixPath(target))
+            for file, new_path in updates:
+                file.path = new_path
 
     def path_resolve(self, path: PurePosixPath) -> str:
         # No symlinks in OSAccess, so resolve is same as absolute with normalization
@@ -1416,20 +1416,19 @@ class OSAccess(AbstractOS):
     def _parent_entry(self, path: PurePosixPath) -> Tree | AbstractFile | None:
         return self._get_entry(PurePosixPath(path).parent)
 
-    def _update_paths_recursive(self, tree: Tree, old_prefix: PurePosixPath, new_prefix: PurePosixPath) -> None:
-        """Update path attributes for all files in a tree after directory rename.
-
-        When a directory is renamed, the internal tree structure is moved but
-        AbstractFile objects still have their old paths. This method recursively
-        updates all file paths by replacing old_prefix with new_prefix.
-        """
-        for entry in tree.values():
-            if _is_file(entry):
-                # Replace old prefix with new prefix in file path
-                relative = entry.path.relative_to(old_prefix)
-                entry.path = new_prefix / relative
-            elif _is_dir(entry):
-                self._update_paths_recursive(entry, old_prefix, new_prefix)
+    def _renamed_file_paths(
+        self, tree: Tree, old_prefix: PurePosixPath, new_prefix: PurePosixPath
+    ) -> list[tuple[AbstractFile, PurePosixPath]]:
+        """Prepare file paths before moving a directory, without recursing through its tree."""
+        updates: list[tuple[AbstractFile, PurePosixPath]] = []
+        pending = [tree]
+        while pending:
+            for entry in pending.pop().values():
+                if _is_file(entry):
+                    updates.append((entry, new_prefix / entry.path.relative_to(old_prefix)))
+                elif _is_dir(entry):
+                    pending.append(entry)
+        return updates
 
 
 def path_from_arg(arg: PurePosixPath | MontyFileHandle) -> PurePosixPath:

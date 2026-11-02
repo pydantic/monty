@@ -8,6 +8,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 """
 
 import datetime
+import sys
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -1682,6 +1683,27 @@ def test_rename_directory_updates_file_paths_direct():
     # Verify old paths no longer exist
     assert fs.path_exists(P('/old/dir')) is False
     assert fs.path_exists(P('/old/dir/file1.txt')) is False
+
+
+@pytest.mark.parametrize('via_monty', [False, True])
+def test_rename_deep_directory(monty_run: RunMonty, via_monty: bool):
+    deep_path = P('/a') / '/'.join(['d'] * (sys.getrecursionlimit() + 10)) / 'file.txt'
+    files = [MemoryFile('/a/shallow.txt', 'shallow'), MemoryFile(deep_path, 'deep')]
+    fs = OSAccess(files)
+    fs.path_mkdir(P('/a/empty'), parents=False, exist_ok=False)
+
+    if via_monty:
+        monty_run('from pathlib import Path; Path("/a").rename("/b")', os=fs)
+    else:
+        fs.path_rename(P('/a'), P('/b'))
+
+    assert fs.path_exists(P('/a')) == snapshot(False)
+    assert fs.path_is_dir(P('/b/empty')) == snapshot(True)
+    for file, old_path in zip(files, [P('/a/shallow.txt'), deep_path], strict=True):
+        new_path = P('/b') / old_path.relative_to('/a')
+        assert file.path == new_path
+        assert file.deleted == snapshot(False)
+        assert fs.path_read_text(new_path) == file.content
 
 
 @pytest.mark.parametrize('via_monty', [False, True])
