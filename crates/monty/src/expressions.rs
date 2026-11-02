@@ -665,7 +665,11 @@ pub enum Node<F> {
     Pass,
     Expr(ExprLoc),
     Return(Option<ExprLoc>),
-    Raise(Option<ExprLoc>),
+    /// `raise exc from cause`; a bare `raise` has neither.
+    Raise {
+        exc: Option<ExprLoc>,
+        cause: Option<ExprLoc>,
+    },
     Assert {
         test: ExprLoc,
         msg: Option<ExprLoc>,
