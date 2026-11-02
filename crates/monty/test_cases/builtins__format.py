@@ -19,6 +19,34 @@ spec = '>+8.2f'
 assert format(3.14159, spec) == f'{3.14159:{spec}}' == '{:>+8.2f}'.format(3.14159)
 assert format('hi', '5') == f'{"hi":5}'
 
+
+# === Objects without a format mini-language ===
+class Unformatted:
+    def __str__(self):
+        return 'plain'
+
+
+for value, type_name, text in (
+    ([1], 'list', '[1]'),
+    (None, 'NoneType', 'None'),
+    ((1,), 'tuple', '(1,)'),
+    ({'a': 1}, 'dict', "{'a': 1}"),
+    ({1}, 'set', '{1}'),
+    (frozenset([1]), 'frozenset', 'frozenset({1})'),
+    (range(1), 'range', 'range(0, 1)'),
+    (slice(1), 'slice', 'slice(None, 1, None)'),
+    (b'x', 'bytes', "b'x'"),
+    (Unformatted(), 'Unformatted', 'plain'),
+):
+    assert format(value) == text
+    assert format(value, '') == text
+    for spec in ('5', '>5', '0', '０', 's', '+', '#', '.', 'q', 'not-a-spec'):
+        try:
+            format(value, spec)
+            assert False, 'expected unsupported format spec to fail'
+        except TypeError as e:
+            assert str(e) == f'unsupported format string passed to {type_name}.__format__'
+
 # === Heap spec strings ===
 assert format(7, ''.join(['0', '3', 'd'])) == '007'
 assert format(7, '0' + '5d') == '00007'
