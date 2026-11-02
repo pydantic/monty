@@ -294,6 +294,10 @@ pub struct Compiler<'a, 'i> {
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches copied into nested scopes"
+)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -304,6 +308,9 @@ struct ScopeFlags {
     /// Rejects `await` at snippet top level and in its class bodies.
     /// Nested function bodies reset this restriction.
     forbid_await: bool,
+    /// Whether the compile unit runs under `from __future__ import annotations`,
+    /// stamped on every `Code` it produces.
+    future_annotations: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -536,8 +543,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -549,8 +557,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(
+            nodes,
+            interns,
+            globals,
+            options,
+            Some(globals_by_name),
+            future_annotations,
+        )
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
@@ -560,6 +576,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
         check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
@@ -569,6 +586,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
+            future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
 
@@ -581,7 +599,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
+    }
+
+    /// Builds the compiled `Code`, stamped with the unit's `__future__` state.
+    fn finish(self) -> Code {
+        self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -622,7 +645,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -1032,11 +1055,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
-    /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the 3-arg
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    /// implicit `LoadNone; ReturnValue` tail with a
+    /// `type.__build_class__(name, {...}, future_annotations)` call: push the
+    /// class name, then for each member (in source order) `LoadConst <name>`
+    /// and the member's value from its class-body slot, build the namespace
+    /// dict, push the body's `from __future__ import annotations` state, and
+    /// call the hidden builtin (which builds the `Class`), then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1058,10 +1082,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // should point at the class statement, not the last member's line.
         compiler.code.set_location(position, None);
 
-        // type(name, (), {members...}): push the name and empty bases tuple...
+        // type.__build_class__(name, {members...}, future): push the name...
         let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
         compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
-        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
 
         // ...then the namespace dict: (name, value) for each member in order.
         for member in members {
@@ -1072,13 +1095,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let member_count = check_collection_size_u16(members.len(), position)?;
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
 
-        // ...and call the 3-arg type() builtin, which builds the class object.
+        // ...then the PEP 563 state, and the hidden builtin that builds the class object.
+        let future_const = compiler.code.add_const(Value::Bool(flags.future_annotations))?;
+        compiler.code.emit_u16(Opcode::LoadConst, future_const)?;
         compiler
             .code
-            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+            .emit_call_builtin_function(BuiltinsFunctions::BuildClass as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.

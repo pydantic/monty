@@ -16,6 +16,16 @@ use ruff_python_ast::{
 use ruff_python_codegen::{Generator, Indentation};
 use ruff_source_file::LineEnding;
 
+/// The value of `annotation` when it is a plain string literal (`'Foo'`, or an
+/// implicit concatenation), which `Format.STRING` reports unquoted.
+pub(crate) fn string_literal_text(annotation: &str) -> Option<String> {
+    let parsed = ruff_python_parser::parse_expression(annotation).ok()?;
+    match parsed.into_syntax().body.as_ref() {
+        AstExpr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+        _ => None,
+    }
+}
+
 /// Renders `annotation` to the text CPython's PEP 563 stringizer would produce.
 ///
 /// Takes `&mut` because canonicalising the literals rewrites them in place.
