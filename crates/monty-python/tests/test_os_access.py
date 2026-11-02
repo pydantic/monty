@@ -8,6 +8,7 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 """
 
 import datetime
+import errno
 import time
 import tracemalloc
 from pathlib import Path, PurePosixPath
@@ -256,7 +257,12 @@ results
     with pytest.raises(OSError) as exc_info:
         fs.path_write_text(P('/new.txt'), 'x' * 11)
     assert str(exc_info.value) == snapshot("[Errno 27] File too large: '/new.txt'")
+    assert (exc_info.value.errno, exc_info.value.filename) == (errno.EFBIG, '/new.txt')
     assert not fs.path_exists(P('/new.txt'))
+    with pytest.raises(OSError) as exc_info:
+        OSAccess(max_total_file_bytes=1).path_write_text(P('/new.txt'), 'xx')
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/new.txt'")
+    assert (exc_info.value.errno, exc_info.value.filename) == (errno.ENOSPC, '/new.txt')
 
 
 def test_max_total_file_bytes(monty_run: RunMonty):
@@ -306,17 +312,71 @@ def test_file_byte_caps_count_encoded_text():
     assert fs.path_read_text(P('/a.txt')) == 'é' * 5
 
 
-def test_overwritten_content_is_not_retained():
+@pytest.mark.parametrize('remove', ['overwrite', 'unlink', 'rename_over'])
+def test_released_content_is_not_retained(remove: str):
     """Accounting must not keep old payloads alive, or the host grows past both caps."""
-    fs = OSAccess()
+    fs = OSAccess(max_total_file_bytes=2_000_000)
     tracemalloc.start()
     try:
         for i in range(20):
-            fs.path_write_bytes(P('/a.bin'), bytes([i]) * 1_000_000)
+            if remove == 'rename_over':
+                fs.path_write_bytes(P('/b.bin'), bytes([i]) * 1_000_000)
+                fs.path_rename(P('/b.bin'), P('/a.bin'))
+            else:
+                fs.path_write_bytes(P('/a.bin'), bytes([i]) * 1_000_000)
+                if remove == 'unlink':
+                    fs.path_unlink(P('/a.bin'))
         retained, _ = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
     assert retained < 3_000_000
+    assert len(fs.files) <= 1
+
+
+def test_unlink_after_rename(monty_run: RunMonty):
+    """A renamed file unlinks once under its new name; the refund cannot repeat."""
+    fs = OSAccess(max_total_file_bytes=20)
+    code = """
+from pathlib import Path
+results = []
+def attempt(f):
+    try:
+        results.append(f())
+    except OSError as e:
+        results.append(str(e))
+Path('/a').write_text('x' * 20)
+Path('/a').rename('/b')
+Path('/b').rename('/c')
+attempt(lambda: Path('/c').unlink())
+attempt(lambda: Path('/c').unlink())
+attempt(lambda: Path('/d').write_text('y' * 20))
+attempt(lambda: Path('/e').write_text('z'))
+results.append(sorted(str(p) for p in Path('/').iterdir()))
+results
+"""
+    assert monty_run(code, os=fs) == snapshot(
+        [
+            None,
+            "[Errno 2] No such file or directory: '/c'",
+            20,
+            "[Errno 28] No space left on device: '/e'",
+            ['/d'],
+        ]
+    )
+
+
+def test_initial_content_over_cap_only_blocks_growth():
+    """Initial files are not rejected; content already over a cap can shrink but not grow."""
+    fs = OSAccess([MemoryFile('/a.txt', 'x' * 20)], max_file_bytes=10, max_total_file_bytes=10)
+    with pytest.raises(OSError) as exc_info:
+        fs.path_append_text(P('/a.txt'), 'x')
+    assert str(exc_info.value) == snapshot("[Errno 27] File too large: '/a.txt'")
+    assert fs.path_write_text(P('/a.txt'), 'x' * 15) == 15
+    with pytest.raises(OSError) as exc_info:
+        fs.path_write_text(P('/b.txt'), 'y')
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/b.txt'")
+    assert fs.path_write_text(P('/a.txt'), 'x' * 4) == 4
+    assert fs.path_write_text(P('/b.txt'), 'y' * 6) == 6
 
 
 def test_file_byte_caps_ignore_callback_files():

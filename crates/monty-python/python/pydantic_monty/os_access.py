@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import errno
 import functools
 import inspect
 import os
@@ -1098,6 +1099,8 @@ class OSAccess(AbstractOS):
             max_total_file_bytes: Largest total size, in bytes, of all `MemoryFile` content,
                 initial files included (default 50 MB); a write past it raises `OSError` (`ENOSPC`).
                 `None` removes the cap. Content stored by a `CallbackFile` is not counted.
+                Initial files are not checked against either cap, so content that starts over one
+                only blocks writes that would grow it.
 
         Raises:
             AssertionError: If root_dir is not an absolute path.
@@ -1312,13 +1315,11 @@ class OSAccess(AbstractOS):
 
     def path_unlink(self, path: PurePosixPath) -> None:
         file = self._get_file(path)
-        file.delete()
-        if isinstance(file, MemoryFile):
-            self._memory_bytes -= _content_size(file.content)
-        # remove from parent
+        # remove by the requested name: after a rename, `file.name` is still the old one
         parent_dir = self._parent_entry(path)
         assert _is_dir(parent_dir), f'Expected parent of a file to always be a directory, got {parent_dir}'
-        del parent_dir[file.name]
+        del parent_dir[PurePosixPath(path).name]
+        self._release(file)
 
     def path_rmdir(self, path: PurePosixPath) -> None:
         dir = self._get_dir(path)
@@ -1367,18 +1368,11 @@ class OSAccess(AbstractOS):
         if _is_file(src_entry):
             if _is_dir(target_entry):
                 raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r} -> {str(target)!r}')
+            # tree keys, not `src_entry.path`, which a `CallbackFile` keeps as the path its callbacks see
+            del parent_dir[PurePosixPath(path).name]
+            target_parent[PurePosixPath(target).name] = src_entry
             if _is_file(target_entry):
-                # need to mark the target as deleted as it'll be overwritten
-                target_entry.delete()
-                if isinstance(target_entry, MemoryFile):
-                    self._memory_bytes -= _content_size(target_entry.content)
-
-            src_name = src_entry.path.name
-            target_name = PurePosixPath(target).name
-            # remove it from the old directory
-            del parent_dir[src_name]
-            # and put it in the new directory
-            target_parent[target_name] = src_entry
+                self._release(target_entry)
         else:
             assert _is_dir(src_entry), 'src path must be a directory here'
             if _is_file(target_entry):
@@ -1423,13 +1417,24 @@ class OSAccess(AbstractOS):
         """
         if new_size > old_size:
             if self.max_file_bytes is not None and new_size > self.max_file_bytes:
-                raise OSError(f'[Errno 27] File too large: {str(path)!r}')
+                raise OSError(errno.EFBIG, 'File too large', str(path))
             if (
                 self.max_total_file_bytes is not None
                 and self._memory_bytes + new_size - old_size > self.max_total_file_bytes
             ):
-                raise OSError(f'[Errno 28] No space left on device: {str(path)!r}')
+                raise OSError(errno.ENOSPC, 'No space left on device', str(path))
         self._memory_bytes += new_size - old_size
+
+    def _release(self, file: AbstractFile) -> None:
+        """Mark `file`, already removed from the tree, deleted and stop retaining it.
+
+        Dropping it from `self.files` lets a sandbox-created payload be freed, so the refund
+        to `max_total_file_bytes` matches memory actually released.
+        """
+        file.delete()
+        self.files = [f for f in self.files if f is not file]
+        if isinstance(file, MemoryFile):
+            self._memory_bytes -= _content_size(file.content)
 
     def _get_entry(self, path: PurePosixPath, *, strict: bool = True) -> Tree | AbstractFile | None:
         """Look up a file or directory, returning `None` if a component is missing.

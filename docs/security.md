@@ -322,9 +322,6 @@ Through the pool the request reaches your `os=` handler like any other OS call; 
 Python's default `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
 `max_urandom_bytes`, 1 MiB by default; `OSAccess(max_urandom_bytes=...)` sets the cap.
 A custom handler allocates in the host process, outside the worker's memory limit, so it must apply its own cap.
-`OSAccess` likewise caps the [`MemoryFile`][pydantic_monty.MemoryFile] content writes can grow: `max_file_bytes`
-(10 MB) per file and `max_total_file_bytes` (50 MB) in total by default
-(see [write limits](limitations/filesystem.md#write-limits)).
 
 The `random` module calls the handler only under `random_start='call_host'`.
 By default it uses worker OS entropy.
@@ -485,6 +482,10 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     A snippet can otherwise retry a rejected host call while the duration budgets are paused.
     Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
+- [`MemoryFile`][pydantic_monty.MemoryFile] content written through `OSAccess` lives in the host process, outside
+    `max_memory`.
+    `OSAccess` caps what writes can grow it to: `max_file_bytes` (10 MB) per file and `max_total_file_bytes` (50 MB) in
+    total by default (see [write limits](limitations/filesystem.md#write-limits)).
 
 ## Where the guarantees weaken
 
