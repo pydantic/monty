@@ -4,6 +4,8 @@
 //! and start finalizing before the delivery thread regains the GIL; older CPython
 //! versions then terminate that thread while it still owns Python objects.
 //! Count the bridge's blocking deliveries and drain them from an `atexit` hook.
+//! The hook runs before interpreter finalization, while delivery threads can still
+//! attach to Python. It waits for result delivery, not for every pending async task.
 
 use std::{
     future::Future,
@@ -18,6 +20,8 @@ use tokio::task::{JoinError, JoinHandle};
 static DELIVERIES: LazyLock<Deliveries> = LazyLock::new(Deliveries::default);
 
 tokio::task_local! {
+    // These locals follow the future across Tokio threads and retain its Python
+    // event loop and contextvars context for callbacks into async Python code.
     static TASK_LOCALS: TaskLocals;
 }
 
@@ -38,9 +42,11 @@ pub(crate) fn get_current_locals(py: Python<'_>) -> PyResult<TaskLocals> {
 /// Waits before Python finalization, releasing the GIL so deliveries can finish.
 #[pyfunction]
 pub(crate) fn drain_deliveries(py: Python<'_>) {
+    // Holding the GIL here would prevent the threads we wait for from finishing.
     py.detach(|| DELIVERIES.close());
 }
 
+/// Uses the shared Tokio executor, adding shutdown tracking at result delivery.
 struct DrainingRuntime;
 
 impl generic::Runtime for DrainingRuntime {
@@ -62,6 +68,8 @@ impl generic::Runtime for DrainingRuntime {
         let delivery = DELIVERIES.begin();
         get_runtime().spawn_blocking(move || {
             if let Some(_delivery) = delivery {
+                // Consume the closure before dropping the guard: its Python references
+                // must be released before shutdown observes this delivery as finished.
                 deliver();
             }
             // After shutdown starts, drop the undelivered closure without attaching to Python.
@@ -74,6 +82,8 @@ impl generic::ContextExt for DrainingRuntime {
     where
         F: Future<Output = R> + Send + 'static,
     {
+        // get_current_locals must use this same scope; the upstream Tokio adapter
+        // has separate task locals and would lose the callback's Python context.
         Box::pin(TASK_LOCALS.scope(locals, future))
     }
 
@@ -84,13 +94,16 @@ impl generic::ContextExt for DrainingRuntime {
 
 #[derive(Default)]
 struct Deliveries {
+    // Admission and shutdown share one lock so close cannot miss a queued delivery.
     state: Mutex<DeliveryState>,
     idle: Condvar,
 }
 
 #[derive(Default)]
 struct DeliveryState {
+    /// Queued or running closures whose delivery guards have not yet dropped.
     in_flight: usize,
+    /// Permanent admission barrier, set before waiting for existing deliveries.
     closing: bool,
 }
 
@@ -107,6 +120,8 @@ impl Deliveries {
     fn close(&self) {
         let mut state = self.lock();
         state.closing = true;
+        // Condvar::wait releases the mutex so delivery guards can decrement the
+        // count. Recheck it after every wake, including spurious wakes.
         while state.in_flight != 0 {
             state = self.idle.wait(state).unwrap_or_else(PoisonError::into_inner);
         }
