@@ -282,3 +282,29 @@ class NoTypeCheck:
 
 # `__no_type_check__` is read before the format
 assert get_type_hints(NoTypeCheck, format=7) == {}
+
+
+# === A hand-written __annotate__ is asked for the format first ===
+def custom_annotate(format):
+    if format == Format.STRING:
+        return {'a': 'custom'}
+    return {'a': int}
+
+
+Custom = type('Custom', (), {'__annotate__': custom_annotate})
+assert Custom.__annotations__ == {'a': int}
+assert get_annotations(Custom, format=Format.STRING) == {'a': 'custom'}
+assert get_annotations(Custom, format=Format.FORWARDREF) == {'a': int}
+assert get_type_hints(Custom, format=Format.STRING) == {'a': 'custom'}
+
+
+# One that only knows VALUE is stringized from its values, as the compiler's is
+def value_only(format):
+    if format > Format.VALUE:
+        raise NotImplementedError
+    return {'a': int, 'b': 'Later', 'c': None}
+
+
+ValueOnly = type('ValueOnly', (), {'__annotate__': value_only})
+assert get_annotations(ValueOnly, format=Format.STRING) == {'a': 'int', 'b': 'Later', 'c': 'None'}
+assert get_annotations(ValueOnly, format=Format.FORWARDREF) == {'a': int, 'b': 'Later', 'c': None}

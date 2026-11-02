@@ -118,3 +118,35 @@ expect_type_error(
     "typing.ClassVar accepts only single type. Got (<class 'int'>, <class 'str'>).",
 )
 expect_type_error(lambda: Any[int], "type 'Any' is not subscriptable")
+
+
+# === In annotations ===
+class C:
+    count: ClassVar[int] = 0
+    names: List[str]
+    extra: Annotated[int, 'units']
+
+
+assert C.__annotations__['count'] == ClassVar[int]
+assert C.__annotations__['names'] == List[str]
+assert C.__annotations__['extra'] == Annotated[int, 'units']
+
+
+class Foo:
+    pass
+
+
+def f(a: List['Foo'], b: Annotated['Foo', 'meta'], c: Dict[str, Annotated[int, 1]]) -> Callable[[int], str]:
+    pass
+
+
+# `get_type_hints` keeps the typing alias when resolving a forward reference
+# inside it, and strips `Annotated` unless asked to keep it.
+hints = get_type_hints(f)
+assert hints['a'] == List[Foo]
+assert hints['b'] is Foo
+assert hints['c'] == Dict[str, int]
+assert hints['return'] == Callable[[int], str]
+extras = get_type_hints(f, include_extras=True)
+assert extras['b'] == Annotated[Foo, 'meta']
+assert extras['c'] == Dict[str, Annotated[int, 1]]
