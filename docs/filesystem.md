@@ -232,6 +232,8 @@ Each feed starts with a fresh overlay.
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 Mounts are serviced by the host, including for remote workers; the worker never receives host paths.
 Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
+Each directory `mkdir` creates, parents included, counts as [`DIRECTORY_WRITE_BYTES`](api/rust/monty-fs.md#directory_write_bytes)
+(4,096 bytes) against `write_bytes_limit`.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
 nginx's `alias`), so requiring names removes the ambiguity.
