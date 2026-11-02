@@ -39,7 +39,11 @@ for corpus, phrase in corpora.items():
     }
     for name, (expression, expected) in cases.items():
         path = fixtures / f'affix_{corpus}_{name}.py'
-        path.write_text(setup + f'for _ in range(100):\n    result = {expression}\nassert result == {expected!r}\n')
+        path.write_text(
+            setup + f'for _ in range(100):\n    result = {expression}\nassert result == {expected!r}\n',
+            encoding='utf-8',
+            newline='\n',
+        )
         paths.append(path)
     for name, positions in {
         'random': [(i * 7919) % (len(body) - 64) for i in range(1024)],
@@ -50,11 +54,17 @@ for corpus, phrase in corpora.items():
         setup = f"TEXT = {body!r}\ntext = ''.join([TEXT, ''])\nPOSITIONS = {positions!r}\n# --- benchmark ---\n"
         path.write_text(
             setup
-            + f'total = 0\nfor position in POSITIONS:\n    excerpt = text[position:position + 64]\n    total += ord(excerpt[0])\nassert total == {expected}\n'
+            + f'total = 0\nfor position in POSITIONS:\n    excerpt = text[position:position + 64]\n    total += ord(excerpt[0])\nassert total == {expected}\n',
+            encoding='utf-8',
+            newline='\n',
         )
         paths.append(path)
     path = fixtures / f'slice_{corpus}_whole.py'
-    path.write_text(base_setup + 'for _ in range(100):\n    result = text[:]\nassert result == TEXT\n')
+    path.write_text(
+        base_setup + 'for _ in range(100):\n    result = text[:]\nassert result == TEXT\n',
+        encoding='utf-8',
+        newline='\n',
+    )
     paths.append(path)
 for language in ('german_ascii', 'german', 'german_emoji', 'chinese'):
     paths.append(args.circus / 'src/flying_circus/workloads' / f'agent_unicode_{language}_large.py')
@@ -95,7 +105,9 @@ for path in paths:
         },
         indent=2,
     )
-    + '\n'
+    + '\n',
+    encoding='utf-8',
+    newline='\n',
 )
 environment = dict(os.environ, PYTHONPATH=str(args.circus / 'src'), PYTHONDONTWRITEBYTECODE='1')
 raise SystemExit(subprocess.run(command, env=environment).returncode)

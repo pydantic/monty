@@ -36,17 +36,19 @@ use crate::{
 };
 
 /// Retains the heap owner while bound conversion can call Python, then reborrows its cache via `get`.
-/// Inline strings and ASCII interned strings use `Interned(None)` and need no offset cache.
+/// Interned entries resolve lazily by ID; inline strings have no persistent offset cache.
 enum StringCache<'s, 'h> {
     Heap(&'s HeapObjectRead<'h, Str>),
-    Interned(Option<&'s StringIndex>),
+    Interned(StringId),
+    Inline,
 }
 
 impl<'h> StringCache<'_, 'h> {
-    fn get<'s>(&'s self, heap: &'s HeapReader<'h>) -> Option<&'s StringIndex> {
+    fn get<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s StringIndex> {
         match self {
-            Self::Heap(string) => Some(&string.get(heap).3),
-            Self::Interned(index) => *index,
+            Self::Heap(string) => Some(&string.get(vm.heap).3),
+            Self::Interned(id) => vm.interns.str_index(*id),
+            Self::Inline => None,
         }
     }
 }
@@ -272,18 +274,18 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
                 str_getitem(
                     &*vm.heap.protect(text),
                     vm.interns.str_is_ascii(*id),
-                    &StringCache::Interned(vm.interns.str_index(*id)),
+                    &StringCache::Interned(*id),
                     key,
                     vm,
                 )
             }
-            Self::Inline(text) => str_getitem(text, text.as_bytes().is_ascii(), &StringCache::Interned(None), key, vm),
+            Self::Inline(text) => str_getitem(text, text.as_bytes().is_ascii(), &StringCache::Inline, key, vm),
             Self::Heap(value) => value.py_getitem(key, vm),
         }
     }
 
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_format_template(self.as_str(vm), &vm.heap.tracker)?;
+        let template = copy_with_time_checks(self.as_str(vm), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
     }
 
@@ -295,21 +297,14 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
                 let text = vm.heap.protect(vm.interns.get_str(*id));
-                call_str_method_impl(
-                    &*text,
-                    &StringCache::Interned(vm.interns.str_index(*id)),
-                    method,
-                    args,
-                    vm,
-                )
-                .map(CallResult::Value)
+                call_str_method_impl(&*text, &StringCache::Interned(*id), method, args, vm).map(CallResult::Value)
             }
             Self::Inline(text) => {
                 let Some(method) = attr.static_string(vm.interns) else {
                     args.drop_with(vm);
                     return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
                 };
-                call_str_method_impl(text, &StringCache::Interned(None), method, args, vm).map(CallResult::Value)
+                call_str_method_impl(text, &StringCache::Inline, method, args, vm).map(CallResult::Value)
             }
             Self::Heap(value) => value.py_call_attr(vm, attr, args),
         }
@@ -522,7 +517,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
     /// `str % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
+        let template = copy_with_time_checks(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
     }
 
@@ -563,7 +558,7 @@ fn str_getitem<'h>(
     {
         let text = s.get(vm.heap);
         if slice.step.unwrap_or(1) == 1 {
-            let index = cache.get(vm.heap);
+            let index = cache.get(vm);
             let length = if ascii {
                 text.len()
             } else {
@@ -583,8 +578,13 @@ fn str_getitem<'h>(
                     string_byte_offset(text, index, stop, &vm.heap.tracker)?,
                 )
             };
-            // Contiguous slices copy UTF-8 directly, without collecting characters.
-            return Ok(allocate_string(&text[start..stop], vm.heap));
+            // Large copies retain cooperative time checks; short slices still use inline storage directly.
+            let result = &text[start..stop];
+            if result.len() > STRING_COPY_CHUNK {
+                let copied = copy_with_time_checks(result, &vm.heap.tracker)?;
+                return Ok(allocate_string(copied, vm.heap));
+            }
+            return Ok(allocate_string(result, vm.heap));
         }
         let result: Box<str> = if ascii {
             // Byte iterators count and skip in O(1), unlike `chars()`.
@@ -596,7 +596,10 @@ fn str_getitem<'h>(
     } else {
         let index = key.as_index(vm, Type::Str)?;
         let text = s.get(vm.heap);
-        let c = if !ascii && let Some(cache) = cache.get(vm.heap) {
+        let c = if !ascii
+            && !matches!(index, 0 | -1)
+            && let Some(cache) = cache.get(vm)
+        {
             cache.character(text, index, &vm.heap.tracker)?
         } else {
             get_char_at_index(text, ascii, index)
@@ -612,16 +615,16 @@ impl HeapItem for Str {
     }
 }
 
-const FORMAT_TEMPLATE_COPY_CHUNK: usize = 64 * 1024;
+const STRING_COPY_CHUNK: usize = 64 * 1024;
 
-/// Copies a formatting template with resource checks before Python callbacks can mutate the heap.
-pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
+/// Copies UTF-8 in polled chunks, including formatting templates borrowed before Python callbacks.
+pub(crate) fn copy_with_time_checks(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
     tracker.check_time()?;
     let mut copy = StringBuilder::with_capacity(template.len(), tracker)?;
     let mut start = 0;
     while start < template.len() {
         tracker.check_time()?;
-        let mut end = start.saturating_add(FORMAT_TEMPLATE_COPY_CHUNK).min(template.len());
+        let mut end = start.saturating_add(STRING_COPY_CHUNK).min(template.len());
         while !template.is_char_boundary(end) {
             end -= 1;
         }
@@ -732,7 +735,7 @@ fn call_str_method_impl<'h>(
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
         StaticStrings::Format => {
-            let template = match copy_format_template(s.get(vm.heap), &vm.heap.tracker) {
+            let template = match copy_with_time_checks(s.get(vm.heap), &vm.heap.tracker) {
                 Ok(template) => template,
                 Err(error) => {
                     args.drop_with(vm);
@@ -995,7 +998,7 @@ fn str_find<'h>(
         return Ok(Value::Int(-1));
     };
     let s = s.get(vm.heap);
-    let index = cache.get(vm.heap);
+    let index = cache.get(vm);
     let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
     let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
@@ -1025,7 +1028,7 @@ fn str_rfind<'h>(
         return Ok(Value::Int(-1));
     };
     let s = s.get(vm.heap);
-    let index = cache.get(vm.heap);
+    let index = cache.get(vm);
     let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
     let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
@@ -1054,7 +1057,7 @@ fn str_index<'h>(
         return Err(ExcType::value_error_substring_not_found());
     };
     let s = s.get(vm.heap);
-    let index = cache.get(vm.heap);
+    let index = cache.get(vm);
     let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
     let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
@@ -1083,7 +1086,7 @@ fn str_rindex<'h>(
         return Err(ExcType::value_error_substring_not_found());
     };
     let s = s.get(vm.heap);
-    let index = cache.get(vm.heap);
+    let index = cache.get(vm);
     let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
     let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
@@ -1113,7 +1116,7 @@ fn str_count<'h>(
         return Ok(Value::Int(0));
     };
     let s = s.get(vm.heap);
-    let index = cache.get(vm.heap);
+    let index = cache.get(vm);
     let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
     let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
@@ -1190,7 +1193,11 @@ fn str_starts_ends_with<'h>(
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
     let text = s.get(vm.heap);
-    let index = cache.get(vm.heap);
+    let index = if start == 0 && end == usize::MAX {
+        None
+    } else {
+        cache.get(vm)
+    };
     let start = string_byte_offset(text, index, start, &vm.heap.tracker)?;
     let end = string_byte_offset(text, index, end, &vm.heap.tracker)?;
     Ok(Value::Bool(affix_matches(
@@ -1271,23 +1278,21 @@ fn parse_search_args<'h>(
     }
 }
 
-/// Normalizes explicit character bounds; omitted bounds cover the original UTF-8.
-/// Counting characters and walking the entire range before an unbounded match dominated
-/// the old Chinese search cost. Only explicit bounds need length normalization.
+/// Normalizes explicit character bounds; entirely omitted/`None` bounds return `(0, usize::MAX)`.
+/// Offset conversion treats that sentinel as the original UTF-8 without counting characters.
 fn string_search_range<'h>(
     s: &impl HeapView<'h, str>,
     cache: &StringCache<'_, 'h>,
     bounds: &[Value],
     vm: &mut VM<'h>,
 ) -> RunResult<SearchRange> {
-    // Omitted bounds need neither a character count nor offset conversion.
     if bounds.iter().all(|bound| matches!(bound, Value::None)) {
         return Ok(Some((0, usize::MAX)));
     }
     let text = s.get(vm.heap);
     let length = if text.is_ascii() {
         text.len()
-    } else if let Some(index) = cache.get(vm.heap) {
+    } else if let Some(index) = cache.get(vm) {
         index.char_len(text)
     } else {
         text.chars().count()

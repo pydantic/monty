@@ -3237,9 +3237,25 @@ impl Interns {
 mod cache_layout_tests {
     use std::ptr;
 
-    use monty_types::ResourceTracker;
+    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
 
     use super::*;
+    use crate::MontyRepl;
+
+    #[test]
+    fn interned_endpoint_reads_do_not_allocate_cache() {
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(
+            "text = '中é🐍'\nclass First:\n    def __index__(self):\n        return 0\ntext[0]\ntext[-1]\ntext[First()]\ntext.startswith('中')\ntext.endswith('🐍')",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+        assert!(repl.heap_and_interns().1.string_indexes.0.get().is_none());
+
+        repl.feed_run("text[1]", vec![], PrintWriter::Disabled).unwrap();
+        assert!(repl.heap_and_interns().1.string_indexes.0.get().is_some());
+    }
 
     #[test]
     fn ascii_entries_keep_the_pre_cache_footprint() {

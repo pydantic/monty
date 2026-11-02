@@ -44,7 +44,9 @@ for corpus, phrase in corpora.items():
         expected = sum(ord(text[p]) for p in positions)
         path = fixtures / f'access_{corpus}_{pattern}.py'
         path.write_text(
-            f'TEXT = {text!r}\nPOSITIONS = {positions!r}\n# --- benchmark ---\ntotal = 0\nfor position in POSITIONS:\n    total += ord(TEXT[position])\nassert total == {expected}\n'
+            f'TEXT = {text!r}\nPOSITIONS = {positions!r}\n# --- benchmark ---\ntotal = 0\nfor position in POSITIONS:\n    total += ord(TEXT[position])\nassert total == {expected}\n',
+            encoding='utf-8',
+            newline='\n',
         )
         paths.append(path)
     body = text[:4096]
@@ -52,7 +54,9 @@ for corpus, phrase in corpora.items():
     path = fixtures / f'memory_index_{corpus}.py'
     expected = 3000 * sum(ord(body[p]) for p in positions)
     path.write_text(
-        f'BODY = {body!r}\nPOSITIONS = {positions!r}\n# --- benchmark ---\ntexts = [BODY + str(i) for i in range(3000)]\ntotal = 0\nfor text in texts:\n    for position in POSITIONS:\n        total += ord(text[position])\nassert total == {expected}\n'
+        f'BODY = {body!r}\nPOSITIONS = {positions!r}\ntexts = [BODY + str(i) for i in range(3000)]\n# --- benchmark ---\ntotal = 0\nfor text in texts:\n    for position in POSITIONS:\n        total += ord(text[position])\nassert total == {expected}\n',
+        encoding='utf-8',
+        newline='\n',
     )
     paths.append(path)
 for corpus in ('ascii', 'german', 'chinese'):
@@ -73,7 +77,11 @@ for corpus in ('ascii', 'german', 'chinese'):
     setup = f'TEXT = {text!r}\nNEEDLE = {needle!r}\n# --- benchmark ---\n'
     for name, (expression, expected) in cases.items():
         path = fixtures / f'search_{corpus}_{name}.py'
-        path.write_text(setup + f'for _ in range(100):\n    value = {expression}\nassert value == {expected!r}\n')
+        path.write_text(
+            setup + f'for _ in range(100):\n    value = {expression}\nassert value == {expected!r}\n',
+            encoding='utf-8',
+            newline='\n',
+        )
         paths.append(path)
     path = fixtures / f'search_{corpus}_successive.py'
     path.write_text(
@@ -88,18 +96,31 @@ for corpus in ('ascii', 'german', 'chinese'):
         count += 1
         position += len(NEEDLE)
 assert count == 16
-"""
+""",
+        encoding='utf-8',
+        newline='\n',
     )
     paths.append(path)
 for language in ('german_ascii', 'german', 'german_emoji', 'chinese'):
     paths.append(args.circus / 'src/flying_circus/workloads' / f'agent_unicode_{language}_large.py')
 for name in (
     'string_random_access_ascii',
+    'string_random_access_interned_ascii',
     'string_random_access_interned',
     'string_random_access_unicode',
     'string_end_access_unicode',
 ):
     paths.append(root / 'crates/monty-bench/benches/python' / f'{name}.py')
+# Flying Circus custom scripts do not load the benchmark harness's sibling data file.
+subtitle = root / 'crates/monty-bench/benches/python/subtitle_search.py'
+data = (subtitle.parent / 'data/subtitles_en.txt').read_text(encoding='utf-8')
+path = fixtures / 'subtitle_search.py'
+path.write_text(
+    f'DATA = {data!r}\n# --- benchmark ---\n' + subtitle.read_text(encoding='utf-8'),
+    encoding='utf-8',
+    newline='\n',
+)
+paths.append(path)
 if args.only:
     paths = [path for path in paths if any(fnmatch.fnmatchcase(path.stem, pattern) for pattern in args.only)]
 if not paths:
@@ -141,7 +162,9 @@ for path in paths:
         },
         indent=2,
     )
-    + '\n'
+    + '\n',
+    encoding='utf-8',
+    newline='\n',
 )
 environment = dict(os.environ, PYTHONPATH=str(args.circus / 'src'), PYTHONDONTWRITEBYTECODE='1')
 raise SystemExit(subprocess.run(command, env=environment).returncode)
