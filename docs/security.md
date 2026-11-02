@@ -426,13 +426,9 @@ Two more properties of the subprocess worker boundary matter:
     A worker that violates the protocol is discarded.
     See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
     for what the per-frame budget counts and excludes.
-- **Workers are reused, then recycled.** A worker serves later sessions after a reset, so a compromised worker could
-    see them.
-    Subprocess and WebAssembly pools kill and replace a worker after 1000 checkouts by default
-    (`max_checkouts_per_worker`, `maxCheckoutsPerWorker` in JavaScript).
-    Set it to 1 to give every session a fresh worker when callers do not trust each other: a fresh process in a
-    subprocess pool, a fresh Web Worker or worker thread in the WebAssembly pool.
-    WebSocket checkouts are single-use connections, so the count does not apply to them.
+- **Workers are reused, then recycled.** A compromised worker could see later sessions until it is replaced, after
+    1000 checkouts by default.
+    Set the count to 1 when callers do not trust each other (see [worker recycling](resource-limits.md#worker-recycling)).
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.
