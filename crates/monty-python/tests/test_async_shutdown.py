@@ -15,11 +15,12 @@ def test_async_result_delivery_finishes_before_interpreter_shutdown():
 import atexit
 import asyncio
 import threading
-import time
 
 pending = 0
+overlapped_shutdown = False
+release = threading.Event()
 # Registered before the extension's drain hook, so this checks after it runs.
-atexit.register(lambda: print('drained' if pending == 0 else 'pending'))
+atexit.register(lambda: print('drained' if overlapped_shutdown and pending == 0 else 'pending'))
 
 from pydantic_monty import AsyncMonty
 
@@ -36,7 +37,7 @@ async def main():
         try:
             original_write()
             # The loop can finish while Rust still owns this delivery's Python objects.
-            time.sleep(0.05)
+            release.wait()
         finally:
             pending -= 1
 
@@ -46,6 +47,14 @@ async def main():
             assert await session.feed_run('1 + 1') == 2
 
 asyncio.run(main())
+
+def release_deliveries():
+    global overlapped_shutdown
+    overlapped_shutdown = pending > 0
+    release.set()
+
+# Runs before the extension's drain hook, after confirming a delivery is blocked.
+atexit.register(release_deliveries)
 """,
         ],
         capture_output=True,
