@@ -189,8 +189,8 @@ fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<M
 
 /// Creates a directory, using `create_dir_all` only when `parents` is set.
 ///
-/// Each directory it will create, parents included, is charged
-/// [`DIRECTORY_WRITE_BYTES`] against the write quota before anything is created.
+/// Each directory it will create, parents included, costs [`DIRECTORY_WRITE_BYTES`]:
+/// the total is checked before anything is created and charged once it succeeds.
 fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     let target = resolve_virtual_path(path, ctx.mount_virtual)?;
     let rel = target.for_dir_op();
@@ -207,8 +207,11 @@ fn mkdir(path: &str, parents: bool, exist_ok: bool, ctx: &mut MountContext<'_>) 
 
 /// How many directories `mkdir` would create at `rel`: with `parents`, every
 /// component from the shortest absent prefix on; without, the target if absent.
+///
+/// The last component is not followed, so a dangling symlink counts as present
+/// and `mkdir` reports `FileExistsError` rather than charging for it.
 fn missing_dirs(dir: &Dir, rel: &str, parents: bool) -> usize {
-    let absent = |prefix: &str| dir.metadata(prefix).is_err();
+    let absent = |prefix: &str| dir.symlink_metadata(prefix).is_err();
     if parents {
         let components: Vec<&str> = rel.split('/').collect();
         (1..=components.len())

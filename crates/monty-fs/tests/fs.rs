@@ -2270,6 +2270,49 @@ fn mkdir_of_existing_directory_is_free() {
     }
 }
 
+#[test]
+fn rw_mkdir_over_dangling_symlink_reports_file_exists() {
+    if !symlinks_supported() {
+        return;
+    }
+    let dir = create_test_dir();
+    symlink_file(dir.path().join("missing"), dir.path().join("dangling"));
+    // the symlink exists, so it is not charged as a new directory
+    let mut mt = mount_at_mnt_with_limit(&dir, MountMode::ReadWrite, 0);
+    let exc = call_err(&mut mt, &mkdir("/mnt/dangling", false, false));
+    assert_exc(
+        &exc,
+        ExcType::FileExistsError,
+        "[Errno 17] File exists: '/mnt/dangling'",
+    );
+}
+
+#[test]
+fn overlay_mkdir_parents_memory_limit_records_nothing() {
+    let dir = create_test_dir();
+    // room for the entries of `a` and `a/b`, not `a/b/c` as well
+    let mount = Mount::new(
+        "/mnt",
+        dir.path(),
+        MountMode::OverlayMemory(OverlayState::new()),
+        Some(dir_budget(10)),
+    )
+    .unwrap()
+    .with_memory_usage_limit(600);
+    let mut mt = MountTable::new();
+    mt.push_mount(mount).unwrap();
+    let exc = call_err(&mut mt, &mkdir("/mnt/a/b/c", true, false));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 600 bytes exceeded",
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/a".into())),
+        MontyObject::bool(false)
+    );
+}
+
 // =============================================================================
 // Unlink and rename operate on symlink entries, not targets (Issue #3)
 // =============================================================================

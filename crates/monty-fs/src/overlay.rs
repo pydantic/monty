@@ -828,7 +828,7 @@ fn ensure_parent_exists(
 }
 
 /// Creates a directory inside the overlay. Each directory it records, parents
-/// included, is charged [`DIRECTORY_WRITE_BYTES`] against the write quota first.
+/// included, costs [`DIRECTORY_WRITE_BYTES`]; both limits are checked before any is recorded.
 fn mkdir(
     state: &mut OverlayState,
     relative: &str,
@@ -877,17 +877,17 @@ fn mkdir(
         ensure_parent_exists(state, relative, ctx, vpath)?;
         vec![relative.to_owned()]
     };
-    // charged for every directory before any is recorded
+    // both limits are checked for every directory before any is recorded
     let charge = to_create.len().saturating_mul(DIRECTORY_WRITE_BYTES);
     check_write_limit(charge, ctx)?;
+    let mtime = current_timestamp();
+    let entry = OverlayEntry::Directory { mtime };
+    state.check_replacements(
+        to_create.iter().map(|dir| (dir.as_str(), &entry)),
+        ctx.memory_usage_limit,
+    )?;
     for dir in to_create {
-        state.insert(
-            dir,
-            OverlayEntry::Directory {
-                mtime: current_timestamp(),
-            },
-            ctx.memory_usage_limit,
-        )?;
+        state.insert_unchecked(dir, OverlayEntry::Directory { mtime });
     }
     commit_write_bytes(charge, ctx);
     Ok(MontyObject::none())
