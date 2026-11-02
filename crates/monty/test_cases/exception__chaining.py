@@ -186,3 +186,80 @@ for _call, _msg in [
         assert str(e) == _msg
         assert e.__cause__ is None
         assert e.__suppress_context__ is False
+
+# === builtins implemented in Python behave like CPython's C code ===
+import functools
+
+try:
+    raise KeyError('outer')
+except KeyError:
+    try:
+        functools.reduce(lambda a, b: a, [])
+    except TypeError as e:
+        assert e.__suppress_context__ is False
+        assert e.__cause__ is None
+        assert repr(e.__context__) == "KeyError('outer')"
+try:
+    functools.reduce(lambda a, b: a, [])
+except TypeError as e:
+    assert e.__suppress_context__ is False
+    assert e.__context__ is None
+
+
+# === `__exit__` raising keeps the body's exception as context ===
+class _Exit:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, typ, val, tb):
+        raise ValueError('exit')
+
+
+try:
+    with _Exit():
+        raise KeyError('body')
+except ValueError as e:
+    assert repr(e.__context__) == "KeyError('body')"
+
+
+# === an exception crossing a synchronous call boundary ===
+def _plain(x):
+    raise ValueError('plain')
+
+
+try:
+    sorted([1, 2], key=_plain)
+except ValueError as e:
+    assert e.__context__ is None
+
+
+def _after_handler(x):
+    try:
+        raise KeyError('k')
+    except KeyError:
+        pass
+    raise ValueError('after')
+
+
+try:
+    sorted([1, 2], key=_after_handler)
+except ValueError as e:
+    assert e.__context__ is None
+
+
+# the handler the callee was in when it raised does not leak into the caller
+def _in_handler(x):
+    try:
+        raise KeyError('k')
+    except KeyError:
+        raise ValueError('in handler')
+
+
+try:
+    sorted([1, 2], key=_in_handler)
+except ValueError as e:
+    assert not isinstance(e.__context__, ValueError), 'context must not be a copy of the raised exception'
+try:
+    raise TypeError('later')
+except TypeError as e:
+    assert e.__context__ is None

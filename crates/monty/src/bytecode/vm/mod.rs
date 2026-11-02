@@ -2432,7 +2432,7 @@ impl<'h> VM<'h> {
         should_return
     }
 
-    /// Releases what a finished frame owns: its stack region and namespace.
+    /// Releases what a finished frame owns: its stack region, open handlers and namespace.
     #[inline]
     fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
         // Clean up frame's stack region (locals + operand stack, which now
@@ -2441,6 +2441,11 @@ impl<'h> VM<'h> {
         self.stack
             .drain(frame.stack_base()..)
             .for_each(|value| value.drop_with(&mut *self.heap));
+        // An exception unwinding out of a handler leaves that handler's entry
+        // behind; a later raise in the caller must not see it as being handled.
+        self.exception_stack
+            .drain(frame.exception_stack_base()..)
+            .drop_with(self.heap);
         // Almost every frame has no namespace; skip the release call for those.
         if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);

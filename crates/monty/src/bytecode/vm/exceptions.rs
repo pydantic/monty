@@ -215,21 +215,24 @@ impl VM<'_> {
     /// Records the exception being handled as `__context__` of the newly raised
     /// `raised`, as CPython's `_PyErr_SetObject` does: a bare `raise` of the handled
     /// exception itself gets none, and a link that would make the chain circular is
-    /// cut first. Exceptions caught by an internal (frozen) handler are not context,
-    /// since the equivalent CPython code is C. The scan is linear in the chain, so
-    /// it polls the clock: a loop that re-raises inside a handler grows the chain
-    /// by one link each time and would otherwise spend quadratic time unchecked.
+    /// cut first. An internal (frozen) handler's exception is skipped, since the
+    /// equivalent CPython code is C and leaves the user's handled exception in place.
     fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
-        let Some(CaughtException::Value(Value::Ref(handled_id))) = self.exception_stack.last() else {
+        let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
+            CaughtException::Value(Value::Ref(id)) => Some(*id),
+            _ => None,
+        });
+        let Some(handled_id) = handled else {
             return Ok(());
         };
-        let handled_id = *handled_id;
         let Value::Ref(raised_id) = raised else {
             return Ok(());
         };
         if *raised_id == handled_id {
             return Ok(());
         }
+        // Each re-raise inside a handler adds a link, so an unchecked scan of a
+        // chain grown by a loop would be quadratic: poll the clock.
         let mut cursor = handled_id;
         for step in 0usize.. {
             let Some(next) = self.exception_context(cursor) else {

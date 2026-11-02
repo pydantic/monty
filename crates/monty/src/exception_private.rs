@@ -2807,8 +2807,8 @@ impl<'h> HeapRead<'h, SimpleException> {
             Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
             Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
             Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
-            Some(StaticStrings::Args) => args_tuple(exc.arg.clone(), vm),
-            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.clone(), vm),
+            Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
+            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
             _ => return None,
         };
         Some(CallResult::Value(value))
@@ -2816,7 +2816,7 @@ impl<'h> HeapRead<'h, SimpleException> {
 }
 
 /// `exc.args`: a tuple holding the message, or empty.
-fn args_tuple(arg: Option<String>, vm: &mut VM<'_>) -> Value {
+fn args_tuple(arg: Option<&str>, vm: &VM<'_>) -> Value {
     let elements = match arg {
         Some(arg) => smallvec![allocate_string(arg, vm.heap)],
         None => smallvec![],
