@@ -34,6 +34,17 @@ for text in ('', 'abcdef', 'äbc中文🐍def', 'aé中🐍' * 200):
             if needle in text:
                 assert text.index(needle, *bounds) == text.index(needle)
                 assert text.rindex(needle, *bounds) == text.rindex(needle)
+            else:
+                for reverse in (False, True):
+                    try:
+                        if reverse:
+                            text.rindex(needle, *bounds)
+                        else:
+                            text.index(needle, *bounds)
+                    except ValueError as error:
+                        assert str(error) == 'substring not found'
+                    else:
+                        assert False, 'missing needle must raise ValueError'
     assert text.find('not-present') == -1
     assert text.count('not-present') == 0
     assert text.find('') == 0
