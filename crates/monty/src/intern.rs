@@ -2905,9 +2905,11 @@ type StringIndexPage = [OnceCell<Box<StringIndex>>; STRING_INDEX_PAGE_SIZE];
 /// Sparse pages avoid filling the gap before a late Unicode intern ID.
 #[derive(Debug, Default)]
 struct SparseStringIndexes {
+    /// Logical page number to dense storage slot; missing ID ranges reserve no pages.
     slots: RefCell<AHashMap<usize, usize>>,
+    /// Append-only storage keeps page addresses stable across directory growth.
     pages: Entries<Box<StringIndexPage>>,
-    // Nearby intern IDs share a directory lookup, including alternating string accesses.
+    // Last (logical page, storage slot), reused even when alternating IDs within one page.
     last: Cell<Option<(usize, usize)>>,
 }
 
@@ -2934,6 +2936,7 @@ impl StringIndexes {
             table.last.set(Some((page, slot)));
             slot
         };
+        // Returned borrows come from stable pages, not the directory's temporary RefCell borrow.
         table.pages[slot][index % STRING_INDEX_PAGE_SIZE].get_or_init(Box::default)
     }
 }
@@ -3167,6 +3170,8 @@ impl Interns {
         id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
     }
 
+    /// Returns a Unicode cache, allocating its directory/page and empty shell as needed.
+    /// Cursor state and checkpoints remain lazy; reserved and ASCII strings return `None`.
     pub(crate) fn str_index(&self, id: StringId) -> Option<&StringIndex> {
         let index = id.index().checked_sub(INTERN_STRING_ID_OFFSET)?;
         if self.strings[index].ascii {

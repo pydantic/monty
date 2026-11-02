@@ -35,6 +35,8 @@ use crate::{
     value::{EitherStr, Value, eq_str},
 };
 
+/// Retains the heap owner while bound conversion can call Python, then reborrows its cache via `get`.
+/// Inline strings and ASCII interned strings use `Interned(None)` and need no offset cache.
 enum StringCache<'s, 'h> {
     Heap(&'s HeapObjectRead<'h, Str>),
     Interned(Option<&'s StringIndex>),
@@ -1293,6 +1295,8 @@ fn string_search_range<'h>(
     search_range(bounds.first(), bounds.get(1), length, vm)
 }
 
+/// Resolves character bounds for slicing; `usize::MAX` denotes the omitted end without counting text.
+/// Inline strings use the bounded scan fallback because they have no persistent cache.
 fn string_byte_offset(
     text: &str,
     cache: Option<&StringIndex>,
@@ -1314,6 +1318,7 @@ fn string_byte_offset(
     Ok(text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte))
 }
 
+/// Converts a match's byte position back to Python's character index using the same cursor as bounds.
 fn string_char_offset(
     text: &str,
     cache: Option<&StringIndex>,

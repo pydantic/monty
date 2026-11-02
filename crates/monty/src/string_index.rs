@@ -32,6 +32,7 @@ use monty_types::ResourceTracker;
 
 use crate::exception_private::RunResult;
 
+// Power-of-two strides let lookups use shifts even when the offset width varies.
 const STRIDE: usize = 32;
 const SHORT_STRIDE: usize = 8;
 const MEDIUM_STRIDE: usize = 16;
@@ -56,6 +57,7 @@ impl Default for StringIndex {
 
 impl Clone for StringIndex {
     fn clone(&self) -> Self {
+        // Cloning text must stay cheap even when its source has built a large index.
         Self::default()
     }
 }
@@ -63,11 +65,15 @@ impl Clone for StringIndex {
 /// Allocated only after a nontrivial Unicode access; local reads need no offset table.
 #[derive(Debug, Default)]
 struct State {
+    /// The same character/byte boundary serves both conversion directions.
     last: (usize, usize),
+    /// Bytes traversed by nonlocal reads before checkpoints have been built.
     scanned: usize,
     offsets: Offsets,
 }
 
+/// Entry `i` stores the UTF-8 byte offset of character `i * stride`.
+/// The width is chosen from the byte length; finer strides spend the saved bytes on more anchors.
 #[derive(Debug, Default)]
 enum Offsets {
     #[default]
@@ -107,6 +113,8 @@ impl Offsets {
         }
     }
 
+    /// Finds the last checkpoint at or before a known byte boundary.
+    /// An empty table supplies `(0, 0)`, so cold lookups scan from the string's start.
     fn anchor(&self, byte: usize) -> (usize, usize) {
         let mut low = 0;
         let mut high = self.len();
@@ -150,6 +158,7 @@ impl StringIndex {
         if index == -1 {
             return Ok(text.chars().next_back());
         }
+        // Positive indices can look up a byte offset without first counting all characters.
         let target = if index < 0 {
             let Ok(distance) = usize::try_from(index.unsigned_abs()) else {
                 return Ok(None);
@@ -180,12 +189,14 @@ impl StringIndex {
         let state = state.get_or_insert_with(Box::default);
         let shift = state.offsets.shift();
         let checkpoint = target >> shift;
+        // Start at a checkpoint when present; the cursor below can shorten the remaining walk.
         let (mut character, mut byte) = if checkpoint < state.offsets.len() {
             (checkpoint << shift, state.offsets.get(checkpoint))
         } else {
             (0, 0)
         };
         let (last_character, last_byte) = state.last;
+        // Reuse a later forward boundary, or a nearby cursor just beyond the target.
         if last_character <= target && last_character >= character {
             (character, byte) = state.last;
         } else if last_character > target && last_character - target <= 8 {
@@ -199,6 +210,7 @@ impl StringIndex {
             return Ok(byte);
         }
         let mut chars = text[byte..].chars();
+        // Consume only preceding characters, leaving the suffix at the requested byte boundary.
         if chars.nth(target - character - 1).is_none() {
             // Remember the length so repeated invalid accesses do not rescan.
             self.char_len(text);
@@ -211,6 +223,7 @@ impl StringIndex {
     }
 
     /// Converts a known UTF-8 boundary returned by substring matching.
+    /// The byte position must be in bounds and at a character boundary; this does not round arbitrary bytes.
     pub fn char_offset(&self, text: &str, target: usize, tracker: &ResourceTracker) -> RunResult<usize> {
         if target == 0 {
             return Ok(0);
@@ -221,6 +234,7 @@ impl StringIndex {
         let mut state = self.state.borrow_mut();
         let state = state.get_or_insert_with(Box::default);
         let (mut character, mut byte) = state.offsets.anchor(target);
+        // Search results often advance from the previous match, beyond the nearest checkpoint.
         if state.last.1 <= target && state.last.1 >= byte {
             (character, byte) = state.last;
         }
@@ -249,6 +263,7 @@ impl StringIndex {
             return Ok(());
         }
         let length = self.char_len(text);
+        // Stored offsets address bytes, so character count alone cannot determine their width.
         state.offsets = if u8::try_from(text.len()).is_ok() {
             Offsets::Small(build_offsets::<u8, SHORT_STRIDE>(text, length, tracker)?)
         } else if u16::try_from(text.len()).is_ok() {
@@ -262,6 +277,7 @@ impl StringIndex {
     }
 }
 
+/// Preflights the exact checkpoint storage so allocation does not grow incrementally.
 fn build_offsets<T, const STEP: usize>(text: &str, length: usize, tracker: &ResourceTracker) -> RunResult<Box<[T]>>
 where
     T: TryFrom<usize>,
