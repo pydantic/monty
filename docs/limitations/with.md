@@ -44,9 +44,6 @@ explicit `obj.__enter__()` call, which is an ordinary method call.
     through unchanged (`typ is ValueError` etc. works). Code that inspects the
     traceback object inside `__exit__` sees `None` where CPython would
     provide a `traceback` instance.
-- If `__exit__` itself raises during the exception path, the new exception
-    replaces the original, which remains reachable only as its `__context__`.
-    This matches CPython.
 - CPython's `BEFORE_WITH` looks up **and binds** `__enter__`/`__exit__` once,
     when the `with` statement is entered; Monty's `WithExit`/`WithExceptStart`
     opcodes look `__exit__` up again when the block exits. A class whose
