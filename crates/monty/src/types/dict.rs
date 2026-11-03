@@ -2232,13 +2232,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     }
 
     #[pyclassmethod]
-    fn fromkeys(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromkeys(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
     }
@@ -2316,13 +2310,7 @@ impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
     }
 
     #[pyclassmethod]
-    fn fromkeys(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromkeys(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
     }
@@ -2410,13 +2398,7 @@ impl<'heap> PyAttrs<'heap> for PyCounterImpl {
     }
 
     #[pyclassmethod]
-    fn fromkeys(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromkeys(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         args.drop_with(vm);
         Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())

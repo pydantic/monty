@@ -773,7 +773,7 @@ impl<'heap> PyAttrs<'heap> for PyComplexImpl {
     }
 
     #[pyclassmethod]
-    fn from_number(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_number(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }
 }

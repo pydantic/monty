@@ -633,7 +633,11 @@ impl Type {
         }
     }
 
-    pub(crate) fn get_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
+    /// Looks up a name in this builtin type's generated attribute table.
+    ///
+    /// Returns the definition without binding a receiver or evaluating a value factory.
+    /// Names absent from the table return `None`; dynamic namespaces are handled separately.
+    pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
         let name = attr.static_string(interns)?;
         match self {
             Self::Set => super::set::PySetImpl::lookup_attr(name),
@@ -685,10 +689,9 @@ impl Type {
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        match self.get_attr(attr, vm.interns) {
-            Some(AttrDef::Method(call)) => call(receiver, args, vm),
-            Some(AttrDef::ClassMethod(call)) => call(
-                self,
+        match self.lookup_attr(attr, vm.interns) {
+            Some(AttrDef::Method(method)) => method(receiver, args, vm),
+            Some(AttrDef::ClassMethod(classmethod)) => classmethod(
                 Value::Builtin(Builtins::Type(
                     BuiltinType::try_from(self).expect("registered builtin type"),
                 )),
@@ -705,10 +708,9 @@ impl Type {
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        match self.get_attr(attr, vm.interns) {
-            Some(AttrDef::ClassMethod(call)) => {
-                return call(
-                    self,
+        match self.lookup_attr(attr, vm.interns) {
+            Some(AttrDef::ClassMethod(classmethod)) => {
+                return classmethod(
                     Value::Builtin(Builtins::Type(
                         BuiltinType::try_from(self).expect("registered builtin type"),
                     )),
@@ -716,7 +718,7 @@ impl Type {
                     vm,
                 );
             }
-            Some(AttrDef::Method(call)) => return builtin_attr::invoke_unbound(self, attr, call, args, vm),
+            Some(AttrDef::Method(method)) => return builtin_attr::invoke_unbound(self, attr, method, args, vm),
             _ => {}
         }
         match (self, attr.static_string(vm.interns)) {
@@ -801,7 +803,7 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        if let Some(AttrDef::Value(get)) = self.get_attr(attr, vm.interns) {
+        if let Some(AttrDef::Value(get)) = self.lookup_attr(attr, vm.interns) {
             return Some(get(vm));
         }
 
