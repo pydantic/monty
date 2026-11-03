@@ -1494,9 +1494,11 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
-/// Liveness probe from a serving relay, sent at any time, never a turn end. A
-/// parent answers each one with `Pong` without otherwise acting on it; a relay
-/// that hears nothing back for a further interval treats the parent as gone.
+/// Liveness probe from a serving relay, never a turn end. A parent answers
+/// each one with `Pong` without otherwise acting on it; a relay that hears
+/// nothing back for a further interval treats the parent as gone. A parent
+/// reads the stream in order, so the answer follows the events before the
+/// ping, which a slow host callback may hold: a relay sends it between turns.
 /// In-band because HTTP/2 PING frames stop at the nearest proxy, while the
 /// parent a relay wants to hear from sits beyond it. A child never sends one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
