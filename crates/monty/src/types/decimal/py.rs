@@ -39,7 +39,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        builtin_attr::{AttrDef, PyAttrs},
+        builtin_attr::PyAttrs,
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },
@@ -722,19 +722,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match Type::Decimal.get_attr(attr, vm.interns) {
-            Some(AttrDef::Method(call)) => {
-                let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-                call(&receiver, args, vm)
-            }
-            Some(AttrDef::ClassMethod(call)) => call(
-                Type::Decimal,
-                Value::Builtin(Builtins::Type(BuiltinType::Decimal)),
-                args,
-                vm,
-            ),
-            _ => Err(ExcType::attribute_error_method(Type::Decimal, attr, args, vm)),
-        }
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        Type::Decimal.call_attr(&receiver, attr, args, vm)
     }
 }
 

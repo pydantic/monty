@@ -33,6 +33,29 @@ pub(crate) enum AttrDef {
 #[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
 pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     match owner {
+        Type::LruCacheWrapper => <super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::ATTRS,
+        Type::NamedTuple => <super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::ATTRS,
+        Type::Bytes => <super::bytes::PyBytes<'static> as PyAttrs<'static>>::ATTRS,
+        Type::Path => <super::path::PyPathImpl as PyAttrs<'static>>::ATTRS,
+        Type::Random => <super::random::PyRandomImpl as PyAttrs<'static>>::ATTRS,
+        Type::HashlibHash | Type::Blake2b | Type::Blake2s => <super::hashlib::PyHashImpl as PyAttrs<'static>>::ATTRS,
+        Type::HashlibHashXof => <super::hashlib::PyHashXofImpl as PyAttrs<'static>>::ATTRS,
+        Type::CsvWriter => <super::csv::PyCsvWriterImpl as PyAttrs<'static>>::ATTRS,
+        Type::CsvDictWriter => <super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::ATTRS,
+        Type::DirEntry => <super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::ATTRS,
+        Type::ScandirIterator => <super::dir_scan::PyScandirImpl as PyAttrs<'static>>::ATTRS,
+        Type::Dict => <super::dict::PyDictImpl as PyAttrs<'static>>::ATTRS,
+        Type::DefaultDict => <super::dict::PyDefaultDictImpl as PyAttrs<'static>>::ATTRS,
+        Type::Counter => <super::dict::PyCounterImpl as PyAttrs<'static>>::ATTRS,
+        Type::Set => <super::set::PySetImpl as PyAttrs<'static>>::ATTRS,
+        Type::FrozenSet => <super::set::PyFrozenSetImpl as PyAttrs<'static>>::ATTRS,
+        Type::DictKeys => <super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::ATTRS,
+        Type::DictItems => <super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::ATTRS,
+        Type::DateTime => <super::datetime::PyDateTimeImpl as PyAttrs<'static>>::ATTRS,
+        Type::Deque => <super::deque::PyDequeImpl as PyAttrs<'static>>::ATTRS,
+        Type::TextIOWrapper | Type::BufferedReader | Type::BufferedWriter | Type::BufferedRandom => {
+            <super::file::PyFileImpl as PyAttrs<'static>>::ATTRS
+        }
         Type::Decimal => <super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::ATTRS,
         Type::DecimalContext => <super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::ATTRS,
         Type::DecimalSignalDict => <super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::ATTRS,
@@ -102,6 +125,10 @@ fn call_subtype(
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
+    if owner == Type::Dict {
+        // Dict variants share the native Dict representation.
+        return call(receiver, args, vm);
+    }
     let Value::Ref(id) = receiver else {
         unreachable!("native subclasses are heap objects")
     };
@@ -234,6 +261,32 @@ mod tests {
     fn tables_and_lookups_agree() {
         let interns = Interns::new("");
         for owner in [
+            Type::Dict,
+            Type::DefaultDict,
+            Type::Counter,
+            Type::DictKeys,
+            Type::DictItems,
+            Type::Bytes,
+            Type::Set,
+            Type::FrozenSet,
+            Type::Deque,
+            Type::DateTime,
+            Type::TextIOWrapper,
+            Type::BufferedReader,
+            Type::BufferedWriter,
+            Type::BufferedRandom,
+            Type::Path,
+            Type::Random,
+            Type::HashlibHash,
+            Type::HashlibHashXof,
+            Type::Blake2b,
+            Type::Blake2s,
+            Type::CsvWriter,
+            Type::CsvDictWriter,
+            Type::DirEntry,
+            Type::ScandirIterator,
+            Type::NamedTuple,
+            Type::LruCacheWrapper,
             Type::Decimal,
             Type::DecimalContext,
             Type::DecimalSignalDict,
@@ -249,7 +302,11 @@ mod tests {
             Type::RePattern,
             Type::ReMatch,
         ] {
-            assert!(owner.get_attr(&EitherStr::Heap("fromkeys".into()), &interns).is_none());
+            assert!(
+                owner
+                    .get_attr(&EitherStr::Heap("missing_builtin_method".into()), &interns)
+                    .is_none()
+            );
             for &(name, definition) in attrs(owner) {
                 let spelling: &str = name.into();
                 let attr = EitherStr::Heap(spelling.to_owned());
