@@ -31,6 +31,8 @@ pub fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         extra_pos.drop_with(vm.heap);
         let type_name = match &cls_val {
             Value::Ref(id) if let HeapData::Class(cls) = vm.heap.get(*id) => cls.name().as_str(vm.interns).to_owned(),
+            Value::Ref(id) if let HeapData::NamedTupleClass(nt) = vm.heap.get(*id) => nt.name(vm.interns).to_owned(),
+            Value::Ref(id) if let HeapData::HostClassType(ty) = vm.heap.get(*id) => ty.name(vm.interns).to_owned(),
             Value::Builtin(Builtins::ExcType(e)) => {
                 let name: &'static str = (*e).into();
                 name.rsplit_once('.').map_or(name, |(_, b)| b).to_owned()
@@ -56,6 +58,22 @@ pub fn builtin_type_mro(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let class_id = *id;
             let mro = cls.mro().to_vec();
             let items = class_mro_values(class_id, &mro, vm.heap);
+            let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+            Ok(Value::Ref(list_id))
+        }
+        Value::Ref(id) if let HeapData::NamedTupleClass(_) = vm.heap.get(*id) => {
+            vm.heap.inc_ref(*id);
+            let items = vec![
+                Value::Ref(*id),
+                Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+                Value::Builtin(Builtins::Type(BuiltinType::Object)),
+            ];
+            let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
+            Ok(Value::Ref(list_id))
+        }
+        Value::Ref(id) if let HeapData::HostClassType(_) = vm.heap.get(*id) => {
+            vm.heap.inc_ref(*id);
+            let items = vec![Value::Ref(*id), Value::Builtin(Builtins::Type(BuiltinType::Object))];
             let list_id = vm.heap.allocate(HeapData::List(List::new(items)));
             Ok(Value::Ref(list_id))
         }

@@ -772,6 +772,9 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
     {
         return Some(value);
     }
+    if attr == "__annotations__" {
+        return None;
+    }
     match class_member(class_id, attr, vm) {
         // A class variable is returned as-is; a function binds `self` (or `class` for `__init_subclass__`).
         Some(member) if attr != "__new__" && is_method_value(&member, vm) => {

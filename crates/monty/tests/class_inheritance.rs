@@ -2830,3 +2830,73 @@ except BaseException:
     .unwrap_err();
     assert_eq!(err2.exc_type(), ExcType::MemoryError);
 }
+
+#[test]
+fn pr4_review_findings_edge_cases() {
+    run(r#"
+class NewOnly:
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+object.__init__(NewOnly(), 1, 2, a=3)
+x = NewOnly(1, 2, a=3)
+assert isinstance(x, NewOnly)
+
+class InitOnly:
+    def __init__(self, *args, **kwargs):
+        pass
+
+try:
+    object.__init__(InitOnly(), 1, 2)
+except TypeError as e:
+    assert "object.__init__() takes exactly one argument (the instance to initialize)" in str(e)
+else:
+    assert False, "expected TypeError on InitOnly"
+
+class Neither:
+    pass
+
+try:
+    object.__init__(Neither(), 1, 2)
+except TypeError as e:
+    assert "Neither.__init__() takes exactly one argument (the instance to initialize)" in str(e)
+else:
+    assert False, "expected TypeError on Neither"
+
+# 2. BaseException.__init__ error message on > 1 args, and non-string arg conversion
+e = ValueError("orig")
+BaseException.__init__(e, 123)
+assert e.args == ("123",)
+
+try:
+    BaseException.__init__(e, "a", "b")
+except TypeError as err:
+    assert "exceptions can only be called with zero or one string argument" in str(err)
+else:
+    assert False, "expected TypeError on multi-arg BaseException.__init__"
+
+# 3. type.mro on namedtuple
+from collections import namedtuple
+Pt = namedtuple('Pt', ['x', 'y'])
+assert type.mro(Pt) == [Pt, tuple, object]
+assert Pt.mro() == [Pt, tuple, object]
+
+# 4. instance __annotations__ isolation
+class AnnClass:
+    x: int
+
+inst = AnnClass()
+assert not hasattr(inst, '__annotations__')
+try:
+    inst.__annotations__
+except AttributeError:
+    pass
+else:
+    assert False, "expected AttributeError for inst.__annotations__"
+
+# Setting explicitly on instance should work
+inst.__annotations__ = {'y': 'str'}
+assert hasattr(inst, '__annotations__')
+assert inst.__annotations__ == {'y': 'str'}
+"#);
+}

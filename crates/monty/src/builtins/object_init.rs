@@ -6,10 +6,10 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
-    types::tuple::allocate_tuple,
+    types::{py_trait::PyTrait, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -27,24 +27,27 @@ pub fn builtin_object_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     let has_extra = pos.len() > 0 || has_kwargs;
     pos.drop_with(vm.heap);
     if has_extra {
-        let type_name = match &self_val {
-            Value::Ref(id) if let HeapData::Instance(inst) = vm.heap.get(*id) => {
-                let class_id = inst.class();
-                if let HeapData::Class(cls) = vm.heap.get(class_id) {
-                    if cls.is_exception_class() || cls.mro_getattr_ref("__init__", vm.heap, vm.interns).is_some() {
-                        "object"
-                    } else {
-                        cls.name().as_str(vm.interns)
-                    }
-                } else {
-                    "object"
-                }
+        if let Value::Ref(id) = &self_val
+            && let HeapData::Instance(inst) = vm.heap.get(*id)
+            && let HeapData::Class(cls) = vm.heap.get(inst.class())
+        {
+            let overrides_new = cls.mro_getattr_ref("__new__", vm.heap, vm.interns).is_some();
+            let overrides_init = cls.mro_getattr_ref("__init__", vm.heap, vm.interns).is_some();
+            if overrides_new && !overrides_init {
+                return Ok(Value::None);
             }
-            _ => "object",
-        };
-        return Err(ExcType::type_error(format!(
-            "{type_name}.__init__() takes exactly one argument (the instance to initialize)"
-        )));
+            let type_name = if cls.is_exception_class() || overrides_init {
+                "object"
+            } else {
+                cls.name().as_str(vm.interns)
+            };
+            return Err(ExcType::type_error(format!(
+                "{type_name}.__init__() takes exactly one argument (the instance to initialize)"
+            )));
+        }
+        return Err(ExcType::type_error(
+            "object.__init__() takes exactly one argument (the instance to initialize)",
+        ));
     }
     Ok(Value::None)
 }
@@ -100,7 +103,13 @@ pub fn builtin_exception_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
                     1 => {
                         let arg = pos.next().expect("length checked");
                         defer_drop!(arg, vm);
-                        let msg = arg.try_to_str(vm)?.to_owned();
+                        let msg = if let Ok(s) = arg.try_to_str(vm) {
+                            s.to_owned()
+                        } else {
+                            let s = arg.py_str(vm)?;
+                            defer_drop!(s, vm);
+                            s.try_to_str(vm)?.to_owned()
+                        };
                         if let HeapReadOutput::Exception(exc) = vm.heap.read(*id) {
                             exc.get_mut(vm.heap).set_arg(Some(msg));
                         }
@@ -108,7 +117,7 @@ pub fn builtin_exception_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
                     }
                     _ => {
                         pos.drop_with(vm.heap);
-                        Err(RunError::internal(
+                        Err(ExcType::type_error(
                             "exceptions can only be called with zero or one string argument",
                         ))
                     }

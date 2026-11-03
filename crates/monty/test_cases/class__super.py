@@ -233,7 +233,7 @@ class SuperExcCheck(ValueError):
         fn = super().__init__
         fn(msg, 'extra')
 
-    def allocate(cls):
+    def allocate(cls):  # pyright: ignore[reportSelfClsParameterName]
         fn = super().__new__
         return fn(cls, 'allocated')
 
@@ -251,7 +251,7 @@ class FactoryBase:
 
 
 def add_one(cls):
-    class Wrapped(cls):
+    class Wrapped(cls):  # pyright: ignore[reportUntypedBaseClass]
         def val(self):
             return super().val() + 1
 

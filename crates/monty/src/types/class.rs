@@ -109,6 +109,11 @@ impl Class {
         heap: &'a Heap,
         interns: &Interns,
     ) -> Option<&'a Value> {
+        // Fast path: if class has no bases, direct namespace lookup is sufficient
+        if self.bases.is_empty() {
+            return self.namespace.get_by_str(attr_str, heap, interns);
+        }
+
         // 1. Check own namespace
         if let Some(value) = self.namespace.get_by_str(attr_str, heap, interns) {
             return Some(value);

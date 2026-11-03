@@ -280,6 +280,8 @@ fn get_search_bases<'a>(type_arg: &Value, obj_arg: &Value, vm: &'a VM<'_>) -> Op
     }
 }
 
+/// Resolves `__self_class__` for a `super` instance: if `obj_arg` is a class or
+/// subtype object, returns it directly; otherwise returns the type of the instance.
 fn resolve_super_self_class(type_arg: &Value, obj_arg: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     if is_type_value(obj_arg, vm) && issubclass_check(obj_arg, type_arg, vm)? {
         Ok(obj_arg.clone_with_heap(vm.heap))

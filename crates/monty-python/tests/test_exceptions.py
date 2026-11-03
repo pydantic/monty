@@ -638,4 +638,3 @@ raise MyCustomError('something went wrong')
     assert err.custom_type_name == 'MyCustomError'
     assert str(err) == 'MyCustomError: something went wrong'
     assert repr(err) == 'MontyRuntimeError(MyCustomError: something went wrong)'
-
