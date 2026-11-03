@@ -18,8 +18,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple,
         builtin_attr::{self, AttrDef},
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
@@ -638,6 +638,10 @@ impl Type {
     pub(crate) fn get_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
         let name = attr.static_string(interns)?;
         match self {
+            Self::Decimal => super::decimal::py::PyDecimalImpl::lookup_attr(name),
+            Self::DecimalContext => super::decimal::py_context::PyContextImpl::lookup_attr(name),
+            Self::DecimalSignalDict => super::decimal::py_context::PySignalDictImpl::lookup_attr(name),
+            Self::ForwardRef => super::forward_ref::PyForwardRefImpl::lookup_attr(name),
             Self::Str => super::str::PyStr::lookup_attr(name),
             Self::List => super::list::PyListImpl::lookup_attr(name),
             Self::Tuple => super::tuple::PyTupleImpl::lookup_attr(name),
@@ -660,7 +664,14 @@ impl Type {
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         match self.get_attr(attr, vm.interns) {
             Some(AttrDef::ClassMethod(call)) => {
-                return call(self, Value::Builtin(Builtins::Type(super::BuiltinType::try_from(self).expect("registered builtin type"))), args, vm);
+                return call(
+                    self,
+                    Value::Builtin(Builtins::Type(
+                        BuiltinType::try_from(self).expect("registered builtin type"),
+                    )),
+                    args,
+                    vm,
+                );
             }
             Some(AttrDef::Method(call)) => return builtin_attr::invoke_unbound(self, attr, call, args, vm),
             _ => {}
@@ -685,16 +696,7 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Decimal, Some(StaticStrings::FromNumber)) => {
-                decimal::py::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Decimal, _) if attr.as_str(vm.interns) == "from_float" => {
-                decimal::py::class_from_float(vm, args).map(CallResult::Value)
-            }
             (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
-                date::class_fromtimestamp(vm, args).map(CallResult::Value)
-            }
             (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
                 datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
             }

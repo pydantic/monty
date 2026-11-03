@@ -793,7 +793,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         };
 
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
