@@ -204,7 +204,12 @@ impl MockStream {
     /// Runtime-agnostic (a script may run inside its own `block_on`), so a
     /// full channel is retried rather than awaited.
     pub fn send(&self, body: Bytes) -> Result<(), ()> {
-        let mut message = Ok(body);
+        self.deliver(Ok(body))
+    }
+
+    /// Queues one item for the response stream, retrying a full channel until
+    /// [`WAIT_TIMEOUT`]; fails once the pool has dropped the stream.
+    fn deliver(&self, mut message: Result<Bytes, Status>) -> Result<(), ()> {
         let deadline = Instant::now() + WAIT_TIMEOUT;
         loop {
             match self.events.try_send(message) {
@@ -223,7 +228,7 @@ impl MockStream {
     /// policy; without, as one that finished (an `OK` status).
     pub fn close(self, status: Option<Status>) {
         if let Some(status) = status {
-            let _ = self.events.try_send(Err(status));
+            let _ = self.deliver(Err(status));
         }
     }
 }

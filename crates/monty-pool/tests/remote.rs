@@ -34,7 +34,7 @@ use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use tokio::runtime::Builder;
 use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use tonic::Status;
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
@@ -2788,6 +2788,38 @@ async fn disconnect_preserves_an_unattributed_status() {
     assert_eq!(details.cause, None);
     assert_eq!(details.transport_error, None);
     join_server(server).await;
+}
+
+/// A status ending the stream while the checkout is idle is what the next
+/// request reports, although that request can no longer be sent: the bare
+/// send failure must not stand in for the status the reader recorded.
+#[tokio::test]
+async fn status_ending_an_idle_stream_is_reported_by_the_next_request() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        socket.close(Some(Cause::IdleTimeout.status("no request within the idle timeout")));
+    });
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    join_server(server).await;
+    // the status reaches the reader before the next request is written
+    sleep(Duration::from_millis(100)).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("an ended stream must fail the turn");
+    let PoolError::Disconnected {
+        remote: Some(details), ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.status_code, Some("DEADLINE_EXCEEDED"));
+    assert_eq!(details.cause, Some(RemoteCause::IdleTimeout));
+    assert_eq!(details.transport_error, None);
 }
 
 /// A server that reports the worker ran out of memory ends the session with

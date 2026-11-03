@@ -186,6 +186,10 @@ impl RemoteWorker {
         if sent {
             Ok(len)
         } else {
+            // the stream ended under the request: the reader records the
+            // server's status as it finishes, so let it get there first and
+            // record only what no status explains
+            let _ = timeout(STATUS_GRACE, &mut self.reader).await;
             let _ = self
                 .disconnect
                 .set(RemoteDisconnect::failure("send", "session stream already ended"));
@@ -247,6 +251,10 @@ const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"))
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long a failed `send` waits for the reader to record the status that
+/// ended the stream, before recording the bare failure instead.
+const STATUS_GRACE: Duration = Duration::from_millis(100);
+
 /// How long `close` waits for the server to end its side after the half-close.
 /// Not a latency budget (no acknowledgement is awaited beyond stream end) — it
 /// only rides out a peer that stopped reading.
@@ -290,7 +298,13 @@ async fn read_events(
                             let _ = pongs.send(pong_body()).await;
                         }
                     }
-                    decoded => break decoded.map(|event| (event, body.len())),
+                    // a frame this build cannot decode: a protocol failure,
+                    // recorded as the disconnect's evidence
+                    Err(err) => {
+                        let _ = disconnect.set(RemoteDisconnect::failure("receive", err.to_string()));
+                        break Err(err);
+                    }
+                    Ok(event) => break Ok((event, body.len())),
                 },
                 // the server ended the stream with an OK status: a session
                 // it considers finished, which mid-checkout is still a loss
