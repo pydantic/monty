@@ -391,7 +391,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
     them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack.
     Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
-    The same bytes load in-process, in a subprocess and over WebSocket.
+    The same bytes load in-process, in a subprocess and over gRPC.
 
 ## Async
 
@@ -420,4 +420,4 @@ See the [Rust quickstart](quickstart/rust.md#serialization).
 - **Forking.** One snapshot restored into several sessions explores several branches from the same state.
 - **Surviving restarts.** A remote server draining for deploy answers with a dump you can restore elsewhere.
     A server that stores sessions instead resumes them for you; see
-    [stored sessions](api/python/websocket.md#stored-sessions).
+    [stored sessions](api/python/remote.md#stored-sessions).

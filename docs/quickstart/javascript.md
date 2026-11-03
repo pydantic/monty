@@ -382,14 +382,14 @@ See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTeleme
 
 ## Remote workers
 
-`MontyWebsocket` is a pool of remote workers, usually [Full Monty](../server.md): each checkout dials the URL, and no
+`MontyRemote` is a pool of remote workers, usually [Full Monty](../server.md): the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
 connection is pre-warmed or reused.
 Sessions are the same `MontySession` a local pool returns:
 
 ```ts test="skip"
-import { MontyWebsocket } from '@pydantic/monty'
+import { MontyRemote } from '@pydantic/monty'
 
-await using pool = await MontyWebsocket.create('ws://localhost:8000/')
+await using pool = await MontyRemote.create('http://localhost:8000/')
 await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } })
 console.log(await session.feedRun('1 + 1')) // 2
 ```
@@ -404,10 +404,11 @@ Either can also reject `checkout()` itself, while the session is being created.
 Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
 stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
-unless `autoResume: false` is passed to `MontyWebsocket.create()`.
-These behave as in the Python client; see [stored sessions](../api/python/websocket.md#stored-sessions).
+unless `autoResume: false` is passed to `MontyRemote.create()`.
+These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).
 The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
-`MontyWebsocket` is native-only; `@pydantic/monty/wasm` does not export it.
+`MontyRemote` is native-only; `@pydantic/monty/wasm` does not export it.
+`MontyWebsocket` is the same class under its former name, and still accepts `ws://`/`wss://` URLs.
 
 ## Browsers and WebAssembly
 
@@ -448,7 +449,7 @@ Differences from the native path:
 
 The package includes declarations with option and method documentation, maintained alongside the implementation:
 [pool options](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/pool.ts),
-[remote pools](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/websocket.ts),
+[remote pools](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/remote.ts),
 [sessions and snapshots](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/session.ts),
 [host objects](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/classInstance.ts),
 [OS policies](https://github.com/pydantic/monty/blob/main/crates/monty-js/ts/options.ts) and

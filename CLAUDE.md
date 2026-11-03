@@ -178,6 +178,14 @@ subprocesses:
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the child-side `worker` state machine.
+    Its `grpc` feature (`monty_proto::grpc`, enabled by `monty-pool`) holds the remote transport's vocabulary:
+    the `MontySession.Session` path, the opaque-bytes codec, and `Cause`, the `monty-cause` trailer a server ends a
+    stream with. The remote transport is one HTTP/2 connection per pool and one bidirectional stream per session,
+    carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
+    stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
+    liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is bumped once per release, with `MIN_SUPPORTED`, when the
+    whole protocol changes; never on your own.
     Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
     `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
     conversion there and host-only binding logic in `monty-python`.
@@ -189,11 +197,11 @@ subprocesses:
     REPL session per checkout. Strict alternation: one request in, zero or more
     streamed `Print` events out, then exactly one turn-ending event.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
-    A WebSocket server selects its own clock and reports it to clients; session limits cannot override it.
+    A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
-    the worker refuses it. WebSocket clients on any platform can adopt a Linux server's CPU clock.
+    the worker refuses it. Remote clients on any platform can adopt a Linux server's CPU clock.
     Local subprocess pools supervise CPU with the child's OS process clock.
-    CPU mode requires a finite `PoolConfig::request_timeout`; WebSocket clients do not supervise CPU locally.
+    CPU mode requires a finite `PoolConfig::request_timeout`; remote clients do not supervise CPU locally.
     WebAssembly workers accept wall mode only.
     Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers

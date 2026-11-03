@@ -58,7 +58,7 @@ The `monty` crate enables the `monty-types/cpu-clock` feature for native CPU rea
 Off Linux a CPU-mode `ResourceTracker` charges elapsed time instead, so check it before selecting CPU mode directly.
 CPU-mode [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) pools independently measure child process CPU.
 They require a finite `PoolConfig::request_timeout` as a wall deadline.
-Remote deployments enable CPU enforcement in the server's local subprocess pool; WebSocket clients adopt its clock.
+Remote deployments enable CPU enforcement in the server's local subprocess pool; remote clients adopt its clock.
 See [resource limits](../resource-limits.md#time) for platform support, sampling, fallback, and snapshot compatibility.
 
 A Monty process can never be made fully crash-proof against memory errors — a stack-overflow abort or an allocator abort
@@ -151,7 +151,7 @@ see [snapshot security](../security.md#deserializing-snapshots).
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
     a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
-    WebSocket checkouts are single-use, so the setting does not apply to them.
+    Remote checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
@@ -180,7 +180,7 @@ for the budget's scope.
 [`PoolConfig::subprocess`](../api/rust/monty-pool.md#poolconfig) spawns local `monty subprocess` children over framed stdio.
 These are the poolable workers: prewarmed, reused across checkouts, replaced on crash.
 
-[`PoolConfig::websocket`](../api/rust/monty-pool.md#poolconfig) dials a remote child over `ws://`/`wss://`.
+[`PoolConfig::remote`](../api/rust/monty-pool.md#poolconfig) reaches a remote child over gRPC at an `http://`/`https://` URL: one HTTP/2 connection per pool, one `MontySession.Session` stream per checkout.
 Those workers are single-use, never prewarmed or returned to the pool, and isolation becomes the remote host's
 responsibility.
 See [the security model](../security.md#remote-workers) before using it.
@@ -188,7 +188,7 @@ See [the security model](../security.md#remote-workers) before using it.
 ### Host decode budget
 
 `PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for
-each protocol frame from a subprocess or WebSocket worker. Values above 1 GiB do not
+each protocol frame from a subprocess or remote worker. Values above 1 GiB do not
 raise the ceiling. The budget excludes wire buffers and host-language conversion.
 Exhaustion discards the worker without replaying the request.
 
@@ -413,5 +413,5 @@ assert_eq!(result, MontyObject::int(42));
 
 ## Remote disconnects
 
-`PoolError::Disconnected` retains optional `websocket` details with the observed I/O stage, peer Close code and reason, or transport error.
+`PoolError::Disconnected` retains optional `remote` details with the observed I/O stage, the gRPC status (code, message and the server's `RemoteCause`) that ended the stream, or the transport error.
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.

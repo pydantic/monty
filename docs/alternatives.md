@@ -124,7 +124,7 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
 
 ## Full Monty
 
-[Full Monty](server.md) is the commercial server: the same `monty` workers behind a WebSocket, as a container image.
+[Full Monty](server.md) is the commercial server: the same `monty` workers behind gRPC, as a container image.
 
 - **Language completeness**: the same subset as OSS Monty, or full CPython when the server proxies a session to a CPython
     sandbox.
@@ -136,9 +136,9 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
     The sandboxes scale by adding server replicas behind a load balancer, independent of the application hosts; a
     draining replica hands each session a signed dump so the client can resume on another.
     See [Full Monty](server.md).
-- **New sandbox**: a WebSocket connection, relayed to a worker process for the session, 1.7 ms measured between
+- **New sandbox**: a gRPC stream on the client's connection, relayed to a worker process for the session, 1.7 ms measured between
     containers on one machine; a deployment adds its network round trip.
-- **FOSS**: closed-source and commercial; the client, [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], ships in the MIT `pydantic-monty`
+- **FOSS**: closed-source and commercial; the client, [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], ships in the MIT `pydantic-monty`
     package.
 - **Setup complexity**: run the container image with one environment variable, the dump-signing key.
 - **File mounting**: client directories are mounted over the wire, the same [`MountDir`][pydantic_monty.MountDir] as a local pool.
@@ -149,7 +149,7 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
 Measured on 2026-09-24: the production pair of containers, the Full Monty server relaying to a separate worker
 container that runs one process per session, both native `linux/arm64` builds on monty 1.0.0-beta.2 in Docker
 Desktop on the same machine.
-The client is `pydantic-monty` 1.0.0b2's [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] in a third
+The client is `pydantic-monty` 1.0.0b2's `AsyncMontyWebsocket` (now [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote]) in a third
 container on the same Docker network, so the figures are the server's own overhead, not Docker Desktop's
 port-forwarding proxy.
 The new client pool and agent run figures are medians of 7 runs.
@@ -157,9 +157,9 @@ The new client pool and agent run figures are medians of 7 runs.
 New sandbox is the median of 20 `checkout()` + `feed_run()` round trips on a client pool that is already open, at
 1.7 ms, measured back to back; each is a new connection and a new worker process, because the server never lets one
 process serve two clients.
-New client pool creates the client pool and opens the WebSocket connection as well, at 3.4 ms.
+New client pool creates the client pool and opens the connection as well, at 3.4 ms.
 
-The agent run is ten `feed_run` calls on one checkout, 5.3 ms; each is a WebSocket round trip relayed from the server
+The agent run is ten `feed_run` calls on one checkout, 5.3 ms; each is a round trip relayed from the server
 to the same worker.
 The worker runs inside a Linux container, where creating an OSS Monty pool measures 2.4 ms against 4.5 ms on macOS,
 so the Full Monty numbers are not directly comparable with the macOS ones.
