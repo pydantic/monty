@@ -38,7 +38,7 @@ use crate::{
         set::unhashable_type_name,
         tuple::{TupleVec, allocate_tuple},
     },
-    value::{EitherStr, Marker, Value},
+    value::{EitherStr, Marker, VALUE_SIZE, Value},
 };
 
 /// The origin of `typing.Literal[...]`, whose values compare as a set.
@@ -123,7 +123,7 @@ impl GenericAlias {
         let key = match form.0 {
             StaticStrings::Literal => literal_params(key, vm)?,
             StaticStrings::Annotated => flatten_annotated(none_to_none_type(key, 1, vm), vm),
-            StaticStrings::Callable => none_to_none_type(callable_params(key, vm), usize::MAX, vm),
+            StaticStrings::Callable => none_to_none_type(callable_params(key, vm)?, usize::MAX, vm),
             _ => none_to_none_type(key, usize::MAX, vm),
         };
         Ok(Self::allocate(AliasOrigin::Special(form), key, vm))
@@ -419,7 +419,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                 // the bare name, anything else is looked up on the origin.
                 AliasOrigin::Special(_) => {
                     let name = attr.as_str(vm.interns);
-                    if name.len() > 4 && name.starts_with("__") && name.ends_with("__") {
+                    if is_dunder(name) {
                         Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
                     } else {
                         let origin = self.get(vm.heap).origin_value(vm.heap);
@@ -447,12 +447,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         );
         match self.get(vm.heap).origin {
             AliasOrigin::Builtin(origin) if !own_attribute => Type::from(origin).call_class_method(attr, args, vm),
+            // A `typing` form's origin answers the call itself: a host class's
+            // lookup may suspend for the host, which only a call-attr carries.
+            AliasOrigin::Special(_) if !own_attribute && !is_dunder(attr.as_str(vm.interns)) => {
+                let origin = self.get(vm.heap).origin_value(vm.heap);
+                defer_drop!(origin, vm);
+                origin.py_value(vm).py_call_attr(vm, attr, args)
+            }
             _ => {
                 // The guard releases `args` when the attribute lookup fails.
                 let mut args_guard = DropGuard::new(args, vm);
                 let (_, vm) = args_guard.as_parts_mut();
                 let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {
-                    unreachable!("the alias's own attributes are always plain values")
+                    unreachable!("the alias's own attributes and a dunder's error are plain values")
                 };
                 let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
@@ -678,8 +685,9 @@ fn literal_hash(args: &Value, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
 
 /// `Callable[[a, b], r]` stores `(a, b, r)`, as CPython's `_CallableGenericAlias`
 /// does: a parameter list flattens, while `...` and a single bare parameter
-/// stand alone. Takes ownership of the `(params, result)` pair.
-fn callable_params(key: Value, vm: &mut VM<'_>) -> Value {
+/// stand alone. Takes ownership of the `(params, result)` pair; the copy of
+/// the list is preflighted like any container copy.
+fn callable_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(key, vm);
     let Some(HeapReadOutput::Tuple(pair)) = key.read_heap(vm) else {
         unreachable!("Callable takes a parameter list and a result")
@@ -688,12 +696,18 @@ fn callable_params(key: Value, vm: &mut VM<'_>) -> Value {
     defer_drop!(params, vm);
     let mut flattened = if let Some(HeapReadOutput::List(list)) = params.read_heap(vm) {
         let count = list.get(vm.heap).as_slice().len();
+        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
         (0..count).map(|index| list.clone_item(index, vm)).collect::<TupleVec>()
     } else {
         smallvec![params.clone_with_heap(vm)]
     };
     flattened.push(pair.clone_item(1, vm));
-    allocate_tuple(flattened, vm.heap)
+    Ok(allocate_tuple(flattened, vm.heap))
+}
+
+/// Whether `name` is a `__dunder__`, which CPython's alias never forwards to its origin.
+fn is_dunder(name: &str) -> bool {
+    name.len() > 4 && name.starts_with("__") && name.ends_with("__")
 }
 
 /// Owned clones of a tuple's items.
