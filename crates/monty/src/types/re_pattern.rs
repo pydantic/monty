@@ -583,7 +583,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
             return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 }
 
@@ -898,7 +898,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     fn search<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.search", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.to_str(vm)?;
+        let text = arg.try_to_str(vm)?;
         value.get(vm.heap).search(arg, text, vm.heap)
     }
 
@@ -906,7 +906,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     fn r#match<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.match", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.to_str(vm)?;
+        let text = arg.try_to_str(vm)?;
         value.get(vm.heap).match_start(arg, text, vm.heap)
     }
 
@@ -914,7 +914,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     fn fullmatch<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.to_str(vm)?;
+        let text = arg.try_to_str(vm)?;
         value.get(vm.heap).fullmatch(arg, text, vm.heap)
     }
 
@@ -922,7 +922,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     fn findall<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.to_str(vm)?;
+        let text = arg.try_to_str(vm)?;
         value.get(vm.heap).findall(text, vm.heap)
     }
 
@@ -945,7 +945,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         // CPython processes the replacement template *before* its match loop, so
         // this check must precede the negative-count early return below: a bad
         // repl raises even when zero substitutions will run.
-        let Ok(repl) = repl_val.to_str(vm) else {
+        let Ok(repl) = repl_val.try_to_str(vm) else {
             return Err(ExcType::type_error(
                 "callable replacement is not yet supported in re.sub()",
             ));
@@ -957,11 +957,11 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
             // The subject is still type-checked (`to_str` raises this method's
             // `expected string, not {t}` wording) before the refcount bump; no
             // need to re-allocate.
-            let _ = string_val.to_str(vm)?;
+            let _ = string_val.try_to_str(vm)?;
             return Ok(string_val.clone_with_heap(vm.heap));
         };
 
-        let text = string_val.to_str(vm)?;
+        let text = string_val.try_to_str(vm)?;
         pattern.get(vm.heap).sub(repl, text, count, vm.heap)
     }
 
@@ -977,7 +977,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         defer_drop!(string_val, vm);
 
         let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
-        let text = string_val.to_str(vm)?.to_owned();
+        let text = string_val.try_to_str(vm)?.to_owned();
         pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
     }
 
@@ -985,7 +985,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     fn finditer<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
         defer_drop!(arg, vm);
-        let text = arg.to_str(vm)?;
+        let text = arg.try_to_str(vm)?;
         value.get(vm.heap).finditer(arg, text, vm.heap)
     }
 }
