@@ -999,12 +999,8 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     type Receiver = HeapObjectRead<'heap, DirScan>;
 
     #[pymethod]
-    fn is_dir<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let DirScan::Entry(entry) = receiver.get(vm.heap) else {
+    fn is_dir<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };
         let info = entry.info;
@@ -1016,12 +1012,8 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     }
 
     #[pymethod]
-    fn is_file<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let DirScan::Entry(entry) = receiver.get(vm.heap) else {
+    fn is_file<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };
         let info = entry.info;
@@ -1034,11 +1026,11 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
 
     #[pymethod]
     fn is_symlink<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
+        this: &mut HeapObjectRead<'h, DirScan>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let DirScan::Entry(entry) = receiver.get(vm.heap) else {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };
         let info = entry.info;
@@ -1051,11 +1043,11 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
 
     #[pymethod]
     fn is_junction<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
+        this: &mut HeapObjectRead<'h, DirScan>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let DirScan::Entry(_) = receiver.get(vm.heap) else {
+        let DirScan::Entry(_) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };
         let value = {
@@ -1067,11 +1059,11 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
 
     #[pymethod]
     fn stat_method<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
+        this: &mut HeapObjectRead<'h, DirScan>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let DirScan::Entry(entry) = receiver.get(vm.heap) else {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };
         let info = entry.info;
@@ -1088,12 +1080,8 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     }
 
     #[pymethod]
-    fn fspath<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let DirScan::Entry(entry) = receiver.get(vm.heap) else {
+    fn fspath<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
         };
         let path = entry.path.clone();
@@ -1112,13 +1100,9 @@ impl<'heap> PyAttrs<'heap> for PyScandirImpl {
     type Receiver = HeapObjectRead<'heap, DirScan>;
 
     #[pymethod]
-    fn close<'h>(
-        receiver: &mut HeapObjectRead<'h, DirScan>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn close<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         args.check_zero_args("ScandirIterator.close", vm.heap)?;
-        if let DirScan::Scandir(iter) = receiver.get_mut(vm.heap) {
+        if let DirScan::Scandir(iter) = this.get_mut(vm.heap) {
             iter.position = iter.entries.len();
         }
         Ok(CallResult::Value(Value::None))

@@ -251,20 +251,20 @@ impl<'heap> PyAttrs<'heap> for PyCsvWriterImpl {
 
     #[pymethod]
     fn writerow<'h>(
-        receiver: &mut HeapObjectRead<'h, CsvObject>,
+        this: &mut HeapObjectRead<'h, CsvObject>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        writer::writerow(receiver, args, vm)
+        writer::writerow(this, args, vm)
     }
 
     #[pymethod]
     fn writerows<'h>(
-        receiver: &mut HeapObjectRead<'h, CsvObject>,
+        this: &mut HeapObjectRead<'h, CsvObject>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        writer::writerows(receiver, args, vm)
+        writer::writerows(this, args, vm)
     }
 }
 
@@ -276,28 +276,28 @@ impl<'heap> PyAttrs<'heap> for PyCsvDictWriterImpl {
 
     #[pymethod]
     fn writerow<'h>(
-        receiver: &mut HeapObjectRead<'h, CsvObject>,
+        this: &mut HeapObjectRead<'h, CsvObject>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        dict::writer_writerow(receiver, args, vm)
+        dict::writer_writerow(this, args, vm)
     }
 
     #[pymethod]
     fn writerows<'h>(
-        receiver: &mut HeapObjectRead<'h, CsvObject>,
+        this: &mut HeapObjectRead<'h, CsvObject>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        dict::writer_writerows(receiver, args, vm)
+        dict::writer_writerows(this, args, vm)
     }
 
     #[pymethod]
     fn writeheader<'h>(
-        receiver: &mut HeapObjectRead<'h, CsvObject>,
+        this: &mut HeapObjectRead<'h, CsvObject>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        dict::writer_writeheader(receiver, args, vm)
+        dict::writer_writeheader(this, args, vm)
     }
 }

@@ -1646,22 +1646,18 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     type Receiver = HeapObjectRead<'heap, DateTime>;
 
     fn time_value<'h>(
-        receiver: &HeapObjectRead<'h, DateTime>,
+        this: &HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
         keep_tz: bool,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+        let dt = this.get(vm.heap).clone();
         {
             // `time()` drops the timezone, `timetz()` keeps it — the only
             // difference between the two in CPython.
             args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
             // Owned, so it must be released whether or not the time attaches it.
-            let tzinfo = if keep_tz {
-                receiver.tzinfo_value(vm)
-            } else {
-                Value::None
-            };
+            let tzinfo = if keep_tz { this.tzinfo_value(vm) } else { Value::None };
             defer_drop!(tzinfo, vm);
             let naive = dt.naive.time();
             let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
@@ -1681,11 +1677,11 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
 
     #[pymethod]
     fn isoformat<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
+        this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+        let dt = this.get(vm.heap).clone();
         {
             let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
             defer_drop!(sep, vm);
@@ -1702,11 +1698,11 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
 
     #[pymethod]
     fn strftime<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
+        this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+        let dt = this.get(vm.heap).clone();
         {
             let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
             defer_drop!(format, vm);
@@ -1716,21 +1712,13 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pymethod]
-    fn replace<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        Ok(CallResult::Value(receiver.replace(vm, args)?))
+    fn replace<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(this.replace(vm, args)?))
     }
 
     #[pymethod]
-    fn weekday<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+    fn weekday<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
         {
             args.check_zero_args("datetime.weekday", vm.heap)?;
             Ok(CallResult::Value(Value::Int(i64::from(
@@ -1741,11 +1729,11 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
 
     #[pymethod]
     fn isoweekday<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
+        this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+        let dt = this.get(vm.heap).clone();
         {
             args.check_zero_args("datetime.isoweekday", vm.heap)?;
             Ok(CallResult::Value(Value::Int(i64::from(
@@ -1755,12 +1743,8 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pymethod]
-    fn date<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+    fn date<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
         {
             args.check_zero_args("datetime.date", vm.heap)?;
             let d = date::from_ymd(
@@ -1773,30 +1757,22 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pymethod]
-    fn time<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        Self::time_value(receiver, args, vm, false)
+    fn time<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Self::time_value(this, args, vm, false)
     }
 
     #[pymethod]
-    fn timetz<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        Self::time_value(receiver, args, vm, true)
+    fn timetz<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Self::time_value(this, args, vm, true)
     }
 
     #[pymethod]
     fn timestamp<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
+        this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+        let dt = this.get(vm.heap).clone();
         {
             args.check_zero_args("datetime.timestamp", vm.heap)?;
             let ts = compute_timestamp(&dt, &vm.env.os_policy.timezone)?;
@@ -1806,23 +1782,23 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
 
     #[pymethod]
     fn astimezone<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
+        this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         {
-            let dt = receiver.get(vm.heap).clone();
+            let dt = this.get(vm.heap).clone();
             astimezone(&dt, vm, args)
         }
     }
 
     #[pymethod]
     fn utcoffset<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
+        this: &mut HeapObjectRead<'h, DateTime>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+        let dt = this.get(vm.heap).clone();
         {
             args.check_zero_args("datetime.utcoffset", vm.heap)?;
             Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
@@ -1830,12 +1806,8 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pymethod]
-    fn tzname<'h>(
-        receiver: &mut HeapObjectRead<'h, DateTime>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
+    fn tzname<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
         {
             args.check_zero_args("datetime.tzname", vm.heap)?;
             let Some(offset_seconds) = dt.offset_seconds else {

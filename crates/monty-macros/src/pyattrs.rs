@@ -209,8 +209,8 @@ fn definition(
     match kind {
         Kind::ClassMethod => quote! {
             crate::py_attrs::AttrDef::ClassMethod({
-                fn call<'h>(receiver: crate::py_class::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
-                    #handler(crate::intern::StaticStrings::#attr_name, receiver, args, vm)
+                fn call<'h>(this: crate::py_class::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                    #handler(crate::intern::StaticStrings::#attr_name, this, args, vm)
                 }
                 call
             })
@@ -227,7 +227,7 @@ fn definition(
                         quote!(crate::py_value::PyValue::#variant(value))
                     };
                     quote! {
-                        let #pattern = receiver else {
+                        let #pattern = this else {
                             unreachable!("builtin method receiver must match its attribute table")
                         };
                         #handler(*value, args, vm)
@@ -240,14 +240,14 @@ fn definition(
                         format_ident!("Str")
                     };
                     quote! {
-                        let crate::py_value::PyValue::#variant(value) = receiver else {
+                        let crate::py_value::PyValue::#variant(value) = this else {
                             unreachable!("builtin method receiver must match its attribute table")
                         };
                         #handler(value, args, vm)
                     }
                 }
                 Mode::HeapHandle => quote! {
-                    let Some(value) = <#native as crate::py_value::PyValuePayload>::from_py_value(receiver) else {
+                    let Some(value) = <#native as crate::py_value::PyValuePayload>::from_py_value(this) else {
                         unreachable!("builtin method receiver must match its attribute table")
                     };
                     #handler(value, args, vm)
@@ -265,7 +265,7 @@ fn definition(
             };
             quote! {
                 crate::py_attrs::AttrDef::Method({
-                    fn call<'h>(receiver: &mut crate::py_value::PyValue<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                    fn call<'h>(this: &mut crate::py_value::PyValue<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                         #body
                     }
                     call
@@ -522,7 +522,7 @@ mod tests {
                 #[pymethod]
                 fn is_integer(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> { todo!() }
                 #[pyclassmethod]
-                fn from_number(name: StaticStrings, receiver: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> { todo!() }
+                fn from_number(name: StaticStrings, this: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> { todo!() }
                 #[pyvalue]
                 fn min(vm: &mut VM<'_>) -> Value { todo!() }
             }
@@ -534,7 +534,7 @@ mod tests {
             immediate
                 .split_whitespace()
                 .collect::<String>()
-                .contains("<PyFloatImpl>::from_number(crate::intern::StaticStrings::FromNumber,receiver,args,vm)"),
+                .contains("<PyFloatImpl>::from_number(crate::intern::StaticStrings::FromNumber,this,args,vm)"),
             "{immediate}"
         );
         assert!(immediate.contains("AttrDef :: Value (< PyFloatImpl > :: min)"));
