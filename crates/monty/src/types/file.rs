@@ -1724,101 +1724,77 @@ impl<'heap> PyAttrs<'heap> for PyFileImpl {
     type Receiver = HeapObjectRead<'heap, OpenFile>;
 
     #[pymethod]
-    fn read<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        receiver.read(vm, args)
+    fn read<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        this.read(vm, args)
     }
 
     #[pymethod]
     fn readline<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        receiver.readline(vm, args)
+        this.readline(vm, args)
     }
 
     #[pymethod]
     fn readlines<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        receiver.readlines(vm, args)
+        this.readlines(vm, args)
     }
 
     #[pymethod]
-    fn tell<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        receiver.tell(vm, args)
+    fn tell<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        this.tell(vm, args)
     }
 
     #[pymethod]
-    fn seek<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        receiver.seek(vm, args)
+    fn seek<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        this.seek(vm, args)
     }
 
     #[pymethod]
-    fn write<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        receiver.write(vm, args)
+    fn write<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        this.write(vm, args)
     }
 
     #[pymethod]
-    fn close<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        receiver.close(vm, args)
+    fn close<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        this.close(vm, args)
     }
 
     #[pymethod]
-    fn flush<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        receiver.flush(vm, args)
+    fn flush<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        this.flush(vm, args)
     }
 
     #[pymethod]
     fn readable<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        receiver.readable(vm, args)
+        this.readable(vm, args)
     }
 
     #[pymethod]
     fn writable<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        receiver.writable(vm, args)
+        this.writable(vm, args)
     }
 
     #[pymethod]
     fn seekable<'h>(
-        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        receiver.seekable(vm, args)
+        this.seekable(vm, args)
     }
 }

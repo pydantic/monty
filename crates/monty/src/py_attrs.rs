@@ -83,21 +83,21 @@ fn call_unbound_subtype(
     owner: Type,
     attr: &EitherStr,
     call: MethodCall,
-    receiver: &Value,
+    this: &Value,
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
     if owner == Type::Dict {
         // Dict variants share the native Dict representation.
-        return call(&mut receiver.py_value(vm), args, vm);
+        return call(&mut this.py_value(vm), args, vm);
     }
-    let Value::Ref(id) = receiver else {
+    let Value::Ref(id) = this else {
         unreachable!("native subclasses are heap objects")
     };
     if owner == Type::Tuple || attr.as_str(vm.interns) == "strftime" {
         // Named tuples use their tuple operations; date.strftime(datetime) reads
         // the datetime's time and timezone, unlike the other date descriptors.
-        return receiver.py_value(vm).py_call_attr(vm, attr, args);
+        return this.py_value(vm).py_call_attr(vm, attr, args);
     }
     let HeapData::DateTime(datetime) = vm.heap.get(*id) else {
         unreachable!("date's native subclass is datetime")

@@ -2453,15 +2453,15 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     type Receiver = PyBytes<'h>;
 
     #[pymethod]
-    fn decode(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn decode(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_decode(bytes, args, vm)
     }
 
     #[pymethod]
-    fn lower(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn lower(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.lower", vm.heap)?;
@@ -2470,8 +2470,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn upper(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn upper(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.upper", vm.heap)?;
@@ -2480,8 +2480,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn capitalize(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn capitalize(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.capitalize", vm.heap)?;
@@ -2490,8 +2490,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn title(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn title(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.title", vm.heap)?;
@@ -2500,8 +2500,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn swapcase(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn swapcase(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.swapcase", vm.heap)?;
@@ -2510,8 +2510,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn isalpha(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn isalpha(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.isalpha", vm.heap)?;
@@ -2520,8 +2520,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn isdigit(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn isdigit(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.isdigit", vm.heap)?;
@@ -2530,8 +2530,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn isalnum(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn isalnum(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.isalnum", vm.heap)?;
@@ -2540,8 +2540,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn isspace(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn isspace(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.isspace", vm.heap)?;
@@ -2550,8 +2550,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn islower(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn islower(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.islower", vm.heap)?;
@@ -2560,8 +2560,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn isupper(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn isupper(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.isupper", vm.heap)?;
@@ -2570,8 +2570,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn isascii(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn isascii(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.isascii", vm.heap)?;
@@ -2580,8 +2580,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn istitle(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn istitle(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             args.check_zero_args("bytes.istitle", vm.heap)?;
@@ -2590,162 +2590,162 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn count(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn count(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_count(bytes, args, vm)
     }
 
     #[pymethod]
-    fn find(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn find(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_find(bytes, args, vm)
     }
 
     #[pymethod]
-    fn rfind(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn rfind(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rfind(bytes, args, vm)
     }
 
     #[pymethod]
-    fn index(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn index(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_index(bytes, args, vm)
     }
 
     #[pymethod]
-    fn rindex(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn rindex(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rindex(bytes, args, vm)
     }
 
     #[pymethod]
-    fn startswith(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn startswith(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_startswith(bytes, args, vm)
     }
 
     #[pymethod]
-    fn endswith(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn endswith(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_endswith(bytes, args, vm)
     }
 
     #[pymethod]
-    fn strip(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn strip(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_strip(bytes, args, vm)
     }
 
     #[pymethod]
-    fn lstrip(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn lstrip(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_lstrip(bytes, args, vm)
     }
 
     #[pymethod]
-    fn rstrip(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn rstrip(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rstrip(bytes, args, vm)
     }
 
     #[pymethod]
-    fn removeprefix(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn removeprefix(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_removeprefix(bytes, args, vm)
     }
 
     #[pymethod]
-    fn removesuffix(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn removesuffix(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_removesuffix(bytes, args, vm)
     }
 
     #[pymethod]
-    fn split(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn split(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_split(bytes, args, vm)
     }
 
     #[pymethod]
-    fn rsplit(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn rsplit(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rsplit(bytes, args, vm)
     }
 
     #[pymethod]
-    fn splitlines(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn splitlines(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_splitlines(bytes, args, vm)
     }
 
     #[pymethod]
-    fn partition(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn partition(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_partition(bytes, args, vm)
     }
 
     #[pymethod]
-    fn rpartition(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn rpartition(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rpartition(bytes, args, vm)
     }
 
     #[pymethod]
-    fn replace(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn replace(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_replace(bytes, args, vm)
     }
 
     #[pymethod]
-    fn center(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn center(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_center(bytes, args, vm)
     }
 
     #[pymethod]
-    fn ljust(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn ljust(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_ljust(bytes, args, vm)
     }
 
     #[pymethod]
-    fn rjust(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn rjust(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rjust(bytes, args, vm)
     }
 
     #[pymethod]
-    fn zfill(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn zfill(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_zfill(bytes, args, vm)
     }
 
     #[pymethod]
-    fn join(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn join(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         {
             let iterable = args.get_one_arg("bytes.join", vm.heap)?;
@@ -2754,8 +2754,8 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pymethod]
-    fn hex(receiver: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        let bytes = receiver.view(vm);
+    fn hex(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_hex(bytes, args, vm)
     }
