@@ -587,8 +587,7 @@ jobs:
       matrix:
         target:
           - tokens_input_panic
-          # disable until https://github.com/astral-sh/ruff/issues/23198 is fixed
-          # - string_input_panic
+          - string_input_panic
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
