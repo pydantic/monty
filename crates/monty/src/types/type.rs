@@ -18,13 +18,13 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
-        Random, Range, Set, Slice, Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyClass,
+        PyTrait, Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::bytes_repr,
         complex, date, datetime, decimal,
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
-        pyattrs::{self, AttrDef},
+        pyattrs::{self, AttrDef, PyAttrs},
         str::{StringRepr, allocate_string},
         time, timedelta,
     },
@@ -633,6 +633,55 @@ impl Type {
         }
     }
 
+    /// Returns the generated attribute definitions for this builtin type.
+    ///
+    /// Types without a registered table return an empty slice.
+    #[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
+    pub(crate) const fn attrs(self) -> &'static [(StaticStrings, AttrDef)] {
+        match self {
+            Self::LruCacheWrapper => <super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::ATTRS,
+            Self::NamedTuple => <super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::ATTRS,
+            Self::Bytes => <super::bytes::PyBytes<'static> as PyAttrs<'static>>::ATTRS,
+            Self::Path => <super::path::PyPathImpl as PyAttrs<'static>>::ATTRS,
+            Self::Random => <super::random::PyRandomImpl as PyAttrs<'static>>::ATTRS,
+            Self::HashlibHash | Self::Blake2b | Self::Blake2s => {
+                <super::hashlib::PyHashImpl as PyAttrs<'static>>::ATTRS
+            }
+            Self::HashlibHashXof => <super::hashlib::PyHashXofImpl as PyAttrs<'static>>::ATTRS,
+            Self::CsvWriter => <super::csv::PyCsvWriterImpl as PyAttrs<'static>>::ATTRS,
+            Self::CsvDictWriter => <super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::ATTRS,
+            Self::DirEntry => <super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::ATTRS,
+            Self::ScandirIterator => <super::dir_scan::PyScandirImpl as PyAttrs<'static>>::ATTRS,
+            Self::Dict => <super::dict::PyDictImpl as PyAttrs<'static>>::ATTRS,
+            Self::DefaultDict => <super::dict::PyDefaultDictImpl as PyAttrs<'static>>::ATTRS,
+            Self::Counter => <super::dict::PyCounterImpl as PyAttrs<'static>>::ATTRS,
+            Self::Set => <super::set::PySetImpl as PyAttrs<'static>>::ATTRS,
+            Self::FrozenSet => <super::set::PyFrozenSetImpl as PyAttrs<'static>>::ATTRS,
+            Self::DictKeys => <super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::ATTRS,
+            Self::DictItems => <super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::ATTRS,
+            Self::DateTime => <super::datetime::PyDateTimeImpl as PyAttrs<'static>>::ATTRS,
+            Self::Deque => <super::deque::PyDequeImpl as PyAttrs<'static>>::ATTRS,
+            Self::TextIOWrapper | Self::BufferedReader | Self::BufferedWriter | Self::BufferedRandom => {
+                <super::file::PyFileImpl as PyAttrs<'static>>::ATTRS
+            }
+            Self::Decimal => <super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::ATTRS,
+            Self::DecimalContext => <super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::ATTRS,
+            Self::DecimalSignalDict => <super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::ATTRS,
+            Self::ForwardRef => <super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::ATTRS,
+            Self::Str => <super::str::PyStr<'static> as PyAttrs<'static>>::ATTRS,
+            Self::List => <super::list::PyListImpl as PyAttrs<'static>>::ATTRS,
+            Self::Tuple => <super::tuple::PyTupleImpl as PyAttrs<'static>>::ATTRS,
+            Self::Complex => <super::complex::PyComplexImpl as PyAttrs<'static>>::ATTRS,
+            Self::Date => <super::date::PyDateImpl as PyAttrs<'static>>::ATTRS,
+            Self::Time => <super::time::PyTimeImpl as PyAttrs<'static>>::ATTRS,
+            Self::TimeDelta => <super::timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::ATTRS,
+            Self::TimeZone => <super::timezone::PyTimeZoneImpl as PyAttrs<'static>>::ATTRS,
+            Self::RePattern => <super::re_pattern::PyRePatternImpl as PyAttrs<'static>>::ATTRS,
+            Self::ReMatch => <super::re_match::PyReMatchImpl as PyAttrs<'static>>::ATTRS,
+            _ => &[],
+        }
+    }
+
     /// Looks up a name in this builtin type's generated attribute table.
     ///
     /// Returns the definition without binding a receiver or evaluating a value factory.
@@ -692,9 +741,7 @@ impl Type {
         match self.lookup_attr(attr, vm.interns) {
             Some(AttrDef::Method(method)) => method(receiver, args, vm),
             Some(AttrDef::ClassMethod(classmethod)) => classmethod(
-                Value::Builtin(Builtins::Type(
-                    BuiltinType::try_from(self).expect("registered builtin type"),
-                )),
+                PyClass::Builtin(BuiltinType::try_from(self).expect("registered builtin type")),
                 args,
                 vm,
             ),
@@ -711,9 +758,7 @@ impl Type {
         match self.lookup_attr(attr, vm.interns) {
             Some(AttrDef::ClassMethod(classmethod)) => {
                 return classmethod(
-                    Value::Builtin(Builtins::Type(
-                        BuiltinType::try_from(self).expect("registered builtin type"),
-                    )),
+                    PyClass::Builtin(BuiltinType::try_from(self).expect("registered builtin type")),
                     args,
                     vm,
                 );

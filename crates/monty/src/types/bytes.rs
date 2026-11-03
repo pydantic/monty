@@ -89,7 +89,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity},
     types::{
-        List,
+        List, PyClass,
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
         pyattrs::PyAttrs,
@@ -2760,8 +2760,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
     }
 
     #[pyclassmethod]
-    fn fromhex(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn fromhex(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         bytes_fromhex(args, vm).map(CallResult::Value)
     }
 }
