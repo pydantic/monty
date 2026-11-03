@@ -56,7 +56,6 @@ impl Remote {
     /// dials. A URL tonic cannot parse fails here, so a pool with a bad URL
     /// fails at `Pool::new` rather than at its first checkout.
     pub(crate) fn connect(url: &str, connect_timeout: Duration) -> Result<Self, PoolError> {
-        install_crypto_provider();
         let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
         let mut endpoint = Endpoint::from_shared(dial_url(url))
             .map_err(|err| spawn_error(&err))?
@@ -73,6 +72,7 @@ impl Remote {
             // 64 KiB flow-control window
             .http2_adaptive_window(true);
         if endpoint.uri().scheme_str() == Some("https") {
+            install_crypto_provider();
             endpoint = endpoint
                 .tls_config(ClientTlsConfig::new().with_webpki_roots())
                 .map_err(|err| spawn_error(&err))?;
