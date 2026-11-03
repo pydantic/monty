@@ -115,12 +115,12 @@ static TURN_DURATION: Instrument = Instrument {
     description: "Wall time of one non-execution turn, by kind.",
 };
 
-/// Suspensions the sandbox raised.
+/// Suspensions the sandbox raised, plus async host calls it started without one.
 static SUSPENSIONS: Instrument = Instrument {
     kind: MetricKind::Counter,
     name: "monty.run.suspensions",
     unit: "{suspension}",
-    description: "Suspensions the sandbox raised for the host to answer, by kind.",
+    description: "Suspensions the sandbox raised for the host to answer, and host calls it started without suspending (kind `started`), by kind.",
 };
 
 /// Round-trip time of one suspension, whoever answers it.
@@ -602,6 +602,12 @@ impl TurnMetrics {
                     }
                 }
             }
+            // no round-trip to time: the worker kept running
+            Some(pb::child_event::Kind::StartedCalls(started)) => self.metrics.record(
+                &SUSPENSIONS,
+                MetricValue::I64(i64::try_from(started.calls.len()).unwrap_or(i64::MAX)),
+                &[KeyValue::new("kind", "started")],
+            ),
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 self.suspend(SuspensionKind::FunctionCall(c.allow_eager_await.then_some(c.call_id)));
             }
@@ -1127,6 +1133,7 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         }))
     }
 

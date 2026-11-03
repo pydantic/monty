@@ -25,7 +25,7 @@ use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
         Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, Persistence, PrintFuture, ReplConfig,
-        ResumeValue, TurnEvent, on_print_sync,
+        ResumeValue, StartedCall, TurnEvent, on_print_sync,
     },
     pool::Pool,
 };

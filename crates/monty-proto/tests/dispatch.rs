@@ -27,6 +27,7 @@ fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
         values: Some(values),
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
     }));
     let (bytes, _) = dispatch_frame(child, &request);
     let (_, event) = split_turn(&bytes);
@@ -253,6 +254,7 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
         print_flush_interval_ms,
+        started_calls: true,
         ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -275,6 +277,7 @@ fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, p
         values: None,
         skip_type_check: false,
         cwd: cwd.to_owned(),
+        async_functions: Vec::new().into(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -418,6 +421,7 @@ fn inputs_are_injected() {
         values: Some(values),
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -666,6 +670,7 @@ fn turn_events_carry_the_suspension_budget() {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     let events = decode_full_events(&bytes);
@@ -837,6 +842,7 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
         values: None,
         skip_type_check: true,
         cwd: String::new(),
+        async_functions: Vec::new().into(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_import(split_turn(&bytes).1), "tools");
@@ -1160,4 +1166,241 @@ fn configuration_acknowledges_the_selected_execution_clock() {
 #[test]
 fn cpu_clock_availability_matches_the_platform() {
     assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(target_os = "linux"));
+}
+
+/// Configures `child` for a parent that does or does not accept `StartedCalls`.
+fn create_repl_accepting(child: &mut Child, started_calls: bool) {
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        started_calls,
+        ..Default::default()
+    }));
+    let (bytes, _) = dispatch_frame(child, &request);
+    assert!(matches!(
+        decode_events(&bytes).as_slice(),
+        [pb::child_event::Kind::Ok(_)]
+    ));
+}
+
+/// Feeds `code` with `inputs` and returns every event of the turn, in order.
+fn feed_inputs(child: &mut Child, code: &str, inputs: Vec<(&str, MontyObject)>) -> Vec<pb::child_event::Kind> {
+    let inputs = NamedValues::from(
+        inputs
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect::<Vec<_>>(),
+    );
+    let (inputs, values) = named_values_to_proto(inputs);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs,
+        values: Some(values),
+        skip_type_check: false,
+        cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
+    }));
+    decode_events(&dispatch_frame(child, &request).0)
+}
+
+/// `(name, positional args)` of every call a turn's `StartedCalls` carried.
+fn started_calls(events: &[pb::child_event::Kind]) -> Vec<(String, Vec<MontyObject>)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            pb::child_event::Kind::StartedCalls(started) => Some(started.calls.iter()),
+            _ => None,
+        })
+        .flatten()
+        .map(|call| {
+            let args = call.clone().into_call_args().expect("worker call args decode");
+            let positional = args.args().map(|arg| arg.to_owned()).collect();
+            (call.function_name.clone(), positional)
+        })
+        .collect()
+}
+
+/// A gather over async host functions costs one request per blocking point:
+/// the feed streams every call and blocks once, and one reply settles them all.
+#[test]
+fn gathered_async_calls_take_one_round_trip() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let events = feed_inputs(
+        &mut child,
+        "import asyncio\nawait asyncio.gather(*[f(i) for i in range(20)])",
+        vec![("f", MontyObject::async_function("f", None))],
+    );
+    let calls = started_calls(&events);
+    assert_eq!(calls.len(), 20);
+    assert_eq!(calls[3], ("f".to_owned(), vec![MontyObject::int(3)]));
+    let Some(pb::child_event::Kind::ResolveFutures(resolve)) = events.last() else {
+        panic!("expected the feed to block on its futures, got {events:?}")
+    };
+    assert_eq!(events.len(), 21);
+    let results = resolve
+        .pending_call_ids
+        .iter()
+        .map(|id| future_reply(*id, pb::ext_function_result::Kind::ReturnValue(0)))
+        .collect();
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        results,
+        MontyObject::int(7),
+    )));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let (_, event) = split_turn(&bytes);
+    assert_eq!(expect_complete(event), MontyObject::list(vec![MontyObject::int(7); 20]));
+}
+
+/// A parent that did not ask for `StartedCalls` gets the suspension it understands.
+#[test]
+fn async_calls_suspend_without_started_calls() {
+    let mut child = Child::default();
+    create_repl_accepting(&mut child, false);
+    let events = feed_inputs(
+        &mut child,
+        "await f(1)",
+        vec![("f", MontyObject::async_function("f", None))],
+    );
+    let [pb::child_event::Kind::FunctionCall(call)] = events.as_slice() else {
+        panic!("expected one suspension, got {events:?}")
+    };
+    assert_eq!(call.function_name, "f");
+}
+
+/// Started calls keep their order against output and the suspensions around them.
+#[test]
+fn started_calls_stream_in_program_order() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let events = feed_inputs(
+        &mut child,
+        "print('before')\na = af(1)\ng(2)\nawait a",
+        vec![
+            ("af", MontyObject::async_function("af", None)),
+            ("g", MontyObject::function("g", None)),
+        ],
+    );
+    let [
+        pb::child_event::Kind::Print(print),
+        pb::child_event::Kind::StartedCalls(_),
+        pb::child_event::Kind::FunctionCall(call),
+    ] = events.as_slice()
+    else {
+        panic!("expected print, started call, then suspension, got {events:?}")
+    };
+    assert_eq!(print.segments[0].text, "before\n");
+    assert_eq!(call.function_name, "g");
+}
+
+/// The host's error for a started call is raised at the `await`.
+#[test]
+fn started_call_errors_surface_at_the_await() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let code = "a = f()\ntry:\n    await a\nexcept ValueError as e:\n    r = str(e)\nr";
+    let events = feed_inputs(&mut child, code, vec![("f", MontyObject::async_function("f", None))]);
+    let Some(pb::child_event::Kind::ResolveFutures(resolve)) = events.last() else {
+        panic!("expected the feed to block, got {events:?}")
+    };
+    let boom = MontyException::new(ExcType::ValueError, Some("boom".to_owned()));
+    let reply = future_reply(
+        resolve.pending_call_ids[0],
+        pb::ext_function_result::Kind::Error((&boom).into()),
+    );
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![reply],
+        MontyObject::none(),
+    )));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::string("boom"));
+}
+
+/// A dump taken while blocked on started calls restores to the same pending
+/// futures: every call was sent before the turn ended, so nothing extra is stored.
+#[test]
+fn dump_after_started_calls_restores_the_pending_futures() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let events = feed_inputs(
+        &mut child,
+        "import asyncio\nawait asyncio.gather(f(1), f(2))",
+        vec![("f", MontyObject::async_function("f", None))],
+    );
+    let Some(pb::child_event::Kind::ResolveFutures(resolve)) = events.last() else {
+        panic!("expected the feed to block, got {events:?}")
+    };
+    let pending = resolve.pending_call_ids.clone();
+    let (bytes, _) = dispatch_frame(&mut child, &frame_request(pb::parent_request::Kind::Dump(pb::Dump {})));
+    let pb::child_event::Kind::DumpResult(dumped) = split_turn(&bytes).1 else {
+        panic!("expected a dump")
+    };
+
+    let mut restored = Child::default();
+    create_repl(&mut restored);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: dumped.state }));
+    let (bytes, _) = dispatch_frame(&mut restored, &request);
+    let pb::child_event::Kind::ResolveFutures(resolve) = split_turn(&bytes).1 else {
+        panic!("expected the restored suspension")
+    };
+    assert_eq!(resolve.pending_call_ids, pending);
+}
+
+/// A bare call to a name the parent never supplied a value for starts without
+/// waiting when the feed names it in `async_functions`; other names still suspend.
+#[test]
+fn feed_async_functions_cover_bare_calls() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: "a = fetch(1)\nb = fetch(2)\nsync_call()".to_owned(),
+        cwd: "/".to_owned(),
+        async_functions: vec!["fetch".to_owned()].into(),
+        ..pb::Feed::default()
+    }));
+    let events = decode_events(&dispatch_frame(&mut child, &request).0);
+    assert_eq!(
+        started_calls(&events),
+        vec![
+            ("fetch".to_owned(), vec![MontyObject::int(1)]),
+            ("fetch".to_owned(), vec![MontyObject::int(2)]),
+        ]
+    );
+    let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
+        panic!("expected the sync call to suspend, got {events:?}")
+    };
+    assert_eq!(call.function_name, "sync_call");
+}
+
+/// A loop of calls it never awaits would otherwise run unbounded, so the
+/// child starts at most `max_suspensions` calls and then suspends, leaving the
+/// parent's suspension budget to abort the feed.
+#[test]
+fn started_calls_stop_at_max_suspensions() {
+    let mut child = Child::default();
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: Some(pb::ResourceLimits {
+            max_suspensions: Some(3),
+            ..Default::default()
+        }),
+        monty_version: MONTY_VERSION.to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        started_calls: true,
+        ..Default::default()
+    }));
+    dispatch_frame(&mut child, &request);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: "while True:\n    fetch()".to_owned(),
+        cwd: "/".to_owned(),
+        async_functions: vec!["fetch".to_owned()].into(),
+        ..pb::Feed::default()
+    }));
+    let events = decode_events(&dispatch_frame(&mut child, &request).0);
+    assert_eq!(started_calls(&events).len(), 3);
+    let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
+        panic!("expected the fourth call to suspend, got {events:?}")
+    };
+    assert_eq!(call.function_name, "fetch");
 }

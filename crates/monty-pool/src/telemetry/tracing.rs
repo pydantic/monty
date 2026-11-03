@@ -310,6 +310,23 @@ impl Recorder {
                     );
                 }
             }
+            // One record per call: the worker kept running, so there is no
+            // round-trip for a span to cover; its future settles in `ResumeFutures`.
+            Some(pb::child_event::Kind::StartedCalls(started)) => {
+                for c in &started.calls {
+                    let (args, kwargs, args_cut) = render_call_arguments(c);
+                    let (function_name, name_cut) = truncate_str(&c.function_name);
+                    logfire::info!(
+                        parent: self.context_span(),
+                        "start call {function_name}",
+                        function_name = function_name,
+                        args = args,
+                        kwargs = kwargs,
+                        call_id = c.call_id,
+                        length_limit_exceeded = (args_cut | name_cut).then_some(true),
+                    );
+                }
+            }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 let (args, kwargs, args_cut) = render_call_arguments(c);
                 let (function_name, name_cut) = truncate_str(&c.function_name);
@@ -1246,6 +1263,7 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "double".to_owned(),
@@ -1433,6 +1451,7 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
             MontyObject::int(1),

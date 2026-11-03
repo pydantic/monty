@@ -865,6 +865,10 @@ pub struct ReplFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
+    /// The callee is an async host function: the host may answer with
+    /// [`Self::resume_pending`] without running it first.
+    #[serde(default)]
+    pub is_async: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal REPL execution snapshot.
@@ -1571,6 +1575,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
@@ -1578,6 +1583,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
             snapshot: new_repl_snapshot!(),
         })),
@@ -1667,7 +1673,10 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         // not a function, so keep only the function-like heap variants.
         Value::Ref(id) => matches!(
             heap.get(*id),
-            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)
+            HeapData::Closure(_)
+                | HeapData::FunctionDefaults(_)
+                | HeapData::ExtFunction(_)
+                | HeapData::AsyncExtFunction(_)
         ),
         _ => false,
     }

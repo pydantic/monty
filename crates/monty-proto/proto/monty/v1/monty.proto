@@ -303,6 +303,12 @@ message ModuleNode {
 message Function {
   string name = 1;
   optional string docstring = 2;
+  // Calls to this function return an awaitable without waiting for the
+  // parent. Under `Configure.started_calls` the child registers the future
+  // itself and streams the call in `StartedCalls`; otherwise, or on a child
+  // that predates the field, it suspends with `FunctionCall` as for any other
+  // function, which the parent may still answer with a future.
+  bool is_async = 3;
 }
 
 // ============================================================================
@@ -660,6 +666,13 @@ message Configure {
   // Local VM and supervisor clock; absent defaults to wall time in the child.
   // Remote clients leave this absent. The server selects the worker's clock.
   optional ExecutionClock execution_clock = 14;
+  // The parent accepts `StartedCalls`, so calls to async host functions
+  // (`Function.is_async`, `Feed.async_functions`) may start without
+  // suspending. Absent or false, the child suspends with `FunctionCall` for
+  // them as for any call. A child that predates the field ignores it, so no
+  // protocol version change is needed. A forwarder that cannot pass
+  // `StartedCalls` on must clear it before forwarding.
+  bool started_calls = 15;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -702,6 +715,11 @@ message Feed {
   // feed, resolved by the parent (an explicit choice, or the first mount on
   // the session's first feed). Empty keeps the session's current directory.
   string cwd = 5;
+  // Names of host functions whose calls in this feed start without waiting,
+  // as for `Function.is_async`. Covers a call of a bare name the parent never
+  // supplied a value for, which reaches the parent only as a `FunctionCall`
+  // by name. Ignored unless `Configure.started_calls` is set.
+  repeated string async_functions = 6;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -796,9 +814,10 @@ message InstallDependencies {
 // fields start at 20 — a new arm then never has to jump the numbering. Note
 // arms past 15 cost a two-byte key instead of one, which forwarding servers
 // (which walk only field keys, on every frame) pay per event. Such a server
-// mirrors this numbering to classify frames without decoding them; it treats
-// a tag it does not know as opaque, so adding an arm degrades rather than
-// misroutes, but renumbering an existing one would break it.
+// mirrors this numbering to classify frames without decoding them, so
+// renumbering an existing arm would misroute frames. A forwarder may also
+// treat a tag it does not know as fatal to the session, so a child sends a new
+// arm only to a parent that asked for it in `Configure`.
 message ChildEvent {
   oneof kind {
     Print print = 1;
@@ -814,6 +833,7 @@ message ChildEvent {
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
     Ping ping = 13;
+    StartedCalls started_calls = 14;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -913,6 +933,20 @@ message FunctionCall {
   // Where the call expression is in the source. Absent from a child that
   // predates the field; the parent then reports an empty range at offset 0.
   SourceRange position = 8;
+}
+
+// Mid-turn, like `Print`: calls to async host functions (`Function.is_async`)
+// the sandbox has started without waiting. Each call already has an external
+// future registered under its `call_id`; the parent starts it and settles it
+// through `ResumeFutures` when a later `ResolveFutures` names it. Sent only
+// to a parent that set `Configure.started_calls`. The child sends every started
+// call before the turn-ending event that follows it, so a `ResolveFutures`
+// never names a call the parent has not received. An event may carry any
+// number of calls; `allow_eager_await` is always false on them. A session
+// starts at most `max_suspensions` calls this way; later calls suspend with
+// `FunctionCall`, so the parent's suspension budget still ends a runaway loop.
+message StartedCalls {
+  repeated FunctionCall calls = 1;
 }
 
 // Suspension: the sandbox performed an OS operation, surfaced for the parent

@@ -122,6 +122,12 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
 
+Calls to async host functions do not suspend: a `MontyObject::async_function` value, or a name passed to
+[`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
+The worker sends them mid-turn and keeps running.
+Take them with [`Checkout::take_started_calls`](../api/rust/monty-pool.md#checkout) after every turn, start each, and
+settle them with `resume_futures` once `ResolveFutures` names them.
+
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.
 

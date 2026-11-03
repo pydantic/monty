@@ -33,7 +33,7 @@ use std::{
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
+    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StartedCall, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -224,6 +224,9 @@ pub struct NativeFeedOptions {
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
     pub skip_type_check: bool,
+    /// `externalLookup` keys marked with `asyncFunction()`, so a bare call to
+    /// one starts without waiting (see `Checkout::set_async_functions`).
+    pub async_functions: Option<Vec<String>>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -556,12 +559,17 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
-        let NativeFeedOptions { cwd, skip_type_check } = options;
+        let NativeFeedOptions {
+            cwd,
+            skip_type_check,
+            async_functions,
+        } = options;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
+                    checkout.set_async_functions(async_functions.unwrap_or_default());
                     checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
                         .await
@@ -998,6 +1006,7 @@ impl NativeSession {
                     return Ok((
                         TurnOutcome::Protocol("the session is closed — check out a new one".to_owned()),
                         None,
+                        Vec::new(),
                     ));
                 };
                 // Forward each print to JS and *await the callback having
@@ -1024,9 +1033,17 @@ impl NativeSession {
                 let outcome = compute(checkout, &mut on_print).await;
                 // a load or an auto-resume can each move the session to a new ID
                 *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
-                Ok((outcome, callback_span_key(&checkout.callback_context())))
+                // taken every turn: a `resolveFutures` can name a call that only arrived this way
+                let started = checkout.take_started_calls();
+                Ok((outcome, callback_span_key(&checkout.callback_context()), started))
             },
-            turn_to_js,
+            |env, (outcome, context, started)| {
+                let mut obj = turn_to_js(env, (outcome, context))?;
+                if !started.is_empty() {
+                    obj.set("startedCalls", started_calls_to_js(env, started)?)?;
+                }
+                Ok(obj)
+            },
         )
     }
 }
@@ -1300,6 +1317,31 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
     }
     Ok(obj)
+}
+
+/// Converts the calls to async host functions a turn started into the
+/// `startedCalls` array of its turn object, shaped like a `functionCall` turn's
+/// fields; `ts/session.ts` runs each and registers its promise as a future.
+fn started_calls_to_js(env: &Env, started: Vec<StartedCall>) -> Result<Array<'_>> {
+    let mut calls = env.create_array(0)?;
+    for StartedCall {
+        function_name,
+        args,
+        call_id,
+        position,
+    } in started
+    {
+        let mut call = Object::new(env)?;
+        call.set("functionName", function_name)?;
+        let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
+        let arena = DecodedArena::new(graph, env)?;
+        call.set("args", values_to_js(env, &arena, arg_ids)?)?;
+        call.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
+        call.set("callId", call_id)?;
+        call.set("position", source_range_to_js(env, &position)?)?;
+        calls.insert(call)?;
+    }
+    Ok(calls)
 }
 
 /// Converts positional call arguments for a turn object.

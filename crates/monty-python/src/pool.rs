@@ -30,6 +30,7 @@
 use std::{
     collections::HashSet,
     future::{Future, ready},
+    mem,
     num::NonZeroU32,
     path::PathBuf,
     pin::Pin,
@@ -43,15 +44,15 @@ use std::{
 
 use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StartedCall, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
     python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value},
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CallArgs, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    NamedValues, OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -1556,15 +1557,19 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         instances,
     } = args;
     let lookup = ExternalLookup::new(py, names, &instances);
+    let async_functions = names.async_functions.clone();
     let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
     // Only system sleeps may create futures in the synchronous API.
     let mut sleep_ids: HashSet<u32> = HashSet::new();
+    // Started calls, run as they arrive and delivered at the next `ResolveFutures`.
+    let mut settled: Vec<(u32, ResumeValue)> = Vec::new();
     let mut event = run_turn_sync(
         py,
         &checkout,
         &print_target,
         turn_fn(move |c, p| {
             Box::pin(async move {
+                c.set_async_functions(async_functions);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -1574,17 +1579,18 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
         // answer discards the checkout (see `sync_turn_answer`).
-        let native = py.detach(|| {
-            block_on_sync(async {
-                checkout
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(monty_pool::Checkout::callback_context)
-                    .unwrap_or_default()
-            })
-        })?;
+        let (native, started) = py.detach(|| block_on_sync(callback_context_and_started_calls(&checkout)))?;
         let callback_guard = callback_context.enter(py, &native)?;
+        for StartedCall {
+            function_name,
+            args,
+            call_id,
+            ..
+        } in started
+        {
+            let outcome = started_call_outcome(ext_to_resume(lookup.call(&function_name, &args))?, &function_name);
+            settled.push((call_id, outcome.map_or_else(ResumeValue::Error, ResumeValue::Return)));
+        }
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
             matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
@@ -1635,6 +1641,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
                     TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
                 }
             },
+            // Delivered first: each started call settled when it arrived.
+            TurnEvent::ResolveFutures { .. } if !settled.is_empty() => TurnAnswer::Futures(mem::take(&mut settled)),
             // Unknown future IDs cannot be resolved by this loop.
             TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
                 if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
@@ -1828,6 +1836,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         instances,
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    let async_functions = names.async_functions.clone();
 
     let mut event = run_turn_async(
         &checkout,
@@ -1838,6 +1847,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
             Box::pin(async move {
+                c.set_async_functions(async_functions);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -1850,12 +1860,16 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let native = checkout
-            .lock()
-            .await
-            .as_ref()
-            .map(monty_pool::Checkout::callback_context)
-            .unwrap_or_default();
+        let (native, started) = callback_context_and_started_calls(&checkout).await;
+        // started before the turn's own event is answered: `ResolveFutures` may name them
+        for call in started {
+            if let Err(err) =
+                start_call_async(call, &names, &instances, &mut join_set, &callback_context, &native).await
+            {
+                discard_checkout(&checkout).await;
+                return Err(err);
+            }
+        }
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
             matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
@@ -2095,6 +2109,79 @@ async fn answer_call(
         other => other,
     };
     dispatched_answer(dispatched, call_id).await
+}
+
+/// Reads the checkout's telemetry context and takes the calls to async host
+/// functions its last turn started, under one lock.
+pub(crate) async fn callback_context_and_started_calls(
+    checkout: &SharedCheckout,
+) -> (opentelemetry::Context, Vec<StartedCall>) {
+    checkout
+        .lock()
+        .await
+        .as_mut()
+        .map_or_else(Default::default, |checkout| {
+            (checkout.callback_context(), checkout.take_started_calls())
+        })
+}
+
+/// Starts a call the sandbox made to an async host function without waiting:
+/// a coroutine is spawned into `join_set`, and a plain return value settles a
+/// ready future, so either answers the call's pending future at `ResolveFutures`.
+async fn start_call_async(
+    call: StartedCall,
+    names: &HostNames,
+    instances: &InstanceStore,
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    callback_context: &CallbackContext,
+    native: &opentelemetry::Context,
+) -> PyResult<()> {
+    let StartedCall {
+        function_name,
+        args,
+        call_id,
+        ..
+    } = call;
+    let dispatch = || dispatch_function_call(&function_name, None, &args, names, instances);
+    match answer_call(
+        dispatch,
+        call_id,
+        false,
+        names,
+        instances,
+        join_set,
+        callback_context,
+        native,
+    )
+    .await?
+    {
+        // `CoroutineMode::Future` spawned the coroutine
+        TurnAnswer::Call(ResumeValue::Future) => {}
+        TurnAnswer::Call(value) => {
+            let result = started_call_outcome(value, &function_name)
+                .map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return);
+            join_set.spawn(ready((call_id, result)));
+        }
+        TurnAnswer::Name(_) | TurnAnswer::Eager(..) | TurnAnswer::Futures(_) => {
+            unreachable!("answer_call answers a call without eager await with `TurnAnswer::Call`")
+        }
+    }
+    Ok(())
+}
+
+/// How a started call that answered at once settles its future. A future
+/// takes only a value or an exception, so a missing function becomes the
+/// `NameError` the sandbox raises for one at a suspension.
+fn started_call_outcome(value: ResumeValue, function_name: &str) -> Result<MontyObject, MontyException> {
+    match value {
+        ResumeValue::Return(value) => Ok(value),
+        ResumeValue::Error(exc) => Err(exc),
+        ResumeValue::NotFound => Err(ExtFunctionResult::not_found_exception(function_name)),
+        ResumeValue::Future | ResumeValue::NotHandled | ResumeValue::ModuleFile(_) => Err(MontyException::new(
+            ExcType::RuntimeError,
+            Some(format!("invalid answer for '{function_name}'")),
+        )),
+    }
 }
 
 /// Awaits any coroutine a dispatch handed back, outside the callback context

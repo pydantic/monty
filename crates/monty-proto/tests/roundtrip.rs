@@ -879,6 +879,7 @@ fn deep_values_cross_the_wire() {
             values: Some(values),
             skip_type_check: false,
             cwd: "/work".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         trace_parent: None,
     };

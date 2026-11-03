@@ -12,6 +12,7 @@
 import { context as ContextAPI, type Context } from '@opentelemetry/api'
 
 import type { NativeSession } from '../native-addon.js'
+import { isAsyncFunction, markAsync } from './asyncFunction.js'
 import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
 import {
   AttrNotExposed,
@@ -48,6 +49,7 @@ import {
   type ModuleReadTurn,
   type NameLookupTurn,
   type NativeFutureResult,
+  type NativeStartedCall,
   type NativeTurn,
   type OkTurn,
   type NotMountedTurn,
@@ -55,6 +57,7 @@ import {
   type ResolveFuturesTurn,
   type ShutdownTurn,
   osCallAcceptsFuture,
+  startedCallsOf,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -228,10 +231,16 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        asyncFunctions: asyncFunctionNames(options.externalLookup),
+      },
       onPrint,
     )) as NativeTurn
     for (;;) {
+      // before the turn is answered: a `resolveFutures` turn may name these calls
+      await answerer.startCalls(turn)
       switch (turn.kind) {
         case 'complete':
           printTarget.throwIfFailed()
@@ -299,7 +308,11 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        asyncFunctions: asyncFunctionNames(options.externalLookup),
+      },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -570,7 +583,10 @@ class TurnAnswerer {
           next = this.native.resumeNameLookup(null, null, onPrint)
         } else {
           const v = lookup[turn.name]
-          if (typeof v === 'function') {
+          if (isAsyncFunction(v)) {
+            // by value, so the native converter sees the marker
+            next = this.native.resumeNameLookup(null, { value: v }, onPrint)
+          } else if (typeof v === 'function') {
             next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
           } else {
             next = this.native.resumeNameLookup(null, { value: prepare(v, this.instances) }, onPrint)
@@ -609,6 +625,11 @@ class TurnAnswerer {
       return this.native.resumeError('TypeError', notCallableMessage(entry), onPrint)
     }
     const fn = entry as ExternalFunction
+    if (isAsyncFunction(fn)) {
+      // A marked call that suspended anyway (a WebAssembly worker, or one past
+      // `maxSuspensions`) still returns an awaitable, raising at the `await`.
+      return this.answerAwaitedCall(call, this.callAsPromise(fn, call), onPrint)
+    }
     let returned: unknown
     try {
       const [args, kwargs] = restoreCallArgs(call, this.instances)
@@ -645,7 +666,57 @@ class TurnAnswerer {
     const attr = functionName.slice(dot + 1)
     const entry = ownEntry(resolved.attrs, attr)
     // Preserve the receiver of `module.attr(...)`.
-    return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(resolved.receiver) : entry)
+    return boxed(typeof entry === 'function' ? bindHostFunction(entry as ExternalFunction, resolved.receiver) : entry)
+  }
+
+  /**
+   * Runs the calls to async host functions `turn` started, in the order the
+   * sandbox made them, and registers each outcome as the call's future. Never
+   * throws: a lookup failure or a throwing function settles that future with
+   * the error, which the sandbox raises at the `await`.
+   */
+  async startCalls(turn: object): Promise<void> {
+    const started = startedCallsOf(turn)
+    if (started.length === 0) {
+      return
+    }
+    const spanKey = (turn as { callbackSpanKey?: string }).callbackSpanKey
+    await runWithCallbackContext(spanKey, async () => {
+      for (const call of started) {
+        this.registerFuture(call.callId, (await this.startCall(call)).promise)
+      }
+    })
+  }
+
+  /** Resolves and calls one started call's function; the promise settles with its outcome. */
+  private async startCall(call: NativeStartedCall): Promise<{ promise: Promise<unknown> }> {
+    let resolved: { value: unknown } | undefined
+    try {
+      resolved = await this.hostEntry(call.functionName)
+    } catch (err) {
+      return { promise: Promise.reject(err) }
+    }
+    if (resolved === undefined) {
+      // a future settles only with a value or an error, so "not found" is the NameError a suspension raises
+      return { promise: Promise.reject(pythonError('NameError', `name '${call.functionName}' is not defined`)) }
+    }
+    if (typeof resolved.value !== 'function') {
+      return { promise: Promise.reject(pythonError('TypeError', notCallableMessage(resolved.value))) }
+    }
+    return { promise: this.callAsPromise(resolved.value as ExternalFunction, call) }
+  }
+
+  /** Calls `fn` with the call's arguments, folding a synchronous return or throw into a promise. */
+  private callAsPromise(
+    fn: ExternalFunction,
+    call: { args: unknown[]; kwargs: [unknown, unknown][] },
+  ): Promise<unknown> {
+    try {
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      return Promise.resolve(fn(...(buildCallArgs(args, kwargs) as never[])))
+    } catch (err) {
+      return Promise.reject(err)
+    }
   }
 
   /**
@@ -1090,6 +1161,13 @@ class SnapshotDriver {
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
+    if (startedCallsOf(turn).length > 0) {
+      // A snapshot surfaces one suspension at a time and cannot hand over calls
+      // that started without one; the worker is left waiting on their futures.
+      throw this.poison(
+        new Error('functions marked with asyncFunction() are not supported by feedStart(); use feedRun()'),
+      )
+    }
     for (;;) {
       switch (turn.kind) {
         case 'complete':
@@ -1575,7 +1653,41 @@ function moduleValue(path: string, entry: ExternalModule): HostModuleValue {
 function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {
   const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
   Object.defineProperty(proxy, 'name', { value: name })
+  if (isAsyncFunction(fn)) {
+    markAsync(proxy)
+  }
   return proxy
+}
+
+/** Binds a module function to its receiver, keeping an `asyncFunction()` marker. */
+function bindHostFunction(fn: ExternalFunction, receiver: unknown): ExternalFunction {
+  const bound = fn.bind(receiver) as ExternalFunction
+  if (isAsyncFunction(fn)) {
+    markAsync(bound)
+  }
+  return bound
+}
+
+/**
+ * The own `externalLookup` keys holding `asyncFunction()`-marked functions, sent
+ * with the feed so a bare call to one starts without waiting for the host.
+ * Reads data properties only: a getter runs lazily, when the sandbox reads its
+ * name, and the value it returns carries its own marker then.
+ */
+function asyncFunctionNames(lookup: Record<string, unknown> | undefined): string[] {
+  if (lookup === undefined) {
+    return []
+  }
+  return Object.entries(Object.getOwnPropertyDescriptors(lookup))
+    .filter(([, descriptor]) => 'value' in descriptor && isAsyncFunction(descriptor.value))
+    .map(([key]) => key)
+}
+
+/** A JS error the sandbox re-raises as Python's `excType` (see [`jsErrorParts`]). */
+function pythonError(excType: string, message: string): Error {
+  const err = new Error(message)
+  err.name = excType
+  return err
 }
 
 /** Positional args, with kwargs appended as an object when present. */

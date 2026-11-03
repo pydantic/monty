@@ -132,6 +132,18 @@ The worker creates a settled awaitable and continues, avoiding a separate `Resol
 Synchronous returns still use `ResumeCall`; parents may also ignore the hint and register a pending future as before.
 Older workers omit the flag, which defaults to false, so newer parents retain the existing reply sequence.
 
+Calls to async host functions start without suspending when the parent sets `Configure.started_calls`.
+A function is async when its `Function` value has `is_async` set, or when the feed lists its name in
+`Feed.async_functions`.
+The worker registers the call's future itself, sends the call in a `StartedCalls` event and keeps running.
+`StartedCalls`, like `Print`, does not end the turn, and every started call is sent before the turn-ending event that
+follows it, so a `ResolveFutures` only names calls the parent has received.
+The parent settles them through the usual `ResolveFutures` / `ResumeFutures` exchange.
+Without the flag the worker suspends with `FunctionCall` as before, which keeps an older parent, or a relay forwarding
+for one, from seeing an event tag it does not know.
+Older workers ignore the flag, so it needs no protocol version change; a relay that cannot forward `StartedCalls`
+must clear it.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

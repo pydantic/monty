@@ -653,6 +653,9 @@ fn hint_source(obj: &Value, vm: &VM<'_>) -> HintSource {
             HeapData::ExtFunction(function) => {
                 return HintSource::Host(TypeHintsTarget::Function(function.as_str().to_owned()));
             }
+            HeapData::AsyncExtFunction(function) => {
+                return HintSource::Host(TypeHintsTarget::Function(function.as_str().to_owned()));
+            }
             HeapData::HostClassType(class) => return HintSource::Host(TypeHintsTarget::Class(class.type_id())),
             HeapData::BoundMethod(method) => &method.func,
             HeapData::LruCache(cache) => match cache.wrapped() {

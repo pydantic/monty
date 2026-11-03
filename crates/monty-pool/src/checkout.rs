@@ -332,6 +332,22 @@ pub enum TurnEvent {
     Complete(MontyObject),
 }
 
+/// A call to an async host function the sandbox started without waiting
+/// for the host, collected during a turn (see [`Checkout::take_started_calls`]).
+///
+/// The sandbox already holds a pending future for `call_id`: start the call,
+/// then settle it with [`Checkout::resume_futures`] once a
+/// [`TurnEvent::ResolveFutures`] names it. Each counts against `max_suspensions`.
+#[derive(Debug)]
+pub struct StartedCall {
+    pub function_name: String,
+    /// One arena holding every positional and keyword argument.
+    pub args: CallArgs,
+    pub call_id: u32,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
+}
+
 /// The caller's answer to a [`TurnEvent::FunctionCall`] or
 /// [`TurnEvent::OsCall`].
 #[derive(Debug)]
@@ -439,6 +455,12 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
+    /// Names sent as `Feed.async_functions` with every later feed; see
+    /// [`Checkout::set_async_functions`].
+    async_functions: Vec<String>,
+    /// Calls to async host functions started since the caller last took them.
+    /// Cleared as a `Feed`, `Load` or `Reset` goes out, so a feed never sees another's.
+    started_calls: Vec<StartedCall>,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
@@ -552,6 +574,9 @@ impl SessionBudget {
         if is_suspension(event) {
             self.suspensions_seen += 1;
             self.cpu_feed_suspended = true;
+        } else if let Some(pb::child_event::Kind::StartedCalls(started)) = &event.kind {
+            // a started call replaces the suspension it would have been
+            self.suspensions_seen = self.suspensions_seen.saturating_add(started.calls.len() as u64);
         } else if matches!(
             event.kind,
             Some(
@@ -668,6 +693,15 @@ fn is_execution_turn(request: &pb::ParentRequest) -> bool {
                 | pb::parent_request::Kind::ResumeNameLookup(_)
                 | pb::parent_request::Kind::ResumeFutures(_)
         )
+    )
+}
+
+/// Recognizes the events a worker streams before a turn-ender: `Print`, and
+/// `StartedCalls` (which `Configure.started_calls` asks for).
+fn is_mid_turn(event: &pb::ChildEvent) -> bool {
+    matches!(
+        event.kind,
+        Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::StartedCalls(_))
     )
 }
 
@@ -798,6 +832,8 @@ impl Checkout {
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
+            async_functions: Vec::new(),
+            started_calls: Vec::new(),
             session_id: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
@@ -959,6 +995,7 @@ impl Checkout {
             values: Some(values),
             skip_type_check,
             cwd,
+            async_functions: self.async_functions.clone().into(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1364,6 +1401,29 @@ impl Checkout {
         self.session_id.as_deref()
     }
 
+    /// Names the host's async functions for the feeds that follow, replacing
+    /// any earlier set: calls to these names start without waiting for the
+    /// host, as for a value made with [`MontyObject::async_function`], and
+    /// arrive through [`Self::take_started_calls`].
+    ///
+    /// Needed for names the sandbox calls without ever reading as a value,
+    /// which reach the host only as a call by name. A worker that predates
+    /// `StartedCalls` ignores them and suspends on each call as before.
+    pub fn set_async_functions(&mut self, names: Vec<String>) {
+        self.async_functions = names;
+    }
+
+    /// Takes the calls to async host functions the sandbox started since the
+    /// last take, in the order it made them.
+    ///
+    /// Take them after every turn, before answering its event: a
+    /// [`TurnEvent::ResolveFutures`] can name a call that only arrived this way.
+    /// Calls past `max_suspensions` are dropped; the feed is aborted at its
+    /// next suspension.
+    pub fn take_started_calls(&mut self) -> Vec<StartedCall> {
+        mem::take(&mut self.started_calls)
+    }
+
     /// Sends a request and requires the reply to be a [`TurnEvent`].
     ///
     /// This is the entry point for *execution* turns (feed/resume — the
@@ -1478,7 +1538,7 @@ impl Checkout {
     ) -> Result<bool, PoolError> {
         let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
         let was_aborting = self.abort_in_flight;
-        let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
+        let is_print = is_mid_turn(event);
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
@@ -1840,9 +1900,9 @@ impl Checkout {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
             }
-            // strict alternation: zero or more `Print`s, then exactly one
-            // turn-ender — so anything that is not a print ends the turn
-            if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+            // strict alternation: zero or more mid-turn events, then exactly
+            // one turn-ender — so anything else ends the turn
+            if is_mid_turn(&event) {
                 on_event(&event).await;
             } else if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) {
                 // the far end is gone (see `fatal_error`): discard the worker
@@ -1991,6 +2051,32 @@ impl Checkout {
                         }
                         #[cfg(not(feature = "telemetry"))]
                         future.await;
+                    }
+                }
+                Some(pb::child_event::Kind::StartedCalls(started)) => {
+                    // `update_from` already counted these. Keep only the calls the
+                    // budget had room for: the suspension after an overrun is
+                    // aborted, so more would only let a worker grow this buffer.
+                    let calls = started.calls.into_inner();
+                    let seen_before = self.budget.suspensions_seen.saturating_sub(calls.len() as u64);
+                    let room = self.budget.suspension_limit.saturating_sub(seen_before);
+                    let room = usize::try_from(room).unwrap_or(usize::MAX);
+                    for mut call in calls.into_iter().take(room) {
+                        let position = suspension_position(call.position.take());
+                        let function_name = mem::take(&mut call.function_name);
+                        let call_id = call.call_id;
+                        let args = match call.into_call_args() {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                            }
+                        };
+                        self.started_calls.push(StartedCall {
+                            function_name,
+                            args,
+                            call_id,
+                            position,
+                        });
                     }
                 }
                 Some(pb::child_event::Kind::FunctionCall(mut call)) => {
@@ -2178,6 +2264,16 @@ impl Checkout {
     /// I/O break (dead worker / closed pipe).
     async fn send_request(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
         self.request_sent = false;
+        if matches!(
+            request.kind,
+            Some(
+                pb::parent_request::Kind::Feed(_)
+                    | pb::parent_request::Kind::Load(_)
+                    | pb::parent_request::Kind::Reset(_)
+            )
+        ) {
+            self.started_calls.clear();
+        }
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
@@ -2449,6 +2545,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
+        // the checkout collects them (`take_started_calls`)
+        started_calls: true,
     }))
 }
 

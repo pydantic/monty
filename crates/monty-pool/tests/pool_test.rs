@@ -1680,6 +1680,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1724,6 +1725,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -1772,6 +1774,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -2179,6 +2182,69 @@ async fn suspension_limit_aborts_the_feed() {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
+    session.finish().await.unwrap();
+}
+
+/// Calls to an async host function arrive as started calls rather than
+/// suspensions: the feed blocks once, and one reply settles every call.
+#[tokio::test]
+async fn started_calls_settle_through_one_resolve_futures() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let code = "import asyncio\nawait asyncio.gather(*[f(i) for i in range(5)])";
+    let event = session.feed(code, inputs, vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::ResolveFutures {
+        mut pending_call_ids, ..
+    } = event
+    else {
+        panic!("expected the feed to block on its futures, got {event:?}")
+    };
+    let started = session.take_started_calls();
+    assert!(started.iter().all(|call| call.function_name == "f"));
+    // started in call order; the worker names pending futures in no particular order
+    let started_ids: Vec<u32> = started.iter().map(|call| call.call_id).collect();
+    pending_call_ids.sort_unstable();
+    assert_eq!(started_ids, pending_call_ids);
+    // taking them empties the buffer
+    assert!(session.take_started_calls().is_empty());
+    let results = started
+        .iter()
+        .map(|call| {
+            let arg = i64::try_from(call.args.args().next().unwrap()).unwrap();
+            (call.call_id, ResumeValue::Return(MontyObject::int(arg * 10)))
+        })
+        .collect();
+    let event = session.resume_futures(results, &mut no_print).await.unwrap();
+    let expected: Vec<_> = (0..5).map(|i| MontyObject::int(i * 10)).collect();
+    assert_eq!(expect_complete(event), MontyObject::list(expected));
+    session.finish().await.unwrap();
+}
+
+/// Started calls spend the suspension budget: the suspension they lead to is
+/// aborted once more calls than `max_suspensions` have started.
+#[tokio::test]
+async fn started_calls_count_against_the_suspension_limit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(3)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let code = "import asyncio\nawait asyncio.gather(*[f(i) for i in range(5)])";
+    let err = session
+        .feed(code, inputs, vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
+    // the worker started three, then suspended on the fourth
+    assert_eq!(session.take_started_calls().len(), 3);
     session.finish().await.unwrap();
 }
 
@@ -3095,6 +3161,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         ..pb::ParentRequest::default()
     };
@@ -3201,6 +3268,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         ..pb::ParentRequest::default()
     };

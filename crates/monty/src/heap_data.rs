@@ -147,6 +147,8 @@ macro_rules! heap_payloads {
             ReMatch(boxed $crate::types::ReMatch),
             /// A reference to an external function supplied by the host.
             ExtFunction(inline $crate::types::ExtFunction),
+            /// A host function whose calls start without waiting for the host.
+            AsyncExtFunction(inline $crate::types::AsyncExtFunction),
             /// A `datetime.date` value.
             Date(inline $crate::types::date::Date),
             /// A `datetime.datetime` value.
@@ -296,6 +298,7 @@ impl HeapData {
             | Self::RePattern(_)
             | Self::ReMatch(_)
             | Self::ExtFunction(_)
+            | Self::AsyncExtFunction(_)
             | Self::Date(_)
             | Self::DateTime(_)
             | Self::Time(_)
@@ -328,6 +331,7 @@ impl HeapData {
                 | Self::Closure(_)
                 | Self::FunctionDefaults(_)
                 | Self::ExtFunction(_)
+                | Self::AsyncExtFunction(_)
                 | Self::Partial(_)
                 | Self::GenericAlias(_)
                 | Self::LruCache(_)
@@ -361,7 +365,9 @@ impl HeapData {
             Self::DictValuesView(_) => Type::DictValues,
             Self::Set(_) => Type::Set,
             Self::FrozenSet(_) => Type::FrozenSet,
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) | Self::AsyncExtFunction(_) => {
+                Type::Function
+            }
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
@@ -780,6 +786,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Closure($value) => $body,
             Self::FunctionDefaults($value) => $body,
             Self::ExtFunction($value) => $body,
+            Self::AsyncExtFunction($value) => $body,
             Self::Decimal($value) => $body,
             Self::DecimalContext($value) => $body,
             Self::DecimalSignalDict($value) => $body,
@@ -1050,6 +1057,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
+            | Self::AsyncExtFunction(_)
             | Self::Partial(_)
             | Self::Random(_)
             | Self::HashObject(_)

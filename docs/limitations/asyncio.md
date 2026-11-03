@@ -143,6 +143,15 @@ loop takes them in the order they were woken.
 Among the tasks that do resume, only the ordering differs.
 This applies to all async code, not only to siblings of a failed `gather`.
 
+### Calls to `async_function` host functions raise at the `await`
+
+A host function marked with `pydantic_monty.async_function` (or `asyncFunction()` in JavaScript) returns an awaitable
+without waiting for the host.
+Whatever the host reports about the call is raised where the awaitable is awaited, including a `TypeError` for
+arguments the host function does not accept and a `NameError` for a name the host cannot resolve.
+CPython raises an argument-binding `TypeError` from an `async def` at the call.
+An awaitable that is never awaited still runs on the host, where an un-awaited CPython coroutine never runs its body.
+
 ### `gather` does not start its children until it is awaited
 
 CPython's `gather` schedules each awaitable as a task straight away, so the children run whether or not the result is

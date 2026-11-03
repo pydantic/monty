@@ -236,6 +236,28 @@ export type NativeTurn =
   | DisconnectedTurn
   | ShutdownTurn
 
+/**
+ * A call to an async host function the sandbox started without suspending.
+ * The sandbox already holds a pending future for `callId`, settled through
+ * `resolveFutures` once a `resolveFutures` turn names it.
+ */
+export interface NativeStartedCall {
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  position: NativeSourceRange
+}
+
+/**
+ * The calls to async host functions a turn started, which the native session
+ * attaches to any turn object as `startedCalls`. The WebAssembly worker never
+ * starts calls, so its turns have none.
+ */
+export function startedCallsOf(turn: object): NativeStartedCall[] {
+  return (turn as { startedCalls?: NativeStartedCall[] }).startedCalls ?? []
+}
+
 /** One settled promise outcome delivered to `resolveFutures`. */
 export interface NativeFutureResult {
   callId: number

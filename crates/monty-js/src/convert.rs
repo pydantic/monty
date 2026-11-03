@@ -707,7 +707,11 @@ impl<'e> GraphEncoder<'e> {
                 let name: String = func_obj
                     .get_named_property::<String>("name")
                     .unwrap_or_else(|_| "<anonymous>".to_string());
-                Ok(self.leaf(MontyNode::Function { name, docstring: None }))
+                Ok(self.leaf(MontyNode::Function {
+                    name,
+                    docstring: None,
+                    is_async: is_async_marked(&func_obj),
+                }))
             }
             ValueType::Symbol | ValueType::External => {
                 // These JS types don't have Monty equivalents
@@ -1227,4 +1231,18 @@ fn get_string_property(obj: &Object, name: &str) -> Result<Option<String>> {
     } else {
         Ok(None)
     }
+}
+
+/// The own property `asyncFunction()` (`ts/asyncFunction.ts`) sets on a host function.
+const ASYNC_MARKER: &str = "__monty_async__";
+
+/// Whether `asyncFunction()` marked `func`, so its calls start without waiting
+/// for the host. A missing, non-boolean or throwing marker counts as unmarked.
+fn is_async_marked(func: &Object) -> bool {
+    func.get_named_property::<Unknown>(ASYNC_MARKER)
+        .and_then(|marker| match marker.get_type()? {
+            ValueType::Boolean => marker.coerce_to_bool(),
+            _ => Ok(false),
+        })
+        .unwrap_or(false)
 }

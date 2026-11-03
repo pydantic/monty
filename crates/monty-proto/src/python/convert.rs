@@ -503,6 +503,15 @@ pub fn get_name(f: &Bound<'_, PyAny>) -> String {
         .unwrap_or_else(|_| "<unknown>".to_string())
 }
 
+/// Whether `pydantic_monty.async_function` marked `f`, so its calls start
+/// without waiting for the host. A failing attribute read counts as unmarked.
+pub fn is_async_marked(f: &Bound<'_, PyAny>) -> bool {
+    f.getattr_opt(intern!(f.py(), "__pydantic_monty_async__"))
+        .ok()
+        .flatten()
+        .is_some_and(|marker| marker.is_truthy().unwrap_or(false))
+}
+
 /// get the `__doc__` attribute from a (hopefully) function
 pub fn get_docstring(f: &Bound<'_, PyAny>) -> Option<String> {
     f.getattr(intern!(f.py(), "__doc__"))

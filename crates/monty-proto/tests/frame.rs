@@ -25,6 +25,7 @@ fn feed() -> pb::ParentRequest {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
         })),
         trace_parent: None,
     }

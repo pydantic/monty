@@ -354,6 +354,13 @@ pub struct Function {
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
+    /// Calls to this function return an awaitable without waiting for the
+    /// parent. Under `Configure.started_calls` the child registers the future
+    /// itself and streams the call in `StartedCalls`; otherwise, or on a child
+    /// that predates the field, it suspends with `FunctionCall` as for any other
+    /// function, which the parent may still answer with a future.
+    #[prost(bool, tag = "3")]
+    pub is_async: bool,
 }
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
@@ -842,6 +849,14 @@ pub struct Configure {
     /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// The parent accepts `StartedCalls`, so calls to async host functions
+    /// (`Function.is_async`, `Feed.async_functions`) may start without
+    /// suspending. Absent or false, the child suspends with `FunctionCall` for
+    /// them as for any call. A child that predates the field ignores it, so no
+    /// protocol version change is needed. A forwarder that cannot pass
+    /// `StartedCalls` on must clear it before forwarding.
+    #[prost(bool, tag = "15")]
+    pub started_calls: bool,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -863,6 +878,12 @@ pub struct Feed {
     /// the session's first feed). Empty keeps the session's current directory.
     #[prost(string, tag = "5")]
     pub cwd: ::prost::alloc::string::String,
+    /// Names of host functions whose calls in this feed start without waiting,
+    /// as for `Function.is_async`. Covers a call of a bare name the parent never
+    /// supplied a value for, which reaches the parent only as a `FunctionCall`
+    /// by name. Ignored unless `Configure.started_calls` is set.
+    #[prost(string, repeated, tag = "6")]
+    pub async_functions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -970,9 +991,10 @@ pub struct InstallDependencies {
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
 /// arms past 15 cost a two-byte key instead of one, which forwarding servers
 /// (which walk only field keys, on every frame) pay per event. Such a server
-/// mirrors this numbering to classify frames without decoding them; it treats
-/// a tag it does not know as opaque, so adding an arm degrades rather than
-/// misroutes, but renumbering an existing one would break it.
+/// mirrors this numbering to classify frames without decoding them, so
+/// renumbering an existing arm would misroute frames. A forwarder may also
+/// treat a tag it does not know as fatal to the session, so a child sends a new
+/// arm only to a parent that asked for it in `Configure`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChildEvent {
     /// Cumulative execution time consumed by the session's sandbox code, in
@@ -1026,7 +1048,7 @@ pub struct ChildEvent {
     /// Configure acknowledgment. Local CPU-mode parents require this before execution.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1059,6 +1081,8 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
         #[prost(message, tag = "13")]
         Ping(super::Ping),
+        #[prost(message, tag = "14")]
+        StartedCalls(super::StartedCalls),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1111,6 +1135,21 @@ pub struct FunctionCall {
     /// predates the field; the parent then reports an empty range at offset 0.
     #[prost(message, optional, tag = "8")]
     pub position: ::core::option::Option<SourceRange>,
+}
+/// Mid-turn, like `Print`: calls to async host functions (`Function.is_async`)
+/// the sandbox has started without waiting. Each call already has an external
+/// future registered under its `call_id`; the parent starts it and settles it
+/// through `ResumeFutures` when a later `ResolveFutures` names it. Sent only
+/// to a parent that set `Configure.started_calls`. The child sends every started
+/// call before the turn-ending event that follows it, so a `ResolveFutures`
+/// never names a call the parent has not received. An event may carry any
+/// number of calls; `allow_eager_await` is always false on them. A session
+/// starts at most `max_suspensions` calls this way; later calls suspend with
+/// `FunctionCall`, so the parent's suspension budget still ends a runaway loop.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StartedCalls {
+    #[prost(message, repeated, tag = "1")]
+    pub calls: ::prost::alloc::vec::Vec<FunctionCall>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the parent
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm

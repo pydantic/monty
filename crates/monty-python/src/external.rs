@@ -4,7 +4,8 @@
 //! lazy attributes resolve through the session's [`InstanceStore`].
 
 use monty_proto::python::{
-    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
+    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, is_async_marked, py_to_monty,
+    py_to_monty_value,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, GET_TYPE_HINTS_CALL, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject,
@@ -412,6 +413,8 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         for (name, value) in module.public_attrs(self.py) {
             let value = if let Ok(submodule) = value.cast::<PyExternalModule>() {
                 self.module_value(&format!("{path}.{name}"), submodule.get())?
+            } else if value.is_callable() && is_async_marked(&value) {
+                MontyObject::async_function(format!("{path}.{name}"), get_docstring(&value))
             } else if value.is_callable() {
                 MontyObject::function(format!("{path}.{name}"), get_docstring(&value))
             } else {
@@ -433,14 +436,25 @@ pub(crate) struct HostNames {
     pub(crate) lookup: Option<Py<PyDict>>,
     /// The session's `external_modules=`.
     pub(crate) modules: Option<HostModules>,
+    /// `external_lookup=` keys whose values `pydantic_monty.async_function`
+    /// marked, sent with the feed so a bare call to one starts without waiting.
+    pub(crate) async_functions: Vec<String>,
 }
 
 impl HostNames {
     /// Pairs the lookup a feed was called with and the session's modules.
     pub(crate) fn capture(py: Python<'_>, lookup: Option<&Bound<'_, PyDict>>, modules: Option<&HostModules>) -> Self {
+        let async_functions = lookup.map_or_else(Vec::new, |lookup| {
+            lookup
+                .iter()
+                .filter(|(_, value)| is_async_marked(value))
+                .filter_map(|(key, _)| key.extract::<String>().ok())
+                .collect()
+        });
         Self {
             lookup: lookup.map(|d| d.clone().unbind()),
             modules: modules.map(|m| m.clone_ref(py)),
+            async_functions,
         }
     }
 
@@ -449,6 +463,7 @@ impl HostNames {
         Self {
             lookup: self.lookup.as_ref().map(|d| d.clone_ref(py)),
             modules: self.modules.as_ref().map(|m| m.clone_ref(py)),
+            async_functions: self.async_functions.clone(),
         }
     }
 }

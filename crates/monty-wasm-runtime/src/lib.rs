@@ -321,6 +321,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
             skip_type_check: request.skip_type_check,
             cwd: request.cwd,
+            async_functions: Vec::new().into(),
         }),
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
@@ -385,6 +386,8 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         type_check_format: i32::from(type_check_format_from_component(request.type_check_format)),
         type_check_color: request.type_check_color,
         protocol_version: PROTOCOL_VERSION,
+        // the component interface has no started-calls event yet
+        started_calls: false,
         // Frames arrive as one batch at the end of a turn, but their
         // boundaries survive it: the host gets one print callback per frame,
         // and a print collector charges its cap per frame.
@@ -544,6 +547,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Ok(_)) => Event::Ok,
         Some(pb::child_event::Kind::FatalError(error)) => Event::FatalError(error.message),
         Some(pb::child_event::Kind::Shutdown(shutdown)) => Event::Shutdown(shutdown.dump.map(Into::into)),
+        Some(pb::child_event::Kind::StartedCalls(_)) => invalid_event("StartedCalls without Configure.started_calls"),
 
         None => invalid_event("ChildEvent carried no kind"),
     }

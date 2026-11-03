@@ -302,6 +302,80 @@ In JavaScript every host function may be async, and there is no separate pool cl
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
+### Starting calls without waiting
+
+By default every call to a host function suspends the worker until the host answers it, even when the answer is only
+that the call returned a coroutine.
+Against a remote worker each answer is a network round trip, so a `gather` over 20 calls waits for 21 of them.
+Marking a function with [`async_function`][pydantic_monty.async_function] in Python, or `asyncFunction()` in
+JavaScript, removes the wait at the call: the worker sends the call to the host and keeps running, and the sandbox
+blocks once, when every task is waiting.
+The 20-call `gather` then costs one round trip plus the slowest call.
+
+=== "Python"
+
+    ```python
+    import asyncio
+
+    import pydantic_monty
+
+
+    @pydantic_monty.async_function
+    async def fetch(url: str) -> str:
+        return f'contents of {url}'
+
+
+    code = """
+    import asyncio
+
+    results = await asyncio.gather(*[fetch(str(i)) for i in range(20)])
+    len(results)
+    """
+
+
+    async def main():
+        async with pydantic_monty.AsyncMonty() as pool:
+            async with pool.checkout() as session:
+                print(await session.feed_run(code, external_lookup={'fetch': fetch}))
+                #> 20
+
+
+    asyncio.run(main())
+    ```
+
+=== "TypeScript"
+
+    ```ts
+    import { asyncFunction, Monty } from '@pydantic/monty'
+
+    const fetch = asyncFunction(async function fetch(url: string): Promise<string> {
+      return `contents of ${url}`
+    })
+
+    const code = `
+    import asyncio
+
+    results = await asyncio.gather(*[fetch(str(i)) for i in range(20)])
+    len(results)
+    `
+
+    await using pool = await Monty.create()
+    await using session = await pool.checkout()
+    console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 20
+    ```
+
+The cost is control at the call site.
+The sandbox has moved on by the time the host sees the call, so the host cannot stop execution there, and an error the
+call raises, including a name the host cannot resolve, surfaces at the `await` instead
+(see [asyncio limitations](limitations/asyncio.md#calls-to-async_function-host-functions-raise-at-the-await)).
+A marked function returns an awaitable even when it returns a plain value, so the sandbox must `await` its calls.
+Each started call counts against `max_suspensions` like the suspension it replaces.
+Marked functions work in `external_lookup` and on [`ExternalModule`][pydantic_monty.ExternalModule] functions, with
+`feed_run` / `feedRun`, on local and remote pools.
+`feed_start()` / `feedStart()` snapshots reject them.
+The WebAssembly worker cannot start calls: it suspends at each call to a marked function, which still returns an
+awaitable and raises at the `await`, except that a name the host cannot resolve raises `NameError` at the call.
+
 ## Importing host modules
 
 Imports of unknown modules ask the host for them.
