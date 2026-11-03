@@ -817,3 +817,55 @@ else:
         )
         .unwrap();
 }
+
+#[test]
+fn nested_classmethod_bindings_are_bounded_and_release_the_recursion_guard() {
+    let mut repl = repl();
+    repl.feed_run(
+        r"
+f = len
+for _ in range(1000):
+    f = classmethod(f).__get__(None, int)
+for _ in range(2):
+    try:
+        f()
+    except RecursionError:
+        pass
+    else:
+        assert False
+assert classmethod(len).__get__(None, [1, 2])() == 2
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    assert_eq!(
+        repl.feed_run("1 + 1", vec![], PrintWriter::Disabled).unwrap(),
+        MontyObject::int(2)
+    );
+}
+
+#[test]
+fn descriptor_protocol_methods_reject_deepcopy_replaced_receivers() {
+    repl()
+        .feed_run(
+            r"
+import copy
+
+p = property(len)
+for method, args in ((p.__get__, ([],)), (p.__set__, ([], 1)), (p.__delete__, ([],)), (p.__set_name__, (int, 'x'))):
+    for receiver in ([], {}, 42):
+        forged = copy.deepcopy(method, {id(p): receiver})
+        try:
+            forged(*args)
+        except TypeError as exc:
+            assert str(exc) == 'descriptor receiver required'
+        else:
+            assert False
+assert p.__get__([1, 2]) == 2
+",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+}

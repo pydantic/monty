@@ -602,6 +602,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     /// Re-dispatches to the underlying function with the captured receiver
     /// pushed in front of the call's own arguments.
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        // Nested classmethod bindings forward without pushing a Python frame.
+        if let Err(error) = vm.enter_run_reentry() {
+            args.drop_with(vm);
+            return Err(error.into());
+        }
+        let mut guard = RunReentryGuard::new(vm);
+        let vm = &mut *guard;
+
         let bound = self.get(vm.heap);
         let instance = bound.instance.clone_with_heap(vm);
         let func = bound.func.clone_with_heap(vm);

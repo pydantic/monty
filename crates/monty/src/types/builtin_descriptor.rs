@@ -254,6 +254,12 @@ impl DescriptorMethod {
         let Some(Value::Ref(id)) = args.as_slice().first() else {
             return Err(ExcType::type_error("descriptor receiver required"));
         };
+
+        // A caller-supplied deepcopy memo can replace a bound method's receiver.
+        if !matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)) {
+            return Err(ExcType::type_error("descriptor receiver required"));
+        }
+
         match (self, args.as_slice()) {
             (Self::Get, [_, instance, owner]) => protocol_get(*id, instance, Some(owner), vm),
             (Self::Get, [_, instance]) => protocol_get(*id, instance, None, vm),
