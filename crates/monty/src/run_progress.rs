@@ -1095,7 +1095,10 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // `instruction_ip` still names the opcode that suspended, so the current
     // position is the suspending expression for every exit but `ResolveFutures`.
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::export(value, vm)),
+        Ok(FrameExit::Return(value)) => match MontyObject::export(value, vm) {
+            Ok(obj) => ConvertedExit::Complete(obj),
+            Err(err) => ConvertedExit::Error(err),
+        },
         Ok(FrameExit::ExternalCall {
             function_name,
             args,
@@ -1104,14 +1107,16 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = function_name.into_string(vm.interns);
-            let args = args.into_call_args(vm);
-            ConvertedExit::FunctionCall {
-                function_name: name,
-                args,
-                call_id: call_id.raw(),
-                object_id: None,
-                allow_eager_await: vm.allow_eager_await(),
-                position,
+            match args.into_call_args(vm) {
+                Ok(args) => ConvertedExit::FunctionCall {
+                    function_name: name,
+                    args,
+                    call_id: call_id.raw(),
+                    object_id: None,
+                    allow_eager_await: vm.allow_eager_await(),
+                    position,
+                },
+                Err(err) => ConvertedExit::Error(err),
             }
         }
         Ok(FrameExit::OsCall {
@@ -1140,14 +1145,16 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = method_name.into_string(vm.interns);
-            let args = args.into_call_args(vm);
-            ConvertedExit::FunctionCall {
-                function_name: name,
-                args,
-                call_id: call_id.raw(),
-                object_id: Some(object_id),
-                allow_eager_await: vm.allow_eager_await(),
-                position,
+            match args.into_call_args(vm) {
+                Ok(args) => ConvertedExit::FunctionCall {
+                    function_name: name,
+                    args,
+                    call_id: call_id.raw(),
+                    object_id: Some(object_id),
+                    allow_eager_await: vm.allow_eager_await(),
+                    position,
+                },
+                Err(err) => ConvertedExit::Error(err),
             }
         }
         Ok(FrameExit::ResolveFutures(pending_call_ids)) => ConvertedExit::ResolveFutures {
