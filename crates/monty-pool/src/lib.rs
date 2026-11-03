@@ -64,6 +64,11 @@ pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 /// stuck dial or a server that never admits the stream.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Default [`PoolConfig::keep_alive`]: the slowest cadence a gRPC server's
+/// default ping policy permits (grpc-go, grpc-java and grpc-core all refuse
+/// pings closer than five minutes apart and answer with `GOAWAY` after two).
+pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_mins(5);
+
 /// Default [`PoolConfig::max_checkouts_per_worker`]: bounds how many sessions
 /// one worker serves while amortising its respawn over many checkouts.
 pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
@@ -93,6 +98,14 @@ pub struct PoolConfig {
     /// with [`PoolError::Spawn`]. Ignored by the subprocess transport.
     /// Defaults to [`DEFAULT_CONNECT_TIMEOUT`].
     pub connect_timeout: Duration,
+    /// How often the remote transport sends an HTTP/2 `PING` on its
+    /// connection while a stream is open, to notice a dead TCP peer on the
+    /// first hop; `None` sends none. Liveness through proxies is the server's
+    /// in-band `Ping`, so this is a backstop, and a server may police it: a
+    /// cadence faster than its policy allows loses the connection, and every
+    /// stream on it, to `GOAWAY`. Defaults to [`DEFAULT_KEEP_ALIVE`]. Ignored
+    /// by the subprocess transport.
+    pub keep_alive: Option<Duration>,
     /// Parent-side hard deadline per protocol turn: when it expires the
     /// worker is killed and the call fails with [`PoolError::Timeout`]. This
     /// backstops the child-side `ResourceLimits` — it also catches a child
@@ -157,6 +170,7 @@ impl PoolConfig {
             execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            keep_alive: Some(DEFAULT_KEEP_ALIVE),
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),

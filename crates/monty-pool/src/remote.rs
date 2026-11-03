@@ -55,7 +55,11 @@ impl Remote {
     /// Prepares the channel for `url` without connecting; the first stream
     /// dials. A URL tonic cannot parse fails here, so a pool with a bad URL
     /// fails at `Pool::new` rather than at its first checkout.
-    pub(crate) fn connect(url: &str, connect_timeout: Duration) -> Result<Self, PoolError> {
+    pub(crate) fn connect(
+        url: &str,
+        connect_timeout: Duration,
+        keep_alive: Option<Duration>,
+    ) -> Result<Self, PoolError> {
         let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
         let mut endpoint = Endpoint::from_shared(dial_url(url))
             .map_err(|err| spawn_error(&err))?
@@ -63,14 +67,19 @@ impl Remote {
             .map_err(|err| spawn_error(&err))?
             .connect_timeout(connect_timeout)
             .tcp_nodelay(true)
-            // hop-local liveness: a dead TCP peer is noticed without waiting
-            // for a turn to time out (the in-band `Ping` covers proxied hops)
-            .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
-            .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
-            .keep_alive_while_idle(true)
             // large frames (a 256 MiB value) should not crawl through a
             // 64 KiB flow-control window
             .http2_adaptive_window(true);
+        if let Some(interval) = keep_alive {
+            // Hop-local liveness while streams are open: a dead TCP peer is
+            // noticed without waiting for a turn to time out (the in-band
+            // `Ping` covers proxied hops). Never while idle: a gRPC server's
+            // default policy counts a ping without a stream as abuse.
+            endpoint = endpoint
+                .http2_keep_alive_interval(interval)
+                .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+                .keep_alive_while_idle(false);
+        }
         if endpoint.uri().scheme_str() == Some("https") {
             install_crypto_provider();
             endpoint = endpoint
@@ -248,7 +257,8 @@ const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"))
 /// Interval between HTTP/2 keepalive pings on the connection, and how long an
 /// unanswered one is tolerated. Connection-level, hop-local: these detect a
 /// dead TCP peer, not a vanished server beyond a proxy (that is `Ping`'s job).
-const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// How long an HTTP/2 `PING` may go unanswered before the connection is
+/// judged dead.
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long `close` waits for the server to end its side after the half-close.
