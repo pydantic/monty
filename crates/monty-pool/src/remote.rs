@@ -342,13 +342,17 @@ async fn read_events(
                 Ok(Some(body)) => {
                     // a large frame decodes under `block_in_place`, which an
                     // abort cannot interrupt: hold a permit so the pool runs no
-                    // more such decodes at once than it has slots
-                    let _permit = if body.len() >= DECODE_OFFLOAD_MIN {
-                        decode_permits.acquire().await.ok()
-                    } else {
-                        None
+                    // more such decodes at once than it has slots, and only for
+                    // the decode, never across a pong send that may wait
+                    let decoded = {
+                        let _permit = if body.len() >= DECODE_OFFLOAD_MIN {
+                            decode_permits.acquire().await.ok()
+                        } else {
+                            None
+                        };
+                        decode_event(&body, max_decode_bytes)
                     };
-                    match decode_event(&body, max_decode_bytes) {
+                    match decoded {
                         Ok(event) if matches!(event.kind, Some(pb::child_event::Kind::Ping(_))) => {
                             // answered here, not by the checkout: a ping can land
                             // between turns, when nothing else polls the stream

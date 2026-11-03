@@ -99,9 +99,12 @@ export class MontyRemote {
     if (options.connectHeaders !== undefined && options.metadata !== undefined) {
       throw new TypeError('pass metadata, not connectHeaders as well')
     }
-    const metadata = options.metadata ?? options.connectHeaders
+    // `!== undefined`, not `??`: an explicit `metadata: null` is a bad value to
+    // reject, not an absent one to fill from the alias
+    const [metadata, option] =
+      options.metadata !== undefined ? [options.metadata, 'metadata'] : [options.connectHeaders, 'connectHeaders']
     if (metadata !== undefined && typeof metadata !== 'function') {
-      throw new TypeError('metadata must be a function returning a record of header names to values')
+      throw new TypeError(`${option} must be a function returning a record of header names to values`)
     }
     const requestTimeout = options.requestTimeout === undefined ? 10 : options.requestTimeout
     const native = NativePool.remote({

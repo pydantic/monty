@@ -110,10 +110,19 @@ test('metadata runs per checkout in the caller async context', async () => {
 
 test('metadata must be a function', async () => {
   const notCallable = { 'x-token': 't' } as unknown as () => Record<string, string>
-  await t.throwsAsync(() => MontyRemote.create('http://127.0.0.1:9', { metadata: notCallable }), {
-    instanceOf: TypeError,
-    message: 'metadata must be a function returning a record of header names to values',
-  })
+  const cases: Array<[MontyRemoteOptions, string]> = [
+    [{ metadata: notCallable }, 'metadata'],
+    // an explicit null is a bad value, not a missing one the alias fills in
+    [{ metadata: null as unknown as () => Record<string, string> }, 'metadata'],
+    // the deprecated alias names itself, the option the caller passed
+    [{ connectHeaders: notCallable }, 'connectHeaders'],
+  ]
+  for (const [options, option] of cases) {
+    await t.throwsAsync(() => MontyRemote.create('http://127.0.0.1:9', options), {
+      instanceOf: TypeError,
+      message: `${option} must be a function returning a record of header names to values`,
+    })
+  }
 })
 
 test('connectHeaders is a deprecated alias of metadata', async () => {
