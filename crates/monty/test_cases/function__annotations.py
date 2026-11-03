@@ -72,6 +72,9 @@ def k(a: counting()):
 assert counter == []
 assert k.__annotations__ == {'a': int}
 assert counter == [1]
+assert k.__annotate__(Format.VALUE) == {'a': int}
+assert k.__annotate__(Format.VALUE) == {'a': int}
+assert counter == [1, 1, 1]
 
 
 # === Methods, via the class and a bound method ===

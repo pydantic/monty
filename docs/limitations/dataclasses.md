@@ -64,7 +64,8 @@ field after a defaulted one
 
 - **Annotations are evaluated at decoration, synchronously.** `@dataclass` reads
     `annotationlib.get_annotations(cls, format=Format.FORWARDREF)` as CPython does, so `Field.type` is the evaluated
-    object, or a string / `ForwardRef` for a name not yet defined (see [typing.md](typing.md#annotations)). The
+    object, a `ForwardRef` for a name not yet defined, or the string a `from __future__ import annotations` class
+    stores (see [typing.md](typing.md#annotations)). The
     evaluation runs in the synchronous position of `default_factory` below, so an annotation that calls an external
     function raises `NotImplementedError` where CPython evaluates it.
 - **`__dataclass_fields__` holds only real fields.** CPython keeps `ClassVar`

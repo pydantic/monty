@@ -443,8 +443,8 @@ every construction request. Divergences:
     class object it does not write at all, where `Foo.x = v` sets a class member.
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
     and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
-    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__`
-    (see [typing.md](typing.md#annotations)), and explicit
+    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__` of a compiled class
+    (a `type()` namespace may bind its own; see [typing.md](typing.md#annotations)), and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`

@@ -13,17 +13,18 @@
 use std::{
     fmt::Write,
     hash::{Hash, Hasher},
+    mem,
 };
 
-use ahash::AHasher;
+use ahash::{AHashMap, AHasher};
 use serde::{Deserialize, Serialize};
-use smallvec::smallvec;
+use smallvec::{SmallVec, smallvec};
 
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
@@ -42,6 +43,9 @@ use crate::{
 
 /// The origin of `typing.Literal[...]`, whose values compare as a set.
 const LITERAL: AliasOrigin = AliasOrigin::Special(Marker(StaticStrings::Literal));
+
+/// The origin of `typing.Callable[[params], result]`, stored flattened as `(params..., result)`.
+const CALLABLE: AliasOrigin = AliasOrigin::Special(Marker(StaticStrings::Callable));
 
 /// What an alias parameterizes: a builtin type (`list[int]`) or a `typing`
 /// special form (`typing.List[int]`, `ClassVar[int]`), CPython's
@@ -106,6 +110,11 @@ impl GenericAlias {
                     repr.as_str(vm).unwrap_or_default()
                 )));
             }
+            StaticStrings::Callable if count != 2 => {
+                return Err(ExcType::type_error(
+                    "Callable must be used as Callable[[arg, ...], result].",
+                ));
+            }
             _ => {}
         }
         let (key, vm) = key_guard.into_parts();
@@ -114,6 +123,7 @@ impl GenericAlias {
         let key = match form.0 {
             StaticStrings::Literal => literal_params(key, vm)?,
             StaticStrings::Annotated => flatten_annotated(none_to_none_type(key, 1, vm), vm),
+            StaticStrings::Callable => none_to_none_type(callable_params(key, vm), usize::MAX, vm),
             _ => none_to_none_type(key, usize::MAX, vm),
         };
         Ok(Self::allocate(AliasOrigin::Special(form), key, vm))
@@ -348,13 +358,29 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         if count == 0 {
             f.write_str("()")?;
         }
+        // `Callable` stores `(params..., result)` and prints the parameter list.
+        let (list_end, list_only) = if origin == CALLABLE && count > 0 {
+            let first = args.clone_item(0, vm);
+            defer_drop!(first, vm);
+            if count == 2 && matches!(first, Value::Ellipsis) {
+                (0, false)
+            } else {
+                f.write_char('[')?;
+                (count - 1, count == 1)
+            }
+        } else {
+            (0, false)
+        };
+        if list_only {
+            f.write_str("], ")?;
+        }
         for index in 0..count {
             if index > 0 {
                 if repr_check_time(index, vm) {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
-                f.write_str(", ")?;
+                f.write_str(if index == list_end { "], " } else { ", " })?;
             }
             let item = args.clone_item(index, vm);
             defer_drop!(item, vm);
@@ -455,20 +481,25 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 /// (`key` itself when it is not a tuple), taking and returning ownership.
 fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> Value {
     let none_type = || Value::Builtin(Builtins::Type(BuiltinType::NoneType));
-    let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
-        return if matches!(key, Value::None) { none_type() } else { key };
+    // The reader on `key` must be released before `key`, possibly the last
+    // reference to a fresh tuple, is dropped below.
+    let converted = {
+        let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
+            return if matches!(key, Value::None) { none_type() } else { key };
+        };
+        let count = items.get(vm.heap).as_slice().len();
+        let mut converted = smallvec![];
+        for index in 0..count {
+            let item = items.clone_item(index, vm);
+            converted.push(if index < limit && matches!(item, Value::None) {
+                none_type()
+            } else {
+                item
+            });
+        }
+        converted
     };
-    let count = items.get(vm.heap).as_slice().len();
-    let mut converted = smallvec![];
-    for index in 0..count {
-        let item = items.clone_item(index, vm);
-        converted.push(if index < limit && matches!(item, Value::None) {
-            none_type()
-        } else {
-            item
-        });
-    }
-    defer_drop!(key, vm);
+    key.drop_with(vm);
     allocate_tuple(converted, vm.heap)
 }
 
@@ -533,23 +564,39 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
             None => flattened.push(value),
         }
     }
-    let mut flattened_guard = DropGuard::new(flattened, vm);
-    let (flattened, vm) = flattened_guard.as_parts_mut();
+    // Values are taken out one at a time, so the guard still releases the rest
+    // when a comparison fails. Hashable values are bucketed by type and hash,
+    // keeping deduplication linear; unhashable ones are compared one by one.
+    defer_drop_mut!(flattened, vm);
     let mut params_guard = DropGuard::new(TupleVec::new(), vm);
     let (params, vm) = params_guard.as_parts_mut();
-    for value in flattened.drain(..) {
+    let mut buckets: AHashMap<(Type, u64), SmallVec<[usize; 1]>> = AHashMap::new();
+    let mut unhashable: Vec<usize> = Vec::new();
+    for index in 0..flattened.len() {
+        vm.heap.tracker.check_time_every(index)?;
+        let value = mem::replace(&mut flattened[index], Value::None);
         let mut value_guard = DropGuard::new(value, vm);
         let (value, vm) = value_guard.as_parts_mut();
+        let bucket = value.py_hash(vm)?.map(|hash| (value.py_type(vm), hash.raw()));
+        let candidates = match &bucket {
+            Some(key) => buckets.get(key).map_or(&[][..], SmallVec::as_slice),
+            None => unhashable.as_slice(),
+        };
         let mut duplicate = false;
-        for param in params.iter() {
-            if same_literal_value(param, value, vm)? {
+        for &candidate in candidates {
+            if same_literal_value(&params[candidate], value, vm)? {
                 duplicate = true;
                 break;
             }
         }
         if !duplicate {
             let (value, _) = value_guard.into_parts();
+            let position = params.len();
             params.push(value);
+            match bucket {
+                Some(key) => buckets.entry(key).or_default().push(position),
+                None => unhashable.push(position),
+            }
         }
     }
     let (params, vm) = params_guard.into_parts();
@@ -570,19 +617,35 @@ fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bo
     defer_drop!(items, vm);
     let others = tuple_items(other_args, vm);
     defer_drop!(others, vm);
-    for item in items.iter().chain(others.iter()) {
-        if item.py_hash(vm)?.is_none() {
+    // Bucket the other side by type and hash, so the comparison is linear.
+    let mut buckets: AHashMap<(Type, u64), SmallVec<[usize; 1]>> = AHashMap::new();
+    for (index, item) in items.iter().chain(others.iter()).enumerate() {
+        vm.heap.tracker.check_time_every(index)?;
+        let Some(hash) = item.py_hash(vm)? else {
             let unhashable_type = unhashable_type_name(item, vm)?;
             return Err(ExcType::type_error_unhashable_set_element("tuple", &unhashable_type));
+        };
+        if index >= items.len() {
+            buckets
+                .entry((item.py_type(vm), hash.raw()))
+                .or_default()
+                .push(index - items.len());
         }
     }
     if items.len() != others.len() {
         return Ok(false);
     }
-    for item in items {
+    for (index, item) in items.iter().enumerate() {
+        vm.heap.tracker.check_time_every(index)?;
+        let Some(hash) = item.py_hash(vm)? else {
+            unreachable!("checked above")
+        };
         let mut found = false;
-        for other in others {
-            if same_literal_value(item, other, vm)? {
+        for &candidate in buckets
+            .get(&(item.py_type(vm), hash.raw()))
+            .map_or(&[][..], SmallVec::as_slice)
+        {
+            if same_literal_value(item, &others[candidate], vm)? {
                 found = true;
                 break;
             }
@@ -600,7 +663,8 @@ fn literal_hash(args: &Value, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
     let items = tuple_items(args, vm);
     defer_drop!(items, vm);
     let mut combined: u64 = 0;
-    for item in items {
+    for (index, item) in items.iter().enumerate() {
+        vm.heap.tracker.check_time_every(index)?;
         let Some(hash) = item.py_hash(vm)? else {
             return Ok(None);
         };
@@ -610,6 +674,26 @@ fn literal_hash(args: &Value, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
         combined = combined.wrapping_add(hasher.finish());
     }
     Ok(Some(HashValue::new(combined)))
+}
+
+/// `Callable[[a, b], r]` stores `(a, b, r)`, as CPython's `_CallableGenericAlias`
+/// does: a parameter list flattens, while `...` and a single bare parameter
+/// stand alone. Takes ownership of the `(params, result)` pair.
+fn callable_params(key: Value, vm: &mut VM<'_>) -> Value {
+    defer_drop!(key, vm);
+    let Some(HeapReadOutput::Tuple(pair)) = key.read_heap(vm) else {
+        unreachable!("Callable takes a parameter list and a result")
+    };
+    let params = pair.clone_item(0, vm);
+    defer_drop!(params, vm);
+    let mut flattened = if let Some(HeapReadOutput::List(list)) = params.read_heap(vm) {
+        let count = list.get(vm.heap).as_slice().len();
+        (0..count).map(|index| list.clone_item(index, vm)).collect::<TupleVec>()
+    } else {
+        smallvec![params.clone_with_heap(vm)]
+    };
+    flattened.push(pair.clone_item(1, vm));
+    allocate_tuple(flattened, vm.heap)
 }
 
 /// Owned clones of a tuple's items.
@@ -715,6 +799,10 @@ fn repr_list_arg(item: &Value, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &m
     f.write_char('[')?;
     for index in 0..list.get(vm.heap).as_slice().len() {
         if index > 0 {
+            if repr_check_time(index, vm) {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
             f.write_str(", ")?;
         }
         let element = list.clone_item(index, vm);

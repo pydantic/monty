@@ -46,7 +46,8 @@ Divergences:
     `AttributeError`. A class evaluates once and caches, as in CPython.
 - **`hasattr()` and `getattr()` with a default evaluate `__annotations__` synchronously**, so an
     `AttributeError` an annotation raises can answer `False` or the default as in CPython; an annotation that calls
-    an external function raises `NotImplementedError` there, where CPython evaluates it.
+    an external function raises `NotImplementedError` there, where CPython evaluates it, and a lazy host attribute
+    reads as undefined (see [classes.md](classes.md#host-class-instances-classinstance-wrapper)).
     `obj.__annotations__` and `getattr()` without a default can suspend for the host.
 - **`C.__annotate__` raises `AttributeError`.**
     The function only resolves class-body names when run under the class namespace, which `C.__annotations__` and
@@ -148,7 +149,7 @@ Subscripting a generic `typing` form — `List`, `Dict`, `Tuple`, `Set`, `Frozen
 `Mapping`, `Iterable`, `Iterator`, `Generator`, `ClassVar`, `Final`, `Literal` and `Annotated` — builds an alias
 with CPython's repr (`typing.List[int]`), `__origin__`, `__args__`, `__parameters__` and, for `Annotated`,
 `__metadata__`; equality and hashing follow the form and its arguments, a `None` argument becomes `NoneType` as in
-CPython, and calling an alias raises CPython's `TypeError`.
+CPython, and calling an alias other than `Annotated` (which calls its type) raises CPython's `TypeError`.
 `Optional[X]` builds a union (see [Unions](#unions)); `Any`, `TypeVar`, `Self`, `Never`, `NoReturn`, `Generic` and
 `Protocol` raise CPython's `TypeError` when subscripted.
 Divergences:
@@ -156,16 +157,13 @@ Divergences:
 - **The alias type is `types.GenericAlias`.**
     `type(List[int])` is the type of `list[int]`, where CPython has `typing._GenericAlias`; the two aliases still
     compare unequal (`List[int] != list[int]`).
-- **`Callable[[int], str].__args__` is `([int], str)`**, the subscript as written, where CPython flattens it to
-    `(int, str)`.
 - **`__origin__` of `Callable`, `Sequence`, `Mapping`, `Iterable`, `Iterator` and `Generator` is the `typing` form**,
     where CPython gives the `collections.abc` class, which Monty does not have.
-- **Arguments are not validated** beyond `Annotated` needing two and `ClassVar` / `Final` one: `List[int, str]`
-    and `Type[3]` are accepted as written where CPython raises.
-    `Literal` deduplicates and flattens its values and compares them as a set, and nested `Annotated` forms flatten,
-    as in CPython.
-- **`__name__` and `__qualname__` raise `AttributeError`** where CPython gives the form's name (`'List'`).
-    Any other dunder raises as in CPython, and anything else is looked up on the origin.
+- **Arguments are not validated** beyond `Annotated` needing two, `ClassVar` / `Final` one and `Callable` a
+    parameter list and a result: `List[int, str]` and `Type[3]` are accepted as written where CPython raises.
+- **Dunder attributes raise `AttributeError`**: `__name__` and `__qualname__`, where CPython gives the form's
+    name (`'List'`), and `__module__`, `__doc__`, `__class__` and `__dict__`, where CPython gives the alias's own
+    values. Anything else is looked up on the origin, as in CPython.
 
 ## Unions
 

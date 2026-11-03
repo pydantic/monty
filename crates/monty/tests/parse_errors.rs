@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
@@ -159,15 +159,16 @@ fn explicit_class_annotations_assignment_returns_not_implemented_error() {
     );
     // Without the import the annotations compile to `__annotate__`, so the
     // binding is an ordinary member that wins, as in CPython.
-    let result = MontyRun::new(
-        "class C:\n    __annotations__ = {'a': 'b'}\n    x: int".to_owned(),
+    let mut runner = MontyRun::new(
+        "class C:\n    __annotations__ = {'a': 'b'}\n    x: int\nC.__annotations__".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
-    );
-    assert!(
-        result.is_ok(),
-        "an explicit `__annotations__` member compiles under PEP 649"
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::dict([(MontyObject::string("a"), MontyObject::string("b"))]),
     );
 }
 

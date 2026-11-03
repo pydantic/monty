@@ -54,6 +54,13 @@ assert Literal[1].__origin__ is Literal
 assert List[int].__args__ == (int,)
 assert Dict[str, int].__args__ == (str, int)
 assert Tuple[int, ...].__args__ == (int, ...)
+assert Callable[[int, str], bool].__args__ == (int, str, bool)
+assert Callable[..., str].__args__ == (..., str)
+assert Callable[[], str].__args__ == (str,)
+assert repr(Callable[[], str]) == 'typing.Callable[[], str]'
+assert Callable[int, str] == Callable[[int], str]
+assert repr(Callable[int, str]) == 'typing.Callable[[int], str]'
+assert Callable[[int], str] != Callable[[str], str]
 assert Literal['a', 1].__args__ == ('a', 1)
 assert ClassVar[int].__args__ == (int,)
 assert List[int].__parameters__ == ()
@@ -118,6 +125,8 @@ expect_type_error(
     "typing.ClassVar accepts only single type. Got (<class 'int'>, <class 'str'>).",
 )
 expect_type_error(lambda: Any[int], "type 'Any' is not subscriptable")
+expect_type_error(lambda: Callable[int], 'Callable must be used as Callable[[arg, ...], result].')
+expect_type_error(lambda: Callable[[int], str, bool], 'Callable must be used as Callable[[arg, ...], result].')
 
 
 # === In annotations ===
@@ -136,7 +145,7 @@ class Foo:
     pass
 
 
-def f(a: List['Foo'], b: Annotated['Foo', 'meta'], c: Dict[str, Annotated[int, 1]]) -> Callable[[int], str]:
+def f(a: List['Foo'], b: Annotated['Foo', 'meta'], c: Dict[str, Annotated[int, 1]]) -> Callable[['Foo'], 'Foo']:
     pass
 
 
@@ -146,7 +155,7 @@ hints = get_type_hints(f)
 assert hints['a'] == List[Foo]
 assert hints['b'] is Foo
 assert hints['c'] == Dict[str, int]
-assert hints['return'] == Callable[[int], str]
+assert hints['return'] == Callable[[Foo], Foo]
 extras = get_type_hints(f, include_extras=True)
 assert extras['b'] == Annotated[Foo, 'meta']
 assert extras['c'] == Dict[str, Annotated[int, 1]]
