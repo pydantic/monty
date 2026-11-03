@@ -17,7 +17,7 @@ mod rustcrypto;
 
 use std::{
     fmt::Write,
-    mem::{self, ManuallyDrop},
+    mem,
     ops::{Deref, DerefMut},
 };
 
@@ -505,12 +505,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
             let type_name = self.py_type_name(vm);
             Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
         }
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let owner = self.py_type(vm);
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        owner.call_attr(&receiver, attr, args, vm)
     }
 }
 

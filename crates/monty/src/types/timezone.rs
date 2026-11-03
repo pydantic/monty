@@ -6,7 +6,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
 };
 
 use monty_macros::pyattrs;
@@ -17,7 +16,7 @@ pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SE
 use super::builtin_attr::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::{CallResult, VM},
+    bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
@@ -29,7 +28,7 @@ use crate::{
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.
@@ -336,11 +335,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
         let tz = self.get(vm.heap);
         let s = tzname_string(tz.offset_seconds, tz.name.as_deref());
         Ok(allocate_string(s, vm.heap))
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::TimeZone.call_attr(&receiver, attr, args, vm)
     }
 }
 

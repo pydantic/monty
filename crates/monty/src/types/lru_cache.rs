@@ -6,11 +6,7 @@
 //! Pending keys and arguments are ordinary frame locals, including across
 //! host suspension and snapshots; the VM needs no cache-specific return effects.
 
-use std::{
-    cell::Cell,
-    fmt::Write,
-    mem::{ManuallyDrop, take},
-};
+use std::{cell::Cell, fmt::Write, mem::take};
 
 use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
@@ -439,8 +435,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
             defer_drop!(func, vm);
             return vm.call_function(func, args);
         }
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::LruCacheWrapper.call_attr(&receiver, attr, args, vm)
+        Err(ExcType::attribute_error_method(Type::LruCacheWrapper, attr, args, vm))
     }
 }
 

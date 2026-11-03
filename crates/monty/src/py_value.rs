@@ -35,8 +35,23 @@ use crate::{
     value::{EitherStr, Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
 
+/// Projects an existing heap handle from a logical value without acquiring another reader.
+pub(crate) trait PyValuePayload<'h>: Sized {
+    fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>>;
+}
+
 /// Normalizes the three multi-representation types and keeps every other heap type flat.
 macro_rules! define_py_value {
+    (@view $variant:ident, $view:ident, $payload:ty) => {
+        impl<'h> PyValuePayload<'h> for $payload {
+            fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>> {
+                match value {
+                    PyValue::$variant($view::Heap(value)) => Some(value),
+                    _ => None,
+                }
+            }
+        }
+    };
     (@collect [$($variant:ident($payload:ty),)*]) => {
         /// A scoped Python-type view retaining the original object's identity.
         /// Drop it before releasing the owning `Value`, so no heap reader survives cleanup.
@@ -57,6 +72,15 @@ macro_rules! define_py_value {
             Property(Property),
             $($variant(HeapObjectRead<'h, $payload>),)*
         }
+
+        $(impl<'h> PyValuePayload<'h> for $payload {
+            fn from_py_value<'a>(value: &'a mut PyValue<'h>) -> Option<&'a mut HeapObjectRead<'h, Self>> {
+                match value {
+                    PyValue::$variant(value) => Some(value),
+                    _ => None,
+                }
+            }
+        })*
 
         impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
             fn from(value: HeapReadOutput<'h>) -> Self {
@@ -105,12 +129,15 @@ macro_rules! define_py_value {
         }
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Str($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Str, PyStr, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* Bytes($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Bytes, PyBytes, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* LongInt($storage:ident $payload:ty), $($rest:tt)*) => {
+        define_py_value!(@view Int, PyInt, $payload);
         define_py_value!(@collect [$($out)*] $($rest)*);
     };
     (@collect [$($out:tt)*] $(#[$meta:meta])* $variant:ident($storage:ident $payload:ty), $($rest:tt)*) => {
@@ -240,6 +267,29 @@ impl<'h> PyValue<'h> {
         Ok(Some(
             usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
         ))
+    }
+
+    /// Handles dynamic namespaces and callable attributes after a native table miss.
+    pub(crate) fn call_dynamic_attr(
+        &mut self,
+        vm: &mut VM<'h>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
+            Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
+            _ => {
+                args.drop_with(vm);
+                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+            }
+        })
     }
 
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
@@ -773,20 +823,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
-            Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
-            Self::DefFunction(func_id) => {
-                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
-                    Some(result) => result,
-                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
-                }
-            }
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
-            }
-        })
+        self.py_type(vm).call_attr(self, attr, args, vm)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

@@ -10,7 +10,7 @@ pub mod dict;
 pub mod reader;
 pub mod writer;
 
-use std::{fmt::Write, mem, mem::ManuallyDrop};
+use std::{fmt::Write, mem};
 
 pub(crate) use dialect::{DIALECT_NAMES, Dialect, FmtParams, Quoting};
 pub(crate) use dict::{DictReader, DictWriter};
@@ -232,12 +232,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         };
         mem::replace(slot, value).drop_with(vm);
         Ok(())
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let owner = self.py_type(vm);
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        owner.call_attr(&receiver, attr, args, vm)
     }
 }
 

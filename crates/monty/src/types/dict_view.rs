@@ -1,4 +1,4 @@
-use std::{fmt::Write, mem, mem::ManuallyDrop};
+use std::{fmt::Write, mem};
 
 use monty_macros::pyattrs;
 use smallvec::smallvec;
@@ -15,7 +15,7 @@ use crate::{
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Shared accessors for heap-backed dictionary view objects.
@@ -245,11 +245,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
         f.write_str("dict_keys([")?;
         write_dict_keys_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::DictKeys.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -515,11 +510,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
         f.write_str("dict_items([")?;
         write_dict_items_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::DictItems.call_attr(&receiver, attr, args, vm)
     }
 }
 

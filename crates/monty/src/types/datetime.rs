@@ -7,7 +7,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
 };
 
 use chrono::{
@@ -1485,11 +1484,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::DateTime.call_attr(&receiver, attr, args, vm)
-    }
-
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
@@ -1622,6 +1616,40 @@ pub(crate) struct PyDateTimeImpl;
 impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     type Receiver = HeapObjectRead<'heap, DateTime>;
 
+    fn time_value<'h>(
+        receiver: &HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+        keep_tz: bool,
+    ) -> RunResult<CallResult> {
+        let dt = receiver.get(vm.heap).clone();
+        {
+            // `time()` drops the timezone, `timetz()` keeps it — the only
+            // difference between the two in CPython.
+            args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
+            // Owned, so it must be released whether or not the time attaches it.
+            let tzinfo = if keep_tz {
+                receiver.tzinfo_value(vm)
+            } else {
+                Value::None
+            };
+            defer_drop!(tzinfo, vm);
+            let naive = dt.naive.time();
+            let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
+                .expect("microsecond is always in 0..=999_999");
+            Ok(CallResult::Value(time::allocate(
+                vm,
+                i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
+                i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
+                i32::try_from(naive.second()).expect("second is always in 0..=59"),
+                micros,
+                // `DateTime` does not store `fold`, so the time is always unfolded.
+                0,
+                tzinfo,
+            )?))
+        }
+    }
+
     #[pymethod]
     fn isoformat<'h>(
         receiver: &mut HeapObjectRead<'h, DateTime>,
@@ -1721,35 +1749,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
-        let method = StaticStrings::Time;
-
-        {
-            // `time()` drops the timezone, `timetz()` keeps it — the only
-            // difference between the two in CPython.
-            let keep_tz = method == StaticStrings::Timetz;
-            args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
-            // Owned, so it must be released whether or not the time attaches it.
-            let tzinfo = if keep_tz {
-                receiver.tzinfo_value(vm)
-            } else {
-                Value::None
-            };
-            defer_drop!(tzinfo, vm);
-            let naive = dt.naive.time();
-            let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
-                .expect("microsecond is always in 0..=999_999");
-            Ok(CallResult::Value(time::allocate(
-                vm,
-                i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
-                i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
-                i32::try_from(naive.second()).expect("second is always in 0..=59"),
-                micros,
-                // `DateTime` does not store `fold`, so the time is always unfolded.
-                0,
-                tzinfo,
-            )?))
-        }
+        Self::time_value(receiver, args, vm, false)
     }
 
     #[pymethod]
@@ -1758,35 +1758,7 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let dt = receiver.get(vm.heap).clone();
-        let method = StaticStrings::Timetz;
-
-        {
-            // `time()` drops the timezone, `timetz()` keeps it — the only
-            // difference between the two in CPython.
-            let keep_tz = method == StaticStrings::Timetz;
-            args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
-            // Owned, so it must be released whether or not the time attaches it.
-            let tzinfo = if keep_tz {
-                receiver.tzinfo_value(vm)
-            } else {
-                Value::None
-            };
-            defer_drop!(tzinfo, vm);
-            let naive = dt.naive.time();
-            let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
-                .expect("microsecond is always in 0..=999_999");
-            Ok(CallResult::Value(time::allocate(
-                vm,
-                i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
-                i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
-                i32::try_from(naive.second()).expect("second is always in 0..=59"),
-                micros,
-                // `DateTime` does not store `fold`, so the time is always unfolded.
-                0,
-                tzinfo,
-            )?))
-        }
+        Self::time_value(receiver, args, vm, true)
     }
 
     #[pymethod]

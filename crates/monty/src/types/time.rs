@@ -16,7 +16,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
 };
 
 use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
@@ -557,11 +556,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Time> {
         let time = self.get(vm.heap);
         let s = format_isoformat(time, attached_offset(time, vm.heap), TimeSpec::Auto);
         Ok(allocate_string_no_interning(s, vm.heap))
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Time.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

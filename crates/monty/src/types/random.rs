@@ -7,7 +7,7 @@
 //! Module functions use the VM's generator ([`RandomTarget::Global`]);
 //! `random.Random(...)` instances use the heap.
 
-use std::{borrow::Cow, fmt::Write, mem, mem::ManuallyDrop};
+use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_macros::pyattrs;
 use monty_types::{RandomSeed, RandomStart, ResourceTracker};
@@ -632,12 +632,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         Ok((attr.static_string(vm.interns) == Some(StaticStrings::RandomVersion))
             .then_some(CallResult::Value(Value::Int(3))))
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let owner = Type::Random;
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        owner.call_attr(&receiver, attr, args, vm)
     }
 }
 

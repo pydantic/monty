@@ -9,7 +9,7 @@
 //! The objects share one heap payload, [`DirScan`], so the heap registers a
 //! single variant for the family.
 
-use std::{borrow::Cow, fmt::Write, mem::ManuallyDrop};
+use std::{borrow::Cow, fmt::Write};
 
 use monty_macros::pyattrs;
 use monty_types::{
@@ -293,12 +293,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
                 name.as_str(vm.interns),
             ))
         }
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let owner = self.py_type(vm);
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        owner.call_attr(&receiver, attr, args, vm)
     }
 }
 

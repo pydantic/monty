@@ -12,7 +12,6 @@
 use std::{
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
     str::FromStr,
 };
 
@@ -20,7 +19,7 @@ use ahash::AHasher;
 use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
-use super::builtin_attr::{AttrDef, PyAttrs};
+use super::builtin_attr::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
@@ -653,12 +652,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    /// `evaluate(...)`; any other method composes `Later.method(...)` on a stringifier.
+    /// Unknown methods compose `Later.method(...)` on a stringifier.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if let Some(AttrDef::Method(call)) = Type::ForwardRef.get_attr(attr, vm.interns) {
-            let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-            call(&receiver, args, vm)
-        } else if self.composes(vm) {
+        if self.composes(vm) {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             text.push('.');
