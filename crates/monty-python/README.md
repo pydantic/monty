@@ -7,7 +7,7 @@ instead, which pulls in this package plus
 [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/) and
 is documented in full on its PyPI page.
 
-Install this package directly to use the websocket client alone,
+Install this package directly to use the remote client alone,
 or if you're installing the `monty` binary another way.
 
 ```bash
@@ -16,17 +16,18 @@ uv add pydantic-monty-client
 pip install pydantic-monty-client
 ```
 
-## Usage with a remote monty server and websockets
+## Usage with a remote monty server
 
-You can use this library alone to connect to a remote monty server via websockets.
+You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
+stream per session. `AsyncMontyWebsocket` is the same class under its former name.
 
 ```python test="skip"
-from pydantic_monty import AsyncMontyWebsocket
+from pydantic_monty import AsyncMontyRemote
 
 
 async def main() -> None:
-    url = '...'
-    async with AsyncMontyWebsocket(url) as pool:
+    url = 'http://...'
+    async with AsyncMontyRemote(url) as pool:
         async with pool.checkout() as session:
             output = await session.feed_run('1 + 1')
             print('output ->', output)
@@ -38,13 +39,14 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-`MontyDisconnectError` exposes `stage`, `close_code`, `close_reason`, and `transport_error` when available.
-These fields preserve transport evidence, not proof that the request did or did not run.
+`MontyDisconnectError` exposes `stage`, `status_code`, `status_message`, `cause` and `transport_error` when available.
+These fields preserve the status the server ended the stream with, or the transport failure, not proof that the request
+did or did not run.
 The client does not automatically replay a disconnected request.
 
 ## Host decode budget
 
-`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
+`AsyncMontyRemote(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
 Values above 1 GiB are rejected when the client is constructed.
 The budget excludes wire buffers and Python conversion, and does not change
 sandbox memory limits. Exhaustion ends the session with a protocol error;
@@ -212,7 +214,7 @@ Both clocks charge bytecode and native builtin execution, excluding host suspens
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
 CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
 (`async with`) raises `RuntimeError`.
-WebSocket clients on any platform adopt the server's clock.
+Remote clients on any platform adopt the server's clock.
 The clock applies to the whole pool; checkouts cannot override it.
 CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
 Smaller remaining budgets shorten that interval.

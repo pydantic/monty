@@ -656,18 +656,19 @@ impl PyAsyncMonty {
     }
 }
 
-/// Async context manager owning a pool of remote `monty` workers reached over a
-/// WebSocket. The intended peer is `monty-server` (one child per connection
-/// plus timeout/capacity/drain policy); any server that bridges to a worker fits,
-/// e.g. a relay pairing this connection with a child that dialed in from the
-/// other end, or the dev relay script.
+/// Async context manager owning a pool of remote `monty` workers reached over
+/// gRPC: one HTTP/2 connection to the configured URL, one stream per session.
+/// The intended peer is `monty-server` (one child per stream plus
+/// timeout/capacity/drain policy); any server that bridges a stream to a
+/// worker fits, e.g. the dev relay script.
 ///
 /// Mirrors [`PyAsyncMonty`] but, instead of spawning local subprocesses, each
-/// checkout dials the configured URL; `checkout()` yields the same
+/// checkout opens a stream to the server; `checkout()` yields the same
 /// [`PyAsyncMontySession`]. There is no sync counterpart — remote turns are
-/// network-bound, so the async API is the only one.
-#[pyclass(name = "AsyncMontyWebsocket", module = "pydantic_monty", frozen)]
-pub struct PyAsyncMontyWebsocket {
+/// network-bound, so the async API is the only one. Also exported as
+/// `AsyncMontyWebsocket`, its former name.
+#[pyclass(name = "AsyncMontyRemote", module = "pydantic_monty", frozen)]
+pub struct PyAsyncMontyRemote {
     config: PoolConfig,
     pool: SharedPool,
     /// The `connect_headers` callback, handed to every session so it runs on
@@ -676,19 +677,19 @@ pub struct PyAsyncMontyWebsocket {
 }
 
 #[pymethods]
-impl PyAsyncMontyWebsocket {
-    /// Creates the pool configuration; connections are made by `async with` and
-    /// each checkout (no workers are pre-warmed).
+impl PyAsyncMontyRemote {
+    /// Creates the pool configuration; the connection is made by the first
+    /// checkout (no workers are pre-warmed).
     ///
     /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
-    /// remote relay that accepts the connection but never produces a worker
-    /// would otherwise leave each turn blocked on the socket until the far end
-    /// closes it. Pass `None` to wait indefinitely.
+    /// server that admits the stream but never answers would otherwise leave
+    /// each turn blocked until the far end ends it. Pass `None` to wait
+    /// indefinitely.
     ///
     /// Note that `install_dependencies` is also a turn, so the default 10.0 is
     /// often too low for it — a real `uv pip install` (e.g. `numpy`) can exceed
     /// it and surface as `MontyCrashedError`. Raise `request_timeout` (or pass
-    /// `None`) when installing dependencies over the WebSocket transport.
+    /// `None`) when installing dependencies over the remote transport.
     #[new]
     #[pyo3(signature = (
         url,
@@ -716,7 +717,7 @@ impl PyAsyncMontyWebsocket {
         max_decode_bytes: Option<usize>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
-        let mut config = parse_websocket_config(
+        let mut config = parse_remote_config(
             url,
             max_processes,
             checkout_timeout,
@@ -1283,11 +1284,11 @@ async fn finish_checkout(checkout: &SharedCheckout) {
     }
 }
 
-/// Builds the WebSocket-transport `monty-pool` config from the `AsyncMontyWebsocket`
-/// constructor arguments. Each checkout dials `url` verbatim; there is no
+/// Builds the remote-transport `monty-pool` config from the `AsyncMontyRemote`
+/// constructor arguments. Each checkout opens a stream to `url`; there is no
 /// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
-/// connections.
-fn parse_websocket_config(
+/// streams.
+fn parse_remote_config(
     url: String,
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
@@ -1295,7 +1296,7 @@ fn parse_websocket_config(
     graces: GraceArgs,
     auto_resume: bool,
 ) -> PyResult<PoolConfig> {
-    let mut config = PoolConfig::websocket(url);
+    let mut config = PoolConfig::remote(url);
     config.auto_resume = auto_resume;
     if let Some(max) = max_processes {
         config.max_processes = max;
@@ -2338,8 +2339,8 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
         PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => MontyCrashedError::new_err(py, message, true, None),
-        PoolError::Disconnected { websocket, .. } => {
-            MontyDisconnectError::new_err(py, message, websocket.map(|details| *details))
+        PoolError::Disconnected { remote, .. } => {
+            MontyDisconnectError::new_err(py, message, remote.map(|details| *details))
         }
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),

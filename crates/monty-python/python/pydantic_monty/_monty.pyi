@@ -25,6 +25,7 @@ __all__ = [
     'NOT_HANDLED',
     'AsyncMonty',
     'AsyncMontySession',
+    'AsyncMontyRemote',
     'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
@@ -537,13 +538,15 @@ class MontyCrashedError(MontyError):
 
 @final
 class MontyDisconnectError(MontyError):
-    """Raised when a remote worker's connection closed mid-session (WebSocket transport only).
+    """Raised when a remote worker's stream ended mid-session (remote transport only).
 
-    The local analogue is `MontyCrashedError`. The sandbox may have died, or
-    the server may have dropped the session by policy — an idle, session, or
-    turn timeout, or being over capacity. A client that only sees the
-    connection go away cannot tell those apart, so this error claims no more
-    than that. The request may have run; do not replay it automatically.
+    The local analogue is `MontyCrashedError`. The sandbox may have died, the
+    connection may have dropped, or the server may have ended the session by
+    policy — an idle, session, or turn timeout, running out of memory, or
+    being over capacity. A server that did so says which in `status_code`,
+    `status_message` and `cause`; otherwise this error claims no more than
+    that the stream went away. The request may have run; do not replay it
+    automatically.
 
     Cannot be constructed directly from Python.
     """
@@ -553,20 +556,28 @@ class MontyDisconnectError(MontyError):
         """`send` or `receive` for the first recorded failure, or `None` if unavailable."""
 
     @property
-    def close_code(self) -> int | None:
-        """The recorded peer Close code, or `None` if unavailable."""
+    def status_code(self) -> str | None:
+        """The gRPC status code the server ended the stream with, by its canonical
+        name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply
+        finished the stream; `None` for a transport failure."""
 
     @property
-    def close_reason(self) -> str | None:
-        """The recorded peer Close reason, or `None` if unavailable."""
+    def status_message(self) -> str | None:
+        """The message on that status, or `None` without one."""
+
+    @property
+    def cause(self) -> str | None:
+        """The policy reason the server attached to the status, in `snake_case`
+        (`idle_timeout`, `session_timeout`, `turn_timeout`, `capacity`, ...), or
+        `None` when it attached none this client knows."""
 
     @property
     def transport_error(self) -> str | None:
-        """The recorded transport or protocol error, or `None` for a peer Close frame."""
+        """The recorded transport or protocol error, or `None` when the server sent a status."""
 
 @final
 class MontyShutdown(MontyError):
-    """Raised when the remote server is shutting down (WebSocket transport only).
+    """Raised when the remote server is shutting down (remote transport only).
 
     Not an error in your code, which is why it is the one exception here
     without an `Error` suffix; it still subclasses `MontyError`. The request
@@ -1016,24 +1027,25 @@ class AsyncMonty:
         """
 
 @final
-class AsyncMontyWebsocket:
+class AsyncMontyRemote:
     """
-    Async context manager owning a pool of remote `monty` workers reached over a
-    WebSocket. The intended peer is `monty-server` (the production server: one
-    `monty subprocess` child per connection, plus capacity/timeout policy and
-    graceful drain), but any server that accepts the connection and bridges to
-    a worker fits — a relay pairing it with a child that dialed in from the
-    other end, or the dev relay `scripts/websocket_relay.py`.
+    Async context manager owning a pool of remote `monty` workers reached over
+    gRPC: one HTTP/2 connection to the configured URL, one stream per session.
+    The intended peer is `monty-server` (the production server: one
+    `monty subprocess` child per stream, plus capacity/timeout policy and
+    graceful drain), but any server that admits the stream and bridges it to
+    a worker fits — e.g. the dev relay `scripts/grpc_relay.py`.
 
     Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
-    dials the configured URL. There is no sync counterpart — remote turns are
-    network-bound. `checkout()` yields the same `AsyncMontySession`.
+    opens a stream to the configured URL. There is no sync counterpart — remote
+    turns are network-bound. `checkout()` yields the same `AsyncMontySession`.
+    `AsyncMontyWebsocket` is the same class under its former name.
 
     A `monty-server` enforces its own policy on top of the pool's. On SIGTERM
     drain it answers the session's next request with `MontyShutdown`, whose
     `dump` restores the session onto another server; every other server-side
-    drop (idle, session or turn timeout, capacity) closes the connection and
-    raises `MontyDisconnectError`.
+    drop (idle, session or turn timeout, capacity) ends the stream with a
+    status and raises `MontyDisconnectError` naming its `cause`.
 
     A server that stores sessions gives each one an ID (`session.session_id`)
     instead of handing state back: `dump()` writes the current state to a
@@ -1044,7 +1056,7 @@ class AsyncMontyWebsocket:
     `auto_resume`).
 
     ```python
-    async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
+    async with AsyncMontyRemote('http://127.0.0.1:8799') as pool:
         async with pool.checkout() as session:
             result = await session.feed_run('1 + 1')
     ```
@@ -1064,23 +1076,22 @@ class AsyncMontyWebsocket:
         max_decode_bytes: int | None = None,
     ) -> Self:
         """
-        Configure a remote worker pool; connections are made by `async with` and
-        each checkout (no workers are pre-warmed).
+        Configure a remote worker pool; the connection is made by the first
+        checkout (no workers are pre-warmed).
 
         Arguments:
-            url: `ws://`/`wss://` URL to dial — a relay, or any server that
-                bridges to a worker. Dialed verbatim; any session/rendezvous routing the URL
-                needs (e.g. a `/<uuid>/parent` path for a relay) must already be
-                in it.
-            max_processes: Cap on concurrent connections (defaults to the CPU
+            url: `http://`/`https://` URL of the server — a relay, or any
+                server that bridges a stream to a worker. `ws://`/`wss://`
+                are read as those two.
+            max_processes: Cap on concurrent streams (defaults to the CPU
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
             request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
                 worker that exceeds it has its connection killed and the call
-                raises `MontyCrashedError` with `timed_out=True`. This also
-                bounds the wait when a relay accepts the connection but never
-                produces a worker. CPU-mode servers require a finite value.
+                raises `MontyCrashedError` with `timed_out=True`. Opening the
+                stream, which includes the server's admission, is bounded
+                separately (30 seconds). CPU-mode servers require a finite value.
                 Pass `None` to wait indefinitely with wall-mode servers.
                 Under contention, this wall deadline can expire before a server
                 CPU budget. Choose it for the expected budgets and scheduling delays.
@@ -1088,31 +1099,32 @@ class AsyncMontyWebsocket:
                 Note that `install_dependencies` is a turn too, so the default
                 10.0 is often too low for it — a real `uv pip install` can exceed
                 it. Raise `request_timeout` when installing dependencies over
-                the WebSocket transport.
+                the remote transport.
             max_decode_bytes: Per-frame host allocation budget in bytes. `None`
                 keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
             connect_headers: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
-                headers for that connection's WebSocket upgrade request — e.g. a
-                token for infrastructure in front of the worker. It runs
-                synchronously on the checking-out task, so it sees that task's
-                contextvars and must not block. Monty never interprets the
-                values; duplicate names are last-wins, also over the default
-                `user-agent` and the `traceparent` the Logfire integration
-                adds, and a malformed name or value raises `RuntimeError` as
-                the session is entered.
+                request metadata for that session's stream — e.g. a token for
+                infrastructure in front of the worker. It runs synchronously
+                on the checking-out task, so it sees that task's contextvars
+                and must not block. Monty never interprets the values; names
+                are lowercase ASCII and values ASCII, duplicate names are
+                last-wins, also over the `traceparent` the Logfire integration
+                adds, a `user-agent` entry is put in front of the default one,
+                and a malformed name or value raises `RuntimeError` as the
+                session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.
                 CPU mode uses the server's supervisor and grace instead.
                 `None` disables this client backstop. `request_timeout` stays independent.
             turn_duration_limit_grace: The same, for `max_turn_duration_secs`.
-            auto_resume: When a server that stores sessions drains one, redial,
-                load the state it named into a new session and re-send the
+            auto_resume: When a server that stores sessions drains one, open a
+                new stream, load the state it named into a new session and re-send the
                 request it did not run, instead of raising `MontyShutdown`; the
                 session's suspension and sleep totals carry over. `MontyShutdown`
-                is still raised when the resume fails. A closed connection is
+                is still raised when the resume fails. An ended stream is
                 never resumed: the request may have run.
         """
 
@@ -1135,10 +1147,10 @@ class AsyncMontyWebsocket:
         profile: str | None = None,
     ) -> AsyncMontySession:
         """
-        Prepare a REPL session served by a dedicated remote connection.
+        Prepare a REPL session served by a dedicated remote stream.
 
         Identical to `AsyncMonty.checkout`, except for `ephemeral` and
-        `profile`; the connection is opened by `async with` on the returned
+        `profile`; the stream is opened by `async with` on the returned
         session.
 
         Arguments:
@@ -1151,12 +1163,15 @@ class AsyncMontyWebsocket:
                 as-is; the `monty` worker itself ignores it.
         """
 
+# The remote pool's former name, kept as a plain alias of the class.
+AsyncMontyWebsocket = AsyncMontyRemote
+
 @final
 class AsyncMontySession:
     """
     A REPL session running in a dedicated `monty` worker, local or remote.
 
-    Obtained from `AsyncMonty.checkout()` or `AsyncMontyWebsocket.checkout()`
+    Obtained from `AsyncMonty.checkout()` or `AsyncMontyRemote.checkout()`
     and used as an async context manager. Session state (globals, functions) persists across
     `feed_run` calls within the session.
     """

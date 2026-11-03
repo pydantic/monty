@@ -38,7 +38,7 @@ pub use exceptions::{
     MontySyntaxError, MontyTypingError, PyFrame, PySourceRange,
 };
 pub use mount::PyMountDir;
-pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
+pub use pool::{PyAsyncMonty, PyAsyncMontyRemote, PyAsyncMontySession, PyMonty, PyMontySession};
 pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
 pub use snapshot::{
@@ -131,9 +131,9 @@ mod _monty {
     #[pymodule_export]
     use super::PyAsyncMonty as AsyncMonty;
     #[pymodule_export]
-    use super::PyAsyncMontySession as AsyncMontySession;
+    use super::PyAsyncMontyRemote as AsyncMontyRemote;
     #[pymodule_export]
-    use super::PyAsyncMontyWebsocket as AsyncMontyWebsocket;
+    use super::PyAsyncMontySession as AsyncMontySession;
     #[pymodule_export]
     use super::PyAsyncNameLookupSnapshot as AsyncNameLookupSnapshot;
     #[pymodule_export]
@@ -165,6 +165,8 @@ mod _monty {
         let py = m.py();
         m.add("__version__", get_version())?;
         m.add("NOT_HANDLED", get_not_handled(py)?.clone_ref(py))?;
+        // the remote pool's former name, kept as a plain alias of the class
+        m.add("AsyncMontyWebsocket", m.getattr("AsyncMontyRemote")?)?;
         // cache the binary resolver now so pool construction never imports
         binary_finder(py)?;
         Ok(())

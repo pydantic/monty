@@ -19,11 +19,11 @@ from typing import Any
 
 from mcp_run_python import code_sandbox
 
-from pydantic_monty import AsyncMontyWebsocket, Monty
+from pydantic_monty import AsyncMontyRemote, Monty
 
 code = '1 + 1'
 # a running Full Monty server, e.g. the container image from docs/server.md
-FULL_MONTY_URL = os.environ.get('FULL_MONTY_URL', 'ws://localhost:8000/')
+FULL_MONTY_URL = os.environ.get('FULL_MONTY_URL', 'http://localhost:8000/')
 
 # The numbers these produce are quoted in docs/index.md, docs/alternatives.md and
 # README.md; regenerate docs/img/startup-latency.svg with scripts/startup_latency_chart.py
@@ -63,7 +63,7 @@ def run_monty_new_pool():
 def run_full_monty():
     async def run() -> Any:
         # the checkout dials the server, which starts a worker for the session
-        async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+        async with AsyncMontyRemote(FULL_MONTY_URL) as pool:
             async with pool.checkout() as session:
                 return await session.feed_run(code)
 
@@ -79,7 +79,7 @@ def run_full_monty_warm(rounds: int = 20):
         # each checkout is a new connection and a new worker: the server never
         # lets one process serve two clients, so only the client side is warm
         samples: list[float] = []
-        async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+        async with AsyncMontyRemote(FULL_MONTY_URL) as pool:
             async with pool.checkout() as session:
                 await session.feed_run(code)
             for _ in range(rounds):
@@ -288,7 +288,7 @@ def agent_monty(warm: bool):
 def agent_full_monty(warm: bool):
     from pydantic_monty import CollectString
 
-    async def feeds(pool: AsyncMontyWebsocket) -> str:
+    async def feeds(pool: AsyncMontyRemote) -> str:
         collector = CollectString()
         async with pool.checkout() as session:
             for block in AGENT_BLOCKS:
@@ -297,13 +297,13 @@ def agent_full_monty(warm: bool):
 
     async def run() -> tuple[float, str]:
         if warm:
-            async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+            async with AsyncMontyRemote(FULL_MONTY_URL) as pool:
                 await feeds(pool)
                 start = time.perf_counter()
                 output = await feeds(pool)
                 return time.perf_counter() - start, output
         start = time.perf_counter()
-        async with AsyncMontyWebsocket(FULL_MONTY_URL) as pool:
+        async with AsyncMontyRemote(FULL_MONTY_URL) as pool:
             output = await feeds(pool)
         return time.perf_counter() - start, output
 
