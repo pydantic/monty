@@ -39,8 +39,9 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{pyattrs::PyAttrs, LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 

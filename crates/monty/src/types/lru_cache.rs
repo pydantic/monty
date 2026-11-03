@@ -22,11 +22,11 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         key_hash::plain_hash,
-        pyattrs::PyAttrs,
         tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Value},

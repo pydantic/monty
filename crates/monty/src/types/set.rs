@@ -17,13 +17,13 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
         LazyHeapSet, Type, TypeRef,
         hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         key_hash::{HashRole, hash_as, set_element_hash},
         list::repr_items_fmt,
-        pyattrs::PyAttrs,
     },
     value::{VALUE_SIZE, Value},
 };

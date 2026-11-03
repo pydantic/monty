@@ -20,13 +20,14 @@ use serde::{Deserialize, Serialize};
 pub(crate) use writer::{Writer, write_method};
 
 use crate::{
+    py_attrs::PyAttrs,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{pyattrs::PyAttrs, LazyHeapSet, PyTrait, Type, TypeRef},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 

@@ -1,4 +1,3 @@
-pub(crate) mod pyattrs;
 /// Type definitions for Python runtime values.
 ///
 /// This module contains structured types that wrap heap-allocated data

@@ -18,6 +18,7 @@ use super::{
     py::{self, ContextMethod},
 };
 use crate::{
+    py_attrs::PyAttrs,
     args::{ArgValues, FromArgs, is_long_int},
     builtins::Builtins,
     bytecode::{CallResult, VM},
@@ -26,7 +27,6 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     types::{
-        pyattrs::PyAttrs,
         Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
