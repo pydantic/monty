@@ -401,7 +401,10 @@ async fn a_refused_stream_fails_the_checkout() {
     assert_eq!(url, mock.url());
     assert_eq!(refusal.stage, "open");
     assert_eq!(refusal.status_code, Some("RESOURCE_EXHAUSTED"));
-    assert_eq!(refusal.status_message.as_deref(), Some("caller holds 10 sessions already"));
+    assert_eq!(
+        refusal.status_message.as_deref(),
+        Some("caller holds 10 sessions already")
+    );
     assert_eq!(refusal.cause, Some(RemoteCause::CallerCap));
     assert_eq!(refusal.transport_error, None);
     // the refusal consumed no capacity: the next checkout is admitted

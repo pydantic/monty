@@ -2,6 +2,7 @@
 //! other repositories and the bindings' tests pin, and its status round trip.
 
 use monty_proto::grpc::{CAUSE_METADATA_KEY, Cause};
+use strum::IntoEnumIterator as _;
 use tonic::{Code, Status};
 
 /// Every cause, with the trailer value and code the wire has carried since
@@ -22,6 +23,13 @@ const CAUSES: [(Cause, &str, Code); 11] = [
 
 #[test]
 fn causes_keep_their_wire_strings_and_codes() {
+    // every variant has a row: a new cause must be pinned here
+    for cause in Cause::iter() {
+        assert!(
+            CAUSES.iter().any(|(listed, ..)| *listed == cause),
+            "{cause:?} has no row"
+        );
+    }
     for (cause, wire, code) in CAUSES {
         assert_eq!(cause.as_str(), wire);
         assert_eq!(cause.to_string(), wire);
@@ -42,6 +50,8 @@ fn a_status_carries_its_cause_as_a_trailer() {
     }
     assert_eq!(Cause::of(&Status::new(Code::Unavailable, "plain")), None);
     let mut unknown = Status::new(Code::Unavailable, "unknown cause");
-    unknown.metadata_mut().insert(CAUSE_METADATA_KEY, "flood".parse().unwrap());
+    unknown
+        .metadata_mut()
+        .insert(CAUSE_METADATA_KEY, "flood".parse().unwrap());
     assert_eq!(Cause::of(&unknown), None);
 }

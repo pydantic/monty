@@ -99,7 +99,8 @@ impl Remote {
     /// metadata (see [`crate::CheckoutOptions`]). Returns once the server has
     /// admitted the stream — sent its response headers — so a refusal
     /// (capacity, authentication, no worker) surfaces here as a
-    /// [`PoolError::Spawn`] naming the server's status, never as a worker that
+    /// [`PoolError::Refused`] carrying the server's status, and a dial that
+    /// fails or times out as a [`PoolError::Spawn`], never as a worker that
     /// fails its first turn.
     pub(crate) async fn open(
         &self,
@@ -114,6 +115,10 @@ impl Remote {
                 .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
             let value = MetadataValue::try_from(value.as_str())
                 .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
+            // never indexed: a token must not sit in the connection's HPACK
+            // table, which every stream on it shares
+            let mut value = value;
+            value.set_sensitive(true);
             metadata.insert(key, value);
         }
         let mut grpc = Grpc::new(self.channel.clone())
@@ -123,7 +128,11 @@ impl Remote {
         let mut retries = 0;
         let (requests, response) = loop {
             let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
-            let request = Request::from_parts(metadata.clone(), Extensions::default(), ReceiverStream::new(request_body));
+            let request = Request::from_parts(
+                metadata.clone(),
+                Extensions::default(),
+                ReceiverStream::new(request_body),
+            );
             let open = async {
                 grpc.ready().await.map_err(|err| Status::from_error(err.into()))?;
                 grpc.streaming(request, PathAndQuery::from_static(SESSION_PATH), BytesCodec)

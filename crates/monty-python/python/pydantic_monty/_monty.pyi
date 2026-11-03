@@ -581,9 +581,11 @@ class MontyDisconnectError(MontyError):
 class MontyRefusedError(MontyError):
     """Raised when the remote server refused to open a session's stream (remote transport only).
 
-    The server was at capacity, or rejected the caller's credentials
-    (`unauthenticated`) or what they asked for (`permission_denied`); it says
-    which in `status_code`, `status_message` and `cause`. No session existed,
+    The server was at capacity (`capacity`, or `caller_cap` for this caller's
+    share of it), could start no worker (`worker_unavailable`), or rejected
+    the caller's credentials (`unauthenticated`) or what a valid credential
+    asked for (`permission_denied`); it says which in `status_code`,
+    `status_message` and `cause`. No session existed,
     so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
     server that could not be reached at all raises `RuntimeError` instead.
 

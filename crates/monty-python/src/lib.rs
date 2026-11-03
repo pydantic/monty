@@ -115,9 +115,9 @@ mod _monty {
     #[pymodule_export]
     use super::MontyDisconnectError;
     #[pymodule_export]
-    use super::MontyRefusedError;
-    #[pymodule_export]
     use super::MontyError;
+    #[pymodule_export]
+    use super::MontyRefusedError;
     #[pymodule_export]
     use super::MontyRuntimeError;
     #[pymodule_export]

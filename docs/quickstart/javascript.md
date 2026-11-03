@@ -233,6 +233,7 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 | `MontyRuntimeError`    | The code raised at runtime                                                            | yes              |
 | `MontyCrashedError`    | The worker died, or the watchdog killed it                                            | no               |
 | `MontyDisconnectError` | A [remote worker's](#remote-workers) connection closed                                | no               |
+| `MontyRefusedError`    | A [remote worker's](#remote-workers) server refused to open the session's stream      | no               |
 | `MontyShutdown`        | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
 | `ProtocolError`        | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
@@ -241,16 +242,17 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
 which ignores any argument:
 
-| Class                                                                      | `display` formats                              |
-| -------------------------------------------------------------------------- | ---------------------------------------------- |
-| `MontyError`, `MontyCrashedError`, `MontyDisconnectError`, `MontyShutdown` | `'msg'` (default), `'type-msg'`                |
-| `MontySyntaxError`                                                         | `'msg'` (default), `'type-msg'`, `'traceback'` |
-| `MontyRuntimeError`                                                        | `'traceback'` (default), `'type-msg'`, `'msg'` |
-| `MontyTypingError`                                                         | takes no argument; returns the diagnostics     |
+| Class                                                                                           | `display` formats                              |
+| ----------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `MontyError`, `MontyCrashedError`, `MontyDisconnectError`, `MontyRefusedError`, `MontyShutdown` | `'msg'` (default), `'type-msg'`                |
+| `MontySyntaxError`                                                                              | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError`                                                                             | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError`                                                                              | takes no argument; returns the diagnostics     |
 
-`MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`.
+`MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
+`statusCode`, `statusMessage` and `cause`.
 `checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
-refusing it.
+rejecting the session's configuration.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn or a server that cannot be reached rejects with a plain `Error`, and a remote server that refuses
 the session's stream with `MontyRefusedError`, whose `statusCode`, `statusMessage` and `cause` say why.

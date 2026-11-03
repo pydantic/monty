@@ -11,7 +11,7 @@
 //! service: a client calls [`SESSION_PATH`] through `tonic::client::Grpc`.
 
 use bytes::{Buf, BufMut, Bytes};
-use strum::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumIter, EnumString, IntoStaticStr};
 use tonic::{
     Code, Status,
     codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
@@ -29,7 +29,7 @@ pub const CAUSE_METADATA_KEY: &str = "monty-cause";
 /// [`CAUSE_METADATA_KEY`] trailer beside the canonical gRPC code so a client
 /// can act on the reason rather than parse the message. Its string form,
 /// the variant in `snake_case`, is the trailer value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter, IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub enum Cause {
     /// No request arrived within the server's idle timeout.

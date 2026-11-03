@@ -160,9 +160,9 @@ container's loopback interface and is not reachable through `-p 8000:8000`.
 
 When the global session limit is full, a new stream is refused with the gRPC status `RESOURCE_EXHAUSTED` and the
 cause `capacity`; exceeding the per-client limit refuses it with `RESOURCE_EXHAUSTED` and the cause `caller_cap`.
-A caller without valid credentials is refused with `UNAUTHENTICATED` and the cause `unauthenticated`; one whose
-credentials are valid but not allowed the project or profile it asked for, with `PERMISSION_DENIED` and the cause
-`permission_denied`.
+A deployment that authenticates callers (the image itself does not; see [Security](#security)) refuses a caller
+without valid credentials with `UNAUTHENTICATED` and the cause `unauthenticated`, and one whose credentials are valid
+but not allowed the project or profile it asked for with `PERMISSION_DENIED` and the cause `permission_denied`.
 Every status the server ends or refuses a stream with carries its cause in a `monty-cause` trailer, which the
 clients expose (see [disconnect diagnostics](api/python/remote.md#disconnect-diagnostics)).
 

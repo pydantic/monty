@@ -1701,7 +1701,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Checks `native` out of its pool, raising what a turn would for the same
- * failure: `MontyRuntimeError` when the server refuses the session,
+ * failure: `MontyRuntimeError` when the server rejects the session's
+ * configuration, `MontyRefusedError` when a remote server refuses to open
+ * the stream at all (no session existed, so retrying is safe),
  * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
  * is lost, and a `TimeoutError` `DOMException` when no worker became available
  * within the checkout timeout. Anything else (a failed spawn or dial) is a plain `Error`.

@@ -292,7 +292,8 @@ A stream ended mid-session reports `PoolError::Disconnected`.
 Its optional `remote` details retain the first recorded failure: its I/O stage, the gRPC status the server ended the
 stream with (code, message, and the `RemoteCause` it named in its `monty-cause` trailer), or the transport error.
 A server refusing a stream before admitting it — at capacity, or rejecting the caller for missing credentials
-(`unauthenticated`) or for credentials not allowed what they asked for (`permission_denied`) — fails the checkout with
+(`unauthenticated`) or for a valid credential that does not allow the requested project or profile
+(`permission_denied`) — fails the checkout with
 `PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
 fails or times out is `PoolError::Spawn`.
 A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one

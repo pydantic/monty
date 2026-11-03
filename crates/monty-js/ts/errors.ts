@@ -278,9 +278,11 @@ export interface RefusalDetails {
 
 /**
  * Raised when the remote server refused to open a session's stream
- * (`MontyRemote` only): at capacity, or rejecting the caller's credentials
- * (`unauthenticated`) or what they asked for (`permission_denied`), which it
- * says in `statusCode`, `statusMessage` and `cause`. No session existed, so
+ * (`MontyRemote` only): at capacity (`capacity`, or `caller_cap` for this
+ * caller's share), with no worker to serve it (`worker_unavailable`), or
+ * rejecting the caller's credentials (`unauthenticated`) or what a valid
+ * credential asked for (`permission_denied`), which it says in `statusCode`,
+ * `statusMessage` and `cause`. No session existed, so
  * nothing ran; unlike `MontyDisconnectError`, retrying is safe. A server that
  * cannot be reached at all rejects with a plain `Error` instead.
  */

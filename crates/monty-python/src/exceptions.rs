@@ -455,10 +455,10 @@ impl MontyDisconnectError {
 }
 
 /// Raised when the remote server refused to open a session's stream (remote
-/// transport only): at capacity, or rejecting the caller's credentials or
-/// what they asked for. The server says which in `status_code`,
-/// `status_message` and `cause`. No session existed, so nothing ran; unlike
-/// `MontyDisconnectError`, retrying is safe.
+/// transport only): at capacity, with no worker to serve it, or rejecting
+/// the caller's credentials or what they asked for. The server says which in
+/// `status_code`, `status_message` and `cause`. No session existed, so
+/// nothing ran; unlike `MontyDisconnectError`, retrying is safe.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRefusedError {
     /// The gRPC status code the server refused with, by name.
