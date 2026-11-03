@@ -1,5 +1,5 @@
 //! napi binding over `monty-pool`: crash-isolated execution in pools of
-//! `monty subprocess` workers, or of remote workers dialed over a WebSocket —
+//! `monty subprocess` workers, or of remote workers reached over gRPC —
 //! the Node.js counterpart of `pydantic_monty`.
 //!
 //! The architecture mirrors the Python binding but keeps JS-shaped concerns in
@@ -33,7 +33,7 @@ use std::{
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -119,13 +119,13 @@ pub struct NativePoolOptions {
     pub max_checkouts_per_worker: Option<u32>,
 }
 
-/// Options for a pool of remote workers ([`NativePool::websocket`]). Timeouts
-/// are pre-normalised to milliseconds by the TypeScript `MontyWebsocket`.
-#[napi(object, js_name = "NativeWebsocketPoolOptions")]
-pub struct NativeWebsocketPoolOptions {
-    /// `ws://`/`wss://` URL each checkout dials verbatim.
+/// Options for a pool of remote workers ([`NativePool::remote`]). Timeouts
+/// are pre-normalised to milliseconds by the TypeScript `MontyRemote`.
+#[napi(object, js_name = "NativeRemotePoolOptions")]
+pub struct NativeRemotePoolOptions {
+    /// `http://`/`https://` URL of the server every checkout opens a stream to.
     pub url: String,
-    /// Cap on concurrent connections; checkouts beyond it wait. Absent: the
+    /// Cap on concurrent streams; checkouts beyond it wait. Absent: the
     /// CPU count.
     pub max_processes: Option<u32>,
     /// How long `enter()` waits for capacity (ms). Absent: forever.
@@ -141,12 +141,12 @@ pub struct NativeWebsocketPoolOptions {
     pub auto_resume: bool,
 }
 
-/// One header for a WebSocket checkout's upgrade request.
+/// One request-metadata entry for a remote checkout's stream.
 #[napi(object, js_name = "NativeHeader")]
 pub struct NativeHeader {
-    /// Header name, validated by `monty-pool` when the connection is dialed.
+    /// Metadata name, validated by `monty-pool` when the stream is opened.
     pub name: String,
-    /// Header value, validated likewise.
+    /// Metadata value, validated likewise.
     pub value: String,
 }
 
@@ -280,8 +280,8 @@ impl NativeMountDir {
     }
 }
 
-/// A pool of `monty` worker subprocesses, or of remote workers reached over a
-/// WebSocket. Wrapped by the TypeScript `Monty` / `MontyWebsocket` classes —
+/// A pool of `monty` worker subprocesses, or of remote workers reached over
+/// gRPC. Wrapped by the TypeScript `Monty` / `MontyRemote` classes —
 /// not part of the public API.
 #[napi(js_name = "NativePool")]
 pub struct NativePool {
@@ -321,11 +321,11 @@ impl NativePool {
         Self::from_config(config, "Monty")
     }
 
-    /// Configures a pool of remote workers: each checkout dials `url`, and no
-    /// connection is pre-warmed or reused.
+    /// Configures a pool of remote workers: each checkout opens a stream to
+    /// `url` over the pool's one connection, and no stream is pre-warmed or reused.
     #[napi(factory)]
-    pub fn websocket(options: NativeWebsocketPoolOptions) -> Result<Self> {
-        let mut config = PoolConfig::websocket(options.url);
+    pub fn remote(options: NativeRemotePoolOptions) -> Result<Self> {
+        let mut config = PoolConfig::remote(options.url);
         if let Some(max) = options.max_processes {
             config.max_processes = max as usize;
         }
@@ -337,7 +337,7 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.auto_resume = options.auto_resume;
-        Self::from_config(config, "MontyWebsocket")
+        Self::from_config(config, "MontyRemote")
     }
 
     /// Spawns the prewarmed workers off the event loop.
@@ -481,8 +481,8 @@ pub struct NativeSession {
 #[napi]
 impl NativeSession {
     /// Checks a worker out of the pool (spawning or dialing one if allowed)
-    /// and creates the REPL session in it. `connect_headers` go on a WebSocket
-    /// pool's upgrade request; a subprocess pool ignores them. Resolves to
+    /// and creates the REPL session in it. `connect_headers` become a remote
+    /// pool's stream metadata; a subprocess pool ignores them. Resolves to
     /// `{kind:'ok'}` or a failure turn object (`exhausted` for a checkout
     /// timeout), so the TypeScript layer raises the same classes as for a turn;
     /// rejects only when the pool is closed or not started.
@@ -1048,8 +1048,12 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
-    /// A remote worker's connection closed mid-session; the session is lost.
-    Disconnected(String),
+    /// A remote worker's stream ended mid-session; the session is lost.
+    /// `details` is the status or transport failure that ended it, when known.
+    Disconnected {
+        message: String,
+        details: Option<Box<RemoteDisconnect>>,
+    },
     /// A draining server declined the request, which did not run; `dump`
     /// names what restores the session, when the server stored it.
     Shutdown { message: String, dump: Option<Vec<u8>> },
@@ -1093,7 +1097,10 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 message: PoolError::Crashed { status, cause }.to_string(),
                 timed_out: false,
             },
-            Err(err @ PoolError::Disconnected { .. }) => Self::Disconnected(err.to_string()),
+            Err(PoolError::Disconnected { context, remote }) => Self::Disconnected {
+                message: PoolError::Disconnected { context, remote: None }.to_string(),
+                details: remote,
+            },
             // the error's Display notes whether a dump came with it, so render
             // it before taking the dump back out
             Err(err @ PoolError::Shutdown { .. }) => {
@@ -1207,9 +1214,24 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
         }
-        TurnOutcome::Disconnected(message) => {
+        TurnOutcome::Disconnected { message, details } => {
             obj.set("kind", "disconnected")?;
             obj.set("message", message)?;
+            if let Some(details) = details {
+                obj.set("stage", details.stage)?;
+                if let Some(code) = details.status_code {
+                    obj.set("statusCode", code)?;
+                }
+                if let Some(status_message) = details.status_message {
+                    obj.set("statusMessage", status_message)?;
+                }
+                if let Some(cause) = details.cause {
+                    obj.set("cause", cause.as_str())?;
+                }
+                if let Some(error) = details.transport_error {
+                    obj.set("transportError", error)?;
+                }
+            }
         }
         TurnOutcome::Shutdown { message, dump } => {
             obj.set("kind", "shutdown")?;

@@ -2,7 +2,7 @@
 // exception hierarchy: MontyError is the base, with MontySyntaxError /
 // MontyRuntimeError / MontyTypingError for sandbox failures and
 // MontyCrashedError for worker death (MontyDisconnectError / MontyShutdown
-// for a remote worker's connection). The full Python traceback is rendered
+// for a remote worker's stream). The full Python traceback is rendered
 // once, in the worker (monty's `MontyException` Display), and carried across
 // as a string — never re-implemented here. Structured frames travel alongside
 // it for programmatic access via `MontyRuntimeError.traceback()`.
@@ -213,25 +213,59 @@ export class MontyCrashedError extends MontyError {
   }
 }
 
+/** The status or transport failure that ended a remote session's stream. */
+export interface DisconnectDetails {
+  /**
+   * The gRPC status code the server ended the stream with, by its canonical
+   * name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply
+   * finished the stream. Absent for a transport failure.
+   */
+  statusCode?: string
+  /** The message on that status. */
+  statusMessage?: string
+  /**
+   * The policy reason the server attached, in `snake_case` (`idle_timeout`,
+   * `session_timeout`, `turn_timeout`, `capacity`, ...), when it is one this
+   * client knows.
+   */
+  cause?: string
+  /** The transport or protocol error, when the server sent no status. */
+  transportError?: string
+}
+
 /**
- * Raised when a remote worker's connection closed mid-session (`MontyWebsocket`
- * only; the local analogue is `MontyCrashedError`). The sandbox may have died,
- * or the server may have dropped the session by policy — an idle, session or
- * turn timeout, or being over capacity; the client cannot tell which. The
- * session is lost; check out a new one.
+ * Raised when a remote worker's stream ended mid-session (`MontyRemote` only;
+ * the local analogue is `MontyCrashedError`). The sandbox may have died, the
+ * connection may have dropped, or the server may have ended the session by
+ * policy — an idle, session or turn timeout, or being over capacity — which
+ * it says in `statusCode`, `statusMessage` and `cause`. The session is lost;
+ * check out a new one.
  */
 export class MontyDisconnectError extends MontyError {
-  constructor(message: string) {
+  /** The status code the server ended the stream with, by name, or `null`. */
+  readonly statusCode: string | null
+  /** The message on that status, or `null`. */
+  readonly statusMessage: string | null
+  /** The policy reason the server named, in `snake_case`, or `null`. */
+  readonly cause: string | null
+  /** The transport or protocol error when the server sent no status, or `null`. */
+  readonly transportError: string | null
+
+  constructor(message: string, details: DisconnectDetails = {}) {
     super('RuntimeError', message)
     this.name = 'MontyDisconnectError'
+    this.statusCode = details.statusCode ?? null
+    this.statusMessage = details.statusMessage ?? null
+    this.cause = details.cause ?? null
+    this.transportError = details.transportError ?? null
   }
 }
 
 /**
- * Raised when the remote server is shutting down (`MontyWebsocket` only). The
+ * Raised when the remote server is shutting down (`MontyRemote` only). The
  * request that raised it **did not run**, so re-running it is safe; the
  * session is lost. Against a server that stores sessions the pool resumes the
- * session itself first (see `MontyWebsocketOptions.autoResume`), so this is
+ * session itself first (see `MontyRemoteOptions.autoResume`), so this is
  * raised only when that fails or is disabled.
  *
  * `dump` restores the session on a fresh one, with `loadSession` (idle) or

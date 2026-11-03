@@ -409,7 +409,7 @@ export class MontySession {
    * format. The session stays usable; the bytes can only be restored by a
    * monty worker of the same version.
    *
-   * Against a `MontyWebsocket` server that stores sessions, returns the ID of
+   * Against a `MontyRemote` server that stores sessions, returns the ID of
    * a record holding the current state instead; `loadSession` / `loadSnapshot`
    * accept it like dump bytes. A server that stores nothing may refuse with
    * `MontyRuntimeError`, and the session carries on.
@@ -465,7 +465,7 @@ export class MontySession {
   }
 
   /**
-   * The opaque ID a `MontyWebsocket` server that stores sessions gave this
+   * The opaque ID a `MontyRemote` server that stores sessions gave this
    * session, or `undefined`: local workers, ephemeral sessions and servers that
    * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
    * to start a new session from the state stored under it. Changes when the
@@ -1738,7 +1738,7 @@ function lostSessionError(turn: CrashedTurn | DisconnectedTurn | ShutdownTurn): 
     case 'crashed':
       return new MontyCrashedError(turn.message, turn)
     case 'disconnected':
-      return new MontyDisconnectError(turn.message)
+      return new MontyDisconnectError(turn.message, turn)
     case 'shutdown':
       return new MontyShutdown(turn.message, turn.dump === undefined ? null : bufferFrom(turn.dump))
   }
