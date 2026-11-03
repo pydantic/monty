@@ -3073,12 +3073,14 @@ async fn cancelling_finish_does_not_leak_capacity() {
     release.send(()).expect("release the server");
     join_server(server).await;
 
-    // the slot came back: the next checkout gets as far as dialling (and fails
-    // to connect, the listener being gone) instead of reporting no capacity
+    // The slot came back: the next checkout gets as far as dialling instead
+    // of reporting no capacity. The mock is shutting down, so the dial fails
+    // (`Spawn`) or, if it still admitted the stream, the stream ends at once
+    // (`Disconnected`); only `Exhausted` would be the leak.
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("the listener is gone, so a checkout cannot succeed");
+        panic!("the mock is shutting down, so a checkout cannot succeed");
     };
-    assert!(matches!(err, PoolError::Spawn(_)), "got {err:?}");
+    assert!(!matches!(err, PoolError::Exhausted), "the slot leaked: {err:?}");
 }
 
 #[tokio::test]
