@@ -144,6 +144,11 @@ indistinguishable from a stack overflow.
     to completion without polling the time limit, about 0.2 s on a laptop; larger
     calls poll between exponent bits, so a single squaring of the modulus is the
     longest uninterruptible step.
+- `math.gcd()` and `math.lcm()` on operands longer than 4,096 bits use Lehmer's
+    algorithm, as CPython does, and poll the time limit every 64 steps; each step is
+    one pass over the operands. `math.isqrt()` past a machine word polls between its
+    precision-doubling steps, so its final full-size division is the longest
+    uninterruptible step.
 - `int(str_or_bytes, base)` rejects inputs over 4,300 digits before the
     potentially quadratic BigInt parse when the effective base is not a power
     of two. The fixed cap matches CPython's

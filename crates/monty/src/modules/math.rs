@@ -26,7 +26,7 @@
 use std::f64::consts;
 
 use monty_types::ResourceTracker;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, BigUint};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use smallvec::smallvec;
@@ -442,7 +442,8 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     } else if let Some(n) = n.to_i64() {
         Ok(Value::Int(isqrt_i64(n)))
     } else {
-        Ok(LongInt::new(BigInt::from(n.magnitude().sqrt())).into_value(vm.heap))
+        let root = polled_isqrt(n.magnitude(), &vm.heap.tracker)?;
+        Ok(LongInt::new(BigInt::from(root)).into_value(vm.heap))
     }
 }
 
@@ -1067,6 +1068,110 @@ fn product_range(lo: u64, hi: u64, polls: &mut usize, tracker: &ResourceTracker)
     }
 }
 
+/// Operand size up to which `polled_gcd` hands both operands to `num-integer`'s binary gcd.
+///
+/// Binary gcd removes about one bit per full-width step, so it is quadratic in the larger
+/// operand even when the other is tiny: `gcd(3 ** 2_000_000 + 1, 2 ** 61 - 1)` took 16 s.
+/// Below this size it finishes in microseconds and is left alone.
+const GCD_UNPOLLED_BITS: u64 = 4096;
+
+/// Bits taken from the top of `a`, and the same window of `b`, for Lehmer's inner loop.
+///
+/// With a 62-bit window the cofactors stay below 2³¹, so they fit in a `u64` for the
+/// full-width products.
+const LEHMER_WINDOW: u64 = 62;
+
+/// Greatest common divisor that polls the time limit, by Lehmer's algorithm as in
+/// CPython's `_PyLong_GCD`.
+///
+/// Each outer step reads only the top `LEHMER_WINDOW` bits, runs Euclid on them in machine
+/// words, and applies the resulting cofactors to the full operands with four word-by-bignum
+/// products. A step costs O(n) and removes about 30 bits, so the whole is a fraction of
+/// binary gcd's work, and nothing returns to the VM's checkpoint, so the loop polls.
+fn polled_gcd(lhs: &BigUint, rhs: &BigUint, tracker: &ResourceTracker) -> RunResult<BigUint> {
+    if lhs.bits().max(rhs.bits()) <= GCD_UNPOLLED_BITS {
+        return Ok(lhs.gcd(rhs));
+    }
+    // Invariant: `long >= short`.
+    let (mut long, mut short) = if lhs >= rhs {
+        (lhs.clone(), rhs.clone())
+    } else {
+        (rhs.clone(), lhs.clone())
+    };
+    let mut polls = 0usize;
+    while short.bits() > 64 {
+        tracker.check_time_every(polls)?;
+        polls += 1;
+        let shift = long.bits() - LEHMER_WINDOW;
+        // Signed, as in CPython: `next_y` goes negative exactly when the window can no longer
+        // be trusted, and `next_cc > next_y` must then end the loop. `i128` keeps the products exact.
+        let mut x = i128::from((&long >> shift).to_u64().expect("the window is 62 bits"));
+        let mut y = i128::from((&short >> shift).to_u64().expect("the window is at most 62 bits"));
+        let (mut ca, mut cb, mut cc, mut cd) = (1i128, 0i128, 0i128, 1i128);
+        let mut steps = 0u32;
+        while y != cc {
+            let quotient = (x + (ca - 1)) / (y - cc);
+            let next_cc = cb + quotient * cd;
+            let next_y = x - quotient * y;
+            if next_cc > next_y {
+                break;
+            }
+            (x, y) = (y, next_y);
+            (ca, cb, cc, cd) = (cd, cc, next_cc, ca + quotient * cc);
+            steps += 1;
+        }
+        if steps == 0 {
+            // The window made no progress, typically because `short` is much shorter than
+            // `long`: take one Euclidean step on the full operands.
+            let remainder = &long % &short;
+            (long, short) = (short, remainder);
+            continue;
+        }
+        let [ca, cb, cc, cd] =
+            [ca, cb, cc, cd].map(|v| u64::try_from(v).expect("Lehmer cofactors are non-negative and below 2^31"));
+        (long, short) = if steps % 2 == 1 {
+            (&short * ca - &long * cb, &long * cd - &short * cc)
+        } else {
+            (&long * ca - &short * cb, &short * cd - &long * cc)
+        };
+    }
+    // `short` now fits a machine word but `long` may not; reduce it first so the binary gcd
+    // below never walks a long operand.
+    if !short.is_zero() {
+        long %= &short;
+    }
+    Ok(long.gcd(&short))
+}
+
+/// Integer square root that polls the time limit, by the precision-doubling recursion
+/// CPython's `math.isqrt` uses.
+///
+/// The loop runs once per bit of `(bits(value) - 1) / 2`, about 22 times for a 2,000,000-digit
+/// input. Each step divides numbers about twice the size of the last, so the final step
+/// dominates and the whole costs about one full-size division, a tenth of `num-bigint`'s
+/// Newton iteration at that size.
+fn polled_isqrt(value: &BigUint, tracker: &ResourceTracker) -> RunResult<BigUint> {
+    if value.is_zero() {
+        return Ok(BigUint::zero());
+    }
+    // Loop invariant, from CPython: `(root - 1)**2 < (value >> 2 * (half - prec)) < (root + 1)**2`,
+    // so `root` approximates the square root of the top `2 * prec` bits.
+    let half = (value.bits() - 1) / 2;
+    let mut root = BigUint::one();
+    let mut prec = 0u64;
+    for step in (0..u64::BITS - half.leading_zeros()).rev() {
+        tracker.check_time()?;
+        let prev_prec = prec;
+        prec = half >> step;
+        let correction = (value >> (2 * half - prev_prec - prec + 1)) / &root;
+        root = (root << (prec - prev_prec - 1)) + correction;
+    }
+    if &root * &root > *value {
+        root -= 1u32;
+    }
+    Ok(root)
+}
+
 /// `math.gcd(*integers)` — returns the greatest common divisor of the arguments.
 ///
 /// Supports 0 or more arguments, matching CPython 3.9+. `gcd()` returns 0,
@@ -1079,7 +1184,8 @@ fn math_gcd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let mut result = BigInt::ZERO;
     for arg in positional.by_ref() {
         defer_drop!(arg, vm);
-        result = result.gcd(&value_to_bigint(arg, vm)?);
+        let n = value_to_bigint(arg, vm)?;
+        result = BigInt::from(polled_gcd(result.magnitude(), n.magnitude(), &vm.heap.tracker)?);
     }
     Ok(LongInt::new(result).into_value(vm.heap))
 }
@@ -1102,7 +1208,8 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             // `lcm` divides out the gcd, holding a quotient up to `result`'s size, then
             // multiplies: preflight both like `*`.
             check_mult_size(result.bits().saturating_mul(2), n.bits(), &vm.heap.tracker)?;
-            result = result.lcm(&n);
+            let gcd = BigInt::from(polled_gcd(result.magnitude(), n.magnitude(), &vm.heap.tracker)?);
+            result = (result / gcd * n).abs();
         } else {
             result = BigInt::ZERO;
         }
