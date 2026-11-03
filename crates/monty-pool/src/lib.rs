@@ -64,7 +64,7 @@ pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 /// stuck dial or a server that never admits the stream.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Default [`PoolConfig::keep_alive`]: the slowest cadence a gRPC server's
+/// Default [`PoolConfig::keep_alive`]: the fastest cadence a gRPC server's
 /// default ping policy permits (grpc-go, grpc-java and grpc-core all refuse
 /// pings closer than five minutes apart and answer with `GOAWAY` after two).
 pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_mins(5);

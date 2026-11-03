@@ -254,11 +254,10 @@ impl Drop for RemoteWorker {
 /// relay it dials; tonic appends its own version after it.
 const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"));
 
-/// Interval between HTTP/2 keepalive pings on the connection, and how long an
-/// unanswered one is tolerated. Connection-level, hop-local: these detect a
-/// dead TCP peer, not a vanished server beyond a proxy (that is `Ping`'s job).
 /// How long an HTTP/2 `PING` may go unanswered before the connection is
-/// judged dead.
+/// judged dead. Connection-level, hop-local: it detects a dead TCP peer, not
+/// a vanished server beyond a proxy (that is the in-band `Ping`'s job). The
+/// interval between pings is `PoolConfig::keep_alive`.
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long `close` waits for the server to end its side after the half-close.

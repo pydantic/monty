@@ -283,7 +283,7 @@ input so adapters that do not support metrics continue to work.
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
   events read before the ping, so a server pings between turns, where a slow host callback
-  cannot delay it. `PoolConfig::keep_alive` (five minutes by default, the slowest cadence a
+  cannot delay it. `PoolConfig::keep_alive` (five minutes by default, the fastest cadence a
   gRPC server's default policy permits; `None` for none) adds an HTTP/2 `PING` on the first
   hop while streams are open. `PoolConfig::connect_timeout`
   (30 s by default) bounds opening a stream, from a cold dial through the server's admission.
