@@ -26,11 +26,7 @@ use monty_macros::pyattrs;
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{
-    CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, PyAttrs},
-    iter::collect_owned_iterable,
-};
+use super::{CmpOrder, PyTrait, builtin_attr::PyAttrs, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -481,12 +477,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::Tuple.get_attr(attr, vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::Tuple.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

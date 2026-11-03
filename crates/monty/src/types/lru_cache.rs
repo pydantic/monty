@@ -6,8 +6,13 @@
 //! Pending keys and arguments are ordinary frame locals, including across
 //! host suspension and snapshots; the VM needs no cache-specific return effects.
 
-use std::{cell::Cell, fmt::Write, mem::take};
+use std::{
+    cell::Cell,
+    fmt::Write,
+    mem::{ManuallyDrop, take},
+};
 
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -23,6 +28,7 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type,
+        builtin_attr::PyAttrs,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         tuple::{TupleVec, allocate_tuple},
     },
@@ -425,34 +431,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.static_string(vm.interns) {
-            Some(StaticStrings::CacheInfo) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
-                self.cache_info(vm)
-            }
-            Some(StaticStrings::CacheClear) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
-                self.cache_clear(vm);
-                Value::None
-            }
-            Some(StaticStrings::CacheParameters) => {
-                args.check_zero_args("_lru_cache_wrapper.cache_parameters", vm.heap)?;
-                self.cache_parameters(vm)?
-            }
-            // `f.__wrapped__(...)` is an ordinary call of the attribute's
-            // value, not a method of the wrapper, so hand it straight on —
-            // uncached, which is the point of reaching for `__wrapped__`.
-            Some(StaticStrings::DunderWrapped) if let Some(func) = self.get(vm.heap).func.as_ref() => {
-                let func = func.clone_with_heap(vm);
-                defer_drop!(func, vm);
-                return vm.call_function(func, args);
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::LruCacheWrapper, attr.as_str(vm.interns)));
-            }
-        };
-        Ok(CallResult::Value(value))
+        // __wrapped__ is a stored callable, so it bypasses the native method table.
+        if attr.static_string(vm.interns) == Some(StaticStrings::DunderWrapped)
+            && let Some(func) = self.get(vm.heap).func.as_ref()
+        {
+            let func = func.clone_with_heap(vm);
+            defer_drop!(func, vm);
+            return vm.call_function(func, args);
+        }
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        Type::LruCacheWrapper.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -568,4 +556,48 @@ fn count_value(count: u64) -> Value {
 /// `maxsize` as Python sees it: an `int`, or `None` when unbounded.
 fn maxsize_value(maxsize: Option<u64>) -> Value {
     maxsize.map_or(Value::None, count_value)
+}
+
+pub(crate) struct PyLruCacheImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
+    type Receiver = HeapObjectRead<'heap, LruCache>;
+
+    #[pymethod]
+    fn cache_info<'h>(
+        receiver: &mut HeapObjectRead<'h, LruCache>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        Ok({
+            args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
+            receiver.cache_info(vm)
+        })
+    }
+
+    #[pymethod]
+    fn cache_clear<'h>(
+        receiver: &mut HeapObjectRead<'h, LruCache>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        Ok({
+            args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
+            receiver.cache_clear(vm);
+            Value::None
+        })
+    }
+
+    #[pymethod]
+    fn cache_parameters<'h>(
+        receiver: &mut HeapObjectRead<'h, LruCache>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        Ok({
+            args.check_zero_args("_lru_cache_wrapper.cache_parameters", vm.heap)?;
+            receiver.cache_parameters(vm)?
+        })
+    }
 }

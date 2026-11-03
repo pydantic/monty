@@ -7,7 +7,7 @@ use syn::{FnArg, GenericArgument, GenericParam, ImplItem, ImplItemFn, ItemImpl, 
 #[derive(Clone, Copy)]
 enum Mode {
     HeapHandle,
-    StrView,
+    NativeView,
     Immediate,
 }
 
@@ -36,13 +36,16 @@ fn receiver(ty: &Type) -> syn::Result<(Mode, Type, syn::Ident)> {
             };
             Ok((Mode::Immediate, ty.clone(), format_ident!("{variant}")))
         }
-        "PyStr" => {
+        "PyStr" | "PyBytes" => {
             if !matches!(&view.arguments, PathArguments::AngleBracketed(args)
                 if args.args.len() == 1 && matches!(args.args.first(), Some(GenericArgument::Lifetime(_))))
             {
-                return Err(syn::Error::new_spanned(ty, "PyStr requires one heap lifetime"));
+                return Err(syn::Error::new_spanned(
+                    ty,
+                    format!("{} requires one heap lifetime", view.ident),
+                ));
             }
-            Ok((Mode::StrView, ty.clone(), view.ident.clone()))
+            Ok((Mode::NativeView, ty.clone(), view.ident.clone()))
         }
         "HeapRead" | "HeapReadMut" | "HeapObjectRead" => {
             let PathArguments::AngleBracketed(args) = &view.arguments else {
@@ -65,7 +68,7 @@ fn receiver(ty: &Type) -> syn::Result<(Mode, Type, syn::Ident)> {
         }
         _ => Err(syn::Error::new_spanned(
             ty,
-            "Receiver must be HeapRead<'h, T>, HeapReadMut<'h, T>, HeapObjectRead<'h, T>, PyStr<'h>, f64, i64, or bool",
+            "Receiver must be HeapRead<'h, T>, HeapReadMut<'h, T>, HeapObjectRead<'h, T>, PyStr<'h>, PyBytes<'h>, f64, i64, or bool",
         )),
     }
 }
@@ -167,7 +170,7 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
         let first = parameters[0];
         let valid = match mode {
             Mode::Immediate => first == native,
-            Mode::StrView => matches!(first, Type::Reference(reference)
+            Mode::NativeView => matches!(first, Type::Reference(reference)
                 if reference.mutability.is_none() && reference.elem.as_ref() == native),
             Mode::HeapHandle => matches!(first, Type::Reference(reference)
             if type_path(&reference.elem).is_ok_and(|segment| {
@@ -181,7 +184,7 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
         if !valid {
             return Err(syn::Error::new_spanned(
                 first,
-                "method receiver does not match Receiver; heap views take & or &mut, PyStr takes &, immediate values are passed by value",
+                "method receiver does not match Receiver; heap views take & or &mut, PyStr/PyBytes take &, immediate values are passed by value",
             ));
         }
     }
@@ -224,12 +227,19 @@ fn definition(
                     };
                     #handler(*value, args, vm)
                 },
-                Mode::StrView => quote! {
-                    let Some(value) = crate::types::str::PyStr::from_value(receiver, vm) else {
-                        unreachable!("builtin method receiver must be a string")
+                Mode::NativeView => {
+                    let view = if variant == "PyBytes" {
+                        quote!(crate::types::bytes::PyBytes)
+                    } else {
+                        quote!(crate::types::str::PyStr)
                     };
-                    #handler(&value, args, vm)
-                },
+                    quote! {
+                        let Some(value) = #view::from_value(receiver, vm) else {
+                            unreachable!("builtin method receiver must match its attribute table")
+                        };
+                        #handler(&value, args, vm)
+                    }
+                }
                 Mode::HeapHandle => {
                     let (binding, argument) = if mutable {
                         (quote!(mut value), quote!(&mut value))
@@ -545,6 +555,31 @@ mod tests {
         assert!(output.contains("read_as :: < ForwardRef >"));
         assert!(output.contains("RunResult < crate :: bytecode :: CallResult >"));
         assert!(!output.contains("map (crate :: bytecode :: CallResult :: Value)"));
+    }
+
+    #[test]
+    fn bytes_receivers_use_the_logical_view() {
+        let output = expand(parse_quote! {
+            impl<'h> PyAttrs<'h> for PyBytes<'h> {
+                type Receiver = PyBytes<'h>;
+                #[pymethod]
+                fn upper(bytes: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
+            }
+        })
+        .unwrap()
+        .to_string();
+        assert!(output.contains("PyBytes :: from_value"));
+        assert!(!output.contains("read_as"));
+        assert!(
+            error(parse_quote! {
+                impl<'h> PyAttrs<'h> for PyBytes<'h> {
+                    type Receiver = PyBytes<'h>;
+                    #[pymethod]
+                    fn upper(bytes: &mut PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
+                }
+            })
+            .contains("receiver does not match Receiver")
+        );
     }
 
     #[test]

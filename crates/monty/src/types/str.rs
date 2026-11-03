@@ -7,7 +7,7 @@ use smallvec::smallvec;
 
 use super::{
     Bytes, CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, PyAttrs},
+    builtin_attr::PyAttrs,
     inline_str::InlineStr,
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
@@ -288,15 +288,12 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::Str.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::Str, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(match self {
             Self::Interned(id) => Value::InternString(*id),
             Self::Inline(text) => Value::InlineString(*text),
             Self::Heap(value) => Value::Ref(value.id()),
         });
-        call(&receiver, args, vm)
+        Type::Str.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -526,11 +523,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::Str.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::Str, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::Str.call_attr(&receiver, attr, args, vm)
     }
 }
 

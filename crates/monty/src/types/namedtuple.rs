@@ -6,9 +6,10 @@ use std::{
     fmt::Write,
     hash::{Hash, Hasher},
     iter::once,
-    mem,
+    mem::{self, ManuallyDrop},
 };
 
+use monty_macros::pyattrs;
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -41,6 +42,7 @@ use crate::{
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Type, Union, allocate_tuple,
+        builtin_attr::PyAttrs,
         iter::collect_owned_iterable,
         py_trait::LazyHeapSet,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
@@ -602,33 +604,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // The `_`-prefixed namedtuple methods. Field names cannot start with `_`,
-        // so these never collide with a real field. Only instances built from a
-        // `collections.namedtuple` class have them — see the note in `py_getattr`.
-        let from_factory = self.get(vm.heap).class_id().is_some();
-        // `count`/`index` are inherited from `tuple`, so unlike the `_`-prefixed
-        // methods they are available on structseqs too (`sys.version_info.count(0)`
-        // works in CPython).
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Count) => return self.method_count(vm, args).map(CallResult::Value),
-            Some(StaticStrings::Index) => return self.method_index(vm, args).map(CallResult::Value),
-            Some(StaticStrings::DunderGetnewargs) => {
-                return self.method_getnewargs(vm, args, from_factory).map(CallResult::Value);
-            }
-            _ => {}
-        }
-        match attr.static_string(vm.interns).filter(|_| from_factory) {
-            Some(StaticStrings::UnderAsdict) => self.method_asdict(vm, args).map(CallResult::Value),
-            Some(StaticStrings::UnderReplace) => self.method_replace(vm, args).map(CallResult::Value),
-            Some(StaticStrings::UnderMake) => self.method_make(vm, args).map(CallResult::Value),
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(
-                    self.get(vm.heap).name(vm.interns),
-                    attr.as_str(vm.interns),
-                ))
-            }
-        }
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        Type::NamedTuple.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -1321,5 +1298,79 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, NamedTuple> {
             self.clone_item(index, vm)
         })?;
         Ok(self.allocate_like(items, vm))
+    }
+}
+
+pub(crate) struct PyNamedTupleImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
+    type Receiver = HeapObjectRead<'heap, NamedTuple>;
+
+    #[pymethod]
+    fn count<'h>(receiver: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        receiver.method_count(vm, args)
+    }
+
+    #[pymethod]
+    fn index<'h>(receiver: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        receiver.method_index(vm, args)
+    }
+
+    #[pymethod]
+    fn dunder_getnewargs<'h>(
+        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        receiver.method_getnewargs(vm, args, receiver.get(vm.heap).class_id().is_some())
+    }
+
+    #[pymethod]
+    fn under_asdict<'h>(
+        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        if receiver.get(vm.heap).class_id().is_none() {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(
+                receiver.get(vm.heap).name(vm.interns),
+                "_asdict",
+            ));
+        }
+        receiver.method_asdict(vm, args)
+    }
+
+    #[pymethod]
+    fn under_replace<'h>(
+        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        if receiver.get(vm.heap).class_id().is_none() {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(
+                receiver.get(vm.heap).name(vm.interns),
+                "_replace",
+            ));
+        }
+        receiver.method_replace(vm, args)
+    }
+
+    #[pymethod]
+    fn under_make<'h>(
+        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        if receiver.get(vm.heap).class_id().is_none() {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(
+                receiver.get(vm.heap).name(vm.interns),
+                "_make",
+            ));
+        }
+        receiver.method_make(vm, args)
     }
 }

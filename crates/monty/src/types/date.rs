@@ -15,10 +15,9 @@ use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_macros::pyattrs;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
-use super::builtin_attr::{AttrDef, PyAttrs};
+use super::builtin_attr::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
-    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -27,7 +26,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     string_builder::StringBuilder,
     types::{
-        BuiltinType, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},
@@ -286,16 +285,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match Type::Date.get_attr(attr, vm.interns) {
-            Some(AttrDef::Method(call)) => {
-                let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-                call(&receiver, args, vm)
-            }
-            Some(AttrDef::ClassMethod(call)) => {
-                call(Type::Date, Value::Builtin(Builtins::Type(BuiltinType::Date)), args, vm)
-            }
-            _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
-        }
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        Type::Date.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

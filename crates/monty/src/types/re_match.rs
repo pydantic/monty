@@ -14,7 +14,7 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write, mem::ManuallyDrop};
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::builtin_attr::{AttrDef, PyAttrs};
+use super::builtin_attr::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -356,11 +356,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ReMatch> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::ReMatch.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::ReMatch, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::ReMatch.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

@@ -26,9 +26,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     types::{
-        Dict, LazyHeapSet, List, PyTrait, Type, allocate_string,
-        builtin_attr::{AttrDef, PyAttrs},
-        iter::collect_iterable,
+        Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, builtin_attr::PyAttrs, iter::collect_iterable,
         tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -566,11 +564,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::DecimalContext.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::DecimalContext, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::DecimalContext.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -778,11 +773,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::DecimalSignalDict.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::DecimalSignalDict, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::DecimalSignalDict.call_attr(&receiver, attr, args, vm)
     }
 }
 

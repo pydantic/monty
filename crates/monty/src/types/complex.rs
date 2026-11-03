@@ -12,7 +12,7 @@ use std::{fmt::Write, mem::ManuallyDrop};
 use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
-use super::builtin_attr::{AttrDef, PyAttrs};
+use super::builtin_attr::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
@@ -740,11 +740,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::Complex.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::Complex.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

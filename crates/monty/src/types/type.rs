@@ -21,12 +21,10 @@ use crate::{
         BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
         Random, Range, Set, Slice, Str, TimeZone, Tuple,
         builtin_attr::{self, AttrDef},
-        bytes::{bytes_fromhex, bytes_repr},
+        bytes::bytes_repr,
         complex, date, datetime, decimal,
-        dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
-        path,
         str::{StringRepr, allocate_string},
         time, timedelta,
     },
@@ -638,6 +636,29 @@ impl Type {
     pub(crate) fn get_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
         let name = attr.static_string(interns)?;
         match self {
+            Self::Set => super::set::PySetImpl::lookup_attr(name),
+            Self::FrozenSet => super::set::PyFrozenSetImpl::lookup_attr(name),
+            Self::DictKeys => super::dict_view::PyDictKeysViewImpl::lookup_attr(name),
+            Self::DictItems => super::dict_view::PyDictItemsViewImpl::lookup_attr(name),
+            Self::DateTime => super::datetime::PyDateTimeImpl::lookup_attr(name),
+            Self::Deque => super::deque::PyDequeImpl::lookup_attr(name),
+            Self::TextIOWrapper | Self::BufferedReader | Self::BufferedWriter | Self::BufferedRandom => {
+                super::file::PyFileImpl::lookup_attr(name)
+            }
+            Self::Dict => super::dict::PyDictImpl::lookup_attr(name),
+            Self::DefaultDict => super::dict::PyDefaultDictImpl::lookup_attr(name),
+            Self::Counter => super::dict::PyCounterImpl::lookup_attr(name),
+            Self::Bytes => super::bytes::PyBytes::lookup_attr(name),
+            Self::Path => super::path::PyPathImpl::lookup_attr(name),
+            Self::Random => super::random::PyRandomImpl::lookup_attr(name),
+            Self::HashlibHash | Self::Blake2b | Self::Blake2s => super::hashlib::PyHashImpl::lookup_attr(name),
+            Self::HashlibHashXof => super::hashlib::PyHashXofImpl::lookup_attr(name),
+            Self::CsvWriter => super::csv::PyCsvWriterImpl::lookup_attr(name),
+            Self::CsvDictWriter => super::csv::PyCsvDictWriterImpl::lookup_attr(name),
+            Self::DirEntry => super::dir_scan::PyDirEntryImpl::lookup_attr(name),
+            Self::ScandirIterator => super::dir_scan::PyScandirImpl::lookup_attr(name),
+            Self::LruCacheWrapper => super::lru_cache::PyLruCacheImpl::lookup_attr(name),
+            Self::NamedTuple => super::namedtuple::PyNamedTupleImpl::lookup_attr(name),
             Self::Decimal => super::decimal::py::PyDecimalImpl::lookup_attr(name),
             Self::DecimalContext => super::decimal::py_context::PyContextImpl::lookup_attr(name),
             Self::DecimalSignalDict => super::decimal::py_context::PySignalDictImpl::lookup_attr(name),
@@ -653,6 +674,33 @@ impl Type {
             Self::RePattern => super::re_pattern::PyRePatternImpl::lookup_attr(name),
             Self::ReMatch => super::re_match::PyReMatchImpl::lookup_attr(name),
             _ => None,
+        }
+    }
+
+    /// Calls a registered method with a borrowed receiver, binding class methods to their owner.
+    pub(crate) fn call_attr(
+        self,
+        receiver: &Value,
+        attr: &EitherStr,
+        args: ArgValues,
+        vm: &mut VM<'_>,
+    ) -> RunResult<CallResult> {
+        match self.get_attr(attr, vm.interns) {
+            Some(AttrDef::Method(call)) => call(receiver, args, vm),
+            Some(AttrDef::ClassMethod(call)) => call(
+                self,
+                Value::Builtin(Builtins::Type(
+                    BuiltinType::try_from(self).expect("registered builtin type"),
+                )),
+                args,
+                vm,
+            ),
+            _ => Err(ExcType::attribute_error_method(
+                receiver.py_type_name(vm),
+                attr,
+                args,
+                vm,
+            )),
         }
     }
 
@@ -677,43 +725,18 @@ impl Type {
             _ => {}
         }
         match (self, attr.static_string(vm.interns)) {
-            // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
-                dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
-            }
-            // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
-            // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
-                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
-            }
             // `chain.from_iterable(iterable)`, CPython's one classmethod here.
             (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
                 itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
             }
-            // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
-                args.drop_with(vm);
-                Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
-            }
-            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
-                datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
-            (Self::DateTime, Some(StaticStrings::Strptime)) => {
-                datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
-                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
+
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
             (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
-            (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
+
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
