@@ -17,10 +17,11 @@ use crate::{
         itertools::ItertoolsFunctions,
     },
     py_attrs::{self, AttrDef, PyAttrs},
+    py_class::PyClass,
     py_value::PyValue,
     types::{
-        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyClass,
-        PyTrait, Random, Range, Set, Slice, Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::bytes_repr,
         complex, date, datetime, decimal,
         instance::class_name,

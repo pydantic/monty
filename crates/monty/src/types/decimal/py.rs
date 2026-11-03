@@ -33,9 +33,10 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
+    py_class::PyClass,
     py_value::PyValue,
     types::{
-        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyClass, PyTrait, Type, allocate_string,
+        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},

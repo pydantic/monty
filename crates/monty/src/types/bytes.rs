@@ -87,10 +87,11 @@ use crate::{
     intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_attrs::PyAttrs,
+    py_class::PyClass,
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size, push_checked, repeated_len, try_vec_with_capacity},
     types::{
-        List, PyClass,
+        List,
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
