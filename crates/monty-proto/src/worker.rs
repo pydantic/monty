@@ -295,6 +295,9 @@ impl Child {
                 sink.send(&ok_event())?;
                 return Ok(HandleOutcome::Shutdown);
             }
+            // a liveness answer meant for a serving relay; it opens no turn,
+            // so it gets no reply
+            pb::parent_request::Kind::Pong(_) => return Ok(HandleOutcome::Continue),
         };
         self.stamp_session_budget(&mut event);
         let sent = sink.send(&event);

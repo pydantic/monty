@@ -741,7 +741,10 @@ pub struct ParentRequest {
     pub trace_parent: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(
+        oneof = "parent_request::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+    )]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -771,6 +774,8 @@ pub mod parent_request {
         Shutdown(super::Shutdown),
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
+        #[prost(message, tag = "12")]
+        Pong(super::Pong),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -1049,7 +1054,10 @@ pub struct ChildEvent {
     /// Configure acknowledgment. Local CPU-mode parents require this before execution.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(
+        oneof = "child_event::Kind",
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+    )]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1081,6 +1089,8 @@ pub mod child_event {
         FatalError(super::FatalError),
         #[prost(message, tag = "12")]
         Shutdown(super::ShutdownDump),
+        #[prost(message, tag = "13")]
+        Ping(super::Ping),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1508,10 +1518,9 @@ pub struct FatalError {
 /// and did NOT run the request it is replying to. Sent only in reply to an
 /// in-flight request, so the client is always reading when it arrives.
 ///
-/// Every other server policy action (idle/session/turn timeout, capacity) is
-/// just a dropped connection, which the client already classifies as a dead
-/// worker — only shutdown needs a message, because only shutdown has state to
-/// hand back.
+/// Every other server policy action (idle/session/turn timeout, capacity,
+/// memory) ends the stream with a gRPC status instead — only shutdown needs a
+/// message, because only shutdown has state to hand back.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ShutdownDump {
@@ -1522,6 +1531,19 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<crate::budgeted_prost::alloc::vec::Vec<u8>>,
 }
+/// Liveness probe from a serving relay, sent at any time, never a turn end. A
+/// parent answers each one with `Pong` without otherwise acting on it; a relay
+/// that hears nothing back for a further interval treats the parent as gone.
+/// In-band because HTTP/2 PING frames stop at the nearest proxy, while the
+/// parent a relay wants to hear from sits beyond it. A child never sends one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct Ping {}
+/// The parent's answer to `Ping`. Not a request: it opens no turn, and a child
+/// or relay that receives one between turns simply notes the parent is alive.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct Pong {}
 /// Where a `Type` comes from — drives id presence and input validation.
 #[derive(
     Clone,

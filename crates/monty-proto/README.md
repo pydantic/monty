@@ -10,7 +10,7 @@ latter into this crate's `OOM_EXIT_CODE` so a parent can classify them).
 The subprocess architecture isolates those crashes: a parent — the
 [`monty-pool`](https://crates.io/crates/monty-pool) crate, and through it the
 Python and JavaScript packages — drives `monty subprocess` children over
-framed stdio (or a WebSocket), and a dead child is simply replaced. This crate
+framed stdio (or a gRPC stream), and a dead child is simply replaced. This crate
 defines the protocol both sides speak.
 
 The protocol is protobuf (rather than Monty's internal CBOR dump format) so a
@@ -49,6 +49,12 @@ for the schema and the protocol rules documented alongside it.
   `FatalError` for the parent to downgrade to, then exits non-zero.
   Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
   Snapshot compatibility is checked separately using the dump-format version.
+- `grpc` (cargo feature, off by default) — the `grpc` module: the remote
+  transport's vocabulary. `SESSION_PATH` names the `MontySession.Session`
+  bidirectional stream, `BytesCodec` moves each message as opaque bytes so both
+  ends decode with the frame helpers above, and `Cause` is the `monty-cause`
+  trailer a server attaches to the status it ends or refuses a stream with.
+  Pulls in `tonic`'s core only (no transport); `monty-pool` enables it.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
   used by the `pydantic-monty-client` extension module and by the embedded-CPython worker `monty-cpython`
