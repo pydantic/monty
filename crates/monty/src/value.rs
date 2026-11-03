@@ -396,10 +396,10 @@ impl<'h> PyTrait<'h> for Value {
                 Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
             }
             (Self::InlineString(text), Self::Ref(id)) if let HeapData::Str(value) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(text.as_bytes().cmp(value.as_str().as_bytes())))
+                Ok(CmpOrder::Ordered(text.as_bytes().cmp(value.as_str(vm.heap).as_bytes())))
             }
             (Self::Ref(id), Self::InlineString(text)) if let HeapData::Str(value) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(value.as_str().as_bytes().cmp(text.as_bytes())))
+                Ok(CmpOrder::Ordered(value.as_str(vm.heap).as_bytes().cmp(text.as_bytes())))
             }
             (Self::InlineString(left), Self::InlineString(right)) => {
                 // UTF-8 byte order matches Unicode scalar order, including prefixes.
@@ -413,10 +413,10 @@ impl<'h> PyTrait<'h> for Value {
             }
             // Cross-type string comparisons: interned vs heap-allocated
             (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str())))
+                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str(vm.heap))))
             }
             (Self::Ref(id1), Self::InternString(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(s1.as_str().cmp(interns.get_str(*s2))))
+                Ok(CmpOrder::Ordered(s1.as_str(vm.heap).cmp(interns.get_str(*s2))))
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
@@ -787,9 +787,9 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
             Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
         }
-        (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-            Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
-        }
+        (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(CmpOrder::Ordered(
+            a.get(vm.heap).as_str(vm.heap).cmp(b.get(vm.heap).as_str(vm.heap)),
+        )),
         (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
             a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
         )),
@@ -1798,7 +1798,7 @@ impl Value {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
             Self::InlineString(text) => Some(EitherStr::Inline(*text)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
-                HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
+                HeapData::Str(s) => Some(EitherStr::Heap(s.as_str(heap).to_owned())),
                 _ => None,
             },
             _ => None,
@@ -1816,7 +1816,7 @@ impl Value {
             Self::InternString(string_id) => Some(interns.get_str(*string_id)),
             Self::InlineString(text) => Some(text.as_str()),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
-                HeapData::Str(s) => Some(s.as_str()),
+                HeapData::Str(s) => Some(s.as_str(heap)),
                 _ => None,
             },
             _ => None,
@@ -1922,7 +1922,7 @@ pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
         Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
-        Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
+        Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str(vm.heap)),
         _ => None,
     }
 }

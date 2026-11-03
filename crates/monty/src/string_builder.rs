@@ -34,7 +34,7 @@
 //! tracker error reaches the caller even when the intermediate
 //! `fmt::Error` is swallowed by a downstream formatter.
 
-use std::{fmt, iter, mem};
+use std::{fmt, iter, mem, ops};
 
 use monty_types::{ResourceError, ResourceTracker};
 
@@ -119,6 +119,13 @@ impl<'t> StringBuilder<'t> {
         let needed = self.inner.len().saturating_add(s.len());
         self.ensure(needed)?;
         self.inner.push_str(s);
+        Ok(())
+    }
+
+    /// Copies an existing UTF-8 range after reservation, so reallocation cannot invalidate the source.
+    pub(crate) fn extend_from_within(&mut self, range: ops::Range<usize>) -> Result<(), ResourceError> {
+        self.ensure(self.inner.len().saturating_add(range.len()))?;
+        self.inner.extend_from_within(range);
         Ok(())
     }
 

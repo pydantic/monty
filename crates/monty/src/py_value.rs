@@ -192,6 +192,7 @@ impl<'h> PyValue<'h> {
             Self::Marker(value) => Ok(value.py_repr_fmt(f)?),
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
+            Self::StringStorage(_) => unreachable!("backing storage is not a Python value"),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
             Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
             Self::Coroutine(coro) => {
@@ -219,6 +220,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Marker(value) => value.py_type(),
             Self::Property(_) => Type::Property,
             Self::Cell(_) => Type::Cell,
+            Self::StringStorage(_) => unreachable!("backing storage is not a Python value"),
             Self::Exception(e) => e.py_type(vm),
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,

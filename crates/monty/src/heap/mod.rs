@@ -17,7 +17,10 @@ use std::{
 };
 
 use monty_types::{DEFAULT_GC_INTERVAL, MontyUuid, ResourceTracker};
-use serde::{de::Error as _, ser::SerializeStruct};
+use serde::{
+    de::Error as _,
+    ser::{SerializeSeq, SerializeStruct},
+};
 
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
@@ -534,6 +537,7 @@ impl<'a, T> HeapView<'a, [T]> for HeapSliceRead<'_, 'a, T> {
     }
 }
 
+#[cfg(any(test, heap_reader_compile_fail_tests))]
 impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
     /// Projects the current box allocation without retaining its address.
     pub fn as_box_value(&self) -> HeapBoxRead<'_, 'a, T> {
@@ -542,10 +546,12 @@ impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
 }
 
 /// A box projection that observes replacement between reader borrows.
+#[cfg(any(test, heap_reader_compile_fail_tests))]
 pub struct HeapBoxRead<'source, 'a, T: ?Sized> {
     source: &'source HeapRead<'a, Box<T>>,
 }
 
+#[cfg(any(test, heap_reader_compile_fail_tests))]
 impl<'a, T: ?Sized> HeapView<'a, T> for HeapBoxRead<'_, 'a, T> {
     fn get<'r>(&'r self, reader: &'r HeapReader<'a>) -> &'r T {
         self.source.get(reader).as_ref()
@@ -998,10 +1004,67 @@ pub(crate) struct Heap {
     host_type_index: BTreeMap<MontyUuid, HeapId>,
 }
 
+struct SnapshotEntries<'a>(&'a Heap);
+
+#[derive(serde::Serialize)]
+struct SnapshotEntry<'a> {
+    #[serde(rename = "R")]
+    refcount: &'a Cell<usize>,
+    #[serde(rename = "D")]
+    data: SnapshotData<'a>,
+    #[serde(rename = "C")]
+    color: &'a Cell<CcColor>,
+}
+
+struct SnapshotData<'a> {
+    heap: &'a Heap,
+    data: &'a HeapData,
+}
+
+impl serde::Serialize for SnapshotData<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        enum LogicalString<'a> {
+            #[serde(rename = "S")]
+            Str(&'a str),
+        }
+        match self.data {
+            HeapData::Str(text) => LogicalString::Str(text.as_str(self.heap)).serialize(serializer),
+            data => data.serialize(serializer),
+        }
+    }
+}
+
+impl serde::Serialize for SnapshotEntries<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let heap = self.0;
+        let mut sequence = serializer.serialize_seq(Some(heap.entries.len()))?;
+        let mut live = heap.entries.iter().peekable();
+        for index in 0..heap.entries.len() {
+            let entry = if live.peek().is_some_and(|(id, _)| id.index() == index) {
+                live.next()
+            } else {
+                None
+            };
+            let entry = entry.and_then(|(id, entry)| {
+                let data = heap.get(id);
+                // Logical strings are saved independently; backing slots become free slots on restore.
+                (!matches!(data, HeapData::StringStorage(_))).then_some(SnapshotEntry {
+                    refcount: &entry.refcount,
+                    data: SnapshotData { heap, data },
+                    color: &entry.color,
+                })
+            });
+            sequence.serialize_element(&entry)?;
+        }
+        sequence.end()
+    }
+}
+
 impl serde::Serialize for Heap {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut state = serializer.serialize_struct("Heap", 6)?;
-        state.serialize_field("entries", &self.entries)?;
+        state.serialize_field("entries", &SnapshotEntries(self))?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("purple_count", &self.purple_count)?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
@@ -1465,6 +1528,16 @@ impl Heap {
         unsafe { &*data.0.get() }
     }
 
+    /// Checks for only a binding and its operand, excluding borrowed handles that could observe mutation.
+    pub(crate) fn has_binding_and_operand_only(&self, id: HeapId) -> bool {
+        self.has_references_without_readers(id, 2)
+    }
+
+    pub(crate) fn has_references_without_readers(&self, id: HeapId, references: usize) -> bool {
+        let entry = self.entries.get(id);
+        entry.refcount.get() == references && entry.readers.get() == 0
+    }
+
     /// Returns the reference count for the heap entry at the given ID.
     ///
     /// This is primarily used for testing reference counting behavior.
@@ -1854,6 +1927,11 @@ impl Drop for Heap {
 /// freeing/decref paths; the two must stay in sync.
 fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
     match data {
+        HeapData::Str(text) => {
+            if let Some(storage) = text.storage_id() {
+                on_child(storage);
+            }
+        }
         HeapData::List(list) => {
             // Skip iteration if no refs - major GC optimization for lists of primitives
             if !list.contains_refs() {

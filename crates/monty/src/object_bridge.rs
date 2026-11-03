@@ -253,7 +253,7 @@ impl GraphExporter {
         vm: &mut VM<'h>,
     ) -> MontyNode {
         match output {
-            HeapReadOutput::Str(s) => MontyNode::String(s.get(vm.heap).as_str().to_owned()),
+            HeapReadOutput::Str(s) => MontyNode::String(s.get(vm.heap).as_str(vm.heap).to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.

@@ -168,7 +168,7 @@ fn parse_json_input(value: &Value, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> 
         Value::InlineString(text) => (Cow::Borrowed(text.as_str().as_bytes()), true),
         Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
+            HeapData::Str(s) => (Cow::Owned(s.as_str(vm.heap).as_bytes().to_vec()), true),
             HeapData::Bytes(b) => (Cow::Owned(b.as_slice().to_vec()), false),
             _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
         },

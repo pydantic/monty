@@ -368,6 +368,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::OpenFile(_)
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
+        | HeapReadOutput::StringStorage(_)
         | HeapReadOutput::DataclassField(_)
         | HeapReadOutput::DataclassParams(_)
         | HeapReadOutput::DecimalSignalDict(_)

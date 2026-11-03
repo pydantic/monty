@@ -25,6 +25,16 @@ assert text_file.seekable() == True
 text_file.close()
 assert text_file.closed == True
 
+# A full read retains a heap buffer; short concatenation must still use Monty's small-string identity.
+small_read_file = open(root / 'hello.txt')
+small_read = small_read_file.read()
+small_read_file.close()
+small_read += '!'
+same_small = 'hello world\n!!'[:-1]
+assert small_read == same_small
+if is_monty:
+    assert small_read is same_small
+
 # === Binary read ===
 binary_file = open(root / 'data.bin', 'rb')
 assert str(type(binary_file)) == "<class '_io.BufferedReader'>"

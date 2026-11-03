@@ -2,9 +2,10 @@
 
 use super::VM;
 use crate::{
+    bytecode::op::Opcode,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::DropGuard,
+    heap::{DropGuard, HeapData, HeapReadOutput},
     types::PyTrait,
     value::Value,
 };
@@ -87,13 +88,17 @@ impl VM<'_> {
         self.binary_op(|lhs, rhs, vm| lhs.py_rshift(rhs, vm))
     }
 
-    /// In-place addition.
+    /// In-place addition, with buffer reuse for unobserved strings.
     ///
     /// Mutable types (a list, a `Counter`, a `deque` whose `+=` is `extend`)
     /// mutate through `py_iadd_impl` and keep their identity, so an alias sees
-    /// the update; immutable ones fall back to ordinary addition. Uses lazy type
+    /// the update; other immutable values fall back to ordinary addition. Uses lazy type
     /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
+        if self.try_string_append()? {
+            return Ok(());
+        }
+
         self.inplace_op(PyTrait::py_iadd_impl, |lhs, rhs, vm| {
             if let Some(value) = lhs.py_add_result(rhs, vm)? {
                 Ok(value)
@@ -107,6 +112,68 @@ impl VM<'_> {
                 ))
             }
         })
+    }
+
+    /// Fuses string `+=` with an infallible matching store; no checkpoint may expose a half-finished assignment.
+    fn try_string_append(&mut self) -> RunResult<bool> {
+        let len = self.stack.len();
+        let Value::Ref(id) = self.stack[len - 2] else {
+            return Ok(false);
+        };
+        let HeapData::Str(text) = self.heap.get(id) else {
+            return Ok(false);
+        };
+        if !self.heap.has_binding_and_operand_only(id)
+            || !self.stack[len - 1].is_str(self.heap)
+            || !text.can_reuse_append_buffer(self.heap)
+        {
+            return Ok(false);
+        }
+
+        let ip = self.current_frame.ip;
+        let bytes = self.current_frame.bytecode;
+        let Some(opcode) = bytes.get(ip).and_then(|byte| Opcode::from_repr(*byte)) else {
+            return Ok(false);
+        };
+        let (global, width) = match opcode {
+            Opcode::StoreLocal => (false, 2),
+            Opcode::StoreLocalW => (false, 3),
+            Opcode::StoreGlobal => (true, 3),
+            _ => return Ok(false),
+        };
+        let Some(operand) = bytes.get(ip + 1..ip + width) else {
+            return Ok(false);
+        };
+        let slot = if width == 2 {
+            usize::from(operand[0])
+        } else {
+            usize::from(u16::from_le_bytes([operand[0], operand[1]]))
+        };
+        let target = if global {
+            self.globals.get(slot)
+        } else {
+            self.stack.get(self.current_frame.stack_base() + slot)
+        };
+        if !matches!(target, Some(Value::Ref(target_id)) if *target_id == id) {
+            return Ok(false);
+        }
+
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+        let Value::Ref(id) = lhs else {
+            unreachable!("append operand was checked before popping")
+        };
+        let HeapReadOutput::Str(string) = this.heap.read(*id) else {
+            unreachable!("append operand is a string")
+        };
+        string.append_unobserved(rhs, this)?;
+
+        // The sole binding already points to the updated object. Skip the store without running Python or polling.
+        this.current_frame.ip += width;
+        Ok(true)
     }
 
     /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.
