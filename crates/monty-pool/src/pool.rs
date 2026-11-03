@@ -244,7 +244,7 @@ const SHUTDOWN_EXIT_GRACE: Duration = Duration::from_millis(500);
 
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh
-    /// remote one (with `connect_headers` on its upgrade request), waiting as
+    /// remote one (with `connect_headers` as its stream's metadata), waiting as
     /// capacity allows — and times that for `monty.pool.checkout.wait`.
     pub(crate) async fn acquire_worker(&self, connect_headers: &[(String, String)]) -> Result<Worker, PoolError> {
         #[cfg(feature = "telemetry")]

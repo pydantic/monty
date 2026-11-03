@@ -62,7 +62,8 @@ def run_monty_new_pool():
 
 def run_full_monty():
     async def run() -> Any:
-        # the checkout dials the server, which starts a worker for the session
+        # the pool's connection is dialed by its first checkout, so this one
+        # includes the dial as well as the server starting a worker for it
         async with AsyncMontyRemote(FULL_MONTY_URL) as pool:
             async with pool.checkout() as session:
                 return await session.feed_run(code)

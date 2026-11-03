@@ -542,8 +542,9 @@ class MontyDisconnectError(MontyError):
 
     The local analogue is `MontyCrashedError`. The sandbox may have died, the
     connection may have dropped, or the server may have ended the session by
-    policy — an idle, session, or turn timeout, running out of memory, or
-    being over capacity. A server that did so says which in `status_code`,
+    policy — an idle, session, or turn timeout, or being over capacity (a
+    worker out of memory is reported as `MemoryError` instead). A server that
+    did so says which in `status_code`,
     `status_message` and `cause`; otherwise this error claims no more than
     that the stream went away. The request may have run; do not replay it
     automatically.

@@ -220,6 +220,8 @@ pub enum PoolError {
     /// may have died, the connection may have dropped, or the server may have
     /// ended the session by policy — in which case `remote` carries the
     /// status it ended with and, when the server named one, the cause.
+    /// Neither says whether the request ran: a disconnect is not a verdict on
+    /// it, so it is not replayed.
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,

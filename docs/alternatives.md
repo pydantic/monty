@@ -136,8 +136,10 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
     The sandboxes scale by adding server replicas behind a load balancer, independent of the application hosts; a
     draining replica hands each session a signed dump so the client can resume on another.
     See [Full Monty](server.md).
-- **New sandbox**: a gRPC stream on the client's connection, relayed to a worker process for the session, 1.7 ms measured between
-    containers on one machine; a deployment adds its network round trip.
+- **New sandbox**: a gRPC stream on the client's connection, relayed to a worker process for the session. 1.7 ms
+    was measured between containers on one machine over the previous transport, which dialed a WebSocket per
+    session; the gRPC transport reuses the connection and has not been re-measured. A deployment adds its network
+    round trip.
 - **FOSS**: closed-source and commercial; the client, [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], ships in the MIT `pydantic-monty`
     package.
 - **Setup complexity**: run the container image with one environment variable, the dump-signing key.

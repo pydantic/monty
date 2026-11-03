@@ -413,5 +413,5 @@ assert_eq!(result, MontyObject::int(42));
 
 ## Remote disconnects
 
-`PoolError::Disconnected` retains optional `remote` details with the observed I/O stage, the gRPC status (code, message and the server's `RemoteCause`) that ended the stream, or the transport error.
+`PoolError::Disconnected` retains optional `remote` details with the observed I/O stage, the gRPC status that ended the stream (code and message, plus the server's `RemoteCause` when it sent one), or the transport error.
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
