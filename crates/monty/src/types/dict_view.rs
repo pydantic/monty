@@ -9,11 +9,11 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    py_attrs::PyAttrs,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
-        pyattrs::PyAttrs,
     },
     value::Value,
 };

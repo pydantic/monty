@@ -25,10 +25,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    types::{
-        Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, iter::collect_iterable, pyattrs::PyAttrs,
-        tuple::allocate_tuple,
-    },
+    py_attrs::PyAttrs,
+    types::{Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, iter::collect_iterable, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 

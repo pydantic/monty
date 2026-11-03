@@ -19,7 +19,6 @@ use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -28,6 +27,7 @@ use crate::{
     heap::{HEAP_ENTRY_SIZE, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
+    py_attrs::PyAttrs,
     resource_checks::check_estimated_size,
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple, re_syntax,

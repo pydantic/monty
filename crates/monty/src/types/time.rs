@@ -22,7 +22,6 @@ use chrono::{NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_macros::pyattrs;
 use monty_types::ResourceTracker;
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -31,6 +30,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         CmpOrder, LazyHeapSet, PyClass, PyTrait, TimeZone, Type,
         date::{self, StrftimeArgs},

@@ -97,8 +97,9 @@ use crate::{
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
+    py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{pyattrs::PyAttrs, str::StringRepr},
+    types::str::StringRepr,
     value::{EitherStr, Value},
     virtual_path::posix_join,
 };

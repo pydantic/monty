@@ -25,10 +25,10 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, List, PyClass, PyTrait, Type, allocate_tuple,
         dir_scan::{glob_call, walk_call},
-        pyattrs::PyAttrs,
         str::allocate_string,
     },
     value::{EitherStr, Value},

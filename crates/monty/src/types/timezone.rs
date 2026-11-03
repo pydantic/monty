@@ -13,7 +13,6 @@ use monty_macros::pyattrs;
 // here because this is where the sandbox-side constructor enforces them.
 pub(crate) use monty_types::{MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS};
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -22,6 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::Interns,
+    py_attrs::PyAttrs,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
