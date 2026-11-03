@@ -61,7 +61,7 @@ impl Remote {
         keep_alive: Option<Duration>,
     ) -> Result<Self, PoolError> {
         let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
-        let mut endpoint = Endpoint::from_shared(dial_url(url))
+        let mut endpoint = Endpoint::from_shared(dial_url(url)?)
             .map_err(|err| spawn_error(&err))?
             .user_agent(USER_AGENT_VALUE)
             .map_err(|err| spawn_error(&err))?
@@ -462,14 +462,24 @@ fn code_name(code: Code) -> &'static str {
 /// The URL to hand tonic: `ws://` and `wss://`, the schemes the WebSocket
 /// transport took, map onto `http://` and `https://` so a configured URL
 /// keeps working; anything else is passed through for tonic to judge.
-fn dial_url(url: &str) -> String {
-    if let Some(rest) = url.strip_prefix("wss://") {
-        format!("https://{rest}")
-    } else if let Some(rest) = url.strip_prefix("ws://") {
-        format!("http://{rest}")
+/// The URL tonic dials: `ws`/`wss` read as `http`/`https`, the scheme matched
+/// without regard to case, and any other scheme refused. tonic accepts any
+/// scheme and enables TLS only for `https`, so an unrecognised one would dial
+/// in plaintext, metadata and all.
+fn dial_url(url: &str) -> Result<String, PoolError> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| PoolError::Spawn(format!("{url}: invalid URI")))?;
+    let normalised = if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("ws") {
+        "http"
+    } else if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("wss") {
+        "https"
     } else {
-        url.to_owned()
-    }
+        return Err(PoolError::Spawn(format!(
+            "{url}: unsupported URL scheme {scheme:?}, expected http or https"
+        )));
+    };
+    Ok(format!("{normalised}://{rest}"))
 }
 
 /// Installs the process-level rustls `CryptoProvider` exactly once before the

@@ -472,6 +472,17 @@ async def test_checkout_rejects_unknown_limits():
     )
 
 
+async def test_an_unknown_url_scheme_is_refused():
+    """Only `http`/`https` (and `ws`/`wss` as their aliases) are dialed; anything
+    else would go out in plaintext, metadata included, so it is refused."""
+    with pytest.raises(RuntimeError) as exc_info:
+        async with AsyncMontyRemote('grpc://127.0.0.1:9'):
+            pass
+    assert str(exc_info.value) == snapshot(
+        'failed to spawn monty worker: grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https'
+    )
+
+
 async def test_unreachable_server_fails_the_checkout():
     """Nothing is dialed until a checkout, which then reports the dial failure."""
     async with AsyncMontyRemote('http://127.0.0.1:9') as pool:

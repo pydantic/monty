@@ -374,6 +374,40 @@ async fn an_unparsable_url_fails_the_pool() {
     assert_eq!(msg, "not a url: invalid URI");
 }
 
+/// Schemes are read without regard to case, `ws`/`wss` as `http`/`https`,
+/// and anything else is refused when the pool is made: tonic would dial an
+/// unknown scheme in plaintext, with the stream's metadata on it.
+#[tokio::test]
+async fn url_schemes_are_normalised_and_unknown_ones_refused() {
+    for scheme in ["HTTP://", "WS://", "ws://"] {
+        let mock = MockServer::start().await;
+        let url = mock.url().replace("http://", scheme);
+        let server = thread::spawn(move || serve_mock_child(&mock));
+        let pool = Pool::new(PoolConfig::remote(&url)).await.expect("pool");
+        let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+        let event = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
+        assert!(matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)));
+        checkout.finish().await.expect("finish");
+        join_server(server).await;
+    }
+    for url in ["grpc://127.0.0.1:9", "WSS+tls://127.0.0.1:9"] {
+        let Err(err) = Pool::new(PoolConfig::remote(url)).await else {
+            panic!("{url} must fail pool creation");
+        };
+        let PoolError::Spawn(msg) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        let scheme = url.split_once("://").unwrap().0;
+        assert_eq!(
+            msg,
+            format!("{url}: unsupported URL scheme {scheme:?}, expected http or https")
+        );
+    }
+}
+
 /// A server that refuses the stream before admitting it — at capacity, or
 /// rejecting the caller — fails the checkout with its status kept structured,
 /// so the caller acts on the code and cause rather than the message, and never
