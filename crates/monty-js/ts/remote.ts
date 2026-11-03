@@ -36,6 +36,12 @@ export interface MontyRemoteOptions {
    */
   metadata?: () => Record<string, string> | Promise<Record<string, string>>
   /**
+   * The former name of `metadata`, accepted for one release; passing both
+   * throws a `TypeError`.
+   * @deprecated Use `metadata`.
+   */
+  connectHeaders?: () => Record<string, string> | Promise<Record<string, string>>
+  /**
    * Client grace for server wall-time budgets (default 1, `null` disables).
    * CPU mode uses the server's supervisor and grace instead.
    */
@@ -90,7 +96,11 @@ export class MontyRemote {
    * the first checkout.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
-    if (options.metadata !== undefined && typeof options.metadata !== 'function') {
+    if (options.connectHeaders !== undefined && options.metadata !== undefined) {
+      throw new TypeError('pass metadata, not connectHeaders as well')
+    }
+    const metadata = options.metadata ?? options.connectHeaders
+    if (metadata !== undefined && typeof metadata !== 'function') {
       throw new TypeError('metadata must be a function returning a record of header names to values')
     }
     const requestTimeout = options.requestTimeout === undefined ? 10 : options.requestTimeout
@@ -104,7 +114,7 @@ export class MontyRemote {
       autoResume: options.autoResume ?? true,
     })
     await native.start()
-    return new MontyRemote(native, options.metadata)
+    return new MontyRemote(native, metadata)
   }
 
   /**

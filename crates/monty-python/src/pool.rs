@@ -55,7 +55,7 @@ use monty_types::{
 };
 use pyo3::{
     Borrowed,
-    exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
+    exceptions::{PyDeprecationWarning, PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
@@ -704,6 +704,7 @@ impl PyAsyncMontyRemote {
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
         max_decode_bytes = None,
+        connect_headers = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -717,7 +718,24 @@ impl PyAsyncMontyRemote {
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
         max_decode_bytes: Option<usize>,
+        connect_headers: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
+        // the keyword's former name, kept for one release
+        let metadata = match (metadata, connect_headers) {
+            (Some(_), Some(_)) => {
+                return Err(PyTypeError::new_err("pass metadata, not connect_headers as well"));
+            }
+            (None, Some(callback)) => {
+                PyErr::warn(
+                    py,
+                    &py.get_type::<PyDeprecationWarning>(),
+                    c"connect_headers is deprecated, pass metadata",
+                    1,
+                )?;
+                Some(callback)
+            }
+            (metadata, None) => metadata,
+        };
         check_callable(py, metadata.as_ref())?;
         let mut config = parse_remote_config(
             url,

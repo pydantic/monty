@@ -340,6 +340,20 @@ async def test_metadata_sent_per_checkout(relay_url_capturing_metadata: tuple[st
     assert sorted(metadata['traceparent'] for metadata in captured) == snapshot(['00-aaa-111-01', '00-bbb-222-01'])
 
 
+async def test_connect_headers_is_a_deprecated_alias(relay_url_capturing_metadata: tuple[str, list[dict[str, str]]]):
+    """The keyword's former name still delivers the metadata, with a warning; both at once is an error."""
+    url, captured = relay_url_capturing_metadata
+    with pytest.warns(DeprecationWarning, match='connect_headers is deprecated, pass metadata'):
+        pool = AsyncMontyRemote(url, request_timeout=30.0, connect_headers=lambda: {'x-token': 'legacy'})
+    async with pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run('1 + 1') == snapshot(2)
+    assert [metadata.get('x-token') for metadata in captured] == snapshot(['legacy'])
+    with pytest.raises(TypeError) as exc_info:
+        AsyncMontyRemote(url, metadata=lambda: {}, connect_headers=lambda: {})
+    assert str(exc_info.value) == snapshot('pass metadata, not connect_headers as well')
+
+
 async def test_metadata_accepts_any_mapping(relay_url_capturing_metadata: tuple[str, list[dict[str, str]]]):
     """Any `Mapping` is accepted, not just `dict`."""
     url, captured = relay_url_capturing_metadata

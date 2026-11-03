@@ -116,6 +116,28 @@ test('metadata must be a function', async () => {
   })
 })
 
+test('connectHeaders is a deprecated alias of metadata', async () => {
+  const relayServer = await server(relay)
+  await using pool = await MontyRemote.create(relayServer.url, {
+    requestTimeout: 30,
+    connectHeaders: () => ({ 'x-token': 'legacy' }),
+  })
+  await using session = await pool.checkout()
+  t.is(await session.feedRun('1 + 1'), 2)
+  t.deepEqual(
+    relayServer.headers.map((headers) => headers['x-token']),
+    ['legacy'],
+  )
+  await t.throwsAsync(
+    () =>
+      MontyRemote.create(relayServer.url, {
+        metadata: () => ({}),
+        connectHeaders: () => ({}),
+      }),
+    { instanceOf: TypeError, message: 'pass metadata, not connectHeaders as well' },
+  )
+})
+
 test('a bad metadata result rejects the checkout and leaves the pool usable', async () => {
   const relayServer = await server(relay)
   let result: unknown = 5

@@ -387,7 +387,7 @@ const SEND_BUF_CAPACITY: usize = 1024;
 
 /// Frames at or above this size decode under `block_in_place` (see
 /// [`decode_event`]); below it (< ~4ms) inline decode beats the handoff.
-const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
+pub(crate) const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
 
 /// A cancel-safe reader of length-prefixed frames from the child's stdout.
 ///

@@ -101,7 +101,12 @@ impl Pool {
         }
         // a remote pool holds one channel for all its streams; nothing dials yet
         let remote = match &config.transport {
-            MontyTransport::Remote(url) => Some(Remote::connect(url, config.connect_timeout, config.keep_alive)?),
+            MontyTransport::Remote(url) => Some(Remote::connect(
+                url,
+                config.connect_timeout,
+                config.keep_alive,
+                config.max_processes,
+            )?),
             MontyTransport::Subprocess(_) => None,
         };
         // Only the subprocess transport pre-warms workers; remote streams

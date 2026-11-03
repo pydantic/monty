@@ -1103,6 +1103,7 @@ class AsyncMontyRemote:
         turn_duration_limit_grace: float | None = 1.0,
         auto_resume: bool = True,
         max_decode_bytes: int | None = None,
+        connect_headers: Callable[[], Mapping[str, str]] | None = None,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
@@ -1133,6 +1134,9 @@ class AsyncMontyRemote:
                 keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
+            connect_headers: The former name of `metadata`, accepted for one
+                release with a `DeprecationWarning`; passing both raises
+                `TypeError`.
             metadata: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
                 request metadata for that session's stream — e.g. a token for

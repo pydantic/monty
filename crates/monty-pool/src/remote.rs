@@ -26,7 +26,10 @@ use monty_proto::{
 };
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
-    sync::mpsc::{self, WeakSender},
+    sync::{
+        Semaphore,
+        mpsc::{self, WeakSender},
+    },
     task::JoinHandle,
     time::{Instant, timeout, timeout_at},
 };
@@ -38,7 +41,10 @@ use tonic::{
     transport::{Channel, ClientTlsConfig, Endpoint},
 };
 
-use crate::{PoolError, RemoteDisconnect, worker::decode_event};
+use crate::{
+    PoolError, RemoteDisconnect,
+    worker::{DECODE_OFFLOAD_MIN, decode_event},
+};
 
 /// A pool's connection to its remote server. Cheap to keep: the channel
 /// connects on the first stream and stays up across checkouts.
@@ -49,6 +55,11 @@ pub(crate) struct Remote {
     /// Bounds opening a stream: the TCP+TLS dial on a cold channel plus the
     /// server's admission (which, for a relay, includes dialing a worker).
     connect_timeout: Duration,
+    /// Caps decodes of large frames at the pool's `max_processes`, across every
+    /// reader. A dropped checkout frees its capacity slot at once, while its
+    /// reader may be inside a decode an abort cannot interrupt, so without
+    /// this a run of drops could stack such decodes past the cap.
+    decode_permits: Arc<Semaphore>,
 }
 
 impl Remote {
@@ -59,6 +70,7 @@ impl Remote {
         url: &str,
         connect_timeout: Duration,
         keep_alive: Option<Duration>,
+        max_processes: usize,
     ) -> Result<Self, PoolError> {
         let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
         let mut endpoint = Endpoint::from_shared(dial_url(url)?)
@@ -92,6 +104,7 @@ impl Remote {
             url: url.to_owned(),
             channel: endpoint.connect_lazy(),
             connect_timeout,
+            decode_permits: Arc::new(Semaphore::new(max_processes.max(1))),
         })
     }
 
@@ -167,6 +180,7 @@ impl Remote {
             requests.downgrade(),
             Arc::clone(&disconnect),
             max_decode_bytes,
+            Arc::clone(&self.decode_permits),
         ));
         Ok(RemoteWorker {
             requests: Some(requests),
@@ -311,27 +325,38 @@ async fn read_events(
     pongs: WeakSender<Bytes>,
     disconnect: Arc<OnceLock<RemoteDisconnect>>,
     max_decode_bytes: usize,
+    decode_permits: Arc<Semaphore>,
 ) {
     // an Err from reserve means the receiver dropped: the worker is gone
     while let Ok(permit) = events.reserve().await {
         let result = loop {
             match stream.message().await {
-                Ok(Some(body)) => match decode_event(&body, max_decode_bytes) {
-                    Ok(event) if matches!(event.kind, Some(pb::child_event::Kind::Ping(_))) => {
-                        // answered here, not by the checkout: a ping can land
-                        // between turns, when nothing else polls the stream
-                        if let Some(pongs) = pongs.upgrade() {
-                            let _ = pongs.send(pong_body()).await;
+                Ok(Some(body)) => {
+                    // a large frame decodes under `block_in_place`, which an
+                    // abort cannot interrupt: hold a permit so the pool runs no
+                    // more such decodes at once than it has slots
+                    let _permit = if body.len() >= DECODE_OFFLOAD_MIN {
+                        decode_permits.acquire().await.ok()
+                    } else {
+                        None
+                    };
+                    match decode_event(&body, max_decode_bytes) {
+                        Ok(event) if matches!(event.kind, Some(pb::child_event::Kind::Ping(_))) => {
+                            // answered here, not by the checkout: a ping can land
+                            // between turns, when nothing else polls the stream
+                            if let Some(pongs) = pongs.upgrade() {
+                                let _ = pongs.send(pong_body()).await;
+                            }
                         }
+                        // a frame this build cannot decode: a protocol failure,
+                        // recorded as the disconnect's evidence
+                        Err(err) => {
+                            let _ = disconnect.set(RemoteDisconnect::failure(err.to_string()));
+                            break Err(err);
+                        }
+                        Ok(event) => break Ok((event, body.len())),
                     }
-                    // a frame this build cannot decode: a protocol failure,
-                    // recorded as the disconnect's evidence
-                    Err(err) => {
-                        let _ = disconnect.set(RemoteDisconnect::failure(err.to_string()));
-                        break Err(err);
-                    }
-                    Ok(event) => break Ok((event, body.len())),
-                },
+                }
                 // the server ended the stream with an OK status: a session
                 // it considers finished, which mid-checkout is still a loss
                 Ok(None) => {
@@ -456,9 +481,6 @@ fn code_name(code: Code) -> &'static str {
     }
 }
 
-/// The URL to hand tonic: `ws://` and `wss://`, the schemes the WebSocket
-/// transport took, map onto `http://` and `https://` so a configured URL
-/// keeps working; anything else is passed through for tonic to judge.
 /// The URL tonic dials: `ws`/`wss` read as `http`/`https`, the scheme matched
 /// without regard to case, and any other scheme refused. tonic accepts any
 /// scheme and enables TLS only for `https`, so an unrecognised one would dial

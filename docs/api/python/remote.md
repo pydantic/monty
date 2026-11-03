@@ -70,7 +70,7 @@ re-sends the request, so the caller sees the result rather than `MontyShutdown`;
 session, and the session's suspension and sleep totals carry over.
 `MontyShutdown` is still raised if the server named nothing to load, if the reload fails, if `auto_resume=False` is
 passed to [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], or if the session has no ID.
-The new stream uses the metadata `metadata` returned when the session was entered, so an expired token makes
+The new stream uses the metadata returned when the session was entered, so an expired token makes
 the resume fail.
 `MontyDisconnectError` is never resumed, because the request may have run.
 
