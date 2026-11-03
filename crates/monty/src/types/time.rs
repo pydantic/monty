@@ -710,7 +710,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     }
 
     #[pyclassmethod]
-    fn fromisoformat(_: StaticStrings, _: Type, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromisoformat(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm, args).map(CallResult::Value)
     }
 

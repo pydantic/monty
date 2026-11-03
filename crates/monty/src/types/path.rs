@@ -940,13 +940,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pyclassmethod]
-    fn cwd(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn cwd(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         class_cwd(vm, args).map(CallResult::Value)
     }

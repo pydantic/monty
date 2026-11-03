@@ -823,6 +823,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        // Forward the attribute call to the value's type, passing this view as the receiver.
         self.py_type(vm).call_attr(self, attr, args, vm)
     }
 

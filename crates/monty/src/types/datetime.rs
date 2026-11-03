@@ -1831,61 +1831,31 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pyclassmethod]
-    fn fromtimestamp(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromtimestamp(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         class_fromtimestamp(vm, args).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn now(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn now(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         class_now(vm, args)
     }
 
     #[pyclassmethod]
-    fn strptime(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn strptime(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn fromisoformat(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn fromisoformat(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn combine(
-        _name: StaticStrings,
-        _owner: Type,
-        receiver: Value,
-        args: ArgValues,
-        vm: &mut VM<'_>,
-    ) -> RunResult<CallResult> {
+    fn combine(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         receiver.drop_with(vm);
         class_combine(vm, args).map(CallResult::Value)
     }

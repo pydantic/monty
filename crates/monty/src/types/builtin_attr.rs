@@ -14,7 +14,8 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-pub(crate) type BuiltinCall = for<'h> fn(Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+/// The `Value` argument is the bound class object, including when called through an instance.
+pub(crate) type BuiltinCall = for<'h> fn(Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// Python attribute definitions and the native view passed to their methods.
@@ -304,18 +305,24 @@ mod tests {
         ] {
             assert!(
                 owner
-                    .get_attr(&EitherStr::Heap("missing_builtin_method".into()), &interns)
+                    .lookup_attr(&EitherStr::Heap("missing_builtin_method".into()), &interns)
                     .is_none()
             );
             for &(name, definition) in attrs(owner) {
                 let spelling: &str = name.into();
                 let attr = EitherStr::Heap(spelling.to_owned());
-                let found = owner.get_attr(&attr, &interns).expect("table entry has a lookup arm");
+                let found = owner
+                    .lookup_attr(&attr, &interns)
+                    .expect("table entry has a lookup arm");
                 assert_eq!(discriminant(&definition), discriminant(&found));
             }
         }
         assert!(attrs(Type::Int).is_empty());
-        assert!(Type::Int.get_attr(&EitherStr::Heap("upper".into()), &interns).is_none());
+        assert!(
+            Type::Int
+                .lookup_attr(&EitherStr::Heap("upper".into()), &interns)
+                .is_none()
+        );
         assert!(PyFloatImpl::lookup_attr(StaticStrings::Upper).is_none());
     }
 
