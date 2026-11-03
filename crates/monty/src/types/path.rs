@@ -626,83 +626,71 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     type Receiver = HeapObjectRead<'heap, Path>;
 
     #[pymethod]
-    fn glob<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn glob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         {
             let PathGlobArgs {
                 pattern,
                 case_sensitive,
                 recurse_symlinks,
             } = PathGlobArgs::from_args(args, vm)?;
-            let base = receiver.get(vm.heap).as_str().to_owned();
+            let base = this.get(vm.heap).as_str().to_owned();
             path_glob(&base, pattern, false, case_sensitive, recurse_symlinks, vm)
         }
     }
 
     #[pymethod]
-    fn rglob<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn rglob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         {
             let PathRglobArgs {
                 pattern,
                 case_sensitive,
                 recurse_symlinks,
             } = PathRglobArgs::from_args(args, vm)?;
-            let base = receiver.get(vm.heap).as_str().to_owned();
+            let base = this.get(vm.heap).as_str().to_owned();
             path_glob(&base, pattern, true, case_sensitive, recurse_symlinks, vm)
         }
     }
 
     #[pymethod]
-    fn walk<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn walk<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         {
             let PathWalkArgs {
                 top_down,
                 on_error,
                 follow_symlinks,
             } = PathWalkArgs::from_args(args, vm)?;
-            let top = receiver.get(vm.heap).as_str().to_owned();
+            let top = this.get(vm.heap).as_str().to_owned();
             walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm)
         }
     }
 
     #[pymethod]
-    fn is_absolute<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn is_absolute<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         ({
             args.check_zero_args("is_absolute", vm.heap)?;
-            Ok(Value::Bool(receiver.get(vm.heap).is_absolute()))
+            Ok(Value::Bool(this.get(vm.heap).is_absolute()))
         })
         .map(CallResult::Value)
     }
 
     #[pymethod]
-    fn joinpath<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn joinpath<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         ({
             let pos_args = args.into_pos_only("joinpath", vm.heap)?;
             defer_drop!(pos_args, vm);
-            let path = fold_joinpath(receiver.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
+            let path = fold_joinpath(this.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
             Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
         })
         .map(CallResult::Value)
     }
 
     #[pymethod]
-    fn with_name<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn with_name<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         ({
             let name_val = args.get_one_arg("with_name", vm.heap)?;
             defer_drop!(name_val, vm);
             let name = extract_path_string(name_val, vm)?.to_owned();
-            let result = receiver
+            let result = this
                 .get(vm.heap)
                 .with_name(&name)
                 .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
@@ -712,16 +700,12 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pymethod]
-    fn with_stem<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn with_stem<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         ({
             let stem_val = args.get_one_arg("with_stem", vm.heap)?;
             defer_drop!(stem_val, vm);
             let stem = extract_path_string(stem_val, vm)?.to_owned();
-            let result = receiver
+            let result = this
                 .get(vm.heap)
                 .with_stem(&stem)
                 .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
@@ -731,16 +715,12 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pymethod]
-    fn with_suffix<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn with_suffix<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         ({
             let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
             defer_drop!(suffix_val, vm);
             let suffix = extract_path_string(suffix_val, vm)?.to_owned();
-            let result = receiver
+            let result = this
                 .get(vm.heap)
                 .with_suffix(&suffix)
                 .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
@@ -750,31 +730,27 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pymethod]
-    fn as_posix<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
+    fn as_posix<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let method = StaticStrings::AsPosix;
         ({
             args.check_zero_args(method.into(), vm.heap)?;
-            Ok(allocate_string(receiver.get(vm.heap).as_posix(), vm.heap))
+            Ok(allocate_string(this.get(vm.heap).as_posix(), vm.heap))
         })
         .map(CallResult::Value)
     }
 
     #[pymethod]
-    fn fspath<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn fspath<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let method = StaticStrings::Fspath;
         ({
             args.check_zero_args(method.into(), vm.heap)?;
-            Ok(allocate_string(receiver.get(vm.heap).as_posix(), vm.heap))
+            Ok(allocate_string(this.get(vm.heap).as_posix(), vm.heap))
         })
         .map(CallResult::Value)
     }
 
     #[pymethod]
-    fn open<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+    fn open<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         {
             // `Path.open(mode='r', ...)` is `open(self, mode, ...)` with
             // `self` prepended as the implicit `file` argument. Reuses
@@ -785,158 +761,126 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
             // The `inc_ref` is required because the prepended `Value::Ref`
             // is dropped by `builtin_open` via `defer_drop!` once the path
             // string has been extracted, balancing the refcount.
-            let args = args.prepend(receiver.clone_value(vm.heap));
+            let args = args.prepend(this.clone_value(vm.heap));
             builtin_open(vm, args)
         }
     }
 
     #[pymethod]
-    fn exists<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn exists<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Exists, path, args, vm)
     }
 
     #[pymethod]
-    fn is_file<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn is_file<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::IsFile, path, args, vm)
     }
 
     #[pymethod]
-    fn is_dir<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn is_dir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::IsDir, path, args, vm)
     }
 
     #[pymethod]
-    fn is_symlink<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn is_symlink<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::IsSymlink, path, args, vm)
     }
 
     #[pymethod]
-    fn read_text<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn read_text<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::ReadText, path, args, vm)
     }
 
     #[pymethod]
-    fn read_bytes<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn read_bytes<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::ReadBytes, path, args, vm)
     }
 
     #[pymethod]
-    fn stat_method<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn stat_method<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::StatMethod, path, args, vm)
     }
 
     #[pymethod]
-    fn iterdir<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn iterdir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Iterdir, path, args, vm)
     }
 
     #[pymethod]
-    fn resolve<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn resolve<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Resolve, path, args, vm)
     }
 
     #[pymethod]
-    fn absolute<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn absolute<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Absolute, path, args, vm)
     }
 
     #[pymethod]
-    fn unlink<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn unlink<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Unlink, path, args, vm)
     }
 
     #[pymethod]
-    fn rmdir<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn rmdir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Rmdir, path, args, vm)
     }
 
     #[pymethod]
-    fn write_text<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn write_text<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::WriteText, path, args, vm)
     }
 
     #[pymethod]
-    fn append_text<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn append_text<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::AppendText, path, args, vm)
     }
 
     #[pymethod]
-    fn write_bytes<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn write_bytes<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::WriteBytes, path, args, vm)
     }
 
     #[pymethod]
     fn append_bytes<'h>(
-        receiver: &mut HeapObjectRead<'h, Path>,
+        this: &mut HeapObjectRead<'h, Path>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::AppendBytes, path, args, vm)
     }
 
     #[pymethod]
-    fn mkdir<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn mkdir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Mkdir, path, args, vm)
     }
 
     #[pymethod]
-    fn rename<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn rename<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Rename, path, args, vm)
     }
 
     #[pymethod]
-    fn replace<'h>(receiver: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let path = MontyPath::new(receiver.get(vm.heap).as_str().to_owned());
+    fn replace<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
         build_path_os_call(StaticStrings::Replace, path, args, vm)
     }
 

@@ -560,39 +560,31 @@ impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
     type Receiver = HeapObjectRead<'heap, LruCache>;
 
     #[pymethod]
-    fn cache_info<'h>(
-        receiver: &mut HeapObjectRead<'h, LruCache>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
+    fn cache_info<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok({
             args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
-            receiver.cache_info(vm)
+            this.cache_info(vm)
         })
     }
 
     #[pymethod]
-    fn cache_clear<'h>(
-        receiver: &mut HeapObjectRead<'h, LruCache>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
+    fn cache_clear<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok({
             args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
-            receiver.cache_clear(vm);
+            this.cache_clear(vm);
             Value::None
         })
     }
 
     #[pymethod]
     fn cache_parameters<'h>(
-        receiver: &mut HeapObjectRead<'h, LruCache>,
+        this: &mut HeapObjectRead<'h, LruCache>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
         Ok({
             args.check_zero_args("_lru_cache_wrapper.cache_parameters", vm.heap)?;
-            receiver.cache_parameters(vm)?
+            this.cache_parameters(vm)?
         })
     }
 }

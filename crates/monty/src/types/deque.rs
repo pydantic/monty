@@ -961,28 +961,28 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     type Receiver = HeapObjectRead<'heap, Deque>;
 
     #[pymethod]
-    fn append<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn append<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let item = args.get_one_arg("deque.append", vm.heap)?;
-            receiver.append(vm, item)?;
+            this.append(vm, item)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn appendleft<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn appendleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let item = args.get_one_arg("deque.appendleft", vm.heap)?;
-            receiver.appendleft(vm, item)?;
+            this.appendleft(vm, item)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn pop<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn pop<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.pop", vm.heap)?;
-            let this = receiver.get_mut(vm.heap);
+            let this = this.get_mut(vm.heap);
             // An empty pop raises without mutating, so it must not bump the state.
             let item = this
                 .items
@@ -994,10 +994,10 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     }
 
     #[pymethod]
-    fn popleft<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn popleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.popleft", vm.heap)?;
-            let this = receiver.get_mut(vm.heap);
+            let this = this.get_mut(vm.heap);
             let item = this
                 .items
                 .pop_front()
@@ -1008,10 +1008,10 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     }
 
     #[pymethod]
-    fn clear<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn clear<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.clear", vm.heap)?;
-            let this = receiver.get_mut(vm.heap);
+            let this = this.get_mut(vm.heap);
             // CPython returns early for an already-empty deque, leaving state alone.
             if this.items.is_empty() {
                 return Ok(Value::None);
@@ -1024,11 +1024,11 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     }
 
     #[pymethod]
-    fn copy<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn copy<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.copy", vm.heap)?;
-            let maxlen = receiver.get(vm.heap).maxlen();
-            let items = receiver.clone_all_items(vm)?;
+            let maxlen = this.get(vm.heap).maxlen();
+            let items = this.clone_all_items(vm)?;
             let (new_deque, evicted) = Deque::new(items, maxlen);
             evicted.drop_with(vm);
             let id = vm.heap.allocate(HeapData::Deque(new_deque));
@@ -1037,29 +1037,29 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     }
 
     #[pymethod]
-    fn reverse<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn reverse<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.reverse", vm.heap)?;
-            receiver.get_mut(vm.heap).items.make_contiguous().reverse();
+            this.get_mut(vm.heap).items.make_contiguous().reverse();
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn extend<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn extend<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let iterable = args.get_one_arg("deque.extend", vm.heap)?;
-            deque_extend(receiver, iterable, ExtendEnd::Right, vm)?;
+            deque_extend(this, iterable, ExtendEnd::Right, vm)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn extendleft<'h>(receiver: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn extendleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let iterable = args.get_one_arg("deque.extendleft", vm.heap)?;
             // extendleft REVERSES the input: each item is pushed to the front in turn.
-            deque_extend(receiver, iterable, ExtendEnd::Left, vm)?;
+            deque_extend(this, iterable, ExtendEnd::Left, vm)?;
             Ok(Value::None)
         }
     }

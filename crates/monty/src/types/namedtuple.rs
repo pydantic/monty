@@ -1303,69 +1303,56 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
     type Receiver = HeapObjectRead<'heap, NamedTuple>;
 
     #[pymethod]
-    fn count<'h>(receiver: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        receiver.method_count(vm, args)
+    fn count<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.method_count(vm, args)
     }
 
     #[pymethod]
-    fn index<'h>(receiver: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        receiver.method_index(vm, args)
+    fn index<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        this.method_index(vm, args)
     }
 
     #[pymethod]
     fn dunder_getnewargs<'h>(
-        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
-        receiver.method_getnewargs(vm, args, receiver.get(vm.heap).class_id().is_some())
+        this.method_getnewargs(vm, args, this.get(vm.heap).class_id().is_some())
     }
 
     #[pymethod]
     fn under_asdict<'h>(
-        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
-        if receiver.get(vm.heap).class_id().is_none() {
+        if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(
-                receiver.get(vm.heap).name(vm.interns),
-                "_asdict",
-            ));
+            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_asdict"));
         }
-        receiver.method_asdict(vm, args)
+        this.method_asdict(vm, args)
     }
 
     #[pymethod]
     fn under_replace<'h>(
-        receiver: &mut HeapObjectRead<'h, NamedTuple>,
+        this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
-        if receiver.get(vm.heap).class_id().is_none() {
+        if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(
-                receiver.get(vm.heap).name(vm.interns),
-                "_replace",
-            ));
+            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_replace"));
         }
-        receiver.method_replace(vm, args)
+        this.method_replace(vm, args)
     }
 
     #[pymethod]
-    fn under_make<'h>(
-        receiver: &mut HeapObjectRead<'h, NamedTuple>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
-        if receiver.get(vm.heap).class_id().is_none() {
+    fn under_make<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(
-                receiver.get(vm.heap).name(vm.interns),
-                "_make",
-            ));
+            return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_make"));
         }
-        receiver.method_make(vm, args)
+        this.method_make(vm, args)
     }
 }

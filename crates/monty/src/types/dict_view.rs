@@ -874,16 +874,14 @@ impl<'heap> PyAttrs<'heap> for PyDictItemsViewImpl {
 
     #[pymethod]
     fn isdisjoint<'h>(
-        receiver: &mut HeapObjectRead<'h, DictItemsView>,
+        this: &mut HeapObjectRead<'h, DictItemsView>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         {
             let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(CallResult::Value(Value::Bool(
-                receiver.isdisjoint_from_value(other, vm)?,
-            )))
+            Ok(CallResult::Value(Value::Bool(this.isdisjoint_from_value(other, vm)?)))
         }
     }
 }
@@ -896,16 +894,14 @@ impl<'heap> PyAttrs<'heap> for PyDictKeysViewImpl {
 
     #[pymethod]
     fn isdisjoint<'h>(
-        receiver: &mut HeapObjectRead<'h, DictKeysView>,
+        this: &mut HeapObjectRead<'h, DictKeysView>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         {
             let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(CallResult::Value(Value::Bool(
-                receiver.isdisjoint_from_value(other, vm)?,
-            )))
+            Ok(CallResult::Value(Value::Bool(this.isdisjoint_from_value(other, vm)?)))
         }
     }
 }

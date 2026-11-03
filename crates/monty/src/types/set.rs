@@ -1836,103 +1836,79 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
     type Receiver = HeapObjectRead<'heap, FrozenSet>;
 
     #[pymethod]
-    fn copy<'h>(receiver: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn copy<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("frozenset.copy", vm.heap)?;
-            let cloned = receiver.get(vm.heap).storage.clone_with_heap(vm.heap);
+            let cloned = this.get(vm.heap).storage.clone_with_heap(vm.heap);
             let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
             Ok(Value::Ref(heap_id))
         }
     }
 
     #[pymethod]
-    fn union<'h>(receiver: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn union<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.union", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::Union, vm)
+            this.set_algebra(other, SetAlgebra::Union, vm)
         }
     }
 
     #[pymethod]
     fn intersection<'h>(
-        receiver: &mut HeapObjectRead<'h, FrozenSet>,
+        this: &mut HeapObjectRead<'h, FrozenSet>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::Intersection, vm)
+            this.set_algebra(other, SetAlgebra::Intersection, vm)
         }
     }
 
     #[pymethod]
-    fn difference<'h>(
-        receiver: &mut HeapObjectRead<'h, FrozenSet>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
+    fn difference<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.difference", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::Difference, vm)
+            this.set_algebra(other, SetAlgebra::Difference, vm)
         }
     }
 
     #[pymethod]
     fn symmetric_difference<'h>(
-        receiver: &mut HeapObjectRead<'h, FrozenSet>,
+        this: &mut HeapObjectRead<'h, FrozenSet>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            this.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
         }
     }
 
     #[pymethod]
-    fn issubset<'h>(
-        receiver: &mut HeapObjectRead<'h, FrozenSet>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
+    fn issubset<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(receiver.comparison_op(other, SetComparison::Subset, vm)?))
+            Ok(Value::Bool(this.comparison_op(other, SetComparison::Subset, vm)?))
         }
     }
 
     #[pymethod]
-    fn issuperset<'h>(
-        receiver: &mut HeapObjectRead<'h, FrozenSet>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
+    fn issuperset<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(receiver.comparison_op(
-                other,
-                SetComparison::Superset,
-                vm,
-            )?))
+            Ok(Value::Bool(this.comparison_op(other, SetComparison::Superset, vm)?))
         }
     }
 
     #[pymethod]
-    fn isdisjoint<'h>(
-        receiver: &mut HeapObjectRead<'h, FrozenSet>,
-        args: ArgValues,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Value> {
+    fn isdisjoint<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(receiver.comparison_op(
-                other,
-                SetComparison::Disjoint,
-                vm,
-            )?))
+            Ok(Value::Bool(this.comparison_op(other, SetComparison::Disjoint, vm)?))
         }
     }
 }
@@ -1944,138 +1920,130 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
     type Receiver = HeapObjectRead<'heap, Set>;
 
     #[pymethod]
-    fn add<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn add<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let value = args.get_one_arg("set.add", vm.heap)?;
-            receiver.add(value, vm)?;
+            this.add(value, vm)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn remove<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn remove<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let value = args.get_one_arg("set.remove", vm.heap)?;
             defer_drop!(value, vm);
-            receiver.remove(value, vm)?;
+            this.remove(value, vm)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn discard<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn discard<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let value = args.get_one_arg("set.discard", vm.heap)?;
             defer_drop!(value, vm);
-            receiver.discard(value, vm)?;
+            this.discard(value, vm)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn pop<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn pop<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.pop", vm.heap)?;
-            receiver.pop(vm)
+            this.pop(vm)
         }
     }
 
     #[pymethod]
-    fn clear<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn clear<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.clear", vm.heap)?;
-            receiver.clear(vm);
+            this.clear(vm);
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn copy<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn copy<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.copy", vm.heap)?;
-            let copy = receiver.copy(vm);
+            let copy = this.copy(vm);
             let heap_id = vm.heap.allocate(HeapData::Set(copy));
             Ok(Value::Ref(heap_id))
         }
     }
 
     #[pymethod]
-    fn update<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn update<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.update", vm.heap)?;
-            receiver.hr_update(other, vm)?;
+            this.hr_update(other, vm)?;
             Ok(Value::None)
         }
     }
 
     #[pymethod]
-    fn union<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn union<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.union", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::Union, vm)
+            this.set_algebra(other, SetAlgebra::Union, vm)
         }
     }
 
     #[pymethod]
-    fn intersection<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn intersection<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.intersection", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::Intersection, vm)
+            this.set_algebra(other, SetAlgebra::Intersection, vm)
         }
     }
 
     #[pymethod]
-    fn difference<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn difference<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.difference", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::Difference, vm)
+            this.set_algebra(other, SetAlgebra::Difference, vm)
         }
     }
 
     #[pymethod]
     fn symmetric_difference<'h>(
-        receiver: &mut HeapObjectRead<'h, Set>,
+        this: &mut HeapObjectRead<'h, Set>,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.symmetric_difference", vm.heap)?;
-            receiver.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
+            this.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
         }
     }
 
     #[pymethod]
-    fn issubset<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn issubset<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.issubset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(receiver.comparison_op(other, SetComparison::Subset, vm)?))
+            Ok(Value::Bool(this.comparison_op(other, SetComparison::Subset, vm)?))
         }
     }
 
     #[pymethod]
-    fn issuperset<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn issuperset<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.issuperset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(receiver.comparison_op(
-                other,
-                SetComparison::Superset,
-                vm,
-            )?))
+            Ok(Value::Bool(this.comparison_op(other, SetComparison::Superset, vm)?))
         }
     }
 
     #[pymethod]
-    fn isdisjoint<'h>(receiver: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    fn isdisjoint<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(receiver.comparison_op(
-                other,
-                SetComparison::Disjoint,
-                vm,
-            )?))
+            Ok(Value::Bool(this.comparison_op(other, SetComparison::Disjoint, vm)?))
         }
     }
 }
