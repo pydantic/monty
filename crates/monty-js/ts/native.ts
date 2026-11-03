@@ -138,8 +138,8 @@ export interface ProtocolTurn {
 }
 
 /** A remote worker's stream ended mid-session; the session is lost. The
- *  details are the status or transport failure that ended it, when known.
- *  Remote pools only. */
+ *  details are the status or transport failure that ended it, when known;
+ *  none of them says whether the in-flight request ran. Remote pools only. */
 export interface DisconnectedTurn {
   kind: 'disconnected'
   message: string

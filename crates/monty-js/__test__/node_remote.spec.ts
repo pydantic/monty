@@ -288,6 +288,7 @@ test('a status ending the stream is reported with its code, message and cause', 
   await using session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
   t.is(error.message, 'RuntimeError: monty worker connection closed while waiting for a reply')
+  t.is(error.stage, 'receive')
   t.is(error.statusCode, 'DEADLINE_EXCEEDED')
   t.is(error.statusMessage, 'idle timeout')
   t.is(error.cause, 'idle_timeout')
