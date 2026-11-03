@@ -10,7 +10,13 @@ mod grpc_mock;
 
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;
-use std::{fs, future::ready, sync::mpsc, thread, time::Duration};
+use std::{
+    fs,
+    future::ready,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use grpc_mock::{MockServer, MockStream};
 #[cfg(feature = "telemetry")]
@@ -3051,23 +3057,48 @@ async fn a_timed_out_turn_sends_a_close_frame() {
     join_server(server).await;
 }
 
-/// Cancelling `finish()` mid-goodbye must not leak the worker's capacity slot.
+/// `finish()` never waits on the server: the half-close is queued and the
+/// checkout returns, so a server that takes its time ending the stream (a relay
+/// parks the session first) adds nothing to the host's teardown.
+#[tokio::test]
+async fn finishing_a_checkout_does_not_wait_for_the_server_to_end_the_stream() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_end(&mut socket);
+        // the half-close has landed; take a while to end the stream in turn
+        thread::sleep(Duration::from_millis(500));
+        drop(socket);
+    });
+
+    let (_pool, checkout) = remote_checkout(&url).await;
+    let start = Instant::now();
+    checkout.finish().await.expect("finish");
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "finish waited {:?} for the server",
+        start.elapsed()
+    );
+    join_server(server).await;
+}
+
+/// `finish()` against a peer that stopped reading must neither block nor leak
+/// the worker's capacity slot.
 ///
-/// The goodbye only *pends* against a peer that stopped reading, so the socket
-/// is wedged first: one oversized feed the mock server never drains fills the
-/// buffers, and every later write queues behind it. The worker is already out
-/// of the `Checkout` by then, so without a `CapacityGuard` across the await
-/// nothing releases its slot and the pool shrinks by one for good.
+/// The socket is wedged first: one oversized feed the mock server never drains
+/// fills the buffers, and every later write queues behind it. The goodbye
+/// queues too, in the detached reader, while the slot comes back at once.
 ///
 /// Not run on Windows: dynamic send buffering grows the loopback socket's
-/// kernel buffer past the wedge, the goodbye never pends, and the cancel
-/// window this test needs cannot be forced open (the client socket is dialled
-/// inside `connect_async`, so its `SO_SNDBUF` — the only way to disable the
-/// growth — is out of reach). The guarded logic is platform-independent; do
-/// not "fix" this by enlarging the wedge, which only moves the flake.
+/// kernel buffer past the wedge, so the feed never blocks (the client socket
+/// is dialled inside `connect_async`, so its `SO_SNDBUF` — the only way to
+/// disable the growth — is out of reach). Do not "fix" this by enlarging the
+/// wedge, which only moves the flake.
 #[cfg(not(windows))]
 #[tokio::test]
-async fn cancelling_finish_does_not_leak_capacity() {
+async fn finishing_against_a_wedged_socket_does_not_leak_capacity() {
     let mock = MockServer::start().await;
     let url = mock.url();
     let (release, wait_for_release) = mpsc::channel::<()>();
@@ -3091,10 +3122,10 @@ async fn cancelling_finish_does_not_leak_capacity() {
         timeout(Duration::from_secs(1), feed).await.is_err(),
         "the unread feed must block, wedging the socket"
     );
-    assert!(
-        timeout(Duration::from_millis(200), checkout.finish()).await.is_err(),
-        "the goodbye must block behind the wedged socket, cancelling inside the window"
-    );
+    timeout(Duration::from_millis(200), checkout.finish())
+        .await
+        .expect("the goodbye must not block behind the wedged socket")
+        .expect("finish");
 
     release.send(()).expect("release the server");
     join_server(server).await;

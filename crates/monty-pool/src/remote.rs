@@ -26,6 +26,7 @@ use monty_proto::{
 };
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
+    runtime::Handle,
     sync::{
         Semaphore,
         mpsc::{self, WeakSender},
@@ -186,7 +187,7 @@ impl Remote {
             requests: Some(requests),
             events,
             disconnect,
-            reader,
+            reader: Some(reader),
         })
     }
 }
@@ -195,8 +196,8 @@ impl Remote {
 /// connection that was closing, once on the one the channel dials to replace it.
 const OPEN_RETRIES: u32 = 2;
 
-/// One session stream. See the module docs for the two halves; teardown must
-/// release both — see [`RemoteWorker::close`].
+/// One session stream. See the module docs for the two halves; teardown
+/// releases both — see [`RemoteWorker::close`].
 pub(crate) struct RemoteWorker {
     /// `send` writes here; `None` after teardown (the closed-stream sentinel).
     /// Dropping the last sender half-closes the stream, the "host is done"
@@ -206,8 +207,8 @@ pub(crate) struct RemoteWorker {
     events: mpsc::Receiver<Result<(pb::ChildEvent, usize), FrameError>>,
     /// The first failure, retained independently of queued protocol events.
     disconnect: Arc<OnceLock<RemoteDisconnect>>,
-    /// The task owning the response stream; aborted on teardown/drop.
-    reader: JoinHandle<()>,
+    /// The task owning the response stream; `None` once `close` detached it.
+    reader: Option<JoinHandle<()>>,
 }
 
 impl RemoteWorker {
@@ -250,32 +251,39 @@ impl RemoteWorker {
         self.disconnect.get().cloned().map(Box::new)
     }
 
-    /// Ends the stream: half-close the request side, give the server
-    /// [`CLOSE_GRACE`] to end its side in turn, then drop the response stream.
+    /// Ends the stream: half-close the request side and leave the detached
+    /// reader holding the response stream open until the server ends its side
+    /// (bounded by [`CLOSE_GRACE`]). Returns at once: what the server does
+    /// before ending — a relay parks the session — is not the host's wait, and
+    /// a goodbye that never lands is the server's idle timeout to clean up.
     ///
     /// The half-close is what a *proxied* server sees: a bare stream reset may
     /// stop at a load balancer, leaving the session (and its capacity slot)
-    /// alive until the far side's own idle timeout. Bounded so a server that
-    /// never answers cannot hang teardown.
-    pub(crate) async fn close(&mut self) {
+    /// alive until the far side's own idle timeout. Without a runtime to carry
+    /// the reader the stream is reset instead.
+    pub(crate) fn close(&mut self) {
         self.requests = None;
-        // a finished handle must not be polled again: a close after one
-        // that already saw the reader out would panic
-        if !self.reader.is_finished() {
-            let _ = timeout(CLOSE_GRACE, &mut self.reader).await;
+        if let Some(reader) = self.reader.take() {
+            let abort = reader.abort_handle();
+            match Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        if timeout(CLOSE_GRACE, reader).await.is_err() {
+                            abort.abort();
+                        }
+                    });
+                }
+                Err(_) => abort.abort(),
+            }
         }
-        self.reader.abort();
     }
 }
 
-/// Backstop for the synchronous teardown paths — an abandoned
-/// [`crate::Checkout`], a discarded worker — where `close` cannot be awaited.
-/// Dropping the request sender half-closes the stream and aborting the reader
-/// drops the response stream, which resets it; a server on the same hop sees
-/// both at once.
+/// Backstop for the teardown paths that never call `close` — an abandoned
+/// [`crate::Checkout`], a discarded worker: the same goodbye.
 impl Drop for RemoteWorker {
     fn drop(&mut self) {
-        self.reader.abort();
+        self.close();
     }
 }
 
@@ -295,9 +303,9 @@ const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 const STREAM_WINDOW_BYTES: u32 = 2 * 1024 * 1024;
 const CONNECTION_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
 
-/// How long `close` waits for the server to end its side after the half-close.
-/// Not a latency budget (no acknowledgement is awaited beyond stream end) — it
-/// only rides out a peer that stopped reading.
+/// How long a closed stream's reader stays up for the server to end its side
+/// after the half-close. Nothing waits on it; it bounds what a peer that
+/// stopped reading can hold open.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Depth of the request channel. The protocol sends one request per turn (plus
@@ -381,6 +389,9 @@ async fn read_events(
             return;
         }
     }
+    // the worker is gone, so this is a closed stream: hold it open until the
+    // server ends its side, so the half-close is read ahead of any reset
+    while let Ok(Some(_)) = stream.message().await {}
 }
 
 /// The encoded `Pong` request, built once per answer (it is two bytes).

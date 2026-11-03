@@ -1317,13 +1317,7 @@ impl Checkout {
         // next checkout.
         if self.pool.config.transport.is_remote() {
             if let Some(mut worker) = self.worker.take() {
-                // guard, not a trailing release: the worker is already out of
-                // `self`, so a caller dropping this future mid-goodbye would
-                // leave `Checkout::drop` with nothing to release. Disarmed
-                // before `release_worker`, which releases the slot itself.
-                let capacity = CapacityGuard::new(&self.pool);
-                worker.close_transport().await;
-                capacity.disarm();
+                worker.close_transport();
                 self.pool.release_worker(worker);
             }
             return Ok(());

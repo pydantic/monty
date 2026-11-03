@@ -355,7 +355,7 @@ impl Worker {
                 w.child.wait().await.ok()
             }
             WorkerKind::Remote(w) => {
-                w.close().await;
+                w.close();
                 None
             }
         }
@@ -364,9 +364,9 @@ impl Worker {
     /// Ends the stream behind a worker the caller is *not* discarding as
     /// dead — a cleanly finished checkout's single-use remote worker. A
     /// no-op for subprocess workers, which the pool reuses or kills instead.
-    pub(crate) async fn close_transport(&mut self) {
+    pub(crate) fn close_transport(&mut self) {
         if let WorkerKind::Remote(w) = &mut self.kind {
-            w.close().await;
+            w.close();
         }
     }
 }

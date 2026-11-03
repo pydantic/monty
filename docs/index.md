@@ -34,7 +34,7 @@ It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you i
 | Sandbox            | New sandbox¹ | Agent run² | Combined³ | Execution env⁴ |
 | ------------------ | ------------ | ---------- | --------- | -------------- |
 | OSS Monty          | 0.80 ms      | 0.40 ms    | 1.20 ms   | local          |
-| Full Monty⁵        | 1.70 ms      | 5.30 ms    | 7.00 ms   | remote         |
+| Full Monty         | 1.70 ms      | 4.90 ms    | 6.60 ms   | remote         |
 | WASI / wasmtime    | 16 ms        | 180 ms     | 200 ms    | local          |
 | local Docker       | 195 ms       | 700 ms     | 900 ms    | local          |
 | Sandboxing service | 1500 ms      | 400 ms     | 1900 ms   | remote         |
@@ -52,8 +52,6 @@ It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you i
     calling them.
     Full Monty and sandboxing services run it remotely, which reduces the blast radius of an escape and lets the
     sandboxes scale independently of the hosts calling them.
-1. Measured on Full Monty's previous transport, a WebSocket per session; the gRPC transport reuses one connection and
-    has not been re-measured.
 
 Learn more in the [comparison to alternatives](alternatives.md).
 
