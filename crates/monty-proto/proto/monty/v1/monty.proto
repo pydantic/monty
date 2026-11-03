@@ -632,7 +632,7 @@ message Configure {
   // Version of the wire schema the parent speaks. The child rejects the
   // session with a `FatalError` naming its own supported range when this
   // falls outside it, so a parent deployed separately from its worker (over
-  // a websocket, say) learns what to downgrade to without a handshake.
+  // a gRPC stream, say) learns what to downgrade to without a handshake.
   //
   // 0 means the parent declared nothing — either it predates this field or it
   // is not a monty parent — and is always rejected. The protocol has no
@@ -657,7 +657,7 @@ message Configure {
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
   // Local VM and supervisor clock; absent defaults to wall time in the child.
-  // WebSocket clients leave this absent. The server selects the worker's clock.
+  // Remote clients leave this absent. The server selects the worker's clock.
   optional ExecutionClock execution_clock = 14;
 }
 

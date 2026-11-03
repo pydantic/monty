@@ -843,7 +843,7 @@ pub struct PyAsyncMontySession {
     /// `external_modules=`: the modules every feed of the session may import.
     modules: Option<HostModules>,
     checkout: SharedCheckout,
-    /// A WebSocket pool's `connect_headers` callback, called by `__aenter__`;
+    /// A remote pool's `connect_headers` callback, called by `__aenter__`;
     /// `None` for subprocess pools, which make no request.
     connect_headers: Option<Py<PyAny>>,
     /// Set once the session has been fed or restored; `load_session` /

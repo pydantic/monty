@@ -27,7 +27,7 @@ state cannot be trusted back into the pool.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
-A WebSocket worker or an unconfirmed subprocess exit returns `None`.
+A remote worker or an unconfirmed subprocess exit returns `None`.
 Dropping a checkout or cancelling `terminate` does not confirm physical termination.
 
 The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are

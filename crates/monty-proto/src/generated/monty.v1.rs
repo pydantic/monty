@@ -823,7 +823,7 @@ pub struct Configure {
     /// Version of the wire schema the parent speaks. The child rejects the
     /// session with a `FatalError` naming its own supported range when this
     /// falls outside it, so a parent deployed separately from its worker (over
-    /// a websocket, say) learns what to downgrade to without a handshake.
+    /// a gRPC stream, say) learns what to downgrade to without a handshake.
     ///
     /// 0 means the parent declared nothing — either it predates this field or it
     /// is not a monty parent — and is always rejected. The protocol has no
@@ -853,7 +853,7 @@ pub struct Configure {
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
     /// Local VM and supervisor clock; absent defaults to wall time in the child.
-    /// WebSocket clients leave this absent. The server selects the worker's clock.
+    /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
 }

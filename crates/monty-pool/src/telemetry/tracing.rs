@@ -44,7 +44,7 @@ fn start_span(span: Span) -> Span {
 /// close by being dropped, so a worker that dies mid-turn still closes its own.
 pub(crate) struct Recorder {
     /// OS pid of the worker, recorded on its session spans (`None` for a
-    /// remote WebSocket worker).
+    /// remote worker).
     worker_pid: Option<u32>,
     /// The span of a housekeeping turn (`Load`, `Dump`, ...), closed by the
     /// turn-ending event. Innermost: a `Dump` can run mid-suspension.
@@ -419,7 +419,7 @@ impl Recorder {
                 }
                 self.turn = None;
             }
-            // only a serving relay sends this (a WebSocket worker's server is
+            // only a serving relay sends this (a remote worker's server is
             // shutting down); its final state dump is absent when there was no
             // session or the dump failed. The worker is discarded right after,
             // closing its spans.
