@@ -4,7 +4,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::{self, ManuallyDrop},
+    mem,
 };
 
 use monty_macros::pyattrs;
@@ -41,7 +41,7 @@ use crate::{
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
@@ -474,11 +474,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.py_mul_impl(other, vm)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Tuple.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

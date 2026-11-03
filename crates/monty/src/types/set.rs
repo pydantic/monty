@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Write, mem, mem::ManuallyDrop};
+use std::{cell::Cell, fmt::Write, mem};
 
 use monty_macros::pyattrs;
 use monty_types::{ResourceError, ResourceTracker};
@@ -24,7 +24,7 @@ use crate::{
         hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         list::repr_items_fmt,
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -1275,11 +1275,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Set.call_attr(&receiver, attr, args, vm)
-    }
 }
 
 /// Helper methods for set operations with arbitrary iterables.
@@ -1539,11 +1534,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         self.storage().repr_fmt(f, vm, heap_ids, "frozenset")
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::FrozenSet.call_attr(&receiver, attr, args, vm)
     }
 }
 

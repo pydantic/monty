@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::c_int, fmt::Write, mem::ManuallyDrop, ops, str};
+use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
@@ -378,14 +378,6 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
         let template = copy_bytes_template(self.as_slice(vm), &vm.heap.tracker)?;
         percent_format_bytes(&template, other, vm).map(Some)
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(match self {
-            Self::Interned(id) => Value::InternBytes(*id),
-            Self::Heap(value) => Value::Ref(value.id()),
-        });
-        Type::Bytes.call_attr(&receiver, attr, args, vm)
-    }
 }
 
 impl From<Vec<u8>> for Bytes {
@@ -479,11 +471,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
         percent_format_bytes(&template, other, vm).map(Some)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Bytes.call_attr(&receiver, attr, args, vm)
     }
 }
 

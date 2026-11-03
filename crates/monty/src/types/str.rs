@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt::Write, mem::ManuallyDrop, ops, str};
+use std::{cell::Cell, fmt::Write, ops, str};
 
 use monty_macros::pyattrs;
 use monty_types::{ResourceError, ResourceTracker};
@@ -286,15 +286,6 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         let template = copy_format_template(self.as_str(vm), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(match self {
-            Self::Interned(id) => Value::InternString(*id),
-            Self::Inline(text) => Value::InlineString(*text),
-            Self::Heap(value) => Value::Ref(value.id()),
-        });
-        Type::Str.call_attr(&receiver, attr, args, vm)
-    }
 }
 
 /// Argument shape for `str(object='', encoding='utf-8', errors='strict')`.
@@ -520,11 +511,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Str.call_attr(&receiver, attr, args, vm)
     }
 }
 

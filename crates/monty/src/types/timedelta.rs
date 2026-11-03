@@ -9,7 +9,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
@@ -537,11 +536,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
         let quotient = int_from_microseconds(quotient, vm.heap);
         let remainder = allocate_micros(remainder, vm.heap);
         Ok(Some(allocate_tuple(smallvec![quotient, remainder], vm.heap)))
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::TimeDelta.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

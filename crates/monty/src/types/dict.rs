@@ -2,8 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::{self, ManuallyDrop},
-    vec,
+    mem, vec,
 };
 
 use monty_macros::pyattrs;
@@ -255,10 +254,8 @@ impl Dict {
     /// Clones this dict's kind for a derived dict, taking a counted reference to
     /// a `defaultdict` factory.
     ///
-    /// Exhaustive over [`DictKind`] on purpose: every operation that builds a
-    /// *new* dict from an existing one (`copy`, and any future `|` / slice-like
-    /// derivation) must carry the tag across, and a hand-written `if
-    /// is_defaultdict()` chain silently degrades a `Counter` to a plain dict.
+    /// Subtype-preserving operations must handle every kind; a hand-written
+    /// `is_defaultdict()` check would silently degrade a `Counter` to a plain dict.
     #[must_use]
     pub fn cloned_kind(&self, heap: &impl ContainsHeap) -> DictKind {
         match self.kind.0.as_deref() {
@@ -1471,12 +1468,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         }
         Ok(())
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let owner = self.py_type(vm);
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        owner.call_attr(&receiver, attr, args, vm)
-    }
 }
 
 impl<'h> HeapObjectRead<'h, Dict> {
@@ -1591,10 +1582,8 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
-/// Implements Python's `dict.copy()` method.
-///
-/// Returns a shallow copy of the dict.
-fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
+/// Copies entries into the requested kind; callers choose whether to preserve the subtype.
+fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, kind: DictKind, vm: &mut VM<'h>) -> RunResult<Value> {
     // Copy all key-value pairs (incrementing refcounts)
     let pairs: Vec<(Value, Value)> = dict
         .get(vm.heap)
@@ -1602,12 +1591,7 @@ fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value>
         .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
         .collect();
 
-    // `copy()` preserves the subclass: a defaultdict keeps its factory, a
-    // Counter stays a Counter. `cloned_kind` clones that factory reference, so
-    // guard it — a `from_pairs` failure (e.g. a key `__eq__` raising) would
-    // otherwise drop `kind` via Rust's `Drop`, leaking the factory refcount.
-    // (`from_pairs` cleans up `pairs` on its own error paths.)
-    let kind = dict.get(vm.heap).cloned_kind(vm.heap);
+    // A defaultdict kind owns its factory reference; release it if rebuilding entries fails.
     let mut kind_guard = DropGuard::new(kind, vm);
     let mut new_dict = Dict::from_pairs(pairs, kind_guard.ctx())?;
     new_dict.set_kind(kind_guard.into_inner());
@@ -2225,7 +2209,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     fn copy<'h>(receiver: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.copy", vm.heap)?;
-            dict_copy(receiver, vm)
+            dict_copy(receiver, DictKind::plain(), vm)
         }
     }
 
@@ -2298,7 +2282,9 @@ impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
 
     #[pymethod]
     fn copy<'h>(receiver: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        PyDictImpl::copy(receiver, args, vm)
+        args.check_zero_args("dict.copy", vm.heap)?;
+        let kind = receiver.get(vm.heap).cloned_kind(vm.heap);
+        dict_copy(receiver, kind, vm)
     }
 
     #[pymethod]
@@ -2380,7 +2366,9 @@ impl<'heap> PyAttrs<'heap> for PyCounterImpl {
 
     #[pymethod]
     fn copy<'h>(receiver: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        PyDictImpl::copy(receiver, args, vm)
+        args.check_zero_args("dict.copy", vm.heap)?;
+        let kind = receiver.get(vm.heap).cloned_kind(vm.heap);
+        dict_copy(receiver, kind, vm)
     }
 
     #[pymethod]

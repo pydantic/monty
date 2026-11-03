@@ -1,8 +1,4 @@
-use std::{
-    cmp::Ordering,
-    fmt::Write,
-    mem::{self, ManuallyDrop},
-};
+use std::{cmp::Ordering, fmt::Write, mem};
 
 use monty_types::ResourceError;
 use monty_macros::pyattrs;
@@ -31,7 +27,7 @@ use crate::{
         LazyHeapSet, Type,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value},
 };
 
 /// Python list type, wrapping a Vec of Values.
@@ -783,12 +779,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             vm.heap.tracker.check_time_every(index)?;
         }
         Ok(true)
-    }
-
-    /// Delegates methods to `call_list_method`.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::List.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {

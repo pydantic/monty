@@ -116,8 +116,11 @@ values = set()
 set.add(values, 1)
 assert set.union(values, [2]) == {1, 2}
 assert frozenset.union(frozenset([1]), [2]) == frozenset([1, 2])
-assert type(mapping.keys()).isdisjoint(mapping.keys(), [1])
-assert type(mapping.items()).isdisjoint(mapping.items(), [(1, 2)])
+mapping['a'] = 1
+assert type(mapping.keys()).isdisjoint(mapping.keys(), ['a']) is False
+assert type(mapping.items()).isdisjoint(mapping.items(), [('a', 1)]) is False
+assert type(mapping.keys()).isdisjoint(mapping.keys(), ['b']) is True
+assert type(mapping.items()).isdisjoint(mapping.items(), [('a', 2)]) is True
 queue = deque([1, 2])
 deque.appendleft(queue, 0)
 assert deque.pop(queue) == 2
@@ -147,5 +150,40 @@ def cached(x):
 assert cached(1) == 2
 assert type(cached).cache_info(cached).currsize == 1
 assert cached.__wrapped__(1) == 2
+
+
+shared = []
+
+
+def make_factory(value):
+    def factory():
+        return value
+
+    return factory
+
+
+factory = make_factory(shared)
+for source in [Counter(a=shared), defaultdict(factory, a=shared)]:
+    plain = dict.copy(source)
+    specialized = source.copy()
+    assert type(plain) is dict
+    assert type(specialized) is type(source)
+    assert plain == source
+    assert specialized == source
+    assert plain['a'] is shared
+    assert specialized['a'] is shared
+    if type(source) is defaultdict:
+        assert specialized.default_factory is factory
+        assert source.default_factory is factory
+assert list.__class_getitem__(int) == list[int]
+
+for zone in [None, timezone(timedelta(hours=2), 'X')]:
+    dt = datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=zone)
+    assert dt.time() == time(3, 4, 5, 123456)
+    assert dt.time().tzinfo is None
+    assert dt.timetz() == time(3, 4, 5, 123456, tzinfo=zone)
+    assert dt.timetz().tzinfo is zone
+    assert datetime.time(dt) == dt.time()
+    assert datetime.timetz(dt) == dt.timetz()
 
 True

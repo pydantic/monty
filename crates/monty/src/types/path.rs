@@ -9,7 +9,6 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem::ManuallyDrop,
 };
 
 use monty_macros::pyattrs;
@@ -584,18 +583,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         // Format like: PosixPath('/usr/bin')
         Ok(write!(f, "PosixPath('{}')", self.get(vm.heap).path)?)
-    }
-
-    /// Handles attribute calls on Path objects, including both pure methods (no I/O)
-    /// and OS methods that require host system access.
-    ///
-    /// OS methods yield calls to the host; `iterdir` retains the receiver's spelling
-    /// so the resume path can restore it on each returned entry.
-    /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let owner = Type::Path;
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        owner.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

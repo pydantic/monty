@@ -677,13 +677,13 @@ impl Type {
         }
     }
 
-    /// Calls a registered method with a borrowed receiver, binding class methods to their owner.
-    pub(crate) fn call_attr(
+    /// Calls registered methods on existing native views, binding class methods to their owner.
+    pub(crate) fn call_attr<'h>(
         self,
-        receiver: &Value,
+        receiver: &mut PyValue<'h>,
         attr: &EitherStr,
         args: ArgValues,
-        vm: &mut VM<'_>,
+        vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         match self.get_attr(attr, vm.interns) {
             Some(AttrDef::Method(call)) => call(receiver, args, vm),
@@ -695,12 +695,7 @@ impl Type {
                 args,
                 vm,
             ),
-            _ => Err(ExcType::attribute_error_method(
-                receiver.py_type_name(vm),
-                attr,
-                args,
-                vm,
-            )),
+            _ => receiver.call_dynamic_attr(vm, attr, args),
         }
     }
 

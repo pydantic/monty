@@ -8,7 +8,7 @@
 //! are session state ([`SessionDecimal`]), carried across REPL feeds and dumps like
 //! `random`'s generator; each `import decimal` sees the same template objects.
 
-use std::{fmt::Write, iter, mem::ManuallyDrop};
+use std::{fmt::Write, iter};
 
 use monty_macros::pyattrs;
 use smallvec::smallvec;
@@ -562,11 +562,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
         *self.get_mut(vm.heap) = settings;
         Ok(())
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::DecimalContext.call_attr(&receiver, attr, args, vm)
-    }
 }
 
 /// A context's `flags` or `traps`, a live mutable mapping from signal classes to bools.
@@ -770,11 +765,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
         let keys = self.listing(SignalDictPart::Keys, vm);
         defer_drop!(keys, vm);
         keys.py_iter(vm)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::DecimalSignalDict.call_attr(&receiver, attr, args, vm)
     }
 }
 

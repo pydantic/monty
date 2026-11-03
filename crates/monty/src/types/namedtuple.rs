@@ -6,7 +6,7 @@ use std::{
     fmt::Write,
     hash::{Hash, Hasher},
     iter::once,
-    mem::{self, ManuallyDrop},
+    mem,
 };
 
 use monty_macros::pyattrs;
@@ -601,11 +601,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
             Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
         }
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::NamedTuple.call_attr(&receiver, attr, args, vm)
     }
 }
 

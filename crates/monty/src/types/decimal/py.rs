@@ -7,12 +7,7 @@
 //! Implicit operands follow C `_decimal`: `int` converts exactly, anything else makes
 //! an operator return `NotImplemented` and a method raise `TypeError`.
 
-use std::{
-    borrow::Cow,
-    cmp::Ordering,
-    fmt::Write,
-    mem::{self, ManuallyDrop},
-};
+use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
 
 use monty_macros::pyattrs;
 use num_bigint::BigInt;
@@ -702,11 +697,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
             "real" | "imag" => ExcType::attribute_error_not_writable(name, &self.py_type_name(vm)),
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name),
         })
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Decimal.call_attr(&receiver, attr, args, vm)
     }
 }
 
