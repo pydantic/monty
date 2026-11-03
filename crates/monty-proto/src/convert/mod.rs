@@ -32,7 +32,7 @@ pub use resume::{
     ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
     resume_call_from_proto,
 };
-pub use type_checking::import_stubs_from_answer;
+pub use type_checking::{import_stubs_from_answer, validate_import_stubs_answer};
 
 use crate::{
     BudgetVec, pb,

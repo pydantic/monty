@@ -16,8 +16,8 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
-    named_values_to_proto, os_call_from_proto, pb, validate_requirement,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, named_values_to_proto,
+    os_call_from_proto, pb, validate_import_stubs_answer, validate_requirement,
 };
 use monty_types::{
     AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExecutionClock, ExtFunctionResult,
@@ -985,7 +985,8 @@ impl Checkout {
         if let Some(OsFunctionCall::ImportStubs(asked)) = os_call.as_deref() {
             match &value {
                 ResumeValue::Return(answer) => {
-                    import_stubs_from_answer(answer, asked).map_err(|message| PoolError::Protocol(message.into()))?;
+                    validate_import_stubs_answer(answer, asked)
+                        .map_err(|message| PoolError::Protocol(message.into()))?;
                 }
                 ResumeValue::Future => {
                     return Err(PoolError::Protocol(
