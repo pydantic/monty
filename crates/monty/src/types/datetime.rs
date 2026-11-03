@@ -29,8 +29,8 @@ use crate::{
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
-        builtin_attr::PyAttrs,
         date::{self, StrftimeArgs},
+        pyattrs::PyAttrs,
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
         timedelta, timezone,

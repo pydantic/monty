@@ -20,8 +20,8 @@ use crate::{
     },
     types::{
         LazyHeapSet, Type,
-        builtin_attr::PyAttrs,
         list::repr_items_fmt,
+        pyattrs::PyAttrs,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},

@@ -11,9 +11,9 @@ use crate::{
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
-        builtin_attr::PyAttrs,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
+        pyattrs::PyAttrs,
     },
     value::Value,
 };

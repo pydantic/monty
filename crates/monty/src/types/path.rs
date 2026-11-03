@@ -27,8 +27,8 @@ use crate::{
     os_dispatch::{build_path_os_call, value_as_path_str},
     types::{
         LazyHeapSet, List, PyTrait, Type, allocate_tuple,
-        builtin_attr::PyAttrs,
         dir_scan::{glob_call, walk_call},
+        pyattrs::PyAttrs,
         str::allocate_string,
     },
     value::{EitherStr, Value},

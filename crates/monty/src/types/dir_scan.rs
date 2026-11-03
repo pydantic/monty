@@ -34,8 +34,8 @@ use crate::{
     os_dispatch::value_as_path_str,
     types::{
         LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
-        builtin_attr::PyAttrs,
         list::ListIterator,
+        pyattrs::PyAttrs,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},

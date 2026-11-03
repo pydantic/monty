@@ -26,7 +26,7 @@ use monty_macros::pyattrs;
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, builtin_attr::PyAttrs, iter::collect_owned_iterable};
+use super::{CmpOrder, PyTrait, iter::collect_owned_iterable, pyattrs::PyAttrs};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},

@@ -14,7 +14,7 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::builtin_attr::PyAttrs;
+use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
