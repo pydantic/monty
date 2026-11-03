@@ -293,7 +293,8 @@ Its optional `remote` details retain the first recorded failure: its I/O stage, 
 stream with (code, message, and the `RemoteCause` it named in its `monty-cause` trailer), or the transport error.
 A server refusing a stream before admitting it — at capacity, or rejecting the caller for missing credentials
 (`unauthenticated`) or for credentials not allowed what they asked for (`permission_denied`) — fails the checkout with
-`PoolError::Spawn` naming that status instead.
+`PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
+fails or times out is `PoolError::Spawn`.
 A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one
 whose cause is `server_shutdown` as `PoolError::Shutdown` with nothing to load.
 The status message is unverified text, and a disconnect does not establish whether the request ran.

@@ -225,8 +225,20 @@ pub enum PoolError {
     Typing(String),
     /// No worker became available within `checkout_timeout`.
     Exhausted,
-    /// A worker process could not be spawned.
+    /// A worker process could not be spawned, or a remote stream could not
+    /// be opened for a reason other than the server refusing it: a dial that
+    /// failed or timed out, a malformed connect header.
     Spawn(String),
+    /// The remote server refused to open the session stream (remote transport
+    /// only). `refusal` carries the status it answered with, so a caller can act
+    /// on its code and cause rather than on the message. No session existed,
+    /// so nothing ran.
+    Refused {
+        /// The server's URL, as configured.
+        url: String,
+        /// The status the refusal named: its code, message and cause.
+        refusal: Box<RemoteDisconnect>,
+    },
     /// The checkout was already finished or its worker already discarded.
     Finished,
     /// The remote worker's stream ended without a turn-ending event (remote
@@ -289,8 +301,9 @@ pub enum CrashCause {
 /// transport failure (`transport_error`) for which there was no status.
 #[derive(Debug, Clone)]
 pub struct RemoteDisconnect {
-    /// The I/O operation that observed the failure. Always `receive`: the
-    /// stream's end is read, never written, whichever side spoke last.
+    /// The I/O operation that observed the failure: `receive` for a stream
+    /// that ended (its end is read, never written, whichever side spoke last),
+    /// `open` for one the server refused.
     pub stage: &'static str,
     /// The gRPC status code the server ended the stream with, by its
     /// canonical name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...);
@@ -327,6 +340,12 @@ impl fmt::Display for PoolError {
             Self::Typing(diagnostics) => write!(f, "type checking failed:\n{diagnostics}"),
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
+            Self::Refused { url, refusal } => write!(
+                f,
+                "failed to spawn monty worker: {url}: {}: {}",
+                refusal.status_code.unwrap_or("UNKNOWN"),
+                refusal.status_message.as_deref().unwrap_or_default()
+            ),
             Self::Finished => f.write_str("this checkout has already been finished"),
             Self::Disconnected { context, .. } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {

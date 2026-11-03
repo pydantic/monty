@@ -135,6 +135,14 @@ impl Remote {
                 // taking it (a GOAWAY as it drains, a refused stream): the
                 // channel reconnects, and the same budget covers the retries
                 Ok(Err(status)) if retries < OPEN_RETRIES && stream_not_taken(&status) => retries += 1,
+                // the server's own answer, kept structured; a status tonic
+                // synthesised for a transport failure has a source error
+                Ok(Err(status)) if Error::source(&status).is_none() => {
+                    return Err(PoolError::Refused {
+                        url: url.to_owned(),
+                        refusal: Box::new(RemoteDisconnect::from_status("open", &status)),
+                    });
+                }
                 Ok(Err(status)) => {
                     return Err(PoolError::Spawn(format!("{url}: {}", describe_status(&status))));
                 }

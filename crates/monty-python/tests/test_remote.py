@@ -33,6 +33,7 @@ from pydantic_monty import (
     AsyncMontyWebsocket,
     ExternalModule,
     MontyDisconnectError,
+    MontyRefusedError,
     MontyRuntimeError,
     MontyShutdown,
 )
@@ -652,11 +653,17 @@ async def test_refused_stream_fails_the_checkout():
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url) as pool:
-            with pytest.raises(RuntimeError) as exc_info:
+            with pytest.raises(MontyRefusedError) as exc_info:
                 async with pool.checkout():
                     pass
-    assert exc_info.value.args[0] == snapshot(
+    assert str(exc_info.value) == snapshot(
         f'failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity'
+    )
+    assert exc_info.value.status_code == snapshot('RESOURCE_EXHAUSTED')
+    assert exc_info.value.status_message == snapshot('server at capacity')
+    assert exc_info.value.cause == snapshot('capacity')
+    assert repr(exc_info.value) == snapshot(
+        f'MontyRefusedError(failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity)'
     )
 
 
@@ -667,12 +674,14 @@ async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
     server, url = await relay.start_relay(str(tmp_path / 'no-such-monty'), '127.0.0.1', 0)
     try:
         async with AsyncMontyRemote(url) as pool:
-            with pytest.raises(RuntimeError) as exc_info:
+            with pytest.raises(MontyRefusedError) as exc_info:
                 async with pool.checkout():
                     pass
-        assert exc_info.value.args[0].startswith(
+        assert str(exc_info.value).startswith(
             f'failed to spawn monty worker: {url}: UNAVAILABLE: cannot start the monty subprocess: '
         )
+        assert exc_info.value.status_code == snapshot('UNAVAILABLE')
+        assert exc_info.value.cause is None
     finally:
         await server.stop(None)
 

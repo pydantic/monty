@@ -13,6 +13,7 @@
 //! ├── MontyTypingError         # Raised when type checking finds errors in the code
 //! ├── MontyCrashedError        # Raised when the sandbox dies or times out
 //! ├── MontyDisconnectError     # A remote worker's stream ended (remote only)
+//! ├── MontyRefusedError        # The remote server refused to open a session (remote only)
 //! ├── MontyShutdown            # The remote server is shutting down (remote only)
 //! └── MontyConversionError     # A host value that can't be converted into the sandbox
 //! ```
@@ -450,6 +451,55 @@ impl MontyDisconnectError {
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __repr__(slf: PyRef<'_, Self>) -> String {
         format!("MontyDisconnectError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when the remote server refused to open a session's stream (remote
+/// transport only): at capacity, or rejecting the caller's credentials or
+/// what they asked for. The server says which in `status_code`,
+/// `status_message` and `cause`. No session existed, so nothing ran; unlike
+/// `MontyDisconnectError`, retrying is safe.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyRefusedError {
+    /// The gRPC status code the server refused with, by name.
+    #[pyo3(get)]
+    status_code: Option<String>,
+    /// The message on that status.
+    #[pyo3(get)]
+    status_message: Option<String>,
+    /// The policy reason the server attached, in `snake_case`.
+    #[pyo3(get)]
+    cause: Option<String>,
+}
+
+impl MontyRefusedError {
+    /// Creates a `MontyRefusedError` with the given description and the status
+    /// the server refused with.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, refusal: RemoteDisconnect) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self {
+            status_code: refusal.status_code.map(str::to_owned),
+            status_message: refusal.status_message,
+            cause: refusal.cause.map(|cause| cause.as_str().to_owned()),
+        });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyRefusedError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyRefusedError({})", slf.as_super().message().unwrap_or_default())
     }
 }
 

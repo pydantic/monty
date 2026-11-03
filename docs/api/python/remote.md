@@ -22,6 +22,10 @@ ignores it.
 
 ## Connection loss and shutdown
 
+[`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream, at
+capacity or rejecting the caller; its `status_code`, `status_message` and `cause` say why, no session existed, and
+retrying is safe.
+A server that cannot be reached at all raises `RuntimeError`.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
 A server that ended it by policy says so in the error's status and cause (see
 [disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.

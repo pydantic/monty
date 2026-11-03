@@ -266,6 +266,41 @@ export class MontyDisconnectError extends MontyError {
   }
 }
 
+/** The status a server refused a session with. */
+export interface RefusalDetails {
+  /** The gRPC status code, by its canonical name (`RESOURCE_EXHAUSTED`, ...). */
+  statusCode?: string
+  /** The message on that status. */
+  statusMessage?: string
+  /** The policy reason the server named, in `snake_case`. */
+  cause?: string
+}
+
+/**
+ * Raised when the remote server refused to open a session's stream
+ * (`MontyRemote` only): at capacity, or rejecting the caller's credentials
+ * (`unauthenticated`) or what they asked for (`permission_denied`), which it
+ * says in `statusCode`, `statusMessage` and `cause`. No session existed, so
+ * nothing ran; unlike `MontyDisconnectError`, retrying is safe. A server that
+ * cannot be reached at all rejects with a plain `Error` instead.
+ */
+export class MontyRefusedError extends MontyError {
+  /** The status code the server refused with, by name, or `null`. */
+  readonly statusCode: string | null
+  /** The message on that status, or `null`. */
+  readonly statusMessage: string | null
+  /** The policy reason the server named, in `snake_case`, or `null`. */
+  readonly cause: string | null
+
+  constructor(message: string, details: RefusalDetails = {}) {
+    super('RuntimeError', message)
+    this.name = 'MontyRefusedError'
+    this.statusCode = details.statusCode ?? null
+    this.statusMessage = details.statusMessage ?? null
+    this.cause = details.cause ?? null
+  }
+}
+
 /**
  * Raised when the remote server is shutting down (`MontyRemote` only). The
  * request that raised it **did not run**, so re-running it is safe; the

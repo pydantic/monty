@@ -252,7 +252,8 @@ which ignores any argument:
 `checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
 refusing it.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
-that fails to spawn or a refused connection rejects with a plain `Error`.
+that fails to spawn or a server that cannot be reached rejects with a plain `Error`, and a remote server that refuses
+the session's stream with `MontyRefusedError`, whose `statusCode`, `statusMessage` and `cause` say why.
 
 ## Limits and type checking
 
@@ -397,7 +398,8 @@ console.log(await session.feedRun('1 + 1')) // 2
 `connectHeaders` is called at each checkout, and may return a promise, for the metadata on that checkout's session stream.
 `requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
 `checkout()` also takes `ephemeral` and `profile`, which the server interprets.
-A refused connection rejects `checkout()`.
+A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
+plain `Error`.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Either can also reject `checkout()` itself, while the session is being created.

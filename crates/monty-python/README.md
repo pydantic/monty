@@ -43,6 +43,8 @@ if __name__ == '__main__':
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
 The client does not automatically replay a disconnected request.
+`MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
+nothing ran, so retrying is safe.
 
 ## Host decode budget
 

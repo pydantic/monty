@@ -1054,6 +1054,13 @@ enum TurnOutcome {
         message: String,
         details: Option<Box<RemoteDisconnect>>,
     },
+    /// The remote server refused to open the session's stream, so no session
+    /// existed; `details` is the status it refused with. Only produced by
+    /// [`NativeSession::enter`].
+    Refused {
+        message: String,
+        details: Box<RemoteDisconnect>,
+    },
     /// A draining server declined the request, which did not run; `dump`
     /// names what restores the session, when the server stored it.
     Shutdown { message: String, dump: Option<Vec<u8>> },
@@ -1101,6 +1108,17 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 message: PoolError::Disconnected { context, remote: None }.to_string(),
                 details: remote,
             },
+            // rendered before the status is taken back out, as for `Shutdown`
+            Err(err @ PoolError::Refused { .. }) => {
+                let message = err.to_string();
+                let PoolError::Refused { refusal, .. } = err else {
+                    unreachable!("matched as Refused above")
+                };
+                Self::Refused {
+                    message,
+                    details: refusal,
+                }
+            }
             // the error's Display notes whether a dump came with it, so render
             // it before taking the dump back out
             Err(err @ PoolError::Shutdown { .. }) => {
@@ -1113,6 +1131,25 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
             Err(other) => Self::Protocol(other.to_string()),
         }
     }
+}
+
+/// Writes a remote status's fields — the stage that observed it, its code,
+/// message and cause, or the transport error — onto a turn object.
+fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()> {
+    obj.set("stage", details.stage)?;
+    if let Some(code) = details.status_code {
+        obj.set("statusCode", code)?;
+    }
+    if let Some(status_message) = details.status_message {
+        obj.set("statusMessage", status_message)?;
+    }
+    if let Some(cause) = details.cause {
+        obj.set("cause", cause.as_str())?;
+    }
+    if let Some(error) = details.transport_error {
+        obj.set("transportError", error)?;
+    }
+    Ok(())
 }
 
 /// Converts a turn outcome into the JS turn object consumed by
@@ -1218,20 +1255,13 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             obj.set("kind", "disconnected")?;
             obj.set("message", message)?;
             if let Some(details) = details {
-                obj.set("stage", details.stage)?;
-                if let Some(code) = details.status_code {
-                    obj.set("statusCode", code)?;
-                }
-                if let Some(status_message) = details.status_message {
-                    obj.set("statusMessage", status_message)?;
-                }
-                if let Some(cause) = details.cause {
-                    obj.set("cause", cause.as_str())?;
-                }
-                if let Some(error) = details.transport_error {
-                    obj.set("transportError", error)?;
-                }
+                set_remote_details(&mut obj, *details)?;
             }
+        }
+        TurnOutcome::Refused { message, details } => {
+            obj.set("kind", "refused")?;
+            obj.set("message", message)?;
+            set_remote_details(&mut obj, *details)?;
         }
         TurnOutcome::Shutdown { message, dump } => {
             obj.set("kind", "shutdown")?;

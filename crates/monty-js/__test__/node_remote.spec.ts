@@ -25,6 +25,7 @@ import {
 
 import {
   MontyDisconnectError,
+  MontyRefusedError,
   MontyRemote,
   type MontyRemoteOptions,
   MontyRuntimeError,
@@ -271,8 +272,11 @@ test('MontyWebsocket is an alias of MontyRemote that still accepts ws:// URLs', 
 test('a stream the server refuses before admitting it rejects the checkout with its status', async () => {
   const { url } = await server((stream) => endWithStatus(stream, status.RESOURCE_EXHAUSTED, 'at capacity', 'capacity'))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const error = await t.throwsAsync(() => pool.checkout())
-  t.is(error.message, `failed to spawn monty worker: ${url}: RESOURCE_EXHAUSTED: at capacity`)
+  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyRefusedError })
+  t.is(error.message, `RuntimeError: failed to spawn monty worker: ${url}: RESOURCE_EXHAUSTED: at capacity`)
+  t.is(error.statusCode, 'RESOURCE_EXHAUSTED')
+  t.is(error.statusMessage, 'at capacity')
+  t.is(error.cause, 'capacity')
 })
 
 test('a status ending the stream is reported with its code, message and cause', async () => {

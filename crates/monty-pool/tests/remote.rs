@@ -377,8 +377,9 @@ async fn an_unparsable_url_fails_the_pool() {
 }
 
 /// A server that refuses the stream before admitting it — at capacity, or
-/// rejecting the caller — fails the checkout with its status and cause,
-/// never with a worker that then fails its first turn.
+/// rejecting the caller — fails the checkout with its status kept structured,
+/// so the caller acts on the code and cause rather than the message, and never
+/// with a worker that then fails its first turn.
 #[tokio::test]
 async fn a_refused_stream_fails_the_checkout() {
     let (mock, config) = mock_pool_config().await;
@@ -387,13 +388,22 @@ async fn a_refused_stream_fails_the_checkout() {
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
         panic!("a refused stream must fail the checkout");
     };
-    let PoolError::Spawn(msg) = err else {
-        panic!("expected Spawn error, got {err:?}");
-    };
     assert_eq!(
-        msg,
-        format!("{}: RESOURCE_EXHAUSTED: caller holds 10 sessions already", mock.url())
+        err.to_string(),
+        format!(
+            "failed to spawn monty worker: {}: RESOURCE_EXHAUSTED: caller holds 10 sessions already",
+            mock.url()
+        )
     );
+    let PoolError::Refused { url, refusal } = err else {
+        panic!("expected Refused error, got {err:?}");
+    };
+    assert_eq!(url, mock.url());
+    assert_eq!(refusal.stage, "open");
+    assert_eq!(refusal.status_code, Some("RESOURCE_EXHAUSTED"));
+    assert_eq!(refusal.status_message.as_deref(), Some("caller holds 10 sessions already"));
+    assert_eq!(refusal.cause, Some(RemoteCause::CallerCap));
+    assert_eq!(refusal.transport_error, None);
     // the refusal consumed no capacity: the next checkout is admitted
     let server = thread::spawn(move || serve_mock_child(&mock));
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");

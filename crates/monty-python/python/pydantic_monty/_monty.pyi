@@ -41,6 +41,7 @@ __all__ = [
     'MontyDisconnectError',
     'MontyError',
     'MontyFileHandle',
+    'MontyRefusedError',
     'MontySession',
     'MontyShutdown',
     'MontySyntaxError',
@@ -577,6 +578,34 @@ class MontyDisconnectError(MontyError):
         """The recorded transport or protocol error, or `None` when the server sent a status."""
 
 @final
+class MontyRefusedError(MontyError):
+    """Raised when the remote server refused to open a session's stream (remote transport only).
+
+    The server was at capacity, or rejected the caller's credentials
+    (`unauthenticated`) or what they asked for (`permission_denied`); it says
+    which in `status_code`, `status_message` and `cause`. No session existed,
+    so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
+    server that could not be reached at all raises `RuntimeError` instead.
+
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def status_code(self) -> str | None:
+        """The gRPC status code the server refused with, by its canonical name
+        (`RESOURCE_EXHAUSTED`, `UNAUTHENTICATED`, `PERMISSION_DENIED`, ...)."""
+
+    @property
+    def status_message(self) -> str | None:
+        """The message on that status, or `None` without one."""
+
+    @property
+    def cause(self) -> str | None:
+        """The policy reason the server attached to the status, in `snake_case`
+        (`capacity`, `caller_cap`, `unauthenticated`, `permission_denied`,
+        `worker_unavailable`, ...), or `None` when it attached none this client knows."""
+
+@final
 class MontyShutdown(MontyError):
     """Raised when the remote server is shutting down (remote transport only).
 
@@ -1046,7 +1075,8 @@ class AsyncMontyRemote:
     drain it answers the session's next request with `MontyShutdown`, whose
     `dump` restores the session onto another server; every other server-side
     drop (idle, session or turn timeout, capacity) ends the stream with a
-    status and raises `MontyDisconnectError` naming its `cause`.
+    status and raises `MontyDisconnectError` naming its `cause`; a stream it
+    refuses to open raises `MontyRefusedError` the same way.
 
     A server that stores sessions gives each one an ID (`session.session_id`)
     instead of handing state back: `dump()` writes the current state to a

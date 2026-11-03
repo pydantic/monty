@@ -75,7 +75,7 @@ use crate::{
     },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
-    exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
+    exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyRefusedError, MontyShutdown, MontyTypingError},
     external::{
         CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_intercepted_os_call, resolve_object_attr,
         wire_call_arguments,
@@ -2342,6 +2342,7 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
         PoolError::Disconnected { remote, .. } => {
             MontyDisconnectError::new_err(py, message, remote.map(|details| *details))
         }
+        PoolError::Refused { refusal, .. } => MontyRefusedError::new_err(py, message, *refusal),
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),

@@ -27,6 +27,7 @@ import {
   MontyDisconnectError,
   MontyError,
   montyErrorFromNative,
+  MontyRefusedError,
   MontyShutdown,
   MontyTypingError,
   notCallableMessage,
@@ -1722,6 +1723,8 @@ export async function enterSession(
     case 'disconnected':
     case 'shutdown':
       throw lostSessionError(turn)
+    case 'refused':
+      throw new MontyRefusedError(turn.message, turn)
     case 'typingError':
       throw new Error(turn.diagnostics)
     case 'protocol':

@@ -2460,7 +2460,7 @@ fn resume_failure(err: &PoolError) -> &'static str {
     match err {
         PoolError::Exhausted => "exhausted",
         PoolError::Disconnected { .. } | PoolError::Spawn(_) => "disconnected",
-        PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => "refused",
+        PoolError::Refused { .. } | PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => "refused",
         PoolError::Shutdown { .. } => "shutdown",
         PoolError::Protocol(_) => "mismatch",
         PoolError::Timeout { .. } => "timeout",
