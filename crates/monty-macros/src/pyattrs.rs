@@ -128,7 +128,7 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
         Kind::ClassMethod => {
             parameters.len() == 4
                 && named(parameters[0], "StaticStrings")
-                && named(parameters[1], "Value")
+                && named(parameters[1], "PyClass")
                 && named(parameters[2], "ArgValues")
                 && vm_parameter(parameters[3])
         }
@@ -158,7 +158,9 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
             Kind::Method => {
                 "expected (native_receiver, ArgValues, &mut VM<'h>) -> RunResult<Value> or RunResult<CallResult>"
             }
-            Kind::ClassMethod => "expected (StaticStrings, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>",
+            Kind::ClassMethod => {
+                "expected (StaticStrings, PyClass<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>"
+            }
             Kind::Value => "expected (&mut VM<'h>) -> Value",
         };
         return Err(syn::Error::new_spanned(signature, expected));
@@ -207,7 +209,7 @@ fn definition(
     match kind {
         Kind::ClassMethod => quote! {
             crate::types::pyattrs::AttrDef::ClassMethod({
-                fn call(receiver: crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                fn call<'h>(receiver: crate::types::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                     #handler(crate::intern::StaticStrings::#attr_name, receiver, args, vm)
                 }
                 call
@@ -520,7 +522,7 @@ mod tests {
                 #[pymethod]
                 fn is_integer(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> { todo!() }
                 #[pyclassmethod]
-                fn from_number(name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> { todo!() }
+                fn from_number(name: StaticStrings, receiver: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> { todo!() }
                 #[pyvalue]
                 fn min(vm: &mut VM<'_>) -> Value { todo!() }
             }
@@ -627,6 +629,20 @@ mod tests {
     #[test]
     fn invalid_signatures_and_annotations() {
         let cases = [
+            (
+                quote!(
+                    #[pyclassmethod]
+                    fn from_number(
+                        name: StaticStrings,
+                        class: Value,
+                        args: ArgValues,
+                        vm: &mut VM<'_>,
+                    ) -> RunResult<CallResult> {
+                        todo!()
+                    }
+                ),
+                "expected (StaticStrings, PyClass<'h>",
+            ),
             (
                 quote!(
                     #[pymethod]

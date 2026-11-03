@@ -34,6 +34,7 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
     types::{
+        PyClass,
         Type, TypeRef,
         hash_table::{
             CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,
@@ -2330,8 +2331,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     }
 
     #[pyclassmethod]
-    fn fromkeys(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
     }
 }
@@ -2408,8 +2408,7 @@ impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
     }
 
     #[pyclassmethod]
-    fn fromkeys(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
     }
 }
@@ -2496,8 +2495,7 @@ impl<'heap> PyAttrs<'heap> for PyCounterImpl {
     }
 
     #[pyclassmethod]
-    fn fromkeys(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         args.drop_with(vm);
         Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
     }

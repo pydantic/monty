@@ -26,6 +26,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
     types::{
+        PyClass,
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         pyattrs::PyAttrs,
         dir_scan::{glob_call, walk_call},
@@ -933,8 +934,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
     }
 
     #[pyclassmethod]
-    fn cwd(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn cwd(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_cwd(vm, args).map(CallResult::Value)
     }
 }

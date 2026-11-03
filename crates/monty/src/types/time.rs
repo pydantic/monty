@@ -32,6 +32,7 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     types::{
+        PyClass,
         CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
@@ -735,7 +736,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     }
 
     #[pyclassmethod]
-    fn fromisoformat(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromisoformat(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm, args).map(CallResult::Value)
     }
 

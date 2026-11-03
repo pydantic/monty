@@ -23,6 +23,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
+        PyClass,
         LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
@@ -786,7 +787,7 @@ impl<'heap> PyAttrs<'heap> for PyComplexImpl {
     }
 
     #[pyclassmethod]
-    fn from_number(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }
 }

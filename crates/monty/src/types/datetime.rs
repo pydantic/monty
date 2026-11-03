@@ -28,6 +28,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     py_value::PyValue,
     types::{
+        PyClass,
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
         pyattrs::PyAttrs,
@@ -1859,32 +1860,37 @@ impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
     }
 
     #[pyclassmethod]
-    fn fromtimestamp(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn fromtimestamp(
+        _name: StaticStrings,
+        _class: PyClass<'_>,
+        args: ArgValues,
+        vm: &mut VM<'_>,
+    ) -> RunResult<CallResult> {
         class_fromtimestamp(vm, args).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn now(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn now(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_now(vm, args)
     }
 
     #[pyclassmethod]
-    fn strptime(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn strptime(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn fromisoformat(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn fromisoformat(
+        _name: StaticStrings,
+        _class: PyClass<'_>,
+        args: ArgValues,
+        vm: &mut VM<'_>,
+    ) -> RunResult<CallResult> {
         class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn combine(_name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
-        receiver.drop_with(vm);
+    fn combine(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_combine(vm, args).map(CallResult::Value)
     }
 }

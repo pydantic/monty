@@ -25,6 +25,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     string_builder::StringBuilder,
     types::{
+        PyClass,
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
@@ -575,17 +576,17 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
     }
 
     #[pyclassmethod]
-    fn today(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn today(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_today(vm, args)
     }
 
     #[pyclassmethod]
-    fn fromisoformat(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromisoformat(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn fromtimestamp(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn fromtimestamp(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromtimestamp(vm, args).map(CallResult::Value)
     }
 

@@ -8,14 +8,12 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData},
     intern::StaticStrings,
     py_value::PyValue,
-    types::{
-        PyTrait, Type, complex, date, datetime, list, re_match, re_pattern, str, time, timedelta, timezone, tuple,
-    },
+    types::{PyClass, PyTrait, Type, date, datetime},
     value::{EitherStr, Value},
 };
 
-/// The `Value` argument is the bound class object, including when called through an instance.
-pub(crate) type ClassMethodCall = for<'h> fn(Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+/// The receiver is the bound class object, including when called through an instance.
+pub(crate) type ClassMethodCall = for<'h> fn(PyClass<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// Python attribute definitions and the native view passed to their methods.
@@ -29,50 +27,6 @@ pub(crate) enum AttrDef {
     Method(MethodCall),
     ClassMethod(ClassMethodCall),
     Value(fn(&mut VM<'_>) -> Value),
-}
-
-#[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
-pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
-    match owner {
-        Type::LruCacheWrapper => <super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::ATTRS,
-        Type::NamedTuple => <super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::ATTRS,
-        Type::Bytes => <super::bytes::PyBytes<'static> as PyAttrs<'static>>::ATTRS,
-        Type::Path => <super::path::PyPathImpl as PyAttrs<'static>>::ATTRS,
-        Type::Random => <super::random::PyRandomImpl as PyAttrs<'static>>::ATTRS,
-        Type::HashlibHash | Type::Blake2b | Type::Blake2s => <super::hashlib::PyHashImpl as PyAttrs<'static>>::ATTRS,
-        Type::HashlibHashXof => <super::hashlib::PyHashXofImpl as PyAttrs<'static>>::ATTRS,
-        Type::CsvWriter => <super::csv::PyCsvWriterImpl as PyAttrs<'static>>::ATTRS,
-        Type::CsvDictWriter => <super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::ATTRS,
-        Type::DirEntry => <super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::ATTRS,
-        Type::ScandirIterator => <super::dir_scan::PyScandirImpl as PyAttrs<'static>>::ATTRS,
-        Type::Dict => <super::dict::PyDictImpl as PyAttrs<'static>>::ATTRS,
-        Type::DefaultDict => <super::dict::PyDefaultDictImpl as PyAttrs<'static>>::ATTRS,
-        Type::Counter => <super::dict::PyCounterImpl as PyAttrs<'static>>::ATTRS,
-        Type::Set => <super::set::PySetImpl as PyAttrs<'static>>::ATTRS,
-        Type::FrozenSet => <super::set::PyFrozenSetImpl as PyAttrs<'static>>::ATTRS,
-        Type::DictKeys => <super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::ATTRS,
-        Type::DictItems => <super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::ATTRS,
-        Type::DateTime => <super::datetime::PyDateTimeImpl as PyAttrs<'static>>::ATTRS,
-        Type::Deque => <super::deque::PyDequeImpl as PyAttrs<'static>>::ATTRS,
-        Type::TextIOWrapper | Type::BufferedReader | Type::BufferedWriter | Type::BufferedRandom => {
-            <super::file::PyFileImpl as PyAttrs<'static>>::ATTRS
-        }
-        Type::Decimal => <super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::ATTRS,
-        Type::DecimalContext => <super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::ATTRS,
-        Type::DecimalSignalDict => <super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::ATTRS,
-        Type::ForwardRef => <super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::ATTRS,
-        Type::Str => <str::PyStr<'static> as PyAttrs<'static>>::ATTRS,
-        Type::List => <list::PyListImpl as PyAttrs<'static>>::ATTRS,
-        Type::Tuple => <tuple::PyTupleImpl as PyAttrs<'static>>::ATTRS,
-        Type::Complex => <complex::PyComplexImpl as PyAttrs<'static>>::ATTRS,
-        Type::Date => <date::PyDateImpl as PyAttrs<'static>>::ATTRS,
-        Type::Time => <time::PyTimeImpl as PyAttrs<'static>>::ATTRS,
-        Type::TimeDelta => <timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::ATTRS,
-        Type::TimeZone => <timezone::PyTimeZoneImpl as PyAttrs<'static>>::ATTRS,
-        Type::RePattern => <re_pattern::PyRePatternImpl as PyAttrs<'static>>::ATTRS,
-        Type::ReMatch => <re_match::PyReMatchImpl as PyAttrs<'static>>::ATTRS,
-        _ => &[],
-    }
 }
 
 /// Calls an instance method through a type, taking the receiver from the first positional argument.
@@ -195,7 +149,7 @@ mod tests {
         heap::{Heap as ObjectHeap, HeapData, HeapReader},
         intern::Interns,
         run::{Program, SessionTables},
-        types::{List, PyTrait},
+        types::{BuiltinType, Class, Dict, List, PyTrait, list, tuple},
         value::EitherStr,
     };
 
@@ -205,6 +159,20 @@ mod tests {
     impl<'heap> PyAttrs<'heap> for PyFloatImpl {
         type Receiver = f64;
 
+        #[pyclassmethod]
+        fn from_number(
+            _: StaticStrings,
+            class: PyClass<'_>,
+            args: ArgValues,
+            vm: &mut VM<'_>,
+        ) -> RunResult<CallResult> {
+            args.check_zero_args("from_number", vm.heap)?;
+            Ok(CallResult::Value(Value::Bool(matches!(
+                PyValue::from(class),
+                PyValue::Class(_)
+            ))))
+        }
+
         #[pymethod]
         fn conjugate(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
             args.check_zero_args("float.conjugate", vm.heap)?;
@@ -213,9 +181,47 @@ mod tests {
     }
 
     #[test]
+    fn classmethod_receivers_accept_classes_and_reject_instances() {
+        let mut heap = ObjectHeap::new(16, ResourceTracker::default());
+        let class_id = heap.allocate(HeapData::Class(Box::new(Class::new(
+            EitherStr::Heap("Custom".to_owned()),
+            Dict::new(),
+            false,
+        ))));
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let vm = &mut vm;
+            let value = Value::Ref(class_id);
+            crate::defer_drop!(value, vm);
+            let Some(AttrDef::ClassMethod(classmethod)) = PyFloatImpl::lookup_attr(StaticStrings::FromNumber) else {
+                panic!("expected classmethod")
+            };
+            assert!(matches!(
+                classmethod(PyClass::Builtin(BuiltinType::Float), ArgValues::Empty, vm).unwrap(),
+                CallResult::Value(Value::Bool(false))
+            ));
+            let Ok(class) = PyClass::try_from(value.py_value(vm)) else {
+                panic!("expected class view");
+            };
+            let view = PyValue::from(class);
+            assert!(matches!(&view, PyValue::Class(class) if class.id() == class_id));
+            let Ok(class) = PyClass::try_from(view) else {
+                panic!("expected class view");
+            };
+            assert!(matches!(
+                classmethod(class, ArgValues::Empty, vm).unwrap(),
+                CallResult::Value(Value::Bool(true))
+            ));
+            assert!(matches!(PyClass::try_from(PyValue::Float(1.0)), Err(PyValue::Float(_))));
+        });
+    }
+
+    #[test]
     fn generated_adapters_use_native_receivers() {
         const SORT: Option<AttrDef> = list::PyListImpl::lookup_attr(StaticStrings::Sort);
-        const LIST_TABLE: &[(StaticStrings, AttrDef)] = attrs(Type::List);
+        const LIST_TABLE: &[(StaticStrings, AttrDef)] = Type::List.attrs();
         assert!(matches!(SORT, Some(AttrDef::Method(_))));
         assert_eq!(LIST_TABLE.len(), <list::PyListImpl as PyAttrs<'static>>::ATTRS.len());
 
@@ -314,7 +320,7 @@ mod tests {
                     .lookup_attr(&EitherStr::Heap("missing_builtin_method".into()), &interns)
                     .is_none()
             );
-            for &(name, definition) in attrs(owner) {
+            for &(name, definition) in owner.attrs() {
                 let spelling: &str = name.into();
                 let attr = EitherStr::Heap(spelling.to_owned());
                 let found = owner
@@ -323,7 +329,7 @@ mod tests {
                 assert_eq!(discriminant(&definition), discriminant(&found));
             }
         }
-        assert!(attrs(Type::Int).is_empty());
+        assert!(Type::Int.attrs().is_empty());
         assert!(
             Type::Int
                 .lookup_attr(&EitherStr::Heap("upper".into()), &interns)
