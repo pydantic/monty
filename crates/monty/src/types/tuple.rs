@@ -38,7 +38,7 @@ use crate::{
     resource_checks::check_repeat_size,
     types::{
         LazyHeapSet, Type,
-        list::repr_sequence_fmt,
+        repr::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},

@@ -34,7 +34,7 @@ use crate::{
     types::{
         BuiltinType, LazyHeapSet, PyTrait, Type, Union,
         instance::class_name,
-        list::repr_should_truncate,
+        repr::repr_should_truncate,
         set::unhashable_type_name,
         tuple::{TupleVec, allocate_tuple},
     },

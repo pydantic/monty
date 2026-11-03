@@ -7,7 +7,7 @@ use std::{
 
 use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
-use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, repr::repr_should_truncate, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},

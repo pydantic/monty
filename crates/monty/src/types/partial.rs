@@ -26,7 +26,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
-    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_should_truncate, tuple::allocate_tuple},
+    types::{Dict, LazyHeapSet, PyTrait, Type, repr::repr_should_truncate, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 

@@ -16,7 +16,7 @@ use crate::{
     resource_checks::{check_estimated_size, check_repeat_size, check_value_buffer_growth},
     types::{
         LazyHeapSet, Type,
-        list::repr_items_fmt,
+        repr::repr_items_fmt,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
