@@ -126,12 +126,11 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
     let valid = match kind {
         Kind::Method => parameters.len() == 3 && named(parameters[1], "ArgValues") && vm_parameter(parameters[2]),
         Kind::ClassMethod => {
-            parameters.len() == 5
+            parameters.len() == 4
                 && named(parameters[0], "StaticStrings")
-                && named(parameters[1], "Type")
-                && named(parameters[2], "Value")
-                && named(parameters[3], "ArgValues")
-                && vm_parameter(parameters[4])
+                && named(parameters[1], "Value")
+                && named(parameters[2], "ArgValues")
+                && vm_parameter(parameters[3])
         }
         Kind::Value => parameters.len() == 1 && vm_parameter(parameters[0]),
     };
@@ -159,9 +158,7 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
             Kind::Method => {
                 "expected (native_receiver, ArgValues, &mut VM<'h>) -> RunResult<Value> or RunResult<CallResult>"
             }
-            Kind::ClassMethod => {
-                "expected (StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>"
-            }
+            Kind::ClassMethod => "expected (StaticStrings, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>",
             Kind::Value => "expected (&mut VM<'h>) -> Value",
         };
         return Err(syn::Error::new_spanned(signature, expected));
@@ -210,8 +207,8 @@ fn definition(
     match kind {
         Kind::ClassMethod => quote! {
             crate::types::builtin_attr::AttrDef::ClassMethod({
-                fn call(owner: crate::types::Type, receiver: crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
-                    #handler(crate::intern::StaticStrings::#attr_name, owner, receiver, args, vm)
+                fn call(receiver: crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                    #handler(crate::intern::StaticStrings::#attr_name, receiver, args, vm)
                 }
                 call
             })
@@ -523,7 +520,7 @@ mod tests {
                 #[pymethod]
                 fn is_integer(value: f64, args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> { todo!() }
                 #[pyclassmethod]
-                fn from_number(name: StaticStrings, owner: Type, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> { todo!() }
+                fn from_number(name: StaticStrings, receiver: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> { todo!() }
                 #[pyvalue]
                 fn min(vm: &mut VM<'_>) -> Value { todo!() }
             }
@@ -532,9 +529,10 @@ mod tests {
         assert!(immediate.contains("StaticStrings :: IsInteger"));
         assert!(immediate.contains("AttrDef :: ClassMethod"));
         assert!(
-            immediate.split_whitespace().collect::<String>().contains(
-                "<PyFloatImpl>::from_number(crate::intern::StaticStrings::FromNumber,owner,receiver,args,vm)"
-            ),
+            immediate
+                .split_whitespace()
+                .collect::<String>()
+                .contains("<PyFloatImpl>::from_number(crate::intern::StaticStrings::FromNumber,receiver,args,vm)"),
             "{immediate}"
         );
         assert!(immediate.contains("AttrDef :: Value (< PyFloatImpl > :: min)"));
