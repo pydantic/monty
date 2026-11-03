@@ -64,4 +64,9 @@ dev = [
 [tool.pytest.ini_options]
 anyio_mode = "auto"
 xfail_strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # grpcio has no free-threaded build: importing it re-enables the GIL for the process,
+    # which CPython reports as a warning, and the remote journeys then run under the GIL
+    'ignore:The global interpreter lock \(GIL\) has been enabled to load module .grpc\._cython\.cygrpc.:RuntimeWarning',
+]
