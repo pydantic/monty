@@ -84,9 +84,7 @@ async def relay_url_capturing_metadata() -> AsyncIterator[tuple[str, list[dict[s
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         captured.append({key: value for key, value in context.invocation_metadata() or () if isinstance(value, str)})
-        child = await relay.spawn_child(monty_bin)
-        await relay.admit(context)
-        async for event in relay.bridge_stream(requests, child):
+        async for event in relay.relay_behaviour(monty_bin)(requests, context):
             yield event
 
     server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
@@ -697,6 +695,80 @@ async def test_child_exiting_with_a_status_ends_the_stream_with_internal(tmp_pat
         assert caught.value.status_message == 'monty subprocess exited with status 3'
     finally:
         await server.stop(None)
+
+
+async def test_a_failed_admission_reaps_the_child():
+    """An admission that fails or is cancelled before the bridge starts does
+    not leave the child it spawned running."""
+    relay = _load_relay_script()
+    spawned: list[asyncio.subprocess.Process] = []
+    spawn_child = relay.spawn_child
+
+    async def recording_spawn(monty_bin: str) -> asyncio.subprocess.Process:
+        child = await spawn_child(monty_bin)
+        spawned.append(child)
+        return child
+
+    relay.spawn_child = recording_spawn  # pyright: ignore[reportAttributeAccessIssue]
+
+    class RefusingContext:
+        async def send_initial_metadata(self, metadata: Any) -> None:
+            raise RuntimeError('the stream went away before admission')
+
+    async def no_requests() -> AsyncIterator[bytes]:
+        return
+        yield b''
+
+    stream = relay.relay_behaviour(find_monty_binary())(no_requests(), RefusingContext())
+    with pytest.raises(RuntimeError, match='before admission'):
+        await stream.__anext__()
+    assert len(spawned) == 1
+    assert spawned[0].returncode is not None
+
+
+async def test_a_broken_child_pipe_ends_the_bridge():
+    """A read error on the child's pipe, not just its EOF, ends the bridge with
+    the child's exit status rather than waiting forever."""
+    relay = _load_relay_script()
+
+    class Stdin:
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class Stdout:
+        async def readexactly(self, n: int) -> bytes:
+            raise OSError('pipe broke')
+
+    class Child:
+        stdin = Stdin()
+        stdout = Stdout()
+        returncode: int | None = None
+
+        def kill(self) -> None:
+            self.returncode = 9
+
+        async def wait(self) -> int:
+            if self.returncode is None:
+                self.returncode = 1
+            return self.returncode
+
+    async def no_requests() -> AsyncIterator[bytes]:
+        return
+        yield b''
+
+    async def consume() -> None:
+        async for _ in relay.bridge_stream(no_requests(), Child()):
+            pass
+
+    with pytest.raises(relay.ChildExited) as caught:
+        await asyncio.wait_for(consume(), 5)
+    assert caught.value.status == 1
 
 
 async def test_out_of_memory_status_raises_memory_error():

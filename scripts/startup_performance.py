@@ -77,8 +77,9 @@ def run_full_monty():
 
 def run_full_monty_warm(rounds: int = 20):
     async def run() -> list[float]:
-        # each checkout is a new connection and a new worker: the server never
-        # lets one process serve two clients, so only the client side is warm
+        # each checkout is a new stream on the pool's connection and a new
+        # worker: the server never lets one process serve two clients, so only
+        # the client side is warm
         samples: list[float] = []
         async with AsyncMontyRemote(FULL_MONTY_URL) as pool:
             async with pool.checkout() as session:

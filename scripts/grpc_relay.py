@@ -117,8 +117,8 @@ async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subproces
             while True:
                 (length,) = _LENGTH_PREFIX.unpack(await stdout.readexactly(_LENGTH_PREFIX.size))
                 await events.put(await stdout.readexactly(length))
-        except asyncio.IncompleteReadError:
-            pass  # the child exited
+        except (asyncio.IncompleteReadError, OSError):
+            pass  # the child exited, or its pipe broke: either way it is done
         # not in a `finally`: a cancelled pump has no reader left to tell, and
         # a full queue would hold the cancellation
         await events.put(None)
@@ -137,9 +137,14 @@ async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subproces
         for task in pumps:
             task.cancel()
         await asyncio.gather(*pumps, return_exceptions=True)
-        if child.returncode is None:
-            child.kill()
-        await child.wait()
+        await reap(child)
+
+
+async def reap(child: asyncio.subprocess.Process) -> None:
+    """Ends `child` if it still runs, and waits for it either way."""
+    if child.returncode is None:
+        child.kill()
+    await child.wait()
 
 
 async def admit(context: aio.ServicerContext[bytes, bytes]) -> None:
@@ -170,7 +175,13 @@ def relay_behaviour(monty_bin: str) -> Behaviour:
             child = await spawn_child(monty_bin)
         except OSError as exc:
             await context.abort(grpc.StatusCode.UNAVAILABLE, f'cannot start the monty subprocess: {exc}')
-        await admit(context)
+        try:
+            await admit(context)
+        except BaseException:
+            # nothing bridges the child yet, so a failed or cancelled
+            # admission would otherwise leave it running
+            await reap(child)
+            raise
         try:
             async for event in bridge_stream(requests, child):
                 yield event

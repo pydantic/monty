@@ -255,8 +255,9 @@ container bound. Lower `--max-sessions` or `--max-memory-mib` to fit your instan
 While the server is accepting traffic, `GET /health` returns an empty 200 response and `GET /` returns a 200 info page.
 Use `/health` for readiness and `/` for liveness.
 
-On SIGTERM, the server sends `GOAWAY` on every open connection, so a client's next stream is dialed afresh and a
-balancer sends it to a live replica; a connection that still arrives is answered with a shutdown on its first stream.
+On SIGTERM, the server sends `GOAWAY` on every open connection, so a client's next stream is dialed afresh, which a
+balancer that has stopped routing to the draining replica sends to a live one; a connection that still arrives is
+answered with a shutdown on its first stream.
 Existing sessions remain connected while the server drains. Each existing session's next request is answered with a
 shutdown instead of being run.
 With a session store, the server parks the session first and the client resumes it on another replica without the

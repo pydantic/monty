@@ -221,7 +221,11 @@ impl RemoteWorker {
     /// never answers cannot hang teardown.
     pub(crate) async fn close(&mut self) {
         self.requests = None;
-        let _ = timeout(CLOSE_GRACE, &mut self.reader).await;
+        // a finished handle must not be polled again: a close after one
+        // that already saw the reader out would panic
+        if !self.reader.is_finished() {
+            let _ = timeout(CLOSE_GRACE, &mut self.reader).await;
+        }
         self.reader.abort();
     }
 }
@@ -368,7 +372,9 @@ impl RemoteDisconnect {
 /// last stream is below it (the server was going away as it was opened), a
 /// `REFUSED_STREAM` reset, or hyper cancelling the request because the
 /// connection closed before it was sent. HTTP/2 promises such a stream was
-/// not processed, so opening it again is safe.
+/// not processed, so opening it again is safe. h2 reports a `GOAWAY` on a
+/// stream only when the stream's id is above the frame's last stream id; a
+/// stream the server did process never sees it.
 fn stream_not_taken(status: &Status) -> bool {
     let mut source = Error::source(status);
     while let Some(err) = source {
