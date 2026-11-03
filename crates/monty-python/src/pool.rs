@@ -73,7 +73,7 @@ use crate::{
         CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
         dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
     },
-    build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
+    build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{
         MontyCrashedError, MontyDisconnectError, MontyError, MontyRefusedError, MontyShutdown, MontyTypingError,
@@ -650,7 +650,7 @@ impl PyAsyncMonty {
             instances: InstanceStore::new(py),
             modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
-            connect_headers: None,
+            metadata: None,
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
@@ -673,9 +673,9 @@ impl PyAsyncMonty {
 pub struct PyAsyncMontyRemote {
     config: PoolConfig,
     pool: SharedPool,
-    /// The `connect_headers` callback, handed to every session so it runs on
+    /// The `metadata` callback, handed to every session so it runs on
     /// the checking-out task (see [`PyAsyncMontySession::__aenter__`]).
-    connect_headers: Option<Py<PyAny>>,
+    metadata: Option<Py<PyAny>>,
 }
 
 #[pymethods]
@@ -699,7 +699,7 @@ impl PyAsyncMontyRemote {
         max_processes = None,
         checkout_timeout = None,
         request_timeout = 10.0,
-        connect_headers = None,
+        metadata = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
@@ -712,13 +712,13 @@ impl PyAsyncMontyRemote {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
-        connect_headers: Option<Py<PyAny>>,
+        metadata: Option<Py<PyAny>>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
         max_decode_bytes: Option<usize>,
     ) -> PyResult<Self> {
-        check_callable(py, connect_headers.as_ref())?;
+        check_callable(py, metadata.as_ref())?;
         let mut config = parse_remote_config(
             url,
             max_processes,
@@ -741,7 +741,7 @@ impl PyAsyncMontyRemote {
         Ok(Self {
             config,
             pool: Arc::new(Mutex::new(None)),
-            connect_headers,
+            metadata,
         })
     }
 
@@ -827,7 +827,7 @@ impl PyAsyncMontyRemote {
             instances: InstanceStore::new(py),
             modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
-            connect_headers: self.connect_headers.as_ref().map(|cb| cb.clone_ref(py)),
+            metadata: self.metadata.as_ref().map(|cb| cb.clone_ref(py)),
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
@@ -845,9 +845,9 @@ pub struct PyAsyncMontySession {
     /// `external_modules=`: the modules every feed of the session may import.
     modules: Option<HostModules>,
     checkout: SharedCheckout,
-    /// A remote pool's `connect_headers` callback, called by `__aenter__`;
+    /// A remote pool's `metadata` callback, called by `__aenter__`;
     /// `None` for subprocess pools, which make no request.
-    connect_headers: Option<Py<PyAny>>,
+    metadata: Option<Py<PyAny>>,
     /// Set once the session has been fed or restored; `load_session` /
     /// `load_snapshot` are valid only while unset. See
     /// [`PyMontySession::load_snapshot`].
@@ -865,7 +865,7 @@ impl PyAsyncMontySession {
     /// Checks a worker out of the pool (spawning one if needed) and creates
     /// the REPL session in it.
     ///
-    /// Whatever must see the caller's contextvars (telemetry, `connect_headers`)
+    /// Whatever must see the caller's contextvars (telemetry, `metadata`)
     /// is captured here, on the caller's task with the GIL held, before the
     /// future moves to tokio.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
@@ -873,15 +873,15 @@ impl PyAsyncMontySession {
         let pool = active_pool(&this.pool)?;
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
-        let connect_headers = this
-            .connect_headers
+        let metadata = this
+            .metadata
             .as_ref()
-            .map(|cb| extract_connect_headers(py, cb))
+            .map(|cb| extract_metadata(py, cb))
             .transpose()?
             .unwrap_or_default();
         let options = CheckoutOptions::default()
             .with_telemetry(capture_telemetry_context(py))
-            .with_connect_headers(connect_headers);
+            .with_metadata(metadata);
         let session_id = Arc::clone(&this.session_id);
         future_into_py(py, async move {
             let checkout = pool
@@ -1190,7 +1190,7 @@ fn parse_pool_config(
 
 /// Rejects a non-callable optional callback with CPython's own `TypeError`
 /// text, so every entry point that accepts one (`os=` on `feed_run` /
-/// `feed_start` / `load_snapshot`, `connect_headers=`) fails the same way.
+/// `feed_start` / `load_snapshot`, `metadata=`) fails the same way.
 fn check_callable(py: Python<'_>, callback: Option<&Py<PyAny>>) -> PyResult<()> {
     if let Some(cb) = callback
         && !cb.bind(py).is_callable()

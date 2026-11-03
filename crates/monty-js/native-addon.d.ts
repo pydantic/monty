@@ -38,7 +38,7 @@ export declare class NativeSession {
   readonly workerId?: number
   readonly workerPid?: number
   readonly sessionId?: Uint8Array | null
-  enter(telemetryContext?: unknown, connectHeaders?: unknown): Promise<object>
+  enter(telemetryContext?: unknown, metadata?: unknown): Promise<object>
   feed(...args: unknown[]): Promise<object>
   feedStart(...args: unknown[]): Promise<object>
   restore(...args: unknown[]): Promise<object>

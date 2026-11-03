@@ -227,7 +227,7 @@ pub enum PoolError {
     Exhausted,
     /// A worker process could not be spawned, or a remote stream could not
     /// be opened for a reason other than the server refusing it: a dial that
-    /// failed or timed out, a malformed connect header.
+    /// failed or timed out, a malformed metadata entry.
     Spawn(String),
     /// The remote server refused to open the session stream (remote transport
     /// only). `refusal` carries the status it answered with, so a caller can act

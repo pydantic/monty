@@ -177,12 +177,12 @@ async fn drives_a_session_over_grpc() {
     join_server(server).await;
 }
 
-/// Each checkout's `CheckoutOptions::connect_headers` reach that checkout's
+/// Each checkout's `CheckoutOptions::metadata` reach that checkout's
 /// own stream's metadata. Remote workers are single-use, so two checkouts
 /// are two dials, and a `traceparent` rendered at checkout time — the
 /// motivating case — must not land on the wrong one.
 #[tokio::test]
-async fn connect_headers_are_per_checkout() {
+async fn metadata_are_per_checkout() {
     let (header_tx, header_rx) = mpsc::channel();
     let (mock, mut config) = mock_pool_config().await;
     let server = thread::spawn(move || serve_capturing_headers(&mock, &["traceparent"], 2, &header_tx));
@@ -195,8 +195,7 @@ async fn connect_headers_are_per_checkout() {
             script_name: "test.py".to_owned(),
             ..ReplConfig::default()
         };
-        let options =
-            CheckoutOptions::default().with_connect_headers(vec![("traceparent".to_owned(), trace.to_owned())]);
+        let options = CheckoutOptions::default().with_metadata(vec![("traceparent".to_owned(), trace.to_owned())]);
         let mut checkout = pool.checkout_with(&repl, options).await.expect("checkout");
         assert_eq!(
             header_rx.recv().expect("captured headers"),
@@ -219,14 +218,14 @@ async fn connect_headers_are_per_checkout() {
 
 /// Duplicate header names are last-wins, as [`CheckoutOptions`] promises.
 #[tokio::test]
-async fn duplicate_connect_headers_are_last_wins() {
+async fn duplicate_metadata_are_last_wins() {
     let (header_tx, header_rx) = mpsc::channel();
     let (mock, mut config) = mock_pool_config().await;
     let server = thread::spawn(move || serve_capturing_headers(&mock, &["traceparent"], 1, &header_tx));
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
 
-    let options = CheckoutOptions::default().with_connect_headers(vec![
+    let options = CheckoutOptions::default().with_metadata(vec![
         ("traceparent".to_owned(), "first".to_owned()),
         ("traceparent".to_owned(), "second".to_owned()),
     ]);
@@ -243,7 +242,7 @@ async fn duplicate_connect_headers_are_last_wins() {
 }
 
 /// Every stream carries a `user-agent` naming this crate and its version
-/// (tonic appends its own), and a `connect_headers` entry of the same name is
+/// (tonic appends its own), and a `metadata` entry of the same name is
 /// put in front of it, so a caller can identify their own product first.
 #[tokio::test]
 async fn user_agent_is_set_and_overridable() {
@@ -265,8 +264,7 @@ async fn user_agent_is_set_and_overridable() {
     );
     checkout.finish().await.expect("finish");
 
-    let options =
-        CheckoutOptions::default().with_connect_headers(vec![("user-agent".to_owned(), "my-app/1.0".to_owned())]);
+    let options = CheckoutOptions::default().with_metadata(vec![("user-agent".to_owned(), "my-app/1.0".to_owned())]);
     let checkout = pool
         .checkout_with(&ReplConfig::default(), options)
         .await
@@ -284,7 +282,7 @@ async fn user_agent_is_set_and_overridable() {
 /// A host trace context captured through the telemetry adapter goes out as
 /// W3C `traceparent`/`tracestate` on the dial, so a remote worker's spans join
 /// the host's trace with no header plumbing by the binding; an explicit
-/// `connect_headers` entry still wins.
+/// `metadata` entry still wins.
 #[cfg(feature = "telemetry")]
 #[tokio::test]
 async fn telemetry_context_is_propagated_on_the_dial() {
@@ -321,7 +319,7 @@ async fn telemetry_context_is_propagated_on_the_dial() {
 
     let options = CheckoutOptions::default()
         .with_telemetry(Some(context()))
-        .with_connect_headers(vec![("traceparent".to_owned(), "00-explicit".to_owned())]);
+        .with_metadata(vec![("traceparent".to_owned(), "00-explicit".to_owned())]);
     let checkout = pool
         .checkout_with(&ReplConfig::default(), options)
         .await
@@ -338,20 +336,20 @@ async fn telemetry_context_is_propagated_on_the_dial() {
 /// is needed: the checkout fails loudly with the promised dial error instead
 /// of the pair being silently dropped.
 #[tokio::test]
-async fn malformed_connect_headers_fail_the_dial() {
+async fn malformed_metadata_fail_the_dial() {
     let cases = [
         (
             ("bad name", "v"),
-            "http://127.0.0.1:9: connect header \"bad name\": invalid gRPC metadata key name",
+            "http://127.0.0.1:9: metadata entry \"bad name\": invalid gRPC metadata key name",
         ),
         (
             ("traceparent", "line\nbreak"),
-            "http://127.0.0.1:9: connect header \"traceparent\" value: failed to parse metadata value",
+            "http://127.0.0.1:9: metadata entry \"traceparent\" value: failed to parse metadata value",
         ),
     ];
     let pool = Pool::new(PoolConfig::remote("http://127.0.0.1:9")).await.expect("pool");
     for ((name, value), expected) in cases {
-        let options = CheckoutOptions::default().with_connect_headers(vec![(name.to_owned(), value.to_owned())]);
+        let options = CheckoutOptions::default().with_metadata(vec![(name.to_owned(), value.to_owned())]);
         let Err(err) = pool.checkout_with(&ReplConfig::default(), options).await else {
             panic!("malformed header must fail the dial");
         };
@@ -414,14 +412,14 @@ async fn a_refused_stream_fails_the_checkout() {
     join_server(server).await;
 }
 
-/// `Debug` for [`CheckoutOptions`] names each connect header, never its value.
+/// `Debug` for [`CheckoutOptions`] names each metadata entry, never its value.
 #[test]
-fn connect_headers_debug_is_redacted() {
+fn metadata_debug_is_redacted() {
     let options =
-        CheckoutOptions::default().with_connect_headers(vec![("authorization".to_owned(), "Bearer secret".to_owned())]);
+        CheckoutOptions::default().with_metadata(vec![("authorization".to_owned(), "Bearer secret".to_owned())]);
     assert_eq!(
         format!("{options:?}"),
-        r#"CheckoutOptions { connect_headers: ["authorization"], .. }"#
+        r#"CheckoutOptions { metadata: ["authorization"], .. }"#
     );
 }
 

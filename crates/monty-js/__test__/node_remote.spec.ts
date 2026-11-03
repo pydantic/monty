@@ -82,13 +82,13 @@ test('separate checkouts are isolated', async () => {
   t.is(error.display('msg'), "name 'leaked' is not defined")
 })
 
-test('connectHeaders runs per checkout in the caller async context', async () => {
+test('metadata runs per checkout in the caller async context', async () => {
   const relayServer = await server(relay)
   const trace = new AsyncLocalStorage<string>()
   let calls = 0
   await using pool = await MontyRemote.create(relayServer.url, {
     requestTimeout: 30,
-    connectHeaders: async () => {
+    metadata: async () => {
       calls += 1
       return { traceparent: trace.getStore() ?? 'missing', 'x-token': 't' }
     },
@@ -108,29 +108,29 @@ test('connectHeaders runs per checkout in the caller async context', async () =>
   )
 })
 
-test('connectHeaders must be a function', async () => {
+test('metadata must be a function', async () => {
   const notCallable = { 'x-token': 't' } as unknown as () => Record<string, string>
-  await t.throwsAsync(() => MontyRemote.create('http://127.0.0.1:9', { connectHeaders: notCallable }), {
+  await t.throwsAsync(() => MontyRemote.create('http://127.0.0.1:9', { metadata: notCallable }), {
     instanceOf: TypeError,
-    message: 'connectHeaders must be a function returning a record of header names to values',
+    message: 'metadata must be a function returning a record of header names to values',
   })
 })
 
-test('a bad connectHeaders result rejects the checkout and leaves the pool usable', async () => {
+test('a bad metadata result rejects the checkout and leaves the pool usable', async () => {
   const relayServer = await server(relay)
   let result: unknown = 5
   await using pool = await MontyRemote.create(relayServer.url, {
     requestTimeout: 30,
-    connectHeaders: () => result as Record<string, string>,
+    metadata: () => result as Record<string, string>,
   })
   await t.throwsAsync(() => pool.checkout(), {
     instanceOf: TypeError,
-    message: 'connectHeaders must return a record of header names to values, got number',
+    message: 'metadata must return a record of header names to values, got number',
   })
   result = { 'x-token': 1 }
   await t.throwsAsync(() => pool.checkout(), {
     instanceOf: TypeError,
-    message: "connectHeaders must return string header values, got number for 'x-token'",
+    message: "metadata must return string header values, got number for 'x-token'",
   })
   result = { 'x-token': 't' }
   await using session = await pool.checkout()

@@ -481,7 +481,7 @@ pub struct NativeSession {
 #[napi]
 impl NativeSession {
     /// Checks a worker out of the pool (spawning or dialing one if allowed)
-    /// and creates the REPL session in it. `connect_headers` become a remote
+    /// and creates the REPL session in it. `metadata` becomes a remote
     /// pool's stream metadata; a subprocess pool ignores them. Resolves to
     /// `{kind:'ok'}` or a failure turn object (`exhausted` for a checkout
     /// timeout), so the TypeScript layer raises the same classes as for a turn;
@@ -491,7 +491,7 @@ impl NativeSession {
         &self,
         env: &'env Env,
         telemetry_context: Option<NativeTelemetryContext>,
-        connect_headers: Option<Vec<NativeHeader>>,
+        metadata: Option<Vec<NativeHeader>>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let pool = Arc::clone(&self.pool);
         let mut closing = self.closing.clone();
@@ -501,7 +501,7 @@ impl NativeSession {
         let session_id = Arc::clone(&self.session_id);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
-        let connect_headers = connect_headers
+        let metadata = metadata
             .unwrap_or_default()
             .into_iter()
             .map(|header| (header.name, header.value))
@@ -522,7 +522,7 @@ impl NativeSession {
                                 &repl_config,
                                 CheckoutOptions::default()
                                     .with_telemetry(telemetry_context)
-                                    .with_connect_headers(connect_headers),
+                                    .with_metadata(metadata),
                             )
                             .await)
                     } => checkout?,

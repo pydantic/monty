@@ -34,7 +34,7 @@ export interface MontyRemoteOptions {
    * values. May return a promise. A resume after a server shutdown reuses
    * the metadata of the original checkout.
    */
-  connectHeaders?: () => Record<string, string> | Promise<Record<string, string>>
+  metadata?: () => Record<string, string> | Promise<Record<string, string>>
   /**
    * Client grace for server wall-time budgets (default 1, `null` disables).
    * CPU mode uses the server's supervisor and grace instead.
@@ -76,12 +76,12 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
  */
 export class MontyRemote {
   private readonly native: NativePool
-  private readonly connectHeaders: MontyRemoteOptions['connectHeaders']
+  private readonly metadata: MontyRemoteOptions['metadata']
   private closed = false
 
-  private constructor(native: NativePool, connectHeaders: MontyRemoteOptions['connectHeaders']) {
+  private constructor(native: NativePool, metadata: MontyRemoteOptions['metadata']) {
     this.native = native
-    this.connectHeaders = connectHeaders
+    this.metadata = metadata
   }
 
   /**
@@ -90,8 +90,8 @@ export class MontyRemote {
    * the first checkout.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
-    if (options.connectHeaders !== undefined && typeof options.connectHeaders !== 'function') {
-      throw new TypeError('connectHeaders must be a function returning a record of header names to values')
+    if (options.metadata !== undefined && typeof options.metadata !== 'function') {
+      throw new TypeError('metadata must be a function returning a record of header names to values')
     }
     const requestTimeout = options.requestTimeout === undefined ? 10 : options.requestTimeout
     const native = NativePool.remote({
@@ -104,7 +104,7 @@ export class MontyRemote {
       autoResume: options.autoResume ?? true,
     })
     await native.start()
-    return new MontyRemote(native, options.connectHeaders)
+    return new MontyRemote(native, options.metadata)
   }
 
   /**
@@ -127,7 +127,7 @@ export class MontyRemote {
     })
     // captured before the headers callback can await, as `Monty.checkout` does
     const telemetryContext = captureTelemetryContext()
-    const headers = this.connectHeaders === undefined ? [] : headerList(await this.connectHeaders())
+    const headers = this.metadata === undefined ? [] : headerList(await this.metadata())
     await enterSession(native, telemetryContext, headers)
     return new MontySession(native, modules)
   }
@@ -149,14 +149,14 @@ export class MontyRemote {
   }
 }
 
-/** Validates a `connectHeaders` result into the native header list. */
+/** Validates a `metadata` result into the native header list. */
 function headerList(headers: unknown): { name: string; value: string }[] {
   if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
-    throw new TypeError(`connectHeaders must return a record of header names to values, got ${describe(headers)}`)
+    throw new TypeError(`metadata must return a record of header names to values, got ${describe(headers)}`)
   }
   return Object.entries(headers).map(([name, value]) => {
     if (typeof value !== 'string') {
-      throw new TypeError(`connectHeaders must return string header values, got ${describe(value)} for '${name}'`)
+      throw new TypeError(`metadata must return string header values, got ${describe(value)} for '${name}'`)
     }
     return { name, value }
   })

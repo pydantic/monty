@@ -147,7 +147,7 @@ impl Pool {
     /// host context `options` carries.
     ///
     /// Takes an idle worker when one exists, spawns or dials a new one (with
-    /// `options.connect_headers`, preceded by the W3C trace headers of
+    /// `options.metadata`, preceded by the W3C trace headers of
     /// `options.telemetry`) while below `max_processes`, and otherwise waits
     /// up to `checkout_timeout` (forever when `None`) before failing with
     /// [`PoolError::Exhausted`].
@@ -157,13 +157,13 @@ impl Pool {
         // ahead of the caller's headers, which stay last-wins
         #[cfg(feature = "telemetry")]
         if let Some(telemetry) = &options.telemetry {
-            options.connect_headers.splice(0..0, telemetry.propagation_headers());
+            options.metadata.splice(0..0, telemetry.propagation_headers());
         }
-        let worker = self.inner.acquire_worker(&options.connect_headers).await?;
+        let worker = self.inner.acquire_worker(&options.metadata).await?;
         let config = &self.inner.config;
         let redial = (config.auto_resume && config.transport.is_remote()).then(|| Redial {
             repl: repl.clone(),
-            connect_headers: options.connect_headers.clone(),
+            metadata: options.metadata.clone(),
             #[cfg(feature = "telemetry")]
             telemetry: options.telemetry.clone(),
         });
@@ -244,15 +244,15 @@ const SHUTDOWN_EXIT_GRACE: Duration = Duration::from_millis(500);
 
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh
-    /// remote one (with `connect_headers` as its stream's metadata), waiting as
+    /// remote one (with `metadata` on its stream), waiting as
     /// capacity allows — and times that for `monty.pool.checkout.wait`.
-    pub(crate) async fn acquire_worker(&self, connect_headers: &[(String, String)]) -> Result<Worker, PoolError> {
+    pub(crate) async fn acquire_worker(&self, metadata: &[(String, String)]) -> Result<Worker, PoolError> {
         #[cfg(feature = "telemetry")]
         let started = Instant::now();
         // set by the acquisition itself: only it can tell an idle reuse from a
         // spawn, or either from a wait for capacity
         let mut outcome = "idle";
-        let worker = self.acquire_worker_inner(connect_headers, &mut outcome).await;
+        let worker = self.acquire_worker_inner(metadata, &mut outcome).await;
         #[cfg(feature = "telemetry")]
         if let Some(metrics) = &self.config.metrics {
             let outcome = match &worker {
@@ -266,11 +266,11 @@ impl PoolInner {
     }
 
     /// Reuses/spawns a local worker or opens a fresh remote stream (with
-    /// `connect_headers` as its metadata), waiting as capacity allows, and
+    /// `metadata` on its stream), waiting as capacity allows, and
     /// reports through `outcome` how it got one.
     async fn acquire_worker_inner(
         &self,
-        connect_headers: &[(String, String)],
+        metadata: &[(String, String)],
         outcome: &mut &'static str,
     ) -> Result<Worker, PoolError> {
         // remote streams are single-use and never pooled idle, so the
@@ -336,7 +336,7 @@ impl PoolInner {
                 // guard the reserved slot: a failed — or cancelled, for the
                 // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let mut worker = Worker::new(&self.config, self.remote.as_ref(), connect_headers).await?;
+                let mut worker = Worker::new(&self.config, self.remote.as_ref(), metadata).await?;
                 worker.id = id;
                 capacity.disarm();
                 return Ok(worker);

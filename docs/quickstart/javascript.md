@@ -397,7 +397,7 @@ await using session = await pool.checkout({ limits: { maxFeedDurationSecs: 30 } 
 console.log(await session.feedRun('1 + 1')) // 2
 ```
 
-`connectHeaders` is called at each checkout, and may return a promise, for the metadata on that checkout's session stream.
+`metadata` is called at each checkout, and may return a promise, for the metadata on that checkout's session stream.
 `requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
 `checkout()` also takes `ephemeral` and `profile`, which the server interprets.
 A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a

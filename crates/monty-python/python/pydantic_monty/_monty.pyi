@@ -1102,7 +1102,7 @@ class AsyncMontyRemote:
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = 10.0,
-        connect_headers: Callable[[], Mapping[str, str]] | None = None,
+        metadata: Callable[[], Mapping[str, str]] | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
         auto_resume: bool = True,
@@ -1137,7 +1137,7 @@ class AsyncMontyRemote:
                 keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
-            connect_headers: Called once per session, as it is entered and before
+            metadata: Called once per session, as it is entered and before
                 any wait for pool capacity, to produce extra `str` to `str`
                 request metadata for that session's stream — e.g. a token for
                 infrastructure in front of the worker. It runs synchronously

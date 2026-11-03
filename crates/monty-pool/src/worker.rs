@@ -88,19 +88,19 @@ struct SubprocessWorker {
 impl Worker {
     /// Creates a worker for `config`'s transport: a spawned child, or a stream
     /// opened on `remote` (the pool's channel, present exactly when the
-    /// transport is remote). `connect_headers` become the stream's request
+    /// transport is remote). `metadata` becomes the stream's request
     /// metadata; a subprocess makes no request and ignores them.
     pub(crate) async fn new(
         config: &PoolConfig,
         remote: Option<&Remote>,
-        connect_headers: &[(String, String)],
+        metadata: &[(String, String)],
     ) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, config.execution_clock),
             MontyTransport::Remote(_) => {
                 let remote = remote.expect("a remote pool holds its channel");
                 remote
-                    .open(connect_headers, config.max_decode_bytes)
+                    .open(metadata, config.max_decode_bytes)
                     .await
                     .map(|worker| Self::from_kind(WorkerKind::Remote(Box::new(worker))))
             }

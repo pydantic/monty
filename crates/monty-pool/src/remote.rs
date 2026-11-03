@@ -95,7 +95,7 @@ impl Remote {
         })
     }
 
-    /// Opens one session stream with `connect_headers` as its request
+    /// Opens one session stream with `metadata` as its request
     /// metadata (see [`crate::CheckoutOptions`]). Returns once the server has
     /// admitted the stream — sent its response headers — so a refusal
     /// (capacity, authentication, no worker) surfaces here as a
@@ -104,22 +104,22 @@ impl Remote {
     /// fails its first turn.
     pub(crate) async fn open(
         &self,
-        connect_headers: &[(String, String)],
+        metadata: &[(String, String)],
         max_decode_bytes: usize,
     ) -> Result<RemoteWorker, PoolError> {
         let url = &self.url;
-        let mut metadata = MetadataMap::new();
+        let mut map = MetadataMap::new();
         // a malformed name/value is a caller bug: fail the dial
-        for (name, value) in connect_headers {
+        for (name, value) in metadata {
             let key = MetadataKey::from_bytes(name.as_bytes())
-                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
+                .map_err(|err| PoolError::Spawn(format!("{url}: metadata entry {name:?}: {err}")))?;
             let value = MetadataValue::try_from(value.as_str())
-                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
+                .map_err(|err| PoolError::Spawn(format!("{url}: metadata entry {name:?} value: {err}")))?;
             // never indexed: a token must not sit in the connection's HPACK
             // table, which every stream on it shares
             let mut value = value;
             value.set_sensitive(true);
-            metadata.insert(key, value);
+            map.insert(key, value);
         }
         let mut grpc = Grpc::new(self.channel.clone())
             .max_decoding_message_size(MAX_FRAME_LEN as usize)
@@ -128,11 +128,7 @@ impl Remote {
         let mut retries = 0;
         let (requests, response) = loop {
             let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
-            let request = Request::from_parts(
-                metadata.clone(),
-                Extensions::default(),
-                ReceiverStream::new(request_body),
-            );
+            let request = Request::from_parts(map.clone(), Extensions::default(), ReceiverStream::new(request_body));
             let open = async {
                 grpc.ready().await.map_err(|err| Status::from_error(err.into()))?;
                 grpc.streaming(request, PathAndQuery::from_static(SESSION_PATH), BytesCodec)

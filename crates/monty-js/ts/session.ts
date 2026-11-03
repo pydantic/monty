@@ -1711,9 +1711,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 export async function enterSession(
   native: NativeSession,
   telemetryContext: unknown,
-  connectHeaders?: { name: string; value: string }[],
+  metadata?: { name: string; value: string }[],
 ): Promise<void> {
-  const turn = (await native.enter(telemetryContext, connectHeaders)) as EnterTurn
+  const turn = (await native.enter(telemetryContext, metadata)) as EnterTurn
   switch (turn.kind) {
     case 'ok':
       return

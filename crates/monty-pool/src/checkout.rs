@@ -144,7 +144,7 @@ pub struct CheckoutOptions {
     /// last-wins, including against the `traceparent` from `telemetry`; the
     /// `user-agent` is set per connection and cannot be overridden here. A
     /// malformed name or value fails the dial.
-    pub connect_headers: Vec<(String, String)>,
+    pub metadata: Vec<(String, String)>,
 }
 
 impl CheckoutOptions {
@@ -158,20 +158,20 @@ impl CheckoutOptions {
 
     /// Sets the request metadata for this checkout's remote stream.
     #[must_use]
-    pub fn with_connect_headers(mut self, connect_headers: Vec<(String, String)>) -> Self {
-        self.connect_headers = connect_headers;
+    pub fn with_metadata(mut self, metadata: Vec<(String, String)>) -> Self {
+        self.metadata = metadata;
         self
     }
 }
 
-/// Names each connect header, never its value: monty never interprets the
+/// Names each metadata entry, never its value: monty never interprets the
 /// values, but a caller may send e.g. a token for a proxy/relay in front of
 /// the worker, and options get logged.
 impl fmt::Debug for CheckoutOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let header_names: Vec<&str> = self.connect_headers.iter().map(|(name, _)| name.as_str()).collect();
+        let header_names: Vec<&str> = self.metadata.iter().map(|(name, _)| name.as_str()).collect();
         f.debug_struct("CheckoutOptions")
-            .field("connect_headers", &header_names)
+            .field("metadata", &header_names)
             .finish_non_exhaustive()
     }
 }
@@ -768,7 +768,7 @@ pub(crate) struct Redial {
     /// Re-sent as the new worker's `Configure`.
     pub(crate) repl: ReplConfig,
     /// The request metadata the checkout first dialed with.
-    pub(crate) connect_headers: Vec<(String, String)>,
+    pub(crate) metadata: Vec<(String, String)>,
     /// Parents the new worker's session span as the first one was.
     #[cfg(feature = "telemetry")]
     pub(crate) telemetry: Option<TelemetryContext>,
@@ -1668,7 +1668,7 @@ impl Checkout {
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
-        let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
+        let worker = self.pool.acquire_worker(&redial.metadata).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);

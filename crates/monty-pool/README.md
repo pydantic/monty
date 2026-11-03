@@ -274,11 +274,11 @@ input so adapters that do not support metrics continue to work.
   the stream was sent — is opened again, up to twice, within the same `connect_timeout`. These workers are single-use:
   a fresh stream per checkout, never prewarmed or returned to the pool. Isolation is the
   remote host's responsibility — a remote crash is observed as the stream ending.
-  `Pool::checkout_with` takes `CheckoutOptions::connect_headers`, extra request metadata
+  `Pool::checkout_with` takes `CheckoutOptions::metadata`, extra request metadata
   for that checkout's stream — e.g. a token for a relay in front of the worker. Every
   stream carries `user-agent: monty-pool/<version>` (tonic appends its own), and with the
   `telemetry` feature the `traceparent` (and `tracestate`) of `CheckoutOptions::telemetry`,
-  so server-side spans join the caller's trace; a `connect_headers` entry replaces the
+  so server-side spans join the caller's trace; a `metadata` entry replaces the
   trace metadata and is put in front of the user agent. A `Ping` event from the server is
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the

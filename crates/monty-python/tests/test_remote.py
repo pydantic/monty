@@ -314,14 +314,14 @@ async def test_separate_checkouts_are_isolated(relay_url: str):
     assert exc_info.value.display(format='msg') == snapshot("name 'leaked' is not defined")
 
 
-async def test_connect_headers_sent_per_checkout(relay_url_capturing_metadata: tuple[str, list[dict[str, str]]]):
-    """`connect_headers` is called once per checkout, on the checking-out task,
+async def test_metadata_sent_per_checkout(relay_url_capturing_metadata: tuple[str, list[dict[str, str]]]):
+    """`metadata` is called once per checkout, on the checking-out task,
     so it sees that task's contextvars — the `traceparent` use case."""
     url, captured = relay_url_capturing_metadata
     trace_id: ContextVar[str] = ContextVar('trace_id')
     calls = 0
 
-    def connect_headers() -> dict[str, str]:
+    def provide_metadata() -> dict[str, str]:
         nonlocal calls
         calls += 1
         return {'traceparent': trace_id.get()}
@@ -333,21 +333,21 @@ async def test_connect_headers_sent_per_checkout(relay_url_capturing_metadata: t
         async with pool.checkout() as session:
             return await session.feed_run('1 + 1')
 
-    async with AsyncMontyRemote(url, request_timeout=30.0, connect_headers=connect_headers) as pool:
+    async with AsyncMontyRemote(url, request_timeout=30.0, metadata=provide_metadata) as pool:
         results = await asyncio.gather(checkout_as('00-aaa-111-01'), checkout_as('00-bbb-222-01'))
     assert results == snapshot([2, 2])
     assert calls == snapshot(2)
     assert sorted(metadata['traceparent'] for metadata in captured) == snapshot(['00-aaa-111-01', '00-bbb-222-01'])
 
 
-async def test_connect_headers_accepts_any_mapping(relay_url_capturing_metadata: tuple[str, list[dict[str, str]]]):
+async def test_metadata_accepts_any_mapping(relay_url_capturing_metadata: tuple[str, list[dict[str, str]]]):
     """Any `Mapping` is accepted, not just `dict`."""
     url, captured = relay_url_capturing_metadata
 
-    def connect_headers() -> MappingProxyType[str, str]:
+    def provide_metadata() -> MappingProxyType[str, str]:
         return MappingProxyType({'x-token': 't'})
 
-    async with AsyncMontyRemote(url, request_timeout=30.0, connect_headers=connect_headers) as pool:
+    async with AsyncMontyRemote(url, request_timeout=30.0, metadata=provide_metadata) as pool:
         async with pool.checkout() as session:
             assert await session.feed_run('1 + 1') == snapshot(2)
     (metadata,) = captured
@@ -356,28 +356,28 @@ async def test_connect_headers_accepts_any_mapping(relay_url_capturing_metadata:
     assert metadata['user-agent'].startswith('monty-pool/')
 
 
-def test_connect_headers_not_callable():
+def test_metadata_not_callable():
     not_callable: Any = {'x-token': 't'}
     with pytest.raises(TypeError) as exc_info:
-        AsyncMontyRemote('http://127.0.0.1:9', connect_headers=not_callable)
+        AsyncMontyRemote('http://127.0.0.1:9', metadata=not_callable)
     assert exc_info.value.args[0] == snapshot("'dict' object is not callable")
 
 
-async def test_connect_headers_failure_leaves_the_pool_usable(
+async def test_metadata_failure_leaves_the_pool_usable(
     relay_url_capturing_metadata: tuple[str, list[dict[str, str]]],
 ):
     """A failing callback checks nothing out, so the next checkout works normally."""
     url, captured = relay_url_capturing_metadata
     attempts = 0
 
-    def connect_headers() -> dict[str, str]:
+    def provide_metadata() -> dict[str, str]:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise ValueError('no token yet')
         return {'x-token': 't'}
 
-    async with AsyncMontyRemote(url, request_timeout=30.0, connect_headers=connect_headers) as pool:
+    async with AsyncMontyRemote(url, request_timeout=30.0, metadata=provide_metadata) as pool:
         with pytest.raises(ValueError) as exc_info:
             async with pool.checkout():
                 pass
@@ -387,17 +387,17 @@ async def test_connect_headers_failure_leaves_the_pool_usable(
     assert [metadata.get('x-token') for metadata in captured] == snapshot(['t'])
 
 
-async def test_connect_headers_not_called_on_an_inactive_pool():
+async def test_metadata_not_called_on_an_inactive_pool():
     """The pool is checked before the callback runs, so a pool that was never
     entered raises without calling it."""
     calls = 0
 
-    def connect_headers() -> dict[str, str]:
+    def provide_metadata() -> dict[str, str]:
         nonlocal calls
         calls += 1
         return {}
 
-    pool = AsyncMontyRemote('http://127.0.0.1:9', connect_headers=connect_headers)
+    pool = AsyncMontyRemote('http://127.0.0.1:9', metadata=provide_metadata)
     with pytest.raises(RuntimeError) as exc_info:
         async with pool.checkout():
             pass
@@ -412,35 +412,35 @@ def raise_no_token() -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    'connect_headers, exc_type, message',
+    'metadata, exc_type, message',
     [
         (
             lambda: [('x-token', 't')],
             TypeError,
-            snapshot("connect_headers must return a mapping of str to str, got 'list'"),
+            snapshot("metadata must return a mapping of str to str, got 'list'"),
         ),
         (
             lambda: {1: 't'},
             TypeError,
-            snapshot("connect_headers must return a mapping of str to str, got 'int' header name"),
+            snapshot("metadata must return a mapping of str to str, got 'int' header name"),
         ),
         (
             lambda: {'x-token': 1},
             TypeError,
-            snapshot("connect_headers must return a mapping of str to str, got 'int' header value"),
+            snapshot("metadata must return a mapping of str to str, got 'int' header value"),
         ),
         (
             lambda: {'bad header': 't'},
             RuntimeError,
             snapshot(
-                'failed to spawn monty worker: http://127.0.0.1:9: connect header "bad header": invalid gRPC metadata key name'
+                'failed to spawn monty worker: http://127.0.0.1:9: metadata entry "bad header": invalid gRPC metadata key name'
             ),
         ),
         (
             lambda: {'x-token': 'a\nb'},
             RuntimeError,
             snapshot(
-                'failed to spawn monty worker: http://127.0.0.1:9: connect header "x-token" value: failed to parse metadata value'
+                'failed to spawn monty worker: http://127.0.0.1:9: metadata entry "x-token" value: failed to parse metadata value'
             ),
         ),
         (raise_no_token, ValueError, snapshot('no token available')),
@@ -452,12 +452,10 @@ def raise_no_token() -> dict[str, str]:
         ),
     ],
 )
-async def test_connect_headers_errors_raise_on_entry(
-    connect_headers: Callable[[], Any], exc_type: type[Exception], message: str
-):
+async def test_metadata_errors_raise_on_entry(metadata: Callable[[], Any], exc_type: type[Exception], message: str):
     """The callback runs and its result is checked as the session is entered,
     before any dial, so an unreachable URL is fine."""
-    async with AsyncMontyRemote('http://127.0.0.1:9', connect_headers=connect_headers) as pool:
+    async with AsyncMontyRemote('http://127.0.0.1:9', metadata=metadata) as pool:
         with pytest.raises(exc_type) as exc_info:
             async with pool.checkout():
                 pass
