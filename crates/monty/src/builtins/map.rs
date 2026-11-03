@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
+    resource_checks::push_value_checked,
     types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
@@ -77,7 +78,8 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         [] => {
             while let Some(item) = first_iter.py_next(vm)? {
                 let args = ArgValues::One(item);
-                out.push(vm.evaluate_function(function, args)?);
+                let mapped = vm.evaluate_function(function, args)?;
+                push_value_checked(vm, out, mapped)?;
             }
         }
         // map(f, iter1, iter2)
@@ -89,7 +91,8 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 };
                 let (arg1, vm) = arg1_guard.into_parts();
                 let args = ArgValues::Two(arg1, arg2);
-                out.push(vm.evaluate_function(function, args)?);
+                let mapped = vm.evaluate_function(function, args)?;
+                push_value_checked(vm, out, mapped)?;
             }
         }
         // map(f, iter1, iter2, *iterables)
@@ -110,7 +113,8 @@ pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                 kwargs: KwargsValues::Empty,
             };
 
-            out.push(vm.evaluate_function(function, args)?);
+            let mapped = vm.evaluate_function(function, args)?;
+            push_value_checked(vm, out, mapped)?;
         },
     }
 

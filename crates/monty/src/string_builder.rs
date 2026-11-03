@@ -239,6 +239,23 @@ fn approve_growth(approved: &mut usize, needed: usize, tracker: &ResourceTracker
     Ok(())
 }
 
+/// Preflights appending `push_len` bytes to a buffer holding `result_len` of `capacity` bytes.
+///
+/// For loops that also need `&mut VM` per step, such as `join` draining its iterable, and so
+/// cannot hold a builder's `&ResourceTracker` borrow. Charges `Vec`'s doubling increment.
+pub(crate) fn check_push_growth(
+    capacity: usize,
+    push_len: usize,
+    result_len: usize,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
+    if push_len == 0 {
+        return Ok(());
+    }
+    let pending = ResourceTracker::growth_bytes(result_len + push_len - 1, capacity, 1);
+    tracker.check_pending_allocation(pending)
+}
+
 const MAX_STRING_CAPACITY: usize = isize::MAX as usize;
 
 /// Fill bytes appended between tracker clock polls by `push_repeated`.

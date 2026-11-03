@@ -25,7 +25,7 @@ use crate::{
     percent_format::percent_format,
     resource_checks::{check_repeat_size, check_replace_size},
     str_format::str_format,
-    string_builder::StringBuilder,
+    string_builder::{StringBuilder, check_push_growth},
     types::{
         LazyHeapSet, Type,
         long_int::repeat_count,
@@ -741,22 +741,29 @@ fn str_join<'h>(separator: &impl HeapView<'h, str>, iterable: Value, vm: &mut VM
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
-        if index > 0 {
-            result.push_str(separator.get(vm.heap));
-        }
 
         // `as_str` borrows interned, inline, and heap-backed strings without copying.
-        if let Some(text) = item.as_str(vm) {
-            result.push_str(text);
-        } else {
+        let Some(text) = item.as_str(vm) else {
             let t = item.py_type_name(vm);
             return Err(ExcType::type_error_join_item(index, &t));
+        };
+
+        if index > 0 {
+            push_str_checked(&mut result, separator.get(vm.heap), vm)?;
         }
+        push_str_checked(&mut result, text, vm)?;
         index += 1;
     }
 
     // Allocate result (uses interned empty string if result is empty)
     Ok(allocate_string(result, vm.heap))
+}
+
+/// Appends `s` to `join`'s result, preflighting any growth; see [`check_push_growth`].
+fn push_str_checked(result: &mut String, s: &str, vm: &VM<'_>) -> RunResult<()> {
+    check_push_growth(result.capacity(), s.len(), result.len(), &vm.heap.tracker)?;
+    result.push_str(s);
+    Ok(())
 }
 
 // =============================================================================

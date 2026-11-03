@@ -6,6 +6,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
+    resource_checks::push_value_checked,
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
@@ -78,7 +79,7 @@ pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // Create tuple from collected items
         let (tuple_items, vm) = items_guard.into_parts();
         let tuple_val = allocate_tuple(tuple_items, vm.heap);
-        result.push(tuple_val);
+        push_value_checked(vm, result, tuple_val)?;
     }
 
     let (result, vm) = result_guard.into_parts();
