@@ -165,8 +165,14 @@ impl MontyRepl {
     /// [`MontyRun::with_os_policy`](crate::MontyRun::with_os_policy).
     #[must_use]
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
-        self.os_policy = Arc::new(os_policy);
+        self.set_os_policy(os_policy);
         self
+    }
+
+    /// Replaces the session's OS-call policies in place, for a host restoring
+    /// a dump under its own policy (see [`ReplProgress::set_os_policy`]).
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        self.os_policy = Arc::new(os_policy);
     }
 
     /// Switches the sandbox working directory (initially `/`).
@@ -811,6 +817,22 @@ impl ReplProgress {
             Self::Complete { repl, .. } => repl.tracker_mut(),
         }
     }
+
+    /// Replaces the OS-call policies of the session and of a suspended snippet.
+    ///
+    /// A dump carries the policy it was taken under; hosts restoring it call this
+    /// so the restoring side's clock, zone, sleep and entropy policy governs every
+    /// later call. A call already suspended keeps the shape it was issued with.
+    pub fn set_os_policy(&mut self, os_policy: OsPolicy) {
+        let os_policy = Arc::new(os_policy);
+        match self {
+            Self::FunctionCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::OsCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::ResolveFutures(state) => state.set_os_policy(os_policy),
+            Self::NameLookup(lookup) => lookup.snapshot.set_os_policy(os_policy),
+            Self::Complete { repl, .. } => repl.os_policy = os_policy,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,6 +1108,12 @@ pub struct ReplResolveFutures {
 }
 
 impl ReplResolveFutures {
+    /// Points the session and the blocked snippet's program at `os_policy`,
+    /// as [`ReplSnapshot`] does for the other suspensions.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Extracts the REPL session, restoring globals from the suspended VM state.
     ///
     /// As with the other REPL snapshot types, globals live inside the VM
@@ -1358,6 +1386,12 @@ pub(crate) struct ReplSnapshot {
 }
 
 impl ReplSnapshot {
+    /// Points both the session and the suspended snippet's program at `os_policy`,
+    /// which a resumed VM reads from the program.
+    fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
+        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+    }
+
     /// Raises `exc` uncatchably at the suspension point.
     fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1629,4 +1663,11 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         ),
         _ => false,
     }
+}
+
+/// Gives a suspended session and its snippet's program the same `os_policy`;
+/// the resumed VM reads the program's copy, later snippets the session's.
+fn set_session_os_policy(repl: &mut MontyRepl, executor: &mut Executor, os_policy: Arc<OsPolicy>) {
+    executor.program.os_policy = Arc::clone(&os_policy);
+    repl.os_policy = os_policy;
 }

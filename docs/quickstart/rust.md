@@ -293,6 +293,8 @@ assert_eq!(result, MontyObject::tuple([MontyObject::int(2023), MontyObject::floa
 ```
 
 Every pool session takes the same struct as `ReplConfig::os_policy` (see [the clock](../security.md#the-clock)).
+A loaded dump keeps the policy it was taken under; call `MontyRepl::set_os_policy`, or `ReplProgress::set_os_policy`
+for a suspended dump, to apply your own, as pool workers do with the restoring checkout's policy.
 `os.urandom()` is the one call with no in-process answer: under `run` it raises `NotImplementedError`, under `start`
 it pauses for the host (see [random](../limitations/random.md)).
 

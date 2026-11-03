@@ -876,6 +876,7 @@ class MontySession:
 
         The dump restores its `script_name` and type-check state.
         Checkout limits cap the restored limits. The execution clock must match.
+        The `checkout()`'s `os_policy` replaces the dump's.
         The class-instance store starts empty — it is host state and
         never part of a dump, so restored `ClassInstance` values fall back to
         `MontyClassProxy` stand-ins and method calls on them fail. Raises if
@@ -901,6 +902,7 @@ class MontySession:
         Valid only on a fresh session, before any feed or load; raises
         `RuntimeError` otherwise. The dump restores its `script_name` and type-check state.
         Checkout limits cap the restored limits. The execution clock must match.
+        The `checkout()`'s `os_policy` replaces the dump's.
         The class-instance store starts empty — it is host state and
         never part of a dump, so restored `ClassInstance` values fall back to
         `MontyClassProxy` stand-ins and method calls on them fail. Raises if

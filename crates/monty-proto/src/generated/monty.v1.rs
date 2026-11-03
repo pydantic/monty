@@ -950,6 +950,8 @@ pub struct Dump {}
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`. A relay
 /// without session storage answers `Error` and the session carries on.
+/// The restored session takes the preceding `Configure`'s `os_policy` (the
+/// default without one), not the policy it was dumped under.
 #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Load {
