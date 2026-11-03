@@ -554,7 +554,7 @@ class MontyDisconnectError(MontyError):
 
     @property
     def stage(self) -> str | None:
-        """`send` or `receive` for the first recorded failure, or `None` if unavailable."""
+        """Where the failure was observed (`receive`, the stream's end being read), or `None` if unavailable."""
 
     @property
     def status_code(self) -> str | None:

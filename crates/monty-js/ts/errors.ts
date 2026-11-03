@@ -215,7 +215,7 @@ export class MontyCrashedError extends MontyError {
 
 /** The status or transport failure that ended a remote session's stream. */
 export interface DisconnectDetails {
-  /** Where the failure was first observed: `send` or `receive`. */
+  /** Where the failure was observed: `receive`, the stream's end being read. */
   stage?: string
   /**
    * The gRPC status code the server ended the stream with, by its canonical
@@ -244,7 +244,7 @@ export interface DisconnectDetails {
  * whether the in-flight request ran. The session is lost; check out a new one.
  */
 export class MontyDisconnectError extends MontyError {
-  /** Where the failure was first observed, `send` or `receive`, or `null`. */
+  /** Where the failure was observed (`receive`, the stream's end being read), or `null`. */
   readonly stage: string | null
   /** The status code the server ended the stream with, by name, or `null`. */
   readonly statusCode: string | null

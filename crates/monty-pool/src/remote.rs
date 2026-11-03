@@ -174,26 +174,22 @@ pub(crate) struct RemoteWorker {
 
 impl RemoteWorker {
     /// Sends one request, returning its encoded size. An oversize request is
-    /// rejected before any I/O so the stream stays in sync; a stream the
-    /// server already ended fails as [`FrameError::Truncated`].
+    /// rejected before any I/O so the stream stays in sync; a torn-down
+    /// worker fails as [`FrameError::Truncated`].
+    ///
+    /// A stream the server ended under the request is not a failure here:
+    /// what it ended with — a final event such as a deadline's exception, then
+    /// its status — is on the read side, so the turn goes on to [`Self::recv`]
+    /// and reports the server's last word rather than a bare send failure.
     pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<usize, FrameError> {
         let body = encode_to_capped_vec(request)?;
         let len = body.len();
-        let sent = match &self.requests {
-            Some(requests) => requests.send(Bytes::from(body)).await.is_ok(),
-            None => false,
-        };
-        if sent {
-            Ok(len)
-        } else {
-            // the stream ended under the request: the reader records the
-            // server's status as it finishes, so let it get there first and
-            // record only what no status explains
-            let _ = timeout(STATUS_GRACE, &mut self.reader).await;
-            let _ = self
-                .disconnect
-                .set(RemoteDisconnect::failure("send", "session stream already ended"));
-            Err(FrameError::Truncated)
+        match &self.requests {
+            Some(requests) => {
+                let _ = requests.send(Bytes::from(body)).await;
+                Ok(len)
+            }
+            None => Err(FrameError::Truncated),
         }
     }
 
@@ -250,10 +246,6 @@ const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"))
 /// dead TCP peer, not a vanished server beyond a proxy (that is `Ping`'s job).
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How long a failed `send` waits for the reader to record the status that
-/// ended the stream, before recording the bare failure instead.
-const STATUS_GRACE: Duration = Duration::from_millis(100);
 
 /// How long `close` waits for the server to end its side after the half-close.
 /// Not a latency budget (no acknowledgement is awaited beyond stream end) — it
