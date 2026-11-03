@@ -263,4 +263,7 @@ fn method_call_on_an_alias_of_a_host_class_reaches_the_host() {
     );
     let call = progress.into_function_call().expect("expected the host method call");
     assert_eq!(call.function_name, "missing");
+    assert_eq!(call.object_id, Some(CLASS_ID));
+    let result = call.resume(MontyObject::int(1), PrintWriter::Stdout).unwrap();
+    assert_eq!(result.into_complete(), Some(MontyObject::int(1)));
 }
