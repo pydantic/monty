@@ -48,6 +48,8 @@ pub enum Cause {
     CallerCap,
     /// The caller presented no acceptable credentials.
     Unauthenticated,
+    /// The caller's credential is valid but not allowed this project or profile.
+    PermissionDenied,
     /// No worker could be reached to serve the session.
     WorkerUnavailable,
     /// The client broke the protocol (a malformed frame, a second request mid-turn).
@@ -63,6 +65,7 @@ impl Cause {
             Self::OutOfMemory | Self::Capacity | Self::CallerCap => Code::ResourceExhausted,
             Self::ServerShutdown | Self::WorkerUnavailable => Code::Unavailable,
             Self::Unauthenticated => Code::Unauthenticated,
+            Self::PermissionDenied => Code::PermissionDenied,
             Self::ProtocolViolation => Code::InvalidArgument,
         }
     }

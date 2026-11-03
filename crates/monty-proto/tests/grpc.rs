@@ -6,7 +6,7 @@ use tonic::{Code, Status};
 
 /// Every cause, with the trailer value and code the wire has carried since
 /// the transport was introduced.
-const CAUSES: [(Cause, &str, Code); 10] = [
+const CAUSES: [(Cause, &str, Code); 11] = [
     (Cause::IdleTimeout, "idle_timeout", Code::DeadlineExceeded),
     (Cause::SessionTimeout, "session_timeout", Code::DeadlineExceeded),
     (Cause::TurnTimeout, "turn_timeout", Code::DeadlineExceeded),
@@ -15,6 +15,7 @@ const CAUSES: [(Cause, &str, Code); 10] = [
     (Cause::Capacity, "capacity", Code::ResourceExhausted),
     (Cause::CallerCap, "caller_cap", Code::ResourceExhausted),
     (Cause::Unauthenticated, "unauthenticated", Code::Unauthenticated),
+    (Cause::PermissionDenied, "permission_denied", Code::PermissionDenied),
     (Cause::WorkerUnavailable, "worker_unavailable", Code::Unavailable),
     (Cause::ProtocolViolation, "protocol_violation", Code::InvalidArgument),
 ];

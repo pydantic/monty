@@ -79,7 +79,8 @@ If the server ended the stream with a gRPC status, `status_code` holds its canon
 `RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...), or `OK` when the server simply finished the stream, and `status_message` its
 message.
 A `monty-server` names why in `cause`: `idle_timeout`, `session_timeout`, `turn_timeout`, `out_of_memory`,
-`server_shutdown`, `capacity`, `caller_cap`, `unauthenticated`, `worker_unavailable` or `protocol_violation`.
+`server_shutdown`, `capacity`, `caller_cap`, `unauthenticated`, `permission_denied`, `worker_unavailable` or
+`protocol_violation`.
 An `out_of_memory` cause is raised as the same `MemoryError` a local out-of-memory kill raises, and a
 `server_shutdown` cause as [`MontyShutdown`][pydantic_monty.MontyShutdown] with no dump, so neither reaches this error.
 A connection failure or protocol failure supplies `transport_error` text instead, with no status.
