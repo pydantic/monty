@@ -34,7 +34,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
+        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyClass, PyTrait, Type, allocate_string,
         pyattrs::PyAttrs, str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -1876,12 +1876,12 @@ impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
     }
 
     #[pyclassmethod]
-    fn from_float(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_float(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_float(vm, args).map(CallResult::Value)
     }
 
     #[pyclassmethod]
-    fn from_number(_: StaticStrings, _: Value, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }
 }
