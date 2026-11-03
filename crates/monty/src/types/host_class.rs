@@ -7,7 +7,7 @@ use std::{
 
 use monty_types::{MontyUuid, unstable::ClassTypeNode};
 
-use super::{Dict, LazyHeapSet, PyTrait, str::allocate_string};
+use super::{Dict, LazyHeapSet, PyTrait, list::repr_should_truncate, str::allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -314,7 +314,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
 ///
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
-/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`.
+/// `None` value `<?>`, and exhausting a time limit truncates `...[timeout]`
+/// (a memory limit raises instead, see [`repr_should_truncate`]).
 ///
 /// `field` is resolved immediately before that field is written, never all up
 /// front, so a `__repr__` that mutates a later field is observed — matching the
@@ -337,7 +338,7 @@ pub(crate) fn write_dataclass_repr<'h>(
         if i > 0 {
             // Same between-item checkpoint as sequence repr, so a wide instance
             // cannot outrun its time limit.
-            if vm.heap.tracker.check_memory_time_every(i).is_err() {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }

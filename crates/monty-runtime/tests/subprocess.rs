@@ -1174,6 +1174,31 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = [None] * 40_000\nx += x", 1_962_551),
         ("t = (None,) * 40_000\nt + t", 1_322_547),
         ("x = [None] * 40_000\nx.copy()", 1_322_293),
+        // A container repr polls the limits between items: crossing the memory
+        // limit raises rather than truncating the way a timeout does.
+        ("x = [None] * 50_000\nlen(repr(x))", 1_105_423),
+        // The other container reprs poll the same way, each from its own loop.
+        (
+            "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
+            1_493_714,
+        ),
+        (
+            "from collections import Counter\ns = 'x' * 200\nc = Counter({(i, s): 1 for i in range(4_000)})\nlen(repr(c))",
+            1_103_442,
+        ),
+        (
+            "import functools\ns = 'x' * 200\np = functools.partial(print, *([s] * 5_000))\nlen(repr(p))",
+            1_337_033,
+        ),
+        (
+            "import functools\ns = 'x' * 400\np = functools.partial(print, **{f'k{i}': s for i in range(2_500)})\nlen(repr(p))",
+            1_388_853,
+        ),
+        ("s = 'x' * 200\ng = list[(s,) * 5_000]\nlen(repr(g))", 1_172_136),
+        (
+            "import typing\ns = 'x' * 600\nu = typing.Union[tuple(list[i, s] for i in range(2_000))]\nlen(repr(u))",
+            1_527_745,
+        ),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
         ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_423),
@@ -1284,7 +1309,18 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
     ];
 
-    for (code, expected) in cases {
+    // A dataclass repr polls between fields, so it needs more fields than a
+    // literal case should spell out.
+    let fields = (0..200)
+        .map(|i| format!("    f{i}: object\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let dataclass = format!(
+        "from dataclasses import dataclass\ns = 'x' * 6_000\n@dataclass\nclass C:\n{fields}c = C(*([s] * 200))\nlen(repr(c))"
+    );
+    let cases = cases.map(|(code, expected)| (code.to_owned(), expected));
+    for (code, expected) in cases.into_iter().chain([(dataclass, 1_212_101)]) {
+        let code = code.as_str();
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(1024 * 1024));
         let (_, event) = child.feed(code);

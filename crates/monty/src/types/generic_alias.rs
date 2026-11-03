@@ -26,7 +26,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time,
+        BuiltinType, LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_should_truncate,
         tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -186,7 +186,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         }
         for index in 0..count {
             if index > 0 {
-                if repr_check_time(index, vm) {
+                if repr_should_truncate(index, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }

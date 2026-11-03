@@ -8,7 +8,9 @@ use std::{
 use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
+use super::{
+    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_should_truncate,
+};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -1156,7 +1158,7 @@ impl<'h> HeapRead<'h, Dict> {
             defer_drop!(pair, vm);
             let (key, value) = pair;
             if printed > 0 {
-                if repr_check_time(printed, vm) {
+                if repr_should_truncate(printed, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
@@ -1204,7 +1206,7 @@ impl<'h> HeapRead<'h, Dict> {
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
-                if repr_check_time(n, vm) {
+                if repr_should_truncate(n, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
