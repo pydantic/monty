@@ -84,8 +84,9 @@ async def relay_url_capturing_metadata() -> AsyncIterator[tuple[str, list[dict[s
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         captured.append({key: value for key, value in context.invocation_metadata() or () if isinstance(value, str)})
+        child = await relay.spawn_child(monty_bin)
         await relay.admit(context)
-        async for event in relay.bridge_stream(requests, monty_bin):
+        async for event in relay.bridge_stream(requests, child):
             yield event
 
     server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
@@ -659,6 +660,43 @@ async def test_refused_stream_fails_the_checkout():
     assert exc_info.value.args[0] == snapshot(
         f'failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity'
     )
+
+
+async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
+    """A relay whose child cannot start refuses the stream before admitting it,
+    so the checkout fails with the status rather than a session that then fails."""
+    relay = _load_relay_script()
+    server, url = await relay.start_relay(str(tmp_path / 'no-such-monty'), '127.0.0.1', 0)
+    try:
+        async with AsyncMontyRemote(url) as pool:
+            with pytest.raises(RuntimeError) as exc_info:
+                async with pool.checkout():
+                    pass
+        assert exc_info.value.args[0].startswith(
+            f'failed to spawn monty worker: {url}: UNAVAILABLE: cannot start the monty subprocess: '
+        )
+    finally:
+        await server.stop(None)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='the stand-in child is a shebang script')
+async def test_child_exiting_with_a_status_ends_the_stream_with_internal(tmp_path: Path):
+    """A child that dies ends the stream with `INTERNAL` naming its exit status,
+    distinct from a session the server simply finished."""
+    script = tmp_path / 'monty'
+    script.write_text(f'#!{sys.executable}\nimport sys\nsys.exit(3)\n')
+    script.chmod(0o755)
+    relay = _load_relay_script()
+    server, url = await relay.start_relay(str(script), '127.0.0.1', 0)
+    try:
+        async with AsyncMontyRemote(url, auto_resume=False) as pool:
+            with pytest.raises(MontyDisconnectError) as caught:
+                async with pool.checkout():
+                    pass
+        assert caught.value.status_code == 'INTERNAL'
+        assert caught.value.status_message == 'monty subprocess exited with status 3'
+    finally:
+        await server.stop(None)
 
 
 async def test_out_of_memory_status_raises_memory_error():

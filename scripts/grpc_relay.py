@@ -27,8 +27,8 @@ Usage:
 can read it back before connecting.
 
 The pieces are importable too (`start_relay`, `SessionHandler`, `admit`,
-`bridge_stream`), so a test can host the same bridge in-process and wrap it
-with its own behaviour, e.g. to record each stream's metadata.
+`spawn_child`, `bridge_stream`), so a test can host the same bridge in-process
+and wrap it with its own behaviour, e.g. to record each stream's metadata.
 """
 
 from __future__ import annotations
@@ -58,32 +58,59 @@ MAX_MESSAGE_BYTES = 256 * 1024 * 1024 + 1024
 # A stream handler: the pool's request messages in, the child's events out.
 Behaviour = Callable[[AsyncIterator[bytes], aio.ServicerContext[bytes, bytes]], AsyncIterator[bytes]]
 
+# Child frames queued for a gRPC reader. Bounded so a reader slower than a
+# print-heavy child fills the queue and then the child's stdout pipe, which
+# stalls the child rather than growing the relay's memory.
+EVENT_QUEUE_DEPTH = 16
 
-async def bridge_stream(requests: AsyncIterator[bytes], monty_bin: str) -> AsyncIterator[bytes]:
-    """Bridges one session stream to a fresh `monty subprocess` child.
 
-    Pumps messages in both directions until either side ends, then tears the
-    child down. Each gRPC message is one protocol frame; the same frame is
-    length-prefixed on stdio, so the only work is adding/stripping the prefix.
+class ChildExited(Exception):
+    """The child ended the session by exiting with a non-zero status."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f'monty subprocess exited with status {status}')
+        self.status = status
+
+
+async def spawn_child(monty_bin: str) -> asyncio.subprocess.Process:
+    """Starts a fresh `monty subprocess` child for one stream.
+
+    Separate from the bridge so a handler can spawn *before* admitting the
+    stream: a child that cannot start then refuses the checkout rather than
+    failing the session.
     """
-    child = await asyncio.create_subprocess_exec(
+    return await asyncio.create_subprocess_exec(
         monty_bin,
         'subprocess',
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
     )
+
+
+async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subprocess.Process) -> AsyncIterator[bytes]:
+    """Bridges one session stream to `child`, a `monty subprocess`.
+
+    Pumps messages in both directions until either side ends, then tears the
+    child down. Each gRPC message is one protocol frame; the same frame is
+    length-prefixed on stdio, so the only work is adding/stripping the prefix.
+    A child that exits with a non-zero status after its last frame raises
+    `ChildExited`, for the handler to end the stream with a status.
+    """
     assert child.stdin is not None
     assert child.stdout is not None
     stdin, stdout = child.stdin, child.stdout
     # the child's frames, ending with `None` at its EOF, read by the generator below
-    events: asyncio.Queue[bytes | None] = asyncio.Queue()
+    events: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=EVENT_QUEUE_DEPTH)
 
     async def requests_to_child() -> None:
-        async for body in requests:
-            stdin.write(_LENGTH_PREFIX.pack(len(body)) + body)
-            await stdin.drain()
-        # the pool half-closed: the child reads EOF as a clean end and exits
-        stdin.close()
+        try:
+            async for body in requests:
+                stdin.write(_LENGTH_PREFIX.pack(len(body)) + body)
+                await stdin.drain()
+        finally:
+            # the pool half-closed, or its requests failed: either way the
+            # child reads EOF as a clean end and exits, which ends the stream
+            stdin.close()
 
     async def child_to_events() -> None:
         try:
@@ -92,13 +119,17 @@ async def bridge_stream(requests: AsyncIterator[bytes], monty_bin: str) -> Async
                 await events.put(await stdout.readexactly(length))
         except asyncio.IncompleteReadError:
             pass  # the child exited
-        finally:
-            await events.put(None)
+        # not in a `finally`: a cancelled pump has no reader left to tell, and
+        # a full queue would hold the cancellation
+        await events.put(None)
 
     pumps = [asyncio.create_task(requests_to_child()), asyncio.create_task(child_to_events())]
     try:
         while (event := await events.get()) is not None:
             yield event
+        # the child closed its stdout: it has exited, cleanly or not
+        if (status := await child.wait()) != 0:
+            raise ChildExited(status)
     finally:
         # Cancel whatever still runs (a cancelled stream lands here too) and
         # reap both so neither is left with an unretrieved exception, then
@@ -123,7 +154,10 @@ async def admit(context: aio.ServicerContext[bytes, bytes]) -> None:
 
 
 def relay_behaviour(monty_bin: str) -> Behaviour:
-    """The plain relay: every stream is admitted and bridged to a fresh child.
+    """The plain relay: every stream gets a fresh child, then is admitted and
+    bridged to it. A child that cannot start refuses the stream with
+    `UNAVAILABLE`; one that exits with a non-zero status ends it with
+    `INTERNAL`, so the pool can tell a crash from a clean close.
 
     An async generator *function*, which is how grpc's aio server tells a
     streaming handler from a one-shot one.
@@ -132,9 +166,16 @@ def relay_behaviour(monty_bin: str) -> Behaviour:
     async def behaviour(
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
+        try:
+            child = await spawn_child(monty_bin)
+        except OSError as exc:
+            await context.abort(grpc.StatusCode.UNAVAILABLE, f'cannot start the monty subprocess: {exc}')
         await admit(context)
-        async for event in bridge_stream(requests, monty_bin):
-            yield event
+        try:
+            async for event in bridge_stream(requests, child):
+                yield event
+        except ChildExited as exc:
+            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
 
     return behaviour
 
