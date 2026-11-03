@@ -67,9 +67,11 @@ impl Remote {
             .map_err(|err| spawn_error(&err))?
             .connect_timeout(connect_timeout)
             .tcp_nodelay(true)
-            // large frames (a 256 MiB value) should not crawl through a
-            // 64 KiB flow-control window
-            .http2_adaptive_window(true);
+            // fixed windows, the connection's well above a stream's: adaptive
+            // ones set both to one estimate, so a session whose host stopped
+            // reading held the whole connection and starved every other session
+            .initial_stream_window_size(STREAM_WINDOW_BYTES)
+            .initial_connection_window_size(CONNECTION_WINDOW_BYTES);
         if let Some(interval) = keep_alive {
             // Hop-local liveness while streams are open: a dead TCP peer is
             // noticed without waiting for a turn to time out (the in-band
@@ -259,6 +261,12 @@ const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"))
 /// a vanished server beyond a proxy (that is the in-band `Ping`'s job). The
 /// interval between pings is `PoolConfig::keep_alive`.
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A stream's HTTP/2 receive window, and the connection's shared by every
+/// stream on the channel: a session whose host stopped reading holds at most
+/// one stream window, leaving the rest for its neighbours' replies.
+const STREAM_WINDOW_BYTES: u32 = 2 * 1024 * 1024;
+const CONNECTION_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
 
 /// How long `close` waits for the server to end its side after the half-close.
 /// Not a latency budget (no acknowledgement is awaited beyond stream end) — it
