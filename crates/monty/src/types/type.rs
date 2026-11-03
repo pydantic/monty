@@ -634,6 +634,13 @@ impl Type {
         }
     }
 
+    /// Returns the class view for a type representable by `BuiltinType`.
+    ///
+    /// Panics for other types. Every type with a registered classmethod must support this conversion.
+    fn py_class<'h>(self) -> PyClass<'h> {
+        PyClass::Builtin(BuiltinType::try_from(self).expect("registered builtin type"))
+    }
+
     /// Returns the generated attribute definitions for this builtin type.
     ///
     /// Types without a registered table return an empty slice.
@@ -741,11 +748,7 @@ impl Type {
     ) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
             Some(AttrDef::Method(method)) => method(receiver, args, vm),
-            Some(AttrDef::ClassMethod(classmethod)) => classmethod(
-                PyClass::Builtin(BuiltinType::try_from(self).expect("registered builtin type")),
-                args,
-                vm,
-            ),
+            Some(AttrDef::ClassMethod(classmethod)) => classmethod(self.py_class(), args, vm),
             _ => receiver.call_dynamic_attr(vm, attr, args),
         }
     }
@@ -758,11 +761,7 @@ impl Type {
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
             Some(AttrDef::ClassMethod(classmethod)) => {
-                return classmethod(
-                    PyClass::Builtin(BuiltinType::try_from(self).expect("registered builtin type")),
-                    args,
-                    vm,
-                );
+                return classmethod(self.py_class(), args, vm);
             }
             Some(AttrDef::Method(method)) => return py_attrs::call_unbound(self, attr, method, args, vm),
             _ => {}
