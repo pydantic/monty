@@ -149,13 +149,15 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
 ```
 
 `#[pymethod]` registers `AttrDef::Method`; it takes a native receiver, `ArgValues`, and `&mut VM`, returning
-`RunResult<Value>`.
+`RunResult<Value>` or `RunResult<CallResult>`.
+The adapter wraps plain values and propagates call results, including suspended VM execution.
 `Receiver` names the native view: `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, or an
 immediate `f64`, `i64`, or `bool`.
 Capability receivers take shared references: `&HeapRead` for reads and `&HeapReadMut` for mutation.
 Object guards can also supply Python identity through `&HeapObjectRead`.
+Heap adapters use typed reads, so native payload names need not match heap enum variants.
 Immediate receivers are passed by value.
-String methods take `&PyStr`, covering interned and heap strings without projecting their storage.
+String methods take `&PyStr`, covering interned, inline, and heap strings without projecting their storage.
 
 `#[pyclassmethod]` registers `AttrDef::ClassMethod` with the existing signature
 `(StaticStrings, Type, Value, ArgValues, &mut VM) -> RunResult<CallResult>`.

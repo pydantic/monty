@@ -544,7 +544,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeDelta> {
             return Err(ExcType::attribute_error_method(Type::TimeDelta, attr, args, vm));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {

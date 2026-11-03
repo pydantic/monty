@@ -296,7 +296,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
             Self::Inline(text) => Value::InlineString(*text),
             Self::Heap(value) => Value::Ref(value.id()),
         });
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 }
 
@@ -530,7 +530,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
             return Err(ExcType::attribute_error_method(Type::Str, attr, args, vm));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 }
 

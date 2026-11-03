@@ -552,6 +552,8 @@ pub enum StaticStrings {
     A85Encode,
     /// `sys.abiflags` attribute.
     Abiflags,
+    /// `decimal` method name.
+    Abs,
     /// Kwarg name `abs_tol` — `math.isclose(abs_tol=...)`.
     AbsTol,
     /// `Path.absolute()` method — yields a host call.
@@ -566,6 +568,8 @@ pub enum StaticStrings {
     Acosh,
     /// `set.add()` method.
     Add,
+    /// `decimal` method name.
+    Adjusted,
     /// `adobe` parameter of `base64.a85encode()` / `a85decode()`.
     #[strum(serialize = "adobe")]
     Adobe,
@@ -609,11 +613,15 @@ pub enum StaticStrings {
     Args,
     /// `sys.argv` attribute.
     Argv,
+    /// `decimal` method name.
+    AsIntegerRatio,
     /// `Path.as_posix()` method, answered without host I/O.
     AsPosix,
     /// `re.ASCII` flag
     #[strum(serialize = "ASCII")]
     AsciiFlag,
+    /// `decimal` method name.
+    AsTuple,
     /// `time.asctime()` function.
     Asctime,
     /// `math.asin()` function.
@@ -737,6 +745,8 @@ pub enum StaticStrings {
     /// `typing.Callable` marker.
     #[strum(serialize = "Callable")]
     Callable,
+    /// `decimal` method name.
+    Canonical,
     /// `capitalize()` method, shared by `str` and `bytes`.
     Capitalize,
     /// Kwarg name `capitals` — `decimal.Context()`.
@@ -774,6 +784,10 @@ pub enum StaticStrings {
     ClassVar,
     /// `clear()` method, shared by `list`, `dict` and `set`.
     Clear,
+    /// `decimal` method name.
+    ClearFlags,
+    /// `decimal` method name.
+    ClearTraps,
     /// `file.close()` method.
     Close,
     /// `file.closed` attribute.
@@ -806,6 +820,12 @@ pub enum StaticStrings {
     Commonprefix,
     /// `field(compare=...)`.
     Compare,
+    /// `decimal` method name.
+    CompareSignal,
+    /// `decimal` method name.
+    CompareTotal,
+    /// `decimal` method name.
+    CompareTotalMag,
     /// `re.compile()` function
     Compile,
     /// `itertools.compress()` function.
@@ -822,6 +842,14 @@ pub enum StaticStrings {
     ConversionSyntax,
     /// `copy()` method, shared by `list`, `dict` and `set`; also the `copy` module and `copy.copy()`.
     Copy,
+    /// `decimal` method name.
+    CopyAbs,
+    /// `decimal` method name.
+    CopyDecimal,
+    /// `decimal` method name.
+    CopyNegate,
+    /// `decimal` method name.
+    CopySign,
     /// `sys.copyright` attribute.
     Copyright,
     /// `math.copysign()` function.
@@ -846,6 +874,10 @@ pub enum StaticStrings {
     /// `binascii.crc_hqx()` function.
     #[strum(serialize = "crc_hqx")]
     CrcHqx,
+    /// `decimal` method name.
+    CreateDecimal,
+    /// `decimal` method name.
+    CreateDecimalFromFloat,
     /// Module name for `import csv`.
     Csv,
     /// `time.ctime()` function.
@@ -977,6 +1009,10 @@ pub enum StaticStrings {
     Discard,
     /// `math.dist()` function.
     Dist,
+    /// `decimal` method name.
+    Divide,
+    /// `decimal` method name.
+    DivideInt,
     /// `decimal.DivisionByZero` signal.
     #[strum(serialize = "DivisionByZero")]
     DivisionByZero,
@@ -986,6 +1022,8 @@ pub enum StaticStrings {
     /// `decimal.DivisionUndefined` condition.
     #[strum(serialize = "DivisionUndefined")]
     DivisionUndefined,
+    /// `decimal` method name.
+    Divmod,
     /// `dklen` parameter of `hashlib.pbkdf2_hmac()`.
     Dklen,
     /// `field(doc=...)`, CPython's per-field docstring.
@@ -1026,12 +1064,27 @@ pub enum StaticStrings {
     /// `__cause__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__cause__")]
     DunderCause,
+    /// `decimal` method name.
+    #[strum(serialize = "__ceil__")]
+    DunderCeil,
+    /// `decimal` method name.
+    #[strum(serialize = "__complex__")]
+    DunderComplex,
     /// `__context__` of an exception: the one being handled when it was raised.
     #[strum(serialize = "__context__")]
     DunderContext,
+    /// `decimal` method name.
+    #[strum(serialize = "__copy__")]
+    DunderCopy,
+    /// `decimal` method name.
+    #[strum(serialize = "__deepcopy__")]
+    DunderDeepcopy,
     /// `__delattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__delattr__")]
     DunderDelattr,
+    /// `decimal` method name.
+    #[strum(serialize = "__delitem__")]
+    DunderDelitem,
     /// `__doc__` — synthesized into the namespace of classes created by the
     /// 3-arg `type()` builtin when the caller's dict omits it.
     #[strum(serialize = "__doc__")]
@@ -1039,6 +1092,15 @@ pub enum StaticStrings {
     /// `__eq__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__eq__")]
     DunderEq,
+    /// `decimal` method name.
+    #[strum(serialize = "__float__")]
+    DunderFloat,
+    /// `decimal` method name.
+    #[strum(serialize = "__floor__")]
+    DunderFloor,
+    /// `decimal` method name.
+    #[strum(serialize = "__format__")]
+    DunderFormat,
     /// `__forward_arg__` — the source text of an `annotationlib.ForwardRef`.
     #[strum(serialize = "__forward_arg__")]
     DunderForwardArg,
@@ -1060,6 +1122,9 @@ pub enum StaticStrings {
     /// `__init__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__init__")]
     DunderInit,
+    /// `decimal` method name.
+    #[strum(serialize = "__int__")]
+    DunderInt,
     /// `decimal.__libmpdec_version__` attribute.
     #[strum(serialize = "__libmpdec_version__")]
     DunderLibmpdecVersion,
@@ -1090,18 +1155,27 @@ pub enum StaticStrings {
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
+    /// `decimal` method name.
+    #[strum(serialize = "__reduce__")]
+    DunderReduce,
     /// `__repr__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__repr__")]
     DunderRepr,
     /// `__resolved_str__` attribute of `annotationlib.ForwardRef`.
     #[strum(serialize = "__resolved_str__")]
     DunderResolvedStr,
+    /// `decimal` method name.
+    #[strum(serialize = "__round__")]
+    DunderRound,
     /// `__setattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__setattr__")]
     DunderSetattr,
     /// `__suppress_context__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__suppress_context__")]
     DunderSuppressContext,
+    /// `decimal` method name.
+    #[strum(serialize = "__trunc__")]
+    DunderTrunc,
     /// `decimal.__version__` attribute.
     #[strum(serialize = "__version__")]
     DunderVersion,
@@ -1161,6 +1235,12 @@ pub enum StaticStrings {
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    /// `decimal` method name.
+    #[strum(serialize = "Etiny")]
+    Etiny,
+    /// `decimal` method name.
+    #[strum(serialize = "Etop")]
+    Etop,
     /// `eval_str` parameter of `annotationlib.get_annotations()`.
     EvalStr,
     /// `ForwardRef.evaluate()` method.
@@ -1295,6 +1375,8 @@ pub enum StaticStrings {
     Fp,
     /// `math.frexp()` function.
     Frexp,
+    /// `decimal` method name.
+    FromFloat,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
@@ -1494,6 +1576,8 @@ pub enum StaticStrings {
     IsAbsolute,
     /// `is_argument` parameter of `annotationlib.ForwardRef()`.
     IsArgument,
+    /// `decimal` method name.
+    IsCanonical,
     /// `is_class` parameter of `annotationlib.ForwardRef()`.
     IsClass,
     /// `dataclasses.is_dataclass()` function.
@@ -1502,13 +1586,31 @@ pub enum StaticStrings {
     IsDir,
     /// `Path.is_file()` method — yields a host call.
     IsFile,
+    /// `decimal` method name.
+    IsFinite,
+    /// `decimal` method name.
+    IsInfinite,
     /// `DirEntry.is_junction()` method.
     IsJunction,
+    /// `decimal` method name.
+    IsNan,
+    /// `decimal` method name.
+    IsNormal,
     /// `unicodedata.is_normalized()` function.
     #[strum(serialize = "is_normalized")]
     IsNormalized,
+    /// `decimal` method name.
+    IsQnan,
+    /// `decimal` method name.
+    IsSigned,
+    /// `decimal` method name.
+    IsSnan,
+    /// `decimal` method name.
+    IsSubnormal,
     /// `Path.is_symlink()` method — yields a host call.
     IsSymlink,
+    /// `decimal` method name.
+    IsZero,
     /// `os.path.isabs()` function.
     Isabs,
     /// `isalnum()` method, shared by `str` and `bytes`.
@@ -1652,6 +1754,8 @@ pub enum StaticStrings {
     Little,
     /// `ljust()` method, shared by `str` and `bytes`.
     Ljust,
+    /// `decimal` method name.
+    Ln,
     /// `lo` in the bisect module.
     Lo,
     /// `json.load()` and `tomllib.load()` functions.
@@ -1674,6 +1778,16 @@ pub enum StaticStrings {
     Log1p,
     /// `math.log2()` function.
     Log2,
+    /// `decimal` method name.
+    Logb,
+    /// `decimal` method name.
+    LogicalAnd,
+    /// `decimal` method name.
+    LogicalInvert,
+    /// `decimal` method name.
+    LogicalOr,
+    /// `decimal` method name.
+    LogicalXor,
     /// `random.lognormvariate()` function.
     Lognormvariate,
     /// `unicodedata.lookup()` function.
@@ -1738,6 +1852,8 @@ pub enum StaticStrings {
     /// `base64.MAXLINESIZE` module constant.
     #[strum(serialize = "MAXLINESIZE")]
     MaxLineSize,
+    /// `decimal` method name.
+    MaxMag,
     /// `decimal.MAX_PREC` constant.
     #[strum(serialize = "MAX_PREC")]
     MaxPrec,
@@ -1776,8 +1892,12 @@ pub enum StaticStrings {
     MinEtiny,
     /// `sys.float_info.min_exp` field.
     MinExp,
+    /// `decimal` method name.
+    MinMag,
     /// `sys.version_info.minor` field.
     Minor,
+    /// `decimal` method name.
+    Minus,
     /// `datetime` / `time` `minute` attribute and constructor kwarg.
     Minute,
     /// `timedelta(minutes=...)` constructor kwarg.
@@ -1828,6 +1948,8 @@ pub enum StaticStrings {
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
+    /// `decimal` method name.
+    Multiply,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
     /// The `collections.namedtuple` factory function.
@@ -1845,6 +1967,12 @@ pub enum StaticStrings {
     NewLimit,
     /// Kwarg name `newline` — `open(newline=...)`.
     Newline,
+    /// `decimal` method name.
+    NextMinus,
+    /// `decimal` method name.
+    NextPlus,
+    /// `decimal` method name.
+    NextToward,
     /// `math.nextafter()` function.
     Nextafter,
     /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
@@ -1884,6 +2012,8 @@ pub enum StaticStrings {
     Num,
     /// Kwarg name `number` — `round(number=...)`.
     Number,
+    /// `decimal` method name.
+    NumberClass,
     /// Kwarg name `obj` — `json.dumps(obj=...)`.
     Obj,
     /// Kwarg name `object` — `str(object=...)`, `itertools.repeat(object=...)`.
@@ -2000,6 +2130,8 @@ pub enum StaticStrings {
     Platform,
     /// `sys.platlibdir` attribute.
     Platlibdir,
+    /// `decimal` method name.
+    Plus,
     /// `pop()` method, shared by `list`, `dict`, `set` and `deque`.
     Pop,
     /// `dict.popitem()` method.
@@ -2017,6 +2149,8 @@ pub enum StaticStrings {
     PostInit,
     /// `math.pow()` function.
     Pow,
+    /// `decimal` method name.
+    Power,
     /// Kwarg name `prec` — `decimal.Context()`.
     Prec,
     /// `sys.prefix` attribute.
@@ -2034,6 +2168,8 @@ pub enum StaticStrings {
     Protocol,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// `decimal` method name.
+    Quantize,
     /// `sys.flags.quiet` field.
     Quiet,
     /// `csv.QUOTE_ALL` constant.
@@ -2113,6 +2249,8 @@ pub enum StaticStrings {
     Relpath,
     /// `math.remainder()` function.
     Remainder,
+    /// `decimal` method name.
+    RemainderNear,
     /// `remove()` method, shared by `set`, `list` and `deque`.
     Remove,
     /// `removeprefix()` method, shared by `str` and `bytes`.
@@ -2206,12 +2344,16 @@ pub enum StaticStrings {
     /// `blake2b.SALT_SIZE` class constant.
     #[strum(serialize = "SALT_SIZE")]
     SaltSize,
+    /// `decimal` method name.
+    SameQuantum,
     /// `os.path.samefile()` function.
     Samefile,
     /// `os.path.samestat()` function.
     Samestat,
     /// `random.sample()` function.
     Sample,
+    /// `decimal` method name.
+    Scaleb,
     /// `os.scandir()` function — yields a host scan.
     Scandir,
     /// `re.search()` / `pattern.search()` method
@@ -2281,6 +2423,8 @@ pub enum StaticStrings {
     /// `hashlib.shake_256()` function and hash name.
     #[strum(serialize = "shake_256")]
     Shake256,
+    /// `decimal` method name.
+    Shift,
     /// The value of `sys.float_repr_style`.
     Short,
     /// `random.shuffle()` function.
@@ -2495,6 +2639,16 @@ pub enum StaticStrings {
     TmYear,
     /// `struct_time.tm_zone` field.
     TmZone,
+    /// `decimal` method name.
+    ToEngString,
+    /// `decimal` method name.
+    ToIntegral,
+    /// `decimal` method name.
+    ToIntegralExact,
+    /// `decimal` method name.
+    ToIntegralValue,
+    /// `decimal` method name.
+    ToSciString,
     /// `date.today()` / `datetime.today()` classmethod.
     Today,
     /// `tomllib.TOMLDecodeError` exception.
@@ -2552,6 +2706,9 @@ pub enum StaticStrings {
     Tzname,
     /// `math.ulp()` function.
     Ulp,
+    /// `decimal` method name.
+    #[strum(serialize = "_apply")]
+    UnderApply,
     /// `NamedTuple._asdict()` method.
     #[strum(serialize = "_asdict")]
     UnderAsdict,

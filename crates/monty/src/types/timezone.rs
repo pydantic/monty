@@ -343,7 +343,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TimeZone> {
             return Err(ExcType::attribute_error_method(Type::TimeZone, attr, args, vm));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 }
 

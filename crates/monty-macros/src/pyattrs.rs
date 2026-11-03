@@ -138,23 +138,24 @@ fn validate(method: &ImplItemFn, kind: Kind, mode: Mode, native: &Type) -> syn::
             "Python attributes require an explicit return type",
         ));
     };
+    let returns_call_result = type_path(result).is_ok_and(|segment| {
+        segment.ident == "RunResult" && matches!(&segment.arguments, PathArguments::AngleBracketed(arguments)
+            if arguments.args.len() == 1 && matches!(arguments.args.first(), Some(GenericArgument::Type(ty)) if named(ty, "CallResult")))
+    });
+    let returns_value = type_path(result).is_ok_and(|segment| {
+        segment.ident == "RunResult" && matches!(&segment.arguments, PathArguments::AngleBracketed(arguments)
+            if arguments.args.len() == 1 && matches!(arguments.args.first(), Some(GenericArgument::Type(ty)) if named(ty, "Value")))
+    });
     let output_valid = match kind {
         Kind::Value => named(result, "Value"),
-        Kind::Method | Kind::ClassMethod => {
-            let output = if matches!(kind, Kind::Method) {
-                "Value"
-            } else {
-                "CallResult"
-            };
-            type_path(result).is_ok_and(|segment| {
-                segment.ident == "RunResult" && matches!(&segment.arguments, PathArguments::AngleBracketed(arguments)
-                    if arguments.args.len() == 1 && matches!(arguments.args.first(), Some(GenericArgument::Type(ty)) if named(ty, output)))
-            })
-        }
+        Kind::Method => returns_value || returns_call_result,
+        Kind::ClassMethod => returns_call_result,
     };
     if !valid || !output_valid {
         let expected = match kind {
-            Kind::Method => "expected (native_receiver, ArgValues, &mut VM<'h>) -> RunResult<Value>",
+            Kind::Method => {
+                "expected (native_receiver, ArgValues, &mut VM<'h>) -> RunResult<Value> or RunResult<CallResult>"
+            }
             Kind::ClassMethod => {
                 "expected (StaticStrings, Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>"
             }
@@ -194,6 +195,7 @@ fn definition(
     mode: Mode,
     variant: &syn::Ident,
     attr_name: &syn::Ident,
+    native: &Type,
 ) -> TokenStream {
     let name = &method.sig.ident;
     // Callable adapters must work for every VM lifetime, independently of the table's lifetime.
@@ -238,16 +240,26 @@ fn definition(
                         let crate::value::Value::Ref(id) = receiver else {
                             unreachable!("builtin method receiver must be a heap value")
                         };
-                        let crate::heap::HeapReadOutput::#variant(#binding) = vm.heap.read(*id) else {
+                        let Some(#binding) = vm.heap.read_as::<#native>(*id) else {
                             unreachable!("builtin method receiver must match its attribute table")
                         };
                         #handler(#argument, args, vm)
                     }
                 }
             };
+            let returns_value = match &method.sig.output {
+                ReturnType::Type(_, ty) => type_path(ty).is_ok_and(|segment| matches!(&segment.arguments,
+                    PathArguments::AngleBracketed(args) if matches!(args.args.first(), Some(GenericArgument::Type(ty)) if named(ty, "Value")))),
+                ReturnType::Default => false,
+            };
+            let body = if returns_value {
+                quote! { ({ #body }).map(crate::bytecode::CallResult::Value) }
+            } else {
+                body
+            };
             quote! {
                 crate::types::builtin_attr::AttrDef::Method({
-                    fn call(receiver: &crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::value::Value> {
+                    fn call(receiver: &crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                         #body
                     }
                     call
@@ -380,7 +392,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
                         syn::Error::new_spanned(name, "method name must map to a StaticStrings variant")
                     })?;
                     static_name.set_span(name.span());
-                    let def = definition(&input.self_ty, method, kind, mode, &variant, &static_name);
+                    let def = definition(&input.self_ty, method, kind, mode, &variant, &static_name, &native);
                     entries.push((static_name, def));
                 }
                 methods.push(method.clone());
@@ -479,7 +491,7 @@ mod tests {
         assert!(output.contains("StaticStrings :: Sort"));
         assert!(output.contains("const ATTRS"));
         assert!(output.contains("const fn lookup_attr"));
-        assert!(output.contains("HeapReadOutput :: List (value)"));
+        assert!(output.contains("Some (value)"));
         assert!(output.contains("< PyListImpl > :: sort"));
         assert!(!output.contains("pymethod"));
     }
@@ -493,7 +505,7 @@ mod tests {
                 fn count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> { todo!() }
             }
         }).unwrap().to_string();
-        assert!(shared.contains("HeapReadOutput :: Tuple (value)"));
+        assert!(shared.contains("Some (value)"));
         assert!(!shared.contains("mut value"));
 
         let immediate = expand(parse_quote! {
@@ -517,6 +529,22 @@ mod tests {
             "{immediate}"
         );
         assert!(immediate.contains("AttrDef :: Value (< PyFloatImpl > :: min)"));
+    }
+
+    #[test]
+    fn methods_can_propagate_vm_call_results() {
+        let output = expand(parse_quote! {
+            impl<'h> PyAttrs<'h> for Namespace {
+                type Receiver = HeapObjectRead<'h, ForwardRef>;
+                #[pymethod]
+                fn evaluate<'a>(value: &HeapObjectRead<'a, ForwardRef>, args: ArgValues, vm: &mut VM<'a>) -> RunResult<CallResult> {
+                    value.evaluate(args, vm)
+                }
+            }
+        }).unwrap().to_string();
+        assert!(output.contains("read_as :: < ForwardRef >"));
+        assert!(output.contains("RunResult < crate :: bytecode :: CallResult >"));
+        assert!(!output.contains("map (crate :: bytecode :: CallResult :: Value)"));
     }
 
     #[test]

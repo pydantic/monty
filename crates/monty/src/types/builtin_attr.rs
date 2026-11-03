@@ -15,7 +15,7 @@ use crate::{
 
 pub(crate) type BuiltinCall = for<'h> fn(Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 /// Heap receivers stay protected by their read handle; temporary Values borrow their references.
-pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<Value>;
+pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// Python attribute definitions and the native view passed to their methods.
 pub(crate) trait PyAttrs<'h> {
@@ -33,6 +33,10 @@ pub(crate) enum AttrDef {
 #[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
 pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     match owner {
+        Type::Decimal => <super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::ATTRS,
+        Type::DecimalContext => <super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::ATTRS,
+        Type::DecimalSignalDict => <super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::ATTRS,
+        Type::ForwardRef => <super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::ATTRS,
         Type::Str => <str::PyStr<'static> as PyAttrs<'static>>::ATTRS,
         Type::List => <list::PyListImpl as PyAttrs<'static>>::ATTRS,
         Type::Tuple => <tuple::PyTupleImpl as PyAttrs<'static>>::ATTRS,
@@ -84,7 +88,7 @@ pub(crate) fn invoke_unbound(
     let ((receiver, args), vm) = pending.into_parts();
     defer_drop!(receiver, vm);
     if receiver_type == owner {
-        call(receiver, args, vm).map(CallResult::Value)
+        call(receiver, args, vm)
     } else {
         call_subtype(owner, attr, call, receiver, args, vm)
     }
@@ -117,6 +121,9 @@ fn call_subtype(
     defer_drop!(date_receiver, vm);
     let result = call(date_receiver, args, vm)?;
     if attr.as_str(vm.interns) == "replace" {
+        let CallResult::Value(result) = result else {
+            unreachable!("date.replace returns a value")
+        };
         defer_drop!(result, vm);
         let Value::Ref(id) = result else {
             unreachable!("date.replace returns a date")
@@ -138,7 +145,7 @@ fn call_subtype(
             vm.heap,
         )))
     } else {
-        Ok(CallResult::Value(result))
+        Ok(result)
     }
 }
 
@@ -193,7 +200,10 @@ mod tests {
             let Some(AttrDef::Method(sort)) = SORT else {
                 panic!("expected sort method")
             };
-            assert!(matches!(sort(&owned.0, ArgValues::Empty, vm).unwrap(), Value::None));
+            assert!(matches!(
+                sort(&owned.0, ArgValues::Empty, vm).unwrap(),
+                CallResult::Value(Value::None)
+            ));
             let HeapData::List(list) = vm.heap.get(list_id) else {
                 panic!("expected list")
             };
@@ -204,17 +214,17 @@ mod tests {
             };
             assert!(matches!(
                 count(&owned.1, ArgValues::One(Value::Int(2)), vm).unwrap(),
-                Value::Int(2)
+                CallResult::Value(Value::Int(2))
             ));
 
             let Some(AttrDef::Method(conjugate)) = PyFloatImpl::lookup_attr(StaticStrings::Conjugate) else {
                 panic!("expected immediate method")
             };
             assert!(
-                matches!(conjugate(&Value::Float(2.0), ArgValues::Empty, vm).unwrap(), Value::Float(value) if value.to_bits() == 2.0_f64.to_bits())
+                matches!(conjugate(&Value::Float(2.0), ArgValues::Empty, vm).unwrap(), CallResult::Value(Value::Float(value)) if value.to_bits() == 2.0_f64.to_bits())
             );
             assert!(
-                matches!(conjugate(&Value::Float(-2.5), ArgValues::Empty, vm).unwrap(), Value::Float(value) if value.to_bits() == (-2.5_f64).to_bits())
+                matches!(conjugate(&Value::Float(-2.5), ArgValues::Empty, vm).unwrap(), CallResult::Value(Value::Float(value)) if value.to_bits() == (-2.5_f64).to_bits())
             );
             assert!(conjugate(&Value::Float(2.0), ArgValues::One(Value::Int(1)), vm).is_err());
         });
@@ -224,6 +234,10 @@ mod tests {
     fn tables_and_lookups_agree() {
         let interns = Interns::new("");
         for owner in [
+            Type::Decimal,
+            Type::DecimalContext,
+            Type::DecimalSignalDict,
+            Type::ForwardRef,
             Type::Str,
             Type::List,
             Type::Tuple,

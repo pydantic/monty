@@ -8,8 +8,9 @@
 //! are session state ([`SessionDecimal`]), carried across REPL feeds and dumps like
 //! `random`'s generator; each `import decimal` sees the same template objects.
 
-use std::{fmt::Write, iter};
+use std::{fmt::Write, iter, mem::ManuallyDrop};
 
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
 use super::{
@@ -24,7 +25,12 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    types::{Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, iter::collect_iterable, tuple::allocate_tuple},
+    types::{
+        Dict, LazyHeapSet, List, PyTrait, Type, allocate_string,
+        builtin_attr::{AttrDef, PyAttrs},
+        iter::collect_iterable,
+        tuple::allocate_tuple,
+    },
     value::{EitherStr, Value},
 };
 
@@ -560,46 +566,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let id = self.id();
-        let name = attr.as_str(vm.interns);
-        match name {
-            "clear_flags" => {
-                args.check_zero_args("Context.clear_flags", vm.heap)?;
-                self.get_mut(vm.heap).flags = Conditions::EMPTY;
-                Ok(CallResult::Value(Value::None))
-            }
-            "clear_traps" => {
-                args.check_zero_args("Context.clear_traps", vm.heap)?;
-                self.get_mut(vm.heap).traps = Conditions::EMPTY;
-                Ok(CallResult::Value(Value::None))
-            }
-            "copy" | "__copy__" => {
-                args.check_zero_args(
-                    if name == "copy" {
-                        "Context.copy"
-                    } else {
-                        "Context.__copy__"
-                    },
-                    vm.heap,
-                )?;
-                let settings = *self.get(vm.heap);
-                Ok(CallResult::Value(Value::Ref(
-                    vm.heap.allocate(HeapData::DecimalContext(settings)),
-                )))
-            }
-            "Etiny" => {
-                args.check_zero_args("Context.Etiny", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(self.get(vm.heap).etiny())))
-            }
-            "Etop" => {
-                args.check_zero_args("Context.Etop", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(self.get(vm.heap).etop())))
-            }
-            _ => match ContextMethod::from_name(name) {
-                Some(method) => py::call_context_method(method, id, args, vm).map(CallResult::Value),
-                None => Err(ExcType::attribute_error_method(Type::DecimalContext, attr, args, vm)),
-            },
-        }
+        let Some(AttrDef::Method(call)) = Type::DecimalContext.get_attr(attr, vm.interns) else {
+            return Err(ExcType::attribute_error_method(Type::DecimalContext, attr, args, vm));
+        };
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm)
     }
 }
 
@@ -807,48 +778,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let value = match attr.as_str(vm.interns) {
-            "keys" => {
-                args.check_zero_args("keys", vm.heap)?;
-                self.listing(SignalDictPart::Keys, vm)
-            }
-            "values" => {
-                args.check_zero_args("values", vm.heap)?;
-                self.listing(SignalDictPart::Values, vm)
-            }
-            "items" => {
-                args.check_zero_args("items", vm.heap)?;
-                self.listing(SignalDictPart::Items, vm)
-            }
-            "copy" => {
-                args.check_zero_args("copy", vm.heap)?;
-                self.to_dict(vm)?
-            }
-            "get" => {
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
-                defer_drop!(key, vm);
-                match signal_of(key) {
-                    Some(signal) => {
-                        default.drop_with(vm);
-                        Value::Bool(self.get(vm.heap).read(vm).has_signal(signal))
-                    }
-                    None => default.unwrap_or(Value::None),
-                }
-            }
-            "update" => {
-                if let Some(other) = args.get_zero_one_arg("update", vm.heap)? {
-                    defer_drop!(other, vm);
-                    self.update(other, vm)?;
-                }
-                Value::None
-            }
-            "__delitem__" | "pop" | "popitem" | "clear" => {
-                args.drop_with(vm);
-                return Err(ExcType::value_error("signal keys cannot be deleted"));
-            }
-            _ => return Err(ExcType::attribute_error_method(Type::DecimalSignalDict, attr, args, vm)),
+        let Some(AttrDef::Method(call)) = Type::DecimalSignalDict.get_attr(attr, vm.interns) else {
+            return Err(ExcType::attribute_error_method(Type::DecimalSignalDict, attr, args, vm));
         };
-        Ok(CallResult::Value(value))
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        call(&receiver, args, vm)
     }
 }
 
@@ -918,5 +852,496 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ContextManager> {
             vm.heap.dec_ref(saved);
         }
         Ok(CallResult::Value(Value::None))
+    }
+}
+
+/// Python methods for a session decimal context.
+pub(crate) struct PyContextImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyContextImpl {
+    type Receiver = HeapObjectRead<'heap, DecContext>;
+
+    #[pymethod]
+    fn clear_flags<'h>(
+        value: &mut HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        args.check_zero_args("Context.clear_flags", vm.heap)?;
+        value.get_mut(vm.heap).flags = Conditions::EMPTY;
+        Ok(Value::None)
+    }
+
+    #[pymethod]
+    fn clear_traps<'h>(
+        value: &mut HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        args.check_zero_args("Context.clear_traps", vm.heap)?;
+        value.get_mut(vm.heap).traps = Conditions::EMPTY;
+        Ok(Value::None)
+    }
+
+    #[pymethod]
+    fn copy<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("Context.copy", vm.heap)?;
+        let settings = *value.get(vm.heap);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+    }
+
+    #[pymethod]
+    fn dunder_copy<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("Context.__copy__", vm.heap)?;
+        let settings = *value.get(vm.heap);
+        Ok(Value::Ref(vm.heap.allocate(HeapData::DecimalContext(settings))))
+    }
+
+    #[pymethod]
+    fn etiny<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("Context.Etiny", vm.heap)?;
+        Ok(Value::Int(value.get(vm.heap).etiny()))
+    }
+
+    #[pymethod]
+    fn etop<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("Context.Etop", vm.heap)?;
+        Ok(Value::Int(value.get(vm.heap).etop()))
+    }
+
+    #[pymethod]
+    fn abs<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Abs), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn canonical<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Canonical), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn copy_abs<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::CopyAbs), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn copy_decimal<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::CopyDecimal), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn copy_negate<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::CopyNegate), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn exp<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Exp), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_canonical<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsCanonical), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_finite<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsFinite), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_infinite<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsInfinite), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_nan<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsNan), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_normal<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsNormal), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_qnan<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsQnan), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_signed<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsSigned), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_snan<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsSnan), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_subnormal<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsSubnormal), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn is_zero<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::IsZero), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn ln<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Ln), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn log10<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Log10), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn logb<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Logb), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn logical_invert<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::LogicalInvert), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn minus<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Minus), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn next_minus<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::NextMinus), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn next_plus<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::NextPlus), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn normalize<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Normalize), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn number_class<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::NumberClass), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn plus<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Plus), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn sqrt<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Sqrt), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn to_eng_string<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::ToEngString), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn to_integral<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::ToIntegral), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn to_integral_exact<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::ToIntegralExact), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn to_integral_value<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::ToIntegralValue), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn to_sci_string<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::ToSciString), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn under_apply<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Unary(py::UnaryOp::Apply), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn add<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Add), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn compare<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Compare), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn compare_signal<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::CompareSignal), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn compare_total<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::CompareTotal), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn compare_total_mag<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(
+            ContextMethod::Binary(py::BinaryOp::CompareTotalMag),
+            value.id(),
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn copy_sign<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::CopySign), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn divide<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Divide), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn divide_int<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::DivideInt), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn divmod<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Divmod), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn logical_and<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::LogicalAnd), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn logical_or<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::LogicalOr), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn logical_xor<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::LogicalXor), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn max<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Max), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn max_mag<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::MaxMag), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn min<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Min), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn min_mag<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::MinMag), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn multiply<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Multiply), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn next_toward<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::NextToward), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn quantize<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Quantize), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn remainder<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Remainder), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn remainder_near<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::RemainderNear), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn rotate<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Rotate), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn same_quantum<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::SameQuantum), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn scaleb<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Scaleb), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn shift<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Shift), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn subtract<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Binary(py::BinaryOp::Subtract), value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn fma<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Fma, value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn power<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Power, value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn create_decimal<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::CreateDecimal, value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn create_decimal_from_float<'h>(
+        value: &HeapObjectRead<'h, DecContext>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::CreateDecimalFromFloat, value.id(), args, vm)
+    }
+
+    #[pymethod]
+    fn radix<'h>(value: &HeapObjectRead<'h, DecContext>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        py::call_context_method(ContextMethod::Radix, value.id(), args, vm)
+    }
+}
+
+/// Python methods for a context's live flags and traps mappings.
+pub(crate) struct PySignalDictImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PySignalDictImpl {
+    type Receiver = HeapObjectRead<'heap, SignalDict>;
+
+    #[pymethod]
+    fn keys<'h>(value: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("keys", vm.heap)?;
+        Ok(value.listing(SignalDictPart::Keys, vm))
+    }
+
+    #[pymethod]
+    fn values<'h>(value: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("values", vm.heap)?;
+        Ok(value.listing(SignalDictPart::Values, vm))
+    }
+
+    #[pymethod]
+    fn items<'h>(value: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("items", vm.heap)?;
+        Ok(value.listing(SignalDictPart::Items, vm))
+    }
+
+    #[pymethod]
+    fn copy<'h>(value: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("copy", vm.heap)?;
+        value.to_dict(vm)
+    }
+
+    #[pymethod]
+    fn get<'h>(value: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let (key, default) = args.get_one_two_args("get", vm.heap)?;
+        defer_drop!(key, vm);
+        Ok(match signal_of(key) {
+            Some(signal) => {
+                default.drop_with(vm);
+                Value::Bool(value.get(vm.heap).read(vm).has_signal(signal))
+            }
+            None => default.unwrap_or(Value::None),
+        })
+    }
+
+    #[pymethod]
+    fn update<'h>(value: &mut HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        if let Some(other) = args.get_zero_one_arg("update", vm.heap)? {
+            defer_drop!(other, vm);
+            value.update(other, vm)?;
+        }
+        Ok(Value::None)
+    }
+
+    #[pymethod]
+    fn dunder_delitem<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.drop_with(vm);
+        Err(ExcType::value_error("signal keys cannot be deleted"))
+    }
+
+    #[pymethod]
+    fn pop<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.drop_with(vm);
+        Err(ExcType::value_error("signal keys cannot be deleted"))
+    }
+
+    #[pymethod]
+    fn popitem<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.drop_with(vm);
+        Err(ExcType::value_error("signal keys cannot be deleted"))
+    }
+
+    #[pymethod]
+    fn clear<'h>(_: &HeapObjectRead<'h, SignalDict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.drop_with(vm);
+        Err(ExcType::value_error("signal keys cannot be deleted"))
     }
 }

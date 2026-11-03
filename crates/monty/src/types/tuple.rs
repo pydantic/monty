@@ -486,7 +486,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
             return Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)));
         };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm).map(CallResult::Value)
+        call(&receiver, args, vm)
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
