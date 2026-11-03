@@ -7,8 +7,8 @@ use smallvec::smallvec;
 
 use super::{
     Bytes, CmpOrder, PyTrait,
-    builtin_attr::PyAttrs,
     inline_str::InlineStr,
+    pyattrs::PyAttrs,
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };

@@ -7,8 +7,8 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::PyAttrs,
     iter::{collect_owned_iterable, collect_python_iterator},
+    pyattrs::PyAttrs,
 };
 use crate::{
     args::ArgValues,

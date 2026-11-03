@@ -19,7 +19,7 @@ use ahash::AHasher;
 use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
-use super::builtin_attr::PyAttrs;
+use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},

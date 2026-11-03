@@ -20,9 +20,9 @@ use crate::{
     py_value::PyValue,
     types::{
         LazyHeapSet, Type,
-        builtin_attr::PyAttrs,
         hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         list::repr_items_fmt,
+        pyattrs::PyAttrs,
     },
     value::{VALUE_SIZE, Value},
 };

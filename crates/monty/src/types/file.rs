@@ -98,7 +98,7 @@ use crate::{
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     py_value::PyValue,
-    types::{builtin_attr::PyAttrs, str::StringRepr},
+    types::{pyattrs::PyAttrs, str::StringRepr},
     value::{EitherStr, Value},
     virtual_path::posix_join,
 };

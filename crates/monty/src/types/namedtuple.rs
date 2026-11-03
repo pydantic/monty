@@ -42,9 +42,9 @@ use crate::{
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Type, Union, allocate_tuple,
-        builtin_attr::PyAttrs,
         iter::collect_owned_iterable,
         py_trait::LazyHeapSet,
+        pyattrs::PyAttrs,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::allocate_string,
         tuple::TupleVec,

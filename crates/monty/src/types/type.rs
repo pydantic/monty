@@ -20,11 +20,11 @@ use crate::{
     types::{
         BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
         Random, Range, Set, Slice, Str, TimeZone, Tuple,
-        builtin_attr::{self, AttrDef},
         bytes::bytes_repr,
         complex, date, datetime, decimal,
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
+        pyattrs::{self, AttrDef},
         str::{StringRepr, allocate_string},
         time, timedelta,
     },
@@ -718,7 +718,7 @@ impl Type {
                     vm,
                 );
             }
-            Some(AttrDef::Method(method)) => return builtin_attr::invoke_unbound(self, attr, method, args, vm),
+            Some(AttrDef::Method(method)) => return pyattrs::call_unbound(self, attr, method, args, vm),
             _ => {}
         }
         match (self, attr.static_string(vm.interns)) {

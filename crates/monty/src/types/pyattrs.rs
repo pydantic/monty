@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// The `Value` argument is the bound class object, including when called through an instance.
-pub(crate) type BuiltinCall = for<'h> fn(Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+pub(crate) type ClassMethodCall = for<'h> fn(Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 pub(crate) type MethodCall = for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// Python attribute definitions and the native view passed to their methods.
@@ -27,7 +27,7 @@ pub(crate) trait PyAttrs<'h> {
 #[derive(Clone, Copy)]
 pub(crate) enum AttrDef {
     Method(MethodCall),
-    ClassMethod(BuiltinCall),
+    ClassMethod(ClassMethodCall),
     Value(fn(&mut VM<'_>) -> Value),
 }
 
@@ -75,7 +75,10 @@ pub(crate) const fn attrs(owner: Type) -> &'static [(StaticStrings, AttrDef)] {
     }
 }
 
-pub(crate) fn invoke_unbound(
+/// Calls an instance method through a type, taking the receiver from the first positional argument.
+///
+/// Validates the receiver against the defining type and adapts supported native subtypes.
+pub(crate) fn call_unbound(
     owner: Type,
     attr: &EitherStr,
     call: MethodCall,
@@ -114,11 +117,14 @@ pub(crate) fn invoke_unbound(
     if receiver_type == owner {
         call(&mut receiver.py_value(vm), args, vm)
     } else {
-        call_subtype(owner, attr, call, receiver, args, vm)
+        call_unbound_subtype(owner, attr, call, receiver, args, vm)
     }
 }
 
-fn call_subtype(
+/// Calls a base type's method on a validated native subtype receiver.
+///
+/// Reuses compatible payloads or projects a date from a datetime when the base adapter requires it.
+fn call_unbound_subtype(
     owner: Type,
     attr: &EitherStr,
     call: MethodCall,

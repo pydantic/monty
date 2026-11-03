@@ -41,8 +41,8 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        LazyHeapSet, PyTrait, Type, allocate_string, builtin_attr::PyAttrs, bytes::allocate_bytes,
-        py_trait::PyObjectIdentity,
+        LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity,
+        pyattrs::PyAttrs,
     },
     value::{EitherStr, Value},
 };

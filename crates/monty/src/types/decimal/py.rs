@@ -35,7 +35,7 @@ use crate::{
     py_value::PyValue,
     types::{
         BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
-        builtin_attr::PyAttrs, str::allocate_string_no_interning, tuple::allocate_tuple,
+        pyattrs::PyAttrs, str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };
