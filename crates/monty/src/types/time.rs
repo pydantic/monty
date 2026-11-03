@@ -31,8 +31,9 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     py_attrs::PyAttrs,
+    py_class::PyClass,
     types::{
-        CmpOrder, LazyHeapSet, PyClass, PyTrait, TimeZone, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeZone, Type,
         date::{self, StrftimeArgs},
         datetime::{allocate_tzinfo_ref, tzinfo_from_value},
         str::{StringRepr, allocate_string, allocate_string_no_interning},

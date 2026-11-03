@@ -23,9 +23,10 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     py_attrs::PyAttrs,
+    py_class::PyClass,
     string_builder::StringBuilder,
     types::{
-        CmpOrder, LazyHeapSet, PyClass, PyTrait, TimeDelta, Type, datetime,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
         timezone::{format_offset_compact, format_offset_hms, tzname_string},

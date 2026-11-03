@@ -7,8 +7,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
     intern::StaticStrings,
+    py_class::PyClass,
     py_value::PyValue,
-    types::{PyClass, PyTrait, Type, date, datetime},
+    types::{PyTrait, Type, date, datetime},
     value::{EitherStr, Value},
 };
 
