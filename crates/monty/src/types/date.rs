@@ -23,9 +23,9 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     py_attrs::PyAttrs,
+    py_class::PyClass,
     string_builder::StringBuilder,
     types::{
-        PyClass,
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type, TypeRef, datetime,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,

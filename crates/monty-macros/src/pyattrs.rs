@@ -209,7 +209,7 @@ fn definition(
     match kind {
         Kind::ClassMethod => quote! {
             crate::py_attrs::AttrDef::ClassMethod({
-                fn call<'h>(receiver: crate::types::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                fn call<'h>(receiver: crate::py_class::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                     #handler(crate::intern::StaticStrings::#attr_name, receiver, args, vm)
                 }
                 call

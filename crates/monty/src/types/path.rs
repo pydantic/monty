@@ -26,8 +26,8 @@ use crate::{
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, value_as_path_str},
     py_attrs::PyAttrs,
+    py_class::PyClass,
     types::{
-        PyClass,
         LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
         str::{StringRepr, allocate_string},

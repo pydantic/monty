@@ -34,8 +34,8 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
     py_attrs::PyAttrs,
+    py_class::PyClass,
     types::{
-        PyClass,
         Type, TypeRef,
         hash_table::{
             CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,

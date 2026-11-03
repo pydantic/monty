@@ -21,9 +21,9 @@ use crate::{
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
     py_attrs::PyAttrs,
+    py_class::PyClass,
     py_value::PyValue,
     types::{
-        PyClass,
         LazyHeapSet, PyTrait, Type, TypeRef,
         str::{StringRepr, allocate_string},
         r#type::strip_underscores,
