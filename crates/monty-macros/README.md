@@ -151,13 +151,14 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
 `#[pymethod]` registers `AttrDef::Method`; it takes a native receiver, `ArgValues`, and `&mut VM`, returning
 `RunResult<Value>` or `RunResult<CallResult>`.
 The adapter wraps plain values and propagates call results, including suspended VM execution.
-`Receiver` names the native view: `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, or an
+`Receiver` names the native view: `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, `PyBytes<'heap>`, or an
 immediate `f64`, `i64`, or `bool`.
 Capability receivers take shared references: `&HeapRead` for reads and `&HeapReadMut` for mutation.
 Object guards can also supply Python identity through `&HeapObjectRead`.
 Heap adapters use typed reads, so native payload names need not match heap enum variants.
 Immediate receivers are passed by value.
 String methods take `&PyStr`, covering interned, inline, and heap strings without projecting their storage.
+Bytes methods take `&PyBytes`, covering interned and heap bytes.
 
 `#[pyclassmethod]` registers `AttrDef::ClassMethod` with the existing signature
 `(StaticStrings, Type, Value, ArgValues, &mut VM) -> RunResult<CallResult>`.
@@ -175,7 +176,7 @@ Implementation types may have lifetime parameters; Rust rejects overlapping `PyA
 
 String methods are defined directly in `impl<'h> PyAttrs<'h> for PyStr<'h>` with `type Receiver = PyStr<'h>`.
 The generated callable converts its `Value` receiver to a borrowed `PyStr` view before invoking the method.
-Mutable string receivers are rejected.
+Bytes methods likewise use `PyBytes` directly. Both views take shared references.
 
 ## Not a standalone crate
 

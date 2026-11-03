@@ -27,7 +27,7 @@ use monty_macros::pyattrs;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
-use super::builtin_attr::{AttrDef, PyAttrs};
+use super::builtin_attr::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -579,11 +579,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::RePattern.get_attr(attr, vm.interns) else {
-            return Err(ExcType::attribute_error_method(Type::RePattern, attr, args, vm));
-        };
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::RePattern.call_attr(&receiver, attr, args, vm)
     }
 }
 

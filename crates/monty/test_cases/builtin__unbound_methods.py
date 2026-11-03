@@ -81,4 +81,71 @@ assert date.strftime(dt, '%H:%M:%S %z') == '03:04:05 +0000'
 assert date.weekday(dt) == 1
 assert date.isoweekday(dt) == 2
 assert date.replace(dt, year=2025) == datetime(2025, 1, 2)
+
+from collections import Counter, defaultdict, deque
+from datetime import datetime
+from functools import lru_cache
+from hashlib import sha256, shake_128
+from pathlib import Path
+from random import Random
+
+mapping = {}
+dict.update(mapping, a=1)
+assert dict.get(mapping, 'a') == 1
+assert dict.pop(mapping, 'a') == 1
+counter = Counter(a=1)
+Counter.update(counter, a=2)
+assert counter['a'] == 3
+dict.update(counter, a=8)
+assert counter['a'] == 8
+assert Counter.total(counter) == 8
+factory_mapping = defaultdict(list)
+assert defaultdict.__missing__(factory_mapping, 'x') == []
+assert type(factory_mapping.fromkeys(['y'])) is defaultdict
+assert dict.fromkeys(['a']) == {'a': None}
+assert type(defaultdict.fromkeys(['a'])) is defaultdict
+for owner in [dict, defaultdict, Counter]:
+    try:
+        owner.get([], 'key')
+    except TypeError:
+        pass
+    else:
+        raise AssertionError('wrong receiver accepted')
+
+values = set()
+set.add(values, 1)
+assert set.union(values, [2]) == {1, 2}
+assert frozenset.union(frozenset([1]), [2]) == frozenset([1, 2])
+assert type(mapping.keys()).isdisjoint(mapping.keys(), [1])
+assert type(mapping.items()).isdisjoint(mapping.items(), [(1, 2)])
+queue = deque([1, 2])
+deque.appendleft(queue, 0)
+assert deque.pop(queue) == 2
+assert list(queue) == [0, 1]
+for data in [b'foo', b''.join([b'f', b'oo'])]:
+    assert bytes.upper(data) == b'FOO'
+    assert bytes.replace(data, b'o', b'a', 1) == b'fao'
+assert bytes.fromhex('666f6f') == b'foo'
+assert b''.fromhex('666f6f') == b'foo'
+assert datetime.isoformat(datetime(2024, 1, 2, 3, 4)) == '2024-01-02T03:04:00'
+assert datetime.fromisoformat('2024-01-02T03:04:00') == datetime(2024, 1, 2, 3, 4)
+assert Path.joinpath(Path('/a'), 'b') == Path('/a/b')
+rng = Random(42)
+assert Random.getrandbits(rng, 8) == 163
+hash_value = sha256()
+type(hash_value).update(hash_value, b'foo')
+assert type(hash_value).digest(hash_value) == sha256(b'foo').digest()
+xof = shake_128(b'foo')
+assert type(xof).digest(xof, 4) == shake_128(b'foo').digest(4)
+
+
+@lru_cache()
+def cached(x):
+    return x + 1
+
+
+assert cached(1) == 2
+assert type(cached).cache_info(cached).currsize == 1
+assert cached.__wrapped__(1) == 2
+
 True

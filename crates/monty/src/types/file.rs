@@ -78,9 +78,10 @@
 
 use std::{
     fmt::{self, Write},
-    mem,
+    mem::{self, ManuallyDrop},
 };
 
+use monty_macros::pyattrs;
 use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
 
 use super::{
@@ -93,11 +94,11 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
     py_value::PyValue,
-    types::str::StringRepr,
+    types::{builtin_attr::PyAttrs, str::StringRepr},
     value::{EitherStr, Value},
     virtual_path::posix_join,
 };
@@ -486,34 +487,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(
-                self.py_type(vm).name(vm.heap, vm.interns),
-                attr.as_str(vm.interns),
-            ));
-        };
-
-        match method {
-            StaticStrings::Read => self.read(vm, args),
-            StaticStrings::Readline => self.readline(vm, args),
-            StaticStrings::Readlines => self.readlines(vm, args),
-            StaticStrings::Tell => self.tell(vm, args),
-            StaticStrings::Seek => self.seek(vm, args),
-            StaticStrings::Write => self.write(vm, args),
-            StaticStrings::Close => self.close(vm, args),
-            StaticStrings::Flush => self.flush(vm, args),
-            StaticStrings::Readable => self.readable(vm, args),
-            StaticStrings::Writable => self.writable(vm, args),
-            StaticStrings::Seekable => self.seekable(vm, args),
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(
-                    self.py_type(vm).name(vm.heap, vm.interns),
-                    attr.as_str(vm.interns),
-                ))
-            }
-        }
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        self.py_type(vm).call_attr(&receiver, attr, args, vm)
     }
 
     fn py_is_context_manager(&self, _vm: &VM<'h>) -> bool {
@@ -1744,4 +1719,110 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
 /// in `try`/`except` matching via [`ExcType::is_subclass_of`].
 fn unsupported_operation(message: &'static str) -> RunError {
     SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
+}
+
+pub(crate) struct PyFileImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyFileImpl {
+    type Receiver = HeapObjectRead<'heap, OpenFile>;
+
+    #[pymethod]
+    fn read<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.read(vm, args)
+    }
+
+    #[pymethod]
+    fn readline<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.readline(vm, args)
+    }
+
+    #[pymethod]
+    fn readlines<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.readlines(vm, args)
+    }
+
+    #[pymethod]
+    fn tell<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.tell(vm, args)
+    }
+
+    #[pymethod]
+    fn seek<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.seek(vm, args)
+    }
+
+    #[pymethod]
+    fn write<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.write(vm, args)
+    }
+
+    #[pymethod]
+    fn close<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.close(vm, args)
+    }
+
+    #[pymethod]
+    fn flush<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.flush(vm, args)
+    }
+
+    #[pymethod]
+    fn readable<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.readable(vm, args)
+    }
+
+    #[pymethod]
+    fn writable<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.writable(vm, args)
+    }
+
+    #[pymethod]
+    fn seekable<'h>(
+        receiver: &mut HeapObjectRead<'h, OpenFile>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        receiver.seekable(vm, args)
+    }
 }

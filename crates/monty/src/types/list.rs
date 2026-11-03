@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use super::{
     CmpOrder, PyTrait,
-    builtin_attr::{AttrDef, PyAttrs},
+    builtin_attr::PyAttrs,
     iter::{collect_owned_iterable, collect_python_iterator},
 };
 use crate::{
@@ -787,13 +787,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(AttrDef::Method(call)) = Type::List.get_attr(attr, vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
-        };
-
         let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        call(&receiver, args, vm)
+        Type::List.call_attr(&receiver, attr, args, vm)
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {

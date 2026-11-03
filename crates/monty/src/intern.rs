@@ -2016,7 +2016,7 @@ pub enum StaticStrings {
     Onerror,
     /// `Path.open()` and the `open()` builtin, which share the `OsFunctionCall::Open`
     /// round-trip. `Path::py_call_attr` delegates to `builtin_open` for mode/kwarg
-    /// validation rather than taking the generic `is_path_os_method` pre-flight.
+    /// validation rather than building a generic path OS call.
     Open,
     /// Kwarg name `opener` — `open(opener=...)`.
     Opener,

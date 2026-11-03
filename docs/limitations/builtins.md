@@ -43,9 +43,7 @@ These raise `NameError`:
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`.
     Direct calls with an explicit first positional receiver, such as `str.upper('foo')` and `list.append(items, value)`,
-    are supported for `str`, `list`, `tuple`, `complex`, `datetime.date`, `datetime.time`, `datetime.timedelta`,
-    `datetime.timezone`, `re.Pattern`, `re.Match`, `decimal.Decimal`, `decimal.Context`, decimal signal mappings,
-    and `annotationlib.ForwardRef`.
+    are supported for registered builtin methods.
 - **Large integer literal identity** — separate occurrences of the same literal outside the `i64` range are not
     deduplicated, so `a = 18446744073709551616; b = 18446744073709551616; a is b` is `False` where CPython may reuse a
     single constant and return `True`.

@@ -7,8 +7,9 @@
 //! Module functions use the VM's generator ([`RandomTarget::Global`]);
 //! `random.Random(...)` instances use the heap.
 
-use std::{borrow::Cow, fmt::Write, mem};
+use std::{borrow::Cow, fmt::Write, mem, mem::ManuallyDrop};
 
+use monty_macros::pyattrs;
 use monty_types::{RandomSeed, RandomStart, ResourceTracker};
 use num_bigint::{BigInt, BigUint};
 use serde::{Deserialize, Serialize};
@@ -20,14 +21,14 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes, hash_python_str, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::{
         copy::{Memo, PyDeepCopy},
         random::{RandomFunctions, random_dispatch},
     },
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity},
+    types::{LazyHeapSet, PyTrait, Type, builtin_attr::PyAttrs, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 
@@ -634,15 +635,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if let Some(function) = attr
-            .static_string(vm.interns)
-            .and_then(RandomFunctions::from_static_string)
-        {
-            random_dispatch(RandomTarget::Instance(self.id()), function, args, vm)
-        } else {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error("Random", attr.as_str(vm.interns)))
-        }
+        let owner = Type::Random;
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        owner.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -669,5 +664,315 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Random> {
     #[inline(never)]
     fn py_deep_copy(&self, _source: &Value, _memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok(self.allocate_like(vm))
+    }
+}
+
+pub(crate) struct PyRandomImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyRandomImpl {
+    type Receiver = HeapObjectRead<'heap, Random>;
+
+    #[pymethod]
+    fn random<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(RandomTarget::Instance(receiver.id()), RandomFunctions::Random, args, vm)
+    }
+
+    #[pymethod]
+    fn seed<'h>(receiver: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        random_dispatch(RandomTarget::Instance(receiver.id()), RandomFunctions::Seed, args, vm)
+    }
+
+    #[pymethod]
+    fn getstate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Getstate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn setstate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Setstate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn getrandbits<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Getrandbits,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn randbytes<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Randbytes,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn randrange<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Randrange,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn randint<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Randint,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn choice<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(RandomTarget::Instance(receiver.id()), RandomFunctions::Choice, args, vm)
+    }
+
+    #[pymethod]
+    fn choices<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Choices,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn shuffle<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Shuffle,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn sample<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(RandomTarget::Instance(receiver.id()), RandomFunctions::Sample, args, vm)
+    }
+
+    #[pymethod]
+    fn uniform<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Uniform,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn triangular<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Triangular,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn normalvariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Normalvariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn gauss<'h>(receiver: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        random_dispatch(RandomTarget::Instance(receiver.id()), RandomFunctions::Gauss, args, vm)
+    }
+
+    #[pymethod]
+    fn lognormvariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Lognormvariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn expovariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Expovariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn vonmisesvariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Vonmisesvariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn gammavariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Gammavariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn betavariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Betavariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn paretovariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Paretovariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn weibullvariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Weibullvariate,
+            args,
+            vm,
+        )
+    }
+
+    #[pymethod]
+    fn binomialvariate<'h>(
+        receiver: &mut HeapObjectRead<'h, Random>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        random_dispatch(
+            RandomTarget::Instance(receiver.id()),
+            RandomFunctions::Binomialvariate,
+            args,
+            vm,
+        )
     }
 }

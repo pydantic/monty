@@ -17,10 +17,11 @@ mod rustcrypto;
 
 use std::{
     fmt::Write,
-    mem,
+    mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut},
 };
 
+use monty_macros::pyattrs;
 use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +40,10 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
+    types::{
+        LazyHeapSet, PyTrait, Type, allocate_string, builtin_attr::PyAttrs, bytes::allocate_bytes,
+        py_trait::PyObjectIdentity,
+    },
     value::{EitherStr, Value},
 };
 
@@ -504,56 +508,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let algorithm = self.get(vm.heap).algorithm;
-        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Update) => {
-                if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
-                    args.drop_with(vm);
-                    return Err(ExcType::type_error_no_kwargs(&method("update")));
-                }
-                let data = args.get_one_arg(&method("update"), vm.heap)?;
-                defer_drop!(data, vm);
-                let data = data.py_value(vm);
-                // The input borrows the heap, so the state is lifted out while
-                // it is absorbed and put back on every path.
-                let mut hash = mem::take(self.get_mut(vm.heap));
-                let absorbed = hash_input(&data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
-                *self.get_mut(vm.heap) = hash;
-                absorbed.map(|()| CallResult::Value(Value::None))
-            }
-            Some(StaticStrings::Digest) if algorithm.is_xof() => {
-                let XofDigestArgs { length } = XofDigestArgs::from_args(args, vm)?;
-                let length = xof_length(length, 1, vm)?;
-                let digest = self.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_bytes(digest, vm.heap)))
-            }
-            Some(StaticStrings::Hexdigest) if algorithm.is_xof() => {
-                let XofHexdigestArgs { length } = XofHexdigestArgs::from_args(args, vm)?;
-                // The raw digest stays live while its hex is built.
-                let length = xof_length(length, 3, vm)?;
-                let digest = self.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
-            }
-            Some(StaticStrings::Digest) => {
-                args.check_zero_args(&method("digest"), vm.heap)?;
-                let digest = self.get(vm.heap).digest();
-                Ok(CallResult::Value(allocate_bytes(digest.to_vec(), vm.heap)))
-            }
-            Some(StaticStrings::Hexdigest) => {
-                args.check_zero_args(&method("hexdigest"), vm.heap)?;
-                let digest = self.get(vm.heap).digest();
-                Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
-            }
-            Some(StaticStrings::Copy) => {
-                args.check_zero_args(&method("copy"), vm.heap)?;
-                Ok(CallResult::Value(self.allocate_like(vm)))
-            }
-            _ => {
-                args.drop_with(vm);
-                Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
-            }
-        }
+        let owner = self.py_type(vm);
+        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
+        owner.call_attr(&receiver, attr, args, vm)
     }
 }
 
@@ -586,5 +543,135 @@ pub(crate) fn hash_input<'a, 'h>(value: &'a PyValue<'h>, vm: &'a VM<'h>) -> RunR
         PyValue::Str(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
         PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm)),
         _ => Err(ExcType::type_error("object supporting the buffer API required")),
+    }
+}
+
+pub(crate) struct PyHashImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyHashImpl {
+    type Receiver = HeapObjectRead<'heap, HashObject>;
+
+    #[pymethod]
+    fn update<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = receiver.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
+                args.drop_with(vm);
+                return Err(ExcType::type_error_no_kwargs(&method("update")));
+            }
+            let data = args.get_one_arg(&method("update"), vm.heap)?;
+            defer_drop!(data, vm);
+            let data = data.py_value(vm);
+            // The input borrows the heap, so the state is lifted out while
+            // it is absorbed and put back on every path.
+            let mut hash = mem::take(receiver.get_mut(vm.heap));
+            let absorbed = hash_input(&data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
+            *receiver.get_mut(vm.heap) = hash;
+            absorbed.map(|()| CallResult::Value(Value::None))
+        }
+    }
+
+    #[pymethod]
+    fn digest<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = receiver.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            args.check_zero_args(&method("digest"), vm.heap)?;
+            let digest = receiver.get(vm.heap).digest();
+            Ok(CallResult::Value(allocate_bytes(digest.to_vec(), vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn hexdigest<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = receiver.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            args.check_zero_args(&method("hexdigest"), vm.heap)?;
+            let digest = receiver.get(vm.heap).digest();
+            Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn copy<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let algorithm = receiver.get(vm.heap).algorithm;
+        let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
+        {
+            args.check_zero_args(&method("copy"), vm.heap)?;
+            Ok(CallResult::Value(receiver.allocate_like(vm)))
+        }
+    }
+}
+
+pub(crate) struct PyHashXofImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
+    type Receiver = HeapObjectRead<'heap, HashObject>;
+
+    #[pymethod]
+    fn update<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::update(receiver, args, vm)
+    }
+
+    #[pymethod]
+    fn digest<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let XofDigestArgs { length } = XofDigestArgs::from_args(args, vm)?;
+            let length = xof_length(length, 1, vm)?;
+            let digest = receiver.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
+            Ok(CallResult::Value(allocate_bytes(digest, vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn hexdigest<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let XofHexdigestArgs { length } = XofHexdigestArgs::from_args(args, vm)?;
+            // The raw digest stays live while its hex is built.
+            let length = xof_length(length, 3, vm)?;
+            let digest = receiver.get(vm.heap).digest_xof(length, &vm.heap.tracker)?;
+            Ok(CallResult::Value(allocate_string(hex_string(&digest), vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn copy<'h>(
+        receiver: &mut HeapObjectRead<'h, HashObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        PyHashImpl::copy(receiver, args, vm)
     }
 }

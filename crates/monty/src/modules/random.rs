@@ -105,15 +105,6 @@ const RANDOM_FUNCTIONS: &[(StaticStrings, RandomFunctions)] = &[
     (StaticStrings::Binomialvariate, RandomFunctions::Binomialvariate),
 ];
 
-impl RandomFunctions {
-    /// The function a `random.Random` attribute name refers to, if any.
-    pub(crate) fn from_static_string(name: StaticStrings) -> Option<Self> {
-        RANDOM_FUNCTIONS
-            .iter()
-            .find_map(|(attr, function)| (*attr == name).then_some(*function))
-    }
-}
-
 /// Creates the `random` module on the heap.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Random, vm.interns);
