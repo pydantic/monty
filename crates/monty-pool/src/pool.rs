@@ -17,8 +17,9 @@ use tokio::{
 };
 
 use crate::{
-    PoolConfig, PoolError,
+    MontyTransport, PoolConfig, PoolError,
     checkout::{Checkout, CheckoutOptions, Redial, ReplConfig, request},
+    remote::Remote,
     worker::Worker,
 };
 
@@ -39,6 +40,9 @@ pub struct Pool {
 
 pub(crate) struct PoolInner {
     pub(crate) config: PoolConfig,
+    /// The remote transport's channel, present exactly when `config.transport`
+    /// is remote; every checkout opens its stream on it.
+    remote: Option<Remote>,
     /// Guarded by a *synchronous* mutex: every critical section is short and
     /// await-free, and worker/checkout `Drop` impls must be able to release
     /// capacity without an async context.
@@ -80,7 +84,7 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
-        if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_websocket() {
+        if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_remote() {
             if !cfg!(target_os = "linux") {
                 return Err(PoolError::Spawn(
                     "CPU execution clock is only supported for subprocess workers on Linux".to_owned(),
@@ -95,12 +99,17 @@ impl Pool {
                 ));
             }
         }
-        // Only the subprocess transport pre-warms workers; WebSocket connections
-        // are made per-checkout (its `min_processes` is 0).
+        // a remote pool holds one channel for all its streams; nothing dials yet
+        let remote = match &config.transport {
+            MontyTransport::Remote(url) => Some(Remote::connect(url, config.connect_timeout)?),
+            MontyTransport::Subprocess(_) => None,
+        };
+        // Only the subprocess transport pre-warms workers; remote streams
+        // are opened per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
-        if !config.transport.is_websocket() {
+        if !config.transport.is_remote() {
             for _ in 0..config.min_processes {
-                let mut worker = Worker::new(&config, &[]).await?;
+                let mut worker = Worker::new(&config, None, &[]).await?;
                 worker.id = idle.len() as u64 + 1;
                 idle.push(worker);
             }
@@ -109,6 +118,7 @@ impl Pool {
         let pool = Self {
             inner: Arc::new_cyclic(|this| PoolInner {
                 config,
+                remote,
                 state: Mutex::new(PoolState {
                     idle,
                     total,
@@ -151,7 +161,7 @@ impl Pool {
         }
         let worker = self.inner.acquire_worker(&options.connect_headers).await?;
         let config = &self.inner.config;
-        let redial = (config.auto_resume && config.transport.is_websocket()).then(|| Redial {
+        let redial = (config.auto_resume && config.transport.is_remote()).then(|| Redial {
             repl: repl.clone(),
             connect_headers: options.connect_headers.clone(),
             #[cfg(feature = "telemetry")]
@@ -255,17 +265,17 @@ impl PoolInner {
         worker
     }
 
-    /// Reuses/spawns a local worker or connects a fresh remote one (with
-    /// `connect_headers` on its upgrade request), waiting as capacity allows,
-    /// and reports through `outcome` how it got one.
+    /// Reuses/spawns a local worker or opens a fresh remote stream (with
+    /// `connect_headers` as its metadata), waiting as capacity allows, and
+    /// reports through `outcome` how it got one.
     async fn acquire_worker_inner(
         &self,
         connect_headers: &[(String, String)],
         outcome: &mut &'static str,
     ) -> Result<Worker, PoolError> {
-        // WebSocket connections are single-use and never pooled idle, so the
-        // idle-reuse step is skipped and each acquisition dials a fresh worker.
-        let websocket = self.config.transport.is_websocket();
+        // remote streams are single-use and never pooled idle, so the
+        // idle-reuse step is skipped and each acquisition opens a fresh one
+        let remote = self.config.transport.is_remote();
         let mut waited = false;
         let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
         loop {
@@ -281,7 +291,7 @@ impl PoolInner {
                 let mut reused = None;
                 let mut died_idle = 0;
                 let mut removed_idle = 0;
-                if !websocket {
+                if !remote {
                     // discard workers that died while idle — their replacement
                     // is the spawn below or a background refill
                     while let Some(mut worker) = state.idle.pop() {
@@ -324,9 +334,9 @@ impl PoolInner {
             if let Some(id) = spawn {
                 *outcome = if waited { "waited" } else { "spawned" };
                 // guard the reserved slot: a failed — or cancelled, for the
-                // WebSocket dial — spawn must release it or the pool shrinks
+                // remote dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let mut worker = Worker::new(&self.config, connect_headers).await?;
+                let mut worker = Worker::new(&self.config, self.remote.as_ref(), connect_headers).await?;
                 worker.id = id;
                 capacity.disarm();
                 return Ok(worker);
@@ -374,17 +384,17 @@ impl PoolInner {
     }
 
     /// Returns a healthy worker to the idle queue (or retires it when it hit
-    /// the recycle limit, or it is a single-use WebSocket connection).
+    /// the recycle limit, or it is a single-use remote stream).
     pub(crate) fn release_worker(&self, worker: Worker) {
-        let websocket = self.config.transport.is_websocket();
-        let recycle = websocket
+        let remote = self.config.transport.is_remote();
+        let recycle = remote
             || self
                 .config
                 .max_checkouts_per_worker
                 .is_some_and(|max| worker.checkouts_served >= max);
         if recycle {
             drop(worker); // kill (on drop) — reaped by tokio in the background
-            self.count_termination(if websocket { "single_use" } else { "recycled" });
+            self.count_termination(if remote { "single_use" } else { "recycled" });
             self.release_capacity();
         } else {
             lock_ignore_poison(&self.state).idle.push(worker);
@@ -406,7 +416,7 @@ impl PoolInner {
     /// their capacity first so a racing checkout can never overshoot
     /// `max_processes`. Does nothing once closed or while refills back off.
     fn replenish(&self) {
-        if self.config.transport.is_websocket() {
+        if self.config.transport.is_remote() {
             return;
         }
         let (wanted, first_id) = {
@@ -469,7 +479,8 @@ impl PoolInner {
 /// Holds only a `Weak` across the spawn, so an in-flight refill never keeps a
 /// dropped pool alive; its worker is then killed on drop.
 async fn refill_one(pool: Weak<PoolInner>, config: PoolConfig, id: u64) {
-    let worker = Worker::new(&config, &[]).await;
+    // only subprocess pools refill, so there is no channel to hand over
+    let worker = Worker::new(&config, None, &[]).await;
     let Some(pool) = pool.upgrade() else { return };
     match worker {
         Ok(mut worker) => {

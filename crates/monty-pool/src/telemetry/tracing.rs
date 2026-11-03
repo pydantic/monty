@@ -270,6 +270,9 @@ impl Recorder {
                 self.feed = None;
                 self.session = None;
             }
+            // liveness, not a turn (and sent by the transport, never through
+            // the recorder)
+            Some(pb::parent_request::Kind::Pong(_)) => {}
             // `checkout::request` always sets a kind
             None => {}
         }
@@ -441,6 +444,8 @@ impl Recorder {
                     length_limit_exceeded = cut.then_some(true),
                 );
             }
+            // liveness, not a turn (and answered by the transport, never seen here)
+            Some(pb::child_event::Kind::Ping(_)) => {}
             None => logfire::error!(parent: self.context_span(), "event with no kind"),
         }
     }

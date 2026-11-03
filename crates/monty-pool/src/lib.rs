@@ -4,6 +4,7 @@ mod checkout;
 mod cpu;
 mod cpu_clock;
 mod pool;
+mod remote;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 /// Compatibility alias for the former public module name.
@@ -15,6 +16,8 @@ use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::Exi
 
 use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
+/// Why a remote server ended a session's stream; see [`RemoteDisconnect::cause`].
+pub use monty_proto::grpc::Cause as RemoteCause;
 use monty_types::{ExecutionClock, MontyException};
 
 #[cfg(feature = "telemetry")]
@@ -33,21 +36,22 @@ pub enum MontyTransport {
     /// Spawn a local `monty subprocess` child and talk to it over framed
     /// stdio pipes. Takes path to the `monty` (or compatible child) binary.
     Subprocess(PathBuf),
-    /// Connect *out* to a remote child over a WebSocket — either a relay (which
-    /// pairs this connection with a child that dialed in with the same session
-    /// id) or a child running a server. One binary message per protocol frame.
+    /// Connect *out* to a remote server speaking the protocol over gRPC: one
+    /// HTTP/2 connection per pool, one `MontySession.Session` stream per
+    /// checkout, carrying one protocol message per gRPC message. The intended
+    /// peer is a relay such as `monty-server`, which pairs each stream with a
+    /// worker of its own.
     ///
-    /// The URL is dialed verbatim — if a relay needs the two ends to share a
-    /// session id in the path (`/<uuid>/parent`), the caller is responsible for
-    /// putting it there. Takes full `ws://`/`wss://` URL to dial.
-    Websocket(String),
+    /// Takes the `http://` or `https://` URL of the server; `ws://` and
+    /// `wss://` are accepted and read as those two.
+    Remote(String),
 }
 
 impl MontyTransport {
-    /// Whether this is the remote WebSocket transport, whose workers are
-    /// single-use (dialed per checkout, never pooled idle or reused).
-    pub(crate) fn is_websocket(&self) -> bool {
-        matches!(self, Self::Websocket(_))
+    /// Whether this is the remote transport, whose workers are single-use (a
+    /// stream opened per checkout, never pooled idle or reused).
+    pub(crate) fn is_remote(&self) -> bool {
+        matches!(self, Self::Remote(_))
     }
 }
 
@@ -55,6 +59,10 @@ impl MontyTransport {
 /// waits past a sandbox time limit for the worker to raise `TimeoutError`
 /// itself before killing it.
 pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
+
+/// Default [`PoolConfig::connect_timeout`]. Generous, since it only guards a
+/// stuck dial or a server that never admits the stream.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default [`PoolConfig::max_checkouts_per_worker`]: bounds how many sessions
 /// one worker serves while amortising its respawn over many checkouts.
@@ -65,20 +73,26 @@ pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
 pub struct PoolConfig {
     /// Floor on live workers: spawned at pool creation, and replaced in the
     /// background whenever one is recycled, crashes or is discarded. Forced to
-    /// 0 for the [`MontyTransport::Websocket`] transport (connections are made
+    /// 0 for the [`MontyTransport::Remote`] transport (streams are opened
     /// per-checkout, not pre-warmed).
     pub min_processes: usize,
-    /// Hard cap on live workers; checkouts beyond this wait.
+    /// Hard cap on live workers; checkouts beyond this wait. For the remote
+    /// transport, a cap on concurrent streams.
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
     pub transport: MontyTransport,
     /// Clock for local worker sessions (default wall time). CPU mode requires Linux
     /// subprocess workers and a finite [`Self::request_timeout`].
-    /// WebSocket pools adopt the server's clock without local CPU supervision.
+    /// Remote pools adopt the server's clock without local CPU supervision.
     pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
+    /// How long opening a remote session stream may take, from a cold dial
+    /// (TCP, TLS) through the server's admission, before the checkout fails
+    /// with [`PoolError::Spawn`]. Ignored by the subprocess transport.
+    /// Defaults to [`DEFAULT_CONNECT_TIMEOUT`].
+    pub connect_timeout: Duration,
     /// Parent-side hard deadline per protocol turn: when it expires the
     /// worker is killed and the call fails with [`PoolError::Timeout`]. This
     /// backstops the child-side `ResourceLimits` — it also catches a child
@@ -106,7 +120,7 @@ pub struct PoolConfig {
     /// Resume a session transparently when a relay that stores sessions answers
     /// a request with `Shutdown`: the checkout redials, reloads the state the
     /// shutdown named and re-sends the request the relay reported it did not run. The session's suspension
-    /// and sleep totals carry over. WebSocket transport only; on by default.
+    /// and sleep totals carry over. Remote transport only; on by default.
     pub auto_resume: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
@@ -126,10 +140,10 @@ impl PoolConfig {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
 
-    /// Creates a WebSocket-transport config dialing `url` verbatim per checkout.
-    /// `min_processes` is 0 (no pre-warming — connections are made per-checkout).
-    pub fn websocket(url: impl Into<String>) -> Self {
-        let mut config = Self::with_transport(MontyTransport::Websocket(url.into()));
+    /// Creates a remote-transport config for the gRPC server at `url`, with a
+    /// stream opened per checkout. `min_processes` is 0 (no pre-warming).
+    pub fn remote(url: impl Into<String>) -> Self {
+        let mut config = Self::with_transport(MontyTransport::Remote(url.into()));
         config.min_processes = 0;
         config
     }
@@ -142,6 +156,7 @@ impl PoolConfig {
             transport,
             execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
@@ -200,17 +215,16 @@ pub enum PoolError {
     Spawn(String),
     /// The checkout was already finished or its worker already discarded.
     Finished,
-    /// The remote worker's connection dropped without a turn-ending event
-    /// (WebSocket transport only — the local analogue is [`Self::Crashed`]).
-    /// The sandbox may have died, or the server may have dropped the session
-    /// by policy (idle/session/turn timeout, capacity); the two are
-    /// indistinguishable to a client that only learns of the close, so this
-    /// deliberately says no more than "the connection went away".
+    /// The remote worker's stream ended without a turn-ending event (remote
+    /// transport only — the local analogue is [`Self::Crashed`]). The sandbox
+    /// may have died, the connection may have dropped, or the server may have
+    /// ended the session by policy — in which case `remote` carries the
+    /// status it ended with and, when the server named one, the cause.
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,
-        /// Transport evidence, absent when the connection task supplied no details.
-        websocket: Option<Box<WebSocketDisconnect>>,
+        /// Transport evidence, absent when the reader task supplied no details.
+        remote: Option<Box<RemoteDisconnect>>,
     },
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` restores the session
@@ -252,16 +266,26 @@ pub enum CrashCause {
     },
 }
 
-/// The first recorded WebSocket failure, without a claim about whether guest code ran.
+/// The first recorded stream failure, without a claim about whether guest code ran.
+///
+/// Exactly one of two shapes: a status the server ended the stream with
+/// (`status_code`, `status_message`, and `cause` when it sent one), or a
+/// transport failure (`transport_error`) for which there was no status.
 #[derive(Debug, Clone)]
-pub struct WebSocketDisconnect {
+pub struct RemoteDisconnect {
     /// The I/O operation that observed the failure: `send` or `receive`.
     pub stage: &'static str,
-    /// The peer's Close frame code, if a Close frame supplied one.
-    pub close_code: Option<u16>,
-    /// The peer's Close frame reason, if a Close frame supplied one.
-    pub close_reason: Option<String>,
-    /// The transport or protocol error for this failure; absent for a peer Close frame.
+    /// The gRPC status code the server ended the stream with, by its
+    /// canonical name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...);
+    /// `OK` when it simply finished the stream.
+    pub status_code: Option<&'static str>,
+    /// The message on that status.
+    pub status_message: Option<String>,
+    /// The policy reason the server attached to that status, when it is one
+    /// this build knows.
+    pub cause: Option<RemoteCause>,
+    /// The transport or protocol error for this failure; absent when the
+    /// server sent a status.
     pub transport_error: Option<String>,
 }
 

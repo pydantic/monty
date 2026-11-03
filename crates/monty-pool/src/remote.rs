@@ -1,0 +1,401 @@
+//! The remote transport: one gRPC channel per pool, one `MontySession.Session`
+//! stream per worker.
+//!
+//! [`Remote`] owns the HTTP/2 connection (dialed lazily, reconnected by tonic
+//! when it drops) and opens a stream per checkout. [`RemoteWorker`] is that
+//! stream: requests go down an `mpsc` channel that tonic drains as the
+//! request body, and a reader task decodes the response stream into another
+//! channel so `recv` is cancel-safe and the stream is polled even while the
+//! worker sits idle — which is what lets it answer a server's `Ping` between
+//! turns, the liveness signal a relay behind a proxy relies on.
+
+use std::{
+    error::Error,
+    fmt::Display,
+    sync::{Arc, Once, OnceLock},
+    time::Duration,
+};
+
+use bytes::Bytes;
+use http::uri::PathAndQuery;
+use monty_proto::{
+    FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
+    grpc::{BytesCodec, Cause, SESSION_PATH},
+    pb,
+};
+use rustls::crypto::aws_lc_rs::default_provider;
+use tokio::{
+    sync::mpsc::{self, WeakSender},
+    task::JoinHandle,
+    time::timeout,
+};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{
+    Code, Extensions, Request, Status, Streaming,
+    client::Grpc,
+    metadata::{MetadataKey, MetadataMap, MetadataValue},
+    transport::{Channel, ClientTlsConfig, Endpoint},
+};
+
+use crate::{PoolError, RemoteDisconnect, worker::decode_event};
+
+/// A pool's connection to its remote server. Cheap to keep: the channel
+/// connects on the first stream and stays up across checkouts.
+pub(crate) struct Remote {
+    /// The URL as the caller gave it, for error messages.
+    url: String,
+    channel: Channel,
+    /// Bounds opening a stream: the TCP+TLS dial on a cold channel plus the
+    /// server's admission (which, for a relay, includes dialing a worker).
+    connect_timeout: Duration,
+}
+
+impl Remote {
+    /// Prepares the channel for `url` without connecting; the first stream
+    /// dials. A URL tonic cannot parse fails here, so a pool with a bad URL
+    /// fails at `Pool::new` rather than at its first checkout.
+    pub(crate) fn connect(url: &str, connect_timeout: Duration) -> Result<Self, PoolError> {
+        install_crypto_provider();
+        let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
+        let mut endpoint = Endpoint::from_shared(dial_url(url))
+            .map_err(|err| spawn_error(&err))?
+            .user_agent(USER_AGENT_VALUE)
+            .map_err(|err| spawn_error(&err))?
+            .connect_timeout(connect_timeout)
+            .tcp_nodelay(true)
+            // hop-local liveness: a dead TCP peer is noticed without waiting
+            // for a turn to time out (the in-band `Ping` covers proxied hops)
+            .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+            .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+            .keep_alive_while_idle(true)
+            // large frames (a 256 MiB value) should not crawl through a
+            // 64 KiB flow-control window
+            .http2_adaptive_window(true);
+        if endpoint.uri().scheme_str() == Some("https") {
+            endpoint = endpoint
+                .tls_config(ClientTlsConfig::new().with_webpki_roots())
+                .map_err(|err| spawn_error(&err))?;
+        }
+        Ok(Self {
+            url: url.to_owned(),
+            channel: endpoint.connect_lazy(),
+            connect_timeout,
+        })
+    }
+
+    /// Opens one session stream with `connect_headers` as its request
+    /// metadata (see [`crate::CheckoutOptions`]). Returns once the server has
+    /// admitted the stream — sent its response headers — so a refusal
+    /// (capacity, authentication, no worker) surfaces here as a
+    /// [`PoolError::Spawn`] naming the server's status, never as a worker that
+    /// fails its first turn.
+    pub(crate) async fn open(
+        &self,
+        connect_headers: &[(String, String)],
+        max_decode_bytes: usize,
+    ) -> Result<RemoteWorker, PoolError> {
+        let url = &self.url;
+        let mut metadata = MetadataMap::new();
+        // a malformed name/value is a caller bug: fail the dial
+        for (name, value) in connect_headers {
+            let key = MetadataKey::from_bytes(name.as_bytes())
+                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
+            let value = MetadataValue::try_from(value.as_str())
+                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
+            metadata.insert(key, value);
+        }
+        let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
+        let request = Request::from_parts(metadata, Extensions::default(), ReceiverStream::new(request_body));
+        let path = PathAndQuery::from_static(SESSION_PATH);
+        let mut grpc = Grpc::new(self.channel.clone())
+            .max_decoding_message_size(MAX_FRAME_LEN as usize)
+            .max_encoding_message_size(MAX_FRAME_LEN as usize);
+        let open = async {
+            grpc.ready().await.map_err(|err| Status::from_error(err.into()))?;
+            grpc.streaming(request, path, BytesCodec).await
+        };
+        let response = timeout(self.connect_timeout, open)
+            .await
+            .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {:?}", self.connect_timeout)))?
+            .map_err(|status| PoolError::Spawn(format!("{url}: {}", describe_status(&status))))?;
+        let (events_tx, events) = mpsc::channel(EVENT_CHANNEL_DEPTH);
+        let disconnect = Arc::new(OnceLock::new());
+        let reader = tokio::spawn(read_events(
+            response.into_inner(),
+            events_tx,
+            requests.downgrade(),
+            Arc::clone(&disconnect),
+            max_decode_bytes,
+        ));
+        Ok(RemoteWorker {
+            requests: Some(requests),
+            events,
+            disconnect,
+            reader,
+        })
+    }
+}
+
+/// One session stream. See the module docs for the two halves; teardown must
+/// release both — see [`RemoteWorker::close`].
+pub(crate) struct RemoteWorker {
+    /// `send` writes here; `None` after teardown (the closed-stream sentinel).
+    /// Dropping the last sender half-closes the stream, the "host is done"
+    /// signal a server ends the session on.
+    requests: Option<mpsc::Sender<Bytes>>,
+    /// Decoded events (or the terminal error) forwarded by the reader task.
+    events: mpsc::Receiver<Result<(pb::ChildEvent, usize), FrameError>>,
+    /// The first failure, retained independently of queued protocol events.
+    disconnect: Arc<OnceLock<RemoteDisconnect>>,
+    /// The task owning the response stream; aborted on teardown/drop.
+    reader: JoinHandle<()>,
+}
+
+impl RemoteWorker {
+    /// Sends one request, returning its encoded size. An oversize request is
+    /// rejected before any I/O so the stream stays in sync; a stream the
+    /// server already ended fails as [`FrameError::Truncated`].
+    pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<usize, FrameError> {
+        let body = encode_to_capped_vec(request)?;
+        let len = body.len();
+        let sent = match &self.requests {
+            Some(requests) => requests.send(Bytes::from(body)).await.is_ok(),
+            None => false,
+        };
+        if sent {
+            Ok(len)
+        } else {
+            let _ = self
+                .disconnect
+                .set(RemoteDisconnect::failure("send", "session stream already ended"));
+            Err(FrameError::Truncated)
+        }
+    }
+
+    /// Receives the next decoded event with its wire size. Cancel-safe: a
+    /// channel receive consumes nothing when dropped. A torn-down worker or a
+    /// finished reader is [`FrameError::Truncated`] — a
+    /// [`PoolError::Disconnected`].
+    pub(crate) async fn recv(&mut self) -> Result<(pb::ChildEvent, usize), FrameError> {
+        if self.requests.is_none() {
+            return Err(FrameError::Truncated);
+        }
+        match self.events.recv().await {
+            Some(result) => result,
+            None => Err(FrameError::Truncated),
+        }
+    }
+
+    /// Copies the first recorded failure before teardown can add a local one.
+    pub(crate) fn disconnect(&self) -> Option<Box<RemoteDisconnect>> {
+        self.disconnect.get().cloned().map(Box::new)
+    }
+
+    /// Ends the stream: half-close the request side, give the server
+    /// [`CLOSE_GRACE`] to end its side in turn, then drop the response stream.
+    ///
+    /// The half-close is what a *proxied* server sees: a bare stream reset may
+    /// stop at a load balancer, leaving the session (and its capacity slot)
+    /// alive until the far side's own idle timeout. Bounded so a server that
+    /// never answers cannot hang teardown.
+    pub(crate) async fn close(&mut self) {
+        self.requests = None;
+        let _ = timeout(CLOSE_GRACE, &mut self.reader).await;
+        self.reader.abort();
+    }
+}
+
+/// Backstop for the synchronous teardown paths — an abandoned
+/// [`crate::Checkout`], a discarded worker — where `close` cannot be awaited.
+/// Dropping the request sender half-closes the stream and aborting the reader
+/// drops the response stream, which resets it; a server on the same hop sees
+/// both at once.
+impl Drop for RemoteWorker {
+    fn drop(&mut self) {
+        self.reader.abort();
+    }
+}
+
+/// `User-Agent` on every stream, identifying this crate to the server or
+/// relay it dials; tonic appends its own version after it.
+const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"));
+
+/// Interval between HTTP/2 keepalive pings on the connection, and how long an
+/// unanswered one is tolerated. Connection-level, hop-local: these detect a
+/// dead TCP peer, not a vanished server beyond a proxy (that is `Ping`'s job).
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long `close` waits for the server to end its side after the half-close.
+/// Not a latency budget (no acknowledgement is awaited beyond stream end) — it
+/// only rides out a peer that stopped reading.
+const CLOSE_GRACE: Duration = Duration::from_secs(1);
+
+/// Depth of the request channel. The protocol sends one request per turn (plus
+/// the odd `AbortFeed`, and `Pong`s from the reader task), so a few slots keep
+/// the sender from blocking while tonic drains the body; deeper buys nothing.
+const REQUEST_CHANNEL_DEPTH: usize = 4;
+
+/// Depth of the reader-task → `recv` channel. One slot, reserved before the
+/// poll, bounds an untrusted peer to a single queued event (≤
+/// [`MAX_FRAME_LEN`]) per worker. Deeper buys nothing: pings need polling,
+/// not buffering, and the server's print backpressure assumes unread data
+/// sits in the stream's flow-control window, not in client memory.
+const EVENT_CHANNEL_DEPTH: usize = 1;
+
+/// The reader task: polls the response stream continuously so a `Ping`
+/// is answered even while the worker is idle (see the module docs),
+/// forwarding each decoded event — or the terminal error — to `recv`.
+///
+/// Reserving the slot before polling keeps the reader polling (and ponging)
+/// rather than blocked holding an event. `pongs` is weak so this task never
+/// keeps the request body open after the worker half-closed it.
+async fn read_events(
+    mut stream: Streaming<Bytes>,
+    events: mpsc::Sender<Result<(pb::ChildEvent, usize), FrameError>>,
+    pongs: WeakSender<Bytes>,
+    disconnect: Arc<OnceLock<RemoteDisconnect>>,
+    max_decode_bytes: usize,
+) {
+    // an Err from reserve means the receiver dropped: the worker is gone
+    while let Ok(permit) = events.reserve().await {
+        let result = loop {
+            match stream.message().await {
+                Ok(Some(body)) => match decode_event(&body, max_decode_bytes) {
+                    Ok(event) if matches!(event.kind, Some(pb::child_event::Kind::Ping(_))) => {
+                        // answered here, not by the checkout: a ping can land
+                        // between turns, when nothing else polls the stream
+                        if let Some(pongs) = pongs.upgrade() {
+                            let _ = pongs.send(pong_body()).await;
+                        }
+                    }
+                    decoded => break decoded.map(|event| (event, body.len())),
+                },
+                // the server ended the stream with an OK status: a session
+                // it considers finished, which mid-checkout is still a loss
+                Ok(None) => {
+                    let _ = disconnect.set(RemoteDisconnect {
+                        stage: "receive",
+                        status_code: Some(code_name(Code::Ok)),
+                        status_message: None,
+                        cause: None,
+                        transport_error: None,
+                    });
+                    break Err(FrameError::Truncated);
+                }
+                Err(status) => {
+                    let _ = disconnect.set(RemoteDisconnect::from_status("receive", &status));
+                    break Err(FrameError::Truncated);
+                }
+            }
+        };
+        // any error is terminal: deliver it and exit
+        let stop = result.is_err();
+        permit.send(result);
+        if stop {
+            return;
+        }
+    }
+}
+
+/// The encoded `Pong` request, built once per answer (it is two bytes).
+fn pong_body() -> Bytes {
+    let pong = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Pong(pb::Pong {})),
+        trace_parent: None,
+    };
+    Bytes::from(encode_to_capped_vec(&pong).expect("a Pong is far below the frame cap"))
+}
+
+impl RemoteDisconnect {
+    /// Classifies a status that ended the stream: one the server sent carries
+    /// its code, message and cause; one tonic synthesised for a transport
+    /// failure (it has a source error) is recorded as that failure instead.
+    fn from_status(stage: &'static str, status: &Status) -> Self {
+        if Error::source(status).is_some() {
+            Self::failure(stage, describe_status(status))
+        } else {
+            Self {
+                stage,
+                status_code: Some(code_name(status.code())),
+                status_message: Some(status.message().to_owned()),
+                cause: Cause::of(status),
+                transport_error: None,
+            }
+        }
+    }
+
+    /// Describes a transport failure for which the server sent no status.
+    fn failure(stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            stage,
+            status_code: None,
+            status_message: None,
+            cause: None,
+            transport_error: Some(message.into()),
+        }
+    }
+}
+
+/// Renders a status for an error message: its code and message, then the
+/// chain of underlying errors tonic attached for a transport failure.
+fn describe_status(status: &Status) -> String {
+    let mut text = format!("{}: {}", code_name(status.code()), status.message());
+    let mut source = Error::source(status);
+    while let Some(err) = source {
+        text.push_str(": ");
+        text.push_str(&err.to_string());
+        source = err.source();
+    }
+    text
+}
+
+/// The canonical upper-snake name of a gRPC code, as the `grpc-status`
+/// documentation and every other implementation spell it.
+fn code_name(code: Code) -> &'static str {
+    match code {
+        Code::Ok => "OK",
+        Code::Cancelled => "CANCELLED",
+        Code::Unknown => "UNKNOWN",
+        Code::InvalidArgument => "INVALID_ARGUMENT",
+        Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        Code::NotFound => "NOT_FOUND",
+        Code::AlreadyExists => "ALREADY_EXISTS",
+        Code::PermissionDenied => "PERMISSION_DENIED",
+        Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        Code::FailedPrecondition => "FAILED_PRECONDITION",
+        Code::Aborted => "ABORTED",
+        Code::OutOfRange => "OUT_OF_RANGE",
+        Code::Unimplemented => "UNIMPLEMENTED",
+        Code::Internal => "INTERNAL",
+        Code::Unavailable => "UNAVAILABLE",
+        Code::DataLoss => "DATA_LOSS",
+        Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}
+
+/// The URL to hand tonic: `ws://` and `wss://`, the schemes the WebSocket
+/// transport took, map onto `http://` and `https://` so a configured URL
+/// keeps working; anything else is passed through for tonic to judge.
+fn dial_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else {
+        url.to_owned()
+    }
+}
+
+/// Installs the process-level rustls `CryptoProvider` exactly once before the
+/// first `https://` dial. rustls 0.23 panics on first TLS use when it can't
+/// pick a provider automatically (both `aws-lc-rs` and `ring`, or neither,
+/// compiled in), so we name `aws_lc_rs` explicitly. Idempotent via `Once`, and
+/// the install error is ignored: another part of the process (e.g. a host
+/// embedding the pool) may have already installed a provider, which is fine.
+fn install_crypto_provider() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = default_provider().install_default();
+    });
+}
