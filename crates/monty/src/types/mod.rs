@@ -1,5 +1,5 @@
-mod builtin_type;
 pub(crate) mod builtin_attr;
+mod builtin_type;
 
 /// Type definitions for Python runtime values.
 ///
