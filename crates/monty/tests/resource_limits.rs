@@ -684,9 +684,9 @@ fn math_gcd_with_small_operand_finishes_within_limit() {
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(500));
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
-    if let Err(exc) = result {
-        panic!("gcd with a machine-word operand should finish within the limit, got: {exc}");
-    }
+    let value = result
+        .unwrap_or_else(|exc| panic!("gcd with a machine-word operand should finish within the limit, got: {exc}"));
+    assert_eq!(value, MontyObject::int(1));
 }
 
 /// `math.lcm` shares the polled gcd.

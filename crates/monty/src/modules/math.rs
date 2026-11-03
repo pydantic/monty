@@ -1098,10 +1098,9 @@ fn polled_gcd(lhs: &BigUint, rhs: &BigUint, tracker: &ResourceTracker) -> RunRes
     } else {
         (rhs.clone(), lhs.clone())
     };
-    let mut polls = 0usize;
     while short.bits() > 64 {
-        tracker.check_time_every(polls)?;
-        polls += 1;
+        // Each step is a full pass over the operands, so every step polls.
+        tracker.check_time()?;
         let shift = long.bits() - LEHMER_WINDOW;
         // Signed, as in CPython: `next_y` goes negative exactly when the window can no longer
         // be trusted, and `next_cc > next_y` must then end the loop. `i128` keeps the products exact.
@@ -1166,6 +1165,8 @@ fn polled_isqrt(value: &BigUint, tracker: &ResourceTracker) -> RunResult<BigUint
         let correction = (value >> (2 * half - prev_prec - prec + 1)) / &root;
         root = (root << (prec - prev_prec - 1)) + correction;
     }
+    // Squaring the root is a full-size multiplication, so it polls first too.
+    tracker.check_time()?;
     if &root * &root > *value {
         root -= 1u32;
     }
