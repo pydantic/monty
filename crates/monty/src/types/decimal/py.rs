@@ -32,10 +32,11 @@ use crate::{
     hash::{HashValue, hash_f64, hash_python_long_int, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
         BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyClass, PyTrait, Type, allocate_string,
-        pyattrs::PyAttrs, str::allocate_string_no_interning, tuple::allocate_tuple,
+        str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
 };

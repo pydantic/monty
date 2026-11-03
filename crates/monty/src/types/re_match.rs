@@ -14,7 +14,6 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write};
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
@@ -22,6 +21,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},

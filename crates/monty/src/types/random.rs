@@ -27,8 +27,9 @@ use crate::{
         copy::{Memo, PyDeepCopy},
         random::{RandomFunctions, random_dispatch},
     },
+    py_attrs::PyAttrs,
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity, pyattrs::PyAttrs},
+    types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 

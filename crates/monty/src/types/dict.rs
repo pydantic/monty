@@ -33,10 +33,10 @@ use crate::{
         },
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
+    py_attrs::PyAttrs,
     types::{
         PyClass, Type,
         hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
-        pyattrs::PyAttrs,
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };

@@ -12,7 +12,6 @@ use std::fmt::Write;
 use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail},
     bytecode::{CallResult, VM},
@@ -21,6 +20,7 @@ use crate::{
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
         LazyHeapSet, PyClass, PyTrait, Type,

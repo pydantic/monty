@@ -16,6 +16,7 @@ use crate::{
         itertools,
         itertools::ItertoolsFunctions,
     },
+    py_attrs::{self, AttrDef, PyAttrs},
     py_value::PyValue,
     types::{
         BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyClass,
@@ -24,7 +25,6 @@ use crate::{
         complex, date, datetime, decimal,
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
-        pyattrs::{self, AttrDef, PyAttrs},
         str::{StringRepr, allocate_string},
         time, timedelta,
     },
@@ -763,7 +763,7 @@ impl Type {
                     vm,
                 );
             }
-            Some(AttrDef::Method(method)) => return pyattrs::call_unbound(self, attr, method, args, vm),
+            Some(AttrDef::Method(method)) => return py_attrs::call_unbound(self, attr, method, args, vm),
             _ => {}
         }
         match (self, attr.static_string(vm.interns)) {

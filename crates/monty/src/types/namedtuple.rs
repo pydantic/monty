@@ -39,12 +39,12 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
+    py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
         py_trait::LazyHeapSet,
-        pyattrs::PyAttrs,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::allocate_string,
         tuple::TupleVec,

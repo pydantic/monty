@@ -8,7 +8,6 @@ use smallvec::smallvec;
 use super::{
     Bytes, CmpOrder, PyTrait,
     inline_str::InlineStr,
-    pyattrs::PyAttrs,
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
@@ -26,6 +25,7 @@ use crate::{
     identity::Identity,
     intern::{Interns, StringId},
     percent_format::percent_format,
+    py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,

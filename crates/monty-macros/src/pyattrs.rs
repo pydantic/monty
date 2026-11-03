@@ -208,14 +208,14 @@ fn definition(
     let handler = quote!(<#owner>::#name);
     match kind {
         Kind::ClassMethod => quote! {
-            crate::types::pyattrs::AttrDef::ClassMethod({
+            crate::py_attrs::AttrDef::ClassMethod({
                 fn call<'h>(receiver: crate::types::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                     #handler(crate::intern::StaticStrings::#attr_name, receiver, args, vm)
                 }
                 call
             })
         },
-        Kind::Value => quote!(crate::types::pyattrs::AttrDef::Value(#handler)),
+        Kind::Value => quote!(crate::py_attrs::AttrDef::Value(#handler)),
         Kind::Method => {
             let body = match mode {
                 Mode::Immediate => {
@@ -264,7 +264,7 @@ fn definition(
                 body
             };
             quote! {
-                crate::types::pyattrs::AttrDef::Method({
+                crate::py_attrs::AttrDef::Method({
                     fn call<'h>(receiver: &mut crate::py_value::PyValue<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                         #body
                     }
@@ -434,7 +434,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
         impl #inherent_generics #owner {
             #(#methods)*
 
-            pub(crate) const fn lookup_attr(name: crate::intern::StaticStrings) -> Option<crate::types::pyattrs::AttrDef> {
+            pub(crate) const fn lookup_attr(name: crate::intern::StaticStrings) -> Option<crate::py_attrs::AttrDef> {
                 match name {
                     #(#arms,)*
                     _ => None,
@@ -445,7 +445,7 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
         #(#attrs)*
         impl #generics #trait_path for #owner {
             #receiver_item
-            const ATTRS: &'static [(crate::intern::StaticStrings, crate::types::pyattrs::AttrDef)] = &[
+            const ATTRS: &'static [(crate::intern::StaticStrings, crate::py_attrs::AttrDef)] = &[
                 #(#table,)*
             ];
         }
@@ -741,8 +741,8 @@ mod tests {
                 .unwrap();
         let support = quote! {
             mod intern { pub enum StaticStrings { Missing } }
-            mod types { pub mod pyattrs { pub enum AttrDef {} } }
-            trait PyAttrs<'h> { type Receiver; const ATTRS: &'static [(intern::StaticStrings, types::pyattrs::AttrDef)]; }
+            mod py_attrs { pub enum AttrDef {} }
+            trait PyAttrs<'h> { type Receiver; const ATTRS: &'static [(intern::StaticStrings, py_attrs::AttrDef)]; }
             struct HeapRead<'h, T>(std::marker::PhantomData<&'h T>);
             struct Native;
             struct Namespace;

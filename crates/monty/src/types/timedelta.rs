@@ -15,7 +15,6 @@ use chrono::TimeDelta as ChronoTimeDelta;
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
@@ -23,6 +22,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, long_int, str::allocate_string, tuple::allocate_tuple,
     },

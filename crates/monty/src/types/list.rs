@@ -8,7 +8,6 @@ use smallvec::SmallVec;
 use super::{
     CmpOrder, PyTrait,
     iter::{collect_owned_iterable, collect_python_iterator},
-    pyattrs::PyAttrs,
 };
 use crate::{
     args::ArgValues,
@@ -20,6 +19,7 @@ use crate::{
         HeapReadOutput, HeapReader,
     },
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,

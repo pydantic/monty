@@ -14,6 +14,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     resource_checks::{
         check_estimated_size, check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity,
@@ -21,7 +22,6 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
-        pyattrs::PyAttrs,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},

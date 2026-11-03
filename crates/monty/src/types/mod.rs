@@ -1,5 +1,4 @@
 mod builtin_type;
-pub(crate) mod pyattrs;
 
 /// Type definitions for Python runtime values.
 ///

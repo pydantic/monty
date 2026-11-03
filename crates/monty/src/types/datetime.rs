@@ -26,11 +26,11 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyClass, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
-        pyattrs::PyAttrs,
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
         timedelta, timezone,

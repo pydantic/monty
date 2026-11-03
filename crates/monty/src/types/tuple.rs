@@ -26,7 +26,7 @@ use monty_macros::pyattrs;
 /// All tuple methods from Python's builtins are implemented.
 use smallvec::SmallVec;
 
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable, pyattrs::PyAttrs};
+use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -35,6 +35,7 @@ use crate::{
     hash::HashValue,
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
+    py_attrs::PyAttrs,
     resource_checks::{check_repeat_size, repeated_len},
     types::{
         LazyHeapSet, Type,

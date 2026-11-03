@@ -19,7 +19,6 @@ use ahash::AHasher;
 use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
-use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
@@ -31,6 +30,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
+    py_attrs::PyAttrs,
     types::{
         BuiltinType, Dict, LazyHeapSet, PyTrait, Type, Union,
         generic_alias::repr_type_arg,
