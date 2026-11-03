@@ -52,7 +52,7 @@ python = ["dep:pyo3", "dep:strum"]
 # Enables the `grpc` module: the session RPC path, the opaque-bytes codec and
 # the status a server ends a stream with. Off by default so the stdio-only
 # runtime never links tonic.
-grpc = ["dep:tonic", "dep:bytes"]
+grpc = ["dep:tonic", "dep:bytes", "dep:strum"]
 # Enables the `worker` module: the child-side Child state machine that drives
 # the interpreter. Off by default so host-side consumers (monty-pool, the
 # bindings) never link the interpreter itself.
@@ -78,7 +78,7 @@ monty-types = { workspace = true, features = ["tzdb"] }
 # Self dev-dependency enables budget instrumentation for tests, not normal builds.
 # Path-only (no version) so `cargo publish` strips it: a versioned self-reference
 # cannot resolve while this version is not yet on crates.io.
-monty-proto = { path = ".", features = ["test-util"] }
+monty-proto = { path = ".", features = ["test-util", "grpc"] }
 serde_json = { workspace = true }
 strum = { workspace = true }
 

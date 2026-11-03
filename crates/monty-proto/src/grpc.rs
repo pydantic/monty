@@ -10,9 +10,8 @@
 //! forwarding server never has to decode what it relays. There is no generated
 //! service: a client calls [`SESSION_PATH`] through `tonic::client::Grpc`.
 
-use std::{fmt, str::FromStr};
-
 use bytes::{Buf, BufMut, Bytes};
+use strum::{Display, EnumString, IntoStaticStr};
 use tonic::{
     Code, Status,
     codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder},
@@ -28,8 +27,10 @@ pub const CAUSE_METADATA_KEY: &str = "monty-cause";
 
 /// Why a server ended a session's stream, or refused to open one. Rides on the
 /// [`CAUSE_METADATA_KEY`] trailer beside the canonical gRPC code so a client
-/// can act on the reason rather than parse the message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// can act on the reason rather than parse the message. Its string form,
+/// the variant in `snake_case`, is the trailer value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum Cause {
     /// No request arrived within the server's idle timeout.
     IdleTimeout,
@@ -69,18 +70,7 @@ impl Cause {
     /// The trailer value: the variant in `snake_case`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::IdleTimeout => "idle_timeout",
-            Self::SessionTimeout => "session_timeout",
-            Self::TurnTimeout => "turn_timeout",
-            Self::OutOfMemory => "out_of_memory",
-            Self::ServerShutdown => "server_shutdown",
-            Self::Capacity => "capacity",
-            Self::CallerCap => "caller_cap",
-            Self::Unauthenticated => "unauthenticated",
-            Self::WorkerUnavailable => "worker_unavailable",
-            Self::ProtocolViolation => "protocol_violation",
-        }
+        self.into()
     }
 
     /// Builds the status a server ends (or refuses) a stream with: this
@@ -103,32 +93,6 @@ impl Cause {
             .get(CAUSE_METADATA_KEY)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse().ok())
-    }
-}
-
-impl fmt::Display for Cause {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for Cause {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "idle_timeout" => Ok(Self::IdleTimeout),
-            "session_timeout" => Ok(Self::SessionTimeout),
-            "turn_timeout" => Ok(Self::TurnTimeout),
-            "out_of_memory" => Ok(Self::OutOfMemory),
-            "server_shutdown" => Ok(Self::ServerShutdown),
-            "capacity" => Ok(Self::Capacity),
-            "caller_cap" => Ok(Self::CallerCap),
-            "unauthenticated" => Ok(Self::Unauthenticated),
-            "worker_unavailable" => Ok(Self::WorkerUnavailable),
-            "protocol_violation" => Ok(Self::ProtocolViolation),
-            _ => Err(()),
-        }
     }
 }
 
