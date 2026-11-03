@@ -209,7 +209,14 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         match self {
-            Self::Interned(id) => Some(vm.interns.get_str(*id).chars().count()),
+            Self::Interned(id) => {
+                let text = vm.interns.get_str(*id);
+                Some(if vm.interns.str_is_ascii(*id) {
+                    text.len()
+                } else {
+                    text.chars().count()
+                })
+            }
             Self::Inline(text) => Some(text.as_str().chars().count()),
             Self::Heap(value) => value.py_len(vm),
         }
@@ -243,7 +250,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         match self {
             Self::Interned(id) => {
                 let text = vm.interns.get_str(*id);
-                str_getitem(&*vm.heap.protect(text), text.is_ascii(), key, vm)
+                str_getitem(&*vm.heap.protect(text), vm.interns.str_is_ascii(*id), key, vm)
             }
             Self::Inline(text) => str_getitem(text, text.as_bytes().is_ascii(), key, vm),
             Self::Heap(value) => value.py_getitem(key, vm),
@@ -386,19 +393,22 @@ pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value
 ///
 /// Negative indices count from the end: -1 is the last character.
 pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
-    let char_count = if ascii { s.len() } else { s.chars().count() };
-    let len = i64::try_from(char_count).ok()?;
-    let normalized = if index < 0 { index + len } else { index };
-
-    if normalized < 0 || normalized >= len {
-        return None;
-    }
-
-    let idx = usize::try_from(normalized).ok()?;
     if ascii {
-        Some(char::from(s.as_bytes()[idx]))
+        let offset = if index < 0 {
+            s.len().checked_sub(usize::try_from(index.unsigned_abs()).ok()?)?
+        } else {
+            usize::try_from(index).ok()?
+        };
+        s.as_bytes().get(offset).copied().map(char::from)
+    } else if index == -1 {
+        s.chars().next_back()
+    } else if index < 0 {
+        // Forward skipping is faster than reverse traversal for distant offsets.
+        let length = s.chars().count();
+        let offset = usize::try_from(index.unsigned_abs()).ok()?;
+        s.chars().nth(length.checked_sub(offset)?)
     } else {
-        s.chars().nth(idx)
+        s.chars().nth(usize::try_from(index).ok()?)
     }
 }
 
@@ -428,7 +438,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::Value(StringIterator::from_heap(
             self.id(),
-            self.get(vm.heap).as_str().is_ascii(),
+            self.get(vm.heap).is_ascii(),
             vm,
         )))
     }
@@ -523,6 +533,22 @@ fn str_getitem<'h>(s: &impl HeapView<'h, str>, ascii: bool, key: &Value, vm: &mu
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
         let text = s.get(vm.heap);
+        if slice.step.unwrap_or(1) == 1 {
+            let length = if ascii { text.len() } else { text.chars().count() };
+            let (start, stop, _) = slice.indices(length)?;
+            if start >= stop {
+                return Ok(allocate_string("", vm.heap));
+            }
+            let start = usize::try_from(start).expect("normalized slice start");
+            let stop = usize::try_from(stop).expect("normalized slice stop");
+            let result = if ascii {
+                &text[start..stop]
+            } else {
+                slice_string(text, start, stop)
+            };
+            // Contiguous slices copy UTF-8 directly, without collecting characters.
+            return Ok(allocate_string(result, vm.heap));
+        }
         let result: Box<str> = if ascii {
             // Byte iterators count and skip in O(1), unlike `chars()`.
             slice_collect_iterator(vm, slice, text.bytes(), char::from)?
@@ -914,8 +940,7 @@ fn str_isdecimal(s: &str) -> bool {
 /// Returns the lowest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
 fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.find", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.find", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.find('', 4) == -1`
         return Ok(Value::Int(-1));
@@ -938,8 +963,7 @@ fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
 /// Returns the highest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
 fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.rfind", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.rfind", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.rfind('', 4) == -1`
         return Ok(Value::Int(-1));
@@ -961,8 +985,7 @@ fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 ///
 /// Like find(), but raises ValueError when the substring is not found.
 fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.index", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.index", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.index('', 4)` raises `ValueError`
         return Err(ExcType::value_error_substring_not_found());
@@ -983,8 +1006,7 @@ fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 ///
 /// Like rfind(), but raises ValueError when the substring is not found.
 fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.rindex", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.rindex", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.rindex('', 4)` raises `ValueError`
         return Err(ExcType::value_error_substring_not_found());
@@ -1006,8 +1028,7 @@ fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
 /// Returns the number of non-overlapping occurrences of substring sub in
 /// the string s[start:end].
 fn str_count<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.count", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.count", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` counts nothing: `'abc'.count('', 2, 1) == 0`
         return Ok(Value::Int(0));
@@ -1054,7 +1075,6 @@ fn str_starts_ends_with<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
     let [affix, rest @ ..] = pos.as_slice() else {
@@ -1063,7 +1083,7 @@ fn str_starts_ends_with<'h>(
     if rest.len() > 2 {
         return Err(ExcType::type_error_at_most(method, 3, pos.len()));
     }
-    let Some((start, end)) = search_range(rest.first(), rest.get(1), str_len, vm)? else {
+    let Some((start, end)) = string_search_range(s, rest, vm)? else {
         // `start` past `end` matches nothing, but each affix is still type-checked
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
@@ -1120,23 +1140,38 @@ fn affix_matches(
 ///
 /// Returns the substring and the `(start, end)` character range to search, or
 /// `None` for a `start` past `end`, where nothing is found (see [`search_range`]).
-fn parse_search_args(
+fn parse_search_args<'h>(
     method: &str,
-    str_len: usize,
+    s: &impl HeapView<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<(String, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
     match pos.as_slice() {
         [sub_value, bounds @ ..] if bounds.len() <= 2 => {
             let sub = extract_string_arg(sub_value, vm)?;
-            let range = search_range(bounds.first(), bounds.get(1), str_len, vm)?;
+            let range = string_search_range(s, bounds, vm)?;
             Ok((sub, range))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
     }
+}
+
+/// Normalizes explicit character bounds; entirely omitted/`None` bounds return `(0, usize::MAX)`.
+/// `slice_string` treats that sentinel as the original UTF-8 without counting characters.
+fn string_search_range<'h>(s: &impl HeapView<'h, str>, bounds: &[Value], vm: &mut VM<'h>) -> RunResult<SearchRange> {
+    if bounds.iter().all(|bound| matches!(bound, Value::None)) {
+        return Ok(Some((0, usize::MAX)));
+    }
+    let text = s.get(vm.heap);
+    let length = if text.is_ascii() {
+        text.len()
+    } else {
+        text.chars().count()
+    };
+    search_range(bounds.first(), bounds.get(1), length, vm)
 }
 
 /// Extracts a string from a Value, returning an error if not a string.
@@ -1171,6 +1206,10 @@ fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
 
 /// Returns a substring of s from character index start to end; ASCII text is sliced by byte offset.
 fn slice_string(s: &str, start: usize, end: usize) -> &str {
+    // Omitted bounds refer to the original UTF-8, without a character-count scan.
+    if start == 0 && end == usize::MAX {
+        return s;
+    }
     if start >= end {
         return "";
     }
@@ -2038,7 +2077,7 @@ pub(crate) struct StringIterator {
 impl StringIterator {
     /// Allocates an iterator over an interned string.
     pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> Value {
-        let ascii = vm.interns.get_str(id).is_ascii();
+        let ascii = vm.interns.str_is_ascii(id);
         Self::allocate(StringIteratorSource::Intern(id), ascii, vm)
     }
 

@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, ops::Not};
 
 use monty_types::MontyUuid;
 
@@ -58,6 +58,10 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    /// Whether the class body ran under `from __future__ import annotations`, so
+    /// `get_type_hints()` treats its `__annotations__` as PEP 563 forward references.
+    #[serde(default, skip_serializing_if = "Not::not")]
+    future_annotations: bool,
 }
 
 impl Class {
@@ -134,6 +138,7 @@ impl Class {
         all_bases: Vec<ClassBase>,
         mro: Vec<ClassBase>,
         defined_methods: Vec<FunctionId>,
+        future_annotations: bool,
     ) -> Self {
         Self {
             name,
@@ -143,7 +148,14 @@ impl Class {
             mro,
             defined_methods,
             uuid: None,
+            future_annotations,
         }
+    }
+
+    /// Whether the class body ran under `from __future__ import annotations`.
+    #[must_use]
+    pub fn future_annotations(&self) -> bool {
+        self.future_annotations
     }
 
     /// Boundary identity of the class, generated and stored on first use so

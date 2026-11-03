@@ -86,7 +86,7 @@ p = Path(path)
   for (const [code, expected] of [
     ['import os\nos.listdir()', "PermissionError: Permission denied: '/'"],
     ["open('./x')", "PermissionError: Permission denied: '/x'"],
-    ["open('')", "PermissionError: Permission denied: ''"],
+    ["open('')", "FileNotFoundError: [Errno 2] No such file or directory: ''"],
     ["open('bad\\0/../x')", 'ValueError: embedded null byte'],
   ] as const) {
     const error = await t.throwsAsync(() => run(code, { cwd: '/' }))

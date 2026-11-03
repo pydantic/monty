@@ -576,6 +576,8 @@ pub enum StaticStrings {
     /// `typing.Annotated` marker.
     #[strum(serialize = "Annotated")]
     Annotated,
+    /// The `annotationlib` module.
+    Annotationlib,
     /// `typing.Any` marker.
     #[strum(serialize = "Any")]
     Any,
@@ -589,6 +591,8 @@ pub enum StaticStrings {
     AppendText,
     /// `deque.appendleft()` method.
     Appendleft,
+    /// `arg` parameter of `annotationlib.ForwardRef()`.
+    Arg,
     /// `BaseException.args` attribute.
     Args,
     /// `sys.argv` attribute.
@@ -994,6 +998,12 @@ pub enum StaticStrings {
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,
+    /// `__cause__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__cause__")]
+    DunderCause,
+    /// `__context__` of an exception: the one being handled when it was raised.
+    #[strum(serialize = "__context__")]
+    DunderContext,
     /// `__delattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__delattr__")]
     DunderDelattr,
@@ -1004,6 +1014,18 @@ pub enum StaticStrings {
     /// `__eq__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__eq__")]
     DunderEq,
+    /// `__forward_arg__` — the source text of an `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_arg__")]
+    DunderForwardArg,
+    /// `__forward_is_argument__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_is_argument__")]
+    DunderForwardIsArgument,
+    /// `__forward_is_class__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_is_class__")]
+    DunderForwardIsClass,
+    /// `__forward_module__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_module__")]
+    DunderForwardModule,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
@@ -1031,6 +1053,9 @@ pub enum StaticStrings {
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,
+    /// `__owner__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__owner__")]
+    DunderOwner,
     /// `__parameters__` of a `types.GenericAlias`.
     #[strum(serialize = "__parameters__")]
     DunderParameters,
@@ -1040,9 +1065,15 @@ pub enum StaticStrings {
     /// `__repr__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__repr__")]
     DunderRepr,
+    /// `__resolved_str__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__resolved_str__")]
+    DunderResolvedStr,
     /// `__setattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__setattr__")]
     DunderSetattr,
+    /// `__suppress_context__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__suppress_context__")]
+    DunderSuppressContext,
     /// `decimal.__version__` attribute.
     #[strum(serialize = "__version__")]
     DunderVersion,
@@ -1102,6 +1133,10 @@ pub enum StaticStrings {
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    /// `eval_str` parameter of `annotationlib.get_annotations()`.
+    EvalStr,
+    /// `ForwardRef.evaluate()` method.
+    Evaluate,
     /// `csv.excel` dialect.
     Excel,
     /// `csv.excel_tab` dialect.
@@ -1219,6 +1254,15 @@ pub enum StaticStrings {
     Followlinks,
     /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
     Format,
+    /// The `annotationlib.Format` class.
+    #[strum(serialize = "Format")]
+    FormatClass,
+    /// `annotationlib.ForwardRef`, also exported by `typing`.
+    #[strum(serialize = "ForwardRef")]
+    ForwardRef,
+    /// `annotationlib.Format.FORWARDREF` member.
+    #[strum(serialize = "FORWARDREF")]
+    Forwardref,
     /// `fp` parameter of `json.load()` / `json.dump()`.
     Fp,
     /// `math.frexp()` function.
@@ -1234,6 +1278,8 @@ pub enum StaticStrings {
     Fromisoformat,
     /// `dict.fromkeys()` classmethod.
     Fromkeys,
+    /// `date.fromtimestamp()` / `datetime.fromtimestamp()` classmethod.
+    Fromtimestamp,
     /// `@dataclass(frozen=...)`.
     Frozen,
     /// `dataclasses.FrozenInstanceError` exception.
@@ -1273,6 +1319,8 @@ pub enum StaticStrings {
     Generic,
     /// `dict.get()` method.
     Get,
+    /// `annotationlib.get_annotations()` function.
+    GetAnnotations,
     /// `csv.get_dialect()` function.
     GetDialect,
     /// `typing.get_type_hints()` function.
@@ -1416,6 +1464,10 @@ pub enum StaticStrings {
     InvalidOperation,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
+    /// `is_argument` parameter of `annotationlib.ForwardRef()`.
+    IsArgument,
+    /// `is_class` parameter of `annotationlib.ForwardRef()`.
+    IsClass,
     /// `dataclasses.is_dataclass()` function.
     IsDataclass,
     /// `Path.is_dir()` method — yields a host call.
@@ -1847,6 +1899,8 @@ pub enum StaticStrings {
     Overflow,
     /// Kwarg name `override` — `Decimal.__format__()`.
     Override,
+    /// `owner` parameter of `annotationlib.ForwardRef()` and `ForwardRef.evaluate()`.
+    Owner,
     /// `pad` parameter of `base64.b85encode()`.
     #[strum(serialize = "pad")]
     Pad,
@@ -2305,6 +2359,9 @@ pub enum StaticStrings {
     /// `match.string`
     #[strum(serialize = "string")]
     StringAttr,
+    /// `annotationlib.Format.STRING` member.
+    #[strum(serialize = "STRING")]
+    StringFormat,
     /// `strip()` method, shared by `str` and `bytes`.
     Strip,
     /// `datetime.strptime()` classmethod.
@@ -2447,6 +2504,8 @@ pub enum StaticStrings {
     /// `typing.TYPE_CHECKING` constant.
     #[strum(serialize = "TYPE_CHECKING")]
     TypeChecking,
+    /// `type_params` parameter of `ForwardRef.evaluate()`.
+    TypeParams,
     /// `typing.TypeVar` marker.
     #[strum(serialize = "TypeVar")]
     TypeVar,
@@ -2532,6 +2591,12 @@ pub enum StaticStrings {
     Validate,
     /// Kwarg name `value` — `decimal.Decimal()`.
     Value,
+    /// `annotationlib.Format.VALUE` member.
+    #[strum(serialize = "VALUE")]
+    ValueFormat,
+    /// `annotationlib.Format.VALUE_WITH_FAKE_GLOBALS` member.
+    #[strum(serialize = "VALUE_WITH_FAKE_GLOBALS")]
+    ValueWithFakeGlobals,
     /// `dict.values()` method.
     Values,
     /// `sys.flags.verbose` field.
@@ -2601,6 +2666,8 @@ pub enum StaticStrings {
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
+    // Immutable text needs only one ASCII scan, including after snapshot loading.
+    ascii: bool,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2628,6 +2695,7 @@ impl InternedString {
     fn static_string(value: StaticStrings) -> Self {
         Self {
             static_tag: Some(value),
+            ascii: <&str>::from(value).is_ascii(),
             text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
@@ -2636,6 +2704,7 @@ impl InternedString {
     fn owned(value: String) -> Self {
         Self {
             static_tag: None,
+            ascii: value.is_ascii(),
             text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
         }
     }
@@ -3016,6 +3085,12 @@ impl Interns {
             .checked_sub(FILE_SOURCE_ID_BASE)
             .and_then(|index| self.file_sources.get(index))
             .map(|file| &*file.source)
+    }
+
+    /// Returns ASCII status without rescanning immutable literal text.
+    #[inline]
+    pub fn str_is_ascii(&self, id: StringId) -> bool {
+        id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
     }
 
     /// Returns the same hash as an equal heap string.

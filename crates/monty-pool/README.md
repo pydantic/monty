@@ -25,6 +25,11 @@ async futures) until the snippet completes, then `Checkout::finish` returns the 
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool.
 
+Use `Checkout::terminate` when cleanup must wait for subprocess exit.
+It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
+A WebSocket worker or an unconfirmed subprocess exit returns `None`.
+Dropping a checkout or cancelling `terminate` does not confirm physical termination.
+
 The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are
 cancel-safe (partial-frame state lives in the worker), and turn deadlines are ordinary timers
 rather than a watchdog thread. Turn futures are not resumable after being dropped mid-flight —
@@ -110,9 +115,10 @@ Invalid snapshots have no correctness or availability guarantees.
   budget. This excludes wire buffers and host-language conversion; it is not a
   process-memory limit. Exhaustion discards the worker without replaying the request.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
-  the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
-  a fresh process, which with `min_processes > 0` the background refill has usually spawned
-  before the checkout asks.
+  how long a slow leak or a compromised worker survives. It defaults to
+  `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
+  subprocess transport, `Some(1)` runs every session in a fresh process, which with
+  `min_processes > 0` the background refill has usually spawned before the checkout asks.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
@@ -272,6 +278,8 @@ input so adapters that do not support metrics continue to work.
 
 A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
 from a server policy drop.
+Its optional `websocket` details retain the first recorded failure, including its I/O stage, peer Close code and reason, or transport error.
+The peer reason is unverified text, and a disconnect does not establish whether the request ran.
 A draining server can instead return `PoolError::Shutdown`, naming what to load the session from when it could store
 it.
 The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have

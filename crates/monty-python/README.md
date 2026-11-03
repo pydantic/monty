@@ -38,6 +38,10 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`MontyDisconnectError` exposes `stage`, `close_code`, `close_reason`, and `transport_error` when available.
+These fields preserve transport evidence, not proof that the request did or did not run.
+The client does not automatically replay a disconnected request.
+
 ## Host decode budget
 
 `AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
@@ -181,6 +185,7 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
+`max_total_file_bytes` (50 MB) caps the `MemoryFile` content all files may grow to; a larger write raises `OSError`.
 Unseeded `random` generators request host entropy only under `os_policy={'random_start': 'call_host'}`.
 Otherwise they use worker OS entropy or the configured seed.
 

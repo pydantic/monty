@@ -372,7 +372,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa78a_9e6c_3fab_abed,
+            0x47f4_8e5e_55da_518f,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -398,7 +398,7 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x3f8f_e56f_8033_d455,
+            0x73c9_9d3e_0212_8ad6,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
@@ -413,7 +413,7 @@ mod tests {
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0x220_cd93_e9c8_4033,
+            0x468f_0027_b6a8_e585,
             "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
         );

@@ -93,6 +93,10 @@ pub struct MontyRepl {
     /// so each file runs once per session.
     #[serde(default)]
     modules: ModuleCache,
+    /// Whether a feed has run `from __future__ import annotations`, which then
+    /// applies to every later feed, as in CPython's interactive mode.
+    #[serde(default)]
+    future_annotations: bool,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -129,6 +133,7 @@ impl MontyRepl {
             cwd: Arc::from(DEFAULT_CWD),
             random: SessionRandom::default(),
             modules: ModuleCache::default(),
+            future_annotations: false,
             heap,
             globals: Vec::new(),
         }
@@ -263,6 +268,7 @@ impl MontyRepl {
             script_name: &this.script_name,
             cwd: &this.cwd,
             os_policy: &this.os_policy,
+            future_annotations: this.future_annotations,
         };
         let mut executor = match Executor::new_repl_snippet(
             code,
@@ -276,6 +282,7 @@ impl MontyRepl {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
         };
+        this.future_annotations = executor.program.module_code.future_annotations();
 
         this.ensure_globals_size(executor.namespace_size());
 
@@ -371,6 +378,7 @@ impl MontyRepl {
             script_name: &self.script_name,
             cwd: &self.cwd,
             os_policy: &self.os_policy,
+            future_annotations: self.future_annotations,
         };
         let mut executor = Executor::new_repl_snippet(
             code,
@@ -381,6 +389,7 @@ impl MontyRepl {
             self.options,
             session,
         )?;
+        self.future_annotations = executor.program.module_code.future_annotations();
 
         self.ensure_globals_size(executor.namespace_size());
 
@@ -487,6 +496,7 @@ impl MontyRepl {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
+                future_annotations: self.future_annotations,
             },
         )?;
         self.sources.insert(input_script_name, executor.program.code.clone());

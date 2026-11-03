@@ -426,6 +426,9 @@ Two more properties of the subprocess worker boundary matter:
     A worker that violates the protocol is discarded.
     See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
     for what the per-frame budget counts and excludes.
+- **Workers are reused, then recycled.** A compromised worker could see later sessions until it is replaced, after
+    1000 checkouts by default.
+    Set the count to 1 when callers do not trust each other (see [worker recycling](resource-limits.md#worker-recycling)).
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.
@@ -482,6 +485,9 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     A snippet can otherwise retry a rejected host call while the duration budgets are paused.
     Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
+- [`MemoryFile`][pydantic_monty.MemoryFile] content written through `OSAccess` lives in the host process, outside
+    `max_memory`.
+    `OSAccess` caps what writes can grow it to: `max_total_file_bytes`, 50 MB by default (see [write limits](limitations/filesystem.md#write-limits)).
 
 ## Where the guarantees weaken
 

@@ -183,7 +183,8 @@ class MountDir:
                 are captured in memory per feed and discarded when it ends.
             write_bytes_limit: Cap on cumulative bytes written through the
                 mount within one feed; exceeding it raises `OSError` in the
-                sandbox. `None` (default) means unlimited.
+                sandbox. Each directory created counts as 4,096 bytes. `None`
+                (default) means unlimited.
             memory_usage_limit: Per-mount budget in bytes (default: monty-fs's
                 `DEFAULT_MEMORY_USAGE_LIMIT`) shared by retained
                 overlay data and transient filesystem results; an operation that
@@ -542,10 +543,26 @@ class MontyDisconnectError(MontyError):
     the server may have dropped the session by policy — an idle, session, or
     turn timeout, or being over capacity. A client that only sees the
     connection go away cannot tell those apart, so this error claims no more
-    than that. Retry on a fresh session.
+    than that. The request may have run; do not replay it automatically.
 
     Cannot be constructed directly from Python.
     """
+
+    @property
+    def stage(self) -> str | None:
+        """`send` or `receive` for the first recorded failure, or `None` if unavailable."""
+
+    @property
+    def close_code(self) -> int | None:
+        """The recorded peer Close code, or `None` if unavailable."""
+
+    @property
+    def close_reason(self) -> str | None:
+        """The recorded peer Close reason, or `None` if unavailable."""
+
+    @property
+    def transport_error(self) -> str | None:
+        """The recorded transport or protocol error, or `None` for a peer Close frame."""
 
 @final
 class MontyShutdown(MontyError):
@@ -600,7 +617,7 @@ class Monty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         execution_clock: Literal['wall', 'cpu'] = 'wall',
-        max_checkouts_per_worker: int | None = None,
+        max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:
@@ -625,8 +642,9 @@ class Monty:
                 delay enforcement while they run. Backstops sandbox `limits`.
             execution_clock: Clock for all sessions in this pool. Defaults to wall time.
                 CPU mode is Linux-only and requires a finite `request_timeout`.
-            max_checkouts_per_worker: Recycle a worker after this many sessions.
-                `1` runs every session in a fresh process.
+            max_checkouts_per_worker: Recycle a worker after this many sessions,
+                bounding how long a leaking or compromised worker keeps serving.
+                `0` and `1` both run every session in a fresh process; `None` never recycles.
             feed_duration_limit_grace: Seconds beyond `max_feed_duration_secs` on
                 the selected clock (`None` disables). CPU mode uses an independent OS counter.
                 This lets the sandbox raise `TimeoutError` before the worker is killed.
@@ -961,7 +979,7 @@ class AsyncMonty:
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
         execution_clock: Literal['wall', 'cpu'] = 'wall',
-        max_checkouts_per_worker: int | None = None,
+        max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
     ) -> Self:

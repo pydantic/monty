@@ -42,8 +42,8 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Persistence, Pool, PoolConfig,
-    PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
+    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -136,10 +136,10 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         execution_clock = "wall",
-        max_checkouts_per_worker = None,
+        max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ))]
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -538,10 +538,10 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         execution_clock = "wall",
-        max_checkouts_per_worker = None,
+        max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ))]
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -1319,6 +1319,13 @@ const _: () = assert!(
     "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
 );
 
+// pyo3 renders the `Some(..)` default of `max_checkouts_per_worker` as `...`,
+// so the constructors spell their signatures out; this pins its `1000`.
+const _: () = assert!(
+    DEFAULT_MAX_CHECKOUTS_PER_WORKER == 1000,
+    "the pool's default recycle count changed: update `max_checkouts_per_worker=1000` in the text signatures"
+);
+
 /// Both duration-backstop graces as a pool constructor takes them, in
 /// seconds. `None` means that limit is not backstopped at all, rather than
 /// "unspecified" — hence the constructors' real-number defaults.
@@ -1562,7 +1569,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
         let search = module_import_search(&event);
         let resume_with = match event {
-            TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
+            TurnEvent::Complete(value) => return decode_result(py, &value, &instances),
             TurnEvent::OsCall { .. } if intercepted => {
                 match sync_turn_answer(py, event, &lookup, &instances).and_then(|answer| match (answer, &search) {
                     // no host module: the file search, `os=` then mounts
@@ -1834,7 +1841,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         let search = module_import_search(&event);
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
-                return Python::attach(|py| monty_to_py(py, &value, &instances));
+                return Python::attach(|py| decode_result(py, &value, &instances));
             }
             TurnEvent::OsCall { .. } if intercepted => {
                 let answer =
@@ -2306,6 +2313,21 @@ fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSp
     ))
 }
 
+/// Converts a feed's final value to Python, raising a decode failure as
+/// `MontyRuntimeError` so the host's own traceback (and its file paths) never
+/// reaches the caller. Such a value is one CPython cannot build, e.g. a
+/// namedtuple field starting with `_`, or a dict keyed by a class-instance proxy.
+pub(crate) fn decode_result(py: Python<'_>, value: &MontyObject, instances: &InstanceStore) -> PyResult<Py<PyAny>> {
+    monty_to_py(py, value, instances).map_err(|err| {
+        let exc = exc_py_to_monty(py, &err);
+        let message = format!(
+            "cannot convert the result to a Python value: {}",
+            exc.message().unwrap_or_default()
+        );
+        MontyError::new_err(py, MontyException::new(exc.exc_type(), Some(message)))
+    })
+}
+
 /// Maps a pool failure onto the Python exception hierarchy.
 pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
     let message = err.to_string();
@@ -2316,7 +2338,9 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
         PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => MontyCrashedError::new_err(py, message, true, None),
-        PoolError::Disconnected { .. } => MontyDisconnectError::new_err(py, message),
+        PoolError::Disconnected { websocket, .. } => {
+            MontyDisconnectError::new_err(py, message, websocket.map(|details| *details))
+        }
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),

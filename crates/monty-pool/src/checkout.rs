@@ -1280,6 +1280,20 @@ impl Checkout {
         }
     }
 
+    /// Discard the worker and wait for its subprocess to exit, including after a cancelled turn.
+    /// `Some` proves process exit. `None` means no subprocess exit was confirmed, including WebSocket workers.
+    /// Cancelling this future still discards the worker but does not confirm its exit.
+    pub async fn terminate(mut self) -> Option<ExitStatus> {
+        #[cfg(feature = "telemetry")]
+        self.record_finish("abandoned");
+        if let Some(mut worker) = self.worker.take() {
+            let _capacity = CapacityGuard::terminating(&self.pool, "discarded");
+            worker.kill_and_reap().await
+        } else {
+            None
+        }
+    }
+
     /// Ends the session and returns the worker to the pool.
     ///
     /// Consumes the checkout. On error the worker is discarded (and the
@@ -2293,11 +2307,13 @@ impl Checkout {
         // and only a wedged-alive one pays for it, on an already-failed turn.
         // A deadline expiry never lands here (see `poison_timeout`), so nothing
         // is waiting on this grace that should have been killed outright.
+        let websocket_details = worker.websocket_disconnect();
         let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
         drop(worker);
         if websocket {
             PoolError::Disconnected {
                 context: context.to_owned(),
+                websocket: websocket_details,
             }
         } else if status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE) {
             // the worker is gone, unlike every other `Runtime` error — the

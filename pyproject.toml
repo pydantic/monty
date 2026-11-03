@@ -109,6 +109,9 @@ extra-standard-library = ["tomllib"]
     "F506", # mixed positional and named placeholders - tests CPython's argument consumption order
     "F507", # placeholder/argument count mismatch - the point of the argument-count tests
 ]
+"crates/monty/test_cases/import__future_{late,nested}.py" = [
+    "F404", # late `__future__` import - the SyntaxError these cases expect
+]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
     "E711", # Comparison to `None` should be `cond is None`
@@ -157,6 +160,9 @@ extra-standard-library = ["tomllib"]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
+"crates/monty-type-checking/tests/bad_types.py" = [
+    "E402", # an import next to its cases keeps the earlier line numbers in the snapshot unchanged
+]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -183,6 +189,9 @@ exclude = [
     "crates/monty/test_cases/typing__get_type_hints_classes.py",
     "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
     "crates/monty/test_cases/typing__get_type_hints_functions.py",
+    "crates/monty/test_cases/typing__get_type_hints_formats.py",
+    "crates/monty/test_cases/typing__get_type_hints_future.py",
+    "crates/monty/test_cases/annotationlib__forward_ref.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

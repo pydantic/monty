@@ -6,6 +6,8 @@ export declare function _installTelemetry(
   metricsEnabled: boolean,
 ): void
 
+export declare function _defaultMaxCheckoutsPerWorker(): number
+
 export declare function _montyVersion(): string
 
 export declare function _setTelemetryMetricsEnabled(enabled: boolean): void

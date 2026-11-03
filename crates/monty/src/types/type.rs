@@ -18,8 +18,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        BuiltinType, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         class::validate_init_subclass_args,
         complex, date, datetime, decimal,
@@ -344,6 +344,9 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    /// `annotationlib.ForwardRef`, an unevaluated annotation.
+    #[strum(serialize = "annotationlib.ForwardRef")]
+    ForwardRef,
     /// `super`, the proxy type created by `super(...)`.
     Super,
 }
@@ -679,6 +682,12 @@ impl Type {
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
+            (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
+                date::class_fromtimestamp(vm, args).map(CallResult::Value)
+            }
+            (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
+                datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
+            }
             (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
             (Self::DateTime, Some(StaticStrings::Strptime)) => {
                 datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
@@ -923,6 +932,7 @@ impl Type {
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
             Self::Path => Path::init(vm, args),
+            Self::ForwardRef => ForwardRef::init(vm, args),
             Self::Partial => Partial::init(vm, args),
             Self::Random => Random::init(vm, args),
             Self::Blake2b => hashlib::blake2_init(Blake2Kind::Blake2b, vm, args),

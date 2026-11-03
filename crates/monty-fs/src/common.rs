@@ -341,6 +341,11 @@ pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudg
     Ok(MontyObject::list(result))
 }
 
+/// Bytes charged against a mount's `write_bytes_limit` for each directory
+/// `mkdir` creates (one filesystem block), so a write budget also bounds how
+/// many directories sandboxed code can leave on the host.
+pub const DIRECTORY_WRITE_BYTES: usize = 4096;
+
 /// Validates that writing `bytes` would not exceed the mount's quota.
 pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {
     if let Some(limit) = ctx.write_bytes_limit {
