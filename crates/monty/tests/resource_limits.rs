@@ -689,12 +689,32 @@ fn math_gcd_with_small_operand_finishes_within_limit() {
     assert_eq!(value, MontyObject::int(1));
 }
 
+/// Each 4,096-bit argument stays under the Lehmer threshold, where `polled_gcd` does not
+/// poll, so only the argument loop's poll can stop this call.
+#[test]
+fn timeout_in_math_gcd_many_arguments() {
+    assert_timeout_in_builtin(
+        "import math\nmath.gcd(3, *([3 * ((1 << 4094) - 1)] * 100_000))",
+        "math.gcd(3, 100,000 4,096-bit ints)",
+    );
+}
+
 /// `math.lcm` shares the polled gcd.
 #[test]
 fn timeout_in_math_lcm() {
     assert_timeout_in_builtin(
         "import math\nmath.lcm((1 << 3_000_000) + 1, (1 << 2_900_000) + 7)",
         "math.lcm(two 3M-bit ints)",
+    );
+}
+
+/// Each `lcm(x, 3)` step runs the gcd below the Lehmer threshold, which does not poll, and
+/// the result stays `x`, so only the argument loop's poll can stop this call.
+#[test]
+fn timeout_in_math_lcm_many_arguments() {
+    assert_timeout_in_builtin(
+        "import math\nmath.lcm(3 * ((1 << 4094) - 1), *([3] * 100_000))",
+        "math.lcm(4,096-bit int, 100,000 threes)",
     );
 }
 

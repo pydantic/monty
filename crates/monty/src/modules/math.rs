@@ -1183,8 +1183,10 @@ fn math_gcd(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop_mut!(positional, vm);
 
     let mut result = BigInt::ZERO;
-    for arg in positional.by_ref() {
+    for (i, arg) in positional.by_ref().enumerate() {
         defer_drop!(arg, vm);
+        // Operands up to 4,096 bits skip `polled_gcd`'s polling, so the loop polls every 64 arguments.
+        vm.heap.tracker.check_time_every(i)?;
         let n = value_to_bigint(arg, vm)?;
         result = BigInt::from(polled_gcd(result.magnitude(), n.magnitude(), &vm.heap.tracker)?);
     }
@@ -1201,8 +1203,10 @@ fn math_lcm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop_mut!(positional, vm);
 
     let mut result = BigInt::one();
-    for arg in positional.by_ref() {
+    for (i, arg) in positional.by_ref().enumerate() {
         defer_drop!(arg, vm);
+        // Polls as `math_gcd` does; this also covers the zero path, which skips `polled_gcd`.
+        vm.heap.tracker.check_time_every(i)?;
         let n = value_to_bigint(arg, vm)?;
         // A zero anywhere makes the result zero, but every argument is still type-checked.
         if !result.is_zero() && !n.is_zero() {
