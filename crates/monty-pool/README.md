@@ -269,7 +269,9 @@ input so adapters that do not support metrics continue to work.
 - **Remote** (`PoolConfig::remote`) — reach a remote child through a relay over gRPC at an
   `http://`/`https://` URL (`ws://`/`wss://` are read as those two). The pool holds one
   HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
-  checkout opens one `MontySession.Session` stream on it. These workers are single-use:
+  checkout opens one `MontySession.Session` stream on it. A stream the server never took
+  — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
+  the stream was sent — is opened again, up to twice, within the same `connect_timeout`. These workers are single-use:
   a fresh stream per checkout, never prewarmed or returned to the pool. Isolation is the
   remote host's responsibility — a remote crash is observed as the stream ending.
   `Pool::checkout_with` takes `CheckoutOptions::connect_headers`, extra request metadata

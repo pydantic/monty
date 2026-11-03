@@ -17,6 +17,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use h2::Reason;
 use http::uri::PathAndQuery;
 use monty_proto::{
     FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
@@ -27,7 +28,7 @@ use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     sync::mpsc::{self, WeakSender},
     task::JoinHandle,
-    time::timeout,
+    time::{Instant, timeout, timeout_at},
 };
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
@@ -104,20 +105,36 @@ impl Remote {
                 .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
             metadata.insert(key, value);
         }
-        let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
-        let request = Request::from_parts(metadata, Extensions::default(), ReceiverStream::new(request_body));
-        let path = PathAndQuery::from_static(SESSION_PATH);
         let mut grpc = Grpc::new(self.channel.clone())
             .max_decoding_message_size(MAX_FRAME_LEN as usize)
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
-        let open = async {
-            grpc.ready().await.map_err(|err| Status::from_error(err.into()))?;
-            grpc.streaming(request, path, BytesCodec).await
+        let deadline = Instant::now() + self.connect_timeout;
+        let mut retries = 0;
+        let (requests, response) = loop {
+            let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
+            let request = Request::from_parts(metadata.clone(), Extensions::default(), ReceiverStream::new(request_body));
+            let open = async {
+                grpc.ready().await.map_err(|err| Status::from_error(err.into()))?;
+                grpc.streaming(request, PathAndQuery::from_static(SESSION_PATH), BytesCodec)
+                    .await
+            };
+            match timeout_at(deadline, open).await {
+                Ok(Ok(response)) => break (requests, response),
+                // the server closed the connection under the stream before
+                // taking it (a GOAWAY as it drains, a refused stream): the
+                // channel reconnects, and the same budget covers the retries
+                Ok(Err(status)) if retries < OPEN_RETRIES && stream_not_taken(&status) => retries += 1,
+                Ok(Err(status)) => {
+                    return Err(PoolError::Spawn(format!("{url}: {}", describe_status(&status))));
+                }
+                Err(_) => {
+                    return Err(PoolError::Spawn(format!(
+                        "{url}: connect timed out after {:?}",
+                        self.connect_timeout
+                    )));
+                }
+            }
         };
-        let response = timeout(self.connect_timeout, open)
-            .await
-            .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {:?}", self.connect_timeout)))?
-            .map_err(|status| PoolError::Spawn(format!("{url}: {}", describe_status(&status))))?;
         let (events_tx, events) = mpsc::channel(EVENT_CHANNEL_DEPTH);
         let disconnect = Arc::new(OnceLock::new());
         let reader = tokio::spawn(read_events(
@@ -135,6 +152,10 @@ impl Remote {
         })
     }
 }
+
+/// How many more times a stream the server never took is opened: once on the
+/// connection that was closing, once on the one the channel dials to replace it.
+const OPEN_RETRIES: u32 = 2;
 
 /// One session stream. See the module docs for the two halves; teardown must
 /// release both — see [`RemoteWorker::close`].
@@ -335,6 +356,28 @@ impl RemoteDisconnect {
             transport_error: Some(message.into()),
         }
     }
+}
+
+/// Whether `status` says the server never took the stream: a `GOAWAY` whose
+/// last stream is below it (the server was going away as it was opened), a
+/// `REFUSED_STREAM` reset, or hyper cancelling the request because the
+/// connection closed before it was sent. HTTP/2 promises such a stream was
+/// not processed, so opening it again is safe.
+fn stream_not_taken(status: &Status) -> bool {
+    let mut source = Error::source(status);
+    while let Some(err) = source {
+        if let Some(h2) = err.downcast_ref::<h2::Error>() {
+            return (h2.is_go_away() && h2.reason() == Some(Reason::NO_ERROR))
+                || (h2.is_reset() && h2.reason() == Some(Reason::REFUSED_STREAM));
+        }
+        if let Some(hyper) = err.downcast_ref::<hyper::Error>()
+            && hyper.is_canceled()
+        {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }
 
 /// Renders a status for an error message: its code and message, then the

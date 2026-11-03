@@ -43,6 +43,10 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "process", "io-
 # gRPC client for the remote transport: one HTTP/2 connection per pool, one
 # stream per session; rustls gives `https://` without a system TLS dependency.
 tonic = { workspace = true, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }
+# to tell a stream the server never took (a `GOAWAY` as it drains, a request
+# cancelled by the connection closing) from a failed one
+h2 = "0.4"
+hyper = { version = "1", default-features = false }
 # The protocol's codec and status vocabulary for that transport.
 monty-proto = { workspace = true, features = ["grpc"] }
 bytes = { workspace = true }
