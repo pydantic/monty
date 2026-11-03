@@ -100,6 +100,11 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
+Use `Checkout::finish` to reset a reusable session.
+Use `Checkout::terminate` to discard a subprocess and wait for its exit, including after a cancelled turn.
+Only `Some(ExitStatus)` confirms process exit. `None` does not confirm physical termination.
+Dropping a checkout requests cleanup without waiting for that confirmation.
+
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
 ([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
 [`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's

@@ -1280,6 +1280,20 @@ impl Checkout {
         }
     }
 
+    /// Discard the worker and wait for its subprocess to exit, including after a cancelled turn.
+    /// `Some` proves process exit. `None` means no subprocess exit was confirmed, including WebSocket workers.
+    /// Cancelling this future still discards the worker but does not confirm its exit.
+    pub async fn terminate(mut self) -> Option<ExitStatus> {
+        #[cfg(feature = "telemetry")]
+        self.record_finish("abandoned");
+        if let Some(mut worker) = self.worker.take() {
+            let _capacity = CapacityGuard::terminating(&self.pool, "discarded");
+            worker.kill_and_reap().await
+        } else {
+            None
+        }
+    }
+
     /// Ends the session and returns the worker to the pool.
     ///
     /// Consumes the checkout. On error the worker is discarded (and the
