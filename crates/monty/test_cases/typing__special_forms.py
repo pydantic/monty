@@ -150,3 +150,63 @@ assert hints['return'] == Callable[[int], str]
 extras = get_type_hints(f, include_extras=True)
 assert extras['b'] == Annotated[Foo, 'meta']
 assert extras['c'] == Dict[str, Annotated[int, 1]]
+
+
+# === Literal: values are deduplicated by value and type, nested forms flattened ===
+assert Literal[1, 1].__args__ == (1,)
+assert Literal[1, 2, 1, 2].__args__ == (1, 2)
+assert Literal[1, Literal[2, Literal[3]]].__args__ == (1, 2, 3)
+assert Literal[1, True].__args__ == (1, True)
+assert Literal[1, '1', 1.0, True].__args__ == (1, '1', 1.0, True)
+assert repr(Literal[1, 1]) == 'typing.Literal[1]'
+assert repr(Literal[1, Literal[2, Literal[3]]]) == 'typing.Literal[1, 2, 3]'
+
+# === Literal: equality and hashing ignore order ===
+assert Literal[1, 2] == Literal[2, 1]
+assert Literal[1, 2] != Literal[1, 2, 3]
+assert Literal[1] != Literal[True]
+assert Literal[1] != Literal[1.0]
+assert hash(Literal[1, 2]) == hash(Literal[2, 1])
+assert {Literal[2, 1]: 1}[Literal[1, 2]] == 1
+try:
+    Literal[[1], 2] == Literal[2, [1]]
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'tuple' as a set element (unhashable type: 'list')"
+
+# === Annotated: nested forms flatten, innermost metadata first ===
+nested = Annotated[Annotated[int, 'a'], 'b']
+assert repr(nested) == "typing.Annotated[int, 'a', 'b']"
+assert nested.__origin__ is int
+assert nested.__metadata__ == ('a', 'b')
+assert Annotated[Annotated[Annotated[int, 1], 2], 3].__metadata__ == (1, 2, 3)
+assert nested == Annotated[int, 'a', 'b']
+
+
+class Deep:
+    a: Annotated[Annotated[int, 'x'], 'y']
+
+
+assert get_type_hints(Deep, include_extras=True) == {'a': Annotated[int, 'x', 'y']}
+
+# === A list argument that contains itself prints finitely ===
+loop = []
+loop.append(loop)
+assert repr(list[loop]) == 'list[[[[...]]]]'
+
+# === An unknown attribute on a typing alias is looked up on the origin; a dunder is not ===
+try:
+    List[int].missing
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "type object 'list' has no attribute 'missing'"
+try:
+    List[int].missing([1])
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "type object 'list' has no attribute 'missing'"
+try:
+    List[int].__missing__
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == '__missing__'

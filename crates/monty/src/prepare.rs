@@ -205,9 +205,11 @@ struct Prepare<'i, 'g> {
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
-    /// Whether this is a synthesized `__annotate__` scope: every name but its
-    /// parameters resolves by name at run time (`NameScope::Name`), through the
-    /// class namespace it runs under and then the globals, and nothing is captured.
+    /// Whether the annotation expressions of a synthesized `__annotate__` scope
+    /// are being prepared: every name, even the scope's `format` parameter,
+    /// resolves by name at run time (`NameScope::Name`), through the class
+    /// namespace the function runs under and then the globals, and nothing is
+    /// captured. Set after the scope's prologue (see `prepare_annotate_body`).
     is_annotate: bool,
 }
 
@@ -1808,10 +1810,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
             self.interner,
         )?;
 
-        inner_prepare.is_annotate = is_annotate;
-
         // Prepare the function body
-        let prepared_body = inner_prepare.prepare_nodes(body)?;
+        let prepared_body = if is_annotate {
+            inner_prepare.prepare_annotate_body(body)?
+        } else {
+            inner_prepare.prepare_nodes(body)?
+        };
 
         // Take the per-function state out of `inner_prepare` and drop the
         // child so its `GlobalsRef` borrow is released. We need exclusive
@@ -1907,6 +1911,18 @@ impl<'i, 'g> Prepare<'i, 'g> {
             is_async,
             annotate,
         })
+    }
+
+    /// Prepares a synthesized `__annotate__` body (see `Parser::synthesize_annotate`):
+    /// the prologue testing `format` as ordinary code, then the returned dict of
+    /// annotation expressions with every name resolved at run time, so a global
+    /// named `format` is not shadowed by the parameter, as in CPython.
+    fn prepare_annotate_body(&mut self, mut body: Vec<ParseNode>) -> Result<Vec<PreparedNode>, ParseError> {
+        let values = body.pop().expect("an annotate body ends with its return");
+        let mut prepared = self.prepare_nodes(body)?;
+        self.is_annotate = true;
+        prepared.extend(self.prepare_nodes(vec![values])?);
+        Ok(prepared)
     }
 
     /// Prepares a `class Foo: ...` definition.
@@ -2351,6 +2367,15 @@ impl<'i, 'g> Prepare<'i, 'g> {
             PrepareState::Function(state) => state,
         };
 
+        // An annotation expression loads every name at run time, as CPython's
+        // annotate scope does: the class namespace it runs under, then the
+        // globals. Its `format` parameter is not visible to it either; only the
+        // synthesized prologue, prepared before this flag is set, reads that.
+        if self.is_annotate {
+            let slot = self.globals.ensure_slot(name_id, position)?;
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Name));
+        }
+
         // In a function: walk the scope cascade.
 
         // 1. Declared `global` — resolve to a module slot.
@@ -2395,15 +2420,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
         //    already there (an implicit global read of a module-level binding)
         //    or we allocate a fresh slot for it (typo, builtin, external
         //    function — runtime resolution will find `Undefined` and either
-        //    pick up a builtin or yield to the host). An annotate scope loads
-        //    it by name instead, through the class namespace it runs under.
+        //    pick up a builtin or yield to the host).
         let slot = self.globals.ensure_slot(name_id, position)?;
-        let scope = if self.is_annotate {
-            NameScope::Name
-        } else {
-            NameScope::Global
-        };
-        Ok(Identifier::new_with_scope(name_id, position, slot, scope))
+        Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global))
     }
 
     /// Prepares an f-string part by resolving names in interpolated expressions.

@@ -308,3 +308,20 @@ def value_only(format):
 ValueOnly = type('ValueOnly', (), {'__annotate__': value_only})
 assert get_annotations(ValueOnly, format=Format.STRING) == {'a': 'int', 'b': 'Later', 'c': 'None'}
 assert get_annotations(ValueOnly, format=Format.FORWARDREF) == {'a': int, 'b': 'Later', 'c': None}
+
+
+# === FORWARDREF leaves a class uncached until a plain evaluation succeeds ===
+class Nested:
+    x: list[Missing]
+
+
+fwd = get_annotations(Nested, format=Format.FORWARDREF)
+assert fwd['x'].__args__[0].__forward_arg__ == 'Missing'
+
+
+class Missing:
+    pass
+
+
+assert Nested.__annotations__ == {'x': list[Missing]}
+assert get_annotations(Nested, format=Format.FORWARDREF) == {'x': list[Missing]}

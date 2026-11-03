@@ -12,7 +12,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::FunctionDefaults,
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
@@ -37,7 +37,8 @@ def __monty_class_annotations(cls, annotate, classdict, call_annotate, cache):
 /// the fake-globals mode frozen code passes: `0` a `NameError` (the function
 /// runs as written), `1` a `ForwardRef` stringifier for unresolved names, `2`
 /// one for every name — CPython's `_StringifierDict` for `FORWARDREF` and
-/// `STRING`. `owner` is borrowed, cloned only when a stringifier needs it.
+/// `STRING` — and `3` a `NameError` without asking the host.
+/// `owner` is borrowed, cloned only when a stringifier needs it.
 fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> MissingNames {
     match fake {
         Value::Int(0) => MissingNames::Raise,
@@ -46,6 +47,7 @@ fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> Mi
             is_class,
             every_name: *every_name == 2,
         },
+        Value::Int(3) => MissingNames::NameError,
         _ => unreachable!("frozen code passes the fake-globals mode as an int"),
     }
 }
@@ -75,18 +77,21 @@ pub(crate) fn function_call_attr(
     args: ArgValues,
     vm: &mut VM<'_>,
 ) -> Option<RunResult<CallResult>> {
+    // The guard releases `args` when there is no attribute or computing it fails.
+    let mut args_guard = DropGuard::new(args, vm);
+    let (_, vm) = args_guard.as_parts_mut();
     let callee = match function_getattr(func_id, globals, attr, vm) {
         Some(Ok(callee)) => callee.require_synchronous(vm),
         Some(Err(err)) => Err(err),
-        None => {
-            args.drop_with(vm);
-            return None;
-        }
+        None => return None,
     };
-    Some(callee.and_then(|callee| {
-        defer_drop!(callee, vm);
-        vm.call_function(callee, args)
-    }))
+    let callee = match callee {
+        Ok(callee) => callee,
+        Err(err) => return Some(Err(err)),
+    };
+    let (args, vm) = args_guard.into_parts();
+    defer_drop!(callee, vm);
+    Some(vm.call_function(callee, args))
 }
 
 /// `f.__annotations__`: runs `__annotate__(VALUE)` on every access, since a
@@ -174,10 +179,16 @@ pub(crate) fn class_annotate(class_id: HeapId, vm: &VM<'_>) -> Option<Value> {
         .filter(|annotate| !matches!(annotate, Value::None))
 }
 
-/// `C.__annotations__ = value`: stored as the cached dict, and the class's
+/// `C.__annotations__ = value`: replaces a dict the namespace binds as
+/// `__annotations__`, else is stored as the cached dict; either way the class's
 /// `__annotate__` is set aside, as CPython's `type.__annotations__` setter does.
 pub(crate) fn set_class_annotations(class_id: HeapId, value: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    set_class_attr(class_id, StaticStrings::DunderAnnotationsCache, value, vm)?;
+    let key = if has_class_member(class_id, StaticStrings::DunderAnnotations, vm) {
+        StaticStrings::DunderAnnotations
+    } else {
+        StaticStrings::DunderAnnotationsCache
+    };
+    set_class_attr(class_id, key, value, vm)?;
     set_class_attr(class_id, StaticStrings::DunderAnnotateFunc, Value::None, vm)
 }
 
@@ -268,6 +279,14 @@ fn class_member(class_id: HeapId, name: StaticStrings, vm: &VM<'_>) -> Option<Va
         .namespace()
         .get_by_str(name.into(), vm.heap, vm.interns)
         .map(|value| value.clone_with_heap(vm.heap))
+}
+
+/// Whether the class namespace binds `name`.
+fn has_class_member(class_id: HeapId, name: StaticStrings, vm: &VM<'_>) -> bool {
+    let HeapData::Class(class) = vm.heap.get(class_id) else {
+        unreachable!("has_class_member takes a class");
+    };
+    class.namespace().get_by_str(name.into(), vm.heap, vm.interns).is_some()
 }
 
 /// Binds `name` to `value` in the class namespace, taking ownership of `value`.

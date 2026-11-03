@@ -124,7 +124,8 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 /// reference evaluates. `format_` is the `annotationlib.Format` code, `task` 0
 /// for `get_annotations`, 1 for it with `eval_str=True` and 2 for
 /// `get_type_hints`. `call_annotate` runs the function with a format and a
-/// fake-globals mode (0 none, 1 stringify unresolved names, 2 every name);
+/// fake-globals mode (0 none, 1 stringify unresolved names, 2 every name, 3
+/// raise `NameError` without asking the host);
 /// `cache`, for a class, stores a plain evaluation as CPython's
 /// `type.__annotations__` would. `eval_hint`'s last three arguments are the
 /// name mode, the owner and the class flag.
@@ -168,35 +169,31 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
         if cache is not None:
             cache(owner, annotations)
     else:
-        # FORWARDREF: the function's own support, else fake globals stringifying
-        # unresolved names, which never asks the host for one (a run that
-        # resolves every name is the plain evaluation CPython tries first, and is
-        # cached like it); a function that refuses fake globals runs plainly, and
-        # if the run raises, every name is stringified and each reference then
-        # evaluated on its own.
+        # FORWARDREF: the plain evaluation `__annotations__` makes first, which a
+        # class caches; it raises `NameError` where it would ask the host for a
+        # name, so this format never does. Then `call_annotate_function`: the
+        # function's own support, else fake globals stringifying unresolved
+        # names, and if that run raises, every name is stringified and each
+        # reference then evaluated on its own.
         try:
-            annotations = call_annotate(annotate, classdict, FORWARDREF, 0, owner, is_class)
-        except not_implemented_error:
+            annotations = call_annotate(annotate, classdict, VALUE, 3, owner, is_class)
+        except exception:
             try:
-                annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 1, owner, is_class)
+                annotations = call_annotate(annotate, classdict, FORWARDREF, 0, owner, is_class)
             except not_implemented_error:
-                annotations = call_annotate(annotate, classdict, VALUE, 0, owner, is_class)
-            except exception:
-                annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 2, owner, is_class)
-                evaluated = {}
-                for name, value in annotations.items():
-                    if isinstance_(value, forward_ref):
-                        value = value.evaluate(format=FORWARDREF)
-                    evaluated[name] = value
-                annotations = evaluated
-            else:
-                if cache is not None:
-                    unresolved = False
-                    for value in annotations.values():
+                try:
+                    annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 1, owner, is_class)
+                except exception:
+                    annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 2, owner, is_class)
+                    evaluated = {}
+                    for name, value in annotations.items():
                         if isinstance_(value, forward_ref):
-                            unresolved = True
-                    if not unresolved:
-                        cache(owner, annotations)
+                            value = value.evaluate(format=FORWARDREF)
+                        evaluated[name] = value
+                    annotations = evaluated
+        else:
+            if cache is not None:
+                cache(owner, annotations)
     # `get_annotations(eval_str=True)` evaluates string values with plain `eval()`.
     if task == 1:
         result = {}

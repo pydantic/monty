@@ -44,6 +44,10 @@ Divergences:
     A function has no `__dict__` to cache it in, so `f.__annotations__ is f.__annotations__` is `False`, a change to
     the dict is lost, an annotation with a side effect runs again, and `f.__annotations__ = {...}` raises
     `AttributeError`. A class evaluates once and caches, as in CPython.
+- **`hasattr()` and `getattr()` with a default evaluate `__annotations__` synchronously**, so an
+    `AttributeError` an annotation raises can answer `False` or the default as in CPython; an annotation that calls
+    an external function raises `NotImplementedError` there, where CPython evaluates it.
+    `obj.__annotations__` and `getattr()` without a default can suspend for the host.
 - **`C.__annotate__` raises `AttributeError`.**
     The function only resolves class-body names when run under the class namespace, which `C.__annotations__` and
     [`get_annotations`](annotationlib.md#get_annotations) do, so it is not exposed on the class. `f.__annotate__` is
@@ -156,10 +160,12 @@ Divergences:
     `(int, str)`.
 - **`__origin__` of `Callable`, `Sequence`, `Mapping`, `Iterable`, `Iterator` and `Generator` is the `typing` form**,
     where CPython gives the `collections.abc` class, which Monty does not have.
-- **Arguments are not validated** beyond `Annotated` needing two and `ClassVar` / `Final` one: `List[int, str]`,
-    `Type[3]` and `Literal[1, 1]` are accepted as written where CPython raises or deduplicates.
-- **No attributes beyond the ones above.**
-    `List[int].__name__` raises `AttributeError` where CPython forwards to the origin and gives `'List'`.
+- **Arguments are not validated** beyond `Annotated` needing two and `ClassVar` / `Final` one: `List[int, str]`
+    and `Type[3]` are accepted as written where CPython raises.
+    `Literal` deduplicates and flattens its values and compares them as a set, and nested `Annotated` forms flatten,
+    as in CPython.
+- **`__name__` and `__qualname__` raise `AttributeError`** where CPython gives the form's name (`'List'`).
+    Any other dunder raises as in CPython, and anything else is looked up on the origin.
 
 ## Unions
 

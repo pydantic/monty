@@ -107,3 +107,12 @@ class E:
 
 
 assert E.__annotations__ == {}
+
+
+# === Assignment replaces the stored strings ===
+class Replaced:
+    x: int
+
+
+Replaced.__annotations__ = {'y': str}
+assert Replaced.__annotations__ == {'y': str}

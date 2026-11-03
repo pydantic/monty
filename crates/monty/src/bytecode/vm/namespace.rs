@@ -94,6 +94,9 @@ pub(crate) enum MissingNames {
         /// annotation raised, which runs it against empty globals.
         every_name: bool,
     },
+    /// Raise `NameError` without asking the host: the plain evaluation
+    /// `annotationlib`'s `FORWARDREF` tries first, which must never suspend.
+    NameError,
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for MissingNames {
@@ -216,13 +219,13 @@ impl<'h> VM<'h> {
                 // An annotation's `eval()` sees the annotate function's globals and locals.
                 Some(FrameNamespace::Annotate { globals, .. }) => {
                     let globals = *globals;
-                    if let FrameGlobals::Dict(dict) = globals {
-                        self.heap.inc_ref(dict);
-                    }
                     let locals = match locals {
                         Some(dict) => Some(dict),
                         None => Some(self.snapshot_locals()?),
                     };
+                    if let FrameGlobals::Dict(dict) = globals {
+                        self.heap.inc_ref(dict);
+                    }
                     (globals, locals)
                 }
                 None => {
@@ -342,6 +345,7 @@ impl<'h> VM<'h> {
     pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit>> {
         let (globals, locals) = self.frame_namespace();
         let stringify = self.frame_stringifies_names();
+        let without_host = self.frame_names_without_host();
         if stringify == Some(true) {
             let stringifier = self.stringifier(name_id);
             self.push(stringifier);
@@ -364,16 +368,19 @@ impl<'h> VM<'h> {
             }
         }
         match globals {
-            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 && stringify.is_none() => {
+            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 && stringify.is_none() && !without_host => {
                 self.load_global_callable(slot, name_id);
                 Ok(None)
             }
-            // An unresolved name stringifies rather than asking the host.
+            // An unresolved name stringifies, or raises, rather than asking the host.
             FrameGlobals::Slots => match self.load_global(slot)? {
                 Some(FrameExit::NameLookup { .. }) if stringify.is_some() => {
                     let stringifier = self.stringifier(name_id);
                     self.push(stringifier);
                     Ok(None)
+                }
+                Some(FrameExit::NameLookup { .. }) if without_host => {
+                    Err(ExcType::name_error(self.interns.get_str(name_id)).into())
                 }
                 exit => Ok(exit),
             },
@@ -415,6 +422,23 @@ impl<'h> VM<'h> {
             ) => Some(*every_name),
             _ => None,
         }
+    }
+
+    /// Whether the current frame raises `NameError` for a name the host would
+    /// otherwise be asked for (see [`MissingNames::NameError`]).
+    fn frame_names_without_host(&self) -> bool {
+        matches!(
+            self.current_frame.namespace.as_deref(),
+            Some(
+                FrameNamespace::Snippet {
+                    missing: MissingNames::NameError,
+                    ..
+                } | FrameNamespace::Annotate {
+                    missing: MissingNames::NameError,
+                    ..
+                }
+            )
+        )
     }
 
     /// A new `ForwardRef` stringifier for `name_id`, owned by the current frame's annotation owner.

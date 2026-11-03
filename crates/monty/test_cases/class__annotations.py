@@ -119,3 +119,9 @@ assert p.x == 1
 assert p.y == 2
 assert repr(p) == 'Point(x=1, y=2)'
 assert repr(Point(x=5, y=6)) == 'Point(x=5, y=6)'
+
+
+# === Assignment replaces a dict the namespace binds as __annotations__ ===
+T2 = type('T2', (), {'__annotations__': {'a': 'int'}})
+T2.__annotations__ = {'b': str}
+assert T2.__annotations__ == {'b': str}

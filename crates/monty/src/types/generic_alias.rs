@@ -24,18 +24,24 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
     },
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, Union, instance::class_name, list::repr_check_time,
-        tuple::allocate_tuple,
+        BuiltinType, LazyHeapSet, PyTrait, Type, Union,
+        instance::class_name,
+        list::repr_check_time,
+        set::unhashable_type_name,
+        tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Marker, Value},
 };
+
+/// The origin of `typing.Literal[...]`, whose values compare as a set.
+const LITERAL: AliasOrigin = AliasOrigin::Special(Marker(StaticStrings::Literal));
 
 /// What an alias parameterizes: a builtin type (`list[int]`) or a `typing`
 /// special form (`typing.List[int]`, `ClassVar[int]`), CPython's
@@ -106,8 +112,8 @@ impl GenericAlias {
         // `typing` forms normalise a `None` argument to `NoneType`, as CPython's
         // `_type_check` does — except `Literal` values and `Annotated` metadata.
         let key = match form.0 {
-            StaticStrings::Literal => key,
-            StaticStrings::Annotated => none_to_none_type(key, 1, vm),
+            StaticStrings::Literal => literal_params(key, vm)?,
+            StaticStrings::Annotated => flatten_annotated(none_to_none_type(key, 1, vm), vm),
             _ => none_to_none_type(key, usize::MAX, vm),
         };
         Ok(Self::allocate(AliasOrigin::Special(form), key, vm))
@@ -265,7 +271,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         None
     }
 
-    /// Two aliases are equal when their origins and `__args__` are.
+    /// Two aliases are equal when their origins and `__args__` are; `Literal`
+    /// compares its values as a set, as CPython does.
     ///
     /// Takes a recursion level like the repr: an argument can be a list that
     /// holds this alias, and comparing two such cycles raises `RecursionError`
@@ -280,16 +287,28 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         defer_drop!(args, vm);
         let (other_origin, other_args) = other.parts(vm);
         defer_drop!(other_args, vm);
-        Ok(Some(origin == other_origin && args.py_eq(other_args, vm)?))
+        if origin != other_origin {
+            Ok(Some(false))
+        } else if origin == LITERAL {
+            literal_eq(args, other_args, vm).map(Some)
+        } else {
+            args.py_eq(other_args, vm).map(Some)
+        }
     }
 
     /// Combines the origin with the `__args__` tuple's hash, so `list[int]`
     /// is one dict key however many times it is written; an unhashable
     /// argument (`list[[1]]`) makes the alias unhashable, as in CPython.
+    /// `Literal` hashes its values in any order, matching its equality.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let (origin, args) = self.parts(vm);
         defer_drop!(args, vm);
-        let Some(args_hash) = args.py_hash(vm)? else {
+        let args_hash = if origin == LITERAL {
+            literal_hash(args, vm)?
+        } else {
+            args.py_hash(vm)?
+        };
+        let Some(args_hash) = args_hash else {
             return Ok(None);
         };
         let mut hasher = AHasher::default();
@@ -339,7 +358,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             }
             let item = args.clone_item(index, vm);
             defer_drop!(item, vm);
-            repr_type_arg(item, f, vm, heap_ids)?;
+            if !repr_list_arg(item, f, vm, heap_ids)? {
+                repr_type_arg(item, f, vm, heap_ids)?;
+            }
         }
         Ok(f.write_char(']')?)
     }
@@ -368,8 +389,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
             }
             _ => match origin {
                 AliasOrigin::Builtin(origin) => Value::Builtin(Builtins::Type(origin)).py_getattr(attr, vm).map(Some),
+                // CPython's `_BaseGenericAlias.__getattr__`: a dunder raises with
+                // the bare name, anything else is looked up on the origin.
                 AliasOrigin::Special(_) => {
-                    Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
+                    let name = attr.as_str(vm.interns);
+                    if name.len() > 4 && name.starts_with("__") && name.ends_with("__") {
+                        Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
+                    } else {
+                        let origin = self.get(vm.heap).origin_value(vm.heap);
+                        defer_drop!(origin, vm);
+                        origin.py_getattr(attr, vm).map(Some)
+                    }
                 }
             },
         }
@@ -392,9 +422,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
         match self.get(vm.heap).origin {
             AliasOrigin::Builtin(origin) if !own_attribute => Type::from(origin).call_class_method(attr, args, vm),
             _ => {
+                // The guard releases `args` when the attribute lookup fails.
+                let mut args_guard = DropGuard::new(args, vm);
+                let (_, vm) = args_guard.as_parts_mut();
                 let Some(CallResult::Value(value)) = self.py_getattr(attr, vm)? else {
                     unreachable!("the alias's own attributes are always plain values")
                 };
+                let (args, vm) = args_guard.into_parts();
                 defer_drop!(value, vm);
                 vm.call_function(value, args)
             }
@@ -436,6 +470,155 @@ fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> Value {
     }
     defer_drop!(key, vm);
     allocate_tuple(converted, vm.heap)
+}
+
+/// `Annotated[Annotated[T, a], b]` is `Annotated[T, a, b]`: nested metadata
+/// flattens, innermost first, as CPython's `Annotated.__class_getitem__` does.
+/// Takes and returns ownership of the args tuple.
+fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> Value {
+    // The readers on `key` must be released before it can be dropped below.
+    let flattened = {
+        let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
+            unreachable!("Annotated takes at least two arguments")
+        };
+        let first = items.clone_item(0, vm);
+        defer_drop!(first, vm);
+        match first.read_heap(vm) {
+            Some(HeapReadOutput::GenericAlias(inner)) if inner.get(vm.heap).is_annotated() => {
+                let (_, inner_args) = inner.parts(vm);
+                defer_drop!(inner_args, vm);
+                let mut flattened = tuple_items(inner_args, vm);
+                for index in 1..items.get(vm.heap).as_slice().len() {
+                    flattened.push(items.clone_item(index, vm));
+                }
+                Some(flattened)
+            }
+            _ => None,
+        }
+    };
+    match flattened {
+        Some(flattened) => {
+            key.drop_with(vm);
+            allocate_tuple(flattened, vm.heap)
+        }
+        None => key,
+    }
+}
+
+/// `Literal`'s parameters as CPython stores them: a nested `Literal` is
+/// flattened into its values and duplicates are dropped, where `1` and `True`
+/// are distinct values. Takes ownership of `key` and returns the args tuple.
+fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    defer_drop!(key, vm);
+    let written = if matches!(key.read_heap(vm), Some(HeapReadOutput::Tuple(_))) {
+        tuple_items(key, vm)
+    } else {
+        smallvec![key.clone_with_heap(vm)]
+    };
+    // One level of flattening: a nested `Literal` was normalised when it was built.
+    let mut flattened: TupleVec = smallvec![];
+    for value in written {
+        let nested = match value.read_heap(vm) {
+            Some(HeapReadOutput::GenericAlias(alias)) if alias.get(vm.heap).origin == LITERAL => {
+                Some(alias.parts(vm).1)
+            }
+            _ => None,
+        };
+        match nested {
+            Some(args) => {
+                defer_drop!(args, vm);
+                flattened.extend(tuple_items(args, vm));
+                value.drop_with(vm);
+            }
+            None => flattened.push(value),
+        }
+    }
+    let mut flattened_guard = DropGuard::new(flattened, vm);
+    let (flattened, vm) = flattened_guard.as_parts_mut();
+    let mut params_guard = DropGuard::new(TupleVec::new(), vm);
+    let (params, vm) = params_guard.as_parts_mut();
+    for value in flattened.drain(..) {
+        let mut value_guard = DropGuard::new(value, vm);
+        let (value, vm) = value_guard.as_parts_mut();
+        let mut duplicate = false;
+        for param in params.iter() {
+            if same_literal_value(param, value, vm)? {
+                duplicate = true;
+                break;
+            }
+        }
+        if !duplicate {
+            let (value, _) = value_guard.into_parts();
+            params.push(value);
+        }
+    }
+    let (params, vm) = params_guard.into_parts();
+    Ok(allocate_tuple(params, vm.heap))
+}
+
+/// Whether two `Literal` values are one parameter: equal and of one type, so
+/// `Literal[1]` and `Literal[True]` differ, as in CPython.
+fn same_literal_value(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+    Ok(a.py_type(vm) == b.py_type(vm) && a.py_eq(b, vm)?)
+}
+
+/// `Literal` equality: the same values in any order, both sides already
+/// deduplicated. An unhashable value raises the `TypeError` CPython's set
+/// comparison does.
+fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+    let items = tuple_items(args, vm);
+    defer_drop!(items, vm);
+    let others = tuple_items(other_args, vm);
+    defer_drop!(others, vm);
+    for item in items.iter().chain(others.iter()) {
+        if item.py_hash(vm)?.is_none() {
+            let unhashable_type = unhashable_type_name(item, vm)?;
+            return Err(ExcType::type_error_unhashable_set_element("tuple", &unhashable_type));
+        }
+    }
+    if items.len() != others.len() {
+        return Ok(false);
+    }
+    for item in items {
+        let mut found = false;
+        for other in others {
+            if same_literal_value(item, other, vm)? {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// `Literal`'s argument hash: each value's hash paired with its type, as the
+/// equality pairs them, combined in any order; `None` when a value is unhashable.
+fn literal_hash(args: &Value, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
+    let items = tuple_items(args, vm);
+    defer_drop!(items, vm);
+    let mut combined: u64 = 0;
+    for item in items {
+        let Some(hash) = item.py_hash(vm)? else {
+            return Ok(None);
+        };
+        let mut hasher = AHasher::default();
+        item.py_type(vm).hash(&mut hasher);
+        hash.hash(&mut hasher);
+        combined = combined.wrapping_add(hasher.finish());
+    }
+    Ok(Some(HashValue::new(combined)))
+}
+
+/// Owned clones of a tuple's items.
+fn tuple_items(tuple: &Value, vm: &mut VM<'_>) -> TupleVec {
+    let Some(HeapReadOutput::Tuple(items)) = tuple.read_heap(vm) else {
+        unreachable!("GenericAlias::args is always a tuple")
+    };
+    let count = items.get(vm.heap).as_slice().len();
+    (0..count).map(|index| items.clone_item(index, vm)).collect()
 }
 
 /// CPython's `TypeError` for instantiating one of `collections.abc`'s classes.
@@ -499,8 +682,7 @@ struct AliasWithArgs {
 
 /// Writes one `__args__` item the way CPython's `ga_repr_item` does: a type
 /// by its qualified name (`int`, `collections.deque`, a class's bare name),
-/// `...` for `Ellipsis`, a list item by item (`Callable[[int], str]`), and the
-/// ordinary repr for anything else.
+/// `...` for `Ellipsis`, and the ordinary repr for anything else.
 pub(crate) fn repr_type_arg(
     item: &Value,
     f: &mut impl Write,
@@ -516,25 +698,31 @@ pub(crate) fn repr_type_arg(
             HeapData::Class(_) => Ok(f.write_str(&class_name(*id, vm.heap, vm.interns))?),
             HeapData::NamedTupleClass(class) => Ok(f.write_str(class.name(vm.interns))?),
             HeapData::HostClassType(class) => Ok(f.write_str(class.name(vm.interns))?),
-            HeapData::List(_) => {
-                let Some(HeapReadOutput::List(list)) = item.read_heap(vm) else {
-                    unreachable!("matched a list")
-                };
-                f.write_char('[')?;
-                for index in 0..list.get(vm.heap).as_slice().len() {
-                    if index > 0 {
-                        f.write_str(", ")?;
-                    }
-                    let element = list.clone_item(index, vm);
-                    defer_drop!(element, vm);
-                    repr_type_arg(element, f, vm, heap_ids)?;
-                }
-                Ok(f.write_char(']')?)
-            }
             _ => item.py_repr_fmt(f, vm, heap_ids),
         },
         _ => item.py_repr_fmt(f, vm, heap_ids),
     }
+}
+
+/// Writes a list argument (`Callable[[int], str]`) element by element, each as
+/// [`repr_type_arg`] writes it; `false` when `item` is not a list. As CPython's
+/// `ga_repr` only looks inside a top-level list, a list nested deeper takes its
+/// ordinary repr, whose cycle protection keeps a self-referential list finite.
+fn repr_list_arg(item: &Value, f: &mut impl Write, vm: &mut VM<'_>, heap_ids: &mut LazyHeapSet) -> RunResult<bool> {
+    let Some(HeapReadOutput::List(list)) = item.read_heap(vm) else {
+        return Ok(false);
+    };
+    f.write_char('[')?;
+    for index in 0..list.get(vm.heap).as_slice().len() {
+        if index > 0 {
+            f.write_str(", ")?;
+        }
+        let element = list.clone_item(index, vm);
+        defer_drop!(element, vm);
+        repr_type_arg(element, f, vm, heap_ids)?;
+    }
+    f.write_char(']')?;
+    Ok(true)
 }
 
 #[cfg(test)]

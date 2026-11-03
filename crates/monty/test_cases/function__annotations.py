@@ -120,3 +120,41 @@ assert T.__annotations__ is T.__annotations__
 assert getattr(f, '__annotations__')['x'] is int
 assert hasattr(f, '__annotations__')
 assert getattr(f, '__annotations__', None)['z'] is float
+
+
+# === An AttributeError raised by an annotation is one hasattr() and a getattr() default see ===
+def broken(x: int.missing):
+    pass
+
+
+assert not hasattr(broken, '__annotations__')
+assert getattr(broken, '__annotations__', None) is None
+try:
+    broken.__annotations__
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "type object 'int' has no attribute 'missing'"
+try:
+    broken.__annotations__([1, 2])
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "type object 'int' has no attribute 'missing'"
+
+
+# === The global `format` is not shadowed by __annotate__'s parameter ===
+format = 'the global'
+
+
+def shadowed(x: format):
+    pass
+
+
+assert shadowed.__annotations__ == {'x': 'the global'}
+assert shadowed.__annotate__(1) == {'x': 'the global'}
+
+
+class Shadowed:
+    y: format
+
+
+assert Shadowed.__annotations__ == {'y': 'the global'}
