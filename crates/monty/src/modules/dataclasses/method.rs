@@ -25,9 +25,9 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, descriptor,
         host_class::write_dataclass_repr,
-        instance::{class_dunder, class_name, instance_attr},
+        instance::{class_dunder, class_member, class_name, instance_attr},
         py_trait::PyObjectIdentity,
         str::allocate_string,
     },
@@ -414,6 +414,13 @@ pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &mut V
     })
 }
 
+pub(crate) fn frozen_deletion_error(class_id: HeapId, name: &Value, vm: &mut VM<'_>) -> Option<RunError> {
+    generated_method(class_id, "__delattr__", vm)?;
+    Some(match frozen_field_error("delete", name, vm) {
+        Ok(error) | Err(error) => error,
+    })
+}
+
 /// `FrozenInstanceError: cannot {action} field {name!r}`, as CPython's frozen
 /// `__setattr__`/`__delattr__` raise it. `Err` only when `repr(name)` raised.
 fn frozen_field_error(action: &str, name: &Value, vm: &mut VM<'_>) -> RunResult<RunError> {
@@ -528,7 +535,7 @@ fn snapshot_field_inits(method_id: HeapId, slots: &[Option<Value>], vm: &VM<'_>)
 /// doing. A hook removed since decoration raises `AttributeError`; its return
 /// value is discarded.
 fn run_post_init(instance_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
-    let Some(post_init) = instance_attr(instance_id, "__post_init__", vm) else {
+    let Some(post_init) = instance_attr(instance_id, "__post_init__", vm)? else {
         let class_name = class_name(instance_class(instance_id, vm), vm.heap, vm.interns).into_owned();
         return Err(ExcType::attribute_error(&class_name, "__post_init__"));
     };
@@ -540,9 +547,8 @@ fn run_post_init(instance_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
 
 /// Stores one bound value per field on the instance, consuming `values`.
 ///
-/// A frozen `__init__` writes straight to `__dict__` (CPython's
-/// `object.__setattr__`); any other goes through the class's assignment check,
-/// so a frozen `__setattr__` installed by a later decoration refuses it.
+/// Both forms honor data descriptors. A frozen `__init__` bypasses the
+/// assignment check, as CPython's `object.__setattr__` does.
 fn store_fields(
     instance_id: HeapId,
     names: &[StringId],
@@ -555,8 +561,20 @@ fn store_fields(
         unreachable!("init_instance runs on an instance")
     };
     for i in 0..values.len() {
-        let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(names[i]);
+        if let Some(member) = class_member(instance.get(vm.heap).class(), vm.interns.get_str(names[i]), vm) {
+            defer_drop!(member, vm);
+            if descriptor::is_data(member, vm) {
+                let value = mem::replace(&mut values[i], Value::None);
+                vm.heap.inc_ref(instance_id);
+                let object = Value::Ref(instance_id);
+                defer_drop!(object, vm);
+                let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
+                result.drop_with(vm);
+                continue;
+            }
+        }
+        let value = mem::replace(&mut values[i], Value::None);
         let replaced = if frozen {
             instance.set_attr_unchecked(name, value, vm)?
         } else {
@@ -699,9 +717,9 @@ pub(crate) fn dataclass_eq(
         let field_name = vm.interns.get_str(*name_id).to_owned();
         // Both reads are guarded so a failing comparison below (or an early
         // return) cannot strand either value.
-        let a = instance_attr(self_id, &field_name, vm);
+        let a = instance_attr(self_id, &field_name, vm)?;
         defer_drop!(a, vm);
-        let b = instance_attr(other_id, &field_name, vm);
+        let b = instance_attr(other_id, &field_name, vm)?;
         defer_drop!(b, vm);
         match (a, b) {
             (Some(a), Some(b)) if !a.py_eq_operator(b, vm)? => return Ok(Some(false)),
@@ -732,7 +750,7 @@ pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut
     let mut hasher = DefaultHasher::new();
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
-        let value = instance_attr(self_id, &field_name, vm);
+        let value = instance_attr(self_id, &field_name, vm)?;
         defer_drop!(value, vm);
         let Some(value) = value else {
             let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
@@ -768,7 +786,7 @@ pub(crate) fn dataclass_repr_fmt(
     // generated f-string does. A field that resolves nowhere raises.
     let result = write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, vm| {
         let field_name = vm.interns.get_str(field_names[i]).to_owned();
-        match instance_attr(self_id, &field_name, vm) {
+        match instance_attr(self_id, &field_name, vm)? {
             Some(value) => Ok((field_name, Some(value))),
             None => Err(ExcType::attribute_error(&name, &field_name)),
         }
