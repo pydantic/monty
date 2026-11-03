@@ -143,7 +143,6 @@ export interface ProtocolTurn {
 export interface DisconnectedTurn {
   kind: 'disconnected'
   message: string
-  stage?: string
   statusCode?: string
   statusMessage?: string
   cause?: string
@@ -156,7 +155,6 @@ export interface DisconnectedTurn {
 export interface RefusedTurn {
   kind: 'refused'
   message: string
-  stage?: string
   statusCode?: string
   statusMessage?: string
   cause?: string

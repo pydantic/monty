@@ -395,9 +395,6 @@ impl MontyCrashedError {
 /// automatically.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyDisconnectError {
-    /// The operation that observed the transport failure.
-    #[pyo3(get)]
-    stage: Option<String>,
     /// The gRPC status code the server ended the stream with, by name.
     #[pyo3(get)]
     status_code: Option<String>,
@@ -417,18 +414,16 @@ impl MontyDisconnectError {
     #[must_use]
     pub fn new_err(py: Python<'_>, message: String, details: Option<RemoteDisconnect>) -> PyErr {
         let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
-        let (stage, status_code, status_message, cause, transport_error) = match details {
+        let (status_code, status_message, cause, transport_error) = match details {
             Some(details) => (
-                Some(details.stage.to_owned()),
                 details.status_code.map(str::to_owned),
                 details.status_message,
                 details.cause.map(|cause| cause.as_str().to_owned()),
                 details.transport_error,
             ),
-            None => (None, None, None, None, None),
+            None => (None, None, None, None),
         };
         let init = PyClassInitializer::from(base).add_subclass(Self {
-            stage,
             status_code,
             status_message,
             cause,

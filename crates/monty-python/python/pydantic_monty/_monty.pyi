@@ -554,10 +554,6 @@ class MontyDisconnectError(MontyError):
     """
 
     @property
-    def stage(self) -> str | None:
-        """Where the failure was observed (`receive`, the stream's end being read), or `None` if unavailable."""
-
-    @property
     def status_code(self) -> str | None:
         """The gRPC status code the server ended the stream with, by its canonical
         name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply

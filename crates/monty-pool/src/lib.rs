@@ -301,10 +301,6 @@ pub enum CrashCause {
 /// transport failure (`transport_error`) for which there was no status.
 #[derive(Debug, Clone)]
 pub struct RemoteDisconnect {
-    /// The I/O operation that observed the failure: `receive` for a stream
-    /// that ended (its end is read, never written, whichever side spoke last),
-    /// `open` for one the server refused.
-    pub stage: &'static str,
     /// The gRPC status code the server ended the stream with, by its
     /// canonical name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...);
     /// `OK` when it simply finished the stream.

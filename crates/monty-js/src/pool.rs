@@ -1133,10 +1133,9 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
     }
 }
 
-/// Writes a remote status's fields — the stage that observed it, its code,
+/// Writes a remote status's fields — its code,
 /// message and cause, or the transport error — onto a turn object.
 fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()> {
-    obj.set("stage", details.stage)?;
     if let Some(code) = details.status_code {
         obj.set("statusCode", code)?;
     }

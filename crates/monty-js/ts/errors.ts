@@ -215,8 +215,6 @@ export class MontyCrashedError extends MontyError {
 
 /** The status or transport failure that ended a remote session's stream. */
 export interface DisconnectDetails {
-  /** Where the failure was observed: `receive`, the stream's end being read. */
-  stage?: string
   /**
    * The gRPC status code the server ended the stream with, by its canonical
    * name (`DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, ...); `OK` when it simply
@@ -244,8 +242,6 @@ export interface DisconnectDetails {
  * whether the in-flight request ran. The session is lost; check out a new one.
  */
 export class MontyDisconnectError extends MontyError {
-  /** Where the failure was observed (`receive`, the stream's end being read), or `null`. */
-  readonly stage: string | null
   /** The status code the server ended the stream with, by name, or `null`. */
   readonly statusCode: string | null
   /** The message on that status, or `null`. */
@@ -258,7 +254,6 @@ export class MontyDisconnectError extends MontyError {
   constructor(message: string, details: DisconnectDetails = {}) {
     super('RuntimeError', message)
     this.name = 'MontyDisconnectError'
-    this.stage = details.stage ?? null
     this.statusCode = details.statusCode ?? null
     this.statusMessage = details.statusMessage ?? null
     this.cause = details.cause ?? null

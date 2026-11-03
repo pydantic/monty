@@ -145,7 +145,7 @@ impl Remote {
                 Ok(Err(status)) if Error::source(&status).is_none() => {
                     return Err(PoolError::Refused {
                         url: url.to_owned(),
-                        refusal: Box::new(RemoteDisconnect::from_status("open", &status)),
+                        refusal: Box::new(RemoteDisconnect::from_status(&status)),
                     });
                 }
                 Ok(Err(status)) => {
@@ -327,7 +327,7 @@ async fn read_events(
                     // a frame this build cannot decode: a protocol failure,
                     // recorded as the disconnect's evidence
                     Err(err) => {
-                        let _ = disconnect.set(RemoteDisconnect::failure("receive", err.to_string()));
+                        let _ = disconnect.set(RemoteDisconnect::failure(err.to_string()));
                         break Err(err);
                     }
                     Ok(event) => break Ok((event, body.len())),
@@ -336,7 +336,6 @@ async fn read_events(
                 // it considers finished, which mid-checkout is still a loss
                 Ok(None) => {
                     let _ = disconnect.set(RemoteDisconnect {
-                        stage: "receive",
                         status_code: Some(code_name(Code::Ok)),
                         status_message: None,
                         cause: None,
@@ -345,7 +344,7 @@ async fn read_events(
                     break Err(FrameError::Truncated);
                 }
                 Err(status) => {
-                    let _ = disconnect.set(RemoteDisconnect::from_status("receive", &status));
+                    let _ = disconnect.set(RemoteDisconnect::from_status(&status));
                     break Err(FrameError::Truncated);
                 }
             }
@@ -372,12 +371,11 @@ impl RemoteDisconnect {
     /// Classifies a status that ended the stream: one the server sent carries
     /// its code, message and cause; one tonic synthesised for a transport
     /// failure (it has a source error) is recorded as that failure instead.
-    fn from_status(stage: &'static str, status: &Status) -> Self {
+    fn from_status(status: &Status) -> Self {
         if Error::source(status).is_some() {
-            Self::failure(stage, describe_status(status))
+            Self::failure(describe_status(status))
         } else {
             Self {
-                stage,
                 status_code: Some(code_name(status.code())),
                 status_message: Some(status.message().to_owned()),
                 cause: Cause::of(status),
@@ -387,9 +385,8 @@ impl RemoteDisconnect {
     }
 
     /// Describes a transport failure for which the server sent no status.
-    fn failure(stage: &'static str, message: impl Into<String>) -> Self {
+    fn failure(message: impl Into<String>) -> Self {
         Self {
-            stage,
             status_code: None,
             status_message: None,
             cause: None,

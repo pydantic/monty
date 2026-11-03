@@ -23,7 +23,7 @@ fn disconnect_without_transport_evidence_preserves_unknown_fields() {
             value.str().unwrap().to_str().unwrap(),
             "monty worker connection closed while waiting for a reply"
         );
-        for field in ["stage", "status_code", "status_message", "cause", "transport_error"] {
+        for field in ["status_code", "status_message", "cause", "transport_error"] {
             assert!(value.getattr(field).unwrap().is_none(), "{field}");
         }
     });

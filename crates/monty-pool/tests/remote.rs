@@ -431,7 +431,6 @@ async fn a_refused_stream_fails_the_checkout() {
         panic!("expected Refused error, got {err:?}");
     };
     assert_eq!(url, mock.url());
-    assert_eq!(refusal.stage, "open");
     assert_eq!(refusal.status_code, Some("RESOURCE_EXHAUSTED"));
     assert_eq!(
         refusal.status_message.as_deref(),
@@ -2766,7 +2765,6 @@ async fn bare_disconnect_is_never_resumed() {
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
     assert_eq!(details.status_code, Some("OK"));
     assert_eq!(details.status_message, None);
     assert_eq!(details.cause, None);
@@ -2796,7 +2794,6 @@ async fn disconnect_preserves_peer_close_details() {
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
     assert_eq!(details.status_code, Some("RESOURCE_EXHAUSTED"));
     assert_eq!(details.status_message.as_deref(), Some("session capacity exhausted"));
     assert_eq!(details.cause, Some(RemoteCause::Capacity));
@@ -2827,7 +2824,6 @@ async fn disconnect_preserves_an_unattributed_status() {
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
     assert_eq!(details.status_code, Some("INTERNAL"));
     assert_eq!(details.status_message.as_deref(), Some("relay fell over"));
     assert_eq!(details.cause, None);
@@ -2859,7 +2855,6 @@ async fn status_ending_an_idle_stream_is_reported_by_the_next_request() {
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
     assert_eq!(details.status_code, Some("DEADLINE_EXCEEDED"));
     assert_eq!(details.cause, Some(RemoteCause::IdleTimeout));
     assert_eq!(details.transport_error, None);
@@ -2939,7 +2934,6 @@ async fn disconnect_preserves_a_reset_stream() {
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
     assert_eq!(details.status_code, None);
     assert_eq!(details.cause, None);
     assert!(details.transport_error.is_some(), "got {details:?}");

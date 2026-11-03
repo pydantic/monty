@@ -289,8 +289,8 @@ input so adapters that do not support metrics continue to work.
   (30 s by default) bounds opening a stream, from a cold dial through the server's admission.
 
 A stream ended mid-session reports `PoolError::Disconnected`.
-Its optional `remote` details retain the first recorded failure: its I/O stage, the gRPC status the server ended the
-stream with (code, message, and the `RemoteCause` it named in its `monty-cause` trailer), or the transport error.
+Its optional `remote` details retain the first recorded failure: the gRPC status the server ended the stream with
+(code, message, and the `RemoteCause` it named in its `monty-cause` trailer), or the transport error.
 A server refusing a stream before admitting it — at capacity, or rejecting the caller for missing credentials
 (`unauthenticated`) or for a valid credential that does not allow the requested project or profile
 (`permission_denied`) — fails the checkout with

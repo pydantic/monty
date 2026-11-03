@@ -638,7 +638,6 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
                 with pytest.raises(MontyDisconnectError) as caught:
                     await session.feed_run('1 + 1')
                 err = caught.value
-                assert err.stage == 'receive'
                 assert err.status_code == ('OK' if status is None else status.name)
                 assert err.status_message == message
                 assert err.cause == cause

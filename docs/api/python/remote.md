@@ -76,9 +76,8 @@ the resume fail.
 
 ## Disconnect diagnostics
 
-[`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] exposes `stage`, `status_code`, `status_message`,
-`cause` and `transport_error`.
-`stage` identifies where the failure was observed: `receive`, since the stream's end is read, never written.
+[`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] exposes `status_code`, `status_message`, `cause` and
+`transport_error`.
 If the server ended the stream with a gRPC status, `status_code` holds its canonical name (`DEADLINE_EXCEEDED`,
 `RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...), or `OK` when the server simply finished the stream, and `status_message` its
 message.
