@@ -44,10 +44,10 @@ use crate::{
     types::{
         Dict, Type, TypeRef, Union, allocate_tuple,
         instance::BoundMethod,
-        builtin_attr::PyAttrs,
         iter::collect_owned_iterable,
         key_hash::hash_or_culprit,
         py_trait::LazyHeapSet,
+        pyattrs::PyAttrs,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::allocate_string,
         tuple::TupleVec,

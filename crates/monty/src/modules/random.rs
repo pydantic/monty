@@ -1642,7 +1642,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::RANDOM_FUNCTIONS;
-    use crate::types::{builtin_attr::PyAttrs, random::PyRandomImpl};
+    use crate::types::{pyattrs::PyAttrs, random::PyRandomImpl};
 
     #[test]
     fn module_and_instance_method_names_match() {

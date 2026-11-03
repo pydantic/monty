@@ -26,7 +26,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     types::{
-        builtin_attr::PyAttrs,
+        pyattrs::PyAttrs,
         Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},

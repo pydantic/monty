@@ -14,7 +14,7 @@ use chrono::{Datelike, NaiveDate, NaiveTime, format::StrftimeItems};
 use monty_macros::pyattrs;
 use monty_types::{OsFunctionCall, ResourceTracker};
 
-use super::builtin_attr::PyAttrs;
+use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},

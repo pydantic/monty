@@ -40,7 +40,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     py_value::PyValue,
-    types::{builtin_attr::PyAttrs, LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
+    types::{pyattrs::PyAttrs, LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 

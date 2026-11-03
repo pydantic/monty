@@ -28,7 +28,7 @@ use crate::{
         random::{RandomFunctions, random_dispatch},
     },
     py_value::PyValue,
-    types::{builtin_attr::PyAttrs, LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
+    types::{pyattrs::PyAttrs, LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 

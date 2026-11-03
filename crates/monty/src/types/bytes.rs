@@ -93,8 +93,8 @@ use crate::{
     types::{
         List,
         iter::checked_preallocation_hint,
-        builtin_attr::PyAttrs,
         py_trait::PyObjectIdentity,
+        pyattrs::PyAttrs,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bytes},

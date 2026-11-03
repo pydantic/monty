@@ -22,8 +22,8 @@ use crate::{
         LazyHeapSet, Type, TypeRef,
         hash_table::{CloneTableEntry, Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         key_hash::{HashRole, hash_as, set_element_hash},
-        builtin_attr::PyAttrs,
         list::repr_items_fmt,
+        pyattrs::PyAttrs,
     },
     value::{VALUE_SIZE, Value},
 };

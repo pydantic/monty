@@ -15,7 +15,7 @@ use chrono::TimeDelta as ChronoTimeDelta;
 use monty_macros::pyattrs;
 use smallvec::smallvec;
 
-use super::builtin_attr::PyAttrs;
+use super::pyattrs::PyAttrs;
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},

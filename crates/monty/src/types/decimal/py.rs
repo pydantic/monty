@@ -34,7 +34,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        builtin_attr::PyAttrs,
+        pyattrs::PyAttrs,
         CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },

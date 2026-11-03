@@ -24,9 +24,9 @@ use crate::{
     modules::ModuleFunctions,
     types::{
         Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
-        builtin_attr::PyAttrs,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         key_hash::plain_hash,
+        pyattrs::PyAttrs,
         tuple::{TupleVec, allocate_tuple},
     },
     value::{EitherStr, Value},

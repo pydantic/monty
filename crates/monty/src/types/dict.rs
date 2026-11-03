@@ -40,7 +40,7 @@ use crate::{
             TableWalk,
         },
         key_hash::dict_key_hash,
-        builtin_attr::PyAttrs,
+        pyattrs::PyAttrs,
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
