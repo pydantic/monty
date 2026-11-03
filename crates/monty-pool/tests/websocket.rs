@@ -43,6 +43,24 @@ use tungstenite::{
     protocol::{CloseFrame, frame::coding::CloseCode},
 };
 
+/// Closing a remote transport cannot prove that the remote subprocess has exited.
+#[tokio::test]
+async fn terminating_a_websocket_checkout_never_confirms_subprocess_exit() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let child = thread::spawn(move || serve_mock_child(&listener));
+    let pool = Pool::new(PoolConfig::websocket(format!("ws://{address}/")))
+        .await
+        .unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert!(
+        matches!(session.feed("6 * 7", vec![], vec![], false, &mut no_print).await.unwrap(), TurnEvent::Complete(value) if value == MontyObject::int(42))
+    );
+    assert!(session.terminate().await.is_none());
+    spawn_blocking(move || child.join().unwrap()).await.unwrap();
+    pool.close().await;
+}
+
 /// A mock child: accepts one WebSocket connection and answers each request with
 /// the obvious turn-ender (`Ok` for control requests, `Complete(42)` for a feed).
 fn serve_mock_child(listener: &TcpListener) {

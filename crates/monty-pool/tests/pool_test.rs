@@ -2573,6 +2573,58 @@ async fn type_check_state_is_scrubbed_between_checkouts_on_the_same_worker() {
 // Cancellation
 // =============================================================================
 
+/// Explicit termination reaps the owned process before it reports completion.
+#[tokio::test]
+async fn termination_reaps_a_cancelled_turn_and_preserves_pool_capacity() {
+    let mut settings = config();
+    settings.max_processes = 1;
+    let pool = Pool::new(settings).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let worker = session.worker_id().unwrap();
+    {
+        let mut printer = no_print;
+        tokio::select! {
+            result = session.feed("while True:\n    pass", vec![], vec![], false, &mut printer) => panic!("the controlled turn cannot finish: {result:?}"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    assert!(session.terminate().await.is_some());
+    let mut next = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_ne!(next.worker_id(), Some(worker));
+    assert_eq!(
+        expect_complete(next.feed("6 * 7", vec![], vec![], false, &mut no_print).await.unwrap()),
+        MontyObject::int(42)
+    );
+    next.finish().await.unwrap();
+}
+
+/// An idle process is killed rather than returned to the reusable pool.
+#[tokio::test]
+async fn termination_reaps_an_idle_checkout() {
+    let pool = Pool::new(config()).await.unwrap();
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert!(session.terminate().await.is_some());
+}
+
+/// A worker discarded by an earlier protocol failure has no retained exit proof.
+#[tokio::test]
+async fn termination_without_an_owned_worker_does_not_confirm_exit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    {
+        let mut printer = no_print;
+        tokio::select! {
+            result = session.feed("while True:\n    pass", vec![], vec![], false, &mut printer) => panic!("the controlled turn cannot finish: {result:?}"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    assert!(matches!(
+        session.feed("6 * 7", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Protocol(_))
+    ));
+    assert!(session.terminate().await.is_none());
+}
+
 /// A turn future dropped mid-flight leaves the protocol state unknowable: the
 /// next call on the checkout must discard the worker and fail cleanly, and
 /// the pool must stay healthy.
