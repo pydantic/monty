@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem, mem::ManuallyDrop};
+use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem};
 
 use monty_macros::pyattrs;
 
@@ -658,11 +658,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             return Ok(Some(CallResult::Value(value)));
         }
         Ok(None)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        Type::Deque.call_attr(&receiver, attr, args, vm)
     }
 }
 

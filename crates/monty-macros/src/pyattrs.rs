@@ -207,8 +207,6 @@ fn definition(
         erase_path_lifetimes(&mut owner.path);
     }
     let handler = quote!(<#owner>::#name);
-    let mutable = matches!(method.sig.inputs.first(), Some(FnArg::Typed(arg))
-        if matches!(arg.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some()));
     match kind {
         Kind::ClassMethod => quote! {
             crate::types::builtin_attr::AttrDef::ClassMethod({
@@ -221,41 +219,40 @@ fn definition(
         Kind::Value => quote!(crate::types::builtin_attr::AttrDef::Value(#handler)),
         Kind::Method => {
             let body = match mode {
-                Mode::Immediate => quote! {
-                    let crate::value::Value::#variant(value) = receiver else {
+                Mode::Immediate => {
+                    let pattern = if variant == "Int" {
+                        quote!(crate::py_value::PyValue::Int(crate::types::long_int::PyInt::Small(
+                            value
+                        )))
+                    } else {
+                        quote!(crate::py_value::PyValue::#variant(value))
+                    };
+                    quote! {
+                        let #pattern = receiver else {
+                            unreachable!("builtin method receiver must match its attribute table")
+                        };
+                        #handler(*value, args, vm)
+                    }
+                }
+                Mode::NativeView => {
+                    let variant = if variant == "PyBytes" {
+                        format_ident!("Bytes")
+                    } else {
+                        format_ident!("Str")
+                    };
+                    quote! {
+                        let crate::py_value::PyValue::#variant(value) = receiver else {
+                            unreachable!("builtin method receiver must match its attribute table")
+                        };
+                        #handler(value, args, vm)
+                    }
+                }
+                Mode::HeapHandle => quote! {
+                    let Some(value) = <#native as crate::py_value::PyValuePayload>::from_py_value(receiver) else {
                         unreachable!("builtin method receiver must match its attribute table")
                     };
-                    #handler(*value, args, vm)
+                    #handler(value, args, vm)
                 },
-                Mode::NativeView => {
-                    let view = if variant == "PyBytes" {
-                        quote!(crate::types::bytes::PyBytes)
-                    } else {
-                        quote!(crate::types::str::PyStr)
-                    };
-                    quote! {
-                        let Some(value) = #view::from_value(receiver, vm) else {
-                            unreachable!("builtin method receiver must match its attribute table")
-                        };
-                        #handler(&value, args, vm)
-                    }
-                }
-                Mode::HeapHandle => {
-                    let (binding, argument) = if mutable {
-                        (quote!(mut value), quote!(&mut value))
-                    } else {
-                        (quote!(value), quote!(&value))
-                    };
-                    quote! {
-                        let crate::value::Value::Ref(id) = receiver else {
-                            unreachable!("builtin method receiver must be a heap value")
-                        };
-                        let Some(#binding) = vm.heap.read_as::<#native>(*id) else {
-                            unreachable!("builtin method receiver must match its attribute table")
-                        };
-                        #handler(#argument, args, vm)
-                    }
-                }
             };
             let returns_value = match &method.sig.output {
                 ReturnType::Type(_, ty) => type_path(ty).is_ok_and(|segment| matches!(&segment.arguments,
@@ -269,7 +266,7 @@ fn definition(
             };
             quote! {
                 crate::types::builtin_attr::AttrDef::Method({
-                    fn call(receiver: &crate::value::Value, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'_>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
+                    fn call<'h>(receiver: &mut crate::py_value::PyValue<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
                         #body
                     }
                     call
@@ -503,6 +500,8 @@ mod tests {
         assert!(output.contains("const fn lookup_attr"));
         assert!(output.contains("Some (value)"));
         assert!(output.contains("< PyListImpl > :: sort"));
+        assert!(!output.contains("read_as"));
+        assert!(!output.contains("from_value"));
         assert!(!output.contains("pymethod"));
     }
 
@@ -529,7 +528,7 @@ mod tests {
                 fn min(vm: &mut VM<'_>) -> Value { todo!() }
             }
         }).unwrap().to_string();
-        assert!(immediate.contains("Value :: Float (value)"));
+        assert!(immediate.contains("PyValue :: Float (value)"));
         assert!(immediate.contains("StaticStrings :: IsInteger"));
         assert!(immediate.contains("AttrDef :: ClassMethod"));
         assert!(
@@ -552,7 +551,7 @@ mod tests {
                 }
             }
         }).unwrap().to_string();
-        assert!(output.contains("read_as :: < ForwardRef >"));
+        assert!(output.contains("< ForwardRef as crate :: py_value :: PyValuePayload > :: from_py_value"));
         assert!(output.contains("RunResult < crate :: bytecode :: CallResult >"));
         assert!(!output.contains("map (crate :: bytecode :: CallResult :: Value)"));
     }
@@ -568,7 +567,7 @@ mod tests {
         })
         .unwrap()
         .to_string();
-        assert!(output.contains("PyBytes :: from_value"));
+        assert!(output.contains("PyValue :: Bytes (value)"));
         assert!(!output.contains("read_as"));
         assert!(
             error(parse_quote! {
@@ -593,7 +592,7 @@ mod tests {
         })
         .unwrap()
         .to_string();
-        assert!(output.contains("PyStr :: from_value"));
+        assert!(output.contains("PyValue :: Str (value)"));
         assert!(!output.contains("heap_read_ref_as_field"));
         assert!(!output.contains("protect"));
         assert!(

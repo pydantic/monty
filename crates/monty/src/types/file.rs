@@ -75,7 +75,7 @@
 
 use std::{
     fmt::{self, Write},
-    mem::{self, ManuallyDrop},
+    mem,
 };
 
 use monty_macros::pyattrs;
@@ -493,11 +493,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         }
         write!(f, " mode={}>", StringRepr(file.mode()))?;
         Ok(())
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let receiver = ManuallyDrop::new(Value::Ref(self.id()));
-        self.py_type(vm).call_attr(&receiver, attr, args, vm)
     }
 
     fn py_is_context_manager(&self, _vm: &VM<'h>) -> bool {

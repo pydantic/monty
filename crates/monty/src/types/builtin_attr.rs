@@ -7,6 +7,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
     intern::StaticStrings,
+    py_value::PyValue,
     types::{
         PyTrait, Type, complex, date, datetime, list, re_match, re_pattern, str, time, timedelta, timezone, tuple,
     },
@@ -14,8 +15,7 @@ use crate::{
 };
 
 pub(crate) type BuiltinCall = for<'h> fn(Type, Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
-/// Heap receivers stay protected by their read handle; temporary Values borrow their references.
-pub(crate) type MethodCall = for<'h> fn(&Value, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
+pub(crate) type MethodCall = for<'h> fn(&mut PyValue<'h>, ArgValues, &mut VM<'h>) -> RunResult<CallResult>;
 
 /// Python attribute definitions and the native view passed to their methods.
 pub(crate) trait PyAttrs<'h> {
@@ -111,7 +111,7 @@ pub(crate) fn invoke_unbound(
     let ((receiver, args), vm) = pending.into_parts();
     defer_drop!(receiver, vm);
     if receiver_type == owner {
-        call(receiver, args, vm)
+        call(&mut receiver.py_value(vm), args, vm)
     } else {
         call_subtype(owner, attr, call, receiver, args, vm)
     }
@@ -127,7 +127,7 @@ fn call_subtype(
 ) -> RunResult<CallResult> {
     if owner == Type::Dict {
         // Dict variants share the native Dict representation.
-        return call(receiver, args, vm);
+        return call(&mut receiver.py_value(vm), args, vm);
     }
     let Value::Ref(id) = receiver else {
         unreachable!("native subclasses are heap objects")
@@ -146,7 +146,7 @@ fn call_subtype(
     let date = date::from_ymd(year, i32::from(month), i32::from(day)).expect("datetime date is valid");
     let date_receiver = Value::Ref(vm.heap.allocate(HeapData::Date(date)));
     defer_drop!(date_receiver, vm);
-    let result = call(date_receiver, args, vm)?;
+    let result = call(&mut date_receiver.py_value(vm), args, vm)?;
     if attr.as_str(vm.interns) == "replace" {
         let CallResult::Value(result) = result else {
             unreachable!("date.replace returns a value")
@@ -185,7 +185,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        heap::{Heap as ObjectHeap, HeapData, HeapReadOutput, HeapReader},
+        heap::{Heap as ObjectHeap, HeapData, HeapReader},
         intern::Interns,
         run::{Program, SessionTables},
         types::{List, PyTrait},
@@ -228,7 +228,7 @@ mod tests {
                 panic!("expected sort method")
             };
             assert!(matches!(
-                sort(&owned.0, ArgValues::Empty, vm).unwrap(),
+                sort(&mut owned.0.py_value(vm), ArgValues::Empty, vm).unwrap(),
                 CallResult::Value(Value::None)
             ));
             let HeapData::List(list) = vm.heap.get(list_id) else {
@@ -240,7 +240,7 @@ mod tests {
                 panic!("expected count method")
             };
             assert!(matches!(
-                count(&owned.1, ArgValues::One(Value::Int(2)), vm).unwrap(),
+                count(&mut owned.1.py_value(vm), ArgValues::One(Value::Int(2)), vm).unwrap(),
                 CallResult::Value(Value::Int(2))
             ));
 
@@ -248,12 +248,12 @@ mod tests {
                 panic!("expected immediate method")
             };
             assert!(
-                matches!(conjugate(&Value::Float(2.0), ArgValues::Empty, vm).unwrap(), CallResult::Value(Value::Float(value)) if value.to_bits() == 2.0_f64.to_bits())
+                matches!(conjugate(&mut PyValue::Float(2.0), ArgValues::Empty, vm).unwrap(), CallResult::Value(Value::Float(value)) if value.to_bits() == 2.0_f64.to_bits())
             );
             assert!(
-                matches!(conjugate(&Value::Float(-2.5), ArgValues::Empty, vm).unwrap(), CallResult::Value(Value::Float(value)) if value.to_bits() == (-2.5_f64).to_bits())
+                matches!(conjugate(&mut PyValue::Float(-2.5), ArgValues::Empty, vm).unwrap(), CallResult::Value(Value::Float(value)) if value.to_bits() == (-2.5_f64).to_bits())
             );
-            assert!(conjugate(&Value::Float(2.0), ArgValues::One(Value::Int(1)), vm).is_err());
+            assert!(conjugate(&mut PyValue::Float(2.0), ArgValues::One(Value::Int(1)), vm).is_err());
         });
     }
 
@@ -336,19 +336,22 @@ mod tests {
                 EitherStr::Heap("missing_method".into()),
             ] {
                 let argument = owned.1.clone_with_heap(vm.heap);
-                let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
-                    panic!("expected list")
-                };
-                assert!(list.py_call_attr(vm, &name, ArgValues::One(argument)).is_err());
+                assert!(
+                    owned
+                        .0
+                        .py_value(vm)
+                        .py_call_attr(vm, &name, ArgValues::One(argument))
+                        .is_err()
+                );
 
                 let argument = owned.0.clone_with_heap(vm.heap);
-                let Value::Ref(tuple_id) = &owned.1 else {
-                    panic!("expected tuple reference")
-                };
-                let HeapReadOutput::Tuple(mut tuple) = vm.heap.read(*tuple_id) else {
-                    panic!("expected tuple")
-                };
-                assert!(tuple.py_call_attr(vm, &name, ArgValues::One(argument)).is_err());
+                assert!(
+                    owned
+                        .1
+                        .py_value(vm)
+                        .py_call_attr(vm, &name, ArgValues::One(argument))
+                        .is_err()
+                );
             }
         });
     }
