@@ -144,6 +144,44 @@ try:
     assert False, 'expected SyntaxError'
 except SyntaxError as e:
     assert str(e) == "'await' outside function (<string>, line 4)"
+# `await` in a function that is not `async`
+for source, message in [
+    ('def f():\n    return await g()', "'await' outside async function (<string>, line 2)"),
+    ('f = lambda: await g()', "'await' outside async function (<string>, line 1)"),
+    ('async def f():\n    def h():\n        return await g()', "'await' outside async function (<string>, line 3)"),
+    ('class C:\n    def m(self):\n        return await g()', "'await' outside async function (<string>, line 3)"),
+    ('def f():\n    class C:\n        x = await g()', "'await' outside function (<string>, line 3)"),
+    ('async def f():\n    class C:\n        x = await g()', "'await' outside function (<string>, line 3)"),
+    ('def f():\n    return [x for x in await g()]', "'await' outside async function (<string>, line 2)"),
+    ('def f():\n    return [lambda: await g() for x in y]', "'await' outside async function (<string>, line 2)"),
+    (
+        'def f():\n    return [await g() for x in y]',
+        'asynchronous comprehension outside of an asynchronous function (<string>, line 2)',
+    ),
+    (
+        'def f():\n    return {x: await g() for x in y}',
+        'asynchronous comprehension outside of an asynchronous function (<string>, line 2)',
+    ),
+    (
+        'def f():\n    return [x for x in y if await g()]',
+        'asynchronous comprehension outside of an asynchronous function (<string>, line 2)',
+    ),
+    (
+        'def f():\n    return {await g() for x in y}',
+        'asynchronous comprehension outside of an asynchronous function (<string>, line 2)',
+    ),
+    (
+        'def f():\n    return [x for x in y for z in [await g()]]',
+        'asynchronous comprehension outside of an asynchronous function (<string>, line 2)',
+    ),
+]:
+    try:
+        exec(source)
+        assert False, f'expected SyntaxError for {source!r}'
+    except SyntaxError as e:
+        assert str(e) == message
+# an `async def` inside a sync function can still await
+exec('def outer():\n    async def inner():\n        return [await g() for x in y]\n    return inner', {})
 try:
     eval(b'\xff')
     assert False, 'expected SyntaxError'
