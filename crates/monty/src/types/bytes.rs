@@ -89,9 +89,9 @@ use crate::{
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
-        List,
+        List, bytearray,
         py_trait::PyObjectIdentity,
-        slice::{SearchRange, search_range, slice_collect_iterator},
+        slice::{SearchRange, search_range_with_len, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_bytes},
 };
@@ -220,6 +220,11 @@ impl Bytes {
             }
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
+                HeapData::ByteArray(b) => {
+                    // The mutable source remains live while its immutable copy is allocated.
+                    vm.heap.tracker.check_allocation(b.as_slice().len())?;
+                    b.as_slice().to_vec()
+                }
                 _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
@@ -270,15 +275,6 @@ pub(crate) enum PyBytes<'h> {
 }
 
 impl<'h> PyBytes<'h> {
-    /// Extracts bytes without copying their contents.
-    pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
-        match value {
-            Value::InternBytes(id) => Some(Self::Interned(*id)),
-            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
-            _ => None,
-        }
-    }
-
     /// Borrows the buffer only for the duration of the heap borrow.
     pub(crate) fn as_slice<'a>(&'a self, vm: &'a VM<'h>) -> &'a [u8] {
         match self {
@@ -474,14 +470,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
 /// Concatenation shared by logical bytes views and concrete heap dispatch.
 fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    match PyBytes::from_value(other, vm) {
-        Some(other) => Ok(Some(concat_bytes(bytes, other.as_slice(vm), vm.heap)?)),
+    match bytearray::read_buffer(other, vm) {
+        Some(other) => Ok(Some(concat_bytes(bytes, other, vm.heap)?)),
         None => Ok(None),
     }
 }
 
 /// Indexes a protected buffer, allowing `__index__` to run before borrowing it.
-fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(crate) fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
@@ -505,7 +501,7 @@ impl HeapItem for Bytes {
 /// This is the unified implementation for bytes method calls, used by both
 /// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
 /// (`Value::InternBytes`).
-fn call_bytes_method_impl<'h>(
+pub(crate) fn call_bytes_method_impl<'h>(
     bytes: &impl HeapView<'h, [u8]>,
     method: StaticStrings,
     args: ArgValues,
@@ -765,8 +761,7 @@ fn count_non_overlapping(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<
 ///
 /// Returns the number of non-overlapping occurrences of the subsequence.
 fn bytes_count<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (sub, range) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.count", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` counts nothing: `b'abc'.count(b'', 2, 1) == 0`
         return Ok(Value::Int(0));
@@ -788,8 +783,7 @@ fn bytes_count<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 ///
 /// Returns the lowest index where the subsequence is found, or -1 if not found.
 fn bytes_find<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (sub, range) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.find", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `b'abc'.find(b'', 4) == -1`
         return Ok(Value::Int(-1));
@@ -814,8 +808,7 @@ fn bytes_find<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<
 ///
 /// Like find(), but raises ValueError if the subsequence is not found.
 fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (sub, range) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.index", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `b'abc'.index(b'', 4)` raises `ValueError`
         return Err(ExcType::value_error_subsequence_not_found());
@@ -844,8 +837,7 @@ fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Accepts bytes or a tuple of bytes as prefix. If a tuple is given, returns True
 /// if any of the prefixes match.
 fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (prefix_arg, range) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
+    let (prefix_arg, range) = parse_bytes_prefix_suffix_args("bytes.startswith", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` matches nothing: `b'abc'.startswith(b'', 4) == False`
         return Ok(Value::Bool(false));
@@ -865,8 +857,7 @@ fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 /// Accepts bytes or a tuple of bytes as suffix. If a tuple is given, returns True
 /// if any of the suffixes match.
 fn bytes_endswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (suffix_arg, range) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
+    let (suffix_arg, range) = parse_bytes_prefix_suffix_args("bytes.endswith", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` matches nothing: `b'abc'.endswith(b'', 4) == False`
         return Ok(Value::Bool(false));
@@ -894,21 +885,21 @@ enum PrefixSuffixArg {
 /// Parses arguments for bytes.startswith/endswith methods.
 ///
 /// Returns the prefix/suffix_arg and the `(start, end)` range to match in, or
-/// `None` for a `start` past `end`, where nothing matches (see [`search_range`]).
+/// `None` for a `start` past `end`, where nothing matches (see [`super::slice::search_range`]).
 /// The prefix/suffix_arg can be a single bytes value or a tuple of bytes values.
-fn parse_bytes_prefix_suffix_args(
+fn parse_bytes_prefix_suffix_args<'h>(
     method: &str,
-    len: usize,
+    bytes: &impl HeapView<'h, [u8]>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<(PrefixSuffixArg, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
     match pos.as_slice() {
         [prefix_value, bounds @ ..] if bounds.len() <= 2 => {
+            let range = search_range_with_len(bounds.first(), bounds.get(1), |vm| bytes.get(vm.heap).len(), vm)?;
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let range = search_range(bounds.first(), bounds.get(1), len, vm)?;
             Ok((prefix, range))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -974,6 +965,7 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
         }
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
+            HeapData::ByteArray(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
             _ => Err(ExcType::type_error("a bytes-like object is required")),
         },
@@ -984,12 +976,12 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
 /// Parses arguments for bytes.find/count/index methods.
 ///
 /// Returns the subsequence and the `(start, end)` range to search, or `None`
-/// for a `start` past `end`, where nothing is found (see [`search_range`]).
-fn parse_bytes_sub_args(
+/// for a `start` past `end`, where nothing is found (see [`super::slice::search_range`]).
+fn parse_bytes_sub_args<'h>(
     method: &str,
-    len: usize,
+    bytes: &impl HeapView<'h, [u8]>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<(Vec<u8>, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
@@ -998,9 +990,10 @@ fn parse_bytes_sub_args(
     // runs the index converters and leaves the buffer check to the function body.
     // A raising `__index__` bound then costs no copy; `pos` keeps `sub` alive.
     let (sub_value, range) = match pos.as_slice() {
-        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
-            (sub_value, search_range(bounds.first(), bounds.get(1), len, vm)?)
-        }
+        [sub_value, bounds @ ..] if bounds.len() <= 2 => (
+            sub_value,
+            search_range_with_len(bounds.first(), bounds.get(1), |vm| bytes.get(vm.heap).len(), vm)?,
+        ),
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
@@ -1191,8 +1184,7 @@ fn bytes_istitle(bytes: &[u8]) -> bool {
 ///
 /// Returns the highest index where the subsequence is found, or -1 if not found.
 fn bytes_rfind<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (sub, range) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.rfind", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `b'abc'.rfind(b'', 4) == -1`
         return Ok(Value::Int(-1));
@@ -1217,8 +1209,7 @@ fn bytes_rfind<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 ///
 /// Like rfind(), but raises ValueError if the subsequence is not found.
 fn bytes_rindex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = bytes.get(vm.heap).len();
-    let (sub, range) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.rindex", bytes, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `b'abc'.rindex(b'', 4)` raises `ValueError`
         return Err(ExcType::value_error_subsequence_not_found());
@@ -2306,14 +2297,15 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(hex_value, vm);
 
     let hex_value_py = hex_value.py_value(vm);
-    let hex_str = match &hex_value_py {
-        PyValue::Str(value) => value.as_str(vm),
-        PyValue::Bytes(_) => {
-            return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
-        }
+    let hex_chars: Box<dyn Iterator<Item = char> + '_> = match &hex_value_py {
+        PyValue::Str(value) => Box::new(value.as_str(vm).chars()),
+        PyValue::Bytes(value) => Box::new(value.as_slice(vm).iter().copied().map(char::from)),
+        PyValue::ByteArray(value) => Box::new(value.get(vm.heap).as_slice().iter().copied().map(char::from)),
         _ => {
             let t = hex_value.py_type_name(vm);
-            return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
+            return Err(ExcType::type_error(format!(
+                "fromhex() argument must be str or bytes-like, not {t}"
+            )));
         }
     };
 
@@ -2327,11 +2319,14 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     // - Odd number of valid hex digits: "must contain an even number of hexadecimal digits"
 
     let mut result = Vec::new();
-    let mut chars = hex_str.chars().enumerate().peekable();
+    let mut chars = hex_chars.enumerate().peekable();
 
     loop {
         // Skip whitespace BETWEEN byte pairs (before the high nibble)
-        while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+        while chars
+            .peek()
+            .is_some_and(|(_, c)| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+        {
             chars.next();
         }
 
@@ -2405,16 +2400,26 @@ enum BytesIteratorSource {
 pub(crate) struct BytesIterator {
     source: BytesIteratorSource,
     index: usize,
+    #[serde(default)]
+    bytearray: bool,
 }
 
 impl BytesIterator {
+    pub(crate) fn py_type(&self) -> Type {
+        if self.bytearray {
+            Type::ByteArrayIterator
+        } else {
+            Type::BytesIterator
+        }
+    }
+
     /// Allocates an iterator over interned bytes.
     pub(crate) fn from_intern(id: BytesId, vm: &mut VM<'_>) -> Value {
         Self::allocate(BytesIteratorSource::Intern(id), vm)
     }
 
     /// Allocates an iterator retaining heap bytes.
-    fn from_heap(id: HeapId, vm: &mut VM<'_>) -> Value {
+    pub(crate) fn from_heap(id: HeapId, vm: &mut VM<'_>) -> Value {
         Self::allocate(BytesIteratorSource::Heap(id), vm)
     }
 
@@ -2437,6 +2442,7 @@ impl BytesIterator {
             BytesIteratorSource::Intern(id) => vm.interns.get_bytes(id),
             BytesIteratorSource::Heap(id) => match vm.heap.get(id) {
                 HeapData::Bytes(bytes) => bytes.as_slice(),
+                HeapData::ByteArray(bytes) => bytes.as_slice(),
                 _ => unreachable!("bytes iterator must retain bytes"),
             },
         }
@@ -2448,7 +2454,12 @@ impl BytesIterator {
             BytesIteratorSource::Heap(id) => Some(id),
             BytesIteratorSource::Intern(_) => None,
         };
-        let id = vm.heap.allocate(HeapData::BytesIterator(Self { source, index: 0 }));
+        let bytearray = source_id.is_some_and(|id| matches!(vm.heap.get(id), HeapData::ByteArray(_)));
+        let id = vm.heap.allocate(HeapData::BytesIterator(Self {
+            source,
+            index: 0,
+            bytearray,
+        }));
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
@@ -2469,8 +2480,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::BytesIterator
+    fn py_type(&self, vm: &VM<'h>) -> Type {
+        self.get(vm.heap).py_type()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -2494,6 +2505,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
             self.get_mut(vm.heap).index += 1;
             Ok(Some(Value::Int(i64::from(byte))))
         } else {
+            self.get_mut(vm.heap).index = usize::MAX;
             Ok(None)
         }
     }

@@ -11,9 +11,9 @@ Builtin sequence repetition is handled after numeric methods: for `sequence * ob
 runs before `obj.__index__` is used as a repetition count.
 If `__rmul__` is absent or returns `NotImplemented`, repetition accepts an integer or calls `__index__`.
 If neither is supported, multiplication raises `TypeError`; a declined `__rmul__` is not called again.
-This applies to lists, deques, tuples, named tuples, strings and bytes.
+This applies to lists, deques, tuples, named tuples, strings, bytes and bytearrays.
 
-List/deque `*=` uses the same ordering: a result from `__rmul__` replaces the assigned value, while native repetition
+List/deque/bytearray `*=` uses the same ordering: a result from `__rmul__` replaces the assigned value, while native repetition
 mutates the existing container so aliases observe the change.
 Other types use binary multiplication as the augmented-assignment fallback.
 For unsupported user-defined in-place dunders, see the

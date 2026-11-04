@@ -585,6 +585,7 @@ pub(crate) fn hash_input<'a, 'h>(value: &'a PyValue<'h>, vm: &'a VM<'h>) -> RunR
     match value {
         PyValue::Str(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
         PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm)),
+        PyValue::ByteArray(bytes) => Ok(bytes.get(vm.heap).as_slice()),
         _ => Err(ExcType::type_error("object supporting the buffer API required")),
     }
 }

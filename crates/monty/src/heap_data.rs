@@ -44,6 +44,7 @@ macro_rules! heap_payloads {
             Str(inline $crate::types::Str),
             #[serde(rename = "B")]
             Bytes(inline $crate::types::Bytes),
+            ByteArray(inline $crate::types::ByteArray),
             #[serde(rename = "L")]
             List(inline $crate::types::List),
             /// `collections.deque` — a double-ended queue with an optional `maxlen`.
@@ -281,6 +282,7 @@ impl HeapData {
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
             Self::Str(_)
+            | Self::ByteArray(_)
             | Self::Bytes(_)
             | Self::Range(_)
             | Self::Slice(_)
@@ -344,6 +346,7 @@ impl HeapData {
         match self {
             Self::Str(_) => Type::Str,
             Self::Bytes(_) => Type::Bytes,
+            Self::ByteArray(_) => Type::ByteArray,
             Self::List(_) => Type::List,
             Self::Deque(_) => Type::Deque,
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
@@ -392,7 +395,7 @@ impl HeapData {
             Self::DequeIterator(_) => Type::DequeIterator,
             Self::TupleIterator(_) => Type::TupleIterator,
             Self::StringIterator(iter) => iter.py_type(),
-            Self::BytesIterator(_) => Type::BytesIterator,
+            Self::BytesIterator(iterator) => iterator.py_type(),
             Self::RangeIterator(_) => Type::RangeIterator,
             Self::DictKeyIterator(_) => Type::DictKeyIterator,
             Self::DictItemIterator(_) => Type::DictItemIterator,
@@ -725,6 +728,7 @@ macro_rules! heap_read_output_py_trait_forward {
         match $self {
             Self::Str($value) => $body,
             Self::Bytes($value) => $body,
+            Self::ByteArray($value) => $body,
             Self::List($value) => $body,
             Self::Deque($value) => $body,
             Self::ListIterator($value) => $body,
@@ -999,6 +1003,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         match self {
             Self::Str(value) => value.py_iter(vm),
             Self::Bytes(value) => value.py_iter(vm),
+            Self::ByteArray(value) => value.py_iter(vm),
             Self::List(value) => value.py_iter(vm),
             Self::Deque(value) => value.py_iter(vm),
             Self::ListIterator(value) => value.py_iter(vm),
@@ -1072,6 +1077,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         match self {
             Self::Str(value) => value.py_next(vm),
             Self::Bytes(value) => value.py_next(vm),
+            Self::ByteArray(value) => value.py_next(vm),
             Self::List(value) => value.py_next(vm),
             Self::ListIterator(value) => value.py_next(vm),
             Self::DequeIterator(value) => value.py_next(vm),

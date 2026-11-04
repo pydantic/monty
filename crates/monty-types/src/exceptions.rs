@@ -442,6 +442,8 @@ pub enum ExcType {
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
     DecimalFloatOperation,
+    /// A buffer operation would invalidate exported storage.
+    BufferError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.

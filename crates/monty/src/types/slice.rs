@@ -158,21 +158,14 @@ pub(crate) fn value_to_i64_bound(value: &Value, vm: &mut VM<'_>) -> RunResult<i6
     saturating_slice_index(value, vm)?.ok_or_else(ExcType::type_error_slice_indices_no_none)
 }
 
-/// [`value_to_option_i64`] normalized against a sequence length, which is the
-/// shape the searches want: `None` selects `default`, anything else is coerced,
-/// saturated and clamped into `0..=len`.
-pub(crate) fn optional_sequence_bound(value: &Value, default: usize, len: usize, vm: &mut VM<'_>) -> RunResult<usize> {
-    let bound = value_to_option_i64(value, vm)?;
-    Ok(bound.map_or(default, |i| normalize_sequence_index(i, len)))
-}
-
 /// The `(start, end)` range of a `str` or `bytes` search, or `None` for a
 /// `start` past `end`, where nothing is found — see [`search_range`].
 pub(crate) type SearchRange = Option<(usize, usize)>;
 
 /// The optional `start` and `end` of a `str` or `bytes` search, adjusted as
 /// CPython's `ADJUST_INDICES` does: both are converted like
-/// [`optional_sequence_bound`] and clamped at zero, and `end` at `len`.
+/// [`value_to_option_i64`], with negative bounds relative to `len` and clamped at zero.
+/// `end` is also clamped at `len`.
 ///
 /// `start` is not clamped at `len`, so a `start` past `end` stays apart from an
 /// empty range at the end. That range is `None`: CPython finds nothing there,
@@ -184,17 +177,24 @@ pub(crate) fn search_range(
     len: usize,
     vm: &mut VM<'_>,
 ) -> RunResult<SearchRange> {
-    let start = match start {
-        Some(value) => match value_to_option_i64(value, vm)?.unwrap_or(0) {
-            index if index < 0 => normalize_sequence_index(index, len),
-            index => usize::try_from(index).unwrap_or(usize::MAX),
-        },
-        None => 0,
+    search_range_with_len(start, end, |_| len, vm)
+}
+
+/// Reads a mutable sequence's length after both bound conversions, which may resize it.
+pub(crate) fn search_range_with_len<'h>(
+    start: Option<&Value>,
+    end: Option<&Value>,
+    len: impl FnOnce(&VM<'h>) -> usize,
+    vm: &mut VM<'h>,
+) -> RunResult<SearchRange> {
+    let start = start.map(|value| value_to_option_i64(value, vm)).transpose()?.flatten();
+    let end = end.map(|value| value_to_option_i64(value, vm)).transpose()?.flatten();
+    let len = len(vm);
+    let start = match start.unwrap_or(0) {
+        index if index < 0 => normalize_sequence_index(index, len),
+        index => usize::try_from(index).unwrap_or(usize::MAX),
     };
-    let end = match end {
-        Some(value) => optional_sequence_bound(value, len, len, vm)?,
-        None => len,
-    };
+    let end = end.map_or(len, |index| normalize_sequence_index(index, len));
     Ok((start <= end).then_some((start, end)))
 }
 

@@ -1391,6 +1391,26 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         child.shutdown();
     }
 
+    // Bytearray growth and copied method results must fail softly before the hard ceiling.
+    for code in [
+        "a = bytearray(16 * 1024 * 1024)\nbytes(a)",
+        "import json\na = bytearray(b' ') * (16 * 1024 * 1024)\na[0] = 49\njson.loads(a)",
+        "a = bytearray(16 * 1024 * 1024)\na.translate(None)",
+        "bytearray(b'x').ljust(16 * 1024 * 1024)",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.split(b'!')",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.partition(b'!')",
+        "a = bytearray(16 * 1024 * 1024)\na.append(0)",
+        "a = bytearray(16 * 1024 * 1024)\na.insert(0, 0)",
+        "import itertools\nbytearray(itertools.chain(itertools.repeat(0, 16 * 1024 * 1024 + 1)))",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
     for code in [
         "a = [None] * 1_000_000\na *= 2",
         "a = [None] * 1_000_000\na += range(1_000_000)",
@@ -1411,6 +1431,16 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         child.feed_complete("a = [None] * 1_000_000\nalias = a\na += [None]\nlen(alias)"),
         MontyObject::int(1_000_001),
     );
+    child.shutdown();
+
+    // A one-byte suffix must reserve the logical result, not double the eight-MiB prefix.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("padding = bytearray(7 * 1024 * 1024)\na = bytearray(8 * 1024 * 1024)\nlen(a + b'x')"),
+        MontyObject::int(8 * 1024 * 1024 + 1),
+    );
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
 

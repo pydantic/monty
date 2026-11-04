@@ -170,6 +170,10 @@ fn parse_json_input(value: &Value, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> 
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),
             HeapData::Bytes(b) => (Cow::Owned(b.as_slice().to_vec()), false),
+            HeapData::ByteArray(b) => {
+                vm.heap.tracker.check_allocation(b.as_slice().len())?;
+                (Cow::Owned(b.as_slice().to_vec()), false)
+            }
             _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
         },
         _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
