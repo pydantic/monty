@@ -582,6 +582,33 @@ fn csv_reader_load_rejects_future_reply() {
     assert_eq!(err.message().unwrap(), "file loading cannot be answered with a future");
 }
 
+#[test]
+fn inline_read_buffer_translates_newlines_and_survives_slicing() {
+    let result = run_with_open_then_io(
+        "f = open('/x.txt' + '', 'r' + '', encoding='utf-' + '8', newline=None)\n(f.read(2), f.read())",
+        "Path.read_text",
+        file_handle("/x.txt", "r"),
+        MontyObject::string("a\r\nb\r").into(),
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::tuple([MontyObject::string("a\n"), MontyObject::string("b\n")]),
+    );
+}
+
+#[test]
+fn inline_read_buffer_preserves_explicit_newlines() {
+    let result = run_with_open_then_io(
+        "f = open('/x.txt' + '', newline='\\r' + '\\n')\nf.read()",
+        "Path.read_text",
+        file_handle("/x.txt", "r"),
+        MontyObject::string("a\r\nb").into(),
+    )
+    .unwrap();
+    assert_eq!(result, MontyObject::string("a\r\nb"));
+}
+
 // ---------------------------------------------------------------------------
 // `json.load` and `json.dump` reuse the buffered-read and one-shot-write
 // effects, so a host failure must leave the file retry-safe exactly as
@@ -742,5 +769,14 @@ fn json_load_dump_taken_while_waiting_for_the_host_still_parses() {
             .into_complete()
             .expect("expected Complete");
         assert_eq!(result, MontyObject::list([MontyObject::bool(true)]));
+    }
+}
+
+#[test]
+fn invalid_utf8_byte_paths_fail_before_an_os_call() {
+    for code in [r"open(b'\xFF')", r"open((b'\xff' * 2)[:1])"] {
+        let mut runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let error = runner.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::UnicodeDecodeError);
     }
 }

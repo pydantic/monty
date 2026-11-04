@@ -135,7 +135,7 @@ class Adopts:
 
 assert Adopts.__dataclass_fields__['x'] is spec
 assert spec.name == 'x'
-assert spec.type == 'int' or spec.type is int
+assert spec.type is int
 assert Adopts().x == 3
 
 

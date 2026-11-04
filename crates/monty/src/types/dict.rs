@@ -375,12 +375,12 @@ impl Dict {
             json_key_equals_str(&entry.key, key_str, vm.heap, vm.interns)
         });
 
-        let entry = DictEntry { key, value, hash };
         if let Some(slot) = found {
-            let old_entry = self.table.replace(slot, entry);
-            old_entry.key.drop_with(vm);
-            Ok(Some(old_entry.value))
+            let old_value = mem::replace(&mut self.table.entry_mut(slot).value, value);
+            key.drop_with(vm);
+            Ok(Some(old_value))
         } else {
+            let entry = DictEntry { key, value, hash };
             if let Err(err) = self.table.check_growth(&vm.heap.tracker) {
                 entry.drop_with(vm);
                 return Err(err.into());
@@ -396,14 +396,7 @@ impl Dict {
 /// JSON object parsing only inserts string keys, but the helper remains
 /// defensive and returns `None` for any non-string value.
 fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
-    match key {
-        Value::InternString(id) => Some(interns.get_str(*id)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(string) => Some(string.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
+    key.as_str_heap(heap, interns)
 }
 
 /// Returns whether `key` is a string equal to `expected`.
@@ -411,14 +404,7 @@ fn json_key_string_slice<'a>(key: &'a Value, heap: &'a Heap, interns: &'a Intern
 /// This bypasses Python's full equality machinery because JSON object keys are
 /// always strings, so content comparison is sufficient and much cheaper.
 fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Interns) -> bool {
-    match key {
-        Value::InternString(id) => interns.get_str(*id) == expected,
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(string) => string.as_str() == expected,
-            _ => false,
-        },
-        _ => false,
-    }
+    key.as_str_heap(heap, interns) == Some(expected)
 }
 
 impl<'h> HeapRead<'h, Dict> {
@@ -575,8 +561,8 @@ impl Dict {
     /// are NOT incremented here - the caller is responsible for ensuring the refcounts
     /// were already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
-    /// If the key already exists, replaces the old value and returns it (caller now
-    /// owns the old value and is responsible for its refcount).
+    /// If the key already exists, keeps the stored key, replaces the old value and
+    /// returns it (caller now owns the old value and is responsible for its refcount).
     /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
     /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
@@ -597,8 +583,8 @@ impl<'h> HeapReadMut<'h, Dict> {
     /// are NOT incremented here - the caller is responsible for ensuring the refcounts
     /// were already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
-    /// If the key already exists, replaces the old value and returns it (caller now
-    /// owns the old value and is responsible for its refcount).
+    /// If the key already exists, keeps the stored key, replaces the old value and
+    /// returns it (caller now owns the old value and is responsible for its refcount).
     /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
     /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -662,16 +648,18 @@ impl<'h> HeapReadMut<'h, Dict> {
             }
         };
 
-        let entry = DictEntry { key, value, hash };
         if let Some(slot) = found {
-            // Key exists, replace in place to preserve insertion order
-            let old_entry = self.get_mut(vm.heap).table.replace(slot, entry);
+            // Key exists: as in CPython, keep the stored key and its position and
+            // rebind only the value, so `d = {1: 'a'}; d[True] = 'b'` gives `{1: 'b'}`
+            let entry = self.get_mut(vm.heap).table.entry_mut(slot);
+            let old_value = mem::replace(&mut entry.value, value);
 
-            // Decrement refcount for old key (we're discarding it)
-            old_entry.key.drop_with(vm);
+            // Decrement refcount for the new key (the stored key is kept)
+            key.drop_with(vm);
             // Transfer ownership of the old value to caller (no clone needed)
-            Ok(Some(old_entry.value))
+            Ok(Some(old_value))
         } else {
+            let entry = DictEntry { key, value, hash };
             if growth == GrowthCheck::Preflight
                 && let Err(err) = self.get(vm.heap).table.check_growth(&vm.heap.tracker)
             {
@@ -810,6 +798,7 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::Float(f) => eq_f64(*f, key, vm),
             Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
             Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
+            Value::InlineString(text) => eq_str(text.as_str(), key, vm),
             Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Str(s) => eq_str(s.as_str(), key, vm),
@@ -1203,7 +1192,15 @@ impl<'h> HeapRead<'h, Dict> {
             .tracker
             .check_allocation(pairs.len().saturating_mul(VALUE_SIZE + mem::size_of::<usize>()))?;
         let counts = pairs.iter().map(|(_, value)| value.clone_with_heap(vm.heap)).collect();
-        let order = counter_order(counts, vm)?;
+        // CPython's `Counter.__repr__` falls back to insertion order when the counts
+        // cannot be ordered: it catches the `TypeError` from `most_common()`.
+        let order = match counter_order(counts, vm) {
+            Ok(order) => order,
+            Err(RunError::Exc(raise)) if raise.exc.exc_type().is_subclass_of(ExcType::TypeError) => {
+                (0..pairs.len()).collect()
+            }
+            Err(err) => return Err(err),
+        };
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
@@ -1737,14 +1734,8 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
         return Ok(None);
     };
-    // `from_pairs` builds a fresh dict of exactly these pairs while the snapshot
-    // is still live, so charge both: copying a near-limit dict must raise
-    // `MemoryError` rather than jump past the allocator's hard ceiling. The
-    // growth term is exact here only because the destination starts empty.
     let left_len = left.get(vm.heap).len();
-    vm.heap.tracker.check_allocation(
-        left_len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()),
-    )?;
+    check_pairs_into_fresh_dict(left_len, vm)?;
     let pairs = left.clone_all_pairs(vm)?;
     let merged = Dict::from_pairs(pairs, vm)?;
     let mut merged_guard = DropGuard::new(merged, vm);
@@ -1845,6 +1836,17 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
 /// unknowable until the keys are compared.
 fn check_pair_snapshot(len: usize, vm: &VM<'_>) -> RunResult<()> {
     Ok(vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?)
+}
+
+/// Preflights a snapshot of `len` pairs and the fresh dict `from_pairs` builds
+/// from it while the snapshot is still live, so copying a near-limit mapping
+/// raises `MemoryError` rather than jumping past the allocator's hard ceiling.
+/// The growth term is exact only because the destination starts empty.
+pub(crate) fn check_pairs_into_fresh_dict(len: usize, vm: &VM<'_>) -> RunResult<()> {
+    Ok(vm
+        .heap
+        .tracker
+        .check_allocation(len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()))?)
 }
 
 /// Merges key-value pairs from an iterable of 2-item iterables.

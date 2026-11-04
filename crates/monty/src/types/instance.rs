@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
+use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -362,7 +362,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         let mut value_guard = DropGuard::new(value, vm);
-        let name = attribute_name_value(name, value_guard.ctx());
+        let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
         let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
@@ -407,7 +407,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids)
         } else if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
             defer_drop!(s, vm);
-            Ok(f.write_str(s.to_str(vm)?)?)
+            Ok(f.write_str(s.as_str(vm).expect("__repr__ result is validated"))?)
         } else {
             self.py_default_repr_fmt(f, vm)
         }
@@ -609,6 +609,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         Ok(write!(f, "<bound method>")?)
+    }
+
+    /// `obj.method.__annotations__` and `__annotate__` are the function's, as
+    /// CPython's method type forwards them.
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+            return Ok(None);
+        }
+        let func = self.get(vm.heap).func.clone_with_heap(vm);
+        defer_drop!(func, vm);
+        func.py_getattr(attr, vm).map(Some)
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+        }
+        let func = self.get(vm.heap).func.clone_with_heap(vm);
+        defer_drop!(func, vm);
+        func.py_value(vm).py_call_attr(vm, attr, args)
     }
 }
 
@@ -976,10 +997,7 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
 /// programmer-error tripwire.
 pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => match class.name() {
-            EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
-            EitherStr::Heap(s) => Cow::Owned(s.clone()),
-        },
+        HeapData::Class(class) => class.name().to_cow(interns),
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }
@@ -1049,5 +1067,55 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, BoundMethod> {
         let copied = deep_copy(&instance, memo, vm);
         instance.drop_with(vm);
         Ok(self.allocate_like(copied?, vm))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt;
+
+    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
+
+    use super::*;
+    use crate::{bytecode::FrameExit, heap::HeapReader, run::Executor};
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write_str(&mut self, _text: &str) -> fmt::Result {
+            Err(fmt::Error)
+        }
+    }
+
+    #[test]
+    fn user_repr_propagates_writer_errors() {
+        let mut executor = Executor::new(
+            "class Example:\n    def __repr__(self):\n        return 'result'\nExample()".to_owned(),
+            "test.py",
+            Vec::new(),
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let globals = executor.empty_globals();
+
+        HeapReader::with(&mut heap, &mut executor, |reader, executor| {
+            let vm = &mut VM::new(
+                globals,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            let FrameExit::Return(value) = vm.run_external().unwrap() else {
+                unreachable!("the program returns its instance")
+            };
+            defer_drop!(value, vm);
+            assert!(
+                value
+                    .py_repr_fmt(&mut FailingWriter, vm, &mut LazyHeapSet::default())
+                    .is_err()
+            );
+        });
     }
 }

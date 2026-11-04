@@ -39,6 +39,7 @@ use crate::{
     frozen::FrozenFunction,
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
+    prepare::SnippetNames,
 };
 
 /// Index into the string interner's storage.
@@ -575,6 +576,8 @@ pub enum StaticStrings {
     /// `typing.Annotated` marker.
     #[strum(serialize = "Annotated")]
     Annotated,
+    /// The `annotationlib` module.
+    Annotationlib,
     /// `typing.Any` marker.
     #[strum(serialize = "Any")]
     Any,
@@ -588,6 +591,8 @@ pub enum StaticStrings {
     AppendText,
     /// `deque.appendleft()` method.
     Appendleft,
+    /// `arg` parameter of `annotationlib.ForwardRef()`.
+    Arg,
     /// `BaseException.args` attribute.
     Args,
     /// `sys.argv` attribute.
@@ -990,9 +995,28 @@ pub enum StaticStrings {
     Dump,
     /// `json.dumps()` function.
     Dumps,
+    /// `__annotate__` — a function's PEP 649 annotate function, and the key a
+    /// namespace handed to `type()` may store a class's under.
+    #[strum(serialize = "__annotate__")]
+    DunderAnnotate,
+    /// `__annotate_func__` — where a compiled class body stores its `__annotate__`.
+    #[strum(serialize = "__annotate_func__")]
+    DunderAnnotateFunc,
+    /// `__annotations__` — a class's stored annotations dict.
+    #[strum(serialize = "__annotations__")]
+    DunderAnnotations,
+    /// `__annotations_cache__` — a class's evaluated annotations, cached on first access.
+    #[strum(serialize = "__annotations_cache__")]
+    DunderAnnotationsCache,
     /// `__args__` of a `types.GenericAlias`.
     #[strum(serialize = "__args__")]
     DunderArgs,
+    /// `__cause__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__cause__")]
+    DunderCause,
+    /// `__context__` of an exception: the one being handled when it was raised.
+    #[strum(serialize = "__context__")]
+    DunderContext,
     /// `__delattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__delattr__")]
     DunderDelattr,
@@ -1003,6 +1027,18 @@ pub enum StaticStrings {
     /// `__eq__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__eq__")]
     DunderEq,
+    /// `__forward_arg__` — the source text of an `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_arg__")]
+    DunderForwardArg,
+    /// `__forward_is_argument__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_is_argument__")]
+    DunderForwardIsArgument,
+    /// `__forward_is_class__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_is_class__")]
+    DunderForwardIsClass,
+    /// `__forward_module__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__forward_module__")]
+    DunderForwardModule,
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
@@ -1018,6 +1054,9 @@ pub enum StaticStrings {
     /// `__main__`, the `__name__` of the module being run.
     #[strum(serialize = "__main__")]
     DunderMain,
+    /// `__metadata__` of `typing.Annotated[T, *metadata]`.
+    #[strum(serialize = "__metadata__")]
+    DunderMetadata,
     /// `defaultdict.__missing__` method.
     #[strum(serialize = "__missing__")]
     DunderMissing,
@@ -1030,6 +1069,9 @@ pub enum StaticStrings {
     /// `__origin__` of a `types.GenericAlias`.
     #[strum(serialize = "__origin__")]
     DunderOrigin,
+    /// `__owner__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__owner__")]
+    DunderOwner,
     /// `__parameters__` of a `types.GenericAlias`.
     #[strum(serialize = "__parameters__")]
     DunderParameters,
@@ -1039,9 +1081,15 @@ pub enum StaticStrings {
     /// `__repr__` — written into a class namespace by `@dataclass`.
     #[strum(serialize = "__repr__")]
     DunderRepr,
+    /// `__resolved_str__` attribute of `annotationlib.ForwardRef`.
+    #[strum(serialize = "__resolved_str__")]
+    DunderResolvedStr,
     /// `__setattr__` — the frozen-dataclass hook `@dataclass` generates.
     #[strum(serialize = "__setattr__")]
     DunderSetattr,
+    /// `__suppress_context__` of an exception, set by `raise ... from`.
+    #[strum(serialize = "__suppress_context__")]
+    DunderSuppressContext,
     /// `decimal.__version__` attribute.
     #[strum(serialize = "__version__")]
     DunderVersion,
@@ -1101,6 +1149,10 @@ pub enum StaticStrings {
     Escape,
     /// `escapechar` dialect attribute and `csv` format parameter.
     Escapechar,
+    /// `eval_str` parameter of `annotationlib.get_annotations()`.
+    EvalStr,
+    /// `ForwardRef.evaluate()` method.
+    Evaluate,
     /// `csv.excel` dialect.
     Excel,
     /// `csv.excel_tab` dialect.
@@ -1171,6 +1223,8 @@ pub enum StaticStrings {
     Filename,
     /// `zip_longest(fillvalue=...)` keyword.
     Fillvalue,
+    /// `fnmatch.filter()` function.
+    Filter,
     /// `itertools.filterfalse()` function.
     Filterfalse,
     /// Value of `sys.version_info.releaselevel`.
@@ -1201,6 +1255,10 @@ pub enum StaticStrings {
     Fma,
     /// `math.fmod()` function.
     Fmod,
+    /// Module name for `import fnmatch`, and its `fnmatch()` function.
+    Fnmatch,
+    /// `fnmatch.fnmatchcase()` function.
+    Fnmatchcase,
     /// `datetime` / `time` `fold` attribute and constructor kwarg.
     Fold,
     /// `foldspaces` parameter of `base64.a85encode()` / `a85decode()`.
@@ -1212,6 +1270,15 @@ pub enum StaticStrings {
     Followlinks,
     /// Kwarg name `format` — `date.strftime(format=...)`, `datetime.strftime(format=...)`.
     Format,
+    /// The `annotationlib.Format` class.
+    #[strum(serialize = "Format")]
+    FormatClass,
+    /// `annotationlib.ForwardRef`, also exported by `typing`.
+    #[strum(serialize = "ForwardRef")]
+    ForwardRef,
+    /// `annotationlib.Format.FORWARDREF` member.
+    #[strum(serialize = "FORWARDREF")]
+    Forwardref,
     /// `fp` parameter of `json.load()` / `json.dump()`.
     Fp,
     /// `math.frexp()` function.
@@ -1229,6 +1296,8 @@ pub enum StaticStrings {
     Fromkeys,
     /// `date.fromordinal()` / `datetime.fromordinal()` classmethod.
     Fromordinal,
+    /// `date.fromtimestamp()` / `datetime.fromtimestamp()` classmethod.
+    Fromtimestamp,
     /// `@dataclass(frozen=...)`.
     Frozen,
     /// `dataclasses.FrozenInstanceError` exception.
@@ -1268,8 +1337,12 @@ pub enum StaticStrings {
     Generic,
     /// `dict.get()` method.
     Get,
+    /// `annotationlib.get_annotations()` function.
+    GetAnnotations,
     /// `csv.get_dialect()` function.
     GetDialect,
+    /// `typing.get_type_hints()` function.
+    GetTypeHints,
     /// `os.path.getatime()` function.
     Getatime,
     /// `decimal.getcontext()` function.
@@ -1292,6 +1365,8 @@ pub enum StaticStrings {
     Getstate,
     /// `Path.glob()` method — yields a host scan.
     Glob,
+    /// `globalns` parameter of `typing.get_type_hints()`.
+    Globalns,
     /// `globals` parameter of eval/exec.
     Globals,
     /// `time.gmtime()` function.
@@ -1364,6 +1439,8 @@ pub enum StaticStrings {
     Ignorechars,
     /// `complex.imag` attribute.
     Imag,
+    /// `include_extras` parameter of `typing.get_type_hints()`.
+    IncludeExtras,
     /// `binascii.Incomplete` exception class.
     #[strum(serialize = "Incomplete")]
     IncompleteClass,
@@ -1405,6 +1482,10 @@ pub enum StaticStrings {
     InvalidOperation,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
+    /// `is_argument` parameter of `annotationlib.ForwardRef()`.
+    IsArgument,
+    /// `is_class` parameter of `annotationlib.ForwardRef()`.
+    IsClass,
     /// `dataclasses.is_dataclass()` function.
     IsDataclass,
     /// `Path.is_dir()` method — yields a host call.
@@ -1569,6 +1650,8 @@ pub enum StaticStrings {
     Loads,
     /// `decimal.localcontext()` function.
     Localcontext,
+    /// `localns` parameter of `typing.get_type_hints()`.
+    Localns,
     /// `locals` parameter of eval/exec.
     Locals,
     /// `time.localtime()` function.
@@ -1739,6 +1822,8 @@ pub enum StaticStrings {
     Name,
     /// The `collections.namedtuple` factory function.
     Namedtuple,
+    /// `names` parameter of `fnmatch.filter()`.
+    Names,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
     /// `typing.Never` marker.
@@ -1832,6 +1917,8 @@ pub enum StaticStrings {
     Overflow,
     /// Kwarg name `override` — `Decimal.__format__()`.
     Override,
+    /// `owner` parameter of `annotationlib.ForwardRef()` and `ForwardRef.evaluate()`.
+    Owner,
     /// `pad` parameter of `base64.b85encode()`.
     #[strum(serialize = "pad")]
     Pad,
@@ -1858,6 +1945,8 @@ pub enum StaticStrings {
     Partition,
     /// `Path.parts` property.
     Parts,
+    /// `pat` parameter of the `fnmatch` functions.
+    Pat,
     /// `password` parameter of `hashlib.pbkdf2_hmac()`.
     Password,
     /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
@@ -2288,6 +2377,9 @@ pub enum StaticStrings {
     /// `match.string`
     #[strum(serialize = "string")]
     StringAttr,
+    /// `annotationlib.Format.STRING` member.
+    #[strum(serialize = "STRING")]
+    StringFormat,
     /// `strip()` method, shared by `str` and `bytes`.
     Strip,
     /// `datetime.strptime()` classmethod.
@@ -2412,6 +2504,8 @@ pub enum StaticStrings {
     Total,
     /// `timedelta.total_seconds()` method.
     TotalSeconds,
+    /// `fnmatch.translate()` function.
+    Translate,
     /// Kwarg name `traps` — `decimal.Context()`.
     Traps,
     /// `random.triangular()` function.
@@ -2430,6 +2524,8 @@ pub enum StaticStrings {
     /// `typing.TYPE_CHECKING` constant.
     #[strum(serialize = "TYPE_CHECKING")]
     TypeChecking,
+    /// `type_params` parameter of `ForwardRef.evaluate()`.
+    TypeParams,
     /// `typing.TypeVar` marker.
     #[strum(serialize = "TypeVar")]
     TypeVar,
@@ -2515,6 +2611,12 @@ pub enum StaticStrings {
     Validate,
     /// Kwarg name `value` — `decimal.Decimal()`.
     Value,
+    /// `annotationlib.Format.VALUE` member.
+    #[strum(serialize = "VALUE")]
+    ValueFormat,
+    /// `annotationlib.Format.VALUE_WITH_FAKE_GLOBALS` member.
+    #[strum(serialize = "VALUE_WITH_FAKE_GLOBALS")]
+    ValueWithFakeGlobals,
     /// `dict.values()` method.
     Values,
     /// `sys.flags.verbose` field.
@@ -2584,6 +2686,8 @@ pub enum StaticStrings {
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
+    // Immutable text needs only one ASCII scan, including after snapshot loading.
+    ascii: bool,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2611,6 +2715,7 @@ impl InternedString {
     fn static_string(value: StaticStrings) -> Self {
         Self {
             static_tag: Some(value),
+            ascii: <&str>::from(value).is_ascii(),
             text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
@@ -2619,6 +2724,7 @@ impl InternedString {
     fn owned(value: String) -> Self {
         Self {
             static_tag: None,
+            ascii: value.is_ascii(),
             text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
         }
     }
@@ -2800,6 +2906,9 @@ pub(crate) struct Interns {
     /// Installed internal implementations by identity, ordered for stable dump bytes.
     frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
+    /// Sources of imported `.py` files, with the virtual paths tracebacks name.
+    #[serde(default)]
+    file_sources: Entries<FileSource>,
     #[serde(skip)]
     string_id_by_name: RefCell<AHashMap<String, StringId>>,
     #[serde(skip)]
@@ -2807,6 +2916,9 @@ pub(crate) struct Interns {
     /// Prevents runtime insertion or a second compiler from consuming provisional IDs.
     #[serde(skip)]
     compiling: Cell<bool>,
+    /// Committed `typing.get_type_hints()` snippets by mode and annotation text.
+    #[serde(skip)]
+    hint_snippets: RefCell<AHashMap<(SnippetNames, Arc<str>), FunctionId>>,
 }
 
 impl Default for Interns {
@@ -2825,6 +2937,8 @@ struct InternsWire {
     #[serde(default)]
     frozen_functions: RefCell<BTreeMap<FrozenFunction, FunctionId>>,
     eval_sources: Entries<Arc<str>>,
+    #[serde(default)]
+    file_sources: Entries<FileSource>,
 }
 
 impl TryFrom<InternsWire> for Interns {
@@ -2853,9 +2967,11 @@ impl TryFrom<InternsWire> for Interns {
             functions: wire.functions,
             frozen_functions: wire.frozen_functions,
             eval_sources: wire.eval_sources,
+            file_sources: wire.file_sources,
             string_id_by_name: RefCell::new(string_id_by_name),
             static_string_ids: RefCell::new(static_string_ids),
             compiling: Cell::new(false),
+            hint_snippets: RefCell::default(),
         })
     }
 }
@@ -2863,6 +2979,16 @@ impl TryFrom<InternsWire> for Interns {
 /// Filename-only IDs are separate from canonical Python strings.
 /// Each snippet has distinct source identity but the same displayed filename.
 const SOURCE_ID_BASE: usize = 1 << 31;
+
+/// Imported files take the IDs above the snippet range, so each displays its own path.
+const FILE_SOURCE_ID_BASE: usize = 3 << 30;
+
+/// An imported module file: its virtual path and text, for tracebacks.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FileSource {
+    path: Arc<str>,
+    source: Arc<str>,
+}
 
 impl Interns {
     /// Moves session ownership without initializing another interner.
@@ -2879,9 +3005,11 @@ impl Interns {
             functions: Entries::default(),
             frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
+            file_sources: Entries::default(),
             string_id_by_name: RefCell::default(),
             static_string_ids: RefCell::default(),
             compiling: Cell::new(false),
+            hint_snippets: RefCell::default(),
         }
     }
 
@@ -2895,9 +3023,11 @@ impl Interns {
             functions: Entries::default(),
             frozen_functions: RefCell::default(),
             eval_sources: Entries::default(),
+            file_sources: Entries::default(),
             string_id_by_name: RefCell::new(AHashMap::with_capacity(capacity)),
             static_string_ids: RefCell::new(AHashMap::with_capacity(CORE_STATIC_STRINGS.len())),
             compiling: Cell::new(false),
+            hint_snippets: RefCell::default(),
         };
         for entry in CORE_ENTRIES.iter() {
             let value = entry.static_value().expect("core entries are static");
@@ -2920,9 +3050,11 @@ impl Interns {
         get_str(&self.strings, id)
     }
 
-    /// Resolves a traceback filename, displaying each snippet's source identity as `<string>`.
+    /// Resolves a traceback filename: a snippet displays as `<string>`, an imported file as its path.
     pub(crate) fn get_filename(&self, id: StringId) -> &str {
-        if id.index() >= SOURCE_ID_BASE {
+        if id.index() >= FILE_SOURCE_ID_BASE {
+            &self.file_sources[id.index() - FILE_SOURCE_ID_BASE].path
+        } else if id.index() >= SOURCE_ID_BASE {
             assert!(
                 id.index() - SOURCE_ID_BASE < self.eval_sources.len(),
                 "invalid snippet source ID"
@@ -2956,13 +3088,29 @@ impl Interns {
         &self.functions[id.index()]
     }
 
-    /// Looks up source by its filename-only ID, never by the displayed text.
+    /// Looks up snippet source by its filename-only ID, never by the displayed text.
     pub(crate) fn eval_source(&self, filename: StringId) -> Option<&str> {
-        filename
-            .index()
-            .checked_sub(SOURCE_ID_BASE)
+        let index = filename.index();
+        (index < FILE_SOURCE_ID_BASE)
+            .then(|| index.checked_sub(SOURCE_ID_BASE))
+            .flatten()
             .and_then(|index| self.eval_sources.get(index))
             .map(AsRef::as_ref)
+    }
+
+    /// Looks up an imported file's source by its filename-only ID.
+    pub(crate) fn file_source(&self, filename: StringId) -> Option<&str> {
+        filename
+            .index()
+            .checked_sub(FILE_SOURCE_ID_BASE)
+            .and_then(|index| self.file_sources.get(index))
+            .map(|file| &*file.source)
+    }
+
+    /// Returns ASCII status without rescanning immutable literal text.
+    #[inline]
+    pub fn str_is_ascii(&self, id: StringId) -> bool {
+        id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
     }
 
     /// Returns the same hash as an equal heap string.
@@ -2995,6 +3143,16 @@ impl Interns {
     /// Records an admitted implementation after its compilation overlay is committed.
     pub(crate) fn set_frozen_function(&self, function: FrozenFunction, id: FunctionId) {
         self.frozen_functions.borrow_mut().insert(function, id);
+    }
+
+    /// The committed snippet that evaluates annotation `text` in mode `names`, if compiled before.
+    pub(crate) fn hint_snippet(&self, names: SnippetNames, text: &Arc<str>) -> Option<FunctionId> {
+        self.hint_snippets.borrow().get(&(names, Arc::clone(text))).copied()
+    }
+
+    /// Records a committed annotation snippet for [`Self::hint_snippet`].
+    pub(crate) fn set_hint_snippet(&self, names: SnippetNames, text: Arc<str>, id: FunctionId) {
+        self.hint_snippets.borrow_mut().insert((names, text), id);
     }
 
     /// Identifies implementation frames hidden from tracebacks and namespace introspection.

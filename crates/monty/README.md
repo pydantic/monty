@@ -122,11 +122,20 @@ Successful decoding is not evidence of authenticity or validity.
 
 Async host functions are supported too: `FunctionCall::resume_pending` continues execution with a pending future the sandboxed code can `await`; when all tasks are blocked, execution yields `RunProgress::ResolveFutures` for the host to supply results. When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the result can pass it to `FunctionCall::resume_eager` and skip the `ResolveFutures` round trip. `OsCall::allow_eager_await` says the same of an `asyncio.sleep` the host has already waited out.
 
-Imports of unknown modules suspend with `OsFunctionCall::Import` and the top-level module name.
-The host's answer becomes the module; dotted imports read subsequent components as attributes of that value.
+Imports of unknown modules suspend with `OsFunctionCall::Import`, whose `ImportArgs` carry the dotted module name and
+its search path: the working directory for a top-level name, or a file package's `__path__` for its submodules.
+A returned value becomes the module; dotted imports read subsequent components as attributes of that value.
 Hosts usually return a host-backed class instance containing the module's attributes.
-`ExtFunctionResult::NotFound`, or running without a host, raises `ModuleNotFoundError`.
+A host with no such module can answer `ExtFunctionResult::ModuleFile` with the module's `.py` file instead:
+`ImportArgs::candidates` lists `<dir>/name/__init__.py`, then `<dir>/name.py`, for each search directory,
+`find_module_file` reads them in turn with a function the host supplies (a missing file moves on, any other read error
+is the answer), and `MountTable::read_module` reads one through the mounts.
+The sandbox runs the file as the module and caches it for the session.
+`ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers), or running without a host, raises
+`ModuleNotFoundError`; an exception the host raises for the import is raised as it is.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+`typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
+answer is the call's result, and running without a host gives `{}`.
 
 ## Other pieces
 

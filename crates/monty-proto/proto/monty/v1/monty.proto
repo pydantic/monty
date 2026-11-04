@@ -394,6 +394,12 @@ message StackFrame {
 // Configuration
 // ============================================================================
 
+// One clock for VM budgets and subprocess supervision. Wall time is the default.
+enum ExecutionClock {
+  WALL = 0;
+  CPU = 1;
+}
+
 // Sandbox resource limits. Absent fields are unlimited except recursion depth
 // and `max_suspensions`, which both default to 1000. The parent enforces
 // `max_suspensions`; the child only retains it for dumps and echoes it on
@@ -526,7 +532,18 @@ message ExtFunctionResult {
     // calls, RuntimeError for the rest). Only valid answering an `OsCall`
     // suspension; the child computes it from its retained call payload.
     Unit not_handled = 5;
+    // The module's `.py` file, answering an `import` call with a non-empty
+    // `search_path`; the child runs it as the module.
+    ModuleFile module_file = 6;
   }
+}
+
+// A module's file found on an `import` call's search path.
+message ModuleFile {
+  // The virtual path it was read from.
+  string path = 1;
+  // The file's text.
+  string source = 2;
 }
 
 message FutureResult {
@@ -629,6 +646,9 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
+  // Local VM and supervisor clock; absent defaults to wall time in the child.
+  // WebSocket clients leave this absent. The server selects the worker's clock.
+  optional ExecutionClock execution_clock = 14;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -825,6 +845,14 @@ message ChildEvent {
   // reply's kind. Unset for ephemeral sessions or for remotes that don't
   // support persistence.
   optional bytes session_id = 28;
+
+  // On Error or TypingError, whether the feed still awaits a host answer.
+  // Absent for older workers or errors generated outside the session state
+  // machine. Parents must preserve an outstanding suspension when unknown.
+  optional bool feed_suspended = 29;
+
+  // Configure acknowledgment. Local CPU-mode parents require this before execution.
+  optional ExecutionClock execution_clock = 30;
 }
 
 enum PrintStream {
@@ -941,6 +969,9 @@ message OsCall {
     ImportStubs import_stubs = 32;
     // Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
     Scan scan = 33;
+    // typing.get_type_hints() of a host function or class. Answer with a dict
+    // of hints, which the call returns as is; `not_handled` means `{}`.
+    GetTypeHints get_type_hints = 34;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -1030,14 +1061,27 @@ message OsCall {
     bool recurse_symlinks = 6;
   }
 
-  // The argument of `OsCall.import`.
+  // The arguments of `OsCall.import`.
   message Import {
+    // The dotted module name.
     string module = 1;
+    // Absolute virtual directories to search, in order, for the module's `.py` file.
+    repeated string search_path = 2;
   }
 
   // The argument of `OsCall.import_stubs`, in source order.
   message ImportStubs {
     repeated string modules = 1;
+  }
+
+  // The host object `OsCall.get_type_hints` asks about.
+  message GetTypeHints {
+    oneof target {
+      // A host function, by the name the sandbox calls it with.
+      string function = 1;
+      // A host class, by the id of the `ClassType` it crossed as.
+      Uuid class_id = 2;
+    }
   }
 }
 

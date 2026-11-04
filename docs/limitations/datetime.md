@@ -50,13 +50,17 @@ Constructor: `date(year, month, day)`.
 Attributes: `year`, `month`, `day`.
 Methods: `isoformat`, `strftime`, `replace`, `weekday`, `isoweekday`, `toordinal`.
 
-Class methods supported: `today()`, `fromisoformat()`, `fromordinal()`.
-`fromisocalendar()` and `fromtimestamp()` are not
-implemented. `strptime()`, added in CPython 3.14, is not implemented
+Class methods supported: `today()`, `fromisoformat()`, `fromordinal()`, `fromtimestamp()`.
+`fromisocalendar()` is not implemented. `strptime()`, added in CPython 3.14, is not implemented
 either.
 
 `today()` reads the clock, so it depends on the embedder granting one —
 see "Reading the clock" below.
+`fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
+Its errors differ as `datetime.fromtimestamp()`'s do (below).
+`today()`, `fromisoformat()` and `fromordinal()` can only be called on the class: `date(2020, 1, 1).today()` raises `AttributeError`.
+`fromtimestamp()` also works on an instance.
+No class method can be read without calling it (see [builtins.md](builtins.md)).
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
 through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
@@ -91,7 +95,7 @@ and with the offset from before a DST gap: CPython's `fold=0` reading, since `fo
 `fold` is not readable: `datetime(2020, 1, 1, fold=1).fold` raises
 `AttributeError`, where CPython returns `1`.
 
-Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
+Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `strptime(date_string, format)`,
 `fromisoformat(date_string)`, `fromordinal(ordinal)`, `combine(date, time, tzinfo=self.tzinfo)`.
 
 - `now()` reads the clock — see "Reading the clock" below.
@@ -111,7 +115,17 @@ Class methods supported: `now(tz=None)`, `strptime(date_string, format)`,
     where CPython distinguishes trailing input with `ValueError: unconverted data remains: ...`.
 - `utcnow()` (the deprecated class method) and `today()` are not
     implemented.
-- `fromtimestamp()` and `utcfromtimestamp()` are not implemented.
+- `now()`, `strptime()`, `fromisoformat()`, `fromordinal()` and `combine()` can only be called on the class:
+    `datetime(2020, 1, 1).now()` raises `AttributeError`. `fromtimestamp()` also works on an instance.
+    No class method can be read without calling it (see [builtins.md](builtins.md)).
+- A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
+    Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython on Linux and macOS,
+    except where the platform's `gmtime()` / `localtime()` fails and CPython raises `OSError`:
+    - A year whose `year - 1900` does not fit a C `int` (`fromtimestamp(1e18)`) raises
+        `OverflowError: timestamp out of range for platform time_t`.
+    - On Windows, where those functions reject negative timestamps and years after 3000, Monty raises the
+        year-range `ValueError` for a year outside 1 to 9999 and returns a result for any other.
+- `utcfromtimestamp()` (deprecated in CPython) is not implemented.
 - `time()` and `timetz()` return a `time` whose `fold` is always 0, since
     `datetime` does not store the flag (above). `combine()` likewise
     discards the `fold` of the `time` it is given, where CPython carries it

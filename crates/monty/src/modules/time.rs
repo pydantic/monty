@@ -28,7 +28,7 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         Module, NamedTuple, PyTrait, date, datetime as datetime_type,
-        datetime::{sandbox_instant, sandbox_local_wall_clock},
+        datetime::{TimestampRounding, sandbox_instant, sandbox_local_wall_clock},
         str::allocate_string,
         timezone::tzname_string,
         tuple::allocate_tuple,
@@ -298,7 +298,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         .get_one_arg("time.sleep", vm.heap)?;
     let result = sleep_seconds(&seconds, vm).and_then(|secs| {
         sleep_duration(secs).map_err(|err| match err {
-            SleepError::NotANumber => ExcType::value_error("Invalid value NaN (not a number)"),
+            SleepError::NotANumber => ExcType::invalid_nan(),
             SleepError::Negative => ExcType::value_error("sleep length must be non-negative"),
             SleepError::TooLarge => ExcType::sleep_too_long(),
         })
@@ -477,7 +477,7 @@ fn suspend_or_apply(vm: &mut VM<'_>, caller: TimeCaller, reading: ClockReading) 
 /// The `str` at position `position` of a `time` function's arguments,
 /// with `_PyArg_BadArgument`'s positional wording.
 fn string_arg(value: &Value, name: &str, position: usize, vm: &VM<'_>) -> RunResult<String> {
-    match value.to_str(vm) {
+    match value.try_to_str(vm) {
         Ok(text) => Ok(text.to_owned()),
         Err(_) => Err(ExcType::type_error(format!(
             "{name}() argument {position} must be str, not {}",
@@ -776,7 +776,7 @@ fn time_tuple_parts(value: &Value, name: &str, vm: &VM<'_>) -> RunResult<([i64; 
         Some([Value::Int(offset_seconds), name]) => {
             i32::try_from(*offset_seconds).ok().map(|offset_seconds| MontyTimeZone {
                 offset_seconds,
-                name: name.to_str(vm).ok().map(str::to_owned),
+                name: name.as_str(vm).map(str::to_owned),
             })
         }
         _ => None,
@@ -831,42 +831,21 @@ fn tuple_zone(year: i32, isdst: i64, vm: &VM<'_>) -> Option<MontyTimeZone> {
 fn optional_instant(seconds: &Value, vm: &mut VM<'_>) -> RunResult<Option<NaiveDateTime>> {
     match seconds {
         Value::None => sandbox_instant(vm),
-        value => {
-            let seconds = clock_seconds(value, vm)?;
-            instant_from_seconds(seconds).map(Some)
-        }
-    }
-}
-
-/// The `secs` argument of `gmtime`/`localtime`/`ctime` as float seconds.
-///
-/// Like [`sleep_seconds`] a float passes through and anything else goes through
-/// `__index__`, but CPython's `_PyTime_ObjectToTime_t` reports a rejection as a
-/// plain non-integer rather than naming floats as acceptable.
-fn clock_seconds(value: &Value, vm: &mut VM<'_>) -> RunResult<f64> {
-    match value {
-        Value::Float(f) => Ok(*f),
-        _ => match value.py_index_impl(vm)? {
-            Some(index) => {
-                let seconds = index_seconds(&index, vm);
-                index.drop_with(vm);
-                Ok(seconds)
-            }
-            None => Err(ExcType::type_error(format!(
-                "'{}' object cannot be interpreted as an integer",
-                value.py_type_name(vm)
-            ))),
+        // CPython's `_PyTime_ObjectToTime_t` floors to whole seconds, as for
+        // `date.fromtimestamp()`, but words a rejection as a plain non-integer.
+        value => match datetime_type::timestamp_parts(value, TimestampRounding::Floor, vm)? {
+            Some((whole, _)) => instant_in_range(whole, 0).map(Some),
+            None => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
         },
     }
 }
 
-/// Epoch seconds as an instant. The whole seconds floor, as CPython's
-/// `_PyTime_ObjectToTime_t` does for `gmtime(-1.9)`, and the fraction is kept
-/// so the `_ns` clocks see it; the broken-down fields never read it.
+/// The host's `time.time` answer as an instant. The whole seconds floor and the
+/// fraction is kept to the nanosecond so the `_ns` clocks see it.
 fn instant_from_seconds(seconds: f64) -> RunResult<NaiveDateTime> {
     let floored = seconds.floor();
     if floored.is_nan() {
-        return Err(ExcType::value_error("Invalid value NaN (not a number)"));
+        return Err(ExcType::invalid_nan());
     }
     // `as` saturates, which would silently clamp rather than raise.
     if !(-9.3e18..=9.3e18).contains(&floored) {
@@ -883,6 +862,12 @@ fn instant_from_seconds(seconds: f64) -> RunResult<NaiveDateTime> {
         reason = "a fraction in 0..1, scaled"
     )]
     let nanos = (((seconds - floored) * 1e9).round() as u32).min(999_999_999);
+    instant_in_range(whole, nanos)
+}
+
+/// Epoch seconds as an instant, raising the `time_t` overflow outside years
+/// 1..=9999, which a `struct_time` here cannot leave.
+fn instant_in_range(whole: i64, nanos: u32) -> RunResult<NaiveDateTime> {
     DateTime::from_timestamp(whole, nanos)
         .map(|utc| utc.naive_utc())
         .filter(|utc| local_wall_clock(*utc, 0).is_some())

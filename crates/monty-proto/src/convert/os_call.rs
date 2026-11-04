@@ -6,18 +6,18 @@
 use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
-    GetenvArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath, MontyTimeZone,
-    OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange,
-    UrandomArgs, sleep_duration, unstable,
+    GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath,
+    MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
     convert::{ProtoConvertError, root_object},
     pb::{
         self, TimeZone, Unit,
-        os_call::{self, Call},
+        os_call::{self, Call, get_type_hints},
     },
-    wire::WireArena,
+    wire::{WireArena, uuid_to_pb},
 };
 
 /// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint,
@@ -116,9 +116,18 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::AsyncSystemSleep(delay) => Call::AsyncSystemSleep(os_call::AsyncSleep {
             delay: delay.as_secs_f64(),
         }),
-        OsFunctionCall::Import(module) => Call::Import(os_call::Import { module }),
+        OsFunctionCall::Import(a) => Call::Import(os_call::Import {
+            module: a.module,
+            search_path: a.search_path.into(),
+        }),
         OsFunctionCall::ImportStubs(modules) => Call::ImportStubs(os_call::ImportStubs {
             modules: modules.into(),
+        }),
+        OsFunctionCall::GetTypeHints(target) => Call::GetTypeHints(os_call::GetTypeHints {
+            target: Some(match target {
+                TypeHintsTarget::Function(name) => get_type_hints::Target::Function(name),
+                TypeHintsTarget::Class(id) => get_type_hints::Target::ClassId(uuid_to_pb(&id)),
+            }),
         }),
         OsFunctionCall::Scan(a) => Call::Scan(os_call::Scan {
             path: a.path.into_string(),
@@ -191,7 +200,10 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             os_call::Call::AsyncSystemSleep(s) => {
                 Self::AsyncSystemSleep(field_sleep_duration(s.delay, "AsyncSleep.delay")?)
             }
-            os_call::Call::Import(i) => Self::Import(i.module),
+            os_call::Call::Import(i) => Self::Import(ImportArgs {
+                module: i.module,
+                search_path: i.search_path.into_iter().collect(),
+            }),
             os_call::Call::ImportStubs(i) => {
                 // the worker asks about each module once; a repeat would multiply the host's factory work
                 let modules: Vec<String> = i.modules.into_iter().collect();
@@ -204,6 +216,22 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 }
                 Self::ImportStubs(modules)
             }
+            os_call::Call::GetTypeHints(hints) => Self::GetTypeHints(
+                match hints
+                    .target
+                    .ok_or(ProtoConvertError::MissingField("GetTypeHints.target"))?
+                {
+                    get_type_hints::Target::Function(name) => TypeHintsTarget::Function(name),
+                    get_type_hints::Target::ClassId(id) => {
+                        TypeHintsTarget::Class(MontyUuid::try_from_slice(&id.data).ok_or_else(|| {
+                            ProtoConvertError::InvalidValue {
+                                field: "GetTypeHints.class_id",
+                                reason: format!("uuid must be 16 bytes, got {}", id.data.len()),
+                            }
+                        })?)
+                    }
+                },
+            ),
             // An empty pattern reads as a plain listing. The interpreter sends `listing(Some(0))`
             // for a fully literal glob, and `glob` with no parts derives `max_depth: Some(0)` too,
             // so either way the host lists the root alone.

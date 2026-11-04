@@ -88,7 +88,12 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
     } else {
-        Value::Builtin(Builtins::Type(value.py_type(vm)))
+        Value::Builtin(Builtins::Type(
+            value
+                .py_type(vm)
+                .try_into()
+                .expect("instances return their class object"),
+        ))
     }
 }
 

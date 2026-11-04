@@ -29,7 +29,7 @@ use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
     CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
     NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
-    SleepMode, TypeCheckingConfig, memory_limit_with_headroom, validate_cwd,
+    SleepMode, TypeCheckingConfig, find_module_file, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -687,19 +687,28 @@ impl HostOs {
     }
 
     /// Waits for system sleeps, enforcing `--max-sleep` again in case the sandbox did not.
-    /// Other calls go to the mounts, transferring write payloads without copying.
+    /// Imports search the mounts for the module's file; other calls go to the
+    /// mounts, transferring write payloads without copying.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
         if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
             thread::sleep(delay.min(self.max_sleep));
             return MontyObject::none().into();
         }
+        // The CLI has no host modules: an import is a file on the mounts or nothing.
+        if let OsFunctionCall::Import(args) = &call {
+            return self
+                .mounts
+                .as_mut()
+                .and_then(|mounts| find_module_file(args, |path| mounts.read_module(path)))
+                .unwrap_or_else(|| call.no_handler_result());
+        }
         match self.mounts.as_mut() {
             Some(mounts) => match mounts.handle_os_call(call) {
                 MountCallOutcome::Handled(Ok(obj)) => obj.into(),
                 MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
-                MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
+                MountCallOutcome::NotHandled(call) => call.no_handler_result(),
             },
-            None => call.on_no_handler().into(),
+            None => call.no_handler_result(),
         }
     }
 }

@@ -148,6 +148,8 @@ struct EncoderKwargs {
     allow_nan: Value,
     separators: Value,
     skipkeys: Value,
+    /// The `default` callable, or `None`; it is called, never validated, as in CPython.
+    default_fn: Value,
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
@@ -158,6 +160,7 @@ impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
         self.allow_nan.drop_with(ctx);
         self.separators.drop_with(ctx);
         self.skipkeys.drop_with(ctx);
+        self.default_fn.drop_with(ctx);
     }
 }
 
@@ -165,10 +168,10 @@ impl<C: ContainsHeap> DropWithContext<C> for EncoderKwargs {
 ///
 /// Only the first argument may be positional. Supported keyword arguments mirror
 /// the high-value subset of CPython's encoder configuration: `indent`,
-/// `sort_keys`, `ensure_ascii`, `allow_nan`, `separators`, and `skipkeys`.
+/// `sort_keys`, `ensure_ascii`, `allow_nan`, `separators`, `skipkeys` and `default`.
 ///
-/// CPython kwargs `cls`, `default`, and `check_circular` are intentionally
-/// unsupported and will raise `TypeError` if passed.
+/// CPython kwargs `cls` and `check_circular` are intentionally unsupported and
+/// will raise `TypeError` if passed.
 pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let JsonDumpsArgs {
         obj,
@@ -178,6 +181,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         allow_nan,
         separators,
         skipkeys,
+        default_fn,
     } = JsonDumpsArgs::from_args(args, vm)?;
     // `obj` outlives kwarg processing: an early error below must not leak it.
     defer_drop!(obj, vm);
@@ -188,10 +192,11 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         allow_nan,
         separators,
         skipkeys,
+        default_fn,
     };
     defer_drop!(kwargs, vm);
     let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, false, vm), vm)?;
-    let output = encode(obj, &config, vm)?;
+    let output = encode(obj, &config, &kwargs.default_fn, vm)?;
     Ok(allocate_string(output, vm.heap))
 }
 
@@ -214,6 +219,7 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         allow_nan,
         separators,
         skipkeys,
+        default_fn,
     } = JsonDumpArgs::from_args(args, vm)?;
     defer_drop!(obj, vm);
     defer_drop!(fp, vm);
@@ -224,6 +230,7 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
         allow_nan,
         separators,
         skipkeys,
+        default_fn,
     };
     defer_drop!(kwargs, vm);
     let config = JsonDumpsConfig::from_kwargs(kwargs, EncoderChecks::for_call(obj, true, vm), vm)?;
@@ -235,7 +242,7 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     };
     // Released if encoding fails, otherwise taken back to write to.
     let mut early_target = DropGuard::new(early_target, vm);
-    let output = encode(obj, &config, early_target.ctx())?;
+    let output = encode(obj, &config, &kwargs.default_fn, early_target.ctx())?;
     let (early_target, vm) = early_target.into_parts();
     let target = match early_target {
         Some(target) => target,
@@ -244,13 +251,15 @@ pub(super) fn call_dump(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     target.write(output, vm)
 }
 
-/// Serializes `obj` to JSON text under `config`.
-fn encode(obj: &Value, config: &JsonDumpsConfig, vm: &mut VM<'_>) -> RunResult<String> {
+/// Serializes `obj` to JSON text under `config`, calling `default` (when not
+/// `None`) for values no JSON type covers.
+fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let mut output = String::new();
     let mut active_containers = Vec::new();
     let mut encoder = Encoder {
         out: &mut output,
         config,
+        default,
         active_containers: &mut active_containers,
         vm,
     };
@@ -271,7 +280,7 @@ fn is_container(value: &Value, vm: &VM<'_>) -> bool {
 }
 
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
-/// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False)`.
+/// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False, default=None)`.
 ///
 /// Arity and missing-arg errors use the `dumps()` descriptor with `style =
 /// def` wording (CPython's `json.dumps` is a pure-Python `def`), but the
@@ -298,6 +307,8 @@ struct JsonDumpsArgs {
     separators: Value,
     #[from_args(kw_only, default = Value::Bool(false))]
     skipkeys: Value,
+    #[from_args(kw_only, static_string = "Default", default = Value::None)]
+    default_fn: Value,
 }
 
 /// Argument shape for `json.dump(obj, fp, *, …)`: [`JsonDumpsArgs`] with the
@@ -319,6 +330,8 @@ struct JsonDumpArgs {
     separators: Value,
     #[from_args(kw_only, default = Value::Bool(false))]
     skipkeys: Value,
+    #[from_args(kw_only, static_string = "Default", default = Value::None)]
+    default_fn: Value,
 }
 
 /// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. Used by the json.dumps kwarg pipeline so each
@@ -417,30 +430,22 @@ fn check_separators_length(len: usize) -> RunResult<()> {
 /// 5 for `key_separator`) so the error message matches CPython exactly.
 fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult<String> {
     let arg_num = if role == "item_separator" { 6 } else { 5 };
-    match value {
-        Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned()),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(string) => Ok(string.as_str().to_owned()),
-            _ => Err(ExcType::type_error(format!(
-                "make_encoder() argument {arg_num} must be str, not {}",
-                value.py_type_name(vm)
-            ))),
-        },
-        _ => Err(ExcType::type_error(format!(
+    value.try_to_str(vm).map(str::to_owned).map_err(|_| {
+        ExcType::type_error(format!(
             "make_encoder() argument {arg_num} must be str, not {}",
             value.py_type_name(vm)
-        ))),
-    }
+        ))
+    })
 }
 
 /// Mutable serialization context shared across the recursive `serialize_*`
 /// methods.
 ///
-/// Groups the four pieces of per-call state that every recursive level needs
-/// — the JSON output buffer, the encoder configuration, the cycle-detection
-/// stack, and the VM (heap + interns) — so the recursive methods can be
-/// invoked as `encoder.serialize_value(value, depth)` rather than threading
-/// five separate parameters through every signature.
+/// Groups the per-call state that every recursive level needs — the JSON output
+/// buffer, the encoder configuration, the `default` callable, the cycle-detection
+/// stack, and the VM (heap + interns) — so the recursive methods can be invoked
+/// as `encoder.serialize_value(value, depth)` rather than threading six separate
+/// parameters through every signature.
 ///
 /// `depth` is intentionally **not** a field of this struct: every recursive
 /// call needs to bump it by one for the descent and restore it on return,
@@ -448,6 +453,8 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_>) -> RunResult
 struct Encoder<'a, 'h> {
     out: &'a mut String,
     config: &'a JsonDumpsConfig,
+    /// The `default=` callable, or `None` when unserializable values raise.
+    default: &'a Value,
     active_containers: &'a mut Vec<HeapId>,
     vm: &'a mut VM<'h>,
 }
@@ -545,18 +552,34 @@ impl<'h> Encoder<'_, 'h> {
                 defer_drop!(token, this);
                 this.with_entered_container(dict.id(), |enc| enc.serialize_dict(entries, depth))
             }
-            _ => {
-                // CPython names the class by `__name__`: `Decimal`, not `decimal.Decimal`.
-                // A user class's name is its `__name__` already, dots and all.
-                let type_name = value.py_type_name(self.vm);
-                let bare = if matches!(value.py_type(self.vm), Type::Instance(_)) {
-                    &*type_name
-                } else {
-                    type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)
-                };
-                Err(ExcType::json_not_serializable_error(bare))
-            }
+            _ => self.serialize_fallback(value, depth),
         }
+    }
+
+    /// Encodes a value no JSON type covers through `default(value)`, or raises
+    /// CPython's `TypeError` when no `default` was given. The value is marked
+    /// before `default` runs and stays marked while its replacement encodes, so a
+    /// revisit raises `Circular reference detected` without calling `default` again.
+    fn serialize_fallback(&mut self, value: &Value, depth: usize) -> RunResult<()> {
+        match (self.default, value) {
+            (Value::None, _) => Err(not_serializable(value, self.vm)),
+            (_, Value::Ref(id)) => self.with_entered_container(*id, |enc| enc.serialize_default(value, depth)),
+            // Immediates (a builtin function, say) have no heap identity to mark.
+            _ => self.serialize_default(value, depth),
+        }
+    }
+
+    /// Calls `default(value)` and encodes what it returns.
+    fn serialize_default(&mut self, value: &Value, depth: usize) -> RunResult<()> {
+        let argument = value.clone_with_heap(self.vm);
+        let replacement = self.vm.evaluate_function(self.default, ArgValues::One(argument))?;
+        let this = self;
+        defer_drop!(replacement, this);
+        // A `default` that keeps returning fresh unserializable values recurses
+        // without ever repeating a container, so the recursion limit bounds it.
+        let token = this.vm.recursion_token()?;
+        defer_drop!(token, this);
+        this.serialize_value(replacement, depth)
     }
 
     /// Streams items from a list or tuple into a JSON array, formatting
@@ -701,6 +724,19 @@ impl<'h> Encoder<'_, 'h> {
             .expect("entered container missing from JSON serialization stack");
         result
     }
+}
+
+/// CPython's `Object of type X is not JSON serializable`, naming the class by
+/// `__name__`: `Decimal`, not `decimal.Decimal`. A user class's name is its
+/// `__name__` already, dots and all.
+fn not_serializable(value: &Value, vm: &VM<'_>) -> RunError {
+    let type_name = value.py_type_name(vm);
+    let bare = if matches!(value.py_type(vm), Type::Instance(_)) {
+        &*type_name
+    } else {
+        type_name.rsplit_once('.').map_or(&*type_name, |(_, bare)| bare)
+    };
+    ExcType::json_not_serializable_error(bare)
 }
 
 /// Sorts dict entries in-place using Python comparison semantics on the keys.

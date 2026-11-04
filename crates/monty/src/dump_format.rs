@@ -7,6 +7,11 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
+//! Inline builtin types serialize through `Type`, preserving the names and payloads
+//! written before `BuiltinType` was split out. Its own enum order is not the wire
+//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
+//! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
+//!
 //! # Naming contract
 //!
 //! The payload is self-describing: structs are maps keyed by field name and
@@ -56,7 +61,7 @@ const MAGIC: &[u8; 6] = b"MONTY\0";
 ///
 /// Before bumping, check there's already been a bump since the last release - multiple bumps
 /// between releases is unnecessary and can lead to confusion.
-pub const DUMP_VERSION: u16 = 14;
+pub const DUMP_VERSION: u16 = 15;
 
 /// The oldest dump version this build loads. `Dump::load` runs `dump_upgrade`
 /// over an older dump, rebuilding what the newer versions changed.
@@ -367,7 +372,7 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xa78a_9e6c_3fab_abed,
+            0x47f4_8e5e_55da_518f,
             "opcodes changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(opcode_fingerprint())
         );
@@ -393,7 +398,7 @@ mod tests {
         );
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x578d_38b1_7715_f9a1,
+            0x4db8_c44f_dbcb_fb2a,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );

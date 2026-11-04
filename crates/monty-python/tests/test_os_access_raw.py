@@ -614,6 +614,22 @@ def test_dir_stat_helper():
     assert stat[8] == snapshot(1700000000.0)  # st_mtime
 
 
+@pytest.mark.parametrize('permissions', [0, 0o755, 0o1755, 0o2755, 0o4755, 0o7755])
+def test_stat_helpers_permission_bits(permissions: int):
+    """Special permission bits do not replace the file type."""
+    file_mode = StatResult.file_stat(0, permissions).st_mode
+    dir_mode = StatResult.dir_stat(permissions).st_mode
+    assert (file_mode & 0o170000, dir_mode & 0o170000) == snapshot((0o100000, 0o040000))
+    assert (file_mode & 0o7777, dir_mode & 0o7777) == (permissions, permissions)
+
+
+@pytest.mark.parametrize('mode', [0o100644, 0o104755, 0o041755, 0o120777])
+def test_stat_helpers_preserve_file_type(mode: int):
+    """A full mode is kept intact, including a caller-supplied file type."""
+    assert StatResult.file_stat(0, mode).st_mode == mode
+    assert StatResult.dir_stat(mode).st_mode == mode
+
+
 def test_path_monty_to_py(monty_run: RunMonty):
     result = monty_run('from pathlib import Path; Path("/foo/bar/thing.txt")')
     assert result == PurePosixPath('/foo/bar/thing.txt')

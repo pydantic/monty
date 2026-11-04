@@ -501,10 +501,10 @@ fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
 
     if length != 1 {
         Err(value_error("sep must be length 1."))
-    } else if sep.is_str(vm.heap) {
+    } else if let Some(text) = sep.as_str(vm) {
         // Latin-1, not ASCII: `hexlify` returns bytes, so CPython only rejects
         // a character that does not fit a byte, under an "ASCII" message.
-        u8::try_from(u32::from(sep.to_str(vm)?.chars().next().expect("one character")))
+        u8::try_from(u32::from(text.chars().next().expect("one character")))
             .map(Some)
             .map_err(|_| value_error("sep must be ASCII."))
     } else if is_bytes(sep, vm) {

@@ -35,9 +35,9 @@ use monty::{MontyRun, RunProgress};
 use monty_fixture::{Header, Interpreter};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject,
-    MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
-    SandboxTimeZone, dir_stat, file_stat,
+    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_CALL, MontyException, MontyFileHandle,
+    MontyObject, MontyType, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
+    ResourceTracker, SandboxTimeZone, TypeHintsTarget, dir_stat, file_stat, find_module_file,
     scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -725,6 +725,56 @@ fn dispatch_method_call(
     }
 }
 
+/// Answers `typing.get_type_hints()` of a fixture function or class as the Python binding
+/// would for the annotations in `test_fixtures.py`: modeled builtin types cross as type
+/// objects, anything else as text. Class targets are keyed by the fixture `type_id`.
+fn fixture_type_hints(target: &TypeHintsTarget) -> MontyObject {
+    let ty = MontyObject::type_object;
+    let text = MontyObject::string;
+    let hints: Vec<(&str, MontyObject)> = match target {
+        TypeHintsTarget::Function(name) => match name.as_str() {
+            "add_ints" => vec![
+                ("a", ty(MontyType::Int)),
+                ("b", ty(MontyType::Int)),
+                ("return", ty(MontyType::Int)),
+            ],
+            "concat_strings" => vec![
+                ("a", ty(MontyType::Str)),
+                ("b", ty(MontyType::Str)),
+                ("return", ty(MontyType::Str)),
+            ],
+            "return_value" => vec![("x", ty(MontyType::Object)), ("return", ty(MontyType::Object))],
+            "get_list" => vec![("return", text("list[int]"))],
+            "raise_error" => vec![
+                ("exc_type", ty(MontyType::Str)),
+                ("message", ty(MontyType::Str)),
+                ("return", ty(MontyType::NoneType)),
+            ],
+            "make_point" => vec![("return", text("test_fixtures.Point"))],
+            "make_mutable_point" => vec![("return", text("test_fixtures.MutablePoint"))],
+            "make_user" => vec![("name", ty(MontyType::Str)), ("return", text("test_fixtures.User"))],
+            "make_empty" => vec![("return", text("test_fixtures.Empty"))],
+            "async_call" => vec![("x", ty(MontyType::Object)), ("return", text("asyncio.Future[object]"))],
+            "async_fail" => vec![
+                ("exc_type", ty(MontyType::Str)),
+                ("message", ty(MontyType::Str)),
+                ("return", text("asyncio.Future[None]")),
+            ],
+            _ => panic!("Unknown external function: {name}"),
+        },
+        // `Point` and `MutablePoint` (type ids 1 and 2) share their fields
+        TypeHintsTarget::Class(id) if [1, 2].map(MontyUuid::from_u128).contains(id) => {
+            vec![("x", ty(MontyType::Int)), ("y", ty(MontyType::Int))]
+        }
+        TypeHintsTarget::Class(id) if *id == MontyUuid::from_u128(3) => {
+            vec![("name", ty(MontyType::Str)), ("active", ty(MontyType::Bool))]
+        }
+        // `Empty`, and any class the harness never registered, as a host store miss
+        TypeHintsTarget::Class(_) => vec![],
+    };
+    MontyObject::dict(hints.into_iter().map(|(name, hint)| (MontyObject::string(name), hint)))
+}
+
 /// Answers a lazy attribute lookup on a host class instance (`NameLookup`
 /// with an instance id): class attributes and properties the eager attrs do
 /// not carry. Mirrors the class attributes in `test_fixtures.py`.
@@ -1029,9 +1079,10 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
     match call {
         // Only the tools fixture is available as a host module.
-        OsFunctionCall::Import(module) if module == "tools" => FixtureRegistry::make_tools_module().into(),
+        OsFunctionCall::Import(args) if args.module == "tools" => FixtureRegistry::make_tools_module().into(),
         OsFunctionCall::Import(_) => ExtFunctionResult::NotFound(call.name().to_owned()),
         OsFunctionCall::ImportStubs(_) => unreachable!("{} is asked only by a type-checking worker", call.name()),
+        OsFunctionCall::GetTypeHints(target) => fixture_type_hints(target).into(),
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
         // `OsPolicy::default()` answers the clock and initial random seed in the sandbox.
@@ -1855,11 +1906,18 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
-                progress = call.resume_with(PrintWriter::Stdout, |fc| match mount_table.handle_os_call(fc) {
-                    MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
-                    MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
-                    // Non-filesystem operation — dispatch to the regular handler.
-                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
+                progress = call.resume_with(PrintWriter::Stdout, |fc| match fc {
+                    // Any module but the tools fixture is a file on the mount, or missing.
+                    OsFunctionCall::Import(args) if args.module != "tools" => {
+                        find_module_file(&args, |path| mount_table.read_module(path))
+                            .unwrap_or_else(|| ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()))
+                    }
+                    fc => match mount_table.handle_os_call(fc) {
+                        MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
+                        MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                        // Non-filesystem operation — dispatch to the regular handler.
+                        MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
+                    },
                 })?;
             }
         }
@@ -2515,10 +2573,11 @@ fn try_run_cpython_test(
     } else {
         None
     };
+    // `root` also goes first on `sys.path`, as Monty imports from its cwd `/mnt`.
     let mount_root_setup: Option<String> = mount_tmpdir.as_ref().map(|tmpdir| {
         let tmpdir_path = tmpdir.path().to_string_lossy().to_string();
         format!(
-            "from pathlib import Path as _Path; root = _Path('{}')",
+            "from pathlib import Path as _Path; import sys as _sys; root = _Path('{}'); _sys.path.insert(0, str(root))",
             tmpdir_path.replace('\\', "\\\\").replace('\'', "\\'")
         )
     });
@@ -2663,6 +2722,9 @@ fn try_run_cpython_test(
             CpythonResult::NoValue // NoException expectation - success
         }
     });
+    if let Some(tmpdir) = &mount_tmpdir {
+        Python::attach(|py| forget_mount_imports(py, tmpdir.path()));
+    }
 
     watchdog.check(&test_name)?;
     match result {
@@ -2681,6 +2743,29 @@ fn try_run_cpython_test(
         CpythonResult::NoValue => Ok(()),
         CpythonResult::Failed(failure) => Err(failure),
     }
+}
+
+/// Undoes a `mount-fs` case's imports in the shared interpreter: takes `root`
+/// off `sys.path` and evicts the finders and modules under it, so the next case
+/// (with its own `root`) imports its own files.
+fn forget_mount_imports(py: Python<'_>, root: &Path) {
+    let code = c"
+import os, sys
+root = str(root)
+def under_root(path):
+    return isinstance(path, str) and (path == root or path.startswith(root + os.sep))
+if root in sys.path:
+    sys.path.remove(root)
+for path in [path for path in sys.path_importer_cache if under_root(path)]:
+    del sys.path_importer_cache[path]
+for name, module in list(sys.modules.items()):
+    if under_root(getattr(module, '__file__', None)):
+        del sys.modules[name]
+";
+    let globals = PyDict::new(py);
+    globals.set_item("root", root).expect("Failed to pass the mount root");
+    py.run(code, Some(&globals), None)
+        .expect("Failed to forget the mount-fs imports");
 }
 
 /// Format a CPython exception into the expected format.

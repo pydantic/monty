@@ -6,6 +6,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
     intern::StringId,
+    resource_checks::check_estimated_size,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, slice::value_to_option_i64,
@@ -41,7 +42,13 @@ impl VM<'_> {
         let this = self;
         let items = this.pop_n(count * 2).into_iter();
         defer_drop_mut!(items, this);
-        let mut dict_guard = DropGuard::new(Dict::new(), this);
+
+        // Estimate keys, values, hashes and index storage, including unused buckets.
+        let entry_bytes = 2 * VALUE_SIZE + size_of::<u64>() + 3 * size_of::<usize>();
+        check_estimated_size(count.saturating_mul(entry_bytes), &this.heap.tracker)?;
+
+        // Exact sizing avoids spare slots; for example, five pairs would otherwise reserve eight.
+        let mut dict_guard = DropGuard::new(Dict::with_capacity(count), this);
         loop {
             let (dict, this) = dict_guard.as_parts_mut();
             let (Some(key), Some(value)) = (items.next(), items.next()) else {
@@ -248,30 +255,15 @@ impl VM<'_> {
             let copied_items = copied_items.into_iter();
             defer_drop_mut!(copied_items, this);
             for (key, value) in copied_items {
-                // Validate key is a string (InternString or heap-allocated Str)
-                let is_string = match &key {
-                    Value::InternString(_) => true,
-                    Value::Ref(id) => matches!(this.heap.get(*id), HeapData::Str(_)),
-                    _ => false,
-                };
-                if !is_string {
-                    key.drop_with(this);
-                    value.drop_with(this);
-                    return Err(ExcType::type_error_kwargs_nonstring_key());
-                }
-
-                // Get the string key for error messages (needed before moving key into closure)
-                let key_str = match &key {
-                    Value::InternString(id) => this.interns.get_str(*id).to_string(),
-                    Value::Ref(id) => {
-                        if let HeapData::Str(s) = this.heap.get(*id) {
-                            s.as_str().to_string()
-                        } else {
-                            "<unknown>".to_string()
-                        }
-                    }
-                    _ => "<unknown>".to_string(),
-                };
+                let mut pair_guard = DropGuard::new((key, value), this);
+                let (pair, this) = pair_guard.as_parts();
+                // Borrow string keys uniformly across their storage forms.
+                let key_str = pair
+                    .0
+                    .as_str(this)
+                    .ok_or_else(ExcType::type_error_kwargs_nonstring_key)?
+                    .to_owned();
+                let ((key, value), this) = pair_guard.into_parts();
 
                 let HeapReadOutput::Dict(dict) = this.heap.read(dict_id) else {
                     unreachable!("DictMerge: entry is not a Dict")

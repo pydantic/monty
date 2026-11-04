@@ -64,6 +64,16 @@ The redial uses the headers `connect_headers` returned when the session was ente
 resume fail.
 `MontyDisconnectError` is never resumed, because the request may have run.
 
+## Disconnect diagnostics
+
+[`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] exposes `stage`, `close_code`, `close_reason`, and `transport_error`.
+`stage` identifies where the first recorded failure occurred, either `send` or `receive`.
+If that failure is a peer Close frame, its code and reason are retained.
+An abrupt EOF, transport failure, or protocol failure supplies error text instead.
+A later Close frame does not replace an earlier failure.
+Missing evidence remains `None`, and a Close reason is peer-supplied text, not a verified explanation.
+These fields do not establish whether the request ran, so the client does not replay it.
+
 ## Dependencies
 
 [`install_dependencies()`][pydantic_monty.AsyncMontySession.install_dependencies] is supported only by embedded-CPython workers.
@@ -71,6 +81,14 @@ It installs PEP 508 requirements using `uv`, within the pool's `request_timeout`
 Those workers also install PEP 723 inline dependencies before running a feed.
 A Monty sandbox worker rejects non-empty installation requests with `MontyRuntimeError` and ignores PEP 723 comments.
 `install_dependencies([])` is a no-op on either worker.
+
+## Host decode budget
+
+`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
+Values above 1 GiB are rejected when the client is constructed.
+The budget excludes wire buffers and Python conversion, and does not change
+sandbox memory limits. Exhaustion ends the session with a protocol error;
+the client does not replay the request.
 
 ## API
 

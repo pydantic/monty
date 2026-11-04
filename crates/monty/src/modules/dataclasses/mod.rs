@@ -34,9 +34,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadMut, HeapReadOutput, HeapReader},
     intern::{Interns, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{
+        ModuleFunctions,
+        typing::{self, HintFormat, HintsRequest, HintsTask},
+    },
     types::{
         Class, Dict, Module, PyTrait, TupleVec, allocate_tuple,
+        generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
     },
@@ -248,15 +252,27 @@ struct ConfiguredArgs {
 fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> RunResult<Value> {
     let mut guard = DropGuard::new(cls, vm);
     let (cls, vm) = guard.as_parts();
+    match cls {
+        Value::Ref(class_id) if matches!(vm.heap.get(*class_id), HeapData::Class(_)) => {
+            decorate_class(cls, *class_id, options, vm)?;
+        }
+        _ => return Err(non_class_error(cls, vm)),
+    }
+    Ok(guard.into_inner())
+}
+
+/// The decoration proper, for `cls` known to be the class `class_id` and kept
+/// alive by the caller.
+fn decorate_class(cls: &Value, class_id: HeapId, options: DataclassOptions, vm: &mut VM<'_>) -> RunResult<()> {
+    // Evaluated before the class is read: an annotation may refer to the class.
+    let annotations = dataclass_annotations(cls, vm)?;
+    defer_drop!(annotations, vm);
     // Read once and pass the handle down: everything below then works from a
-    // value already known to be a class, and the guard's reference keeps it alive.
-    let Value::Ref(class_id) = cls else {
-        return Err(non_class_error(cls, vm));
+    // value already known to be a class.
+    let HeapReadOutput::Class(class) = vm.heap.read(class_id) else {
+        unreachable!("the caller checked the class")
     };
-    let HeapReadOutput::Class(class) = vm.heap.read(*class_id) else {
-        return Err(non_class_error(cls, vm));
-    };
-    let fields = build_dataclass_fields(&class, vm)?;
+    let fields = build_dataclass_fields(&class, annotations, vm)?;
     let Value::Ref(fields_id) = fields else {
         unreachable!("the fields mapping is a dict")
     };
@@ -267,9 +283,8 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     // as attributes can be rewritten to what CPython leaves behind.
     rewrite_field_attributes(&class, fields_id, vm)?;
     store_dataclass_params(&class, options, vm)?;
-    install_generated_methods(*class_id, &class, fields_id, options, &mut Installer::Decorate(vm))?;
-    store_match_args(&class, fields_id, vm)?;
-    Ok(guard.into_inner())
+    install_generated_methods(class_id, &class, fields_id, options, &mut Installer::Decorate(vm))?;
+    store_match_args(&class, fields_id, vm)
 }
 
 /// `dataclass()` applied to something that is not a class.
@@ -282,16 +297,34 @@ fn non_class_error(cls: &Value, vm: &VM<'_>) -> RunError {
     .into()
 }
 
-/// Builds the `name -> Field` mapping for `class` from its `__annotations__`:
-/// the annotated names in definition order, minus `ClassVar` entries, each
-/// owning the default the class namespace bound for it (`y: int = 5`).
+/// The class's annotations as CPython's decorator reads them,
+/// `annotationlib.get_annotations(cls, format=Format.FORWARDREF)`: evaluated
+/// where they were written, an unresolvable name left as a `ForwardRef`.
+///
+/// Evaluation runs synchronously, in the same position as a `default_factory`
+/// (see `limitations/dataclasses.md`); in `FORWARDREF` format it never asks the
+/// host for a name.
+fn dataclass_annotations(cls: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let request = HintsRequest {
+        format: HintFormat::ForwardRef,
+        globalns: None,
+        localns: None,
+        include_extras: true,
+        task: HintsTask::Annotations { eval_str: false },
+    };
+    typing::collect_hints(cls, &request, vm)?.require_synchronous(vm)
+}
+
+/// Builds the `name -> Field` mapping for `class` from its evaluated
+/// `annotations`: the annotated names in definition order, minus `ClassVar`
+/// entries, each owning the default the class namespace bound for it (`y: int = 5`).
 ///
 /// Also where a class body Monty cannot yet honour is rejected, so an
 /// unimplemented feature raises rather than producing a subtly wrong class
 /// (see `limitations/dataclasses.md`). The fields are guarded throughout, so a
 /// rejection releases the defaults already captured.
-fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<Value> {
-    let fields = collect_annotated_fields(class, vm);
+fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+    let fields = collect_annotated_fields(class, annotations, vm);
     let mut guard = DropGuard::new(fields, vm);
     let (fields, vm) = guard.as_parts();
     // Field validation runs first, so a class CPython would reject reports
@@ -579,8 +612,8 @@ fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, HeapId)> 
         .collect()
 }
 
-/// Collects the dataclass fields from `__annotations__`, in definition order,
-/// dropping `ClassVar` entries, as owned references to heap `Field`s.
+/// Collects the dataclass fields from the evaluated `annotations`, in definition
+/// order, dropping `ClassVar` entries, as owned references to heap `Field`s.
 ///
 /// A class-body value that is already a `field()` result is **adopted in place**
 /// — the same object gains the name and annotation and goes on to
@@ -590,8 +623,8 @@ fn adopted_field_ids(fields_id: HeapId, heap: &Heap) -> Vec<(StringId, HeapId)> 
 ///
 /// The returned references are owned, so a caller that discards them must
 /// release them (`drop_with`).
-fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> Vec<Value> {
-    let names = annotated_field_names(class, vm);
+fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, annotations: &Value, vm: &mut VM<'h>) -> Vec<Value> {
+    let names = annotated_field_names(annotations, vm);
     let mut guard = DropGuard::new(Vec::with_capacity(names.len()), vm);
     let (fields, vm) = guard.as_parts_mut();
     for name_id in names {
@@ -601,7 +634,7 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) ->
         let bound = namespace
             .get_by_str(vm.interns.get_str(name_id), vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap));
-        let annotation = field_annotation(class, name_id, vm);
+        let annotation = field_annotation(annotations, name_id, vm);
         // The class body bound a `field()` result: it *is* the field, so it
         // takes the name and annotation and the list keeps that reference.
         // Anything else is a plain default, wrapped in a field of its own.
@@ -624,48 +657,44 @@ fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) ->
 ///
 /// Names alone, so the collection loop can take the heap mutably instead of
 /// holding a borrow of the annotations dict across an allocation.
-fn annotated_field_names<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> Vec<StringId> {
-    let Some(annotations) = annotations_dict(class, vm) else {
-        return Vec::new();
-    };
-    annotations
-        .into_iter()
+fn annotated_field_names(annotations: &Value, vm: &VM<'_>) -> Vec<StringId> {
+    annotations_dict(annotations, vm)
+        .iter()
         .filter_map(|(key, annotation)| match key {
-            Value::InternString(name_id) if !is_classvar(&annotation_text(annotation, vm)) => Some(*name_id),
+            Value::InternString(name_id) if !is_classvar(annotation, vm) => Some(*name_id),
             _ => None,
         })
         .collect()
 }
 
 /// One field's annotation, cloned as an owned reference for the `Field` to hold.
-fn field_annotation<'h>(class: &HeapRead<'h, Class>, name: StringId, vm: &VM<'h>) -> Value {
-    annotations_dict(class, vm)
-        .and_then(|annotations| annotations.get_by_str(vm.interns.get_str(name), vm.heap, vm.interns))
+fn field_annotation(annotations: &Value, name: StringId, vm: &VM<'_>) -> Value {
+    annotations_dict(annotations, vm)
+        .get_by_str(vm.interns.get_str(name), vm.heap, vm.interns)
         .map_or(Value::None, |annotation| annotation.clone_with_heap(vm.heap))
 }
 
-/// The class's `__annotations__` dict, or `None` for a class body with none.
-fn annotations_dict<'a, 'h>(class: &HeapRead<'h, Class>, vm: &'a VM<'h>) -> Option<&'a Dict> {
-    match class
-        .get(vm.heap)
-        .namespace()
-        .get_by_str("__annotations__", vm.heap, vm.interns)
-    {
-        Some(Value::Ref(id)) => match vm.heap.get(*id) {
-            HeapData::Dict(annotations) => Some(annotations),
-            _ => None,
-        },
-        _ => None,
-    }
+/// The evaluated annotations as a dict (`get_annotations` always returns one).
+fn annotations_dict<'a>(annotations: &Value, vm: &'a VM<'_>) -> &'a Dict {
+    let Value::Ref(id) = annotations else {
+        unreachable!("get_annotations returns a dict")
+    };
+    let HeapData::Dict(dict) = vm.heap.get(*id) else {
+        unreachable!("get_annotations returns a dict")
+    };
+    dict
 }
 
-/// A stringized annotation as text, or `""` for the non-string annotations
-/// Monty never produces (it always stores annotations as source text).
-fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
-    annotation
-        .as_either_str(vm.heap)
-        .map(|s| s.as_str(vm.interns).to_owned())
-        .unwrap_or_default()
+/// The text of a string or `ForwardRef` annotation, which CPython's decorator
+/// also matches by name; `None` for an evaluated object.
+fn annotation_text(annotation: &Value, vm: &VM<'_>) -> Option<String> {
+    match annotation {
+        Value::Ref(id) if let HeapData::ForwardRef(forward_ref) = vm.heap.get(*id) => forward_ref
+            .arg()
+            .as_either_str(vm.heap)
+            .map(|s| s.into_string(vm.interns)),
+        _ => annotation.as_either_str(vm.heap).map(|s| s.into_string(vm.interns)),
+    }
 }
 
 /// Rejects field lists Monty cannot honour, in CPython's checking order.
@@ -675,12 +704,13 @@ fn annotation_text(annotation: &Value, vm: &VM<'_>) -> String {
 fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
     for field_value in fields {
         // Read out first: hashing a default needs the heap mutably.
-        let Some((name, annotation_text, default)) = read_field(field_value, vm) else {
+        let Some((name, annotation, default)) = read_field(field_value, vm) else {
             continue;
         };
+        defer_drop!(annotation, vm);
         defer_drop!(default, vm);
         let name = vm.interns.get_str(name).to_owned();
-        if is_initvar(&annotation_text) {
+        if annotation.as_ref().is_some_and(|annotation| is_initvar(annotation, vm)) {
             return Err(ExcType::not_implemented(format!(
                 "dataclass() does not yet support InitVar (field {name}), which would become an ordinary field"
             ))
@@ -710,13 +740,12 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[Value]) -> RunResult<()> {
 
 /// A collected field's name, annotation text, and a **cloned** default — the
 /// three things validation needs, read before it takes the heap mutably.
-fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, String, Option<Value>)> {
+fn read_field(field: &Value, vm: &VM<'_>) -> Option<(StringId, Option<Value>, Option<Value>)> {
     let Value::Ref(id) = field else { return None };
     let field = field_at_id(vm.heap, *id)?;
-    let annotation = field.annotation().map_or_else(String::new, |a| annotation_text(a, vm));
     Some((
         field.name().expect("collection adopts every field"),
-        annotation,
+        field.annotation().map(|a| a.clone_with_heap(vm.heap)),
         field.default().map(|d| d.clone_with_heap(vm.heap)),
     ))
 }
@@ -743,20 +772,27 @@ fn first_non_default_after_default(fields: &[Value], vm: &VM<'_>) -> Option<(Str
     })
 }
 
-/// Whether a stringized annotation denotes `typing.ClassVar`, so the field is
-/// excluded.
+/// Whether an annotation denotes `typing.ClassVar`, so the field is excluded:
+/// the form itself or its subscription, or a string / `ForwardRef` naming it,
+/// the path CPython keeps for PEP 563 code.
 ///
-/// Detection is textual where CPython resolves the annotation through the
-/// defining module, so neither the import nor a dotted spelling's module is
-/// checked — both divergences are in `limitations/dataclasses.md`.
-fn is_classvar(annotation: &str) -> bool {
-    annotation_head(annotation, "ClassVar")
+/// The textual match is where CPython resolves the name through the defining
+/// module, so neither the import nor a dotted spelling's module is checked —
+/// both divergences are in `limitations/dataclasses.md`.
+fn is_classvar(annotation: &Value, vm: &VM<'_>) -> bool {
+    match annotation {
+        Value::Marker(Marker(StaticStrings::ClassVar)) => true,
+        Value::Ref(id) if let HeapData::GenericAlias(alias) = vm.heap.get(*id) => {
+            alias.origin() == AliasOrigin::Special(Marker(StaticStrings::ClassVar))
+        }
+        _ => annotation_text(annotation, vm).is_some_and(|text| annotation_head(&text, "ClassVar")),
+    }
 }
 
-/// Whether a stringized annotation denotes `dataclasses.InitVar`. Matched the
-/// same way as [`is_classvar`], and with the same textual-only caveats.
-fn is_initvar(annotation: &str) -> bool {
-    annotation_head(annotation, "InitVar")
+/// Whether a string or `ForwardRef` annotation names `dataclasses.InitVar`,
+/// which Monty has no object for; matched as [`is_classvar`] matches text.
+fn is_initvar(annotation: &Value, vm: &VM<'_>) -> bool {
+    annotation_text(annotation, vm).is_some_and(|text| annotation_head(&text, "InitVar"))
 }
 
 /// Whether a stringized annotation names `name`, bare, subscripted, or

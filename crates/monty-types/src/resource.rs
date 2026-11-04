@@ -5,7 +5,7 @@
 use std::hint;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(all(target_arch = "wasm32", not(target_os = "unknown")))]
 use std::time::Instant;
 use std::{
     cell::Cell,
@@ -15,13 +15,11 @@ use std::{
     time::Duration,
 };
 
-// `std::time::Instant::now()` panics ("time not implemented on this platform")
-// on `wasm32-unknown-unknown`, so any duration limit aborts there. Swap in
-// `web_time::Instant` (a `performance.now()`-backed drop-in) only for that
-// target; every other target (native, WASI) keeps std, so the `web-time`
-// dependency is pulled in only where it's needed (see Cargo.toml).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
+
+mod execution_clock;
+use execution_clock::ExecutionInstant;
 
 /// Exit code a worker uses when it exceeded its memory limit or the allocator
 /// refused an allocation, so the parent can report `MemoryError` instead of an
@@ -144,6 +142,26 @@ impl fmt::Display for ResourceError {
 
 impl Error for ResourceError {}
 
+/// Clock used for execution budgets and execution-time telemetry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionClock {
+    /// Elapsed time while the interpreter executes, including descheduling.
+    #[default]
+    Wall,
+    /// Thread CPU time, Linux only. A failed native clock uses conservative elapsed time.
+    /// CPU accounting is approximate and does not bound response latency.
+    Cpu,
+}
+
+impl ExecutionClock {
+    /// Whether this thread can read the selected clock. CPU reads require Linux and the `cpu-clock` feature.
+    #[must_use]
+    pub fn is_available(self) -> bool {
+        self == Self::Wall || execution_clock::thread_cpu().is_some()
+    }
+}
+
 /// Configuration for resource limits.
 ///
 /// The time/memory/GC limits are optional — set to `None` to disable — but
@@ -155,13 +173,13 @@ impl Error for ResourceError {}
 /// custom limits with the builder pattern.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourceLimits {
-    /// Maximum execution time for a single feed (`feed_start`, `feed_run` or
-    /// `call_function`), summed over the turns it takes and excluding time
-    /// suspended on the host. Bounds one snippet, not the session.
+    /// Maximum execution time per feed (`feed_start`, `feed_run` or `call_function`),
+    /// summed across turns, excluding host suspension. Uses the tracker's clock
+    /// (wall time by default, or [`ExecutionClock::Cpu`]). Bounds a snippet, not the session.
     pub max_feed_duration: Option<Duration>,
     /// Maximum execution time for a single host turn, reset at each feed and
     /// each resume. Bounds the stretch of sandbox code between two host round
-    /// trips, so a host can bound its own response time per call.
+    /// trips. Use a separate host deadline to bound elapsed response time.
     pub max_turn_duration: Option<Duration>,
     /// Maximum allocator-backed memory in bytes.
     ///
@@ -279,6 +297,9 @@ impl ResourceLimits {
 /// that budget rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResourceTracker {
+    /// Clock paired with the accumulated execution time. Legacy dumps use wall time.
+    #[serde(default)]
+    execution_clock: ExecutionClock,
     limits: ResourceLimits,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Bounds nothing — it is what [`elapsed`](Self::elapsed) reports
@@ -298,7 +319,7 @@ pub struct ResourceTracker {
     /// idle. Never serialized — a snapshot is by definition taken while not
     /// executing.
     #[serde(skip)]
-    running_since: Cell<Option<Instant>>,
+    running_since: Cell<Option<ExecutionInstant>>,
     /// Optional override applied on top of `limits.max_recursion_depth`.
     ///
     /// `None` (the default — also the value any pre-`test-hooks` snapshot
@@ -319,8 +340,8 @@ impl Default for ResourceTracker {
 }
 
 impl ResourceTracker {
-    /// Tightens restored limits to the destination policy without resetting execution clocks.
-    /// A snapshot can retain stricter limits but cannot increase the destination's allowance.
+    /// Caps restored limits without resetting consumption or relaxing stricter saved limits.
+    /// Callers must check clock compatibility first. This retains the saved clock.
     pub fn tighten_limits(&mut self, ceiling: &ResourceLimits) {
         self.limits.max_memory = tighter_limit(self.limits.max_memory, ceiling.max_memory);
         self.limits.max_feed_duration = tighter_limit(self.limits.max_feed_duration, ceiling.max_feed_duration);
@@ -346,6 +367,7 @@ impl ResourceTracker {
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
+            execution_clock: ExecutionClock::Wall,
             limits,
             total_execution_time: Cell::new(Duration::ZERO),
             feed_execution_time: Cell::new(Duration::ZERO),
@@ -353,6 +375,16 @@ impl ResourceTracker {
             running_since: Cell::new(None),
             recursion_limit_override: Cell::new(None),
         }
+    }
+
+    /// Selects the execution clock before the tracker starts running.
+    ///
+    /// Off Linux, CPU mode cannot read the thread counter and charges elapsed time instead;
+    /// check [`ExecutionClock::is_available`] first to refuse it.
+    #[must_use]
+    pub fn with_execution_clock(mut self, clock: ExecutionClock) -> Self {
+        self.execution_clock = clock;
+        self
     }
 
     /// Returns the live recursion ceiling: the override if one is in effect,
@@ -364,10 +396,8 @@ impl ResourceTracker {
             .unwrap_or(self.limits.max_recursion_depth)
     }
 
-    /// Returns the cumulative execution time: bytecode-execution wall time
-    /// accumulated across runs/feeds, excluding time suspended on the host
-    /// or idle between feeds. Includes the in-progress window if the VM is
-    /// currently executing.
+    /// Returns cumulative execution time using the configured clock, excluding
+    /// time suspended on the host or idle between feeds. Includes the running window.
     ///
     /// Nothing is bounded by this — it is reported to the host for telemetry.
     /// The budgets are [`feed_elapsed`](Self::feed_elapsed) and
@@ -398,7 +428,18 @@ impl ResourceTracker {
     /// rather than two.
     #[inline]
     fn running_window(&self) -> Duration {
-        self.running_since.get().map_or(Duration::ZERO, |t| t.elapsed())
+        let Some(mut window) = self.running_since.get() else {
+            return Duration::ZERO;
+        };
+        let elapsed = window.elapsed();
+        self.running_since.set(Some(window));
+        elapsed
+    }
+
+    /// Returns the clock saved with this tracker's accumulated consumption.
+    #[must_use]
+    pub fn execution_clock(&self) -> ExecutionClock {
+        self.execution_clock
     }
 
     /// Returns the configured per-feed execution time limit, if any.
@@ -678,14 +719,22 @@ impl ResourceTracker {
             self.running_since.get().is_none(),
             "nested on_execution_start: VM-internal re-entry must use the raw run loop, not run_external"
         );
-        self.running_since.set(Some(Instant::now()));
+        let remaining = [
+            (self.limits.max_feed_duration, self.feed_execution_time.get()),
+            (self.limits.max_turn_duration, self.turn_execution_time.get()),
+        ]
+        .into_iter()
+        .filter_map(|(limit, used)| limit.map(|limit| limit.saturating_sub(used)))
+        .min();
+        self.running_since
+            .set(Some(ExecutionInstant::now(self.execution_clock, remaining)));
     }
 
     /// Called when the VM leaves its execution loop — on completion, error,
     /// or suspension at an external call. See [`on_execution_start`](Self::on_execution_start).
     pub fn on_execution_stop(&self) {
-        if let Some(started) = self.running_since.take() {
-            let window = started.elapsed();
+        if let Some(mut started) = self.running_since.take() {
+            let window = started.elapsed_at_stop();
             for clock in [
                 &self.total_execution_time,
                 &self.feed_execution_time,

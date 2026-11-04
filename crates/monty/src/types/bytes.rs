@@ -86,12 +86,13 @@ use crate::{
     identity::Identity,
     intern::{BytesId, StaticStrings},
     percent_format::{copy_bytes_template, percent_format_bytes},
+    py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
         long_int::repeat_count,
         py_trait::PyObjectIdentity,
-        slice::{optional_sequence_bound, slice_collect_iterator},
+        slice::{SearchRange, search_range, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_bytes},
 };
@@ -176,17 +177,13 @@ impl Bytes {
         defer_drop!(source, vm);
         defer_drop!(encoding, vm);
         defer_drop!(errors, vm);
-        let source_str = match source {
-            Some(v) if v.is_str(vm.heap) => Some(v),
-            _ => None,
-        };
+        let source_str = source.as_ref().and_then(|value| value.as_str(vm));
         // CPython's `bytes_new` ordering: an encoding demands a str source, a
         // str source demands an encoding, and a lone `errors` is never valid.
         if let Some(encoding) = encoding {
-            let Some(v) = source_str else {
+            let Some(s) = source_str else {
                 return Err(ExcType::type_error_encoding_without_string());
             };
-            let s = v.to_str(vm)?;
             let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
             let encoding = encoding.as_str(vm);
             let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
@@ -778,7 +775,11 @@ fn count_non_overlapping(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<
 /// Returns the number of non-overlapping occurrences of the subsequence.
 fn bytes_count<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` counts nothing: `b'abc'.count(b'', 2, 1) == 0`
+        return Ok(Value::Int(0));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let count = if sub.is_empty() {
@@ -797,7 +798,11 @@ fn bytes_count<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Returns the lowest index where the subsequence is found, or -1 if not found.
 fn bytes_find<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.find(b'', 4) == -1`
+        return Ok(Value::Int(-1));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -819,7 +824,11 @@ fn bytes_find<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<
 /// Like find(), but raises ValueError if the subsequence is not found.
 fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.index(b'', 4)` raises `ValueError`
+        return Err(ExcType::value_error_subsequence_not_found());
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -845,7 +854,11 @@ fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// if any of the prefixes match.
 fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (prefix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
+    let (prefix_arg, range) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` matches nothing: `b'abc'.startswith(b'', 4) == False`
+        return Ok(Value::Bool(false));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = match prefix_arg {
@@ -862,7 +875,11 @@ fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 /// if any of the suffixes match.
 fn bytes_endswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
+    let (suffix_arg, range) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` matches nothing: `b'abc'.endswith(b'', 4) == False`
+        return Ok(Value::Bool(false));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = match suffix_arg {
@@ -885,40 +902,27 @@ enum PrefixSuffixArg {
 
 /// Parses arguments for bytes.startswith/endswith methods.
 ///
-/// Returns (prefix/suffix_arg, start, end) where start and end are normalized indices.
+/// Returns the prefix/suffix_arg and the `(start, end)` range to match in, or
+/// `None` for a `start` past `end`, where nothing matches (see [`search_range`]).
 /// The prefix/suffix_arg can be a single bytes value or a tuple of bytes values.
-/// Guarantees `start <= end` to prevent slice panics.
 fn parse_bytes_prefix_suffix_args(
     method: &str,
     len: usize,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<(PrefixSuffixArg, usize, usize)> {
+) -> RunResult<(PrefixSuffixArg, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    let (prefix, start, end) = match pos.as_slice() {
-        [prefix_value] => {
+    match pos.as_slice() {
+        [prefix_value, bounds @ ..] if bounds.len() <= 2 => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            (prefix, 0, len)
+            let range = search_range(bounds.first(), bounds.get(1), len, vm)?;
+            Ok((prefix, range))
         }
-        [prefix_value, start_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            (prefix, start, len)
-        }
-        [prefix_value, start_value, end_value] => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            let end = optional_sequence_bound(end_value, len, len, vm)?;
-            (prefix, start, end)
-        }
-        [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    };
-
-    // Ensure start <= end to prevent slice panics
-    Ok((prefix, start, end.max(start)))
+        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
+        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
+    }
 }
 
 /// Extracts bytes (or tuple of bytes) for startswith/endswith methods.
@@ -929,38 +933,28 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
     // Extract the method name (e.g., "startswith" from "bytes.startswith")
     let method_name = method.strip_prefix("bytes.").unwrap_or(method);
 
-    match value {
-        Value::InternBytes(id) => Ok(PrefixSuffixArg::Single(vm.interns.get_bytes(*id).to_vec())),
-        Value::InternString(_) => Err(ExcType::type_error(format!(
+    match value.py_value(vm) {
+        PyValue::Bytes(bytes) => Ok(PrefixSuffixArg::Single(bytes.as_slice(vm).to_vec())),
+        PyValue::Str(_) => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(PrefixSuffixArg::Single(b.as_slice().to_vec())),
-            HeapData::Str(_) => Err(ExcType::type_error(format!(
-                "{method_name} first arg must be bytes or a tuple of bytes, not str"
-            ))),
-            HeapData::Tuple(tuple) => {
-                // Extract each element as bytes
-                let items = tuple.as_slice();
-                let mut prefixes = Vec::with_capacity(items.len());
-                for (i, item) in items.iter().enumerate() {
-                    if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
-                        prefixes.push(b);
-                    } else {
-                        let item_type = item.py_type_name(vm);
-                        return Err(ExcType::type_error(format!(
-                            "{method_name} first arg must be bytes or a tuple of bytes, \
-                             not tuple containing {item_type} at index {i}"
-                        )));
-                    }
+        PyValue::Tuple(tuple) => {
+            // Extract each element as bytes
+            let items = tuple.get(vm.heap).as_slice();
+            let mut prefixes = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
+                    prefixes.push(b);
+                } else {
+                    let item_type = item.py_type_name(vm);
+                    return Err(ExcType::type_error(format!(
+                        "{method_name} first arg must be bytes or a tuple of bytes, \
+                         not tuple containing {item_type} at index {i}"
+                    )));
                 }
-                Ok(PrefixSuffixArg::Multiple(prefixes))
             }
-            _ => Err(ExcType::type_error(format!(
-                "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-                value.py_type_name(vm)
-            ))),
-        },
+            Ok(PrefixSuffixArg::Multiple(prefixes))
+        }
         _ => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
             value.py_type_name(vm)
@@ -970,13 +964,9 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
 
 /// Extracts a single bytes value for tuple element in startswith/endswith.
 fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
-    match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id).to_vec()),
-        Value::InternString(_) => Err(ExcType::type_error("expected bytes, not str")),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(b) => Ok(b.as_slice().to_vec()),
-            _ => Err(ExcType::type_error("expected bytes")),
-        },
+    match value.py_value(vm) {
+        PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm).to_vec()),
+        PyValue::Str(_) => Err(ExcType::type_error("expected bytes, not str")),
         _ => Err(ExcType::type_error("expected bytes")),
     }
 }
@@ -988,7 +978,9 @@ fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResu
 fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     match value {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::InternString(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
+        Value::InternString(_) | Value::InlineString(_) => {
+            Err(ExcType::type_error("a bytes-like object is required, not 'str'"))
+        }
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
@@ -1000,38 +992,29 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
 
 /// Parses arguments for bytes.find/count/index methods.
 ///
-/// Returns (sub_bytes, start, end) where start and end are normalized indices.
-/// Guarantees `start <= end` to prevent slice panics.
+/// Returns the subsequence and the `(start, end)` range to search, or `None`
+/// for a `start` past `end`, where nothing is found (see [`search_range`]).
 fn parse_bytes_sub_args(
     method: &str,
     len: usize,
     args: ArgValues,
     vm: &mut VM<'_>,
-) -> RunResult<(Vec<u8>, usize, usize)> {
+) -> RunResult<(Vec<u8>, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
     // The bounds convert before `sub` is inspected, as in CPython, whose parser
     // runs the index converters and leaves the buffer check to the function body.
     // A raising `__index__` bound then costs no copy; `pos` keeps `sub` alive.
-    let (sub_value, start, end) = match pos.as_slice() {
-        [sub_value] => (sub_value, 0, len),
-        [sub_value, start_value] => {
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            (sub_value, start, len)
-        }
-        [sub_value, start_value, end_value] => {
-            let start = optional_sequence_bound(start_value, 0, len, vm)?;
-            let end = optional_sequence_bound(end_value, len, len, vm)?;
-            (sub_value, start, end)
+    let (sub_value, range) = match pos.as_slice() {
+        [sub_value, bounds @ ..] if bounds.len() <= 2 => {
+            (sub_value, search_range(bounds.first(), bounds.get(1), len, vm)?)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
     let sub = extract_bytes_only(sub_value, vm)?.to_owned();
-
-    // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    Ok((sub, start, end.max(start)))
+    Ok((sub, range))
 }
 
 // =============================================================================
@@ -1218,7 +1201,11 @@ fn bytes_istitle(bytes: &[u8]) -> bool {
 /// Returns the highest index where the subsequence is found, or -1 if not found.
 fn bytes_rfind<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.rfind(b'', 4) == -1`
+        return Ok(Value::Int(-1));
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -1240,7 +1227,11 @@ fn bytes_rfind<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 /// Like rfind(), but raises ValueError if the subsequence is not found.
 fn bytes_rindex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
-    let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
+    let (sub, range) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
+    let Some((start, end)) = range else {
+        // `start` past `end` finds nothing: `b'abc'.rindex(b'', 4)` raises `ValueError`
+        return Err(ExcType::value_error_subsequence_not_found());
+    };
 
     let slice = &bytes.get(vm.heap)[start..end];
     let result = if sub.is_empty() {
@@ -2257,20 +2248,24 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<c
         return Ok((None, 1));
     };
 
-    let sep_bytes = match sep_value {
-        Value::InternString(id) => vm.interns.get_str(*id).as_bytes(),
-        Value::InternBytes(id) => vm.interns.get_bytes(*id),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => s.as_bytes(),
-            HeapData::Bytes(b) => b.as_slice(),
-            _ => return Err(ExcType::type_error("sep must be str or bytes")),
+    let sep_char = match sep_value.py_value(vm) {
+        PyValue::Str(sep) => match sep.as_str(vm).as_bytes() {
+            [b] if b.is_ascii() => *b as char,
+            _ => {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
+                );
+            }
+        },
+        PyValue::Bytes(sep) => match sep.as_slice(vm) {
+            [b] if b.is_ascii() => *b as char,
+            _ => {
+                return Err(
+                    SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
+                );
+            }
         },
         _ => return Err(ExcType::type_error("sep must be str or bytes")),
-    };
-
-    let sep_char = match sep_bytes {
-        [b] if b.is_ascii() => *b as char,
-        _ => return Err(SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into()),
     };
 
     let bytes_per_sep = match bytes_per_sep {
@@ -2319,14 +2314,11 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let hex_value = args.get_one_arg("bytes.fromhex", vm.heap)?;
     defer_drop!(hex_value, vm);
 
-    let hex_str = match hex_value {
-        Value::InternString(id) => vm.interns.get_str(*id),
-        Value::Ref(heap_id) => {
-            if let HeapData::Str(s) = vm.heap.get(*heap_id) {
-                s.as_str()
-            } else {
-                return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
-            }
+    let hex_value_py = hex_value.py_value(vm);
+    let hex_str = match &hex_value_py {
+        PyValue::Str(value) => value.as_str(vm),
+        PyValue::Bytes(_) => {
+            return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
         }
         _ => {
             let t = hex_value.py_type_name(vm);

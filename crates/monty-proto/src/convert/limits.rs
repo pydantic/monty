@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use monty_types::{DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, ResourceLimits};
+use monty_types::{DEFAULT_MAX_RECURSION_DEPTH, DEFAULT_MAX_SUSPENSIONS, ExecutionClock, ResourceLimits};
 
 use crate::pb;
 
@@ -51,4 +51,22 @@ pub(crate) fn micros_field(value: Option<Duration>) -> Option<u64> {
 /// Narrows an optional wire `u64` to `usize`, saturating to `usize::MAX` on 32-bit hosts.
 pub(crate) fn usize_field(value: Option<u64>) -> Option<usize> {
     value.map(|v| usize::try_from(v).unwrap_or(usize::MAX))
+}
+
+impl From<ExecutionClock> for pb::ExecutionClock {
+    fn from(clock: ExecutionClock) -> Self {
+        match clock {
+            ExecutionClock::Wall => Self::Wall,
+            ExecutionClock::Cpu => Self::Cpu,
+        }
+    }
+}
+
+impl From<pb::ExecutionClock> for ExecutionClock {
+    fn from(clock: pb::ExecutionClock) -> Self {
+        match clock {
+            pb::ExecutionClock::Wall => Self::Wall,
+            pb::ExecutionClock::Cpu => Self::Cpu,
+        }
+    }
 }

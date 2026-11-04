@@ -38,6 +38,18 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
+`MontyDisconnectError` exposes `stage`, `close_code`, `close_reason`, and `transport_error` when available.
+These fields preserve transport evidence, not proof that the request did or did not run.
+The client does not automatically replay a disconnected request.
+
+## Host decode budget
+
+`AsyncMontyWebsocket(max_decode_bytes=...)` can lower the default 1 GiB allocation budget for each decoded protocol frame.
+Values above 1 GiB are rejected when the client is constructed.
+The budget excludes wire buffers and Python conversion, and does not change
+sandbox memory limits. Exhaustion ends the session with a protocol error;
+the client does not replay the request.
+
 ## Usage with a local monty worker
 
 `AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,
@@ -53,6 +65,8 @@ An `ExternalModule` copies its `attrs` dict at construction and imports as a `mo
 functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
 Its `id` identifies the module when it crosses back out of the sandbox.
 The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
+An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__init__.py` (or `name.py`) through the
+`os` handler, then the feed's mounts, and runs it as the module, once per session.
 
 This requires the `pydantic-monty-runtime` package, which is generally
 installed as part of the `pydantic-monty` meta-package.
@@ -171,6 +185,7 @@ Setting `cwd` does not grant filesystem access; provide `mount=` or `os=` to han
 
 `OSAccess(max_urandom_bytes=...)` sets the largest `os.urandom()` request the default handler serves, 1 MiB by default.
 Larger requests raise `MemoryError` before allocating.
+`max_total_file_bytes` (50 MB) caps the `MemoryFile` content all files may grow to; a larger write raises `OSError`.
 Unseeded `random` generators request host entropy only under `os_policy={'random_start': 'call_host'}`.
 Otherwise they use worker OS entropy or the configured seed.
 
@@ -189,3 +204,26 @@ Return the generated values or `rng.getstate()` instead.
 
 See the [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) README for
 more details.
+
+## Execution time
+
+Execution duration limits use wall time by default.
+Both clocks charge bytecode and native builtin execution, excluding host suspension.
+Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
+CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
+(`async with`) raises `RuntimeError`.
+WebSocket clients on any platform adopt the server's clock.
+The clock applies to the whole pool; checkouts cannot override it.
+CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.
+Smaller remaining budgets shorten that interval.
+Execution boundaries take fresh samples. WebAssembly workers support wall time only.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+If the counter later becomes unusable during execution, the VM uses elapsed time for that window.
+The OS controls CPU counter accuracy and resolution.
+Native pool backstops use the selected clock and configured grace.
+CPU mode uses an independent OS process counter and requires a finite wall-clock `request_timeout`.
+Snapshots retain their clock and VM consumption.
+CPU restore approximates prior supervisor usage from saved VM consumption.
+The snapshot does not record protocol CPU or supervisor grace separately.
+Load them through a pool with the same execution clock.
+Snapshots without a clock use wall time.

@@ -12,7 +12,7 @@ use std::{
 #[cfg(unix)]
 use cap_std::fs::MetadataExt;
 use cap_std::{ambient_authority, fs::Dir};
-use monty_types::{MontyObject, OsFunctionCall, normalize_virtual_path};
+use monty_types::{ModuleRead, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path};
 
 use super::{
     common::MountContext,
@@ -161,6 +161,17 @@ impl MountTable {
             }
         } else {
             MountCallOutcome::NotHandled(call)
+        }
+    }
+
+    /// Reads one candidate file of an `import` the host answers itself, as
+    /// `Path.read_text` would: [`ModuleRead::NotHandled`] when no mount covers
+    /// `path`. Hosts pass it to [`find_module_file`](monty_types::find_module_file).
+    pub fn read_module(&mut self, path: &str) -> ModuleRead {
+        match self.handle_os_call(OsFunctionCall::ReadText(MontyPath::new(path.to_owned()))) {
+            MountCallOutcome::Handled(Ok(text)) => ModuleRead::from_result(text.into()),
+            MountCallOutcome::Handled(Err(err)) => ModuleRead::from_exception(err.into_exception()),
+            MountCallOutcome::NotHandled(_) => ModuleRead::NotHandled,
         }
     }
 

@@ -179,11 +179,11 @@ impl GraphExporter {
             Value::Int(i) => MontyNode::Int(*i),
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
+            Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),
-            Value::Builtin(Builtins::Type(Type::Instance(class_id))) => return self.sandbox_class_node(*class_id, vm),
-            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(*t) {
+            Value::Builtin(Builtins::Type(t)) => match MontyType::from_internal_static(Type::from(*t)) {
                 Some(ty) => MontyNode::Type(ty),
                 None => repr_node(value, vm),
             },
@@ -451,10 +451,10 @@ impl GraphExporter {
                     imag: c.imag,
                 })
             }
-            // A host module crosses back with its id and attrs; a bundled one
-            // has no host identity and crosses as its repr.
-            HeapReadOutput::Module(m) => match m.get(vm.heap).id() {
-                Some(id) => {
+            // A host module crosses back with its id and attrs; a bundled or
+            // file one has no host identity and crosses as its repr.
+            HeapReadOutput::Module(m) => {
+                if let Some(id) = m.get(vm.heap).id() {
                     let name = m.get(vm.heap).name_str(vm.interns).to_owned();
                     let children = snapshot_dict_pairs(m.get(vm.heap).attrs(), vm.heap);
                     defer_drop!(children, vm);
@@ -463,9 +463,10 @@ impl GraphExporter {
                         id,
                         attrs: self.push_pairs(children, vm),
                     }
+                } else {
+                    MontyNode::Repr(m.get(vm.heap).repr(vm.interns))
                 }
-                None => MontyNode::Repr(format!("<module '{}'>", m.get(vm.heap).name_str(vm.interns))),
-            },
+            }
             HeapReadOutput::Coroutine(coro) => {
                 let func_id = coro.get(vm.heap).func_id;
                 let func = vm.interns.get_function(func_id);
@@ -786,7 +787,8 @@ impl MontyTypeExt for MontyType {
             | Type::CsvDialect
             | Type::DecimalContext
             | Type::DecimalSignalDict
-            | Type::DecimalContextManager => return None,
+            | Type::DecimalContextManager
+            | Type::ForwardRef => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
@@ -1054,7 +1056,9 @@ fn import_node(
             let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
             Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))))
         }
-        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(t.to_internal()))),
+        MontyNode::Type(t) => Ok(Value::Builtin(Builtins::Type(
+            t.to_internal().try_into().expect("host types are static"),
+        ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
         MontyNode::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)),
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
@@ -1147,7 +1151,7 @@ fn repr_node(value: &Value, vm: &mut VM<'_>) -> MontyNode {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
             defer_drop!(s, vm);
-            MontyNode::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
+            MontyNode::Repr(s.try_to_str(vm).map(str::to_owned).unwrap_or_default())
         }
         Err(e) => {
             let ty = value.py_type_name(vm);

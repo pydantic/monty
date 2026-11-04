@@ -21,7 +21,7 @@ use super::{
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExceptionRaise, RunError, SimpleException},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
         ImportName, Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, Submodule,
@@ -29,7 +29,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, StringId},
+    intern::{CompileInterns, FunctionId, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -294,6 +294,10 @@ pub struct Compiler<'a, 'i> {
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches copied into nested scopes"
+)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -304,6 +308,9 @@ struct ScopeFlags {
     /// Rejects `await` at snippet top level and in its class bodies.
     /// Nested function bodies reset this restriction.
     forbid_await: bool,
+    /// Whether the compile unit runs under `from __future__ import annotations`,
+    /// stamped on every `Code` it produces.
+    future_annotations: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -536,8 +543,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -549,8 +557,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(
+            nodes,
+            interns,
+            globals,
+            options,
+            Some(globals_by_name),
+            future_annotations,
+        )
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
@@ -560,6 +576,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
         check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
@@ -569,6 +586,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
+            future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
 
@@ -581,7 +599,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
+    }
+
+    /// Builds the compiled `Code`, stamped with the unit's `__future__` state.
+    fn finish(self) -> Code {
+        self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -622,7 +645,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -767,14 +790,19 @@ impl<'a, 'i> Compiler<'a, 'i> {
             } => self.compile_for(target, iter, body, or_else)?,
             Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
             Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
-            Node::Raise(expr) => {
-                if let Some(exc) = expr {
+            Node::Raise { exc, cause } => match (exc, cause) {
+                (Some(exc), Some(cause)) => {
+                    self.compile_expr(exc)?;
+                    self.compile_expr(cause)?;
+                    self.code.emit(Opcode::RaiseFrom)?;
+                }
+                (Some(exc), None) => {
                     self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise)?;
-                } else {
-                    self.code.emit(Opcode::Reraise)?;
                 }
-            }
+                // The parser rejects `raise from cause` without an exception.
+                (None, _) => self.code.emit(Opcode::Reraise)?,
+            },
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
@@ -896,7 +924,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the body recursively.
+        // 1. Compile the `__annotate__` function (PEP 649) and the body
+        //    recursively; nested functions are pushed first, so they get lower ids.
+        let annotate = func_def
+            .annotate
+            .as_deref()
+            .map(|annotate| self.compile_annotate(annotate))
+            .transpose()?;
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
         let body_code = compile_body(self.interns, namespace_size)?;
 
@@ -914,7 +948,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             })
             .collect();
         let function = Function::new(
-            func_def.name,
+            self.function_name(func_def),
             func_def.signature.clone(),
             func_def.namespace_size,
             enclosing_slot_metadata,
@@ -924,7 +958,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.default_exprs.len(),
             func_def.is_async,
             body_code,
-        );
+        )
+        .with_annotate(annotate);
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -958,6 +993,46 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
 
         Ok(())
+    }
+
+    /// Compiles a `def`'s `__annotate__(format)` body and interns it, returning
+    /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
+    /// function value is built on `f.__annotate__` access from the owner's
+    /// globals, since it has no defaults or captured cells of its own.
+    fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
+        debug_assert!(
+            annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
+            "an annotate function captures nothing and has no defaults"
+        );
+        let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
+        let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
+        let function = Function::new(
+            self.function_name(annotate),
+            annotate.signature.clone(),
+            annotate.namespace_size,
+            Vec::new(),
+            annotate.free_var_slots.clone(),
+            annotate.cell_var_slots.clone(),
+            annotate.cell_param_indices.clone(),
+            0,
+            false,
+            code,
+        );
+        let func_id = self.interns.push_function(function);
+        Ok(FunctionId::from_index(check_function_count_u16(
+            func_id,
+            annotate.name.position,
+        )?))
+    }
+
+    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
+    /// called that, as in CPython, whatever a class body binds it as.
+    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
+        let mut name = func_def.name;
+        if func_def.is_annotate {
+            name.name_id = self.interns.intern_static(StaticStrings::DunderAnnotate);
+        }
+        name
     }
 
     /// Compiles a `class Foo: ...` definition.
@@ -1032,10 +1107,10 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
     /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
-    /// call: push the class name and an empty bases tuple, then for each
-    /// member (in source order) push `LoadConst <name>` and the member's value
-    /// from its class-body slot, build the namespace dict, and call the 3-arg
-    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    /// call: push the class name and an empty bases tuple, then for each member
+    /// (in source order) `LoadConst <name>` and the member's value from its
+    /// class-body slot, build the namespace dict, call the 3-arg `type()`
+    /// builtin (which builds the `Class`), then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -1077,7 +1152,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.
@@ -1828,7 +1903,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // - Callable must be a builtin type constructor (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
         if let Callable::Builtin(Builtins::Type(t)) = callable
-            && let Some(type_id) = t.callable_to_u8()
+            && let Some(type_id) = Type::from(*t).callable_to_u8()
             && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
         {
             // Optimization applied - CallBuiltinType emitted
@@ -2291,7 +2366,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             }
             Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
             Builtins::Type(type_) => {
-                let name = type_.builtin_name()?;
+                let name = Type::from(type_).builtin_name()?;
                 self.interns.get_string_id_by_name(name)?
             }
         };
@@ -4000,11 +4075,28 @@ impl CompileError {
         }
     }
 
+    /// Converts an imported file's compile error; see `ParseError::into_file_run_error`.
+    pub(crate) fn into_file_run_error(self, path: &str, source: &str) -> RunError {
+        let (exc_type, msg, frame) = self.into_parts(path, source);
+        RunError::Exc(ExceptionRaise {
+            exc: SimpleException::new_msg(exc_type, msg),
+            frame: None,
+            snippet_frame: Some(Box::new(frame)),
+            hide_caret: true,
+        })
+    }
+
     /// Converts this compile error into a Python exception.
     ///
     /// Syntax errors omit the frame name; unsupported constructs report a
     /// runtime-style location with the stored exception type and message.
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
+        let (exc_type, msg, frame) = self.into_parts(filename, source);
+        MontyException::with_traceback(exc_type, Some(msg), vec![frame])
+    }
+
+    /// The exception type, message and the frame locating the error in `filename`.
+    fn into_parts(self, filename: &str, source: &str) -> (ExcType, String, StackFrame) {
         let mut source_map = SourceMap::new(source);
         let mut frame = if self.exc_type == ExcType::SyntaxError {
             // SyntaxError uses different format: no `, in <module>`
@@ -4016,7 +4108,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        (self.exc_type, self.message.into_owned(), frame)
     }
 }
 
