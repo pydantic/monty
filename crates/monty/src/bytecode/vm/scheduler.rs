@@ -56,6 +56,10 @@ pub(crate) struct Task {
     /// Result recipient, owning an inc_ref for a gather. An already-settled gather
     /// discards the result. The main task has no awaiter.
     pub awaiter: Option<Awaiter>,
+    /// Python-visible `asyncio.Task` handle for a task created by
+    /// `asyncio.create_task`, owned by the scheduler until cancellation.
+    #[serde(default)]
+    pub python_handle: Option<HeapId>,
     /// Current execution state.
     state: TaskState,
 }
@@ -73,6 +77,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         }
         if let Some(awaiter) = self.awaiter.take() {
             awaiter.drop_with(heap);
+        }
+        if let Some(handle) = self.python_handle.take() {
+            heap.heap_mut().dec_ref(handle);
         }
     }
 }
@@ -117,6 +124,7 @@ impl Task {
             instruction_ip: 0,
             coroutine_id,
             awaiter,
+            python_handle: None,
             state: TaskState::Ready(Ok(())),
         }
     }
@@ -135,6 +143,10 @@ pub(crate) struct Scheduler {
     current_task: Option<TaskId>,
     /// Counter for generating new task IDs.
     next_task_id: u32,
+    /// Counter for automatic Task names. CPython's running task is `Task-1`,
+    /// so the first user-created task is `Task-2`.
+    #[serde(default = "default_next_task_name")]
+    next_task_name: u32,
     /// Counter for external call IDs (always incremented, even for sync resolution).
     next_call_id: u32,
     /// Host-side index mapping each unresolved external call to its
@@ -163,6 +175,7 @@ impl Scheduler {
             ready_queue: VecDeque::new(), // Main task is current, not in ready queue
             current_task: Some(main_task_id),
             next_task_id: 1,
+            next_task_name: default_next_task_name(),
             next_call_id: 0,
             pending_externals: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
@@ -204,6 +217,14 @@ impl Scheduler {
         let id = CallId::new(self.next_call_id);
         self.next_call_id += 1;
         id
+    }
+
+    /// Allocates the next automatic `Task-N` name. The running task is
+    /// `Task-1`, so the first user-created task is `Task-2`.
+    pub fn allocate_task_name(&mut self) -> String {
+        let name = format!("Task-{}", self.next_task_name);
+        self.next_task_name += 1;
+        name
     }
 
     /// Registers a freshly created `ExternalFuture` for `call_id`.
@@ -289,11 +310,50 @@ impl Scheduler {
         Some(task_id)
     }
 
+    /// Spawns a task for an `asyncio.create_task` call, taking a scheduler-owned
+    /// reference to the Python-visible handle so the handle cannot be freed
+    /// while the task is running.
+    ///
+    /// Returns `None` when `coroutine_id` is already driving a task; the caller
+    /// turns that into a failed task with CPython's reuse error.
+    pub fn spawn_user_task(&mut self, heap: &Heap, coroutine_id: HeapId, python_handle: HeapId) -> Option<TaskId> {
+        if self.coroutine_to_task.contains_key(&coroutine_id) {
+            return None;
+        }
+
+        let task_id = TaskId::new(self.next_task_id);
+        self.next_task_id += 1;
+
+        heap.inc_ref(coroutine_id);
+        heap.inc_ref(python_handle);
+
+        let mut task = Task::new(task_id, Some(coroutine_id), None);
+        task.python_handle = Some(python_handle);
+
+        self.tasks.insert(task_id, task);
+        self.coroutine_to_task.insert(coroutine_id, task_id);
+        self.ready_queue.push_back(task_id);
+
+        Some(task_id)
+    }
+
     /// Gets the next ready task from the queue.
     ///
     /// Returns `None` if no tasks are ready.
     pub fn next_ready_task(&mut self) -> Option<TaskId> {
         self.ready_queue.pop_front()
+    }
+
+    /// Requeues the current task so another ready task can take the next turn.
+    ///
+    /// The current task stays runnable; its context is saved when the next task
+    /// activates. Used after an asynchronous host wait, where the waiting task
+    /// is ready again but should not starve tasks created while it waited.
+    pub fn requeue_current(&mut self) {
+        if let Some(task_id) = self.current_task {
+            self.ready_queue.retain(|&id| id != task_id);
+            self.ready_queue.push_back(task_id);
+        }
     }
 
     /// Wakes a blocked task with a value already on its stack, or an exception to raise.
@@ -425,6 +485,11 @@ impl Scheduler {
             self.cancel_task(task_id, heap);
         }
     }
+}
+
+/// Default for scheduler dumps written before automatic Task names existed.
+fn default_next_task_name() -> u32 {
+    2
 }
 
 impl Default for Scheduler {

@@ -352,6 +352,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'IndexError',
   'KeyError',
   'RuntimeError',
+  'asyncio.exceptions.InvalidStateError',
   'NotImplementedError',
   'RecursionError',
   'AttributeError',

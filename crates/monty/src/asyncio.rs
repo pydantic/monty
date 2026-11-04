@@ -186,9 +186,9 @@ impl ExternalFuture {
 ///   The wrapper **owns an inc_ref on `gather`**: storing the awaiter on an
 ///   awaitable keeps the gather alive for the in-flight window, so the
 ///   awaitable's resolution path can dispatch to it safely without
-///   additional cleanup elsewhere. Drop the owned `Awaiter` via
-///   [`DropWithContext`] (and clone via [`Self::clone_with_heap`]) so the
-///   `gather` ref count stays balanced.
+///   additional cleanup elsewhere. Discard the owned `Awaiter` via
+///   [`DropWithContext`], which releases exactly the reference
+///   [`Self::heap_ref`] reports.
 ///
 /// An awaitable whose downstream has already settled keeps its `Awaiter`
 /// pointing at it; the value is discarded where it is delivered rather than
@@ -200,18 +200,99 @@ impl ExternalFuture {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Awaiter {
     Task(TaskId),
-    GatherSlot { gather: HeapId, source: HeapId },
+    GatherSlot {
+        gather: HeapId,
+        source: HeapId,
+    },
+    /// An adopted host future settled: complete this heap task and fan its
+    /// result out to the task's own awaiters.
+    UserTask {
+        task: HeapId,
+    },
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
-    fn drop_with(self, heap: &mut C) {
-        if let Self::GatherSlot { gather, .. } = self {
-            heap.heap_mut().dec_ref(gather);
+impl Awaiter {
+    /// The heap reference this awaiter owns, if any.
+    ///
+    /// Every heap-owning variant inc_refs its target when constructed; GC and
+    /// `dec_ref` use this to release it without matching each variant by hand.
+    #[inline]
+    pub fn heap_ref(&self) -> Option<HeapId> {
+        match self {
+            Self::Task(_) => None,
+            Self::GatherSlot { gather: id, .. } => Some(*id),
+            Self::UserTask { task } => Some(*task),
         }
     }
 }
 
-/// A gather() result tracking multiple coroutines/tasks and external futures.
+impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
+    fn drop_with(self, heap: &mut C) {
+        if let Some(id) = self.heap_ref() {
+            heap.heap_mut().dec_ref(id);
+        }
+    }
+}
+
+/// A user-created `asyncio.Task` wrapping a coroutine or a host future.
+///
+/// The scheduler owns the execution context of a coroutine-backed task; this
+/// heap entry is the Python-visible handle and the completion record that
+/// `await`, `result()` and `exception()` read. `task_id` is `None`
+/// for an adopted host future, which the host already drives and which needs
+/// no scheduler task.
+///
+/// A host-adopted task is completed by [`crate::asyncio::Awaiter::UserTask`]
+/// when its future resolves. A coroutine-backed task is completed by
+/// `VM::handle_task_completion` / `VM::handle_task_failure`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TaskFuture {
+    /// Scheduler task driving the coroutine, if this is not a host future.
+    pub task_id: Option<TaskId>,
+    /// Owned reference to the wrapped coroutine or external future. Kept so
+    /// `get_coro()` still works after the scheduler releases its own reference.
+    pub coroutine_id: HeapId,
+    /// Display name used by `get_name`, `set_name` and `repr`.
+    pub name: String,
+    /// Completion record. `Pending` until the scheduler or host resolves it.
+    pub state: TaskFutureState,
+    /// Downstreams awaiting this task. Owned; each `GatherSlot` holds an
+    /// inc_ref on its gather, and `UserTask` holds an inc_ref on the task it
+    /// completes. A task may have several awaiters.
+    pub awaiters: Vec<Awaiter>,
+}
+
+/// Completion state of a [`TaskFuture`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum TaskFutureState {
+    /// The wrapped work has not completed.
+    Pending,
+    /// Completed with this cached result. Re-awaits clone it.
+    Completed(Value),
+    /// Failed with this cached exception. Re-awaits replay it.
+    Failed(RunError),
+}
+
+impl TaskFuture {
+    /// Creates a pending task handle around `coroutine_id`, taking ownership
+    /// of that heap reference and naming the task `name`.
+    pub fn new(task_id: Option<TaskId>, coroutine_id: HeapId, name: String) -> Self {
+        Self {
+            task_id,
+            coroutine_id,
+            name,
+            state: TaskFutureState::Pending,
+            awaiters: Vec::new(),
+        }
+    }
+
+    /// Whether the task has completed, successfully or not.
+    #[inline]
+    pub fn is_done(&self) -> bool {
+        !matches!(self.state, TaskFutureState::Pending)
+    }
+}
+
 ///
 /// Created by `asyncio.gather(*awaitables)`. Does NOT spawn tasks immediately -
 /// tasks are spawned when the GatherFuture is awaited in Await.
@@ -248,8 +329,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GatherFuture {
     /// Heap ids of items to gather. Each id points to an awaitable
-    /// `HeapData` entry (currently `Coroutine` or `ExternalFuture`); the
-    /// kind is recovered with `heap.read(id)` at gather-await time.
+    /// `HeapData` entry (`Coroutine`, `ExternalFuture`, `GatherFuture` or
+    /// `TaskFuture`); the kind is recovered with `heap.read(id)` at
+    /// gather-await time.
     ///
     /// Set once at construction and never mutated. The gather inc_refs each
     /// id and is the owner until drop, so GC must always walk this vector

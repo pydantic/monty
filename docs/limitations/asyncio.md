@@ -5,12 +5,16 @@ external calls. The sandbox schedules its own tasks; host event loops execute ex
 
 ## Module surface
 
-The `asyncio` module exposes exactly three functions:
+The `asyncio` module exposes these functions and one type:
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
     the coroutine `return`s, or re-raises an exception from it.
+- `asyncio.create_task(coro, *, name=None)` — schedules a coroutine, or adopts
+    a pending host future, as an `asyncio.Task`. See
+    [below](#asynciotask-and-create_task).
 - `asyncio.gather(*awaitables)` — runs awaitables concurrently and returns
     a list of results. Always behaves as `return_exceptions=False`.
+    Accepts coroutines, gather futures, host futures and `Task`s.
     Any keyword argument is rejected with
     `NotImplementedError: gather() does not yet support keyword arguments`,
     where CPython raises
@@ -19,12 +23,15 @@ The `asyncio` module exposes exactly three functions:
 - `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
     says, then produces `result`. See
     [below](#asynciosleep-waits-at-the-call-not-at-the-await).
+- `asyncio.Task` — the type returned by `create_task`; constructing one
+    directly is not supported.
 
 Not implemented (raise `AttributeError`):
 
-`create_task`, `wait`, `wait_for`, `shield`, `to_thread`,
-`new_event_loop`, `get_event_loop`, `get_running_loop`, `Queue`, `Lock`,
-`Semaphore`, `Event`, `Future`, `Task`, `TaskGroup`, `timeout`,
+`wait`, `wait_for`, `shield`, `to_thread`,
+`new_event_loop`, `get_event_loop`, `get_running_loop`, `current_task`,
+`all_tasks`, `Queue`, `Lock`,
+`Semaphore`, `Event`, `Future`, `TaskGroup`, `timeout`,
 `timeout_at`, `Timeout`, `as_completed`, `iscoroutine`, `ensure_future`,
 the whole `asyncio.subprocess` / `asyncio.streams` / `asyncio.protocols`
 surface.
@@ -49,6 +56,27 @@ time (see [language.md](language.md)).
     knows internally: coroutines from `async def`, gather futures, and external
     function call futures returned by host bindings.
 
+## `asyncio.Task` and `create_task`
+
+`create_task(coro, *, name=None)` wraps a coroutine in a `Task` and makes it
+runnable; the body first runs when the scheduler next switches tasks, not during
+the call. A task can be awaited from several coroutines, and awaiting a finished
+task returns its cached result (or re-raises its cached exception).
+
+`name` is converted with `str()`. `get_name()` and `set_name()` work, and
+`repr()` follows CPython's `<Task pending name='...'>` /
+`<Task finished name='...'>` shape. `done()`, `result()`, `exception()`,
+`cancelled()` and `cancel()` exist; the last two report that cancellation is not
+implemented rather than stopping the task.
+
+A host future returned by an external binding is also accepted. It is adopted
+rather than spawned: resolving the host call completes the `Task`. In Monty such
+a future's `type(...).__name__` is `coroutine`, where CPython reports `Future`.
+An already-resolved or already-failed host future starts the task in that state.
+
+Constructing `asyncio.Task(...)` directly is unsupported, and the task body
+cannot remove itself early: `Task.cancel()` always returns `False`.
+
 ## `asyncio.sleep()` waits at the call, not at the `await`
 
 CPython's `asyncio.sleep()` returns a coroutine that does nothing until it is
@@ -57,6 +85,7 @@ The session's `sleep` setting determines concurrency (see [time.md](time.md)):
 
 - `'system'`: all pools answer with futures, so gathered sleeps overlap and sibling tasks can run meanwhile.
     Standard Rust execution and the CLI wait inline, making gathered sleeps sequential.
+    Other ready tasks run after the inline wait returns, not during it.
     An immediately awaited sleep may be answered eagerly if no other task can run.
 - `'call_host'`: async handlers in `AsyncMonty` and JavaScript allow gathered sleeps to overlap.
     `OSAccess` is async by default under `AsyncMonty`.

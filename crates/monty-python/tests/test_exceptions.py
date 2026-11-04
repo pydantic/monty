@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import binascii
 import csv
 import json
@@ -35,6 +36,23 @@ def test_value_error(monty_run: RunMonty):
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('bad value')
+
+
+def test_asyncio_invalid_state_error(monty_run: RunMonty):
+    code = """
+import asyncio
+
+async def main():
+    task = asyncio.create_task(asyncio.sleep(10))
+    task.result()
+
+asyncio.run(main())
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, asyncio.InvalidStateError)
+    assert str(inner) == snapshot('Result is not set.')
 
 
 def test_unicode_encode_error(monty_run: RunMonty):

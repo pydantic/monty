@@ -264,6 +264,7 @@ ExcType = Literal[
     'IndexError',
     'KeyError',
     'RuntimeError',
+    'asyncio.exceptions.InvalidStateError',
     'NotImplementedError',
     'RecursionError',
     'AttributeError',

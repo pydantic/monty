@@ -1307,6 +1307,8 @@ pub enum StaticStrings {
     /// `Path.__fspath__()` method, answered without host I/O.
     #[strum(serialize = "__fspath__")]
     Fspath,
+    /// `coro` parameter of `asyncio.create_task()`.
+    Coro,
     /// `math.fsum()` function.
     Fsum,
     /// `re.fullmatch()` / `pattern.fullmatch()` method
@@ -1321,6 +1323,29 @@ pub enum StaticStrings {
     Gammavariate,
     /// `asyncio.gather()` function.
     Gather,
+    /// `asyncio.create_task()` function.
+    #[strum(serialize = "create_task")]
+    CreateTask,
+    /// `asyncio.Task` class.
+    #[strum(serialize = "Task")]
+    Task,
+    /// `asyncio.Task.done()` method.
+    Done,
+    /// `asyncio.Task.cancelled()` method.
+    Cancelled,
+    /// `asyncio.Task.cancel()` method.
+    Cancel,
+    /// `asyncio.Task.get_name()` method.
+    GetName,
+    /// `asyncio.Task.set_name()` method.
+    SetName,
+    /// `asyncio.Task.get_coro()` method.
+    GetCoro,
+    /// `asyncio.Task.exception()` method.
+    Exception,
+    /// `asyncio.InvalidStateError` class.
+    #[strum(serialize = "InvalidStateError")]
+    InvalidStateError,
     /// `random.gauss()` function.
     Gauss,
     /// Module name for `import gc`.
@@ -2125,9 +2150,9 @@ pub enum StaticStrings {
     Restkey,
     /// `restval` parameter and attribute of `csv.DictReader` / `csv.DictWriter`.
     Restval,
-    /// `result` parameter of `asyncio.sleep()`.
+    /// `result` parameter of `asyncio.sleep()` and `Task.result()` method.
     #[strum(serialize = "result")]
-    ResultArg,
+    Result,
     /// Kwarg name `return_exceptions` — `asyncio.gather(return_exceptions=...)`.
     ReturnExceptions,
     /// `list.reverse()` method.

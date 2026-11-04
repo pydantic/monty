@@ -210,6 +210,8 @@ pub(crate) enum BuiltinType {
     DecimalContextManager,
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    #[strum(serialize = "_asyncio.Task")]
+    Task,
 }
 
 impl From<BuiltinType> for Type {
@@ -321,6 +323,7 @@ impl From<BuiltinType> for Type {
             BuiltinType::DecimalSignalDict => Self::DecimalSignalDict,
             BuiltinType::DecimalContextManager => Self::DecimalContextManager,
             BuiltinType::ForwardRef => Self::ForwardRef,
+            BuiltinType::Task => Self::Task,
         }
     }
 }
@@ -436,6 +439,7 @@ impl TryFrom<Type> for BuiltinType {
             Type::DecimalSignalDict => Self::DecimalSignalDict,
             Type::DecimalContextManager => Self::DecimalContextManager,
             Type::ForwardRef => Self::ForwardRef,
+            Type::Task => Self::Task,
             Type::Instance(_) => return Err("user-defined classes use heap type objects"),
         })
     }

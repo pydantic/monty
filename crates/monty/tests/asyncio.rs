@@ -81,6 +81,74 @@ fn allow_eager_await_keeps_existing_resume_semantics() {
     assert_eq!(done.into_complete().unwrap(), MontyObject::int(42));
 }
 
+/// A discarded Task handle must stay alive until its completion is delivered.
+///
+/// The creator parks on an external call, the scheduler runs the fire-and-forget
+/// child, and completion takes the handle reference before cancelling the task.
+#[test]
+fn fire_and_forget_task_completes_while_creator_awaits_external() {
+    let code = r"
+import asyncio
+
+done = []
+
+async def child():
+    done.append('child')
+
+async def main():
+    asyncio.create_task(child())
+    await foo()
+    return done
+
+await main()
+";
+
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    assert_eq!(call_ids.len(), 1);
+
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::string("ok")))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list([MontyObject::string("child")])
+    );
+}
+
+/// The failure path takes the same handle reference before cancelling the task.
+#[test]
+fn fire_and_forget_task_failure_while_creator_awaits_external() {
+    let code = r"
+import asyncio
+
+async def child():
+    raise ValueError('bad')
+
+async def main():
+    asyncio.create_task(child())
+    await foo()
+    return 'ok'
+
+await main()
+";
+
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    assert_eq!(call_ids.len(), 1);
+
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::string("ok")))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    assert_eq!(progress.into_complete().unwrap(), MontyObject::string("ok"));
+}
+
 /// Deferred calls, ready siblings, and earlier pending futures must retain concurrency.
 #[test]
 fn allow_eager_await_excludes_competing_work() {

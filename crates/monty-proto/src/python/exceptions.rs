@@ -37,6 +37,15 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::IndexError => exceptions::PyIndexError::new_err(msg),
         ExcType::KeyError => exceptions::PyKeyError::new_err(msg),
         ExcType::RuntimeError => exceptions::PyRuntimeError::new_err(msg),
+        ExcType::InvalidStateError => {
+            if let Ok(exc_cls) = get_asyncio_invalid_state_error(py)
+                && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
+            {
+                PyErr::from_value(exc_instance)
+            } else {
+                exceptions::PyException::new_err(msg)
+            }
+        }
         ExcType::NotImplementedError => exceptions::PyNotImplementedError::new_err(msg),
         ExcType::RecursionError => exceptions::PyRecursionError::new_err(msg),
         ExcType::AssertionError => exceptions::PyAssertionError::new_err(msg),
@@ -163,6 +172,23 @@ fn get_decimal_module(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     DECIMAL
         .get_or_try_init(py, || py.import("decimal").map(|m| m.into_any().unbind()))
         .map(|m| m.bind(py))
+}
+
+/// Returns the cached host `asyncio.InvalidStateError` class.
+fn get_asyncio_invalid_state_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static INVALID_STATE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    INVALID_STATE
+        .get_or_try_init(py, || {
+            py.import("asyncio.exceptions")?
+                .getattr("InvalidStateError")
+                .map(pyo3::Bound::unbind)
+        })
+        .map(|cls| cls.bind(py))
+}
+
+/// Whether a host exception is `asyncio.InvalidStateError` (by identity).
+fn is_asyncio_invalid_state_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    get_asyncio_invalid_state_error(exc.py()).is_ok_and(|cls| exc.is_instance(cls).unwrap_or(false))
 }
 
 /// The `ExcType` of a host `decimal` exception: its nearest class in the MRO that
@@ -461,6 +487,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         // last as it needs a python isinstance call against an imported class
         } else if is_re_pattern_error(exc) {
             ExcType::RePatternError
+        } else if is_asyncio_invalid_state_error(exc) {
+            ExcType::InvalidStateError
         } else if is_csv_error(exc) {
             ExcType::CsvError
         } else {
