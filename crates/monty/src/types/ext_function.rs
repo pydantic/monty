@@ -86,7 +86,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ExtFunction> {
 /// future itself and streams the call to the host instead of suspending.
 /// It is a separate heap type, not a flag on [`ExtFunction`], so dumps
 /// written before it existed still load. Identity follows the same weak cache
-/// rules as `ExtFunction`, keyed separately so a sync and an async function
+/// as `ExtFunction`, in a slot of its own so a sync and an async function
 /// with one name stay distinct.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]

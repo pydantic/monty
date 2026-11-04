@@ -1113,11 +1113,7 @@ fn import_node(
             t.to_internal().try_into().expect("host types are static"),
         ))),
         MontyNode::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-        MontyNode::Function { name, is_async, .. } => Ok(if is_async {
-            vm.heap.get_async_ext_function(&name)
-        } else {
-            vm.heap.get_ext_function(&name)
-        }),
+        MontyNode::Function { name, is_async, .. } => Ok(vm.heap.get_ext_function(&name, is_async)),
         MontyNode::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
         MontyNode::Cycle(_) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
     }

@@ -983,13 +983,10 @@ pub(crate) struct Heap {
     /// Created lazily by `types::decimal::py_context`. Kept here rather than on the VM so the
     /// current context outlives each VM, as the heap does across REPL feeds and dumps.
     decimal_contexts: [Option<HeapId>; DecimalSlot::COUNT],
-    /// Live external functions indexed by name without owning heap references.
+    /// Live sync and async external functions indexed by name without owning heap references.
     ///
     /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
-    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
-    /// Live async external functions by name, weak like `ext_function_cache`.
-    /// Separate so a sync and an async host function with one name stay distinct.
-    async_ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    ext_function_cache: BTreeMap<Arc<str>, ExtFunctionSlots>,
     /// Live sandbox classes and instances by boundary uuid, so a value the host
     /// hands back resolves to the original object. Weak like
     /// `ext_function_cache`: cleared when the object is freed, rebuilt on restore.
@@ -1030,7 +1027,6 @@ impl<'de> serde::Deserialize<'de> for Heap {
         let mut entries = fields.entries;
         let WeakIndexes {
             ext_function_cache,
-            async_ext_function_cache,
             boundary_index,
             host_type_index,
         } = restore_entries(&mut entries).map_err(D::Error::custom)?;
@@ -1044,7 +1040,6 @@ impl<'de> serde::Deserialize<'de> for Heap {
             timezone_utc: fields.timezone_utc,
             decimal_contexts: fields.decimal_contexts,
             ext_function_cache,
-            async_ext_function_cache,
             boundary_index,
             host_type_index,
         })
@@ -1068,10 +1063,18 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
         }
         match entry.get_mut().data.0.get_mut() {
             HeapData::ExtFunction(function) => {
-                indexes.ext_function_cache.insert(function.cache_key(), id);
+                *indexes
+                    .ext_function_cache
+                    .entry(function.cache_key())
+                    .or_default()
+                    .slot_mut(false) = Some(id);
             }
             HeapData::AsyncExtFunction(function) => {
-                indexes.async_ext_function_cache.insert(function.cache_key(), id);
+                *indexes
+                    .ext_function_cache
+                    .entry(function.cache_key())
+                    .or_default()
+                    .slot_mut(true) = Some(id);
             }
             HeapData::Instance(instance) => {
                 indexes.index_boundary_uuid(instance.uuid(), id);
@@ -1090,8 +1093,7 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
 
 /// A freed object's key in one of the heap's weak indexes.
 enum WeakIndexKey {
-    ExtFunction(Arc<str>),
-    AsyncExtFunction(Arc<str>),
+    ExtFunction { name: Arc<str>, is_async: bool },
     Boundary(MontyUuid),
     HostType(MontyUuid),
 }
@@ -1099,10 +1101,29 @@ enum WeakIndexKey {
 /// The heap's weak (non-owning) indexes, rebuilt from the entries on restore.
 #[derive(Default)]
 struct WeakIndexes {
-    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
-    async_ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    ext_function_cache: BTreeMap<Arc<str>, ExtFunctionSlots>,
     boundary_index: BTreeMap<MontyUuid, HeapId>,
     host_type_index: BTreeMap<MontyUuid, HeapId>,
+}
+
+/// The live `ExtFunction` and `AsyncExtFunction` sharing one name, each held
+/// separately so a sync and an async host function with that name stay distinct.
+#[derive(Debug, Default)]
+struct ExtFunctionSlots {
+    sync: Option<HeapId>,
+    async_fn: Option<HeapId>,
+}
+
+impl ExtFunctionSlots {
+    /// The slot for the sync or async function.
+    fn slot_mut(&mut self, is_async: bool) -> &mut Option<HeapId> {
+        if is_async { &mut self.async_fn } else { &mut self.sync }
+    }
+
+    /// The live function of the requested kind, if any.
+    fn get(&self, is_async: bool) -> Option<HeapId> {
+        if is_async { self.async_fn } else { self.sync }
+    }
 }
 
 impl WeakIndexes {
@@ -1143,7 +1164,6 @@ impl Heap {
             timezone_utc: None,
             decimal_contexts: [None; DecimalSlot::COUNT],
             ext_function_cache: BTreeMap::new(),
-            async_ext_function_cache: BTreeMap::new(),
             boundary_index: BTreeMap::new(),
             host_type_index: BTreeMap::new(),
         };
@@ -1235,44 +1255,41 @@ impl Heap {
         Value::Ref(EMPTY_TUPLE_ID)
     }
 
-    /// Returns the external function for `name`, reusing a live object when possible.
+    /// Returns the sync or async external function for `name`, reusing a live object when possible.
     ///
     /// The cache holds no reference count of its own. Its entry is removed when the
     /// last owning reference is dropped, before the heap slot can be reused.
-    pub fn get_ext_function(&mut self, name: &str) -> Value {
-        if let Some(id) = self.ext_function_cache.get(name).copied() {
+    pub fn get_ext_function(&mut self, name: &str, is_async: bool) -> Value {
+        if let Some(id) = self.ext_function_cache.get(name).and_then(|slots| slots.get(is_async)) {
             self.inc_ref(id);
             Value::Ref(id)
         } else {
-            let function = ExtFunction::new(name);
-            let cache_key = function.cache_key();
-            let id = self.allocate(HeapData::ExtFunction(function));
-            let previous = self.ext_function_cache.insert(cache_key, id);
-            debug_assert!(previous.is_none());
+            let (cache_key, data) = if is_async {
+                let function = AsyncExtFunction::new(name);
+                (function.cache_key(), HeapData::AsyncExtFunction(function))
+            } else {
+                let function = ExtFunction::new(name);
+                (function.cache_key(), HeapData::ExtFunction(function))
+            };
+            let id = self.allocate(data);
+            let slot = self.ext_function_cache.entry(cache_key).or_default().slot_mut(is_async);
+            debug_assert!(slot.is_none());
+            *slot = Some(id);
             Value::Ref(id)
         }
     }
 
-    /// Returns the async external function for `name`, with the same weak
-    /// cache rules as [`Self::get_ext_function`] in a cache of its own.
-    pub fn get_async_ext_function(&mut self, name: &str) -> Value {
-        if let Some(id) = self.async_ext_function_cache.get(name).copied() {
-            self.inc_ref(id);
-            Value::Ref(id)
-        } else {
-            let function = AsyncExtFunction::new(name);
-            let cache_key = function.cache_key();
-            let id = self.allocate(HeapData::AsyncExtFunction(function));
-            let previous = self.async_ext_function_cache.insert(cache_key, id);
-            debug_assert!(previous.is_none());
-            Value::Ref(id)
-        }
-    }
-
-    /// Removes `id` from the weak cache without disturbing a duplicate-name winner.
-    fn remove_ext_function_cache_entry(cache: &mut BTreeMap<Arc<str>, HeapId>, name: &str, id: HeapId) {
-        if cache.get(name) == Some(&id) {
-            cache.remove(name);
+    /// Clears `id` from the weak cache without disturbing a duplicate-name winner,
+    /// dropping the name once neither its sync nor its async slot is live.
+    fn remove_ext_function_cache_entry(&mut self, name: &str, is_async: bool, id: HeapId) {
+        if let Some(slots) = self.ext_function_cache.get_mut(name) {
+            let slot = slots.slot_mut(is_async);
+            if *slot == Some(id) {
+                *slot = None;
+            }
+            if slots.sync.is_none() && slots.async_fn.is_none() {
+                self.ext_function_cache.remove(name);
+            }
         }
     }
 
@@ -1280,8 +1297,14 @@ impl Heap {
     /// the index entry can be cleared (see [`Heap::remove_weak_index_entry`]).
     fn weak_index_key(data: &HeapData) -> Option<WeakIndexKey> {
         match data {
-            HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction(function.cache_key())),
-            HeapData::AsyncExtFunction(function) => Some(WeakIndexKey::AsyncExtFunction(function.cache_key())),
+            HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction {
+                name: function.cache_key(),
+                is_async: false,
+            }),
+            HeapData::AsyncExtFunction(function) => Some(WeakIndexKey::ExtFunction {
+                name: function.cache_key(),
+                is_async: true,
+            }),
             HeapData::Instance(instance) => instance.uuid().map(WeakIndexKey::Boundary),
             HeapData::Class(class) => class.uuid().map(WeakIndexKey::Boundary),
             HeapData::HostClassType(ty) => Some(WeakIndexKey::HostType(ty.type_id())),
@@ -1294,11 +1317,8 @@ impl Heap {
     /// restored dump may hold duplicates).
     fn remove_weak_index_entry(&mut self, key: Option<WeakIndexKey>, id: HeapId) {
         match key {
-            Some(WeakIndexKey::ExtFunction(name)) => {
-                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &name, id);
-            }
-            Some(WeakIndexKey::AsyncExtFunction(name)) => {
-                Self::remove_ext_function_cache_entry(&mut self.async_ext_function_cache, &name, id);
+            Some(WeakIndexKey::ExtFunction { name, is_async }) => {
+                self.remove_ext_function_cache_entry(&name, is_async, id);
             }
             Some(WeakIndexKey::Boundary(uuid)) if self.boundary_index.get(&uuid) == Some(&id) => {
                 self.boundary_index.remove(&uuid);
