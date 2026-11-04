@@ -240,6 +240,12 @@ unequal to itself. *Distinct* `NaN` objects agree on both
 (`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
 direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
 
+## Function hashes
+
+Distinct functions created from the same `def` share a hash value in Monty.
+Dicts and sets still distinguish these function objects, but storing many of
+them as keys can be slower than in CPython because they share a hash bucket.
+
 ## What *does* work
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on
