@@ -325,3 +325,22 @@ class Missing:
 
 assert Nested.__annotations__ == {'x': list[Missing]}
 assert get_annotations(Nested, format=Format.FORWARDREF) == {'x': list[Missing]}
+
+
+# === A hand-written __annotate__ returning a non-dict ===
+def not_a_dict(format):
+    return [1]
+
+
+NotADict = type('NotADict', (), {'__annotate__': not_a_dict})
+for fmt in [Format.FORWARDREF, Format.STRING]:
+    try:
+        get_annotations(NotADict, format=fmt)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == f'{NotADict!r}.__annotate__ returned a non-dict'
+try:
+    NotADict.__annotations__
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "__annotate__ returned non-dict of type 'list'"

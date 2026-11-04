@@ -1910,6 +1910,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             default_exprs,
             is_async,
             annotate,
+            is_annotate,
         })
     }
 
@@ -2077,6 +2078,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             default_exprs: Vec::new(),
             is_async: false,
             annotate: None,
+            is_annotate: false,
         };
 
         Ok(Node::ClassDef {
@@ -2242,6 +2244,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             default_exprs,
             is_async: false,
             annotate: None,
+            is_annotate: false,
         };
 
         Ok(ExprLoc::new(

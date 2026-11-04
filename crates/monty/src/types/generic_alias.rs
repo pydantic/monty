@@ -424,7 +424,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                     } else {
                         let origin = self.get(vm.heap).origin_value(vm.heap);
                         defer_drop!(origin, vm);
-                        origin.py_getattr(attr, vm).map(Some)
+                        // A special form (`ClassVar`, `Literal`) raises the bare
+                        // name too, as CPython's `_SpecialForm.__getattr__` does.
+                        if matches!(origin, Value::Marker(_)) {
+                            Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
+                        } else {
+                            origin.py_getattr(attr, vm).map(Some)
+                        }
                     }
                 }
             },

@@ -33,25 +33,6 @@ def __monty_class_annotations(cls, annotate, classdict, call_annotate, cache):
     return result
 ";
 
-/// What an unresolved name loads as while an `__annotate__` function runs, from
-/// the fake-globals mode frozen code passes: `0` a `NameError` (the function
-/// runs as written), `1` a `ForwardRef` stringifier for unresolved names, `2`
-/// one for every name — CPython's `_StringifierDict` for `FORWARDREF` and
-/// `STRING` — and `3` a `NameError` without asking the host.
-/// `owner` is borrowed, cloned only when a stringifier needs it.
-fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> MissingNames {
-    match fake {
-        Value::Int(0) => MissingNames::Raise,
-        Value::Int(every_name @ (1 | 2)) => MissingNames::ForwardRef {
-            owner: owner.clone_with_heap(vm.heap),
-            is_class,
-            every_name: *every_name == 2,
-        },
-        Value::Int(3) => MissingNames::NameError,
-        _ => unreachable!("frozen code passes the fake-globals mode as an int"),
-    }
-}
-
 /// `f.__annotate__` and `f.__annotations__` of a `def`, the only attributes
 /// Monty's functions have (see `limitations/language.md`); `None` for any other
 /// name. `globals` is the exec dict the `def` was made under, if any.
@@ -228,6 +209,25 @@ pub(crate) fn call_annotate_helper(args: ArgValues, vm: &mut VM<'_>) -> RunResul
     };
     let missing = missing_names(&fake, owner, matches!(is_class, Value::Bool(true)), vm);
     vm.call_annotate(annotate, format, classdict.ref_id(), missing)
+}
+
+/// What an unresolved name loads as while an `__annotate__` function runs, from
+/// the fake-globals mode frozen code passes: `0` a `NameError` (the function
+/// runs as written), `1` a `ForwardRef` stringifier for unresolved names, `2`
+/// one for every name — CPython's `_StringifierDict` for `FORWARDREF` and
+/// `STRING` — and `3` a `NameError` without asking the host.
+/// `owner` is borrowed, cloned only when a stringifier needs it.
+fn missing_names(fake: &Value, owner: &Value, is_class: bool, vm: &VM<'_>) -> MissingNames {
+    match fake {
+        Value::Int(0) => MissingNames::Raise,
+        Value::Int(every_name @ (1 | 2)) => MissingNames::ForwardRef {
+            owner: owner.clone_with_heap(vm.heap),
+            is_class,
+            every_name: *every_name == 2,
+        },
+        Value::Int(3) => MissingNames::NameError,
+        _ => unreachable!("frozen code passes the fake-globals mode as an int"),
+    }
 }
 
 /// Arguments of the private `call_annotate` helper.

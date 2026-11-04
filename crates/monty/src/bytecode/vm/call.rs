@@ -915,33 +915,25 @@ impl<'h> VM<'h> {
     ) -> Result<CallResult, RunError> {
         let this = self;
         let args = ArgValues::One(Value::Int(format));
-        let (func_id, cells, defaults, globals) = match annotate {
-            Value::DefFunction(func_id) => (*func_id, Box::default(), Vec::new(), None),
-            Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::FunctionDefaults(function) => {
-                    let defaults = function.defaults.iter().map(|v| v.clone_with_heap(this)).collect();
-                    (function.func_id, Box::default(), defaults, function.globals)
-                }
-                HeapData::Closure(closure) => {
-                    let defaults = closure.defaults.iter().map(|v| v.clone_with_heap(this)).collect();
-                    (closure.func_id, closure.cells.clone(), defaults, closure.globals)
-                }
-                _ => {
-                    missing.drop_with(this);
-                    return this.call_function(annotate, args);
-                }
-            },
-            _ => {
-                missing.drop_with(this);
-                return this.call_function(annotate, args);
-            }
+        // The guard releases `missing` on the paths that run without a namespace.
+        let mut missing_guard = DropGuard::new(missing, this);
+        let (_, this) = missing_guard.as_parts_mut();
+        let Some(FunctionParts {
+            func_id,
+            cells,
+            defaults,
+            globals,
+        }) = this.function_parts(annotate)
+        else {
+            return this.call_function(annotate, args);
         };
-        defer_drop!(defaults, this);
         let func = this.interns.get_function(func_id);
         if func.is_async {
-            missing.drop_with(this);
+            defer_drop!(defaults, this);
             return this.create_coroutine(func_id, func, &cells, defaults, globals, args);
         }
+        let (missing, this) = missing_guard.into_parts();
+        defer_drop!(defaults, this);
         let globals = match globals {
             Some(dict) => {
                 this.heap.inc_ref(dict);
@@ -958,6 +950,36 @@ impl<'h> VM<'h> {
             missing,
         });
         this.call_sync_function(func_id, func, &cells, defaults, Some(namespace), args)
+    }
+
+    /// The [`FunctionParts`] of a Python function value; `None` for a callable
+    /// that is not a `def` (a builtin, a bound method, ...).
+    fn function_parts(&self, value: &Value) -> Option<FunctionParts> {
+        let parts = |func_id, cells, defaults: &[Value], globals| FunctionParts {
+            func_id,
+            cells,
+            defaults: defaults.iter().map(|v| v.clone_with_heap(self)).collect(),
+            globals,
+        };
+        match value {
+            Value::DefFunction(func_id) => Some(parts(*func_id, Box::default(), &[], None)),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) => Some(parts(
+                    function.func_id,
+                    Box::default(),
+                    &function.defaults,
+                    function.globals,
+                )),
+                HeapData::Closure(closure) => Some(parts(
+                    closure.func_id,
+                    closure.cells.clone(),
+                    &closure.defaults,
+                    closure.globals,
+                )),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Creates a Coroutine for an async function call.
@@ -1345,4 +1367,14 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         _ => None,
     };
     vm.heap.read(heap_id).py_exit(vm, exc)
+}
+
+/// What a Python function value is called with: its id, captured cells, owned
+/// clones of its defaults and its exec globals, as [`VM::function_parts`] unpacks them.
+struct FunctionParts {
+    func_id: FunctionId,
+    cells: Box<[HeapId]>,
+    /// OWNED clones, released by the caller.
+    defaults: Vec<Value>,
+    globals: Option<HeapId>,
 }

@@ -100,7 +100,7 @@ pub(crate) enum FrozenFunctions {
     AliasWith,
     /// Cache a class's evaluated `__annotations__` under `__annotations_cache__`.
     CacheClassAnnotations,
-    /// Call an `__annotate__` function in an `annotationlib.Format` (see `annotations::AnnotateMode`).
+    /// Call an `__annotate__` function in an `annotationlib.Format` (see `annotations::missing_names`).
     CallAnnotate,
     /// Evaluate one annotation string in explicit namespaces and name-resolution mode.
     EvalHint,

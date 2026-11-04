@@ -982,6 +982,9 @@ pub struct PreparedFunctionDef {
     /// The prepared `__annotate__(format)` of an annotated `def`, compiled as a
     /// nested function and recorded on the [`Function`](crate::function::Function).
     pub annotate: Option<Box<Self>>,
+    /// Whether this is a synthesized `__annotate__`, named so in tracebacks
+    /// whatever a class body binds it as (`__annotate_func__`).
+    pub is_annotate: bool,
 }
 
 /// Type alias for prepared AST nodes (output of prepare phase).

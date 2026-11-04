@@ -227,3 +227,11 @@ assert hash(Literal[big]) == hash(Literal[big[::-1]])
 assert len(Literal[big + big].__args__) == 1000
 assert Literal[big].__args__[:3] == (0, 1, 2)
 assert Literal[[1], 1, [1]].__args__ == ([1], 1)
+
+# === An unknown attribute on a special form's alias raises with the bare name too ===
+for form in (ClassVar[int], Literal[1], Final[str]):
+    try:
+        form.foo
+        assert False, 'expected AttributeError'
+    except AttributeError as exc:
+        assert str(exc) == 'foo'

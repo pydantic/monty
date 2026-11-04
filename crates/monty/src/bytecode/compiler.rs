@@ -948,7 +948,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             })
             .collect();
         let function = Function::new(
-            func_def.name,
+            self.function_name(func_def),
             func_def.signature.clone(),
             func_def.namespace_size,
             enclosing_slot_metadata,
@@ -999,6 +999,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
     /// function value is built on `f.__annotate__` access from the owner's
     /// globals, since it has no defaults or captured cells of its own.
+    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
+    /// called that, as in CPython, whatever a class body binds it as.
+    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
+        let mut name = func_def.name;
+        if func_def.is_annotate {
+            name.name_id = self.interns.intern("__annotate__");
+        }
+        name
+    }
+
     fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
         debug_assert!(
             annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
@@ -1007,7 +1017,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
         let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
         let function = Function::new(
-            annotate.name,
+            self.function_name(annotate),
             annotate.signature.clone(),
             annotate.namespace_size,
             Vec::new(),

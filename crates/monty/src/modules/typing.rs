@@ -130,7 +130,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 /// `type.__annotations__` would. `eval_hint`'s last three arguments are the
 /// name mode, the owner and the class flag.
 pub(crate) const GET_ANNOTATIONS_SOURCE: &str = r"
-def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_, task, include_extras, is_class, call_annotate, cache, eval_hint, alias_with, forward_ref, type_repr_, isinstance_, len_, str_, tuple_, generic_alias, union, none_type, exception, not_implemented_error, syntax_error):
+def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_, task, include_extras, is_class, call_annotate, cache, eval_hint, alias_with, forward_ref, type_repr_, isinstance_, len_, str_, tuple_, dict_, repr_, generic_alias, union, none_type, exception, not_implemented_error, syntax_error, value_error):
     VALUE = 1
     FAKE_GLOBALS = 2
     FORWARDREF = 3
@@ -152,6 +152,8 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
                     annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 2, owner, is_class)
                 except not_implemented_error:
                     annotations = call_annotate(annotate, classdict, VALUE, 0, owner, is_class)
+            if not isinstance_(annotations, dict_):
+                raise value_error(repr_(owner) + '.__annotate__ returned a non-dict')
         result = {}
         for name, value in annotations.items():
             if isinstance_(value, forward_ref):
@@ -175,9 +177,19 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
         # function's own support, else fake globals stringifying unresolved
         # names, and if that run raises, every name is stringified and each
         # reference then evaluated on its own.
+        # A non-dict from the plain evaluation is the `TypeError` `__annotations__`
+        # raises, which `get_annotations` swallows like any other failure.
+        plain = True
         try:
             annotations = call_annotate(annotate, classdict, VALUE, 3, owner, is_class)
         except exception:
+            plain = False
+        if plain and not isinstance_(annotations, dict_):
+            plain = False
+        if plain:
+            if cache is not None:
+                cache(owner, annotations)
+        else:
             try:
                 annotations = call_annotate(annotate, classdict, FORWARDREF, 0, owner, is_class)
             except not_implemented_error:
@@ -185,15 +197,16 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
                     annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 1, owner, is_class)
                 except exception:
                     annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 2, owner, is_class)
+                    if not isinstance_(annotations, dict_):
+                        raise value_error(repr_(owner) + '.__annotate__ returned a non-dict')
                     evaluated = {}
                     for name, value in annotations.items():
                         if isinstance_(value, forward_ref):
                             value = value.evaluate(format=FORWARDREF)
                         evaluated[name] = value
                     annotations = evaluated
-        else:
-            if cache is not None:
-                cache(owner, annotations)
+            if not isinstance_(annotations, dict_):
+                raise value_error(repr_(owner) + '.__annotate__ returned a non-dict')
     # `get_annotations(eval_str=True)` evaluates string values with plain `eval()`.
     if task == 1:
         result = {}
@@ -582,12 +595,15 @@ fn resolve_hints(
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
             Value::Builtin(Builtins::Type(BuiltinType::Str)),
             Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+            Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Repr)),
             Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
             Value::Builtin(Builtins::Type(BuiltinType::Union)),
             Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
             Value::Builtin(Builtins::ExcType(ExcType::Exception)),
             Value::Builtin(Builtins::ExcType(ExcType::NotImplementedError)),
             Value::Builtin(Builtins::ExcType(ExcType::SyntaxError)),
+            Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
         ],
     )
 }
