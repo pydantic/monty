@@ -157,4 +157,4 @@ next(gone_flat)
 gone_flat = None
 
 len('done')
-# ref-counts={'itertools': 1, 'Reentrant': 1, 'reentrant_flat': 1, 'teed': 1, 'drained_tee': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1}
+# ref-counts={'itertools': 1, 'Reentrant': 1, 'reentrant_flat': 1, 'teed': 1, 'drained_tee': 1, 'combos': 1, 'yielding': 1, 'replaced': 1, 'permuted': 1, 'yielded': 1, 'product_live': 1, 'repeated': 1, 'survivor': 1, 'cyclic': 2, 'groupers': 2, 'grouped_group': 1, 'orphan_group': 1, 'keys_source': 2, 'drained_groupby': 1, 'flattened': 1, 'flat_source': 1, 'spent_flat': 1, 'bad_source': 1, 'failing_flat': 1, 'make_length_key': 1}

@@ -15,4 +15,4 @@ def f():
 
 
 res = f()
-# ref-counts={'obj': 2, 'res': 2}
+# ref-counts={'obj': 2, 'res': 2, 'f': 1}

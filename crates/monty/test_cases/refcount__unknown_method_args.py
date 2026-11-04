@@ -33,4 +33,4 @@ def call_bogus():
 
 for _ in range(3):
     assert call_bogus() == 3
-# ref-counts={'lst': 1, 're': 1}
+# ref-counts={'lst': 1, 're': 1, 'call_bogus': 1}

@@ -31,4 +31,4 @@ try:
         raise TypeError('replacement')
 except TypeError:
     pass
-# ref-counts={'result': 1}
+# ref-counts={'result': 1, 'swallow_return': 1}
