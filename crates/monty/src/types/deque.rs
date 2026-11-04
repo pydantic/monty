@@ -605,7 +605,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             return Ok(false);
         };
 
-        // Repeating once or repeating an empty deque must leave existing iterators valid.
+        // These no-op repetitions must not invalidate iterators already traversing this deque.
         if count == 1 || self.get(vm.heap).items.is_empty() {
             return Ok(true);
         }

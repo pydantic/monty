@@ -667,6 +667,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
     /// Extends in place from a list or synchronous iterable, preserving aliases.
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        // Lists use bulk copying; other operands follow the iterator protocol, including its errors.
         let other_id = other
             .ref_id()
             .filter(|id| matches!(vm.heap.get(*id), HeapData::List(_)));
@@ -675,8 +676,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             let iterator = other.py_iter(vm)?.require_synchronous(vm)?;
             defer_drop!(iterator, vm);
             let mut iterator = iterator.read(vm);
+
+            // Preflight the size hint; append still checks growth if the iterator yields more.
             let hint = iterator.iter_size_hint(vm);
             vm.heap.tracker.check_allocation(hint.saturating_mul(VALUE_SIZE))?;
+
             while let Some(item) = iterator.py_next(vm)? {
                 self.append(vm, item)?;
             }
@@ -684,9 +688,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         };
 
         if other_id == self.id() {
-            // Self-extend: clone our own items with proper refcounting. Checked
-            // at 2× — the temporary clone plus the equal-sized target growth —
-            // up front, while no owned values need releasing on failure.
+            // Snapshot before extending so `a += a` copies only the original items.
+            // Budget for both the snapshot and target growth before acquiring owned references.
             let len = self.get(vm.heap).items.len();
             vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
             self.get_mut(vm.heap)
@@ -694,6 +697,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
                 .try_reserve_exact(len)
                 .map_err(|_| ExcType::allocation_too_large())?;
             let items = self.clone_all_items(vm)?;
+            // Duplicating existing elements cannot change whether this list contains heap references.
             self.get_mut(vm.heap).items.extend(items);
         } else {
             // Read source list via HeapRead, clone items into a temporary Vec.
@@ -712,7 +716,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
                 .try_reserve_exact(source_len)
                 .map_err(|_| ExcType::allocation_too_large())?;
             let source_items = source_list.clone_all_items(vm)?;
-            // Check if new items contain refs
+            // GC skips lists without heap references; newly appended references must enable scanning.
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
             self.get_mut(vm.heap).items.extend(source_items);
             if has_new_refs {
