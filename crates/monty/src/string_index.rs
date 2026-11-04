@@ -18,8 +18,8 @@
 //! Cursor state stays boxed to keep unused per-string metadata small. An inline
 //! `Cell`/`OnceCell` experiment saved about 0.35 MiB across 3,000 Unicode strings but
 //! regressed several access workloads by 2–4%, so the boxed layout remains the default.
-//! These measurements do not isolate the CPU cause; see the string-access benchmark
-//! README for workloads and the remaining moderate-access overhead.
+//! These measurements do not isolate the CPU cause; see `scripts/string_access/README.md` in Flying Circus
+//! for workloads and the remaining moderate-access overhead.
 //!
 //! Checkpoint allocation is resource-preflighted. All caches are derived, reset on clone and omitted
 //! from snapshots; the text alone determines their validity.
@@ -287,6 +287,7 @@ where
     tracker.check_allocation(count.saturating_mul(size_of::<T>()))?;
     let mut offsets = Vec::with_capacity(count);
     for (character, (byte, _)) in text.char_indices().enumerate() {
+        tracker.check_time_every(character)?;
         if character % STEP == 0 {
             offsets.push(T::try_from(byte).expect("offset width checked before building"));
         }
@@ -296,6 +297,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{hint::spin_loop, time::Duration};
+
     use monty_types::ResourceLimits;
 
     use super::*;
@@ -361,6 +364,43 @@ mod tests {
                 ..State::default()
             };
             assert!(index.charge(&text, &mut denied, 9, 0, &limited).is_err());
+        }
+    }
+
+    #[test]
+    fn checkpoint_construction_observes_deadlines_and_can_retry() {
+        for limits in [
+            ResourceLimits {
+                max_feed_duration: Some(Duration::ZERO),
+                ..ResourceLimits::default()
+            },
+            ResourceLimits {
+                max_turn_duration: Some(Duration::ZERO),
+                ..ResourceLimits::default()
+            },
+        ] {
+            for characters in [128, 1024, 65_536] {
+                let text = "é".repeat(characters);
+                let index = StringIndex::default();
+                let mut state = State {
+                    scanned: text.len() * SCAN_BUDGET,
+                    ..State::default()
+                };
+                let tracker = ResourceTracker::new(limits.clone());
+                tracker.on_execution_start();
+                while tracker.check_time().is_ok() {
+                    spin_loop();
+                }
+
+                // Force construction directly so a VM dispatch check cannot mask a missing loop check.
+                assert!(index.charge(&text, &mut state, 9, 0, &tracker).is_err());
+                assert_eq!(state.offsets.len(), 0);
+
+                index
+                    .charge(&text, &mut state, 9, 0, &ResourceTracker::default())
+                    .unwrap();
+                assert!(state.offsets.len() > 0);
+            }
         }
     }
 
