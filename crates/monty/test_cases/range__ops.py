@@ -290,3 +290,76 @@ assert True not in range(2, 5)
 assert None not in range(5)
 assert (1,) not in range(5)
 assert [1] not in range(5)
+
+# === start, stop and step attributes ===
+r = range(1, 20, 3)
+assert (r.start, r.stop, r.step) == (1, 20, 3)
+assert (range(5).start, range(5).stop, range(5).step) == (0, 5, 1)
+assert range(10, 0, -2).step == -2
+tail = r[1:]
+assert (tail.start, tail.stop, tail.step) == (4, 22, 3)
+for name in ['start', 'stop', 'step']:
+    try:
+        setattr(r, name, 0)
+        assert False, f'expected AttributeError for {name}'
+    except AttributeError as e:
+        assert str(e) == 'readonly attribute'
+
+# === index() and count() ===
+assert r.index(7) == 2
+assert r.index(7.0) == 2
+assert r.index(True) == 0
+assert range(3).index(True) == 1
+assert range(10, 0, -2).index(4) == 3
+assert range(-(2**63), 2**63 - 1).index(2**63 - 2) == 2**64 - 2
+assert r.count(7) == 1
+assert r.count(8) == 0
+assert r.count(7.0) == 1
+assert r.count('a') == 0
+assert r.count(2**70) == 0
+assert range(3).count(False) == 1
+for value, message in [
+    (8, 'range.index(x): x not in range'),
+    (2**70, 'range.index(x): x not in range'),
+    (False, 'range.index(x): x not in range'),
+    (7.5, 'sequence.index(x): x not in sequence'),
+    ('a', 'sequence.index(x): x not in sequence'),
+]:
+    try:
+        r.index(value)
+        assert False, f'expected ValueError for {value!r}'
+    except ValueError as e:
+        assert str(e) == message
+try:
+    r.index()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'range.index() takes exactly one argument (0 given)'
+try:
+    r.count(1, 2)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'range.count() takes exactly one argument (2 given)'
+try:
+    r.index(x=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'range.index() takes no keyword arguments'
+try:
+    r.count(x=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'range.count() takes no keyword arguments'
+
+# === other attributes ===
+for call in [lambda: r.foo, lambda: r.foo()]:
+    try:
+        call()
+        assert False, 'expected AttributeError'
+    except AttributeError as e:
+        assert str(e) == "'range' object has no attribute 'foo'"
+try:
+    r.foo = 1
+    assert False, 'expected AttributeError'
+except AttributeError as e:
+    assert str(e) == "'range' object has no attribute 'foo' and no __dict__ for setting new attributes"
