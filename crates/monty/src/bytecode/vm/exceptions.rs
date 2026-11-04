@@ -565,7 +565,14 @@ impl VM<'_> {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
-                format_unhandled_custom_exception(&mut error, &mut exc_guard);
+                if let Err(terminal) = format_unhandled_custom_exception(&mut error, &mut exc_guard) {
+                    let (exc_value, this) = exc_guard.into_parts();
+                    exc_value.drop_with(this);
+                    if let Some(exc) = this.unwinding_exception.take() {
+                        exc.drop_with(this);
+                    }
+                    return ExceptionHandlingResult::Unhandled(this.unwind_for_traceback(terminal));
+                }
 
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
@@ -611,7 +618,14 @@ impl VM<'_> {
                 }
             }
             if should_return {
-                format_unhandled_custom_exception(&mut error, &mut exc_guard);
+                if let Err(terminal) = format_unhandled_custom_exception(&mut error, &mut exc_guard) {
+                    let (exc_value, this) = exc_guard.into_parts();
+                    exc_value.drop_with(this);
+                    if let Some(exc) = this.unwinding_exception.take() {
+                        exc.drop_with(this);
+                    }
+                    return ExceptionHandlingResult::Unhandled(this.unwind_for_traceback(terminal));
+                }
                 let (exc_value, this) = exc_guard.into_parts();
                 if let Some(old) = this.unwinding_exception.replace(exc_value) {
                     old.drop_with(this);
@@ -824,23 +838,34 @@ impl Write for TruncatingWriter {
     }
 }
 
-fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropGuard<'_, VM<'_>, Value>) {
+fn format_unhandled_custom_exception(
+    error: &mut RunError,
+    exc_guard: &mut DropGuard<'_, VM<'_>, Value>,
+) -> RunResult<()> {
     if let RunError::Exc(raise) = error
         && raise.exc.arg().is_none()
         && raise.exc.custom_type_name().is_some()
     {
         let (exc_val, this) = exc_guard.as_parts();
-        if let Ok(text) = exc_val.py_str(this) {
-            defer_drop!(text, this);
-            if let Some(s) = text.as_str(this)
-                && !s.is_empty()
-            {
-                raise.exc.set_arg(Some(s.to_owned()));
+        match exc_val.py_str(this) {
+            Ok(text) => {
+                defer_drop!(text, this);
+                if let Some(s) = text.as_str(this)
+                    && !s.is_empty()
+                {
+                    raise.exc.set_arg(Some(s.to_owned()));
+                }
             }
-        } else {
-            this.clear_unwinding_exception();
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+            }
+            Err(terminal) => {
+                this.clear_unwinding_exception();
+                return Err(terminal);
+            }
         }
     }
+    Ok(())
 }
 
 fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>) -> bool {

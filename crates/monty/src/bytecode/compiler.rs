@@ -1018,7 +1018,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
 
         if keywords.is_empty() {
-            // Fast path: Arguments for type(name, bases, dict):
+            // Fast path: Arguments for type.__build_class__(name, bases, dict, future_annotations):
             let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
             self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
 
@@ -1034,15 +1034,18 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.set_location(position, None);
             self.code.emit_u8(Opcode::CallFunction, 0)?;
 
-            // Call the 3-arg type() builtin, which constructs the Class object.
+            let future_const = self.code.add_const(Value::Bool(self.flags.future_annotations))?;
+            self.code.emit_u16(Opcode::LoadConst, future_const)?;
+
+            // Call the 4-arg type.__build_class__() builtin, which constructs the Class object.
             self.code.set_location(position, None);
-            self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+            self.code.emit_call_builtin_function(BuiltinsFunctions::BuildClass as u8, 4)?;
         } else {
-            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, kw_val_0, kw_val_1, ...]
-            let type_const = self
+            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, pos_3, kw_val_0, kw_val_1, ...]
+            let build_class_const = self
                 .code
-                .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)))?;
-            self.code.emit_u16(Opcode::LoadConst, type_const)?;
+                .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::BuildClass)))?;
+            self.code.emit_u16(Opcode::LoadConst, build_class_const)?;
 
             let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
             self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
@@ -1065,8 +1068,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 .map_err(|_| CompileError::new("too many keyword arguments in class definition", position))?;
             self.code.emit_u8(Opcode::SinkTop, kw_count)?;
 
+            let future_const = self.code.add_const(Value::Bool(self.flags.future_annotations))?;
+            self.code.emit_u16(Opcode::LoadConst, future_const)?;
+            self.code.emit_u8(Opcode::SinkTop, kw_count)?;
+
             self.code.set_location(position, None);
-            self.code.emit_call_function_kw(3, &kwname_ids)?;
+            self.code.emit_call_function_kw(4, &kwname_ids)?;
         }
 
         // Each call consumes the callable below the current value: `deco(value)`.

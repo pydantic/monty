@@ -54,31 +54,40 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
 }
 
-/// Arguments of the compiled class body's tail call (see `compile_class_body`).
+/// Arguments of the compiled class definition call (see `compile_class_def`).
 #[derive(FromArgs)]
 #[from_args(name = "type.__build_class__", style = unpack)]
 struct BuildClassArgs {
     #[from_args(pos_only)]
     name: Value,
     #[from_args(pos_only)]
+    bases: Value,
+    #[from_args(pos_only)]
     namespace: Value,
     #[from_args(pos_only)]
     future_annotations: Value,
 }
 
-/// `type.__build_class__(name, namespace, future_annotations)`: builds the
-/// class a compiled body assembled, keeping the body's `from __future__ import
+/// `type.__build_class__(name, bases, namespace, future_annotations, **kwargs)`: builds the
+/// class a compiled definition assembled, keeping the definition's `from __future__ import
 /// annotations` state so `get_type_hints()` reads its stringized annotations
 /// the right way. Unreachable from Python code (see `BuiltinsFunctions::BuildClass`).
 pub fn builtin_build_class(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let (pos, kwargs) = args.into_parts();
     let BuildClassArgs {
         name,
+        bases,
         namespace,
         future_annotations,
-    } = BuildClassArgs::from_args(args, vm)?;
+    } = match BuildClassArgs::from_args(ArgValues::from_parts(pos.collect(), KwargsValues::Empty), vm) {
+        Ok(args) => args,
+        Err(e) => {
+            kwargs.drop_with(vm.heap);
+            return Err(e);
+        }
+    };
     let future_annotations = matches!(future_annotations, Value::Bool(true));
-    let bases = vm.heap.get_empty_tuple();
-    create_class(vm, name, bases, namespace, KwargsValues::Empty, future_annotations)
+    create_class(vm, name, bases, namespace, kwargs, future_annotations)
 }
 
 /// The 1-arg `type(obj)` form.
