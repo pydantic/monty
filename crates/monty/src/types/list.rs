@@ -23,7 +23,7 @@ use crate::{
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
-        long_int::repeat_count,
+        long_int::{inplace_repeat_count, repeat_count},
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -667,22 +667,37 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
     }
 
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let Value::Ref(other_id) = other else {
-            return Ok(false);
+        let other_id = other
+            .ref_id()
+            .filter(|id| matches!(vm.heap.get(*id), HeapData::List(_)));
+        let Some(other_id) = other_id else {
+            let iterator = other.py_iter(vm)?.require_synchronous(vm)?;
+            defer_drop!(iterator, vm);
+            let mut iterator = iterator.read(vm);
+            let hint = iterator.iter_size_hint(vm);
+            vm.heap.tracker.check_allocation(hint.saturating_mul(VALUE_SIZE))?;
+            while let Some(item) = iterator.py_next(vm)? {
+                self.append(vm, item)?;
+            }
+            return Ok(true);
         };
 
-        if *other_id == self.id() {
+        if other_id == self.id() {
             // Self-extend: clone our own items with proper refcounting. Checked
             // at 2× — the temporary clone plus the equal-sized target growth —
             // up front, while no owned values need releasing on failure.
             let len = self.get(vm.heap).items.len();
             vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+            self.get_mut(vm.heap)
+                .items
+                .try_reserve_exact(len)
+                .map_err(|_| ExcType::allocation_too_large())?;
             let items = self.clone_all_items(vm)?;
             self.get_mut(vm.heap).items.extend(items);
         } else {
             // Read source list via HeapRead, clone items into a temporary Vec.
             // Checked at 2× — the clone plus the target growth — see above.
-            let source = vm.heap.read(*other_id);
+            let source = vm.heap.read(other_id);
             let HeapReadOutput::List(source_list) = source else {
                 return Ok(false);
             };
@@ -690,6 +705,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             vm.heap
                 .tracker
                 .check_allocation(source_len.saturating_mul(2 * VALUE_SIZE))?;
+            // Exact reservation avoids doubling a full list for a small source.
+            self.get_mut(vm.heap)
+                .items
+                .try_reserve_exact(source_len)
+                .map_err(|_| ExcType::allocation_too_large())?;
             let source_items = source_list.clone_all_items(vm)?;
             // Check if new items contain refs
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
@@ -699,6 +719,34 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             }
         }
 
+        Ok(true)
+    }
+
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(count) = inplace_repeat_count(other, vm)? else {
+            return Ok(false);
+        };
+        let len = self.get(vm.heap).items.len();
+        if count == 1 || len == 0 {
+            return Ok(true);
+        }
+        if count == 0 {
+            let items = mem::take(&mut self.get_mut(vm.heap).items);
+            self.get_mut(vm.heap).contains_refs = false;
+            items.drop_with(vm);
+            return Ok(true);
+        }
+        check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
+        let total = len.checked_mul(count).ok_or_else(ExcType::allocation_too_large)?;
+        self.get_mut(vm.heap)
+            .items
+            .try_reserve_exact(total - len)
+            .map_err(|_| ExcType::allocation_too_large())?;
+        for index in len..total {
+            let item = self.get(vm.heap).items[index % len].clone_with_heap(vm.heap);
+            self.get_mut(vm.heap).items.push(item);
+            vm.heap.tracker.check_time_every(index)?;
+        }
         Ok(true)
     }
 

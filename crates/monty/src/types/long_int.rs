@@ -27,6 +27,7 @@ use smallvec::smallvec;
 use self::arithmetic::IntArithmetic;
 use crate::{
     bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData, HeapObjectRead},
@@ -645,6 +646,18 @@ pub(crate) fn repeat_count(value: &Value, vm: &VM<'_>) -> RunResult<Option<usize
         PyValue::Bool(value) => Ok(Some(usize::from(value))),
         _ => Ok(None),
     }
+}
+
+/// Resolves an in-place sequence repeat count through `__index__`.
+pub(crate) fn inplace_repeat_count(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<usize>> {
+    let Some(count) = value.py_index_impl(vm)? else {
+        return Ok(None);
+    };
+    defer_drop!(count, vm);
+    let count = count.as_int(vm)?;
+    Ok(Some(
+        usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
+    ))
 }
 
 /// Compares a `BigInt` against an `f64` *exactly*, matching CPython's mixed

@@ -186,7 +186,11 @@ impl<'h> HeapReadMut<'h, SetStorage> {
     /// Returns `Err` if the key is unhashable.
     fn remove(&self, value: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let hash = set_element_hash(value, vm)?;
+        self.remove_with_hash(value, hash, vm)
+    }
 
+    /// Set-to-set mutation reuses the hash cached by the source entry.
+    fn remove_with_hash(&self, value: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(slot) = self.find_index(value, hash, vm)? else {
             return Ok(false);
         };
@@ -838,6 +842,47 @@ fn clone_storage_checked(storage: &SetStorage, vm: &VM<'_>) -> RunResult<SetStor
     Ok(storage.clone_with_heap(vm.heap))
 }
 
+impl<'h> HeapObjectRead<'h, Set> {
+    /// In-place set operators accept sets/frozensets; dict views use reflected binary dispatch.
+    fn inplace_algebra(&self, other: &Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(id) = other.ref_id() else {
+            return Ok(false);
+        };
+        if !matches!(vm.heap.get(id), HeapData::Set(_) | HeapData::FrozenSet(_)) {
+            return Ok(false);
+        }
+        if id == self.id() {
+            if matches!(op, SetAlgebra::Difference | SetAlgebra::SymmetricDifference) {
+                self.clear(vm);
+            }
+            return Ok(true);
+        }
+        let storage = match vm.heap.get(id) {
+            HeapData::Set(set) => clone_storage_checked(&set.0, vm)?,
+            HeapData::FrozenSet(set) => clone_storage_checked(&set.storage, vm)?,
+            _ => unreachable!(),
+        };
+        defer_drop!(storage, vm);
+        let storage = vm.heap.protect(storage);
+        if matches!(op, SetAlgebra::Intersection) {
+            let result = self.storage().intersection(&storage, vm)?;
+            let old = mem::replace(&mut self.get_mut(vm.heap).0, result);
+            old.drop_with(vm);
+        } else {
+            let iter = storage.iter(vm)?;
+            defer_drop_mut!(iter, vm);
+            while let Some((value, hash)) = iter.next_entry(vm)? {
+                let removed =
+                    !matches!(op, SetAlgebra::Union) && self.storage_mut().remove_with_hash(value, hash, vm)?;
+                if matches!(op, SetAlgebra::Union) || matches!(op, SetAlgebra::SymmetricDifference) && !removed {
+                    self.add_with_hash(value.clone_with_heap(vm.heap), hash, vm)?;
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
 impl<'h> HeapReadMut<'h, Set> {
     /// Adds an element to the set, transferring ownership.
     ///
@@ -1202,6 +1247,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Set> {
         };
         let result_id = vm.heap.allocate(HeapData::Set(result));
         Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.inplace_algebra(other, SetAlgebra::Difference, vm)
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.inplace_algebra(other, SetAlgebra::Intersection, vm)
+    }
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.inplace_algebra(other, SetAlgebra::Union, vm)
+    }
+
+    fn py_ixor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        self.inplace_algebra(other, SetAlgebra::SymmetricDifference, vm)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {

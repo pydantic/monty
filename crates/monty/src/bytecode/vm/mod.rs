@@ -1501,14 +1501,10 @@ impl<'h> VM<'h> {
                 Opcode::UnaryNeg => try_catch!(self, self.unary_neg()),
                 Opcode::UnaryPos => try_catch!(self, self.unary_pos()),
                 Opcode::UnaryInvert => try_catch!(self, self.unary_invert()),
-                // In-place Operations - route through exception handling.
-                // `+=`/`-=`/`&=`/`|=` first try a true in-place `Counter` op
-                // (mutating the left operand); everything else — and the
-                // non-Counter fallback — reuses the binary implementation, since
-                // Monty's other types have no distinct in-place form.
+                // `+=`, `-=`, `*=`, `&=`, `|=`, and `^=` try mutation before binary fallback.
                 Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
                 Opcode::InplaceSub => try_catch!(self, self.inplace_sub()),
-                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
+                Opcode::InplaceMul => try_catch!(self, self.inplace_mult()),
                 Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
                 Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
@@ -1518,7 +1514,7 @@ impl<'h> VM<'h> {
                 }
                 Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
                 Opcode::InplaceXor => {
-                    try_catch!(self, self.binary_xor());
+                    try_catch!(self, self.inplace_xor());
                 }
                 Opcode::InplaceLShift => {
                     try_catch!(self, self.binary_lshift());

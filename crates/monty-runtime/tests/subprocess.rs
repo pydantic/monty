@@ -1295,6 +1295,28 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+
+    for code in [
+        "a = [None] * 1_000_000\na *= 2",
+        "a = [None] * 1_000_000\na += range(1_000_000)",
+        "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("a = [None] * 1_000_000\nalias = a\na += [None]\nlen(alias)"),
+        MontyObject::int(1_000_001),
+    );
+    child.shutdown();
 }
 
 /// `DictWriter.writerows()` on a file keeps one list per row until its single
