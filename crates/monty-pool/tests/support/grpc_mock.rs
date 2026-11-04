@@ -143,6 +143,12 @@ impl MockServer {
         }
     }
 
+    /// Whether the pool opens another session stream within `wait`; a test
+    /// asserting the pool holds back calls it.
+    pub fn opens_within(&self, wait: Duration) -> bool {
+        self.incoming.recv_timeout(wait).is_ok()
+    }
+
     /// Refuses the next stream with `status` before admitting it — what a
     /// server at capacity, or one rejecting the caller's credentials, does.
     pub fn refuse_next(&self, status: Status) {

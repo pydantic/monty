@@ -272,8 +272,10 @@ input so adapters that do not support metrics continue to work.
   checkout opens one `MontySession.Session` stream on it. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `connect_timeout`. These workers are single-use:
-  a fresh stream per checkout, never prewarmed or returned to the pool. Isolation is the
-  remote host's responsibility — a remote crash is observed as the stream ending.
+  a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
+  the stream and returns at once, but its `max_processes` slot is freed only when the server
+  ends the stream (or after a second), so a full pool does not open its next stream while the
+  server still counts the last one. Isolation is the remote host's responsibility — a remote crash is observed as the stream ending.
   `Pool::checkout_with` takes `CheckoutOptions::metadata`, extra request metadata
   for that checkout's stream — e.g. a token for a relay in front of the worker. Every
   stream carries `user-agent: monty-pool/<version>` (tonic appends its own), and with the

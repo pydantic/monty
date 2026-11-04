@@ -1316,8 +1316,7 @@ impl Checkout {
         // subprocess workers are reset and returned to the idle pool for the
         // next checkout.
         if self.pool.config.transport.is_remote() {
-            if let Some(mut worker) = self.worker.take() {
-                worker.close_transport();
+            if let Some(worker) = self.worker.take() {
                 self.pool.release_worker(worker);
             }
             return Ok(());

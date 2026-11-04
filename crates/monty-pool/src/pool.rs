@@ -390,16 +390,25 @@ impl PoolInner {
 
     /// Returns a healthy worker to the idle queue (or retires it when it hit
     /// the recycle limit, or it is a single-use remote stream).
-    pub(crate) fn release_worker(&self, worker: Worker) {
-        let remote = self.config.transport.is_remote();
-        let recycle = remote
-            || self
-                .config
-                .max_checkouts_per_worker
-                .is_some_and(|max| worker.checkouts_served >= max);
-        if recycle {
+    ///
+    /// A remote stream keeps its slot until the server has ended it: a server
+    /// still counting the stream would refuse a full pool's next checkout.
+    pub(crate) fn release_worker(&self, mut worker: Worker) {
+        if self.config.transport.is_remote() {
+            let pool = self.this.clone();
+            worker.close_transport(move || {
+                if let Some(pool) = pool.upgrade() {
+                    pool.count_termination("single_use");
+                    pool.release_capacity();
+                }
+            });
+        } else if self
+            .config
+            .max_checkouts_per_worker
+            .is_some_and(|max| worker.checkouts_served >= max)
+        {
             drop(worker); // kill (on drop) — reaped by tokio in the background
-            self.count_termination(if remote { "single_use" } else { "recycled" });
+            self.count_termination("recycled");
             self.release_capacity();
         } else {
             lock_ignore_poison(&self.state).idle.push(worker);

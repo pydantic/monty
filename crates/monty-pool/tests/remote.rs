@@ -18,6 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytes::Bytes;
 use grpc_mock::{MockServer, MockStream};
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
@@ -28,7 +29,7 @@ use monty_pool::{
 use monty_proto::{
     MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, grpc::Cause, pb, resume_call_from_proto,
 };
-// only the Linux CPU-server test names the clock or builds its own runtime
+// only the Linux CPU-server test names the clock
 #[cfg(target_os = "linux")]
 use monty_types::ExecutionClock;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
@@ -36,11 +37,9 @@ use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, Resourc
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
-#[cfg(target_os = "linux")]
-use tokio::runtime::Builder;
-use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
 use tokio::time::timeout;
+use tokio::{runtime::Builder, task::spawn_blocking};
 use tonic::Status;
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
@@ -3138,6 +3137,87 @@ async fn finishing_against_a_wedged_socket_does_not_leak_capacity() {
         panic!("the mock is shutting down, so a checkout cannot succeed");
     };
     assert!(!matches!(err, PoolError::Exhausted), "the slot leaked: {err:?}");
+}
+
+/// A finished checkout's slot comes back once the server has ended the stream,
+/// not at once: a full pool's next checkout must not reach a server still
+/// counting the last one, which a relay's per-caller cap would refuse.
+#[tokio::test]
+async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut first = mock.accept();
+        expect_configure(&mut first);
+        expect_end(&mut first);
+        let early = mock.opens_within(Duration::from_millis(300));
+        assert!(!early, "the next stream opened before the server ended this one");
+        drop(first);
+        let mut second = mock.accept();
+        expect_configure(&mut second);
+        expect_end(&mut second);
+    });
+
+    let (pool, checkout) = remote_checkout(&url).await;
+    checkout.finish().await.expect("finish");
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A checkout dropped outside any runtime, after the `block_on` that made it
+/// returned, still half-closes on the runtime its stream was opened on rather
+/// than resetting the stream under a server still ending it.
+#[test]
+fn a_checkout_dropped_outside_its_runtime_still_half_closes() {
+    let runtime = Builder::new_multi_thread().enable_all().build().expect("runtime");
+    let mock = runtime.block_on(MockServer::start());
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_end(&mut socket);
+        assert!(stays_open(&socket), "the stream was reset");
+    });
+
+    let (pool, checkout) = runtime.block_on(remote_checkout(&url));
+    drop(checkout);
+    server.join().expect("server thread");
+    drop(pool);
+}
+
+/// Closed streams waiting on their server are capped at `max_processes`: past
+/// that a close resets its stream, so peers that never end theirs cannot pile
+/// up buffered streams as fast as checkouts are abandoned.
+#[tokio::test]
+async fn closes_past_the_pool_size_reset_their_streams() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut first = mock.accept();
+        expect_configure(&mut first);
+        expect_end(&mut first);
+        let mut second = mock.accept();
+        expect_configure(&mut second);
+        expect_end(&mut second);
+        // neither is ended here: the first holds the pool's one closing slot
+        let (first_open, second_open) = (stays_open(&first), stays_open(&second));
+        assert!(first_open, "the first close must wait for the server");
+        assert!(!second_open, "the close past the cap must reset its stream");
+    });
+
+    let (pool, checkout) = remote_checkout(&url).await;
+    drop(checkout);
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// Whether the pool still holds `socket`'s stream a moment after it ended its
+/// side: a reset stream drops the response, so a send then fails.
+fn stays_open(socket: &MockStream) -> bool {
+    thread::sleep(Duration::from_millis(200));
+    socket.send(Bytes::new()).is_ok()
 }
 
 #[tokio::test]

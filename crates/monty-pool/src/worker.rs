@@ -355,18 +355,21 @@ impl Worker {
                 w.child.wait().await.ok()
             }
             WorkerKind::Remote(w) => {
-                w.close();
+                w.close(|| {});
                 None
             }
         }
     }
 
     /// Ends the stream behind a worker the caller is *not* discarding as
-    /// dead — a cleanly finished checkout's single-use remote worker. A
-    /// no-op for subprocess workers, which the pool reuses or kills instead.
-    pub(crate) fn close_transport(&mut self) {
-        if let WorkerKind::Remote(w) = &mut self.kind {
-            w.close();
+    /// dead — a cleanly finished checkout's single-use remote worker — and
+    /// calls `on_closed` once the server has ended it too (or the close gave
+    /// up). Subprocess workers, which the pool reuses or kills instead, call
+    /// it at once.
+    pub(crate) fn close_transport(&mut self, on_closed: impl FnOnce() + Send + 'static) {
+        match &mut self.kind {
+            WorkerKind::Remote(w) => w.close(on_closed),
+            WorkerKind::Subprocess(_) => on_closed(),
         }
     }
 }

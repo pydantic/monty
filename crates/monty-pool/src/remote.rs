@@ -61,6 +61,10 @@ pub(crate) struct Remote {
     /// reader may be inside a decode an abort cannot interrupt, so without
     /// this a run of drops could stack such decodes past the cap.
     decode_permits: Arc<Semaphore>,
+    /// Caps closed streams whose reader is still waiting out [`CLOSE_GRACE`]
+    /// at `max_processes`: past it a close resets the stream, so what peers
+    /// can buffer on retired streams tracks the pool's size, not its churn.
+    closing: Arc<Semaphore>,
 }
 
 impl Remote {
@@ -106,6 +110,7 @@ impl Remote {
             channel: endpoint.connect_lazy(),
             connect_timeout,
             decode_permits: Arc::new(Semaphore::new(max_processes.max(1))),
+            closing: Arc::new(Semaphore::new(max_processes.max(1))),
         })
     }
 
@@ -188,6 +193,8 @@ impl Remote {
             events,
             disconnect,
             reader: Some(reader),
+            runtime: Handle::current(),
+            closing: Arc::clone(&self.closing),
         })
     }
 }
@@ -209,6 +216,11 @@ pub(crate) struct RemoteWorker {
     disconnect: Arc<OnceLock<RemoteDisconnect>>,
     /// The task owning the response stream; `None` once `close` detached it.
     reader: Option<JoinHandle<()>>,
+    /// The runtime the reader runs on, which carries it through a close even
+    /// when the worker is dropped outside any runtime.
+    runtime: Handle,
+    /// See [`Remote::closing`].
+    closing: Arc<Semaphore>,
 }
 
 impl RemoteWorker {
@@ -253,21 +265,25 @@ impl RemoteWorker {
 
     /// Ends the stream: half-close the request side and leave the detached
     /// reader holding the response stream open until the server ends its side
-    /// (bounded by [`CLOSE_GRACE`]). Returns at once: what the server does
-    /// before ending — a relay parks the session — is not the host's wait, and
-    /// a goodbye that never lands is the server's idle timeout to clean up.
+    /// (bounded by [`CLOSE_GRACE`]), then call `on_closed`. Returns at once:
+    /// what the server does before ending — a relay parks the session — is not
+    /// the host's wait.
     ///
     /// The half-close is what a *proxied* server sees: a bare stream reset may
     /// stop at a load balancer, leaving the session (and its capacity slot)
-    /// alive until the far side's own idle timeout. Without a runtime to carry
-    /// the reader the stream is reset instead.
-    pub(crate) fn close(&mut self) {
+    /// alive until the far side's own idle timeout. Past [`Remote::closing`]'s
+    /// cap the stream is reset instead.
+    pub(crate) fn close(&mut self, on_closed: impl FnOnce() + Send + 'static) {
         self.requests = None;
+        // runs `on_closed` however this ends, including a runtime shut down
+        // under the detached task
+        let closed = OnDrop(Some(on_closed));
         if let Some(reader) = self.reader.take() {
             let abort = reader.abort_handle();
-            match Handle::try_current() {
-                Ok(handle) => {
-                    handle.spawn(async move {
+            match Arc::clone(&self.closing).try_acquire_owned() {
+                Ok(permit) => {
+                    self.runtime.spawn(async move {
+                        let _held = (permit, closed);
                         if timeout(CLOSE_GRACE, reader).await.is_err() {
                             abort.abort();
                         }
@@ -283,7 +299,18 @@ impl RemoteWorker {
 /// [`crate::Checkout`], a discarded worker: the same goodbye.
 impl Drop for RemoteWorker {
     fn drop(&mut self) {
-        self.close();
+        self.close(|| {});
+    }
+}
+
+/// Calls its closure when dropped.
+struct OnDrop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
     }
 }
 
