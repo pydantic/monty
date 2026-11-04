@@ -271,7 +271,11 @@ input so adapters that do not support metrics continue to work.
 - **Remote** (`PoolConfig::remote`) — reach a remote child through a relay over gRPC at an
   `http://`/`https://` URL (`ws://`/`wss://` are read as those two). The pool holds one
   HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
-  checkout opens one `MontySession.Session` stream on it. A stream the server never took
+  checkout opens one `MontySession.Session` stream on it. An `https://` server's certificate
+  is verified by the operating system (the Security framework on macOS, CryptoAPI on Windows,
+  the distro's CA bundle on Linux), so the roots it trusts and the certificates it knows to
+  be revoked are the host's, not a list bundled into the binary; a Linux host with no CA
+  bundle cannot make an `https://` pool. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
   the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
   a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes

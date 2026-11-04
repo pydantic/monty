@@ -25,7 +25,8 @@ use monty_proto::{
     grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
-use rustls::crypto::aws_lc_rs::default_provider;
+use rustls::crypto::{CryptoProvider, aws_lc_rs::default_provider};
+use rustls_platform_verifier::Verifier;
 use tokio::{
     runtime::Handle,
     sync::{
@@ -101,9 +102,12 @@ impl Remote {
                 .keep_alive_while_idle(false);
         }
         if endpoint.uri().scheme_str() == Some("https") {
-            install_crypto_provider();
+            // The OS verifies the server certificate, so its trust store, its
+            // distrust decisions and its revocation data apply. On Linux this
+            // reads the distro CA bundle now; a host with none fails here.
+            let verifier = Verifier::new(install_crypto_provider()).map_err(|err| spawn_error(&err))?;
             endpoint = endpoint
-                .tls_config(ClientTlsConfig::new().with_webpki_roots())
+                .tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))
                 .map_err(|err| spawn_error(&err))?;
         }
         Ok(Self {
@@ -694,16 +698,20 @@ fn dial_url(url: &str) -> Result<String, PoolError> {
 }
 
 /// Installs the process-level rustls `CryptoProvider` exactly once before the
-/// first `https://` dial. rustls 0.23 panics on first TLS use when it can't
+/// first `https://` dial and returns the one in force, for the verifier to
+/// check signatures with. rustls 0.23 panics on first TLS use when it can't
 /// pick a provider automatically (both `aws-lc-rs` and `ring`, or neither,
 /// compiled in), so we name `aws_lc_rs` explicitly. Idempotent via `Once`, and
 /// the install error is ignored: another part of the process (e.g. a host
 /// embedding the pool) may have already installed a provider, which is fine.
-fn install_crypto_provider() {
+fn install_crypto_provider() -> Arc<CryptoProvider> {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         let _ = default_provider().install_default();
     });
+    CryptoProvider::get_default()
+        .expect("a rustls CryptoProvider is installed above")
+        .clone()
 }
 
 #[cfg(test)]
