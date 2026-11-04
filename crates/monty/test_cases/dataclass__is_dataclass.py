@@ -56,8 +56,7 @@ b = Defaulted.__dataclass_fields__['b']
 assert type(b).__name__ == 'Field'
 assert b.name == 'b'
 assert b.default == 'hi'
-# Monty stores annotations as source text where CPython evaluates them.
-assert b.type in ('str', str)
+assert b.type is str
 # Every field Monty builds carries the decorator defaults: `field()` and
 # `@dataclass(...)`, the forms that vary these, are not supported.
 assert b.init is True

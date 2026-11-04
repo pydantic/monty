@@ -152,13 +152,20 @@ pub fn encode_framed_into(msg: &impl Message, buf: &mut Vec<u8>) -> Result<(), F
 /// budget, restoring any enclosing budget on return or unwind. The budget
 /// applies to this crate's protocol types, not arbitrary third-party messages.
 pub fn decode_frame<M: Message + Default>(bytes: &[u8]) -> Result<M, FrameError> {
+    decode_frame_with_budget(bytes, DEFAULT_MAX_DECODE_BYTES)
+}
+
+/// Decodes a frame with a host-selected allocation ceiling, capped at
+/// [`DEFAULT_MAX_DECODE_BYTES`]. This excludes the wire buffer and subsequent
+/// host-language conversion. Each payload allocation is charged before reservation.
+pub fn decode_frame_with_budget<M: Message + Default>(bytes: &[u8], max_decode_bytes: usize) -> Result<M, FrameError> {
     if bytes.len() > MAX_FRAME_LEN as usize {
         return Err(FrameError::FrameTooLarge {
             len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             max: MAX_FRAME_LEN,
         });
     }
-    with_decode_budget(DEFAULT_MAX_DECODE_BYTES, || M::decode(bytes)).map_err(FrameError::Decode)
+    with_decode_budget(max_decode_bytes, || M::decode(bytes)).map_err(FrameError::Decode)
 }
 
 /// Reads length-prefixed protobuf frames from a byte stream.

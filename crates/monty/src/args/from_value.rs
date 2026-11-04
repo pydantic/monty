@@ -369,7 +369,7 @@ impl StrArg {
     /// Borrows the text. Infallible: the constructor validated str-ness and a
     /// live value's type cannot change.
     pub fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
-        match self.0.to_str(vm) {
+        match self.0.try_to_str(vm) {
             Ok(s) => s,
             Err(_) => unreachable!("StrArg always holds a str"),
         }

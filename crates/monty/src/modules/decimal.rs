@@ -13,7 +13,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Module, NamedTupleClass, Type, allocate_string,
+        BuiltinType, Module, NamedTupleClass, allocate_string,
         decimal::{
             context::{MAX_EMAX, MAX_PREC, MIN_EMIN, MIN_ETINY, Rounding},
             py_context::{self, IEEE_CONTEXT_MAX_BITS, Template},
@@ -70,12 +70,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::DecimalMod, vm.interns);
     module.set_attr(
         StaticStrings::DecimalType,
-        Value::Builtin(Builtins::Type(Type::Decimal)),
+        Value::Builtin(Builtins::Type(BuiltinType::Decimal)),
         vm,
     );
     module.set_attr(
         StaticStrings::ContextType,
-        Value::Builtin(Builtins::Type(Type::DecimalContext)),
+        Value::Builtin(Builtins::Type(BuiltinType::DecimalContext)),
         vm,
     );
     for (name, function) in [

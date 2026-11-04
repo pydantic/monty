@@ -148,7 +148,7 @@ def test_nul_paths_rejected_before_callback(monty_run: RunMonty, with_callback: 
 
 
 @pytest.mark.parametrize('with_callback', [False, True])
-@pytest.mark.parametrize('code, path', [('import os\nos.listdir()', '/'), ("open('./x')", '/x'), ("open('')", '')])
+@pytest.mark.parametrize('code, path', [('import os\nos.listdir()', '/'), ("open('./x')", '/x')])
 def test_no_handler_uses_normalized_path(monty_run: RunMonty, with_callback: bool, code: str, path: str):
     """Missing and declining callbacks report the same normalized permission error."""
 
@@ -158,6 +158,26 @@ def test_no_handler_uses_normalized_path(monty_run: RunMonty, with_callback: boo
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run(code, os=os_handler if with_callback else None)
     assert str(exc_info.value) == f'PermissionError: Permission denied: {path!r}'
+
+
+@pytest.mark.parametrize('with_callback', [False, True])
+def test_empty_path_never_reaches_callback(monty_run: RunMonty, with_callback: bool):
+    """An empty path raises CPython's `FileNotFoundError` in the sandbox, without calling `os=`."""
+    calls: list[Any] = []
+
+    def os_handler(*, args: tuple[Any, ...], **_: Any) -> object:
+        calls.append(args)
+        return NOT_HANDLED
+
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("open('')", os=os_handler if with_callback else None)
+    assert str(exc_info.value) == snapshot("FileNotFoundError: [Errno 2] No such file or directory: ''")
+    result = monty_run(
+        "import os\n(os.path.exists(''), os.path.lexists(''), os.path.isfile(''))",
+        os=os_handler if with_callback else None,
+    )
+    assert result == snapshot((False, False, False))
+    assert calls == []
 
 
 def test_path_concatenation(monty_run: RunMonty):

@@ -380,13 +380,34 @@ assert b'hello'.count(b'', 5) == 1
 assert b'hello'.startswith(b'', 5)
 assert b'hello'.endswith(b'', 5)
 
-# TODO: These edge cases when start > len need to be fixed
-# CPython returns -1/0/False for these, currently Monty doesn't handle this correctly
-# assert b'hello'.find(b'', 10) == -1, 'find empty when start > len returns -1'
-# assert b'hello'.count(b'', 10) == 0, 'count empty when start > len returns 0'
-# assert not b'hello'.startswith(b'', 10), 'startswith empty when start > len is false'
-# assert not b'hello'.endswith(b'', 10), 'endswith empty when start > len is false'
-# assert b'hello'.rfind(b'', 10) == -1, 'rfind empty when start > len returns -1'
+# A start past the end, or past `end`, finds nothing, not even the empty subsequence
+assert b'hello'.find(b'', 10) == -1
+assert b'hello'.count(b'', 10) == 0
+assert not b'hello'.startswith(b'', 10), 'startswith empty when start > len is false'
+assert not b'hello'.endswith(b'', 10), 'endswith empty when start > len is false'
+assert b'hello'.rfind(b'', 10) == -1
+assert b'hello'.find(b'', 3, 2) == -1
+assert b'hello'.count(b'', 3, 2) == 0
+assert not b'hello'.endswith((b'x', b''), 3, 2), 'endswith tuple when start > end is false'
+for search in (lambda: b'hello'.index(b'', 10), lambda: b'hello'.rindex(b'', 3, 2)):
+    try:
+        search()
+        assert False, 'index empty with start past end should raise'
+    except ValueError as e:
+        assert str(e) == 'subsection not found'
+
+# A bad start or end raises before anything is searched
+for search in (
+    lambda: b'hello'.count(b'l', 'x'),
+    lambda: b'hello'.index(b'l', None, 'x'),
+    lambda: b'hello'.rfind(b'l', 'x'),
+    lambda: b'hello'.rindex(b'l', 0, 'x'),
+):
+    try:
+        search()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == 'slice indices must be integers or None or have an __index__ method'
 
 # === bytes.hex() non-ASCII separator errors ===
 try:

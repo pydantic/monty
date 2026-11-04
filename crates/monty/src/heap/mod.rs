@@ -2092,21 +2092,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Partial(partial) => partial.for_each_child_id(on_child),
         HeapData::GenericAlias(alias) => alias.for_each_child_id(on_child),
         HeapData::Union(union) => union.for_each_child_id(on_child),
+        HeapData::ForwardRef(forward_ref) => forward_ref.for_each_child_id(on_child),
         HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
-        HeapData::Module(m) => {
-            // Module attrs can contain references to heap values
-            if !m.has_refs() {
-                return;
-            }
-            for (k, v) in m.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
-        }
+        // Attrs and, for a file module, its namespace dict.
+        HeapData::Module(m) => m.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
@@ -2194,6 +2183,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         // Mirror `py_dec_ref_ids_for_data`: both own references to decimal contexts.
         HeapData::DecimalSignalDict(dict) => on_child(dict.context_id()),
         HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
+        // The owned `__cause__` / `__context__`; exceptions are still not GC-tracked.
+        HeapData::Exception(exc) => exc.owned_chain_ids().for_each(on_child),
         // Leaf types with no heap references
         _ => {}
     }
@@ -2256,6 +2247,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Partial(partial) => partial.py_dec_ref_ids(stack),
         HeapData::GenericAlias(alias) => alias.py_dec_ref_ids(stack),
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
+        HeapData::ForwardRef(forward_ref) => forward_ref.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
@@ -2327,6 +2319,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         // Release the owned decimal context references (mirrors `for_each_child_id`).
         HeapData::DecimalSignalDict(dict) => dict.py_dec_ref_ids(stack),
         HeapData::DecimalContextManager(manager) => manager.py_dec_ref_ids(stack),
+        // Release the owned `__cause__` / `__context__` references (mirrors `for_each_child_id`).
+        HeapData::Exception(exc) => exc.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }

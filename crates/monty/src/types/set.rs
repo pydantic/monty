@@ -1796,7 +1796,7 @@ pub(crate) fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64>
 }
 
 /// Finds the nested value responsible for a tuple-like element being unhashable.
-fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+pub(crate) fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let Value::Ref(id) = value else {
         return Ok(value.py_type_name(vm).into_owned());
     };

@@ -661,7 +661,7 @@ pub mod random_seed {
 /// resolve, against its suspended call).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExtFunctionResult {
-    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4, 5")]
+    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4, 5, 6")]
     pub kind: ::core::option::Option<ext_function_result::Kind>,
 }
 /// Nested message and enum types in `ExtFunctionResult`.
@@ -688,7 +688,21 @@ pub mod ext_function_result {
         /// suspension; the child computes it from its retained call payload.
         #[prost(message, tag = "5")]
         NotHandled(super::Unit),
+        /// The module's `.py` file, answering an `import` call with a non-empty
+        /// `search_path`; the child runs it as the module.
+        #[prost(message, tag = "6")]
+        ModuleFile(super::ModuleFile),
     }
+}
+/// A module's file found on an `import` call's search path.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ModuleFile {
+    /// The virtual path it was read from.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// The file's text.
+    #[prost(string, tag = "2")]
+    pub source: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FutureResult {
@@ -821,6 +835,10 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
+    /// Local VM and supervisor clock; absent defaults to wall time in the child.
+    /// WebSocket clients leave this absent. The server selects the worker's clock.
+    #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
+    pub execution_clock: ::core::option::Option<i32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -995,6 +1013,14 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+    /// On Error or TypingError, whether the feed still awaits a host answer.
+    /// Absent for older workers or errors generated outside the session state
+    /// machine. Parents must preserve an outstanding suspension when unknown.
+    #[prost(bool, optional, tag = "29")]
+    pub feed_suspended: ::core::option::Option<bool>,
+    /// Configure acknowledgment. Local CPU-mode parents require this before execution.
+    #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
+    pub execution_clock: ::core::option::Option<i32>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
@@ -1110,7 +1136,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1229,17 +1255,39 @@ pub mod os_call {
         #[prost(bool, tag = "6")]
         pub recurse_symlinks: bool,
     }
-    /// The argument of `OsCall.import`.
+    /// The arguments of `OsCall.import`.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Import {
+        /// The dotted module name.
         #[prost(string, tag = "1")]
         pub module: ::prost::alloc::string::String,
+        /// Absolute virtual directories to search, in order, for the module's `.py` file.
+        #[prost(string, repeated, tag = "2")]
+        pub search_path: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     }
     /// The argument of `OsCall.import_stubs`, in source order.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct ImportStubs {
         #[prost(string, repeated, tag = "1")]
         pub modules: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    }
+    /// The host object `OsCall.get_type_hints` asks about.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct GetTypeHints {
+        #[prost(oneof = "get_type_hints::Target", tags = "1, 2")]
+        pub target: ::core::option::Option<get_type_hints::Target>,
+    }
+    /// Nested message and enum types in `GetTypeHints`.
+    pub mod get_type_hints {
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+        pub enum Target {
+            /// A host function, by the name the sandbox calls it with.
+            #[prost(string, tag = "1")]
+            Function(::prost::alloc::string::String),
+            /// A host class, by the id of the `ClassType` it crossed as.
+            #[prost(message, tag = "2")]
+            ClassId(super::super::Uuid),
+        }
     }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
@@ -1347,6 +1395,10 @@ pub mod os_call {
         /// Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
         #[prost(message, tag = "33")]
         Scan(Scan),
+        /// typing.get_type_hints() of a host function or class. Answer with a dict
+        /// of hints, which the call returns as is; `not_handled` means `{}`.
+        #[prost(message, tag = "34")]
+        GetTypeHints(GetTypeHints),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
@@ -1477,6 +1529,33 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// One clock for VM budgets and subprocess supervision. Wall time is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExecutionClock {
+    Wall = 0,
+    Cpu = 1,
+}
+impl ExecutionClock {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Wall => "WALL",
+            Self::Cpu => "CPU",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WALL" => Some(Self::Wall),
+            "CPU" => Some(Self::Cpu),
             _ => None,
         }
     }

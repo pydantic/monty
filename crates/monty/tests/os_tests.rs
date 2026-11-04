@@ -87,8 +87,10 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
         | OsFunctionCall::SystemSleep(_)
         | OsFunctionCall::AsyncSleep(_)
         | OsFunctionCall::AsyncSystemSleep(_) => MontyObject::none(),
-        // never mocked: these tests import nothing the sandbox lacks
-        OsFunctionCall::Import(_) | OsFunctionCall::ImportStubs(_) => MontyObject::dict([]),
+        // never mocked: these tests import nothing the sandbox lacks and ask no host for hints
+        OsFunctionCall::Import(_) | OsFunctionCall::ImportStubs(_) | OsFunctionCall::GetTypeHints(_) => {
+            MontyObject::dict([])
+        }
         OsFunctionCall::DateTimeNow(_) => MontyObject::datetime(MontyDateTime {
             year: 2023,
             month: 11,
@@ -237,12 +239,40 @@ fn relative_paths_resolve_against_cwd() {
         ("import os; os.listdir()", "/data/."),
         ("import os; os.mkdir('sub/')", "/data/sub/"),
         ("import os; os.stat('a//./b/../c/')", "/data/a//./b/../c/"),
-        ("open('')", ""),
         ("from pathlib import Path; Path('/abs.txt').exists()", "/abs.txt"),
     ] {
         let call = run_to_oscall_in(code, "/data");
         assert_eq!(call.fs_primary_path(), Some(expected), "{code}");
     }
+}
+
+/// `''` is answered inside the sandbox as CPython would, never resolved to the cwd and yielded.
+#[test]
+fn empty_paths_never_reach_the_host() {
+    let mut runner = MontyRun::new(
+        "import os
+def err(f):
+    try:
+        f()
+    except FileNotFoundError as e:
+        return str(e)
+(os.path.exists(''), err(lambda: open('')), err(lambda: os.stat('')), err(lambda: os.rename('a', '')))"
+            .to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    runner.set_cwd("/data");
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::tuple([
+            MontyObject::bool(false),
+            MontyObject::string("[Errno 2] No such file or directory: ''".to_owned()),
+            MontyObject::string("[Errno 2] No such file or directory: ''".to_owned()),
+            MontyObject::string("[Errno 2] No such file or directory: 'a' -> ''".to_owned()),
+        ])
+    );
 }
 
 #[test]

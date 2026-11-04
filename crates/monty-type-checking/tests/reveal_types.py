@@ -71,3 +71,31 @@ reveal_type(datetime.timezone.utc)
 import decimal  # noqa: E402
 
 reveal_type(decimal.localcontext(traps=[decimal.Inexact], flags=[decimal.Rounded]))
+
+# fmt: off
+# === open ===
+from pathlib import Path  # noqa: E402, I001
+# fmt: on
+
+reveal_type(open('/work/default.txt'))
+reveal_type(open('/work/example.txt', 'tr', encoding='UTF-8'))
+reveal_type(open('/work/read.bin', 'br'))
+reveal_type(open('/work/write.bin', 'ba'))
+
+path = Path('/work/example.txt')
+reveal_type(path.open())
+reveal_type(path.open('tw', encoding='utf8'))
+reveal_type(path.open('rb'))
+reveal_type(path.open('bw'))
+
+
+def reveal_dynamic_open(mode: str) -> None:
+    reveal_type(open('/work/dynamic', mode))
+    reveal_type(path.open(mode))
+
+
+# `fnmatch()` and `filter()`'s pattern take a path, which upstream typeshed does not allow
+import fnmatch  # noqa: E402
+
+reveal_type(fnmatch.fnmatch(path, '*.py'))
+reveal_type(fnmatch.filter(['a.py'], Path('*.py')))

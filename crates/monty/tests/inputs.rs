@@ -925,3 +925,23 @@ fn invalid_is_keyword() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(err.message(), Some("Input name 'async' not a valid identifier"));
 }
+
+#[test]
+fn host_class_repr_formats_non_string_attribute_keys() {
+    let object = MontyObject::class_instance(
+        MontyObject::class_type("Odd", MontyUuid::from_u128(101), true, false, []),
+        MontyUuid::from_u128(102),
+        [(MontyObject::int(42), MontyObject::int(7))],
+    );
+    let mut runner = MontyRun::new(
+        "repr(obj)".to_owned(),
+        "test.py",
+        vec!["obj".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![object]).unwrap(),
+        MontyObject::string("Odd(42=7)")
+    );
+}

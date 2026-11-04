@@ -184,7 +184,8 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::AsyncSleep(_)
         | OsFunctionCall::AsyncSystemSleep(_)
         | OsFunctionCall::Import(_)
-        | OsFunctionCall::ImportStubs(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        | OsFunctionCall::ImportStubs(_)
+        | OsFunctionCall::GetTypeHints(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
         OsFunctionCall::Scan(_) => unreachable!("scans are run by the mount table, not one mount"),
     }
 }

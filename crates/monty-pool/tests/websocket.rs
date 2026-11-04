@@ -3,6 +3,9 @@
 //! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
+#[cfg(target_os = "linux")]
+mod binary;
+
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;
 use std::{
@@ -21,18 +24,42 @@ use monty_pool::{
     ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
+// only the Linux CPU-server test names the clock or builds its own runtime
+#[cfg(target_os = "linux")]
+use monty_types::ExecutionClock;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
+#[cfg(target_os = "linux")]
+use tokio::runtime::Builder;
 use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
 use tokio::time::timeout;
 use tungstenite::{
     Message, WebSocket,
     handshake::server::{Request, Response},
+    protocol::{CloseFrame, frame::coding::CloseCode},
 };
+
+/// Closing a remote transport cannot prove that the remote subprocess has exited.
+#[tokio::test]
+async fn terminating_a_websocket_checkout_never_confirms_subprocess_exit() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let child = thread::spawn(move || serve_mock_child(&listener));
+    let pool = Pool::new(PoolConfig::websocket(format!("ws://{address}/")))
+        .await
+        .unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert!(
+        matches!(session.feed("6 * 7", vec![], vec![], false, &mut no_print).await.unwrap(), TurnEvent::Complete(value) if value == MontyObject::int(42))
+    );
+    assert!(session.terminate().await.is_none());
+    spawn_blocking(move || child.join().unwrap()).await.unwrap();
+    pool.close().await;
+}
 
 /// A mock child: accepts one WebSocket connection and answers each request with
 /// the obvious turn-ender (`Ok` for control requests, `Complete(42)` for a feed).
@@ -717,6 +744,8 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
                 max_suspensions: None,
                 restored_script_name: None,
                 session_id: None,
+                execution_clock: None,
+                feed_suspended: None,
                 feed_execution_micros: 0,
                 max_feed_duration_micros: Some(100_000),
                 max_turn_duration_micros: None,
@@ -997,6 +1026,8 @@ async fn restored_session_rearms_the_duration_backstop() {
                 kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
                 restored_script_name: Some("restored.py".to_owned()),
                 session_id: None,
+                execution_clock: None,
+                feed_suspended: None,
                 total_execution_micros: 0,
                 max_suspensions: None,
                 feed_execution_micros: 0,
@@ -2684,7 +2715,85 @@ async fn bare_disconnect_is_never_resumed() {
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("a closed connection must fail the turn");
-    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.close_code, None);
+    assert_eq!(details.close_reason, None);
+    assert_eq!(details.transport_error, None);
+    join_server(server).await;
+}
+
+/// Peer Close details survive teardown without implying that the request did not run.
+#[tokio::test]
+async fn disconnect_preserves_peer_close_details() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        socket
+            .close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: "session capacity exhausted".into(),
+            }))
+            .expect("close");
+        while try_read_request(&mut socket).is_some() {}
+    });
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("disconnect");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.close_code, Some(1008));
+    assert_eq!(details.close_reason.as_deref(), Some("session capacity exhausted"));
+    assert_eq!(details.transport_error, None);
+    join_server(server).await;
+}
+
+/// A TCP EOF without a Close frame retains the protocol error rather than a fabricated Close code.
+#[tokio::test]
+async fn disconnect_preserves_abrupt_eof() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+    });
+    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("disconnect");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.stage, "receive");
+    assert_eq!(details.close_code, None);
+    assert_eq!(details.close_reason, None);
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("WebSocket protocol error: Connection reset without closing handshake")
+    );
     join_server(server).await;
 }
 
@@ -2878,7 +2987,12 @@ async fn a_dropped_connection_is_a_disconnect() {
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         // the server drops the session while the client sits idle, then exits
-        let _ = socket.close(None);
+        socket
+            .close(Some(CloseFrame {
+                code: CloseCode::Away,
+                reason: "idle timeout".into(),
+            }))
+            .expect("close");
     });
 
     let (_pool, mut checkout) = websocket_checkout(port).await;
@@ -2897,7 +3011,16 @@ async fn a_dropped_connection_is_a_disconnect() {
         .feed("x", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("a closed connection must fail the turn");
-    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
+    let PoolError::Disconnected {
+        websocket: Some(details),
+        ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.close_code, Some(1001));
+    assert_eq!(details.close_reason.as_deref(), Some("idle timeout"));
+    assert_eq!(details.transport_error, None);
 }
 
 /// The suspension position every hand-built event carries.
@@ -2972,4 +3095,196 @@ async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
     );
     assert!(checkout.worker_id().is_none(), "the worker must be discarded");
     join_server(server).await;
+}
+
+/// Budget exhaustion discards the connection without replaying the feed.
+#[tokio::test]
+async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
+    let (listener, mut config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        socket
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "42");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        expect_close(&mut socket);
+    });
+    config.max_decode_bytes = 0;
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let error = checkout
+        .feed("42", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("decode budget");
+    assert!(matches!(error, PoolError::Protocol(_)));
+    assert!(checkout.worker_id().is_none());
+    drop(checkout);
+    drop(pool);
+    join_server(server).await;
+}
+
+/// The server selects CPU mode and enforces it beside the child.
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
+    let binary = binary::monty_binary();
+    let (listener, mut config) = ws_pool_config();
+    let (tx, rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        let pb::parent_request::Kind::Configure(configure) = read_request(&mut socket) else {
+            panic!("expected Configure")
+        };
+        assert_eq!(configure.execution_clock, None);
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut config = PoolConfig::subprocess(binary);
+            config.execution_clock = ExecutionClock::Cpu;
+            config.min_processes = 0;
+            config.max_processes = 1;
+            config.request_timeout = Some(Duration::from_secs(2));
+            config.feed_duration_limit_grace = Some(Duration::ZERO);
+            config.turn_duration_limit_grace = Some(Duration::ZERO);
+            let pool = Pool::new(config).await.unwrap();
+            let mut child = pool
+                .checkout(&ReplConfig {
+                    limits: configure.limits.map(ResourceLimits::from),
+                    ..ReplConfig::default()
+                })
+                .await
+                .unwrap();
+            let ok = pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                execution_clock: Some(pb::ExecutionClock::Cpu as i32),
+                ..Default::default()
+            };
+            send_event(&mut socket, &ok);
+            let request = try_read_request(&mut socket).expect("Feed");
+            let mut on_event = |_: &pb::ChildEvent| -> PrintFuture { Box::pin(ready(())) };
+            let outcome = child.turn_raw(&request, &mut on_event).await;
+            tx.send(matches!(outcome, Err(PoolError::CpuLimit { .. }))).unwrap();
+            assert_eq!(
+                child.pid(),
+                None,
+                "CPU exhaustion must discard and reap the server's child"
+            );
+            drop(child);
+            pool.close().await;
+        });
+        socket.close(None).unwrap();
+    });
+    config.request_timeout = Some(Duration::from_secs(5));
+    let pool = Pool::new(config).await.unwrap();
+    let mut remote = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(50))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    assert!(
+        remote
+            .feed("while True: pass", vec![], vec![], false, &mut no_print)
+            .await
+            .is_err()
+    );
+    drop(remote);
+    pool.close().await;
+    join_server(server).await;
+    assert!(rx.recv().unwrap(), "the server must enforce the independent CPU limit");
+}
+
+#[tokio::test]
+async fn invalid_server_clock_configuration_is_rejected_before_execution() {
+    for (clock, deadline, expected) in [
+        (Some(42), Some(Duration::from_secs(2)), "unknown execution clock"),
+        (
+            Some(pb::ExecutionClock::Cpu as i32),
+            None,
+            "finite client request_timeout",
+        ),
+        (
+            Some(pb::ExecutionClock::Cpu as i32),
+            Some(Duration::MAX),
+            "finite client request_timeout",
+        ),
+    ] {
+        let (listener, mut config) = ws_pool_config();
+        let server = thread::spawn(move || {
+            let mut socket = accept_ws(&listener);
+            socket.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            assert!(matches!(
+                read_request(&mut socket),
+                pb::parent_request::Kind::Configure(_)
+            ));
+            let event = pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                execution_clock: clock,
+                ..Default::default()
+            };
+            send_event(&mut socket, &event);
+            assert!(
+                !matches!(socket.read(), Ok(Message::Binary(_))),
+                "invalid clock metadata must not execute requests"
+            );
+        });
+        config.request_timeout = deadline;
+        let pool = Pool::new(config).await.unwrap();
+        let result = pool
+            .checkout(&ReplConfig {
+                limits: Some(ResourceLimits::default()),
+                ..ReplConfig::default()
+            })
+            .await;
+        assert!(matches!(result, Err(PoolError::Protocol(ref message)) if message.contains(expected)));
+        pool.close().await;
+        join_server(server).await;
+    }
+}
+
+#[tokio::test]
+async fn remote_clock_is_reported_by_the_server_without_a_client_preference() {
+    for clock in [None, Some(pb::ExecutionClock::Wall), Some(pb::ExecutionClock::Cpu)] {
+        let (listener, mut config) = ws_pool_config();
+        let server = thread::spawn(move || {
+            let mut socket = accept_ws(&listener);
+            let pb::parent_request::Kind::Configure(configure) = read_request(&mut socket) else {
+                panic!("expected Configure")
+            };
+            assert_eq!(configure.execution_clock, None);
+            let mut configured = event_kind(ok_event());
+            configured.execution_clock = clock.map(|clock| clock as i32);
+            send_event(&mut socket, &configured);
+            assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+            if clock == Some(pb::ExecutionClock::Cpu) {
+                thread::sleep(Duration::from_millis(150));
+            }
+            send_kind(
+                &mut socket,
+                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+            );
+            let _ = socket.read();
+        });
+        config.request_timeout = Some(Duration::from_secs(2));
+        config.feed_duration_limit_grace = Some(Duration::ZERO);
+        let pool = Pool::new(config).await.unwrap();
+        let mut session = pool
+            .checkout(&ReplConfig {
+                limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(50))),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let event = session.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
+        assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
+        drop(session);
+        pool.close().await;
+        join_server(server).await;
+    }
 }

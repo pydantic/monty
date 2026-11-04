@@ -159,7 +159,7 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
         } else {
             let len = a
                 .py_len(vm)
-                .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", a.py_type_name(vm))))?;
+                .ok_or_else(|| ExcType::type_error_no_len(&a.py_type_name(vm)))?;
             i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?
         };
     }

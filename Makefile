@@ -235,7 +235,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
 	cargo llvm-cov clean --workspace
 	echo "coverage for `make test-no-features`"
-	cargo llvm-cov --no-report -p monty
+	cargo llvm-cov --no-report -p monty -p monty-fs -p monty-types
 	cargo llvm-cov run --no-report -p monty-datatest
 	echo "coverage for `make test-memory-model-checks`"
 	cargo llvm-cov --no-report -p monty --features memory-model-checks

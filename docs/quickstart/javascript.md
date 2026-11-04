@@ -356,7 +356,8 @@ await using pool = await Monty.create({
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
 Replacement workers get new IDs, even if the OS reuses a PID.
-`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
+`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295 and defaults to 1000; 0 and 1 both retire a worker after
+each checkout, and `null` never recycles.
 `workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform

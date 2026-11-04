@@ -11,6 +11,7 @@ use std::{
 use num_bigint::BigInt;
 
 use crate::{
+    annotations,
     args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
@@ -23,7 +24,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     types::{
-        GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
+        BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
@@ -193,7 +194,7 @@ impl<'h> PyValue<'h> {
             Self::Property(value) => Ok(write!(f, "<property {value:?}>")?),
             Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
-            Self::Module(m) => Ok(write!(f, "<module '{}'>", m.get(vm.heap).name_str(vm.interns))?),
+            Self::Module(m) => Ok(f.write_str(&m.get(vm.heap).repr(vm.interns))?),
             Self::Coroutine(coro) => {
                 let func = vm.interns.get_function(coro.get(vm.heap).func_id);
                 Ok(write!(f, "<coroutine object {}>", vm.interns.get_str(func.name.name_id))?)
@@ -531,7 +532,13 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) if let EitherStr::Interned(id) = attr => ty.call_class_method(*id, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
@@ -541,11 +548,23 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         forward_py_value!(self, |value| value.py_getitem(key, vm), {
-            Self::Builtin(Builtins::Type(t)) if t.has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(Type::Type, key.clone_with_heap(vm), vm)),
-            Self::Builtin(Builtins::Type(Type::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
+            Self::Builtin(Builtins::Type(t)) if Type::from(*t).has_class_getitem() => Ok(GenericAlias::subscript(*t, key.clone_with_heap(vm), vm)),
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(BuiltinType::Type, key.clone_with_heap(vm), vm)),
+            Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
-            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&t.name(vm.heap, vm.interns))),
+            Self::Marker(form) if form.is_generic_form() => GenericAlias::subscript_special(*form, key.clone_with_heap(vm), vm),
+            // CPython's wording per kind of `typing` object: `Any` and `TypeVar`
+            // are classes, `Self` and friends special forms, the two bases generic.
+            Self::Marker(Marker(StaticStrings::Any)) => Err(ExcType::type_error_type_not_subscriptable("Any")),
+            Self::Marker(Marker(StaticStrings::TypeVar)) => Err(ExcType::type_error_type_not_subscriptable("typing.TypeVar")),
+            Self::Marker(Marker(form @ (StaticStrings::Generic | StaticStrings::Protocol))) => Err(ExcType::type_error(format!(
+                "Parameters to {}[...] must all be type variables or parameter specification variables.",
+                <&str>::from(*form)
+            ))),
+            Self::Marker(form) if form.py_type() == Type::SpecialForm => {
+                Err(ExcType::type_error(format!("typing.{} is not subscriptable", <&str>::from(form.0))))
+            }
+            Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
             Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         })
