@@ -26,8 +26,8 @@ ignores it.
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, no session existed, and retrying is safe.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
-A server that cannot be reached, or that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
-no Monty server), raises `RuntimeError`.
+A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
+no Monty server), or that is no gRPC server at all (a web server's error page), raises `RuntimeError`.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
 A server that ended it by policy says so in the error's status and cause (see
 [disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.

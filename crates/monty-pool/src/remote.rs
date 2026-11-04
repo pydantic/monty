@@ -124,8 +124,8 @@ impl Remote {
     /// admitted the stream — sent its response headers — so a refusal
     /// (capacity, authentication, no worker) surfaces here as a
     /// [`PoolError::Refused`] carrying the server's status, and a dial that
-    /// fails or times out as a [`PoolError::Spawn`], never as a worker that
-    /// fails its first turn.
+    /// fails, times out or reaches no gRPC server as a [`PoolError::Spawn`],
+    /// never as a worker that fails its first turn.
     pub(crate) async fn open(
         &self,
         metadata: &[(String, String)],
@@ -164,6 +164,15 @@ impl Remote {
                 None => Ok(open.await),
             };
             match opened {
+                // tonic opens a stream on any response without a `grpc-status`,
+                // so a plain web server's error page would only fail later, mid-
+                // session, as an undecodable body: refuse it here as a misconfiguration
+                Ok(Ok(response)) if !is_grpc_response(response.metadata()) => {
+                    return Err(PoolError::Spawn(format!(
+                        "{url}: not a gRPC server, the response's content-type is {}",
+                        describe_content_type(response.metadata())
+                    )));
+                }
                 Ok(Ok(response)) => break (requests, response),
                 // the server closed the connection under the stream before
                 // taking it (a GOAWAY as it drains, a refused stream): the
@@ -235,6 +244,35 @@ fn refuses_admission(code: Code) -> bool {
             | Code::FailedPrecondition
     )
 }
+
+/// Whether a response's headers are a gRPC server's: the protocol requires a
+/// `content-type` of `application/grpc`, optionally with a `+format` or
+/// `;params` suffix, on every response.
+fn is_grpc_response(metadata: &MetadataMap) -> bool {
+    metadata
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|value| {
+            value
+                .strip_prefix(GRPC_CONTENT_TYPE)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['+', ';']))
+        })
+}
+
+/// A response's `content-type` for an error message: quoted, or `missing`.
+fn describe_content_type(metadata: &MetadataMap) -> String {
+    metadata.get(CONTENT_TYPE).map_or_else(
+        || "missing".to_owned(),
+        |value| format!("{:?}", value.to_str().unwrap_or("<non-ASCII>")),
+    )
+}
+
+/// The `content-type` header, as tonic's metadata names it.
+const CONTENT_TYPE: &str = "content-type";
+
+/// The media type every gRPC response carries, before any suffix.
+const GRPC_CONTENT_TYPE: &str = "application/grpc";
 
 /// How many more times a stream the server never took is opened: once on the
 /// connection that was closing, once on the one the channel dials to replace it.
