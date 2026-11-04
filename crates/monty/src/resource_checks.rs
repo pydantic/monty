@@ -133,7 +133,7 @@ pub fn check_replace_size(
 ///
 /// For scans bounded only by an attacker-sized input (split pieces), whose
 /// buffer would otherwise double past the allocator's hard headroom before any
-/// checkpoint. Also polls the time limit, amortized with `check_time_every`.
+/// checkpoint. Also polls the time limit; see [`push_checked`].
 pub(crate) fn collect_checked<T>(
     items: impl IntoIterator<Item = T>,
     tracker: &ResourceTracker,
@@ -147,11 +147,38 @@ pub(crate) fn collect_checked<T>(
 
 /// Pushes one item onto a scan buffer after [`ResourceTracker::check_growth`] and an
 /// amortized time poll; the single-push form of [`collect_checked`].
+///
+/// Scan pieces cost a few nanoseconds each, so the hot path is one branch: the growth
+/// check and clock read run only at a capacity boundary or every [`SCAN_CHECK_INTERVAL`] pushes.
+#[inline]
 pub(crate) fn push_checked<T>(buffer: &mut Vec<T>, item: T, tracker: &ResourceTracker) -> Result<(), ResourceError> {
-    tracker.check_time_every(buffer.len())?;
-    tracker.check_growth(buffer.len(), buffer.capacity(), size_of::<T>())?;
+    let len = buffer.len();
+    if len == buffer.capacity() || len % SCAN_CHECK_INTERVAL == SCAN_CHECK_INTERVAL - 1 {
+        check_scan_buffer(len, buffer.capacity(), size_of::<T>(), tracker)?;
+    }
     buffer.push(item);
     Ok(())
+}
+
+/// Pushes between time polls in [`push_checked`]: wider than
+/// `ResourceTracker::LOOP_CHECK_INTERVAL` because a scan push is far cheaper than a
+/// loop iteration that allocates.
+const SCAN_CHECK_INTERVAL: usize = 1024;
+
+/// The cold half of [`push_checked`]: the growth preflight, plus a time poll on every
+/// [`SCAN_CHECK_INTERVAL`]th push, so a short scan never reads the clock.
+#[cold]
+#[inline(never)]
+fn check_scan_buffer(
+    len: usize,
+    capacity: usize,
+    elem_size: usize,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
+    if len % SCAN_CHECK_INTERVAL == SCAN_CHECK_INTERVAL - 1 {
+        tracker.check_time()?;
+    }
+    tracker.check_growth(len, capacity, elem_size)
 }
 
 /// Pre-checks the reallocation a push into a full `Value` buffer causes,

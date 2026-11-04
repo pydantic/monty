@@ -13,6 +13,7 @@ use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -194,9 +195,12 @@ impl RePattern {
     }
 
     /// Builds the `ReMatch` for a single-match search (`search`, `match`, `fullmatch`).
+    ///
+    /// The spans sit on the stack for patterns with up to seven groups, so a search
+    /// allocates nothing beyond the match itself.
     fn build_single_match(&self, text: &str, caps: &fancy_regex::Captures<'_>, subject: &Value, heap: &Heap) -> Value {
-        let mut spans = Vec::with_capacity(caps.len());
-        push_spans(caps, &mut spans);
+        let spans: SmallVec<[Option<(usize, usize)>; 8]> =
+            caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect();
         self.build_match(text, &spans, subject, text.is_ascii(), heap)
     }
 
@@ -518,7 +522,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         write!(f, "re.compile(")?;
         string_repr_fmt(&this.pattern, f)?;
         if this.flags != 0 {
-            let mut flag_parts = smallvec::SmallVec::<[&'static str; 4]>::new();
+            let mut flag_parts = SmallVec::<[&'static str; 4]>::new();
             if this.flags & IGNORECASE != 0 {
                 flag_parts.push("re.IGNORECASE");
             }

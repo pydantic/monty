@@ -462,12 +462,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Tuple> {
         let mut result = DropGuard::new(items, vm);
         for rep in 0..count {
             let (items, vm) = result.as_parts_mut();
-            items.extend(
-                self.get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|value| value.clone_with_heap(vm.heap)),
-            );
+            // Pushes, not `extend`: its per-call reserve dominates when each pass adds one item.
+            for value in self.get(vm.heap).as_slice() {
+                items.push(value.clone_with_heap(vm.heap));
+            }
             vm.heap.tracker.check_time_every(rep)?;
         }
         let (items, vm) = result.into_parts();
