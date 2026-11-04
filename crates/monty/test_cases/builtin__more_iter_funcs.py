@@ -309,6 +309,40 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
+# The index keeps counting past the i64 range, a start can be any int, and a
+# start with `__index__` works, as in CPython.
+assert list(enumerate('ab', 2**63 - 1)) == [(2**63 - 1, 'a'), (2**63, 'b')]
+assert list(enumerate('ab', -(2**63))) == [(-(2**63), 'a'), (-(2**63) + 1, 'b')]
+assert list(enumerate('ab', start=10**30)) == [(10**30, 'a'), (10**30 + 1, 'b')]
+
+
+class StartIndex:
+    def __index__(self):
+        return 5
+
+
+assert list(enumerate('a', StartIndex())) == [(5, 'a')]
+
+# The start is converted before the iterable, as in CPython.
+try:
+    enumerate(1, 1.5)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'float' object cannot be interpreted as an integer"
+
+
+# An error from the start's `__index__` propagates.
+class RaisingIndex:
+    def __index__(self):
+        raise ValueError('no index')
+
+
+try:
+    enumerate('a', RaisingIndex())
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'no index'
+
 # a non-iterable errors out of iterator construction without leaking a
 # heap-backed start=
 try:
