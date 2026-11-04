@@ -1153,6 +1153,53 @@ try:
 except OverflowError as e:
     assert str(e) == 'days=-1000000000; must have magnitude <= 999999999', f'td neg overflow: {e}'
 
+# === timedelta constructor: float components ===
+# CPython keeps each float's whole part exact and rounds the summed fractions
+# to the nearest microsecond, with a tie going to the even total.
+assert datetime.timedelta(seconds=1.5) == datetime.timedelta(seconds=1, microseconds=500000)
+assert datetime.timedelta(hours=1.5) == datetime.timedelta(seconds=5400)
+assert datetime.timedelta(days=0.5) == datetime.timedelta(seconds=43200)
+assert datetime.timedelta(weeks=0.5, days=-0.5) == datetime.timedelta(days=3)
+assert datetime.timedelta(milliseconds=0.5) == datetime.timedelta(microseconds=500)
+assert datetime.timedelta(minutes=-0.5) == datetime.timedelta(days=-1, seconds=86370)
+assert datetime.timedelta(seconds=0.1) == datetime.timedelta(microseconds=100000)
+assert datetime.timedelta(weeks=1e-6) == datetime.timedelta(microseconds=604800)
+assert datetime.timedelta(days=1.1, seconds=0.3, microseconds=0.7) == datetime.timedelta(
+    days=1, seconds=8640, microseconds=300001
+)
+assert datetime.timedelta(1.5, 1.5, 1.5) == datetime.timedelta(days=1, seconds=43201, microseconds=500002)
+assert datetime.timedelta(hours=-1.25) == datetime.timedelta(days=-1, seconds=81900)
+assert datetime.timedelta(days=-1e-6) == datetime.timedelta(days=-1, seconds=86399, microseconds=913600)
+assert datetime.timedelta(seconds=1e-7) == datetime.timedelta(0)
+assert datetime.timedelta(microseconds=0.5) == datetime.timedelta(0)
+assert datetime.timedelta(microseconds=1.5) == datetime.timedelta(microseconds=2)
+assert datetime.timedelta(microseconds=2.5) == datetime.timedelta(microseconds=2)
+assert datetime.timedelta(microseconds=-0.5) == datetime.timedelta(0)
+assert datetime.timedelta(microseconds=-1.5) == datetime.timedelta(days=-1, seconds=86399, microseconds=999998)
+assert datetime.timedelta(microseconds=1, milliseconds=0.0005) == datetime.timedelta(microseconds=2)
+assert datetime.timedelta(seconds=1, microseconds=0.5) == datetime.timedelta(seconds=1)
+assert datetime.timedelta(days=999999999, microseconds=-0.5) == datetime.timedelta(days=999999999)
+assert datetime.timedelta(True, 0.5) == datetime.timedelta(days=1, microseconds=500000)
+
+# The components are added from microseconds up to weeks, so `seconds` fails first here.
+for kwargs, error, message in [
+    ({'seconds': float('inf')}, 'OverflowError', 'cannot convert float infinity to integer'),
+    ({'days': float('-inf')}, 'OverflowError', 'cannot convert float infinity to integer'),
+    ({'minutes': float('nan')}, 'ValueError', 'cannot convert float NaN to integer'),
+    ({'days': float('nan'), 'seconds': float('inf')}, 'OverflowError', 'cannot convert float infinity to integer'),
+    ({'days': 1e9}, 'OverflowError', 'days=1000000000; must have magnitude <= 999999999'),
+    ({'days': -1e9}, 'OverflowError', 'days=-1000000000; must have magnitude <= 999999999'),
+    ({'microseconds': 1e39}, 'OverflowError', 'Python int too large to convert to C int'),
+    ({'weeks': 1e30}, 'OverflowError', 'Python int too large to convert to C int'),
+    ({'microseconds': 1e38, 'milliseconds': 1e35}, 'OverflowError', 'Python int too large to convert to C int'),
+]:
+    try:
+        datetime.timedelta(**kwargs)
+        assert False, f'expected {error}: {message}'
+    except (OverflowError, ValueError) as e:
+        assert type(e).__name__ == error
+        assert str(e) == message
+
 # === timedelta constructor: duplicate kwargs (timedelta.rs init) ===
 # Both engines use the clinic conflict wording "argument for X given by
 # name (...) and position (...)"; only the descriptor differs — CPython
