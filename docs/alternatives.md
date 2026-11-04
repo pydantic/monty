@@ -124,25 +124,29 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
 
 ## Full Monty
 
-[Full Monty](server.md) is the commercial server: the same `monty` workers behind a WebSocket, as a container image.
+[Full Monty](server.md) runs remote `monty` sessions through separate server and worker images.
 
 - **Language completeness**: the same subset as OSS Monty, or full CPython when the server proxies a session to a CPython
     sandbox.
-- **Security**: the Monty sandbox plus OS-level isolation; escaping the sandbox reaches an empty container, not the
-    machine running your application.
-- **Execution environment**: the server's container, on whatever machines you deploy it to.
-    Each connection gets a worker from the server's pool, and the server enforces its own session, memory and duration
-    ceilings.
-    The sandboxes scale by adding server replicas behind a load balancer, independent of the application hosts; a
-    draining replica hands each session a signed dump so the client can resume on another.
+- **Security**: the Monty interpreter sandbox runs in the worker tier.
+    Container and host configuration determine OS-level isolation.
+    Keep application and storage credentials off workers.
+- **Execution environment**: worker containers on the hosts you choose.
+    The server relays connections; the worker enforces sandbox memory and execution limits.
+    Size server and worker replica counts and capacity limits independently.
+    With session storage, a draining replica can return a checkpoint ID after it stores a session's state.
+    A compatible replica sharing that store can resume the session.
     See [Full Monty](server.md).
 - **New sandbox**: a WebSocket connection, relayed to a worker process for the session, 1.7 ms measured between
     containers on one machine; a deployment adds its network round trip.
 - **FOSS**: closed-source and commercial; the client, [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], ships in the MIT `pydantic-monty`
     package.
-- **Setup complexity**: run the container image with one environment variable, the dump-signing key.
+- **Setup complexity**: run matching server and worker images and configure the server's worker URL.
+    Configure shared session storage for recovery across replicas.
 - **File mounting**: client directories are mounted over the wire, the same [`MountDir`][pydantic_monty.MountDir] as a local pool.
-- **Snapshotting**: as OSS Monty, and a draining server hands each session a signed dump to restore elsewhere.
+- **Snapshotting**: a server with session storage returns checkpoint IDs instead of interpreter state bytes.
+    Loading an ID forks its stored state into an independent session.
+    A server without storage cannot preserve sessions across disconnects.
 
 ### How it was measured
 

@@ -1,86 +1,74 @@
 # Full Monty
 
-Full Monty is a WebSocket server that hosts Monty sandbox workers: each connection gets its own `monty` worker
-subprocess from an elastic pool.
-A worker serves one session at a time and is reset or replaced between sessions, so no sandbox state crosses from one
-client to another.
-`pydantic_monty.AsyncMontyWebsocket` connects directly from Python, and `MontyWebsocket` from Node with
-`@pydantic/monty`; the package's WebAssembly build cannot dial a remote server.
-The server adds capacity limits, timeouts, per-caller quotas, health probes, graceful drain and tracing to [Pydantic
-Logfire](https://pydantic.dev/logfire). The `monty` worker provides the sandboxing.
-Additionally, Full Monty can act as a reverse proxy, forwarding requests to a full sandbox running CPython.
+Full Monty runs Monty sessions on remote workers.
+A host-facing `monty-server` relays each WebSocket session to a separate `monty-worker` service.
+The worker runs sandboxed code and enforces execution and memory limits.
+The server owns client admission, session storage, upstream credentials and graceful drain.
 
-The server is closed-source and distributed as a container image.
-
-!!! tip "Design partners"
-
-    If you're interested in being an early design partner for Full Monty, please
-    [contact us](https://pydantic.dev/contact). We're currently offering Full Monty free to a select set of
-    organizations while we finalize the commercial platform.
-
-## Why Full Monty over OSS Monty
-
-Running Monty on a remote server provides:
-
-- **Security**: escaping the sandbox gets you the machine running Monty, not the machine running the agent or
-    application code. That machine is an empty container.
-- **Centralized monitoring, observability, and scaling**: one horizontally scalable service for all Monty code
-    execution, instead of every service running its own worker pool.
-- **Density**: Monty workers have a small baseline footprint (as little as 2MB), plus additional memory for limits and
-    optional type checking, so a single machine can run hundreds.
-- **Same behavior as OSS Monty**: the wire protocol carries host callbacks, name lookups, async futures and mounted
-    client directories, so code that runs against a local pool runs unchanged against the server.
-- **Full sandbox option**: a VM running CPython for code that needs dependencies, bash or a real filesystem,
-    exposed through the same interface.
+Python clients use `pydantic_monty.AsyncMontyWebsocket`.
+Node clients use `MontyWebsocket` from `@pydantic/monty`.
+The server and worker images are distributed separately from the open-source interpreter and SDKs.
+Contact [Pydantic](https://pydantic.dev/contact) for access to the self-hosted images.
 
 ## Quickstart
 
-The image is private: commercial access comes with a `key.json` service-account file that authenticates pulls (the same
-mechanism as self-hosted Logfire images, which live on the same registry host):
+Use matching server and worker image tags supplied with your image access.
+Use an SDK version compatible with those images.
+A newer source checkout does not imply that matching images have been published.
+
+Authenticate the container client with your supplied pull credential:
 
 ```bash
 docker login us-docker.pkg.dev -u _json_key --password-stdin < key.json
+export MONTY_IMAGE_TAG=REPLACE_WITH_YOUR_IMAGE_TAG
+export MONTY_SDK_VERSION=REPLACE_WITH_A_COMPATIBLE_SDK_VERSION
 ```
 
-The image refuses to start without a dump-signing key of at least 16 bytes:
+Save this as `compose.yaml`:
+
+```yaml
+services:
+  worker:
+    image: us-docker.pkg.dev/pydantic-public-registries/monty/monty-worker:${MONTY_IMAGE_TAG:?Set a matching image tag}
+    read_only: true
+    tmpfs:
+      - /tmp
+  server:
+    image: us-docker.pkg.dev/pydantic-public-registries/monty/monty-server:${MONTY_IMAGE_TAG:?Set a matching image tag}
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      MONTY_SERVER_WORKER_URL: ws://worker:8000/
+    ports:
+      - '127.0.0.1:8000:8000'
+    depends_on:
+      - worker
+```
+
+Start both services and inspect their logs:
 
 ```bash
-docker run --rm \
-  -e MONTY_SERVER_DUMP_KEY="$(openssl rand -hex 16)" \
-  -p 8000:8000 \
-  us-docker.pkg.dev/pydantic-public-registries/monty/monty-server:latest
+docker compose up -d
+docker compose logs server worker
 ```
 
-The image currently only has a `linux/amd64` manifest. On an Apple Silicon Mac or another ARM64 host, run it through
-Docker's amd64 emulation by adding `--platform=linux/amd64`:
+The server requires `MONTY_SERVER_WORKER_URL`.
+It does not spawn the interpreter itself, and it does not need a dump-signing key.
+The server logs its bound address to stderr.
+`GET /health` reports whether the server accepts traffic; it does not establish worker availability.
+The SDK journey below checks both services.
 
-```bash
-docker run --rm \
-  --platform=linux/amd64 \
-  -e MONTY_SERVER_DUMP_KEY="$(openssl rand -hex 16)" \
-  -p 8000:8000 \
-  us-docker.pkg.dev/pydantic-public-registries/monty/monty-server:latest
-```
-
-Native ARM64 images are planned. Until they are available, omitting `--platform=linux/amd64` on an ARM64 host fails
-with `no matching manifest for linux/arm64/v8`.
-
-When the server is ready, it prints its bound URL to stdout:
-
-```text
-ws://0.0.0.0:8000/
-```
-
-In another terminal, create a Python client project and add `pydantic-monty`:
+Create a client project:
 
 ```bash
 mkdir monty-server-quickstart
 cd monty-server-quickstart
 uv init --bare
-uv add pydantic-monty
+uv add "pydantic-monty==${MONTY_SDK_VERSION:?Set a compatible SDK version}"
 ```
 
-Create `client.py`:
+Save this as `client.py`:
 
 ```python test="skip"
 import asyncio
@@ -99,201 +87,103 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-Run the client:
-
-```bash
-uv run client.py
-```
-
-It should print:
-
-```text
-2
-```
-
-`GET /` on the server URL returns a short info page.
-
-The image bundles the matching `monty` worker binary and runs as non-root uid 65532 on a `scratch` base with no shell or
-package manager. The bound URL is the only line written to stdout. All logging goes to stderr.
-
-### Kubernetes
-
-On Kubernetes, `key.json` becomes an image pull secret referenced from the pod spec:
-
-```bash
-kubectl create secret docker-registry monty-image-key \
-  --docker-server=us-docker.pkg.dev \
-  --docker-username=_json_key \
-  --docker-password="$(cat key.json)"
-```
+Run `uv run client.py`.
+It prints `2`.
+Stop the services with `docker compose down` from the directory containing `compose.yaml`.
+This example has no persistent store, so sessions are ephemeral.
 
 ## Configuration
 
-Every configuration flag has an environment variable: the flag name in upper snake case with a `MONTY_SERVER_` prefix
-(`--max-sessions` → `MONTY_SERVER_MAX_SESSIONS`), except `--monty-bin` and `--logfire-token`, which use `MONTY_BIN` and
-`LOGFIRE_TOKEN` respectively.
-A flag on the command line wins over its variable.
+Server flags use the `MONTY_SERVER_` environment prefix.
+Worker flags use `MONTY_WORKER_`.
+For example, `--max-sessions` maps to `MONTY_SERVER_MAX_SESSIONS` on the server and
+`MONTY_WORKER_MAX_SESSIONS` on the worker.
+`MONTY_BIN` is the worker's exception for `--monty-bin`.
+`LOGFIRE_TOKEN` configures tracing on either service.
+Command-line flags take precedence over environment variables.
 
-The server binary defaults to `--host 127.0.0.1`, but the image's default `CMD` supplies `--host 0.0.0.0` so a published
-Docker port is reachable. Arguments after the image name in `docker run <image> ...` replace that `CMD` wholesale, so
-include `--host 0.0.0.0` when passing any flags. Hostnames are accepted, but `--host localhost` resolves to the
-container's loopback interface and is not reachable through `-p 8000:8000`.
+| Configure on | Settings                                                                                                           |
+| ------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Server       | Worker URL, worker connection attempts, concurrent client sessions, per-caller cap, keepalive and session lifetime |
+| Server       | Object store, database connections, idle parking, volume grants and MCP connections                                |
+| Worker       | Interpreter binary, sandbox memory and execution limits, idle timeout, child reuse and worker capacity             |
+| Both         | Bind address, port, drain grace and optional telemetry                                                             |
 
-| Flag                            | Meaning                                                            | Default                               |
-| ------------------------------- | ------------------------------------------------------------------ | ------------------------------------- |
-| `--host <address>`              | interface to bind                                                  | image: `0.0.0.0`; binary: `127.0.0.1` |
-| `--port <port>`                 | port to bind; 0 selects an ephemeral port                          | 8000                                  |
-| `--monty-bin <path>`            | worker binary                                                      | image: `/usr/local/bin/monty`         |
-| `--max-sessions <n>`            | concurrent sessions across the server                              | 64                                    |
-| `--max-sessions-per-client <n>` | concurrent sessions per caller; 0 disables                         | 10                                    |
-| `--idle-timeout <seconds>`      | maximum gap between requests; 0 disables                           | 60                                    |
-| `--keepalive <seconds>`         | WebSocket ping interval for detecting vanished clients; 0 disables | 5                                     |
-| `--session-timeout <seconds>`   | maximum total session lifetime; 0 disables                         | 3600                                  |
-| `--turn-timeout <seconds>`      | wall-clock cap on one request; 0 disables                          | 300                                   |
-| `--drain-grace <seconds>`       | time after SIGTERM for existing sessions to collect a dump         | 30                                    |
-| `--max-memory-mib <MiB>`        | per-session memory ceiling; 0 disables                             | 64                                    |
-| `--max-duration <seconds>`      | sandbox execution time per feed; 0 disables                        | 60                                    |
-| `--max-recursion-depth <n>`     | per-session call-stack ceiling; cannot be disabled                 | 1000                                  |
-| `--trust-forwarded-for`         | use the last `X-Forwarded-For` entry as the caller identity        | off                                   |
-| `--dump-key <key>`              | required key of at least 16 bytes for signing session dumps        | none (required)                       |
-| `--logfire-token <token>`       | export traces to Logfire                                           | off                                   |
-
-When the global session limit is full, a new WebSocket upgrade gets `503 Service Unavailable`; exceeding the
-per-client limit gets `429 Too Many Requests`.
-
-Run the image's `--help` for the authoritative list for the version you pulled:
+Use the help from the exact image tag you deploy:
 
 ```bash
-docker run --rm \
-  --platform=linux/amd64 \
-  us-docker.pkg.dev/pydantic-public-registries/monty/monty-server:latest \
-  --help
+docker compose run --rm --no-deps server --help
+docker compose run --rm --no-deps worker --help
 ```
 
-Prefer environment variables for container configuration so the image's `CMD` remains intact, especially for
-`--dump-key` and `--logfire-token`: a command line is world-readable via `ps` and commonly lands in shell history.
+The images supply `--host 0.0.0.0` in their default commands.
+If you replace a container's command, include that flag so another container can reach it.
+Prefer environment variables for credentials because process arguments can appear in shell history and process listings.
 
-### Resource limits
+The server and worker have independent capacity limits.
+The server refuses excess connections with HTTP `503`; its per-caller limit returns `429`.
+Size the worker's session and memory ceilings together with its container memory limit.
+A sandbox heap limit does not bound total process RSS or relay payload memory.
 
-The server's three sandbox resource limits are ceilings. If a client omits a limit, the server limit applies. A higher
-value is clamped to the server limit. A lower value is accepted and becomes the effective ceiling. Duration and memory
-limits can be disabled, but recursion depth is always bounded.
+## Session storage
 
-The server flags and Python client keys use different names and, for memory, different units:
+Set `MONTY_SERVER_OBJECT_STORE_URI` to enable stored sessions.
+Supported URI schemes include `s3://`, `gs://`, `az://`, `file:///` and `memory://`.
+Only the server needs storage credentials.
+Keep the bucket or directory writable only by trusted server processes.
+Without a store, sessions are ephemeral and snapshot operations are refused.
 
-| Server flag                 | `pool.checkout(limits=...)` key | Unit    |
-| --------------------------- | ------------------------------- | ------- |
-| `--max-duration <seconds>`  | `max_feed_duration_secs`        | seconds |
-| `--max-memory-mib <MiB>`    | `max_memory`                    | bytes   |
-| `--max-recursion-depth <n>` | `max_recursion_depth`           | count   |
+The host receives opaque record IDs instead of interpreter state bytes.
+A session dump creates a checkpoint ID; loading that ID creates an independent session.
+With a shared store, another compatible server replica can restore the checkpoint.
+A `memory://` store loses checkpoints when its process exits and cannot provide shared storage across replicas.
+A file store needs a writable mounted directory that covers its URI path.
 
-For example, this asks for 30 seconds, 32 MiB and a recursion depth of 500; the server may lower any value to its own
-ceiling:
+PostgreSQL is optional for ordinary execution and session snapshots.
+Profiles require the database; volumes require both the database and object store.
+Run `monty-server migrate up` before starting a server that uses these database-backed features.
+Serving does not apply migrations automatically.
 
-```python test="skip"
-import asyncio
+## Kubernetes and shutdown
 
-from pydantic_monty import AsyncMontyWebsocket
+The [Monty Helm chart](https://github.com/pydantic/monty-helm-chart) packages the server and worker.
+Select a chart and image pair that support the settings you enable.
+Both services need their own capacity and resource budgets.
+The server needs writable temporary storage, including when its root filesystem is read-only.
+Mount an `emptyDir` at `/tmp` and a separate persistent volume for any `file:///` store.
+Temporary storage is not a checkpoint store.
 
+Terminate TLS and enforce caller authentication at your ingress or proxy.
+The standalone server does not authenticate clients.
+Keep the worker endpoint private to the server tier and keep object-store credentials off workers.
 
-async def main() -> None:
-    async with AsyncMontyWebsocket('ws://localhost:8000/') as pool:
-        async with pool.checkout(
-            limits={
-                'max_feed_duration_secs': 30,
-                'max_memory': 32 * 1024 * 1024,
-                'max_recursion_depth': 500,
-            },
-        ) as session:
-            result = await session.feed_run('1 + 1')
-            print(result)
+Set Kubernetes `terminationGracePeriodSeconds` above each service's drain grace.
+During drain, readiness fails and existing sessions receive a bounded opportunity to save state.
+A stored session can hand back a checkpoint ID only after the server stores its state.
+Sessions that cannot reach a safe boundary before the deadline can be disconnected.
+External callbacks need their own idempotency or deduplication when an application resumes interrupted work.
 
+## Local development relay
 
-if __name__ == '__main__':
-    asyncio.run(main())
+The source checkout includes `scripts/websocket_relay.py` for SDK transport tests.
+It bridges each connection directly to a fresh `monty subprocess` and has no session store or authentication.
+Run it on loopback for local development:
+
+```bash
+uv run scripts/websocket_relay.py --monty-bin /path/to/monty --max-sessions 8
 ```
 
-Save this as `limits_client.py` and run `uv run limits_client.py`; with the default server configuration, it prints
-`2`.
-
-`--max-duration` counts interpreter execution within one feed and excludes time suspended waiting for the client.
-It restarts at each feed, so it bounds a request rather than a session; `--session-timeout` is what bounds the
-session. `--turn-timeout` measures wall-clock time for one complete request, including time waiting for a client
-callback. Keep the server's turn timeout above the clients' `request_timeout` so the client watchdog can report a more
-specific failure first.
-
-A keepalive ping that goes unanswered for one further `--keepalive` interval ends the session. Keep that interval below
-half of `--idle-timeout` if keepalive should detect a vanished client first.
-
-The worker enforces the effective limits. Memory and duration errors include the effective byte or time ceiling in
-their messages.
-
-## Sizing the container
-
-Workers are created on demand for active connections and exit when their sessions close. `--max-sessions` is a capacity
-limit, not a number of preallocated workers.
-
-`--max-memory-mib` limits per-session live bytes requested through the worker's global allocator. It does not cap total
-process memory or RSS. Thread stacks, the mapped binary image, direct `mmap`, allocator overhead and fragmentation are
-not included. The allocator's hard ceiling also includes the worker baseline and 4 MiB of headroom, or 32 MiB with type
-checking. Estimate the peak allocator budget as:
-
-```
-peak worker allocator budget ≈ --max-sessions × (--max-memory-mib + baseline + headroom)
-```
-
-At full utilization, the default session limits alone allow 4 GiB of allocator-backed live bytes. Container RSS will be
-higher. Account for untracked worker memory and server overhead, and use an OS or cgroup memory limit to enforce a hard
-container bound. Lower `--max-sessions` or `--max-memory-mib` to fit your instance.
-
-## Health probes and drain
-
-While the server is accepting traffic, `GET /health` returns an empty 200 response and `GET /` returns a 200 info page.
-Use `/health` for readiness and `/` for liveness.
-
-On SIGTERM, the server stops listening immediately, so new HTTP and WebSocket connections are refused rather than
-receiving a 503 response. Existing WebSocket sessions remain connected while the server drains. Each existing session's
-next request is answered with a shutdown instead of being run.
-With a session store, the server parks the session first and the client resumes it on another replica without the
-caller noticing; see [stored sessions](api/python/websocket.md#stored-sessions).
-Otherwise, or when the session has no ID, or when that resume fails or is disabled, the request raises
-`pydantic_monty.MontyShutdown`; it did not run and can be resent after restoration.
-Its `dump` is the session's ID, which restores the session on another replica sharing the store, or `None` when
-nothing could be stored: the server has no store, the session is ephemeral, or the park failed. Check that the
-dump is not `None`, then restore an idle session on a fresh one with `await session.load_session(exc.dump)` before
-resending the request; a session that was suspended mid-feed instead uses
-`await session.load_snapshot(exc.dump, ...)`.
-
-If the interrupted request was answering an external function or `os` callback, the host already ran that callback and
-the restored snapshot re-announces it. Make such callbacks idempotent or deduplicate them before restoring across a
-shutdown.
-
-Sessions that remain silent through `--drain-grace` (default 30s) are dropped without a dump.
-Set the pod's `terminationGracePeriodSeconds` above `--drain-grace`. Point every replica at the same store with the
-same `MONTY_SERVER_DUMP_KEY`: a session parked or dumped by one replica is loaded by another.
-A server without a store refuses `dump()` and `load_session()` / `load_snapshot()` with `MontyRuntimeError`, and its
-drain hands nothing back.
-Stored sessions only load into a worker of the same Monty version, so roll clients and servers together.
+The script prints its WebSocket URL to stdout.
+`--port 0` selects an ephemeral port.
+`--max-message-bytes` bounds messages in both directions and defaults to the protocol's 256 MiB ceiling.
+The message limit must be positive and cannot exceed that ceiling.
+An excess session closes with WebSocket status `1013`; an oversized message closes with status `1009`.
+The relay reaps a session's subprocess when either transport direction ends.
+Use the server and worker deployment above when you need persistence, server-side limits or drain.
 
 ## Tracing
 
-Pass `--logfire-token` (or set `LOGFIRE_TOKEN`) to export traces to [Pydantic Logfire](https://pydantic.dev/logfire).
-Without a token, execution is unchanged. Traces and logs are written to stderr but not exported.
-
-The server records one span per connection. Beneath it are the same session, run and host-call spans emitted by other
-Monty clients, so existing Monty dashboards work with the server.
-Policy outcomes (capacity rejections, timeouts, drain) are logged as events on the connection span, one line each naming
-the limit that fired.
-
-Traces carry WebSocket handshake request headers, the code fed to each session, call arguments, results and print
-output. There is no option to disable collection of these fields.
-Only export to a Logfire project that is authorized to receive this caller data.
-
-## Security
-
-There is no authentication and the listener speaks plain `ws://`.
-Terminate TLS at an ingress or load balancer and keep the listener on a private network.
-By default, `--max-sessions-per-client` identifies a caller by the direct peer IP. A proxy or NAT can therefore make
-many callers share one quota. Behind a proxy you control, set `--trust-forwarded-for` to identify callers by the last
-`X-Forwarded-For` entry instead. Configure that proxy to sanitize the header, and never enable this flag on a directly
-exposed listener, where callers can forge a fresh identity per connection and bypass the quota.
+Set `LOGFIRE_TOKEN` separately on the services whose telemetry you want to export.
+Without a token, services keep local logging without exporting traces.
+Execution telemetry can include code, callback arguments, results and printed output.
+Export it only to a project authorized to receive that data.

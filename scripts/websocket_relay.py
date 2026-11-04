@@ -20,6 +20,7 @@ isolated as the child it spawns.
 
 Usage:
     uv run scripts/websocket_relay.py [--host HOST] [--port PORT] [--monty-bin PATH]
+        [--max-message-bytes BYTES] [--max-sessions N]
 
 `--port 0` binds an ephemeral port. Once listening, the relay prints the chosen
 `ws://host:port` URL as a single line to stdout, so a caller (e.g. a test) can
@@ -40,9 +41,13 @@ from websockets.exceptions import ConnectionClosed
 
 # The stdio child's per-frame header: a 4-byte little-endian length prefix.
 _LENGTH_PREFIX = struct.Struct('<I')
+# Same encoded-frame ceiling as `monty-proto/src/frame.rs`.
+MAX_MESSAGE_BYTES = 256 * 1024 * 1024
 
 
-async def bridge_connection(websocket: ServerConnection, monty_bin: str) -> None:
+async def bridge_connection(
+    websocket: ServerConnection, monty_bin: str, max_message_bytes: int = MAX_MESSAGE_BYTES
+) -> None:
     """Bridges one WebSocket connection to a fresh `monty subprocess` child.
 
     Pumps frames in both directions until either side closes, then tears the
@@ -50,6 +55,7 @@ async def bridge_connection(websocket: ServerConnection, monty_bin: str) -> None
     frame is length-prefixed on stdio, so the only work is adding/stripping the
     prefix.
     """
+    validate_limits(max_message_bytes)
     child = await asyncio.create_subprocess_exec(
         monty_bin,
         'subprocess',
@@ -71,6 +77,9 @@ async def bridge_connection(websocket: ServerConnection, monty_bin: str) -> None
     async def child_to_ws() -> None:
         while True:
             (length,) = _LENGTH_PREFIX.unpack(await stdout.readexactly(_LENGTH_PREFIX.size))
+            if length > max_message_bytes:
+                await websocket.close(1009, 'worker frame exceeds relay message limit')
+                return
             await websocket.send(await stdout.readexactly(length))
 
     ws_task = asyncio.create_task(ws_to_child())
@@ -99,14 +108,31 @@ async def bridge_connection(websocket: ServerConnection, monty_bin: str) -> None
         await child.wait()
 
 
-async def serve_relay(host: str, port: int, monty_bin: str) -> None:
+async def serve_relay(
+    host: str,
+    port: int,
+    monty_bin: str,
+    *,
+    max_message_bytes: int = MAX_MESSAGE_BYTES,
+    max_sessions: int | None = None,
+) -> None:
     """Serves the relay until cancelled, printing the bound `ws://` URL once up."""
 
-    async def handler(websocket: ServerConnection) -> None:
-        await bridge_connection(websocket, monty_bin)
+    validate_limits(max_message_bytes, max_sessions)
+    active = 0
 
-    # max_size=None: never reject a frame the monty protocol itself would accept.
-    async with serve(handler, host, port, max_size=None) as server:
+    async def handler(websocket: ServerConnection) -> None:
+        nonlocal active
+        if max_sessions is not None and active >= max_sessions:
+            await websocket.close(1013, 'relay is at capacity')
+            return
+        active += 1
+        try:
+            await bridge_connection(websocket, monty_bin, max_message_bytes)
+        finally:
+            active -= 1
+
+    async with serve(handler, host, port, max_size=max_message_bytes, compression=None) as server:
         bound_host, bound_port = server.sockets[0].getsockname()[:2]
         print(format_ws_url(bound_host, bound_port), flush=True)
         await asyncio.get_running_loop().create_future()  # run until cancelled
@@ -136,14 +162,49 @@ def resolve_monty_bin(explicit: str | None) -> str:
     return explicit or os.environ.get('MONTY_BIN') or shutil.which('monty') or 'monty'
 
 
+def positive_int(value: str) -> int:
+    """Reject a disabled or negative safety bound in CLI configuration."""
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError('must be a positive integer')
+    return number
+
+
+def validate_limits(max_message_bytes: int, max_sessions: int | None = None) -> None:
+    """Refuse invalid bounds before opening a listener or spawning a worker."""
+    if not 1 <= max_message_bytes <= MAX_MESSAGE_BYTES:
+        raise ValueError(f'message limit must be between 1 and {MAX_MESSAGE_BYTES} bytes')
+    if max_sessions is not None and max_sessions <= 0:
+        raise ValueError('session limit must be a positive integer')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='Bridge WebSocket connections to monty subprocess children.')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8799, help='listen port (0 binds an ephemeral port)')
     parser.add_argument('--monty-bin', default=None, help='monty binary path (default: $MONTY_BIN, then PATH)')
+    parser.add_argument(
+        '--max-message-bytes',
+        type=positive_int,
+        default=MAX_MESSAGE_BYTES,
+        help='largest message in either direction (default: Monty protocol ceiling)',
+    )
+    parser.add_argument('--max-sessions', type=positive_int, default=None, help='concurrent children (default: no cap)')
     args = parser.parse_args()
     try:
-        asyncio.run(serve_relay(args.host, args.port, resolve_monty_bin(args.monty_bin)))
+        validate_limits(args.max_message_bytes, args.max_sessions)
+    except ValueError as error:
+        parser.error(str(error))
+    try:
+        asyncio.run(
+            serve_relay(
+                args.host,
+                args.port,
+                resolve_monty_bin(args.monty_bin),
+                max_message_bytes=args.max_message_bytes,
+                max_sessions=args.max_sessions,
+            )
+        )
     except KeyboardInterrupt:
         pass
 
