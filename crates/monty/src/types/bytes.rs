@@ -89,7 +89,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
-        List,
+        List, bytearray,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range_with_len, slice_collect_iterator},
     },
@@ -220,7 +220,11 @@ impl Bytes {
             }
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
-                HeapData::ByteArray(b) => b.as_slice().to_vec(),
+                HeapData::ByteArray(b) => {
+                    // The mutable source remains live while its immutable copy is allocated.
+                    vm.heap.tracker.check_allocation(b.as_slice().len())?;
+                    b.as_slice().to_vec()
+                }
                 _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
@@ -466,7 +470,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
 /// Concatenation shared by logical bytes views and concrete heap dispatch.
 fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    match super::bytearray::read_buffer(other, vm) {
+    match bytearray::read_buffer(other, vm) {
         Some(other) => Ok(Some(concat_bytes(bytes, other, vm.heap)?)),
         None => Ok(None),
     }

@@ -19,7 +19,7 @@ use crate::{
     py_value::PyValue,
     types::{
         ByteArray, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
-        Random, Range, Set, Slice, Str, TimeZone, Tuple,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple, bytearray,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -672,11 +672,11 @@ impl Type {
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
             (Self::ByteArray, _) if attr.as_str(vm.interns) == "maketrans" => {
-                super::bytearray::maketrans(args, vm).map(CallResult::Value)
+                bytearray::maketrans(args, vm).map(CallResult::Value)
             }
             (Self::ByteArray, Some(StaticStrings::Fromhex)) => {
                 let value = bytes_fromhex(args, vm)?;
-                Ok(CallResult::Value(super::bytearray::convert_result(value, vm)?))
+                Ok(CallResult::Value(bytearray::convert_result(value, vm)?))
             }
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)
