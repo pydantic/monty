@@ -103,7 +103,8 @@ These raise `NameError`:
     `s.isdisjoint(t)` is `False` in Monty, which keeps the comparison that
     matched, and `True` in CPython, which restarts the probe and finds the set
     empty.
-    In-place union, difference and symmetric difference also snapshot their right operand before mutation.
+    In-place `|=`, `-=`, `^=`, and `&=` also snapshot their right operand before mutation.
+    Changes to that operand made by user `__eq__` are not observed.
 - **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
     `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
     live, resize-checked walk that calls `__hash__` on each one. CPython probes

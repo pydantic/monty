@@ -654,7 +654,7 @@ pub(crate) fn inplace_repeat_count(value: &Value, vm: &mut VM<'_>) -> RunResult<
         return Ok(None);
     };
     defer_drop!(count, vm);
-    let count = count.as_int(vm)?;
+    let count = count.as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())?;
     Ok(Some(
         usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
     ))

@@ -161,7 +161,9 @@ answer is the call's result, and running without a host gives `{}`.
 
 ## Mutable container operators
 
-Lists and deques keep their identity through `*=`, and list `+=` accepts any synchronous iterable.
+Lists and deques keep their identity during native `*=` repetition with integer or `__index__` counts.
+List `+=` accepts any synchronous iterable.
+Reflected user arithmetic takes precedence and can replace the value.
 Sets keep their identity through `|=`, `&=`, `-=`, and `^=` with set or frozenset operands.
 Aliases observe those mutations; dict-view operands use reflected set operators and produce a replacement value.
 See the [builtin limitations](https://github.com/pydantic/monty/blob/main/docs/limitations/builtins.md) for callback behavior.

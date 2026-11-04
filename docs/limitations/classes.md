@@ -389,7 +389,8 @@ every construction request. Divergences:
 - **Binary sequence repetition does not consult `__index__`.**
     `'ab' * obj` and `[0] * obj` raise `TypeError: can't multiply sequence by non-int of type 'Foo'`
     for an instance of `Foo`, where CPython repeats.
-    In-place repetition of lists and deques (`*=`) does consult `__index__`.
+    Native in-place repetition of lists and deques (`*=`) consults `__index__`.
+    A reflected `__rmul__` that handles the operation takes precedence.
 - **Returning `bool` from `__int__` or `__index__` does not emit a `DeprecationWarning`.**
 - **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
     `TypeError: list indices must be integers or slices, not Foo` where CPython

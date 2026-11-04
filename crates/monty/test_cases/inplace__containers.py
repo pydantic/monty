@@ -16,6 +16,19 @@ for count in [-3, 0, 1, 2, 5]:
         d *= count
         assert d is alias and d == expected and d.maxlen == maxlen
 
+for make in [list, deque]:
+    for contents in [[], [1]]:
+        for count in [2**70, -(2**70)]:
+            a = make(contents)
+            alias = a
+            try:
+                a *= count
+            except OverflowError as exc:
+                assert str(exc) == "cannot fit 'int' into an index-sized integer"
+            else:
+                assert False
+            assert a is alias and list(a) == contents
+
 for iterable in [(2, 3), range(2, 4), 'ab', {'a': 1}, {2, 3}]:
     a = [1]
     alias = a
