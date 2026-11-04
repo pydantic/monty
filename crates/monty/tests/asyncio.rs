@@ -81,6 +81,80 @@ fn allow_eager_await_keeps_existing_resume_semantics() {
     assert_eq!(done.into_complete().unwrap(), MontyObject::int(42));
 }
 
+/// A discarded Task handle must stay alive until its completion is delivered.
+///
+/// The creator parks on an external call, the scheduler runs the fire-and-forget
+/// child, and completion takes the handle reference before cancelling the task.
+#[test]
+fn fire_and_forget_task_completes_while_creator_awaits_external() {
+    let code = r"
+import asyncio
+
+done = []
+
+async def child():
+    done.append('child')
+
+async def main():
+    asyncio.create_task(child())
+    await foo()
+    return done
+
+await main()
+";
+
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    assert_eq!(call_ids.len(), 1);
+
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::string("ok")))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list([MontyObject::string("child")])
+    );
+}
+
+/// The failure path takes the same handle reference before cancelling the task.
+#[test]
+fn fire_and_forget_task_failure_while_creator_awaits_external() {
+    let code = r"
+import asyncio
+
+done = []
+
+async def child():
+    done.append('child')
+    raise ValueError('bad')
+
+async def main():
+    asyncio.create_task(child())
+    await foo()
+    return done
+
+await main()
+";
+
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    assert_eq!(call_ids.len(), 1);
+
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::string("ok")))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list([MontyObject::string("child")])
+    );
+}
+
 /// Deferred calls, ready siblings, and earlier pending futures must retain concurrency.
 #[test]
 fn allow_eager_await_excludes_competing_work() {
@@ -1923,4 +1997,38 @@ await main()
         MontyObject::list([MontyObject::string("doomed failed".to_string()), MontyObject::int(3)]),
         "only the awaited failure reached the main task"
     );
+}
+
+/// A queued reused coroutine that fails while the only other task blocks on a
+/// pending host future must yield to the host instead of dispatching a parked frame.
+#[test]
+fn reused_task_drain_without_a_successor_yields() {
+    let code = r"
+import asyncio
+
+async def child():
+    return 1
+
+async def main():
+    coro = child()
+    await coro
+    asyncio.create_task(coro)
+    await foo()
+
+asyncio.run(main())
+";
+    let call = start_external(code).into_function_call().unwrap();
+    let call_id = call.call_id;
+    let waiting = call
+        .resume_pending(PrintWriter::Stdout)
+        .expect("draining the reused task must yield to the host")
+        .into_resolve_futures()
+        .expect("the host future is still pending");
+    let progress = waiting
+        .resume(
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::none()))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(progress.into_complete().unwrap(), MontyObject::none());
 }

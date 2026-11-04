@@ -231,6 +231,13 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into()
     }
 
+    /// Creates the canonical `RuntimeError: cannot reuse already awaited future`,
+    /// raised when an already-consumed future or task is awaited again.
+    #[must_use]
+    fn cannot_reuse_already_awaited_future() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into()
+    }
+
     /// `ValueError: generator already executing` — a generator advanced from
     /// inside its own step, e.g. by an `os.walk` `onerror` callback.
     #[must_use]

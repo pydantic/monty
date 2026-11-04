@@ -22,7 +22,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
 use crate::{
-    asyncio::{Awaiter, ExternalFutureState, GatherState},
+    asyncio::{Awaiter, ExternalFutureState, GatherState, TaskFutureState},
     types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
     value::Value,
 };
@@ -2120,8 +2120,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // heap refs.
             match &gather.state {
                 GatherState::Awaited(awaited) => {
-                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
-                        on_child(*gather);
+                    if let Some(id) = awaited.awaiter.heap_ref() {
+                        on_child(id);
                     }
                     for result in awaited.results.iter().flatten() {
                         if let Value::Ref(id) = result {
@@ -2134,19 +2134,31 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::ExternalFuture(fut) => {
-            // `Pending { awaiter: Some(GatherSlot { gather, .. }) }` owns an
-            // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
-            // state carry no heap refs. `Resolved` owns the cached value, and
-            // a pending sleep owns the `result` it will resolve with.
+            // `Pending`'s awaiter may own an inc_ref on a gather or task.
+            // `Resolved` owns the cached value, and a pending
+            // sleep owns the `result` it will resolve with.
             if let Some(Value::Ref(id)) = &fut.sleep_result {
                 on_child(*id);
             }
             match &fut.state {
                 ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
-                ExternalFutureState::Pending {
-                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-                } => on_child(*gather),
+                ExternalFutureState::Pending { awaiter: Some(awaiter) } => {
+                    if let Some(id) = awaiter.heap_ref() {
+                        on_child(id);
+                    }
+                }
                 _ => {}
+            }
+        }
+        HeapData::Task(task) => {
+            on_child(task.coroutine_id);
+            for awaiter in &task.awaiters {
+                if let Some(id) = awaiter.heap_ref() {
+                    on_child(id);
+                }
+            }
+            if let TaskFutureState::Completed(Value::Ref(id)) = &task.state {
+                on_child(*id);
             }
         }
         HeapData::DateTime(dt) => {
@@ -2268,8 +2280,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // heap refs.
             match &mut gather.state {
                 GatherState::Awaited(awaited) => {
-                    if let Awaiter::GatherSlot { gather, .. } = &awaited.awaiter {
-                        stack.push(*gather);
+                    if let Some(id) = awaited.awaiter.heap_ref() {
+                        stack.push(id);
                     }
                     for result in awaited.results.iter_mut().flatten() {
                         result.py_dec_ref_ids(stack);
@@ -2286,13 +2298,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             }
             match &mut fut.state {
                 ExternalFutureState::Resolved(value) => value.py_dec_ref_ids(stack),
-                ExternalFutureState::Pending {
-                    awaiter: Some(Awaiter::GatherSlot { gather, .. }),
-                } => stack.push(*gather),
-                ExternalFutureState::Pending {
-                    awaiter: None | Some(Awaiter::Task(_)),
-                }
-                | ExternalFutureState::Failed(_) => {}
+                ExternalFutureState::Pending { awaiter: Some(awaiter) } => stack.extend(awaiter.heap_ref()),
+                ExternalFutureState::Pending { awaiter: None } | ExternalFutureState::Failed(_) => {}
+            }
+        }
+        HeapData::Task(task) => {
+            stack.push(task.coroutine_id);
+            stack.extend(task.awaiters.iter().filter_map(Awaiter::heap_ref));
+            if let TaskFutureState::Completed(value) = &mut task.state {
+                value.py_dec_ref_ids(stack);
             }
         }
         HeapData::DateTime(dt) => {

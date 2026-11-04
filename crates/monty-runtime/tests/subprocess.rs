@@ -959,6 +959,18 @@ fn memory_errors_in_user_str_and_repr_are_uncatchable() {
     }
 }
 
+/// Queueing a used coroutine thousands of times makes every task fail at
+/// startup. Selecting the successor for each failure must not recurse on the
+/// native stack, or a normal program can overflow it before any limit fires.
+#[test]
+fn used_coroutines_do_not_recurse_while_starting_tasks() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let code = "import asyncio\n\nasync def c():\n    return 1\n\nasync def main():\n    coro = c()\n    await coro\n    tasks = [asyncio.create_task(coro) for _ in range(5000)]\n    return len(tasks)\n\nasyncio.run(main())";
+    assert_eq!(child.feed_complete(code), MontyObject::int(5000));
+    child.shutdown();
+}
+
 /// Async scheduler state is allocator-accounted even though it lives outside
 /// Monty's object heap, so recursive gathers reach the soft limit safely.
 #[test]

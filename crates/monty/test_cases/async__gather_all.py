@@ -43,6 +43,7 @@ async def single():
 result = await asyncio.gather(single())  # pyright: ignore
 assert result == [42]
 
+
 # === repr of gather function ===
 r = repr(asyncio.gather)
 assert r.startswith('<function gather at 0x'), f'repr should start with: {r}'

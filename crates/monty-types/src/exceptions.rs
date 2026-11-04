@@ -442,6 +442,11 @@ pub enum ExcType {
     /// `decimal.FloatOperation`: floats and Decimals were mixed.
     #[strum(serialize = "decimal.FloatOperation")]
     DecimalFloatOperation,
+
+    /// `asyncio.InvalidStateError`, raised by `Task.result()` and
+    /// `Task.exception()` while the task is still pending.
+    #[strum(serialize = "asyncio.exceptions.InvalidStateError")]
+    InvalidStateError,
 }
 impl ExcType {
     /// Checks if this exception type is a subclass of another exception type.

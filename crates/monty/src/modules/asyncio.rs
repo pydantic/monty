@@ -5,15 +5,19 @@
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
 //! - `sleep(delay, result=None)`: An awaitable governed by the session's `SleepMode`
 //!
-//! Other asyncio functions (`create_task`, `wait`, etc.) are not implemented.
-//! The host acts as the event loop - Monty yields control when tasks are blocked.
+//! `create_task` and the `Task` methods live in the [`task`] submodule. The
+//! host acts as the event loop - Monty yields control when tasks are blocked.
+
+mod task;
 
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
+pub(crate) use task::{create_task, task_call_method};
 
 use crate::{
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -25,7 +29,7 @@ use crate::{
         time::{HostSleep, host_sleep},
     },
     os_dispatch::PostConversionEffect,
-    types::Module,
+    types::{BuiltinType, Module},
     value::Value,
 };
 
@@ -33,6 +37,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, serde::Serialize, serde::Deserialize)]
 #[strum(serialize_all = "lowercase")]
 pub(crate) enum AsyncioFunctions {
+    #[strum(serialize = "create_task")]
+    CreateTask,
     Gather,
     Run,
     Sleep,
@@ -40,8 +46,8 @@ pub(crate) enum AsyncioFunctions {
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains only the `run`, `gather` and `sleep` functions. Other asyncio
-/// functions are not implemented as they would require additional VM/scheduler features.
+/// The module contains `run`, `gather`, `sleep`, `create_task`, `Task` and
+/// `InvalidStateError`. Other asyncio functions require VM features Monty does not have.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
@@ -60,11 +66,27 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Sleep)),
         vm,
     );
+    module.set_attr(
+        StaticStrings::CreateTask,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::CreateTask)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::Task,
+        Value::Builtin(Builtins::Type(BuiltinType::Task)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::InvalidStateError,
+        Value::Builtin(Builtins::ExcType(ExcType::InvalidStateError)),
+        vm,
+    );
 
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
+        AsyncioFunctions::CreateTask => create_task(vm, args).map(CallResult::Value),
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
@@ -108,7 +130,7 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 struct SleepArgs {
     #[from_args(static_string = "Delay")]
     delay: Value,
-    #[from_args(static_string = "ResultArg", default = Value::None)]
+    #[from_args(static_string = "Result", default = Value::None)]
     result: Value,
 }
 
@@ -144,21 +166,23 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 
 /// Implementation of `asyncio.gather(*awaitables)`.
 ///
-/// Collects coroutines and external futures for concurrent execution. Does NOT
-/// spawn tasks immediately - just validates and stores the references. Tasks are
-/// spawned when the returned `GatherFuture` is awaited (in the `Await` opcode handler).
+/// Collects awaitables for concurrent execution. Does NOT spawn tasks
+/// immediately - just validates and stores the references. Tasks are spawned
+/// when the returned `GatherFuture` is awaited (in the `Await` opcode handler).
 ///
 /// # Behavior when awaited
 ///
 /// 1. Each coroutine is spawned as a separate Task
 /// 2. External futures are tracked for resolution by the host
-/// 3. The current task blocks until all items complete
-/// 4. Results are collected in order and returned as a list
-/// 5. On any task failure, sibling tasks are cancelled and the exception propagates
+/// 3. Nested gather futures use the existing awaiter chains
+/// 4. The current task blocks until all items complete
+/// 5. Results are collected in order and returned as a list
+/// 6. On any task failure the exception propagates; siblings keep running and
+///    their later results are discarded (see `GatherFuture::fail`)
 ///
 /// # Arguments
 /// * `heap` - The heap for allocating the GatherFuture
-/// * `args` - Variadic awaitable arguments (coroutines or external futures)
+/// * `args` - Variadic awaitable arguments
 ///
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
@@ -178,7 +202,10 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             Value::Ref(id)
                 if matches!(
                     vm.heap.get(*id),
-                    HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
+                    HeapData::Coroutine(_)
+                        | HeapData::ExternalFuture(_)
+                        | HeapData::GatherFuture(_)
+                        | HeapData::Task(_)
                 )
         ) {
             return Err(ExcType::type_error(

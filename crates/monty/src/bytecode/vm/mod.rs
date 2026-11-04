@@ -2159,7 +2159,7 @@ impl<'h> VM<'h> {
             Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
                 let settled = self.settled_awaitable(result);
                 self.push(settled);
-                return self.run_external();
+                return self.resume_after_async_wait();
             }
             effect => {
                 self.pending_effect = effect;
