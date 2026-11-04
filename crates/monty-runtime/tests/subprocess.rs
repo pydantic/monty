@@ -1341,6 +1341,9 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal('Infinity').next_minus()",
             3_047_327,
         ),
+        // `join` preflights each append, so the result is refused as it grows.
+        ("s = 'x' * 400_000\nbig = ','.join([s, s, s, s])", 1_243_561),
+        ("s = b'x' * 400_000\nbig = b','.join([s, s, s, s])", 1_251_789),
     ];
 
     for (code, expected) in cases {
@@ -1908,6 +1911,39 @@ fn batched_without_a_size_hint_is_refused_before_the_hard_limit() {
     );
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
+}
+
+/// Rust-side drains fill a result buffer with no dispatch checkpoint between pushes, so a
+/// doubling that outgrows the 4 MiB headroom must be preflighted. Each limit is one where
+/// the unchecked push killed the worker; where the refusal lands depends on the doubling.
+#[test]
+fn drain_buffer_growth_is_refused_before_the_hard_limit() {
+    for (mib, setup, code) in [
+        (9, "None", "map(abs, range(10**9))"),
+        (9, "None", "filter(None, range(1, 10**9))"),
+        (32, "None", "enumerate(range(10**9))"),
+        (32, "None", "zip(range(10**9), range(10**9))"),
+        (
+            24,
+            "import fnmatch\nnames = ['a'] * 1_000_000",
+            "fnmatch.filter(names, '*')",
+        ),
+        (9, "s = 'x' * 3_000_000", "','.join([s, s, s])"),
+        (9, "s = b'x' * 3_000_000", "b','.join([s, s, s])"),
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(mib * 1024 * 1024));
+        // Built in its own feed so a `MemoryError` can only come from the drain.
+        let (_, event) = child.feed(setup);
+        assert!(
+            matches!(event, pb::child_event::Kind::Complete(_)),
+            "{setup}: {event:?}"
+        );
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
 }
 
 /// `tomllib` turns a couple of source bytes into a tree node (`[[a]]` into a

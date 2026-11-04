@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData},
+    resource_checks::push_value_checked,
     types::{List, allocate_tuple},
     value::Value,
 };
@@ -47,7 +48,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     while let Some(item) = iter.py_next(vm)? {
         // Create tuple (index, item)
         let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap);
-        result.push(tuple_val);
+        push_value_checked(vm, result, tuple_val)?;
         index += 1;
     }
 

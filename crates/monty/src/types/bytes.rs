@@ -88,6 +88,7 @@ use crate::{
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
+    string_builder::check_push_growth,
     types::{
         List,
         long_int::repeat_count,
@@ -2126,18 +2127,12 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
 
-        if index > 0 {
-            result.extend_from_slice(separator.get(vm.heap));
-        }
-
         // Check item is bytes and extract its content
-        match item {
-            Value::InternBytes(id) => {
-                result.extend_from_slice(vm.interns.get_bytes(*id));
-            }
+        let content: &[u8] = match item {
+            Value::InternBytes(id) => vm.interns.get_bytes(*id),
             Value::Ref(heap_id) => {
                 if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
-                    result.extend_from_slice(b.as_slice());
+                    b.as_slice()
                 } else {
                     let t = item.py_type_name(vm);
                     return Err(ExcType::type_error(format!(
@@ -2151,11 +2146,23 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
                     "sequence item {index}: expected a bytes-like object, {t} found"
                 )));
             }
+        };
+
+        if index > 0 {
+            push_bytes_checked(&mut result, separator.get(vm.heap), vm)?;
         }
+        push_bytes_checked(&mut result, content, vm)?;
         index += 1;
     }
 
     Ok(allocate_bytes(result, vm.heap))
+}
+
+/// Appends `s` to `join`'s result, preflighting any growth; see [`check_push_growth`].
+fn push_bytes_checked(result: &mut Vec<u8>, s: &[u8], vm: &VM<'_>) -> RunResult<()> {
+    check_push_growth(result.capacity(), s.len(), result.len(), &vm.heap.tracker)?;
+    result.extend_from_slice(s);
+    Ok(())
 }
 
 // =============================================================================

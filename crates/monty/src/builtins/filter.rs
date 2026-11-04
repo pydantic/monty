@@ -14,6 +14,7 @@ use crate::{
     exception_private::RunResult,
     heap::{DropGuard, HeapData},
     predicate::call_predicate,
+    resource_checks::push_value_checked,
     types::{List, PyTrait},
     value::Value,
 };
@@ -53,7 +54,8 @@ pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         };
 
         if should_include {
-            out.push(item_guard.into_inner());
+            let (item, vm) = item_guard.into_parts();
+            push_value_checked(vm, out, item)?;
         }
     }
 

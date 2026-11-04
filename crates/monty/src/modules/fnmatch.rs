@@ -20,6 +20,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{value_as_bytes, value_as_path_str},
+    resource_checks::push_value_checked,
     types::{List, Module, str::allocate_string},
     value::Value,
 };
@@ -140,7 +141,8 @@ fn filter(names: Value, pat: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         seen += 1;
         let name = Text::from_subject(item, vm)?;
         if matches(&tokens, &pattern_subject(&name, &pat)?.chars, &vm.heap.tracker)? {
-            out.push(item_guard.into_inner());
+            let (item, vm) = item_guard.into_parts();
+            push_value_checked(vm, out, item)?;
         }
     }
     let (out, vm) = out_guard.into_parts();

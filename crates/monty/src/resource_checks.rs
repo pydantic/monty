@@ -123,6 +123,21 @@ pub(crate) fn check_value_buffer_growth(vm: &mut VM<'_>, len: usize, capacity: u
     }
 }
 
+/// Pushes `item` onto a Rust-side `Value` buffer, preflighting the growth when it is full.
+///
+/// For drain loops such as the eager `map` and `filter`, whose result `Vec` is not a heap
+/// object with its own checked `append`. Drops `item` if the buffer cannot grow.
+pub(crate) fn push_value_checked(vm: &mut VM<'_>, buffer: &mut Vec<Value>, item: Value) -> RunResult<()> {
+    let (len, capacity) = (buffer.len(), buffer.capacity());
+    let item = if len < capacity {
+        item
+    } else {
+        check_value_buffer_growth(vm, len, capacity, item)?
+    };
+    buffer.push(item);
+    Ok(())
+}
+
 /// Pre-checks the reallocation one insertion into a dict or set would cause,
 /// summing both of the buffers it grows.
 ///
