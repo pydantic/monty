@@ -68,9 +68,8 @@ use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
 use memchr::memmem::{Finder, FinderRev};
-use monty_types::{ResourceError, ResourceTracker};
 use monty_macros::pyattrs;
-use monty_types::ResourceError;
+use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
 
@@ -98,7 +97,7 @@ use crate::{
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
+    value::{VALUE_SIZE, Value, eq_bytes},
 };
 
 // ======================================================================// ASCII byte helper functions

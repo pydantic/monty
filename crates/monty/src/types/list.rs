@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
-use monty_types::ResourceError;
 use monty_macros::pyattrs;
+use monty_types::ResourceError;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 

@@ -187,7 +187,6 @@ mod tests {
         let class_id = heap.allocate(HeapData::Class(Box::new(Class::new(
             EitherStr::Heap("Custom".to_owned()),
             Dict::new(),
-            false,
         ))));
         let mut tables = SessionTables::default();
         let program = Program::for_tests();
