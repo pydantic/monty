@@ -223,9 +223,8 @@ except ValueError:
 late_erroring = None
 
 
-# The predicate-driven adaptors own a CALLABLE as well as a source, so each has
-# a second trace edge. A closure is used deliberately: a plain `def` is an
-# immediate `Value`, not a heap ref, so it would exercise no hook at all.
+# The predicate-driven adaptors own a callable as well as a source.
+# These closures capture heap values to exercise tracing through the callable.
 def make_shorter_than(limit):
     bound = list(range(limit))
 
