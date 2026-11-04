@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use monty_types::ResourceError;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -1061,13 +1062,13 @@ pub(crate) fn repr_sequence_fmt<'h>(
 
     f.write_char(start)?;
     // The item is fetched before the separator is written so nothing is emitted
-    // for an index that turned out to be out of range. `repr_check_time` bounds
+    // for an index that turned out to be out of range. `repr_should_truncate` bounds
     // reprs that keep growing the sequence from inside a user `__repr__`.
     for i in 0.. {
         let Some(item) = get_item(vm.heap, i) else { break };
         defer_drop!(item, vm);
         if i > 0 {
-            if repr_check_time(i, vm) {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -1095,7 +1096,7 @@ pub(crate) fn repr_items_fmt(
 ) -> RunResult<()> {
     for (i, item) in items.iter().enumerate() {
         if i > 0 {
-            if repr_check_time(i, vm) {
+            if repr_should_truncate(i, vm)? {
                 f.write_str(", ...[timeout]")?;
                 break;
             }
@@ -1106,11 +1107,17 @@ pub(crate) fn repr_items_fmt(
     Ok(())
 }
 
-/// Polls the time/memory soft limits every 64th item rather than every item,
-/// keeping per-item overhead to one branch while still truncating huge reprs
-/// promptly with `", ...[timeout]"` (tested in `resource_limits.rs`).
-pub(crate) fn repr_check_time(i: usize, vm: &VM<'_>) -> bool {
-    vm.heap.tracker.check_memory_time_every(i).is_err()
+/// Polls the time and memory soft limits every 64th item of a container repr.
+///
+/// `Ok(true)` means the time limit ran out, so the caller writes `", ...[timeout]"`
+/// and stops (tested in `resource_limits.rs`). A memory error propagates instead,
+/// since a truncated repr would let the feed carry on past `max_memory`.
+pub(crate) fn repr_should_truncate(i: usize, vm: &VM<'_>) -> RunResult<bool> {
+    match vm.heap.tracker.check_memory_time_every(i) {
+        Ok(()) => Ok(false),
+        Err(ResourceError::Time { .. }) => Ok(true),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Iterates over a list while observing changes to its current contents.

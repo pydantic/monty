@@ -1352,7 +1352,7 @@ s.splitlines()
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods
 // (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) poll the
-// limits every 64th item via `repr_check_time` and write `...[timeout]` when the
+// limits every 64th item via `repr_should_truncate` and write `...[timeout]` when the
 // time limit is exceeded, returning normally instead of propagating an error.
 //
 // Each test uses the external function "interrupt" pattern: the large object is
@@ -1667,7 +1667,7 @@ repr(x)
 /// limit.
 ///
 /// The bound arguments and keywords are formatted in one native loop, so
-/// without the shared `repr_check_time` counter the repr runs to completion
+/// without the shared `repr_should_truncate` counter the repr runs to completion
 /// before any checkpoint — 500k arguments overshoot the deadline by more than
 /// an order of magnitude over the bound asserted here.
 #[test]
@@ -1687,7 +1687,7 @@ repr(p)
 /// the time limit.
 ///
 /// The arguments are formatted in one native loop, as a tuple's are, so the
-/// same `repr_check_time` poll has to truncate it.
+/// same `repr_should_truncate` poll has to truncate it.
 #[test]
 fn timeout_truncation_in_generic_alias_repr() {
     let code = r"
