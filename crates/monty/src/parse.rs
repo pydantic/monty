@@ -12,7 +12,7 @@ use ruff_python_ast::{
     token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
-use ruff_python_parser::{Mode, parse_expression, parse_module};
+use ruff_python_parser::{Mode, parse_expression_range, parse_module};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
@@ -257,6 +257,9 @@ pub(crate) fn parse_module_with_filename_id(
 
 /// Parses `code` as a single expression, as `eval()` does.
 ///
+/// Leading spaces and tabs are skipped, as CPython's `eval()` strips them, but
+/// parsing starts at that offset in the full source so every position in the
+/// result and in any error stays relative to what the caller passed.
 /// `filename_id` is the snippet's fresh `<string>` id (see
 /// [`parse_module_with_filename_id`]).
 pub(crate) fn parse_expression_with_interner(
@@ -266,12 +269,60 @@ pub(crate) fn parse_expression_with_interner(
     source_scan_threshold: usize,
 ) -> Result<ExprLoc, ParseError> {
     check_source_nesting(code, Mode::Expression, filename_id, source_scan_threshold)?;
-    let parsed = parse_expression(code)
+    // ruff's lexer asserts the same `u32` bound on every source it parses.
+    let end = TextSize::try_from(code.len()).expect("eval source exceeds u32 offsets");
+    let start = end - TextSize::of(code.trim_start_matches([' ', '\t']));
+    reject_leading_bom(code, start, filename_id)?;
+    let parsed = parse_expression_range(code, TextRange::new(start, end))
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    if let Some(range) = trailing_indent(code) {
+        return Err(ParseError::syntax(
+            "Unexpected indentation",
+            code_range(filename_id, range),
+        ));
+    }
     // No `class` keywords can occur in a bare expression.
     // An expression holds no annotations, so the `__future__` state is moot.
     let mut parser = Parser::new(code, filename_id, interner, Vec::new(), false);
     parser.parse_expression(*parsed.into_syntax().body)
+}
+
+/// Rejects a byte-order mark at `start`, where an `eval()` or `exec()` snippet's
+/// code begins, with CPython's `SyntaxError`.
+///
+/// ruff skips a BOM at offset 0, which suits a module read from a file, but
+/// CPython treats one in a `str` snippet as an invalid character.
+pub(crate) fn reject_leading_bom(code: &str, start: TextSize, filename_id: StringId) -> Result<(), ParseError> {
+    if code[start.to_usize()..].starts_with('\u{feff}') {
+        Err(ParseError::syntax(
+            "invalid non-printable character U+FEFF",
+            code_range(filename_id, TextRange::at(start, TextSize::of('\u{feff}'))),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// The last line of an `eval()` source when it holds only indentation, which
+/// CPython's tokenizer rejects as an unexpected indent but ruff accepts.
+///
+/// A final line with no newline after it is not blank to CPython, so its
+/// indentation counts. A form feed resets the column, as in CPython, and a line
+/// continued by a backslash is not a new line at all.
+fn trailing_indent(code: &str) -> Option<TextRange> {
+    let line_start = code.rfind(['\n', '\r'])? + 1;
+    let line = &code[line_start..];
+    let column = line.chars().try_fold(0usize, |column, c| match c {
+        ' ' => Some(column + 1),
+        '\t' => Some(column / 8 * 8 + 8),
+        '\x0c' => Some(0),
+        _ => None,
+    })?;
+    let continued = code[..line_start].trim_end_matches(['\n', '\r']).ends_with('\\');
+    (column > 0 && !continued).then(|| {
+        let start = TextSize::try_from(line_start).expect("eval source exceeds u32 offsets");
+        TextRange::at(start, TextSize::of(line))
+    })
 }
 
 /// [`check_source_nesting`] for a host vetting a snippet before compiling it,
@@ -3007,19 +3058,6 @@ pub enum ParseError {
 }
 
 impl ParseError {
-    /// Moves the error `bytes` later in the source, for a parse of a suffix
-    /// of the caller's text (`eval()` trims leading whitespace) so the line
-    /// number is counted from the start of what the caller passed.
-    pub(crate) fn shifted(mut self, bytes: u32) -> Self {
-        let (Self::Syntax { position, .. }
-        | Self::NotImplemented { position, .. }
-        | Self::NotSupported { position, .. }
-        | Self::Import { position, .. }) = &mut self;
-        position.start_byte = position.start_byte.saturating_add(bytes);
-        position.end_byte = position.end_byte.saturating_add(bytes);
-        self
-    }
-
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
             msg: msg.into(),

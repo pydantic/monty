@@ -395,7 +395,10 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     notes.
     Older builds then refuse the new dumps as too new.
     Where the old data still holds everything the new meaning needs, the newer build upgrades older dumps as it loads
-    them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack.
+    them: version 14 builds load version 13 dumps from 1.0 and 1.1, generating the methods their dataclasses lack, and
+    version 15 builds rebase the source positions of `eval()` code in version 14 dumps from 1.4.
+    A version 14 `eval()` whose source is valid as both a module and an expression after blank lines cannot be told
+    apart from an `exec()`, and keeps positions that can point a few lines early.
     Otherwise it refuses them as too old, and the session has to be rebuilt by replaying its feeds.
     The same bytes load in-process, in a subprocess and over gRPC.
 
