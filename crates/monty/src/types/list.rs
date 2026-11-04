@@ -702,6 +702,42 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(true)
     }
 
+    /// `list *= n` — repeats the list in place, as CPython's `list_inplace_repeat`
+    /// does, so an alias sees the result. A count that is not an `int` falls back
+    /// to binary `*`.
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(false);
+        };
+        let len = self.get(vm.heap).items.len();
+        if count == 0 {
+            mem::take(&mut self.get_mut(vm.heap).items).drop_with(vm);
+        } else if count > 1 && len > 0 {
+            check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
+            // Checked at 2× the added items — the temporary clone plus the equal-sized
+            // target growth — as for a list extended by itself in `py_iadd_impl`.
+            let added = len.saturating_mul(count - 1);
+            vm.heap.tracker.check_allocation(added.saturating_mul(2 * VALUE_SIZE))?;
+            // Without a memory limit the check above accepts any count, so the new
+            // capacity must still be possible: CPython raises `MemoryError` here.
+            let mut repeated = Vec::new();
+            len.checked_mul(count - 1)
+                .and_then(|extra| repeated.try_reserve_exact(extra).ok())
+                .ok_or_else(ExcType::allocation_too_large)?;
+            // Guarded, so the clones are released if the time limit stops the loop.
+            let mut guard = DropGuard::new(repeated, vm);
+            let (repeated, vm) = guard.as_parts_mut();
+            let value = self.get(vm.heap);
+            for rep in 1..count {
+                repeated.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
+                vm.heap.tracker.check_time_every(rep)?;
+            }
+            let (repeated, vm) = guard.into_parts();
+            self.get_mut(vm.heap).items.extend(repeated);
+        }
+        Ok(true)
+    }
+
     /// Delegates methods to `call_list_method`.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         if attr.static_string(vm.interns) == Some(StaticStrings::Sort) {

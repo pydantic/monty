@@ -231,6 +231,26 @@ assert repr(deque([1, 2], maxlen=0) * 10**9) == 'deque([], maxlen=0)'
 d = deque([1, 2, 3], maxlen=5)
 d *= 4
 assert repr(d) == 'deque([2, 3, 1, 2, 3], maxlen=5)'
+# `*=` keeps the deque's identity, so an alias sees the change
+d = deque([1, 2])
+alias = d
+alias *= 2
+assert alias is d
+assert list(d) == [1, 2, 1, 2]
+alias *= 0
+assert alias is d
+assert list(d) == []
+# A count of 1 leaves a live iterator alone; a real repeat invalidates it
+d = deque([1, 2])
+it = iter(d)
+d *= 1
+assert next(it) == 1
+d *= 2
+try:
+    next(it)
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'deque mutated during iteration'
 
 # A count too large for a C ssize_t raises before building anything.
 try:

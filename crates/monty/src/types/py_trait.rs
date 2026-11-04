@@ -495,6 +495,12 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(false)
     }
 
+    /// Python in-place multiplication (`__imul__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s
+    /// contract: `Ok(true)` repeated `self` in place, `Ok(false)` falls back to binary `*`.
+    fn py_imul_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(false)
+    }
+
     /// Python in-place bitwise AND (`__iand__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
     fn py_iand_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(false)

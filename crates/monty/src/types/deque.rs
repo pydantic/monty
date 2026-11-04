@@ -604,6 +604,38 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         self.py_mul_impl(other, vm)
     }
 
+    /// `deque *= int` — repeats in place, as CPython's `deque_inplace_repeat`
+    /// does, keeping `maxlen` and the deque's identity, so aliases see the update.
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(false);
+        };
+        let deque = self.get(vm.heap);
+        // As in CPython, an empty deque or a count of 1 stays as it is, without a
+        // state change that would stop a live iterator.
+        if deque.items.is_empty() || count == 1 {
+            return Ok(true);
+        }
+        let maxlen = deque.maxlen();
+        let source: Vec<Value> = if count == 0 {
+            Vec::new()
+        } else {
+            vm.heap
+                .tracker
+                .check_allocation(deque.items.len().saturating_mul(VALUE_SIZE))?;
+            deque.iter().map(|v| v.clone_with_heap(vm.heap)).collect()
+        };
+        let items = repeat_deque_items(source, maxlen, count, vm)?;
+        // `VecDeque::from` takes over the buffer of `items`, so nothing is allocated
+        // after the deque changes, and a live iterator sees the change only once the
+        // new items are in place.
+        let deque = self.get_mut(vm.heap);
+        let old = mem::replace(&mut deque.items, VecDeque::from(items));
+        deque.bump_state();
+        Vec::from(old).drop_with(vm);
+        Ok(true)
+    }
+
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // `maxlen` is the deque's only data attribute (read-only in CPython).
         if attr.static_string(vm.interns) == Some(StaticStrings::Maxlen) {
@@ -1088,6 +1120,16 @@ fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, v
 }
 
 /// Builds `deque * count`, honoring the deque's `maxlen`.
+fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+    let result = repeat_deque_items(source, maxlen, count, vm)?;
+    // We already trimmed to at most `maxlen`, so `Deque::new` evicts nothing and
+    // no refcounts need releasing — `debug_assert` guards that invariant.
+    let (new_deque, evicted) = Deque::new(result, maxlen);
+    debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
+}
+
+/// The items of `deque * count`, for both `*` and `*=`.
 ///
 /// A bounded deque keeps only its rightmost `maxlen` items, so we build just the
 /// surviving suffix rather than the full product — `deque([1,2], maxlen=2) *
@@ -1096,7 +1138,12 @@ fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, v
 /// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
 /// shortcut and materializes the full product (may hit resource limits, like
 /// CPython's `MemoryError`).
-fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+fn repeat_deque_items(
+    source: Vec<Value>,
+    maxlen: Option<usize>,
+    count: usize,
+    vm: &mut VM<'_>,
+) -> RunResult<Vec<Value>> {
     let len = source.len();
     // `source` is an owned copy of the deque's items; release it on every exit.
     defer_drop!(source, vm);
@@ -1129,11 +1176,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         }
         result.into_inner()
     };
-    // We already trimmed to at most `maxlen`, so `Deque::new` evicts nothing and
-    // no refcounts need releasing — `debug_assert` guards that invariant.
-    let (new_deque, evicted) = Deque::new(result, maxlen);
-    debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
+    Ok(result)
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
