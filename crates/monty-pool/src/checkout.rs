@@ -32,7 +32,7 @@ use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
-    CrashCause, PoolConfig, PoolError, cpu,
+    CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
     worker::Worker,
 };
@@ -134,17 +134,17 @@ impl Default for ReplConfig {
 #[non_exhaustive]
 pub struct CheckoutOptions {
     /// Distributed trace context captured by a host adapter. Its span also
-    /// goes out as `traceparent`/`tracestate` on a WebSocket dial, so a remote
-    /// worker's own spans join the host's trace.
+    /// goes out as `traceparent`/`tracestate` metadata on a remote stream, so
+    /// a remote worker's own spans join the host's trace.
     #[cfg(feature = "telemetry")]
     pub telemetry: Option<TelemetryContext>,
-    /// Extra headers for this checkout's WebSocket upgrade request; the
-    /// subprocess transport makes no request and ignores them. Duplicate
-    /// names are last-wins, even against the default `user-agent`
-    /// (`monty-pool/<version>`), the `traceparent` from `telemetry`, `host`
-    /// and the other handshake headers, and a malformed name or value fails
-    /// the dial.
-    pub connect_headers: Vec<(String, String)>,
+    /// Extra request metadata for this checkout's remote stream, as gRPC
+    /// metadata (lowercase ASCII names, ASCII values); the subprocess
+    /// transport makes no request and ignores them. Duplicate names are
+    /// last-wins, including against the `traceparent` from `telemetry`; the
+    /// `user-agent` is set per connection and cannot be overridden here. A
+    /// malformed name or value fails the dial.
+    pub metadata: Vec<(String, String)>,
 }
 
 impl CheckoutOptions {
@@ -156,22 +156,22 @@ impl CheckoutOptions {
         self
     }
 
-    /// Sets the headers for this checkout's WebSocket upgrade request.
+    /// Sets the request metadata for this checkout's remote stream.
     #[must_use]
-    pub fn with_connect_headers(mut self, connect_headers: Vec<(String, String)>) -> Self {
-        self.connect_headers = connect_headers;
+    pub fn with_metadata(mut self, metadata: Vec<(String, String)>) -> Self {
+        self.metadata = metadata;
         self
     }
 }
 
-/// Names each connect header, never its value: monty never interprets the
+/// Names each metadata entry, never its value: monty never interprets the
 /// values, but a caller may send e.g. a token for a proxy/relay in front of
 /// the worker, and options get logged.
 impl fmt::Debug for CheckoutOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let header_names: Vec<&str> = self.connect_headers.iter().map(|(name, _)| name.as_str()).collect();
+        let header_names: Vec<&str> = self.metadata.iter().map(|(name, _)| name.as_str()).collect();
         f.debug_struct("CheckoutOptions")
-            .field("connect_headers", &header_names)
+            .field("metadata", &header_names)
             .finish_non_exhaustive()
     }
 }
@@ -762,13 +762,13 @@ impl PendingKey {
     }
 }
 
-/// What a WebSocket checkout keeps to redial its relay and reload the session
+/// What a remote checkout keeps to redial its relay and reload the session
 /// after a `Shutdown` (see [`PoolConfig::auto_resume`]).
 pub(crate) struct Redial {
     /// Re-sent as the new worker's `Configure`.
     pub(crate) repl: ReplConfig,
-    /// The upgrade headers the checkout first dialed with.
-    pub(crate) connect_headers: Vec<(String, String)>,
+    /// The request metadata the checkout first dialed with.
+    pub(crate) metadata: Vec<(String, String)>,
     /// Parents the new worker's session span as the first one was.
     #[cfg(feature = "telemetry")]
     pub(crate) telemetry: Option<TelemetryContext>,
@@ -1281,7 +1281,7 @@ impl Checkout {
     }
 
     /// Discard the worker and wait for its subprocess to exit, including after a cancelled turn.
-    /// `Some` proves process exit. `None` means no subprocess exit was confirmed, including WebSocket workers.
+    /// `Some` proves process exit. `None` means no subprocess exit was confirmed, including remote workers.
     /// Cancelling this future still discards the worker but does not confirm its exit.
     pub async fn terminate(mut self) -> Option<ExitStatus> {
         #[cfg(feature = "telemetry")]
@@ -1309,21 +1309,14 @@ impl Checkout {
     /// recorded on the error paths too — a `?` here would otherwise leave the
     /// drop below to report the session as abandoned.
     async fn finish_session(&mut self) -> Result<(), PoolError> {
-        // A websocket worker is single-use — the pool discards it after every
+        // A remote worker is single-use — the pool discards it after every
         // checkout — so there is no point round-tripping a `Reset` to ready it
-        // for reuse. Closing the connection (Close frame, then socket) is what
-        // ends the session; the child reads it as a clean EOF and exits. Only
+        // for reuse. Ending the stream (half-close, then drop) is what ends
+        // the session; the server reads it as the host leaving. Only
         // subprocess workers are reset and returned to the idle pool for the
         // next checkout.
-        if self.pool.config.transport.is_websocket() {
-            if let Some(mut worker) = self.worker.take() {
-                // guard, not a trailing release: the worker is already out of
-                // `self`, so a caller dropping this future mid-goodbye would
-                // leave `Checkout::drop` with nothing to release. Disarmed
-                // before `release_worker`, which releases the slot itself.
-                let capacity = CapacityGuard::new(&self.pool);
-                worker.close_transport().await;
-                capacity.disarm();
+        if self.pool.config.transport.is_remote() {
+            if let Some(worker) = self.worker.take() {
                 self.pool.release_worker(worker);
             }
             return Ok(());
@@ -1359,7 +1352,7 @@ impl Checkout {
     }
 
     /// OS process id of the worker, when it is a local subprocess (`None` for a
-    /// remote WebSocket worker, or a finished checkout). Diagnostics/tests.
+    /// remote worker, or a finished checkout). Diagnostics/tests.
     pub fn pid(&self) -> Option<u32> {
         self.worker.as_ref().and_then(Worker::pid)
     }
@@ -1399,7 +1392,7 @@ impl Checkout {
 
     /// Takes a fresh OS CPU baseline for this turn, independent of worker reports.
     async fn cpu_monitor(&mut self, request: &pb::ParentRequest) -> Result<Option<cpu::Monitor>, PoolError> {
-        if self.budget.execution_clock != ExecutionClock::Cpu || self.pool.config.transport.is_websocket() {
+        if self.budget.execution_clock != ExecutionClock::Cpu || self.pool.config.transport.is_remote() {
             return Ok(None);
         }
         if !is_execution_turn(request) {
@@ -1668,7 +1661,7 @@ impl Checkout {
     /// reply can only tighten its limits, and a shutdown grants nothing.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
-        let worker = self.pool.acquire_worker(&redial.connect_headers).await?;
+        let worker = self.pool.acquire_worker(&redial.metadata).await?;
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);
@@ -1724,7 +1717,7 @@ impl Checkout {
     /// the frame it forwards. Worker lifecycle, poisoning and parent-side
     /// limits work as on the typed path; a raw `Load` re-adopts its budget like
     /// [`Checkout::restore`]. A `FatalError`
-    /// (or WebSocket `ShutdownDump`) turn-ender is returned so the driver can
+    /// (or remote `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
     /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
     /// An error from an older worker does not establish that a suspended feed ended.
@@ -1821,6 +1814,10 @@ impl Checkout {
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
+                // a frame larger than the reader accepts: the worker misbehaved
+                Err(err @ FrameError::FrameTooLarge { .. }) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
             let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
@@ -1854,7 +1851,7 @@ impl Checkout {
                 self.reap_announced_exit().await;
                 return Ok(event);
             } else if matches!(event.kind, Some(pb::child_event::Kind::Shutdown(_))) {
-                return if self.pool.config.transport.is_websocket() {
+                return if self.pool.config.transport.is_remote() {
                     // the serving relay is gone: discard as `turn_io` does,
                     // handing the frame (and its dump) back to forward
                     self.discard_worker();
@@ -1918,6 +1915,10 @@ impl Checkout {
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
+                // a frame larger than the reader accepts: the worker misbehaved
+                Err(err @ FrameError::FrameTooLarge { .. }) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
             if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
@@ -1927,7 +1928,7 @@ impl Checkout {
                     Ok(clock) => ExecutionClock::from(clock),
                     Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
                 };
-                if self.pool.config.transport.is_websocket() {
+                if self.pool.config.transport.is_remote() {
                     if clock == ExecutionClock::Cpu
                         && self
                             .pool
@@ -1964,6 +1965,9 @@ impl Checkout {
                 self.restored_script_name = Some(name.clone());
             }
             match event.kind {
+                // answered by the remote transport's reader task before it
+                // reaches here, and never sent by a subprocess; not a turn end
+                Some(pb::child_event::Kind::Ping(_)) => {}
                 Some(pb::child_event::Kind::Print(print)) => {
                     #[cfg(feature = "telemetry")]
                     let context = self.callback_context();
@@ -2140,7 +2144,7 @@ impl Checkout {
                     // violation, not a shutdown. Accepting it would let the
                     // child hand back a dump it minted itself, which the
                     // caller would then restore as trusted session state.
-                    if !self.pool.config.transport.is_websocket() {
+                    if !self.pool.config.transport.is_remote() {
                         return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
                     }
                     // The serving side is shutting down and dropped this
@@ -2282,9 +2286,10 @@ impl Checkout {
     }
 
     /// Discards the worker after an I/O failure and classifies it as an
-    /// out-of-memory kill, a crash, or — on the WebSocket transport, where the
-    /// worker is a remote process this client cannot reap — a disconnect.
-    /// Deadline expiry goes through [`Self::poison_timeout`] instead.
+    /// out-of-memory kill, a crash, or — on the remote transport, where the
+    /// worker is a remote process this client cannot reap — a disconnect, or
+    /// whatever the server's status says the disconnect was. Deadline expiry
+    /// goes through [`Self::poison_timeout`] instead.
     async fn poison(&mut self, context: &str) -> PoolError {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
@@ -2293,13 +2298,13 @@ impl Checkout {
         self.record_finish("error");
         self.pending = None;
         self.feed_mounts = None;
-        let websocket = self.pool.config.transport.is_websocket();
+        let remote = self.pool.config.transport.is_remote();
         // guard, not a trailing release: a caller dropping this future
         // mid-reap must still release the slot and count the death. Its reason
         // is what the classification below would have said without an exit
         // status, so a cancelled reap of an out-of-memory worker is the one
         // case counted as a plain crash.
-        let mut capacity = CapacityGuard::terminating(&self.pool, if websocket { "disconnected" } else { "crash" });
+        let mut capacity = CapacityGuard::terminating(&self.pool, if remote { "disconnected" } else { "crash" });
         // A worker that exits deliberately (an allocation refused, see
         // `OOM_EXIT_CODE`) is racing us: SIGKILLing it mid-exit would replace
         // its code with `signal: 9` and lose the classification. Give it the
@@ -2307,15 +2312,15 @@ impl Checkout {
         // and only a wedged-alive one pays for it, on an already-failed turn.
         // A deadline expiry never lands here (see `poison_timeout`), so nothing
         // is waiting on this grace that should have been killed outright.
-        let websocket_details = worker.websocket_disconnect();
+        let remote_details = worker.remote_disconnect();
         let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
         drop(worker);
-        if websocket {
-            PoolError::Disconnected {
-                context: context.to_owned(),
-                websocket: websocket_details,
-            }
-        } else if status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE) {
+        let out_of_memory = if remote {
+            remote_details.as_ref().and_then(|details| details.cause) == Some(RemoteCause::OutOfMemory)
+        } else {
+            status.and_then(|status| status.code()) == Some(monty_types::OOM_EXIT_CODE)
+        };
+        if out_of_memory {
             // the worker is gone, unlike every other `Runtime` error — the
             // checkout is already finished, so later calls report `Finished`
             capacity.set_reason("oom");
@@ -2323,6 +2328,18 @@ impl Checkout {
                 ExcType::MemoryError,
                 Some("the worker exceeded its memory limit and was terminated".to_owned()),
             ))
+        } else if remote {
+            // a server that drained an idle session had nothing to hand back,
+            // but still never ran the request: the same `Shutdown` a
+            // `ShutdownDump` without state reports
+            if remote_details.as_ref().and_then(|details| details.cause) == Some(RemoteCause::ServerShutdown) {
+                PoolError::Shutdown { dump: None }
+            } else {
+                PoolError::Disconnected {
+                    context: context.to_owned(),
+                    remote: remote_details,
+                }
+            }
         } else {
             PoolError::Crashed {
                 status,
@@ -2414,8 +2431,7 @@ impl Drop for Checkout {
 fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: repl.script_name.clone(),
-        execution_clock: (!pool.transport.is_websocket())
-            .then(|| pb::ExecutionClock::from(pool.execution_clock) as i32),
+        execution_clock: (!pool.transport.is_remote()).then(|| pb::ExecutionClock::from(pool.execution_clock) as i32),
         limits: repl.limits.as_ref().map(Into::into),
         type_check: repl.type_check,
         type_check_stubs: repl.type_check_stubs.clone(),
@@ -2445,7 +2461,9 @@ fn resume_failure(err: &PoolError) -> &'static str {
     match err {
         PoolError::Exhausted => "exhausted",
         PoolError::Disconnected { .. } | PoolError::Spawn(_) => "disconnected",
-        PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => "refused",
+        PoolError::Refused { .. } | PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => {
+            "refused"
+        }
         PoolError::Shutdown { .. } => "shutdown",
         PoolError::Protocol(_) => "mismatch",
         PoolError::Timeout { .. } => "timeout",

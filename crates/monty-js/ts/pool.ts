@@ -227,7 +227,7 @@ export class Monty {
 
 /**
  * Encodes checkout options as the native binding's fields; shared by `Monty`
- * and `MontyWebsocket`, which add their own transport-specific fields.
+ * and `MontyRemote`, which add their own transport-specific fields.
  */
 export function nativeCheckoutOptions(options: CheckoutOptions): Record<string, unknown> {
   const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)

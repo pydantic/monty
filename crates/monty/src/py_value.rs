@@ -11,6 +11,7 @@ use std::{
 use num_bigint::BigInt;
 
 use crate::{
+    annotations,
     args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions, object_new::builtin_object_new},
     bytecode::{CallResult, VM},
@@ -155,6 +156,26 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Converts an integer or an object implementing `__index__` into a repetition count.
+    /// Returns `None` for unsupported operands; out-of-range counts raise `OverflowError`.
+    /// Negative counts within range become zero.
+    pub(crate) fn repeat_count(self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+        let count = self.py_index_impl(vm)?;
+        // An integer may return itself; release its reader before cleaning up the result.
+        drop(self);
+        let Some(count) = count else {
+            return Ok(None);
+        };
+        defer_drop!(count, vm);
+
+        // Check overflow before clamping: even an oversized negative count must raise.
+        let count = count.as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())?;
+        // In-range negatives mean no repetitions; check that the result fits the host's usize.
+        Ok(Some(
+            usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
+        ))
+    }
+
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
     pub(crate) fn subscript(self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
@@ -614,6 +635,12 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
                     Err(ExcType::attribute_error_type("type", method))
                 }
             }
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
@@ -627,6 +654,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(BuiltinType::Type, key.clone_with_heap(vm), vm)),
             Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
+            Self::Marker(form) if form.is_generic_form() => GenericAlias::subscript_special(*form, key.clone_with_heap(vm), vm),
+            // CPython's wording per kind of `typing` object: `Any` and `TypeVar`
+            // are classes, `Self` and friends special forms, the two bases generic.
+            Self::Marker(Marker(StaticStrings::Any)) => Err(ExcType::type_error_type_not_subscriptable("Any")),
+            Self::Marker(Marker(StaticStrings::TypeVar)) => Err(ExcType::type_error_type_not_subscriptable("typing.TypeVar")),
+            Self::Marker(Marker(form @ (StaticStrings::Generic | StaticStrings::Protocol))) => Err(ExcType::type_error(format!(
+                "Parameters to {}[...] must all be type variables or parameter specification variables.",
+                <&str>::from(*form)
+            ))),
+            Self::Marker(form) if form.py_type() == Type::SpecialForm => {
+                Err(ExcType::type_error(format!("typing.{} is not subscriptable", <&str>::from(form.0))))
+            }
             Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
             Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),

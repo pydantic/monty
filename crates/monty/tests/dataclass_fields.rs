@@ -44,11 +44,11 @@ fn expect_error(expr: &str) -> String {
     }
 }
 
-/// CPython's `Field.__repr__` attribute for attribute, bar `type`: annotation
-/// text where CPython evaluates it to `<class 'int'>`. The `MISSING` repr is
-/// swapped for its name, since it carries the sentinel's `id()`.
+/// CPython's `Field.__repr__` attribute for attribute, `type` being the
+/// evaluated annotation. The `MISSING` repr is swapped for its name, since it
+/// carries the sentinel's `id()`.
 #[test]
-fn field_repr_renders_type_as_annotation_text() {
+fn field_repr_matches_cpython() {
     let repr = |name: &str| {
         eval_str(&format!(
             "from dataclasses import MISSING\nrepr(Point.__dataclass_fields__['{name}']).replace(repr(MISSING), 'MISSING')"
@@ -56,11 +56,11 @@ fn field_repr_renders_type_as_annotation_text() {
     };
     assert_snapshot!(
         repr("y"),
-        @"Field(name='y',type='int',default=5,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
+        @"Field(name='y',type=<class 'int'>,default=5,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
     );
     assert_snapshot!(
         repr("x"),
-        @"Field(name='x',type='int',default=MISSING,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
+        @"Field(name='x',type=<class 'int'>,default=MISSING,default_factory=MISSING,init=True,repr=True,hash=None,compare=True,metadata=mappingproxy({}),kw_only=False,doc=None,_field_type=_FIELD)"
     );
 }
 

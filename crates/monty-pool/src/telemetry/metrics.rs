@@ -571,6 +571,8 @@ impl TurnMetrics {
                 self.close_suspension(outcome);
             }
             Some(pb::parent_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
+            // liveness, not a turn (sent by the transport, never through here)
+            Some(pb::parent_request::Kind::Pong(_)) => {}
             None => {}
         }
     }
@@ -632,6 +634,8 @@ impl TurnMetrics {
             // the worker is about to exit; the pool counts the termination
             Some(pb::child_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
             Some(pb::child_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
+            // liveness, not a turn (answered by the transport, never seen here)
+            Some(pb::child_event::Kind::Ping(_)) => {}
             None => {}
         }
     }

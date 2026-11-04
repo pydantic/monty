@@ -26,7 +26,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
-    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_check_time, tuple::allocate_tuple},
+    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_should_truncate, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -373,7 +373,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         let mut item = 0;
         'items: {
             for index in 0..self.get(vm.heap).args.len() {
-                if repr_check_time(item, vm) {
+                if repr_should_truncate(item, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break 'items;
                 }
@@ -385,7 +385,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
             }
 
             for index in 0..self.get(vm.heap).keywords.len() {
-                if repr_check_time(item, vm) {
+                if repr_should_truncate(item, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break 'items;
                 }

@@ -1168,6 +1168,22 @@ impl<'h> VM<'h> {
         self.finish_host_turn(result)
     }
 
+    /// Runs an export made after [`Self::run_external`] has returned, with the
+    /// execution clock running, so a user `__repr__` it calls counts towards
+    /// the time limits. Like `run_external` it must not nest: an export inside
+    /// the loop (`os.getenv`'s default) is already on the clock and calls
+    /// `export` directly.
+    pub(crate) fn export_on_clock<T>(&mut self, export: impl FnOnce(&mut Self) -> RunResult<T>) -> RunResult<T> {
+        self.heap.tracker.on_execution_start();
+        let result = export(self);
+        self.heap.tracker.on_execution_stop();
+        // A container repr truncates on timeout (`...[timeout]`) rather than failing.
+        result.and_then(|value| match self.heap.tracker.check_time() {
+            Ok(()) => Ok(value),
+            Err(err) => Err(err.into()),
+        })
+    }
+
     /// Epilogue for every host-boundary execution window (here, and the
     /// uncaught branch of `resume_with_exception`, which ends a turn without
     /// entering the loop): re-checks both resource limits so an
@@ -1525,31 +1541,19 @@ impl<'h> VM<'h> {
                 Opcode::UnaryNeg => try_catch!(self, self.unary_neg()),
                 Opcode::UnaryPos => try_catch!(self, self.unary_pos()),
                 Opcode::UnaryInvert => try_catch!(self, self.unary_invert()),
-                // In-place Operations - route through exception handling.
-                // `+=`/`-=`/`&=`/`|=` first try a true in-place `Counter` op
-                // (mutating the left operand); everything else — and the
-                // non-Counter fallback — reuses the binary implementation, since
-                // Monty's other types have no distinct in-place form.
+                // `+=`, `-=`, `*=`, `&=`, `|=`, and `^=` try mutation before binary fallback.
                 Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
                 Opcode::InplaceSub => try_catch!(self, self.inplace_sub()),
-                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
+                Opcode::InplaceMul => try_catch!(self, self.inplace_mult()),
                 Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
                 Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
                 Opcode::InplacePow => try_catch!(self, self.binary_pow()),
-                Opcode::InplaceAnd => {
-                    try_catch!(self, self.inplace_and());
-                }
+                Opcode::InplaceAnd => try_catch!(self, self.inplace_and()),
                 Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
-                Opcode::InplaceXor => {
-                    try_catch!(self, self.binary_xor());
-                }
-                Opcode::InplaceLShift => {
-                    try_catch!(self, self.binary_lshift());
-                }
-                Opcode::InplaceRShift => {
-                    try_catch!(self, self.binary_rshift());
-                }
+                Opcode::InplaceXor => try_catch!(self, self.inplace_xor()),
+                Opcode::InplaceLShift => try_catch!(self, self.binary_lshift()),
+                Opcode::InplaceRShift => try_catch!(self, self.binary_rshift()),
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = self.current_frame.fetch_u16() as usize;

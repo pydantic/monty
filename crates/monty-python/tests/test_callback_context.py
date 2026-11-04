@@ -89,7 +89,7 @@ assert request.get() == 'outside'
     )
 
 
-@pytest.mark.parametrize('transport', ['subprocess', 'websocket'])
+@pytest.mark.parametrize('transport', ['subprocess', 'remote'])
 def test_callback_contexts(transport: str):
     subprocess.run(
         [
@@ -103,7 +103,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from pydantic_monty import AsyncMonty, AsyncMontyWebsocket, Monty, instrument_telemetry
+from pydantic_monty import AsyncMonty, AsyncMontyRemote, Monty, instrument_telemetry
 from opentelemetry import baggage, context
 
 exporter = InMemorySpanExporter()
@@ -142,7 +142,7 @@ async def run(index, url=None):
             with tracer.start_as_current_span(f'os {index}'):
                 pass
             return True
-        async with (AsyncMontyWebsocket(url) if url else AsyncMonty()) as pool:
+        async with (AsyncMontyRemote(url) if url else AsyncMonty()) as pool:
             async with pool.checkout(script_name=str(index)) as session:
                 assert await session.feed_run(
                     "print('hello'); sync_callback() + await async_callback()",
@@ -159,15 +159,13 @@ async def main():
         await asyncio.gather(run(1), run(2))
     else:
         import runpy
-        from websockets.asyncio.server import serve
         from pydantic_monty._binary import find_monty_binary
-        bridge = runpy.run_path(sys.argv[2])['bridge_connection']
-        async def handler(websocket):
-            await bridge(websocket, find_monty_binary())
-        async with serve(handler, '127.0.0.1', 0, max_size=None) as server:
-            port = server.sockets[0].getsockname()[1]
-            url = f'ws://127.0.0.1:{port}'
+        start_relay = runpy.run_path(sys.argv[2])['start_relay']
+        server, url = await start_relay(find_monty_binary())
+        try:
             await asyncio.gather(run(1, url), run(2, url))
+        finally:
+            await server.stop(None)
 
 asyncio.run(main())
 assert request.get() == 'outside'
@@ -198,7 +196,7 @@ child = next(s for s in spans if s.name == 'sync child')
 assert next(s for s in spans if s.context.span_id == child.parent.span_id).name == 'call {function_name}'
 """,
             transport,
-            str(Path(__file__).resolve().parents[3] / 'scripts' / 'websocket_relay.py'),
+            str(Path(__file__).resolve().parents[3] / 'scripts' / 'grpc_relay.py'),
         ],
         check=True,
         timeout=60,

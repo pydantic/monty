@@ -1,30 +1,37 @@
-//! Drives the pool's WebSocket transport against a mock child server: a thread
-//! that accepts one WebSocket connection and serves a scripted protocol
-//! session. This exercises `Worker::websocket` (the async dial) and the WS
+//! Drives the pool's remote transport against a mock gRPC server: a thread
+//! that accepts one session stream and serves a scripted protocol session.
+//! This exercises the pool's channel, the per-checkout stream and the
 //! send/recv path end-to-end without needing a real remote child.
 
 #[cfg(target_os = "linux")]
 mod binary;
+#[path = "support/grpc_mock.rs"]
+mod grpc_mock;
 
 #[cfg(feature = "telemetry")]
 use std::sync::Arc;
 use std::{
     fs,
     future::ready,
-    net::{TcpListener, TcpStream},
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use bytes::Bytes;
+use grpc_mock::{MockServer, MockStream};
+use h2::server::handshake;
+use http::Response as HttpResponse;
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
-    ReplConfig, ResumeValue, TurnEvent,
+    RemoteCause, ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::{MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, pb, resume_call_from_proto};
-// only the Linux CPU-server test names the clock or builds its own runtime
+use monty_proto::{
+    MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, grpc::Cause, pb, resume_call_from_proto,
+};
+// only the Linux CPU-server test names the clock
 #[cfg(target_os = "linux")]
 use monty_types::ExecutionClock;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
@@ -32,26 +39,18 @@ use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, Resourc
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
-#[cfg(target_os = "linux")]
-use tokio::runtime::Builder;
-use tokio::task::spawn_blocking;
 #[cfg(not(windows))]
 use tokio::time::timeout;
-use tungstenite::{
-    Message, WebSocket,
-    handshake::server::{Request, Response},
-    protocol::{CloseFrame, frame::coding::CloseCode},
-};
+use tokio::{net::TcpListener, runtime::Builder, task::spawn_blocking};
+use tonic::Status;
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
 #[tokio::test]
-async fn terminating_a_websocket_checkout_never_confirms_subprocess_exit() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let child = thread::spawn(move || serve_mock_child(&listener));
-    let pool = Pool::new(PoolConfig::websocket(format!("ws://{address}/")))
-        .await
-        .unwrap();
+async fn terminating_a_remote_checkout_never_confirms_subprocess_exit() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let child = thread::spawn(move || serve_mock_child(&mock));
+    let pool = Pool::new(PoolConfig::remote(&url)).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert!(
         matches!(session.feed("6 * 7", vec![], vec![], false, &mut no_print).await.unwrap(), TurnEvent::Complete(value) if value == MontyObject::int(42))
@@ -61,19 +60,18 @@ async fn terminating_a_websocket_checkout_never_confirms_subprocess_exit() {
     pool.close().await;
 }
 
-/// A mock child: accepts one WebSocket connection and answers each request with
+/// A mock child: accepts one session stream and answers each request with
 /// the obvious turn-ender (`Ok` for control requests, `Complete(42)` for a feed).
-fn serve_mock_child(listener: &TcpListener) {
-    let (stream, _peer) = listener.accept().expect("accept");
-    let mut socket = tungstenite::accept(stream).expect("ws handshake");
+fn serve_mock_child(server: &MockServer) {
+    let mut socket = server.accept();
     answer_requests(&mut socket);
 }
 
-/// Answers each request on an accepted socket with the obvious turn-ender
+/// Answers each request on an accepted stream with the obvious turn-ender
 /// (`Ok` for control requests, `Complete(42)` for a feed) until the peer
-/// disconnects.
-fn answer_requests(socket: &mut WebSocket<TcpStream>) {
-    while let Ok(Message::Binary(data)) = socket.read() {
+/// ends the stream.
+fn answer_requests(socket: &mut MockStream) {
+    while let Some(data) = socket.read() {
         let request = decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request");
         let kind = match request.kind.expect("request kind") {
             pb::parent_request::Kind::Feed(_) => {
@@ -87,37 +85,31 @@ fn answer_requests(socket: &mut WebSocket<TcpStream>) {
             ..Default::default()
         };
         let body = encode_to_capped_vec(&event).expect("encode event");
-        socket.send(Message::Binary(body.into())).expect("send event");
+        socket.send(body.into()).expect("send event");
     }
 }
 
 /// A mock child that also reports each of `headers`' values (in order, `None`
-/// when absent) from each of `connections` upgrade requests — the handshake
-/// callback is where a server reads them.
+/// when absent) from the request metadata of each of `connections` streams.
 fn serve_capturing_headers(
-    listener: &TcpListener,
+    server: &MockServer,
     headers: &[&str],
     connections: usize,
     tx: &mpsc::Sender<Vec<Option<String>>>,
 ) {
     for _ in 0..connections {
-        let (stream, _peer) = listener.accept().expect("accept");
-        // the Err type (an ErrorResponse) is tungstenite's callback contract
-        #[expect(clippy::result_large_err)]
-        let callback = |req: &Request, resp: Response| {
-            let seen = headers
-                .iter()
-                .map(|header| {
-                    req.headers()
-                        .get(*header)
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_owned)
-                })
-                .collect();
-            tx.send(seen).expect("send captured headers");
-            Ok(resp)
-        };
-        let mut socket = tungstenite::accept_hdr(stream, callback).expect("ws handshake");
+        let mut socket = server.accept();
+        let seen = headers
+            .iter()
+            .map(|header| {
+                socket
+                    .metadata
+                    .get(*header)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned)
+            })
+            .collect();
+        tx.send(seen).expect("send captured headers");
         answer_requests(&mut socket);
     }
 }
@@ -157,13 +149,13 @@ async fn join_server(server: thread::JoinHandle<()>) {
 }
 
 #[tokio::test]
-async fn drives_a_session_over_websocket() {
-    // Bind before spawning so the port is listening before the pool connects.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let server = thread::spawn(move || serve_mock_child(&listener));
+async fn drives_a_session_over_grpc() {
+    // Start before spawning so the server is listening before the pool connects.
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || serve_mock_child(&mock));
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
@@ -176,7 +168,7 @@ async fn drives_a_session_over_websocket() {
         .await
         .expect("checkout");
 
-    // The WebSocket worker has no local pid.
+    // The remote worker has no local pid.
     assert_eq!(checkout.pid(), None);
 
     let event = checkout
@@ -192,15 +184,15 @@ async fn drives_a_session_over_websocket() {
     join_server(server).await;
 }
 
-/// Each checkout's `CheckoutOptions::connect_headers` reach that checkout's
-/// own upgrade request. WebSocket workers are single-use, so two checkouts
+/// Each checkout's `CheckoutOptions::metadata` reach that checkout's
+/// own stream's metadata. Remote workers are single-use, so two checkouts
 /// are two dials, and a `traceparent` rendered at checkout time — the
 /// motivating case — must not land on the wrong one.
 #[tokio::test]
-async fn connect_headers_are_per_checkout() {
+async fn metadata_are_per_checkout() {
     let (header_tx, header_rx) = mpsc::channel();
-    let (listener, mut config) = ws_pool_config();
-    let server = thread::spawn(move || serve_capturing_headers(&listener, &["traceparent"], 2, &header_tx));
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || serve_capturing_headers(&mock, &["traceparent"], 2, &header_tx));
 
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
@@ -210,8 +202,7 @@ async fn connect_headers_are_per_checkout() {
             script_name: "test.py".to_owned(),
             ..ReplConfig::default()
         };
-        let options =
-            CheckoutOptions::default().with_connect_headers(vec![("traceparent".to_owned(), trace.to_owned())]);
+        let options = CheckoutOptions::default().with_metadata(vec![("traceparent".to_owned(), trace.to_owned())]);
         let mut checkout = pool.checkout_with(&repl, options).await.expect("checkout");
         assert_eq!(
             header_rx.recv().expect("captured headers"),
@@ -234,14 +225,14 @@ async fn connect_headers_are_per_checkout() {
 
 /// Duplicate header names are last-wins, as [`CheckoutOptions`] promises.
 #[tokio::test]
-async fn duplicate_connect_headers_are_last_wins() {
+async fn duplicate_metadata_are_last_wins() {
     let (header_tx, header_rx) = mpsc::channel();
-    let (listener, mut config) = ws_pool_config();
-    let server = thread::spawn(move || serve_capturing_headers(&listener, &["traceparent"], 1, &header_tx));
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || serve_capturing_headers(&mock, &["traceparent"], 1, &header_tx));
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
 
-    let options = CheckoutOptions::default().with_connect_headers(vec![
+    let options = CheckoutOptions::default().with_metadata(vec![
         ("traceparent".to_owned(), "first".to_owned()),
         ("traceparent".to_owned(), "second".to_owned()),
     ]);
@@ -257,34 +248,40 @@ async fn duplicate_connect_headers_are_last_wins() {
     join_server(server).await;
 }
 
-/// Every dial carries a `User-Agent` naming this crate and its version, and a
-/// `connect_headers` entry of the same name replaces it rather than being
-/// appended, so a caller can identify their own product instead.
+/// Every stream carries a `user-agent` naming this crate and its version
+/// (tonic appends its own), and a `metadata` entry of the same name is
+/// put in front of it, so a caller can identify their own product first.
 #[tokio::test]
 async fn user_agent_is_set_and_overridable() {
     let (header_tx, header_rx) = mpsc::channel();
-    let (listener, mut config) = ws_pool_config();
-    let server = thread::spawn(move || serve_capturing_headers(&listener, &["user-agent"], 2, &header_tx));
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || serve_capturing_headers(&mock, &["user-agent"], 2, &header_tx));
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
 
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    assert_eq!(
-        header_rx.recv().expect("captured headers"),
-        vec![Some(format!("monty-pool/{}", env!("CARGO_PKG_VERSION")))]
+    let agent = header_rx
+        .recv()
+        .expect("captured headers")
+        .remove(0)
+        .expect("no user-agent");
+    assert!(
+        agent.starts_with(&format!("monty-pool/{} tonic/", env!("CARGO_PKG_VERSION"))),
+        "got {agent}"
     );
     checkout.finish().await.expect("finish");
 
-    let options =
-        CheckoutOptions::default().with_connect_headers(vec![("User-Agent".to_owned(), "my-app/1.0".to_owned())]);
+    let options = CheckoutOptions::default().with_metadata(vec![("user-agent".to_owned(), "my-app/1.0".to_owned())]);
     let checkout = pool
         .checkout_with(&ReplConfig::default(), options)
         .await
         .expect("checkout");
-    assert_eq!(
-        header_rx.recv().expect("captured headers"),
-        vec![Some("my-app/1.0".to_owned())]
-    );
+    let agent = header_rx
+        .recv()
+        .expect("captured headers")
+        .remove(0)
+        .expect("no user-agent");
+    assert!(agent.starts_with("my-app/1.0 monty-pool/"), "got {agent}");
     checkout.finish().await.expect("finish");
     join_server(server).await;
 }
@@ -292,7 +289,7 @@ async fn user_agent_is_set_and_overridable() {
 /// A host trace context captured through the telemetry adapter goes out as
 /// W3C `traceparent`/`tracestate` on the dial, so a remote worker's spans join
 /// the host's trace with no header plumbing by the binding; an explicit
-/// `connect_headers` entry still wins.
+/// `metadata` entry still wins.
 #[cfg(feature = "telemetry")]
 #[tokio::test]
 async fn telemetry_context_is_propagated_on_the_dial() {
@@ -308,9 +305,8 @@ async fn telemetry_context_is_propagated_on_the_dial() {
             .expect("context")
     };
     let (header_tx, header_rx) = mpsc::channel();
-    let (listener, mut config) = ws_pool_config();
-    let server =
-        thread::spawn(move || serve_capturing_headers(&listener, &["traceparent", "tracestate"], 2, &header_tx));
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || serve_capturing_headers(&mock, &["traceparent", "tracestate"], 2, &header_tx));
     config.request_timeout = Some(Duration::from_secs(10));
     let pool = Pool::new(config).await.expect("pool");
 
@@ -330,7 +326,7 @@ async fn telemetry_context_is_propagated_on_the_dial() {
 
     let options = CheckoutOptions::default()
         .with_telemetry(Some(context()))
-        .with_connect_headers(vec![("traceparent".to_owned(), "00-explicit".to_owned())]);
+        .with_metadata(vec![("traceparent".to_owned(), "00-explicit".to_owned())]);
     let checkout = pool
         .checkout_with(&ReplConfig::default(), options)
         .await
@@ -347,22 +343,20 @@ async fn telemetry_context_is_propagated_on_the_dial() {
 /// is needed: the checkout fails loudly with the promised dial error instead
 /// of the pair being silently dropped.
 #[tokio::test]
-async fn malformed_connect_headers_fail_the_dial() {
+async fn malformed_metadata_fail_the_dial() {
     let cases = [
         (
             ("bad name", "v"),
-            "ws://127.0.0.1:9: connect header \"bad name\": invalid HTTP header name",
+            "http://127.0.0.1:9: metadata entry \"bad name\": invalid gRPC metadata key name",
         ),
         (
             ("traceparent", "line\nbreak"),
-            "ws://127.0.0.1:9: connect header \"traceparent\" value: failed to parse header value",
+            "http://127.0.0.1:9: metadata entry \"traceparent\" value: failed to parse metadata value",
         ),
     ];
-    let pool = Pool::new(PoolConfig::websocket("ws://127.0.0.1:9"))
-        .await
-        .expect("pool");
+    let pool = Pool::new(PoolConfig::remote("http://127.0.0.1:9")).await.expect("pool");
     for ((name, value), expected) in cases {
-        let options = CheckoutOptions::default().with_connect_headers(vec![(name.to_owned(), value.to_owned())]);
+        let options = CheckoutOptions::default().with_metadata(vec![(name.to_owned(), value.to_owned())]);
         let Err(err) = pool.checkout_with(&ReplConfig::default(), options).await else {
             panic!("malformed header must fail the dial");
         };
@@ -373,50 +367,267 @@ async fn malformed_connect_headers_fail_the_dial() {
     }
 }
 
-/// A URL that cannot form an upgrade request fails the dial with the same
-/// `{url}: {err}` shape as every other dial failure.
+/// `request_timeout` bounds opening a stream too: a server that takes the TCP
+/// connection but never speaks HTTP/2 fails the checkout at that deadline.
 #[tokio::test]
-async fn an_unparsable_url_fails_the_dial() {
-    let pool = Pool::new(PoolConfig::websocket("not a url")).await.expect("pool");
+async fn request_timeout_bounds_opening_the_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}/", listener.local_addr().expect("addr"));
+    let silent = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+
+    let mut config = PoolConfig::remote(&url);
+    config.request_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).await.expect("pool");
+    let start = Instant::now();
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("unparsable URL must fail the dial");
+        panic!("a server that never answers cannot admit a stream");
+    };
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    let PoolError::Spawn(message) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(message, format!("{url}: connect timed out after 200ms"));
+    silent.abort();
+}
+
+/// An `https://` server is verified against the operating system's trust
+/// store, not a root list bundled into the pool: a certificate the server
+/// signed itself is refused, and the checkout reports the dial failure.
+#[tokio::test]
+async fn an_untrusted_server_certificate_fails_the_dial() {
+    let server = MockServer::start_self_signed().await;
+    let url = server.url();
+    let pool = Pool::new(PoolConfig::remote(&url)).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("a self-signed certificate must not be trusted");
+    };
+    let PoolError::Spawn(message) = err else {
+        panic!("got {err:?}");
+    };
+    // Each platform's verifier words the refusal in its own way; tonic's chain
+    // then repeats the cause at every layer of the transport error.
+    let cause = if cfg!(target_vendor = "apple") {
+        "invalid peer certificate: Other(OtherError(\"“rcgen self signed cert” certificate is not trusted: -67843\"))"
+    } else {
+        "invalid peer certificate: UnknownIssuer"
+    };
+    assert_eq!(
+        message,
+        format!("{url}: UNAVAILABLE: {cause}: transport error: {cause}: {cause}")
+    );
+}
+
+/// A URL tonic cannot parse fails pool creation with the same `{url}: {err}`
+/// shape as every other dial failure — before any checkout, since the channel
+/// is built once for the pool.
+#[tokio::test]
+async fn an_unparsable_url_fails_the_pool() {
+    let Err(err) = Pool::new(PoolConfig::remote("not a url")).await else {
+        panic!("unparsable URL must fail pool creation");
     };
     let PoolError::Spawn(msg) = err else {
         panic!("expected Spawn error, got {err:?}");
     };
-    assert_eq!(msg, "not a url: HTTP format error: invalid uri character");
+    assert_eq!(msg, "not a url: invalid URI");
 }
 
-/// `Debug` for [`CheckoutOptions`] names each connect header, never its value.
+/// Schemes are read without regard to case, `ws`/`wss` as `http`/`https`,
+/// and anything else is refused when the pool is made: tonic would dial an
+/// unknown scheme in plaintext, with the stream's metadata on it.
+#[tokio::test]
+async fn url_schemes_are_normalised_and_unknown_ones_refused() {
+    for scheme in ["HTTP://", "WS://", "ws://"] {
+        let mock = MockServer::start().await;
+        let url = mock.url().replace("http://", scheme);
+        let server = thread::spawn(move || serve_mock_child(&mock));
+        let pool = Pool::new(PoolConfig::remote(&url)).await.expect("pool");
+        let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+        let event = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
+        assert!(matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)));
+        checkout.finish().await.expect("finish");
+        join_server(server).await;
+    }
+    for url in ["grpc://127.0.0.1:9", "WSS+tls://127.0.0.1:9"] {
+        let Err(err) = Pool::new(PoolConfig::remote(url)).await else {
+            panic!("{url} must fail pool creation");
+        };
+        let PoolError::Spawn(msg) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        let scheme = url.split_once("://").unwrap().0;
+        assert_eq!(
+            msg,
+            format!("{url}: unsupported URL scheme {scheme:?}, expected http or https")
+        );
+    }
+}
+
+/// tonic dials only the scheme and authority, so a URL naming a path, query or
+/// fragment fails pool creation rather than dropping it silently; a bare `/`
+/// is the root and fine.
+#[tokio::test]
+async fn url_paths_are_refused() {
+    for url in [
+        "http://127.0.0.1:9/relay",
+        "http://127.0.0.1:9/?x=1",
+        "http://127.0.0.1:9#a",
+    ] {
+        let Err(err) = Pool::new(PoolConfig::remote(url)).await else {
+            panic!("{url} must fail pool creation");
+        };
+        let PoolError::Spawn(msg) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        assert_eq!(
+            msg,
+            format!("{url}: a URL path, query or fragment is not supported; the session path is fixed")
+        );
+    }
+    for url in ["http://127.0.0.1:9", "http://127.0.0.1:9/"] {
+        Pool::new(PoolConfig::remote(url)).await.expect("a root URL is fine");
+    }
+}
+
+/// A server that refuses the stream before admitting it — at capacity, or
+/// rejecting the caller — fails the checkout with its status kept structured,
+/// so the caller acts on the code and cause rather than the message, and never
+/// with a worker that then fails its first turn.
+#[tokio::test]
+async fn a_refused_stream_fails_the_checkout() {
+    let (mock, config) = mock_pool_config().await;
+    mock.refuse_next(Cause::CallerCap.status("caller holds 10 sessions already"));
+    let pool = Pool::new(config).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("a refused stream must fail the checkout");
+    };
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "failed to spawn monty worker: {}: RESOURCE_EXHAUSTED: caller holds 10 sessions already",
+            mock.url()
+        )
+    );
+    let PoolError::Refused { url, refusal } = err else {
+        panic!("expected Refused error, got {err:?}");
+    };
+    assert_eq!(url, mock.url());
+    assert_eq!(refusal.status_code, Some("RESOURCE_EXHAUSTED"));
+    assert_eq!(
+        refusal.status_message.as_deref(),
+        Some("caller holds 10 sessions already")
+    );
+    assert_eq!(refusal.cause, Some(RemoteCause::CallerCap));
+    assert_eq!(refusal.transport_error, None);
+    // the refusal consumed no capacity: the next checkout is admitted
+    let server = thread::spawn(move || serve_mock_child(&mock));
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// Only an admission code is a refusal: a status such as `UNIMPLEMENTED`, from
+/// a URL that is no Monty server, is a misconfiguration, so it fails as `Spawn`
+/// and a retry loop on `Refused` does not spin on it.
+#[tokio::test]
+async fn a_non_admission_status_is_a_spawn_failure() {
+    let (mock, config) = mock_pool_config().await;
+    mock.refuse_next(Status::unimplemented("unknown service"));
+    let pool = Pool::new(config).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("an unimplemented session RPC must fail the checkout");
+    };
+    let PoolError::Spawn(message) = err else {
+        panic!("expected Spawn error, got {err:?}");
+    };
+    assert_eq!(message, format!("{}: UNIMPLEMENTED: unknown service", mock.url()));
+}
+
+/// A URL that is an HTTP/2 server but no gRPC one — a web server's error
+/// page — fails the checkout as `Spawn`, rather than opening a session whose
+/// first turn then dies decoding the page as a message.
+#[tokio::test]
+async fn a_non_grpc_server_is_a_spawn_failure() {
+    for (status, content_type, described) in [
+        (405, Some("text/html"), "\"text/html\""),
+        (200, Some("application/grpc-web"), "\"application/grpc-web\""),
+        (200, None, "missing"),
+    ] {
+        let url = serve_plain_http2(status, content_type).await;
+        let mut config = PoolConfig::remote(url.clone());
+        config.max_processes = 1;
+        let pool = Pool::new(config).await.expect("pool");
+        let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+            panic!("a {status} {content_type:?} response must fail the checkout");
+        };
+        let PoolError::Spawn(message) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        assert_eq!(
+            message,
+            format!("{url}: not a gRPC server, the response's content-type is {described}")
+        );
+    }
+}
+
+/// Serves h2c on an ephemeral loopback port, answering every request with
+/// `status`, `content_type` and a small HTML body, as a web server does; returns its URL.
+async fn serve_plain_http2(status: u16, content_type: Option<&'static str>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let Ok(mut connection) = handshake(socket).await else {
+                    return;
+                };
+                // polling `accept` also drives the connection's frames
+                while let Some(Ok((_request, mut respond))) = connection.accept().await {
+                    let mut response = HttpResponse::builder().status(status);
+                    if let Some(content_type) = content_type {
+                        response = response.header("content-type", content_type);
+                    }
+                    let response = response.body(()).expect("response");
+                    if let Ok(mut body) = respond.send_response(response, false) {
+                        let _ = body.send_data(Bytes::from_static(b"<html>Method Not Allowed</html>"), true);
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
+/// `Debug` for [`CheckoutOptions`] names each metadata entry, never its value.
 #[test]
-fn connect_headers_debug_is_redacted() {
+fn metadata_debug_is_redacted() {
     let options =
-        CheckoutOptions::default().with_connect_headers(vec![("authorization".to_owned(), "Bearer secret".to_owned())]);
+        CheckoutOptions::default().with_metadata(vec![("authorization".to_owned(), "Bearer secret".to_owned())]);
     assert_eq!(
         format!("{options:?}"),
-        r#"CheckoutOptions { connect_headers: ["authorization"], .. }"#
+        r#"CheckoutOptions { metadata: ["authorization"], .. }"#
     );
 }
 
-/// Binds a listener and returns it with a websocket pool config pointing at it.
-fn ws_pool_config() -> (TcpListener, PoolConfig) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+/// Starts a mock server and returns it with a remote pool config pointing at it.
+async fn mock_pool_config() -> (MockServer, PoolConfig) {
+    let mock = MockServer::start().await;
+    let mut config = PoolConfig::remote(mock.url());
     config.max_processes = 1;
-    (listener, config)
+    (mock, config)
 }
 
-/// Accepts one connection and returns the accepted socket.
-fn accept_ws(listener: &TcpListener) -> WebSocket<TcpStream> {
-    let (stream, _peer) = listener.accept().expect("accept");
-    tungstenite::accept(stream).expect("ws handshake")
-}
-
-/// Reads one framed `ParentRequest` from the mock child's socket.
-fn read_request(socket: &mut WebSocket<TcpStream>) -> pb::parent_request::Kind {
-    let Ok(Message::Binary(data)) = socket.read() else {
-        panic!("expected a binary request frame");
+/// Reads one `ParentRequest` from the mock child's stream.
+fn read_request(socket: &mut MockStream) -> pb::parent_request::Kind {
+    let Some(data) = socket.read() else {
+        panic!("expected a request message");
     };
     decode_frame::<pb::ParentRequest>(data.as_ref())
         .expect("decode request")
@@ -425,9 +636,9 @@ fn read_request(socket: &mut WebSocket<TcpStream>) -> pb::parent_request::Kind {
 }
 
 /// Sends one event from the mock child.
-fn send_event(socket: &mut WebSocket<TcpStream>, event: &pb::ChildEvent) {
+fn send_event(socket: &mut MockStream, event: &pb::ChildEvent) {
     let body = encode_to_capped_vec(event).expect("encode event");
-    socket.send(Message::Binary(body.into())).expect("send event");
+    socket.send(body.into()).expect("send event");
 }
 
 fn event_kind(kind: pb::child_event::Kind) -> pb::ChildEvent {
@@ -438,7 +649,7 @@ fn event_kind(kind: pb::child_event::Kind) -> pb::ChildEvent {
 }
 
 /// The headline scenario for parent-side mounts: the worker lives on the far
-/// side of a WebSocket, yet a mounted read is serviced from the *parent's*
+/// side of a gRPC stream, yet a mounted read is serviced from the *parent's*
 /// filesystem — the mock child emits the `OsCall` and `resume_from_mounts`
 /// answers it with the file's contents, no host path ever crossing the wire.
 #[tokio::test]
@@ -446,9 +657,9 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "parent-side bytes").unwrap();
 
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -513,9 +724,9 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
 /// is refused, so only an ordinary answer resumes the call.
 #[tokio::test]
 async fn eager_bit_on_a_non_future_os_call_is_dropped() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -589,9 +800,9 @@ async fn malformed_os_call_is_a_protocol_error() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "never read").unwrap();
 
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -641,10 +852,10 @@ async fn malformed_os_call_is_a_protocol_error() {
 /// backstop is the only armed deadline.
 #[tokio::test]
 async fn duration_backstop_kills_an_unresponsive_worker() {
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -680,10 +891,10 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
 /// only bound was `max_feed_duration` had no parent-side deadline at all.
 #[tokio::test]
 async fn duration_backstop_arms_on_the_raw_path() {
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -726,10 +937,10 @@ async fn duration_backstop_arms_on_the_raw_path() {
 /// backstop measured turns against the wrong limit.
 #[tokio::test]
 async fn a_raw_load_adopts_the_dumps_duration_budget() {
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -799,9 +1010,9 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
 /// server proves by seeing the `Feed` as its very next frame.
 #[tokio::test]
 async fn lifecycle_requests_are_refused_on_the_raw_path() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -857,10 +1068,10 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
 /// anticipation of the dump's limits must be put back.
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -914,9 +1125,9 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
 /// relay's worker is discarded rather than kept until the next failure.
 #[tokio::test]
 async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -970,10 +1181,10 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
 async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
 
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     config.request_timeout = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1009,10 +1220,10 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
 /// backstop without the parent ever seeing the original `ReplConfig`.
 #[tokio::test]
 async fn restored_session_rearms_the_duration_backstop() {
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1061,7 +1272,7 @@ async fn restored_session_rearms_the_duration_backstop() {
 }
 
 /// Serves suspensions until the parent responds with the expected `AbortFeed`.
-fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: u32) {
+fn serve_endless_suspensions(socket: &mut MockStream, expected_calls: u32) {
     let function_call = |call_id: u32| {
         event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "fetch".to_owned(),
@@ -1098,9 +1309,9 @@ fn serve_endless_suspensions(socket: &mut WebSocket<TcpStream>, expected_calls: 
 /// The parent replaces an over-budget suspension with `AbortFeed`.
 #[tokio::test]
 async fn suspension_limit_is_enforced_by_the_parent() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1145,9 +1356,9 @@ async fn suspension_limit_is_enforced_by_the_parent() {
 /// compromised worker run past the budget for as long as the turn deadline.
 #[tokio::test]
 async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "fetch()");
         send_kind(&mut socket, function_call(1));
@@ -1198,9 +1409,9 @@ async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
 /// instead of being aborted and reported as a runtime error.
 #[tokio::test]
 async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "open('x')");
         // the event shrinks the limit to zero itself, so this suspension is
@@ -1239,9 +1450,9 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
 /// Enforces suspension limits when a relay uses the raw path.
 #[tokio::test]
 async fn suspension_limit_is_enforced_on_the_raw_path() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1296,9 +1507,9 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
 /// is still live, so its budget stays as it was.
 #[tokio::test]
 async fn rejected_raw_load_keeps_the_suspension_count() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1408,9 +1619,9 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
 #[tokio::test]
 async fn configured_suspension_limit_caps_a_restored_one() {
     for reported in [Some(5), None] {
-        let (listener, config) = ws_pool_config();
+        let (mock, config) = mock_pool_config().await;
         let server = thread::spawn(move || {
-            let mut socket = accept_ws(&listener);
+            let mut socket = mock.accept();
             assert!(matches!(
                 read_request(&mut socket),
                 pb::parent_request::Kind::Configure(_)
@@ -1467,9 +1678,9 @@ async fn configured_suspension_limit_caps_a_restored_one() {
 /// A checkout with no limits configured still enforces the 1000 default.
 #[tokio::test]
 async fn suspension_limit_defaults_to_one_thousand() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1509,9 +1720,9 @@ async fn suspension_limit_defaults_to_one_thousand() {
 /// adoption is decided by the first reply, not by the abort's `Error`.
 #[tokio::test]
 async fn aborted_restored_suspension_keeps_the_dump_limit() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1519,7 +1730,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call =
             |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false, position());
-        let abort_reply = |socket: &mut WebSocket<TcpStream>| {
+        let abort_reply = |socket: &mut MockStream| {
             let pb::parent_request::Kind::AbortFeed(abort) = read_request(socket) else {
                 panic!("expected AbortFeed");
             };
@@ -1597,9 +1808,9 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
 /// Restores `max_suspensions` from the worker's `Load` reply.
 #[tokio::test]
 async fn restored_session_readopts_the_suspension_limit() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Configure(_)
@@ -1648,21 +1859,15 @@ async fn restored_session_readopts_the_suspension_limit() {
 // client sees when a server hands back a `ShutdownDump` or simply drops the
 // connection — and that a shutdown dump can be restored by hand.
 
-/// Reads the next request frame; `None` once the client closed the socket.
-fn try_read_request(socket: &mut WebSocket<TcpStream>) -> Option<pb::ParentRequest> {
-    loop {
-        match socket.read() {
-            Ok(Message::Binary(data)) => {
-                return Some(decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request"));
-            }
-            Ok(Message::Ping(_) | Message::Pong(_)) => {}
-            Ok(_) | Err(_) => return None,
-        }
-    }
+/// Reads the next request message; `None` once the client ended the stream.
+fn try_read_request(socket: &mut MockStream) -> Option<pb::ParentRequest> {
+    socket
+        .read()
+        .map(|data| decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request"))
 }
 
 /// Sends one `ChildEvent` with the given kind (timing fields zeroed).
-fn send_kind(socket: &mut WebSocket<TcpStream>, kind: pb::child_event::Kind) {
+fn send_kind(socket: &mut MockStream, kind: pb::child_event::Kind) {
     send_event(socket, &event_kind(kind));
 }
 
@@ -1691,7 +1896,7 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
 }
 
 /// Asserts the next request is `Configure` and acknowledges it.
-fn expect_configure(socket: &mut WebSocket<TcpStream>) {
+fn expect_configure(socket: &mut MockStream) {
     let request = try_read_request(socket).expect("configure");
     assert!(
         matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))),
@@ -1701,7 +1906,7 @@ fn expect_configure(socket: &mut WebSocket<TcpStream>) {
 }
 
 /// Asserts the next request is `Feed` of `code`.
-fn expect_feed(socket: &mut WebSocket<TcpStream>, code: &str) {
+fn expect_feed(socket: &mut MockStream, code: &str) {
     let request = try_read_request(socket).expect("feed");
     match request.kind {
         Some(pb::parent_request::Kind::Feed(feed)) => assert_eq!(feed.code, code),
@@ -1710,7 +1915,7 @@ fn expect_feed(socket: &mut WebSocket<TcpStream>, code: &str) {
 }
 
 /// Asserts the next request is `Load` and checks its state bytes.
-fn expect_load(socket: &mut WebSocket<TcpStream>, state: &[u8]) {
+fn expect_load(socket: &mut MockStream, state: &[u8]) {
     let request = try_read_request(socket).expect("load");
     match request.kind {
         Some(pb::parent_request::Kind::Load(load)) => assert_eq!(load.state, state),
@@ -1718,16 +1923,16 @@ fn expect_load(socket: &mut WebSocket<TcpStream>, state: &[u8]) {
     }
 }
 
-/// A pool + checkout against `ws://127.0.0.1:{port}` with a 10s turn timeout.
-async fn websocket_checkout(port: u16) -> (Pool, Checkout) {
-    let pool = websocket_pool(port).await;
+/// A pool + checkout against the mock at `url` with a 10s turn timeout.
+async fn remote_checkout(url: &str) -> (Pool, Checkout) {
+    let pool = remote_pool(url).await;
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     (pool, checkout)
 }
 
-/// A single-worker pool against `ws://127.0.0.1:{port}`.
-async fn websocket_pool(port: u16) -> Pool {
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+/// A single-worker pool against the mock at `url`.
+async fn remote_pool(url: &str) -> Pool {
+    let mut config = PoolConfig::remote(url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
     Pool::new(config).await.expect("pool")
@@ -1735,16 +1940,16 @@ async fn websocket_pool(port: u16) -> Pool {
 
 #[tokio::test]
 async fn shutdown_hands_back_a_restorable_dump() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
         // conn 1: a draining server intercepts the feed and replies with the dump
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"fake-dump")));
         // conn 2: the client restores the dump by hand and re-runs the feed
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"fake-dump");
         send_kind(&mut socket, ok_event());
@@ -1756,7 +1961,7 @@ async fn shutdown_hands_back_a_restorable_dump() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let err = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
@@ -1788,10 +1993,10 @@ async fn shutdown_hands_back_a_restorable_dump() {
 
 #[tokio::test]
 async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
@@ -1802,14 +2007,14 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
         );
         send_kind(&mut socket, shutdown(Some(b"susp-dump")));
         // the restored session re-announces the suspension the resume answered
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"susp-dump");
         send_kind(&mut socket, function_call(7));
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let event = checkout
         .feed("ext()", vec![], vec![], false, &mut no_print)
@@ -1842,17 +2047,17 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
 
 #[tokio::test]
 async fn shutdown_without_a_session_carries_no_dump() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
         // a server that began draining before this session ever ran anything
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         let request = try_read_request(&mut socket).expect("configure");
         assert!(matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))));
         send_kind(&mut socket, shutdown(None));
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
         panic!("checkout against a draining server must fail");
     };
@@ -1866,7 +2071,7 @@ async fn shutdown_without_a_session_carries_no_dump() {
 // treats it as opaque bytes and sends `persistence` and `profile` through.
 
 /// Sends one `ChildEvent` with the given kind, naming the session `session_id`.
-fn send_with_session_id(socket: &mut WebSocket<TcpStream>, kind: pb::child_event::Kind, session_id: &[u8]) {
+fn send_with_session_id(socket: &mut MockStream, kind: pb::child_event::Kind, session_id: &[u8]) {
     send_event(
         socket,
         &pb::ChildEvent {
@@ -1884,11 +2089,11 @@ async fn configure_carries_persistence() {
         (Persistence::Ephemeral, pb::Persistence::Ephemeral),
         (Persistence::Stored, pb::Persistence::Stored),
     ];
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
         for (_, expected) in cases {
-            let mut socket = accept_ws(&listener);
+            let mut socket = mock.accept();
             let request = try_read_request(&mut socket).expect("configure");
             let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
                 panic!("expected Configure, got {request:?}");
@@ -1899,7 +2104,7 @@ async fn configure_carries_persistence() {
         }
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     for (persistence, _) in cases {
         let repl = ReplConfig {
             persistence,
@@ -1915,11 +2120,11 @@ async fn configure_carries_persistence() {
 async fn configure_carries_profile() {
     let cases = [None, Some("gpu".to_owned()), Some(String::new())];
     let expected = cases.clone();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
         for expected in expected {
-            let mut socket = accept_ws(&listener);
+            let mut socket = mock.accept();
             let request = try_read_request(&mut socket).expect("configure");
             let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
                 panic!("expected Configure, got {request:?}");
@@ -1930,7 +2135,7 @@ async fn configure_carries_profile() {
         }
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     for profile in cases {
         let repl = ReplConfig {
             profile,
@@ -1944,10 +2149,10 @@ async fn configure_carries_profile() {
 
 #[tokio::test]
 async fn session_id_is_read_from_the_configure_reply() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         try_read_request(&mut socket).expect("configure");
         send_with_session_id(&mut socket, ok_event(), b"sess-1");
         expect_feed(&mut socket, "1 + 1");
@@ -1958,7 +2163,7 @@ async fn session_id_is_read_from_the_configure_reply() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
     // later replies carry no ID, and the session keeps the one it has
     checkout
@@ -1972,10 +2177,10 @@ async fn session_id_is_read_from_the_configure_reply() {
 
 #[tokio::test]
 async fn restore_adopts_the_new_session_id() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         try_read_request(&mut socket).expect("configure");
         send_with_session_id(&mut socket, ok_event(), b"sess-new");
         expect_load(&mut socket, b"sess-1");
@@ -1985,7 +2190,7 @@ async fn restore_adopts_the_new_session_id() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let (event, _name) = checkout
         .restore(b"sess-1".to_vec(), vec![], &mut no_print)
         .await
@@ -2001,10 +2206,10 @@ async fn restore_adopts_the_new_session_id() {
 
 #[tokio::test]
 async fn restore_clears_a_stale_session_id() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         try_read_request(&mut socket).expect("configure");
         send_with_session_id(&mut socket, ok_event(), b"sess-1");
         // restoring dump bytes: the reply names no session
@@ -2013,7 +2218,7 @@ async fn restore_clears_a_stale_session_id() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
     checkout
         .restore(b"dump-bytes".to_vec(), vec![], &mut no_print)
@@ -2029,10 +2234,10 @@ async fn restore_clears_a_stale_session_id() {
 /// forget it, or it would decline to resume a session the relay can hand back.
 #[tokio::test]
 async fn refused_restore_keeps_the_session_id() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_load(&mut socket, b"bad-dump");
         // the refusal: an ordinary Error, which names no session
@@ -2051,7 +2256,7 @@ async fn refused_restore_keeps_the_session_id() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let refused = checkout.restore(b"bad-dump".to_vec(), vec![], &mut no_print).await;
     assert!(matches!(refused, Err(PoolError::Runtime(_))), "{refused:?}");
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
@@ -2066,7 +2271,7 @@ async fn refused_restore_keeps_the_session_id() {
 // did not run.
 
 /// Acknowledges the next request, which must be `Configure`, naming the session `id`.
-fn configure_with_session_id(socket: &mut WebSocket<TcpStream>, id: &[u8]) {
+fn configure_with_session_id(socket: &mut MockStream, id: &[u8]) {
     let request = try_read_request(socket).expect("configure");
     assert!(
         matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))),
@@ -2076,7 +2281,7 @@ fn configure_with_session_id(socket: &mut WebSocket<TcpStream>, id: &[u8]) {
 }
 
 /// Asserts the next request answers call `call_id`.
-fn expect_resume_call(socket: &mut WebSocket<TcpStream>, call_id: u32) {
+fn expect_resume_call(socket: &mut MockStream, call_id: u32) {
     let request = try_read_request(socket).expect("resume");
     assert!(
         matches!(&request.kind, Some(pb::parent_request::Kind::ResumeCall(rc)) if rc.call_id == call_id),
@@ -2085,7 +2290,7 @@ fn expect_resume_call(socket: &mut WebSocket<TcpStream>, call_id: u32) {
 }
 
 /// Sends a `Complete(42)` turn-ender.
-fn send_complete(socket: &mut WebSocket<TcpStream>) {
+fn send_complete(socket: &mut MockStream) {
     send_kind(
         socket,
         pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
@@ -2094,16 +2299,16 @@ fn send_complete(socket: &mut WebSocket<TcpStream>) {
 
 #[tokio::test]
 async fn shutdown_resumes_transparently() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         // the drain names what to load, which need not be the session's own ID
         send_kind(&mut socket, shutdown(Some(b"parked-1")));
         // the checkout redials, reloads the session and re-sends the feed
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"parked-1");
         send_with_session_id(&mut socket, ok_event(), b"sess-2");
@@ -2112,7 +2317,7 @@ async fn shutdown_resumes_transparently() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let event = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -2132,10 +2337,10 @@ async fn shutdown_resumes_transparently() {
 #[tokio::test]
 async fn resume_resends_the_profile() {
     let (profile_tx, profile_rx) = mpsc::channel();
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         let request = try_read_request(&mut socket).expect("first configure");
         let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
             panic!("expected Configure, got {request:?}");
@@ -2144,7 +2349,7 @@ async fn resume_resends_the_profile() {
         send_with_session_id(&mut socket, ok_event(), b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         let request = try_read_request(&mut socket).expect("second configure");
         let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
             panic!("expected Configure, got {request:?}");
@@ -2162,7 +2367,7 @@ async fn resume_resends_the_profile() {
         profile: Some("gpu".to_owned()),
         ..ReplConfig::default()
     };
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     let mut checkout = pool.checkout(&repl).await.expect("checkout");
     checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
@@ -2177,16 +2382,16 @@ async fn resume_resends_the_profile() {
 
 #[tokio::test]
 async fn shutdown_while_suspended_resumes_after_the_same_call_is_reannounced() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, function_call(7), b"sess-2");
@@ -2195,7 +2400,7 @@ async fn shutdown_while_suspended_resumes_after_the_same_call_is_reannounced() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let event = checkout
         .feed("ext()", vec![], vec![], false, &mut no_print)
         .await
@@ -2218,16 +2423,16 @@ async fn shutdown_while_suspended_resumes_after_the_same_call_is_reannounced() {
 
 #[tokio::test]
 async fn resume_rejects_a_different_reannounced_call() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         // not the call the drained session was waiting on
@@ -2235,7 +2440,7 @@ async fn resume_rejects_a_different_reannounced_call() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     checkout
         .feed("ext()", vec![], vec![], false, &mut no_print)
         .await
@@ -2258,16 +2463,16 @@ async fn resume_rejects_a_different_reannounced_call() {
 #[tokio::test]
 async fn resume_rejects_a_reannounced_call_with_another_name() {
     // the same call id naming a different function is another session
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         send_with_session_id(
@@ -2285,7 +2490,7 @@ async fn resume_rejects_a_reannounced_call_with_another_name() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     checkout
         .feed("ext()", vec![], vec![], false, &mut no_print)
         .await
@@ -2302,10 +2507,10 @@ async fn resume_rejects_a_reannounced_call_with_another_name() {
 async fn an_aborted_load_reply_still_names_the_session() {
     // a re-announced suspension over budget is aborted before the caller
     // sees it, but the ID its event carried names the session that lives on
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, function_call(7), b"sess-2");
@@ -2322,7 +2527,7 @@ async fn an_aborted_load_reply_still_names_the_session() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     let repl = ReplConfig {
         limits: Some(ResourceLimits::default().max_suspensions(0)),
         ..ReplConfig::default()
@@ -2350,10 +2555,10 @@ async fn resume_rejects_a_reannounced_lookup_on_another_object() {
             position: Some((&position()).into()),
         })
     };
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "obj.x");
         send_kind(&mut socket, lookup(1));
@@ -2363,14 +2568,14 @@ async fn resume_rejects_a_reannounced_lookup_on_another_object() {
             "expected ResumeNameLookup, got {request:?}"
         );
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, lookup(2), b"sess-2");
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let event = checkout
         .feed("obj.x", vec![], vec![], false, &mut no_print)
         .await
@@ -2388,14 +2593,14 @@ async fn resume_rejects_a_reannounced_lookup_on_another_object() {
 async fn resumed_session_keeps_its_duration_backstop() {
     // the reload's `Load` reply reports no limits, as a worker hiding them
     // would; the configured feed budget still bounds the resumed feed
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, ok_event(), b"sess-2");
@@ -2407,7 +2612,7 @@ async fn resumed_session_keeps_its_duration_backstop() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
     config.feed_duration_limit_grace = Some(Duration::from_millis(100));
@@ -2438,16 +2643,16 @@ async fn resumed_turn_takes_the_reloaded_backstop() {
     // the session was configured without limits; the `Load` reply reports the
     // dump's, which must bound the re-sent turn rather than the deadline
     // computed before the shutdown
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         send_event(
@@ -2464,7 +2669,7 @@ async fn resumed_turn_takes_the_reloaded_backstop() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
     config.feed_duration_limit_grace = Some(Duration::from_millis(100));
@@ -2487,14 +2692,14 @@ async fn resumed_turn_takes_the_reloaded_backstop() {
 
 #[tokio::test]
 async fn resume_refused_returns_the_original_shutdown() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         // e.g. the store no longer holds the session
@@ -2506,7 +2711,7 @@ async fn resume_refused_returns_the_original_shutdown() {
         );
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -2520,16 +2725,16 @@ async fn resume_refused_returns_the_original_shutdown() {
 
 #[tokio::test]
 async fn auto_resume_disabled_returns_the_shutdown() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
     });
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
     config.auto_resume = false;
@@ -2550,17 +2755,17 @@ async fn auto_resume_disabled_returns_the_shutdown() {
 async fn shutdown_without_state_is_not_resumed() {
     // a drain naming nothing to load has nothing to resume from, whatever ID
     // the session holds: the relay could not park it
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(None));
         // no redial: a second accept would hang the server thread
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -2576,14 +2781,14 @@ async fn shutdown_without_state_is_not_resumed() {
 async fn resumed_feed_restarts_the_feed_clock() {
     // the `Load` reply reports the dump's last feed; the re-sent `Feed` starts
     // a new one, so that time must not shorten its backstop
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         // the previous feed used the whole budget
@@ -2608,7 +2813,7 @@ async fn resumed_feed_restarts_the_feed_clock() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
     config.feed_duration_limit_grace = Some(Duration::from_millis(100));
@@ -2641,10 +2846,10 @@ async fn resumed_feed_restarts_the_feed_clock() {
 #[tokio::test]
 async fn resumed_session_keeps_its_suspension_count() {
     // the host counts suspensions; a drain must not restart the count
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(1));
@@ -2652,7 +2857,7 @@ async fn resumed_session_keeps_its_suspension_count() {
         send_kind(&mut socket, function_call(2));
         expect_resume_call(&mut socket, 2);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, function_call(2), b"sess-2");
@@ -2673,7 +2878,7 @@ async fn resumed_session_keeps_its_suspension_count() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let pool = websocket_pool(port).await;
+    let pool = remote_pool(&url).await;
     let repl = ReplConfig {
         limits: Some(ResourceLimits::default().max_suspensions(2)),
         ..ReplConfig::default()
@@ -2702,125 +2907,221 @@ async fn resumed_session_keeps_its_suspension_count() {
 #[tokio::test]
 async fn bare_disconnect_is_never_resumed() {
     // only `ShutdownDump` says the request did not run; a closed socket does not
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         configure_with_session_id(&mut socket, b"sess-1");
         expect_feed(&mut socket, "1 + 1");
-        let _ = socket.close(None);
-        while try_read_request(&mut socket).is_some() {}
+        socket.close(None);
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
-        .expect_err("a closed connection must fail the turn");
+        .expect_err("a finished stream must fail the turn");
     let PoolError::Disconnected {
-        websocket: Some(details),
-        ..
+        remote: Some(details), ..
     } = err
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
-    assert_eq!(details.close_code, None);
-    assert_eq!(details.close_reason, None);
+    assert_eq!(details.status_code, Some("OK"));
+    assert_eq!(details.status_message, None);
+    assert_eq!(details.cause, None);
     assert_eq!(details.transport_error, None);
     join_server(server).await;
 }
 
-/// Peer Close details survive teardown without implying that the request did not run.
+/// A server's status survives teardown without implying that the request did not run.
 #[tokio::test]
 async fn disconnect_preserves_peer_close_details() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
-        socket
-            .close(Some(CloseFrame {
-                code: CloseCode::Policy,
-                reason: "session capacity exhausted".into(),
-            }))
-            .expect("close");
-        while try_read_request(&mut socket).is_some() {}
+        socket.close(Some(Cause::Capacity.status("session capacity exhausted")));
     });
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("disconnect");
     let PoolError::Disconnected {
-        websocket: Some(details),
-        ..
+        remote: Some(details), ..
     } = err
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
-    assert_eq!(details.close_code, Some(1008));
-    assert_eq!(details.close_reason.as_deref(), Some("session capacity exhausted"));
+    assert_eq!(details.status_code, Some("RESOURCE_EXHAUSTED"));
+    assert_eq!(details.status_message.as_deref(), Some("session capacity exhausted"));
+    assert_eq!(details.cause, Some(RemoteCause::Capacity));
     assert_eq!(details.transport_error, None);
     join_server(server).await;
 }
 
-/// A TCP EOF without a Close frame retains the protocol error rather than a fabricated Close code.
+/// A status without a `monty-cause` trailer — one from a proxy, or a server
+/// policy this build does not know — keeps its code and message with no cause.
 #[tokio::test]
-async fn disconnect_preserves_abrupt_eof() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+async fn disconnect_preserves_an_unattributed_status() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
+        socket.close(Some(Status::internal("relay fell over")));
     });
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("disconnect");
     let PoolError::Disconnected {
-        websocket: Some(details),
-        ..
+        remote: Some(details), ..
     } = err
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.stage, "receive");
-    assert_eq!(details.close_code, None);
-    assert_eq!(details.close_reason, None);
-    assert_eq!(
-        details.transport_error.as_deref(),
-        Some("WebSocket protocol error: Connection reset without closing handshake")
-    );
+    assert_eq!(details.status_code, Some("INTERNAL"));
+    assert_eq!(details.status_message.as_deref(), Some("relay fell over"));
+    assert_eq!(details.cause, None);
+    assert_eq!(details.transport_error, None);
     join_server(server).await;
 }
 
-/// The load-bearing keepalive check: a ping sent while the client sits idle
+/// A status ending the stream while the checkout is idle is what the next
+/// request reports: the request goes into the ended stream and the turn reads
+/// the status the reader recorded, never a bare send failure.
+#[tokio::test]
+async fn status_ending_an_idle_stream_is_reported_by_the_next_request() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        socket.close(Some(Cause::IdleTimeout.status("no request within the idle timeout")));
+    });
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    join_server(server).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("an ended stream must fail the turn");
+    let PoolError::Disconnected {
+        remote: Some(details), ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.status_code, Some("DEADLINE_EXCEEDED"));
+    assert_eq!(details.cause, Some(RemoteCause::IdleTimeout));
+    assert_eq!(details.transport_error, None);
+}
+
+/// A server that reports the worker ran out of memory ends the session with
+/// the same `MemoryError` a local out-of-memory kill raises.
+#[tokio::test]
+async fn out_of_memory_status_is_a_memory_error() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "x = 'a' * 10**9");
+        socket.close(Some(Cause::OutOfMemory.status("worker exceeded its memory limit")));
+    });
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let err = checkout
+        .feed("x = 'a' * 10**9", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("out of memory");
+    let PoolError::Runtime(exc) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(
+        exc.to_string(),
+        "MemoryError: the worker exceeded its memory limit and was terminated"
+    );
+    assert!(checkout.worker_id().is_none(), "the worker is gone");
+    join_server(server).await;
+}
+
+/// A draining server that had no state to hand back for an idle session ends
+/// it with `server_shutdown`: the request did not run, and there is no dump.
+#[tokio::test]
+async fn server_shutdown_status_is_a_shutdown_without_state() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        socket.close(Some(Cause::ServerShutdown.status("server is draining")));
+    });
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("shutdown");
+    assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
+    join_server(server).await;
+}
+
+/// A stream the server reset without any status retains the transport error
+/// rather than a fabricated status.
+#[tokio::test]
+async fn disconnect_preserves_a_reset_stream() {
+    let mock = MockServer::start_proxied().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        // the connection is cut under the open stream: no status, no stream end
+        mock.cut();
+        expect_end(&mut socket);
+    });
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("disconnect");
+    let PoolError::Disconnected {
+        remote: Some(details), ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(details.status_code, None);
+    assert_eq!(details.cause, None);
+    assert!(details.transport_error.is_some(), "got {details:?}");
+    join_server(server).await;
+}
+
+/// The load-bearing keepalive check: a `Ping` sent while the client sits idle
 /// (no turn in flight, so no `recv` polling the stream) is still answered,
-/// because the background reader task polls the read half continuously.
-/// Without that task the pong only goes out on the next turn — and a
+/// because the background reader task polls the stream continuously.
+/// Without that task the `Pong` only goes out on the next turn — and a
 /// keepalive server would have dropped the session as vanished long before.
 #[tokio::test]
 async fn pings_are_answered_while_idle() {
-    let (listener, config) = ws_pool_config();
+    let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         // the client is now idle: nothing in flight, nothing awaited
-        socket.send(Message::Ping(b"live".as_slice().into())).expect("ping");
+        send_kind(&mut socket, pb::child_event::Kind::Ping(pb::Ping {}));
         // bound the wait so a missing pong fails the test rather than hanging it
-        socket
-            .get_ref()
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("read timeout");
-        match socket.read() {
-            Ok(Message::Pong(payload)) => assert_eq!(payload.as_ref(), b"live"),
-            other => panic!("expected a Pong while the client is idle, got {other:?}"),
-        }
+        socket.set_read_timeout(Duration::from_secs(5));
+        let request = try_read_request(&mut socket).expect("a Pong while the client is idle");
+        assert!(
+            matches!(request.kind, Some(pb::parent_request::Kind::Pong(_))),
+            "expected a Pong, got {request:?}"
+        );
     });
 
     let pool = Pool::new(config).await.expect("pool");
@@ -2831,40 +3132,147 @@ async fn pings_are_answered_while_idle() {
     drop(checkout);
 }
 
+/// A ping above the size limit ends the stream: no turn deadline covers an
+/// idle stream, so only the reader bounds what a server sends on it.
+#[tokio::test]
+async fn an_oversized_ping_ends_the_stream() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        // a ping padded with 100 bytes of unknown field 111, which decoding skips
+        let mut body = encode_to_capped_vec(&event_kind(pb::child_event::Kind::Ping(pb::Ping {}))).expect("encode");
+        body.extend([0xfa, 0x06, 100]);
+        body.extend([0; 100]);
+        socket.send(Bytes::from(body)).expect("send the ping");
+        drain_requests(&mut socket);
+    });
+
+    let details = disconnect_after_a_feed(config).await;
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("server sent a 105-byte ping, above the 64-byte limit")
+    );
+    join_server(server).await;
+}
+
+/// A server pinging far faster than any keepalive ends the stream.
+#[tokio::test]
+async fn a_ping_flood_ends_the_stream() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        for _ in 0..11 {
+            if socket
+                .send(Bytes::from(
+                    encode_to_capped_vec(&event_kind(pb::child_event::Kind::Ping(pb::Ping {}))).expect("encode"),
+                ))
+                .is_err()
+            {
+                break;
+            }
+        }
+        drain_requests(&mut socket);
+    });
+
+    let details = disconnect_after_a_feed(config).await;
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("server sent more than 10 pings in 1s")
+    );
+    join_server(server).await;
+}
+
+/// Checks out from `config`, feeds once, and returns the disconnect that ended
+/// the stream.
+async fn disconnect_after_a_feed(config: PoolConfig) -> Box<monty_pool::RemoteDisconnect> {
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the stream must end");
+    let PoolError::Disconnected {
+        remote: Some(details), ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    details
+}
+
+/// Reads until the pool ends its side, ignoring what it sends.
+fn drain_requests(socket: &mut MockStream) {
+    while socket.read().is_some() {}
+}
+
+/// A message above the decode budget is refused before tonic buffers it, and
+/// fails the turn as a protocol error naming both sizes.
+#[tokio::test]
+async fn a_message_above_the_decode_budget_is_refused_unbuffered() {
+    let (mock, mut config) = mock_pool_config().await;
+    config.max_decode_bytes = 100_000;
+    let complete = event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+        MontyObject::string("x".repeat(200_000)),
+    )));
+    let body = encode_to_capped_vec(&complete).expect("encode");
+    let len = body.len();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1");
+        let _ = socket.send(Bytes::from(body));
+        drain_requests(&mut socket);
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the result is over budget");
+    let PoolError::Protocol(message) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(
+        message,
+        format!("invalid payload from worker: frame of {len} bytes exceeds maximum of 100000 bytes")
+    );
+    drop(checkout);
+    join_server(server).await;
+}
+
 // === teardown says goodbye ===
 
-/// Reads until the client's Close frame, panicking on anything else.
+/// Reads until the client ends its side of the stream, panicking on a request.
 ///
-/// Behind a proxy this is the *only* signal the far side gets: some load
-/// balancers forward a Close frame but never propagate a bare TCP disconnect
-/// upstream, so a teardown that only drops the socket leaves the remote session
-/// alive until its own idle timeout.
-fn expect_close(socket: &mut WebSocket<TcpStream>) {
-    loop {
-        match socket.read() {
-            Ok(Message::Close(_)) => return,
-            Ok(Message::Ping(_) | Message::Pong(_)) => {}
-            other => panic!("expected a Close frame, got {other:?}"),
-        }
+/// Behind a proxy the half-close is the *only* signal the far side gets: some
+/// load balancers forward it but never propagate a bare stream reset, so a
+/// teardown that only drops the stream leaves the remote session alive until
+/// its own idle timeout.
+fn expect_end(socket: &mut MockStream) {
+    if let Some(data) = socket.read() {
+        panic!("expected the stream to end, got a {}-byte request", data.len());
     }
 }
 
 #[tokio::test]
 async fn finishing_a_checkout_sends_a_close_frame() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
-        expect_close(&mut socket);
+        expect_end(&mut socket);
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -2875,15 +3283,15 @@ async fn finishing_a_checkout_sends_a_close_frame() {
 
 #[tokio::test]
 async fn an_abandoned_checkout_sends_a_close_frame() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
-        expect_close(&mut socket);
+        expect_end(&mut socket);
     });
 
-    let (_pool, checkout) = websocket_checkout(port).await;
+    let (_pool, checkout) = remote_checkout(&url).await;
     // dropping a checkout is a synchronous teardown, so the goodbye is sent by
     // a detached task rather than awaited here
     drop(checkout);
@@ -2892,18 +3300,18 @@ async fn an_abandoned_checkout_sends_a_close_frame() {
 
 #[tokio::test]
 async fn a_timed_out_turn_sends_a_close_frame() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "while True:\n    pass");
         // never reply: the client's deadline must end the session, and the
         // abandoned-session case is exactly when the server most wants the slot
-        expect_close(&mut socket);
+        expect_end(&mut socket);
     });
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_millis(200));
     let pool = Pool::new(config).await.expect("pool");
@@ -2916,34 +3324,59 @@ async fn a_timed_out_turn_sends_a_close_frame() {
     join_server(server).await;
 }
 
-/// Cancelling `finish()` mid-goodbye must not leak the worker's capacity slot.
+/// `finish()` never waits on the server: the half-close is queued and the
+/// checkout returns, so a server that takes its time ending the stream (a relay
+/// parks the session first) adds nothing to the host's teardown.
+#[tokio::test]
+async fn finishing_a_checkout_does_not_wait_for_the_server_to_end_the_stream() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_end(&mut socket);
+        // the half-close has landed; take a while to end the stream in turn
+        thread::sleep(Duration::from_millis(500));
+        drop(socket);
+    });
+
+    let (_pool, checkout) = remote_checkout(&url).await;
+    let start = Instant::now();
+    checkout.finish().await.expect("finish");
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "finish waited {:?} for the server",
+        start.elapsed()
+    );
+    join_server(server).await;
+}
+
+/// `finish()` against a peer that stopped reading must neither block nor leak
+/// the worker's capacity slot.
 ///
-/// The goodbye only *pends* against a peer that stopped reading, so the socket
-/// is wedged first: one oversized feed the mock server never drains fills the
-/// buffers, and every later write queues behind it. The worker is already out
-/// of the `Checkout` by then, so without a `CapacityGuard` across the await
-/// nothing releases its slot and the pool shrinks by one for good.
+/// The socket is wedged first: one oversized feed the mock server never drains
+/// fills the buffers, and every later write queues behind it. The goodbye
+/// queues too, in the detached reader, while the slot comes back at once.
 ///
 /// Not run on Windows: dynamic send buffering grows the loopback socket's
-/// kernel buffer past the wedge, the goodbye never pends, and the cancel
-/// window this test needs cannot be forced open (the client socket is dialled
-/// inside `connect_async`, so its `SO_SNDBUF` — the only way to disable the
-/// growth — is out of reach). The guarded logic is platform-independent; do
-/// not "fix" this by enlarging the wedge, which only moves the flake.
+/// kernel buffer past the wedge, so the feed never blocks (the client socket
+/// is dialled inside `connect_async`, so its `SO_SNDBUF` — the only way to
+/// disable the growth — is out of reach). Do not "fix" this by enlarging the
+/// wedge, which only moves the flake.
 #[cfg(not(windows))]
 #[tokio::test]
-async fn cancelling_finish_does_not_leak_capacity() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+async fn finishing_against_a_wedged_socket_does_not_leak_capacity() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let (release, wait_for_release) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         // never read again: the client's writes now back up in the socket
         wait_for_release.recv().expect("release");
     });
 
-    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    let mut config = PoolConfig::remote(&url);
     config.max_processes = 1;
     config.checkout_timeout = Some(Duration::from_millis(200));
     let pool = Pool::new(config).await.expect("pool");
@@ -2956,32 +3389,118 @@ async fn cancelling_finish_does_not_leak_capacity() {
         timeout(Duration::from_secs(1), feed).await.is_err(),
         "the unread feed must block, wedging the socket"
     );
-    assert!(
-        timeout(Duration::from_millis(200), checkout.finish()).await.is_err(),
-        "the goodbye must block behind the wedged socket, cancelling inside the window"
-    );
+    timeout(Duration::from_millis(200), checkout.finish())
+        .await
+        .expect("the goodbye must not block behind the wedged socket")
+        .expect("finish");
 
     release.send(()).expect("release the server");
     join_server(server).await;
 
-    // the slot came back: the next checkout gets as far as dialling (and fails
-    // to connect, the listener being gone) instead of reporting no capacity
+    // The slot came back: the next checkout gets as far as dialling instead
+    // of reporting no capacity. The mock is shutting down, so the dial fails
+    // (`Spawn`) or, if it still admitted the stream, the stream ends at once
+    // (`Disconnected`); only `Exhausted` would be the leak.
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("the listener is gone, so a checkout cannot succeed");
+        panic!("the mock is shutting down, so a checkout cannot succeed");
     };
-    assert!(matches!(err, PoolError::Spawn(_)), "got {err:?}");
+    assert!(!matches!(err, PoolError::Exhausted), "the slot leaked: {err:?}");
+}
+
+/// A finished checkout's slot comes back once the server has ended the stream,
+/// not at once: a full pool's next checkout must not reach a server still
+/// counting the last one, which a relay's per-caller cap would refuse.
+#[tokio::test]
+async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut first = mock.accept();
+        expect_configure(&mut first);
+        expect_end(&mut first);
+        let early = mock.try_accept(Duration::from_millis(300));
+        assert!(
+            early.is_none(),
+            "the next stream opened before the server ended this one"
+        );
+        drop(first);
+        let mut second = mock.accept();
+        expect_configure(&mut second);
+        expect_end(&mut second);
+    });
+
+    let (pool, checkout) = remote_checkout(&url).await;
+    checkout.finish().await.expect("finish");
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A checkout dropped outside any runtime, after the `block_on` that made it
+/// returned, still half-closes on the runtime its stream was opened on rather
+/// than resetting the stream under a server still ending it.
+#[test]
+fn a_checkout_dropped_outside_its_runtime_still_half_closes() {
+    let runtime = Builder::new_multi_thread().enable_all().build().expect("runtime");
+    let mock = runtime.block_on(MockServer::start());
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_end(&mut socket);
+        assert!(stays_open(&socket), "the stream was reset");
+    });
+
+    let (pool, checkout) = runtime.block_on(remote_checkout(&url));
+    drop(checkout);
+    server.join().expect("server thread");
+    drop(pool);
+}
+
+/// Closed streams waiting on their server are capped at `max_processes`: past
+/// that a close resets its stream, so peers that never end theirs cannot pile
+/// up buffered streams as fast as checkouts are abandoned.
+#[tokio::test]
+async fn closes_past_the_pool_size_reset_their_streams() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut first = mock.accept();
+        expect_configure(&mut first);
+        expect_end(&mut first);
+        let mut second = mock.accept();
+        expect_configure(&mut second);
+        expect_end(&mut second);
+        // neither is ended here: the first holds the pool's one closing slot
+        let (first_open, second_open) = (stays_open(&first), stays_open(&second));
+        assert!(first_open, "the first close must wait for the server");
+        assert!(!second_open, "the close past the cap must reset its stream");
+    });
+
+    let (pool, checkout) = remote_checkout(&url).await;
+    drop(checkout);
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// Whether the pool still holds `socket`'s stream a moment after it ended its
+/// side: a reset stream drops the response, so a send then fails.
+fn stays_open(socket: &MockStream) -> bool {
+    thread::sleep(Duration::from_millis(200));
+    socket.send(Bytes::new()).is_ok()
 }
 
 #[tokio::test]
 async fn a_dropped_connection_is_a_disconnect() {
     // Every server policy action other than shutdown (idle/session/turn
-    // timeout, capacity) is just a closed socket. The client cannot tell those
-    // from a dead sandbox, and says so: `Disconnected`, never `Crashed` — the
-    // remote process is not ours to reap.
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    // timeout, capacity) ends the stream with a status. The client cannot tell
+    // the sandbox's fate from that, and says so: `Disconnected`, never
+    // `Crashed` — the remote process is not ours to reap.
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
         send_kind(
@@ -2989,15 +3508,10 @@ async fn a_dropped_connection_is_a_disconnect() {
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
         // the server drops the session while the client sits idle, then exits
-        socket
-            .close(Some(CloseFrame {
-                code: CloseCode::Away,
-                reason: "idle timeout".into(),
-            }))
-            .expect("close");
+        socket.close(Some(Cause::IdleTimeout.status("idle timeout")));
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let event = checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -3014,14 +3528,14 @@ async fn a_dropped_connection_is_a_disconnect() {
         .await
         .expect_err("a closed connection must fail the turn");
     let PoolError::Disconnected {
-        websocket: Some(details),
-        ..
+        remote: Some(details), ..
     } = err
     else {
         panic!("got {err:?}");
     };
-    assert_eq!(details.close_code, Some(1001));
-    assert_eq!(details.close_reason.as_deref(), Some("idle timeout"));
+    assert_eq!(details.status_code, Some("DEADLINE_EXCEEDED"));
+    assert_eq!(details.status_message.as_deref(), Some("idle timeout"));
+    assert_eq!(details.cause, Some(RemoteCause::IdleTimeout));
     assert_eq!(details.transport_error, None);
 }
 
@@ -3037,10 +3551,10 @@ fn position() -> SourceRange {
 /// Discard the worker so an invalid `TypingError` cannot falsely end a suspended feed.
 #[tokio::test]
 async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         try_read_request(&mut socket).expect("configure");
         send_kind(&mut socket, ok_event());
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Dump(_)));
@@ -3053,7 +3567,7 @@ async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout.dump().await.unwrap_err();
     assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
     assert_eq!(
@@ -3066,10 +3580,10 @@ async fn a_typing_error_reply_to_dump_is_a_protocol_violation() {
 
 #[tokio::test]
 async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
+    let mock = MockServer::start().await;
+    let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         try_read_request(&mut socket).expect("configure");
         send_kind(&mut socket, ok_event());
         assert!(matches!(
@@ -3085,7 +3599,7 @@ async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port).await;
+    let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
         .feed("import nope", vec![], vec![], true, &mut no_print)
         .await
@@ -3102,20 +3616,17 @@ async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
 /// Budget exhaustion discards the connection without replaying the feed.
 #[tokio::test]
 async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
-        socket
-            .get_ref()
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("read timeout");
+        let mut socket = mock.accept();
+        socket.set_read_timeout(Duration::from_secs(5));
         expect_configure(&mut socket);
         expect_feed(&mut socket, "42");
         send_kind(
             &mut socket,
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
         );
-        expect_close(&mut socket);
+        expect_end(&mut socket);
     });
     config.max_decode_bytes = 0;
     let pool = Pool::new(config).await.expect("pool");
@@ -3136,10 +3647,10 @@ async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
 #[cfg(target_os = "linux")]
 async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
     let binary = binary::monty_binary();
-    let (listener, mut config) = ws_pool_config();
+    let (mock, mut config) = mock_pool_config().await;
     let (tx, rx) = mpsc::channel();
     let server = thread::spawn(move || {
-        let mut socket = accept_ws(&listener);
+        let mut socket = mock.accept();
         let pb::parent_request::Kind::Configure(configure) = read_request(&mut socket) else {
             panic!("expected Configure")
         };
@@ -3179,7 +3690,7 @@ async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
             drop(child);
             pool.close().await;
         });
-        socket.close(None).unwrap();
+        socket.close(None);
     });
     config.request_timeout = Some(Duration::from_secs(5));
     let pool = Pool::new(config).await.unwrap();
@@ -3217,10 +3728,10 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
             "finite client request_timeout",
         ),
     ] {
-        let (listener, mut config) = ws_pool_config();
+        let (mock, mut config) = mock_pool_config().await;
         let server = thread::spawn(move || {
-            let mut socket = accept_ws(&listener);
-            socket.get_ref().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut socket = mock.accept();
+            socket.set_read_timeout(Duration::from_secs(5));
             assert!(matches!(
                 read_request(&mut socket),
                 pb::parent_request::Kind::Configure(_)
@@ -3232,7 +3743,7 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
             };
             send_event(&mut socket, &event);
             assert!(
-                !matches!(socket.read(), Ok(Message::Binary(_))),
+                socket.read().is_none(),
                 "invalid clock metadata must not execute requests"
             );
         });
@@ -3253,9 +3764,9 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
 #[tokio::test]
 async fn remote_clock_is_reported_by_the_server_without_a_client_preference() {
     for clock in [None, Some(pb::ExecutionClock::Wall), Some(pb::ExecutionClock::Cpu)] {
-        let (listener, mut config) = ws_pool_config();
+        let (mock, mut config) = mock_pool_config().await;
         let server = thread::spawn(move || {
-            let mut socket = accept_ws(&listener);
+            let mut socket = mock.accept();
             let pb::parent_request::Kind::Configure(configure) = read_request(&mut socket) else {
                 panic!("expected Configure")
             };

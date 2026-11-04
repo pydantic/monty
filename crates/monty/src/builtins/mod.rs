@@ -181,7 +181,6 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
-            Self::BuildClass => type_::builtin_build_class(vm, args),
             Self::Zip => zip::builtin_zip(vm, args),
             // `eval()` / `exec()` push the compiled snippet's frame.
             Self::Eval => return eval_exec::builtin_eval(vm, args),

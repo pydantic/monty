@@ -223,6 +223,11 @@ impl ForwardRef {
         self.globals.is_some()
     }
 
+    /// `__forward_arg__`: the reference's source text, borrowed.
+    pub(crate) fn arg(&self) -> &Value {
+        &self.arg
+    }
+
     /// The globals dict this reference owns, if any.
     fn globals_dict(&self) -> Option<HeapId> {
         match self.globals {

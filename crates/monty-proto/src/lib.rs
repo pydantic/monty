@@ -9,6 +9,10 @@ mod convert;
 mod decode_budget;
 mod frame;
 mod generated;
+// The gRPC transport's path, codec and status vocabulary; opt-in because it
+// links tonic, which stdio-only consumers (the runtime) never need.
+#[cfg(feature = "grpc")]
+pub mod grpc;
 // Python ↔ MontyObject value conversion; opt-in because it links pyo3, which
 // pure-Rust consumers of the wire protocol must never pay for.
 #[cfg(feature = "python")]
@@ -32,8 +36,10 @@ pub mod worker;
 /// `Configure.persistence`, `Configure.profile` and `ChildEvent.session_id` did not bump it: a
 /// serving relay and its client act on them, children ignore them, and a
 /// child that drops them loses nothing. Version 6 added the `import` and
-/// `import_stubs` OS calls, which version 5 parents cannot answer.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// `import_stubs` OS calls, which version 5 parents cannot answer. Version 7
+/// moved the remote transport from one WebSocket per session to one gRPC
+/// stream per session, with `Ping`/`Pong` liveness and status-ended streams.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -42,14 +48,10 @@ pub const PROTOCOL_VERSION: u32 = 6;
 /// peers keep working for everything but the new thing. Raising it is a
 /// breaking change that requires a major version bump.
 ///
-/// Version 4 and below are not served. Version 3 carried values as recursive
-/// `MontyObject` trees, where this build carries one flat `Arena` per message.
-/// Version 4 both lacked `max_feed_duration`/`max_turn_duration` and had the
-/// per-session `max_duration` this build dropped: a version 4 parent would
-/// send a budget nothing enforces, and a version 4 child would accept the new
-/// budgets and ignore them. Neither side can be told apart from a working one,
-/// so both are refused.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 5;
+/// Version 6 and below are not served: their remote transport was a WebSocket
+/// per session, which no version 7 server speaks, and a version 6 parent would
+/// neither answer `Ping` nor read the status a dropped stream ends with.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 7;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

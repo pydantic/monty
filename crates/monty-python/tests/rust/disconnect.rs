@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 
 use crate::{MontyDisconnectError, pool::pool_err_to_py};
 
-/// Missing transport evidence must remain None rather than inventing a Close code or reason.
+/// Missing transport evidence must remain None rather than inventing a status or cause.
 #[test]
 fn disconnect_without_transport_evidence_preserves_unknown_fields() {
     Python::initialize();
@@ -14,7 +14,7 @@ fn disconnect_without_transport_evidence_preserves_unknown_fields() {
             py,
             PoolError::Disconnected {
                 context: "waiting for a reply".to_owned(),
-                websocket: None,
+                remote: None,
             },
         );
         assert!(error.is_instance_of::<MontyDisconnectError>(py));
@@ -23,7 +23,7 @@ fn disconnect_without_transport_evidence_preserves_unknown_fields() {
             value.str().unwrap().to_str().unwrap(),
             "monty worker connection closed while waiting for a reply"
         );
-        for field in ["stage", "close_code", "close_reason", "transport_error"] {
+        for field in ["status_code", "status_message", "cause", "transport_error"] {
             assert!(value.getattr(field).unwrap().is_none(), "{field}");
         }
     });

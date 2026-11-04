@@ -736,7 +736,7 @@ pub struct ParentRequest {
     /// not depend on it, and it is absent whenever the parent is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -765,6 +765,8 @@ pub mod parent_request {
         Shutdown(super::Shutdown),
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
+        #[prost(message, tag = "12")]
+        Pong(super::Pong),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -809,7 +811,7 @@ pub struct Configure {
     /// Version of the wire schema the parent speaks. The child rejects the
     /// session with a `FatalError` naming its own supported range when this
     /// falls outside it, so a parent deployed separately from its worker (over
-    /// a websocket, say) learns what to downgrade to without a handshake.
+    /// a gRPC stream, say) learns what to downgrade to without a handshake.
     ///
     /// 0 means the parent declared nothing — either it predates this field or it
     /// is not a monty parent — and is always rejected. The protocol has no
@@ -827,7 +829,8 @@ pub struct Configure {
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
     /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
-    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    /// with parent-serviced sleeps capped at 10s. It also governs a session restored by
+    /// `Load`, replacing the policy the dump was taken under.
     #[prost(message, optional, tag = "11")]
     pub os_policy: ::core::option::Option<OsPolicy>,
     /// Relay-only: whether a serving relay may store the session. Children ignore
@@ -839,7 +842,7 @@ pub struct Configure {
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
     /// Local VM and supervisor clock; absent defaults to wall time in the child.
-    /// WebSocket clients leave this absent. The server selects the worker's clock.
+    /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
 }
@@ -934,6 +937,8 @@ pub struct Dump {}
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`. A relay
 /// without session storage answers `Error` and the session carries on.
+/// The restored session takes the preceding `Configure`'s `os_policy` (the
+/// default without one), not the policy it was dumped under.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
     /// Either:
@@ -1024,7 +1029,7 @@ pub struct ChildEvent {
     /// Configure acknowledgment. Local CPU-mode parents require this before execution.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1055,6 +1060,8 @@ pub mod child_event {
         FatalError(super::FatalError),
         #[prost(message, tag = "12")]
         Shutdown(super::ShutdownDump),
+        #[prost(message, tag = "13")]
+        Ping(super::Ping),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1481,10 +1488,9 @@ pub struct FatalError {
 /// and did NOT run the request it is replying to. Sent only in reply to an
 /// in-flight request, so the client is always reading when it arrives.
 ///
-/// Every other server policy action (idle/session/turn timeout, capacity) is
-/// just a dropped connection, which the client already classifies as a dead
-/// worker — only shutdown needs a message, because only shutdown has state to
-/// hand back.
+/// Every other server policy action (idle/session/turn timeout, capacity,
+/// memory) ends the stream with a gRPC status instead — only shutdown needs a
+/// message, because only shutdown has state to hand back.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShutdownDump {
     /// What `Load` restores the session from on a fresh connection: the ID a
@@ -1494,6 +1500,19 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
+/// Liveness probe from a serving relay, never a turn end. A parent answers
+/// each one with `Pong` without otherwise acting on it; a relay that hears
+/// nothing back for a further interval treats the parent as gone. A parent
+/// reads the stream in order, so the answer follows the events before the
+/// ping, which a slow host callback may hold: a relay sends it between turns.
+/// In-band because HTTP/2 PING frames stop at the nearest proxy, while the
+/// parent a relay wants to hear from sits beyond it. A child never sends one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Ping {}
+/// The parent's answer to `Ping`. Not a request: it opens no turn, and a child
+/// or relay that receives one between turns simply notes the parent is alive.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Pong {}
 /// Where a `Type` comes from — drives id presence and input validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

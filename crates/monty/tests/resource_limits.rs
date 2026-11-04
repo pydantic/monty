@@ -482,6 +482,21 @@ fn time_limit_covers_csv_long_ordinary_fields() {
     );
 }
 
+/// A user `__repr__` run to export a result or an external call's argument
+/// counts towards the time limits, although the export follows the run loop.
+#[test]
+fn time_limit_covers_export_repr() {
+    let repr_class = "import functools\nclass R:\n    def __repr__(self):\n        for _ in range(10**7):\n            pass\n        return 'r'\n";
+    for tail in ["functools.partial(print, R())", "add(functools.partial(print, R()))"] {
+        let code = format!("{repr_class}{tail}");
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let progress = run.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+        let exc = progress.and_then(resolve_name_lookups).map(|_| ()).unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{tail}");
+    }
+}
+
 #[test]
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly
@@ -1167,6 +1182,32 @@ for _ in range(400):
     }
 }
 
+/// Builtins that collect heap values in a Rust loop polling the time limit.
+///
+/// Every piece is a heap value (split pieces are at least two characters, so not
+/// interned; repeated items are lists), and a timeout part-way through must release
+/// the pieces built so far: under memory-model-checks a leaked `Value::Ref` panics on
+/// drop. `bytes.splitlines` was already guarded and stays as a regression check.
+const PIECE_BUILDING_EXPRS: &[&str] = &[
+    "('ab,' * 3_000_000).split(',')",
+    "('ab,' * 3_000_000).rsplit(',')",
+    "('ab\\n' * 3_000_000).splitlines()",
+    "(b'ab ' * 3_000_000).split()",
+    "(b'ab ' * 3_000_000).rsplit()",
+    "(b'ab\\n' * 3_000_000).splitlines()",
+    "[[1]] * 10_000_000",
+    "([1],) * 10_000_000",
+    "from collections import namedtuple\nnamedtuple('P', 'a')([1]) * 10_000_000",
+];
+
+/// A timeout while a builtin is still building its result releases the pieces built so far.
+#[test]
+fn timeout_mid_build_releases_pieces() {
+    for expression in PIECE_BUILDING_EXPRS {
+        assert_timeout_in_builtin(expression, expression);
+    }
+}
+
 /// Test that `str.splitlines()` on a large string respects the time limit.
 ///
 /// `str_splitlines()` scans the entire string for line endings in a while loop
@@ -1392,7 +1433,7 @@ s.splitlines()
 // These tests verify that `repr()` on large containers respects the time limit
 // and terminates promptly instead of hanging indefinitely. The repr methods
 // (`repr_sequence_fmt`, `Dict::py_repr_fmt`, `SetInner::repr_fmt`) poll the
-// limits every 64th item via `repr_check_time` and write `...[timeout]` when the
+// limits every 64th item via `repr_should_truncate` and write `...[timeout]` when the
 // time limit is exceeded, returning normally instead of propagating an error.
 //
 // Each test uses the external function "interrupt" pattern: the large object is
@@ -1468,6 +1509,30 @@ fn timeout_in_sort_key_loop() {
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     // Polled, this stops one budget in at any machine speed; unpolled it runs
     // all 4M key calls before anything re-checks, which takes seconds.
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
+/// Many references to 16 long strings sharing a 1 MB prefix: each comparison scans the prefix, so the sort must
+/// poll between comparisons rather than run Rust's uninterruptible `sort_by`.
+#[test]
+fn timeout_in_sort_of_long_strings() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "s = 'a' * 1_000_000\nkeys = [s + chr(97 + i) for i in range(16)]\nx = [keys[i * 7 % 16] for i in range(20_000)]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+    let start = ThreadTime::now();
+    let exc = repl
+        .feed_run("x.sort()", vec![], PrintWriter::Stdout)
+        .expect_err("the sort must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     assert!(
         elapsed < Duration::from_millis(500),
         "should stop promptly, took {elapsed:?}"
@@ -1707,7 +1772,7 @@ repr(x)
 /// limit.
 ///
 /// The bound arguments and keywords are formatted in one native loop, so
-/// without the shared `repr_check_time` counter the repr runs to completion
+/// without the shared `repr_should_truncate` counter the repr runs to completion
 /// before any checkpoint — 500k arguments overshoot the deadline by more than
 /// an order of magnitude over the bound asserted here.
 #[test]
@@ -1727,7 +1792,7 @@ repr(p)
 /// the time limit.
 ///
 /// The arguments are formatted in one native loop, as a tuple's are, so the
-/// same `repr_check_time` poll has to truncate it.
+/// same `repr_should_truncate` poll has to truncate it.
 #[test]
 fn timeout_truncation_in_generic_alias_repr() {
     let code = r"
@@ -1783,16 +1848,40 @@ repr(x)
 ";
     assert_timeout_promptly(code, "set repr");
 }
+
+/// `re.finditer` releases the matches it already built when a later match hits the
+/// backtracking limit.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn re_finditer_error_releases_earlier_matches() {
+    let code = r"
+import re
+try:
+    re.finditer('a|(x+x+)+\\1y', 'aaa' + 'x' * 30 + 'zy')
+    result = 'no error'
+except re.PatternError:
+    result = 'raised'
+result
+";
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
+    let output = run.run_ref_counts(vec![]).expect("should run");
+
+    assert_eq!(output.value, MontyObject::string("raised".to_owned()));
+    assert_eq!(output.unreachable, Vec::<String>::new());
+}
+
 /// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
 ///
-/// The pattern `(a+)+\1b` forces `fancy_regex` into its backtracking VM (due to the
-/// backreference `\1`). With enough `a`s followed by a non-matching character, the
-/// exponential blowup exceeds the engine's backtracking step limit (~1M steps).
+/// The pattern `(x+x+)+\1y` forces `fancy_regex` into its backtracking VM (due to the
+/// backreference `\1`). With enough `x`s followed by a non-matching character, the
+/// exponential blowup exceeds the engine's backtracking step limit (~1M steps). The doubled
+/// `x+` gets past fancy-regex 0.20's nested-repeat optimisation, which defuses `(a+)+`, and the
+/// subject contains the `y` the pattern requires, so the engine's prefilter cannot skip it.
 #[test]
 fn re_sub_backtracking_limit_raises_pattern_error() {
     let code = r"
 import re
-re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
+re.sub('(x+x+)+\\1y', 'X', 'x' * 30 + 'zy')
 ";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
@@ -1805,6 +1894,27 @@ re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
         exc.message().is_some_and(|m| m.contains("backtrack")),
         "expected backtracking error, got: {exc}"
     );
+}
+
+/// Subroutine calls, a fancy-regex extension CPython lacks, are rejected before fancy-regex
+/// compiles them, with CPython's error.
+#[test]
+fn re_subroutine_call_is_rejected_before_compiling() {
+    let code = r"
+import re
+re.compile('(a\\g<1>?\\g<1>?\\g<1>?)')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let start = Instant::now();
+    let exc = ex.run_no_limits(vec![]).unwrap_err();
+
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "rejection should be immediate"
+    );
+    assert_eq!(exc.exc_type(), ExcType::RePatternError);
+    assert_eq!(exc.message(), Some("bad escape \\g at position 2"));
 }
 
 /// User slots that recurse through native dispatch must fail before exhausting the Rust stack.
@@ -2046,6 +2156,31 @@ fn a_refused_unpacked_call_releases_its_kwargs() {
         .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .expect_err("the *args clone should be refused");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+/// A concatenation refused while cloning its right operand releases the clones of its left.
+///
+/// The right operand is built by appends, whose growth checks stay below the limit, so
+/// only the 160 KB clone of it is refused; `memory-model-checks` panics on the stranded
+/// `[]` clone if the left side leaks.
+#[test]
+fn a_refused_concatenation_releases_its_left_clones() {
+    for (setup, kind) in [
+        ("a = [[]]\nb = [None for _ in range(10_000)]", "list"),
+        ("a = ([],)\nb = tuple(None for _ in range(10_000))", "tuple"),
+        (
+            "from collections import deque\na = deque([[]])\nb = deque(None for _ in range(10_000))",
+            "deque",
+        ),
+    ] {
+        let code = format!("{setup}\na + b");
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_memory(150_000);
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .expect_err("cloning the right operand should be refused");
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{kind} + {kind}");
+    }
 }
 
 // ---------------------------------------------------------------------------

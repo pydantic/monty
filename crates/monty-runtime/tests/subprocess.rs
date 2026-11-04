@@ -936,6 +936,32 @@ fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     child.shutdown();
 }
 
+/// A resource limit hit inside a user `__str__` / `__repr__` that Monty runs to
+/// build a message or export a value ends the feed with `MemoryError`, rather
+/// than becoming a `KeyError` or a repr string; `except MemoryError` cannot catch it.
+#[test]
+fn memory_errors_in_user_str_and_repr_are_uncatchable() {
+    let cases = [
+        // `KeyError` message for a missing dict key and set member
+        "class K:\n    def __hash__(self):\n        return 0\n    def __str__(self):\n        return 'x' * 10_000_000\ntry:\n    {}[K()]\nexcept (KeyError, MemoryError):\n    pass\n'caught'",
+        "class K:\n    def __hash__(self):\n        return 0\n    def __str__(self):\n        return 'x' * 10_000_000\ntry:\n    set().remove(K())\nexcept (KeyError, MemoryError):\n    pass\n'caught'",
+        // a result exported as its repr
+        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\nfunctools.partial(print, R())",
+        // an external call's argument, exported before the call reaches the host
+        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ntry:\n    add(functools.partial(print, R()))\nexcept MemoryError:\n    pass\n'caught'",
+        // the `os.getenv` default, exported into the `OsCall`
+        "import functools, os\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ntry:\n    os.getenv('KEY', functools.partial(print, R()))\nexcept MemoryError:\n    pass\n'caught'",
+    ];
+    for code in cases {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(1024 * 1024));
+        let (_, event) = child.feed(code);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+}
+
 /// Async scheduler state is allocator-accounted even though it lives outside
 /// Monty's object heap, so recursive gathers reach the soft limit safely.
 #[test]
@@ -1177,6 +1203,31 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = [None] * 40_000\nx += x", 1_965_471),
         ("t = (None,) * 40_000\nt + t", 1_325_471),
         ("x = [None] * 40_000\nx.copy()", 1_325_217),
+        // A container repr polls the limits between items: crossing the memory
+        // limit raises rather than truncating the way a timeout does.
+        ("x = [None] * 50_000\nlen(repr(x))", 1_107_679),
+        // The other container reprs poll the same way, each from its own loop.
+        (
+            "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
+            1_495_978,
+        ),
+        (
+            "from collections import Counter\ns = 'x' * 200\nc = Counter({(i, s): 1 for i in range(4_000)})\nlen(repr(c))",
+            1_136_426,
+        ),
+        (
+            "import functools\ns = 'x' * 200\np = functools.partial(print, *([s] * 5_000))\nlen(repr(p))",
+            1_339_297,
+        ),
+        (
+            "import functools\ns = 'x' * 400\np = functools.partial(print, **{f'k{i}': s for i in range(2_500)})\nlen(repr(p))",
+            1_390_933,
+        ),
+        ("s = 'x' * 200\ng = list[(s,) * 5_000]\nlen(repr(g))", 1_174_392),
+        (
+            "import typing\ns = 'x' * 600\nu = typing.Union[tuple(list[i, s] for i in range(2_000))]\nlen(repr(u))",
+            1_560_729,
+        ),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
         ("d = dict.fromkeys(range(12_000))\nd | {}", 1_808_342),
@@ -1199,11 +1250,54 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
             1_105_587,
         ),
+        // A `typing` alias copies its subscript into its `__args__`, and a class's
+        // `__annotations__` copies the namespace into the dict the annotations
+        // evaluate under; both are preflighted like any container copy.
+        ("from typing import Tuple\nTuple[(None,) * 40_000]", 1_325_941),
+        (
+            "class C:\n    x: int\nfor i in range(16_000):\n    setattr(C, str(i), i)\nC.__annotations__",
+            1_148_674,
+        ),
+        // `Literal` copies its values to deduplicate them, `Callable` its
+        // parameter list; both copies are preflighted.
+        ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_325_953),
+        ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_325_973),
+        // `__metadata__` copies an `Annotated` alias's metadata, preflighted too.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [None] * 30_000\na.__metadata__",
+            1_172_962,
+        ),
+        // Flattening a nested `Annotated` copies both aliases' arguments into
+        // one buffer, preflighted as a whole.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\ninner = Annotated[(int,) + meta]\nAnnotated[(inner,) + meta]",
+            1_409_217,
+        ),
+        // Comparing or hashing a `Literal` copies its values again, so an alias
+        // that fits is refused when the copy would not.
+        (
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nL == L",
+            1_108_879,
+        ),
+        (
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nhash(L)",
+            1_108_880,
+        ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_045_595,
         ),
+        // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_298_115),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_676_961),
+        // A split's piece buffer is grown under the same checks as `re.split`'s.
+        ("('ab,' * 100_000).split(',')", 1_393_588),
+        ("('ab,' * 100_000).rsplit(',')", 1_393_589),
+        ("(b'ab ' * 100_000).split()", 1_401_806),
+        ("(b'ab,' * 100_000).rsplit(b',')", 1_401_813),
+        // Empty lines allocate no heap entry, so only the line buffer's growth check sees them.
+        ("('\\n' * 200_000).splitlines()", 1_293_582),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_169_660),
         // `randbytes` charges its word buffer and the byte buffer it fills.
@@ -1287,7 +1381,18 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ),
     ];
 
-    for (code, expected) in cases {
+    // A dataclass repr polls between fields, so it needs more fields than a
+    // literal case should spell out.
+    let fields = (0..200)
+        .map(|i| format!("    f{i}: object\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let dataclass = format!(
+        "from dataclasses import dataclass\ns = 'x' * 6_000\n@dataclass\nclass C:\n{fields}c = C(*([s] * 200))\nlen(repr(c))"
+    );
+    let cases = cases.map(|(code, expected)| (code.to_owned(), expected));
+    for (code, expected) in cases.into_iter().chain([(dataclass, 1_266_151)]) {
+        let code = code.as_str();
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(1024 * 1024));
         let (_, event) = child.feed(code);
@@ -1298,6 +1403,40 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
+
+    for code in [
+        "a = [None] * 1_000_000\na *= 2",
+        "a = [None] * 1_000_000\na += range(1_000_000)",
+        "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+        // The line buffer's next doubling would land past the hard headroom.
+        "('\\n' * 2_000_000).splitlines()",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
+
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("a = [None] * 1_000_000\nalias = a\na += [None]\nlen(alias)"),
+        MontyObject::int(1_000_001),
+    );
+    child.shutdown();
+
+    // A result `finditer` preflights as fitting must build within that estimate: a
+    // named group's table once took 4 slots per match, killing the worker here.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("import re\nlen(re.finditer('(?P<x>)', 'a' * 60_000))"),
+        MontyObject::int(60_001),
+    );
+    child.shutdown();
 }
 
 /// `DictWriter.writerows()` on a file keeps one list per row until its single

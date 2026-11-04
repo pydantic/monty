@@ -88,7 +88,7 @@ These raise `NameError`:
     on *every* comparison never finishes in either engine; under a duration
     limit Monty raises `TimeoutError`. No mutation pattern can panic or corrupt either
     engine.
-- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^` and their method
+- **Set algebra under a mutating `__eq__`** — `-`, `&`, `^`, in-place intersection (`&=`), and their method
     forms walk one of the two sets while user `__eq__` code can run. Monty
     raises `RuntimeError: Set changed size during iteration` if that code adds
     or removes an element from the set being walked, where CPython carries on
@@ -102,6 +102,8 @@ These raise `NameError`:
     `s.isdisjoint(t)` is `False` in Monty, which keeps the comparison that
     matched, and `True` in CPython, which restarts the probe and finds the set
     empty.
+    In-place `|=`, `-=`, `^=`, and `&=` also snapshot their right operand before mutation.
+    Changes to that operand made by user `__eq__` are not observed.
 - **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
     `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
     live, resize-checked walk that calls `__hash__` on each one. CPython probes

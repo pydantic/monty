@@ -213,7 +213,7 @@ pub enum Session {
 
 impl Session {
     /// The session heap and its interns, or `None` for a one-shot run that has completed.
-    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
+    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
         match self {
             Self::Idle(repl) => Some(repl.heap_and_interns()),
             Self::Suspended(progress) => Some(progress.heap_and_interns()),
@@ -413,7 +413,7 @@ mod tests {
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0x468f_0027_b6a8_e585,
+            0x0220_cd93_e9c8_4033,
             "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
         );

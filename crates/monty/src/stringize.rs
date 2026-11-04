@@ -1,11 +1,11 @@
 //! Rendering a ruff AST expression back to source text, the way CPython's
 //! PEP 563 stringizer does.
 //!
-//! The inverse of [`parse`](crate::parse). Class annotations are the only caller
-//! today (they are stored stringized, not evaluated — see
-//! `limitations/typing.md`), but the contract is "match CPython's stringizer", so
-//! any future stringization belongs here. Unparsing rather than slicing the
-//! source is what makes `x: dict[str,int]` yield `'dict[str, int]'` on both.
+//! The inverse of [`parse`](crate::parse). Annotations under
+//! `from __future__ import annotations` are the only caller today, but the
+//! contract is "match CPython's stringizer", so any future stringization belongs
+//! here. Unparsing rather than slicing the source is what makes
+//! `x: dict[str,int]` yield `'dict[str, int]'` on both.
 
 use ruff_python_ast::{
     self as ast, AtomicNodeIndex, Expr as AstExpr,
@@ -15,16 +15,6 @@ use ruff_python_ast::{
 };
 use ruff_python_codegen::{Generator, Indentation};
 use ruff_source_file::LineEnding;
-
-/// The value of `annotation` when it is a plain string literal (`'Foo'`, or an
-/// implicit concatenation), which `Format.STRING` reports unquoted.
-pub(crate) fn string_literal_text(annotation: &str) -> Option<String> {
-    let parsed = ruff_python_parser::parse_expression(annotation).ok()?;
-    match parsed.into_syntax().body.as_ref() {
-        AstExpr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
-        _ => None,
-    }
-}
 
 /// Renders `annotation` to the text CPython's PEP 563 stringizer would produce.
 ///

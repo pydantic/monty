@@ -3,7 +3,7 @@
 use std::{hint::black_box, io, thread, time::Duration};
 
 use cpu_time::ThreadTime;
-use monty_proto::{FrameReader, WireFunctionCall, os_call_to_proto, pb, write_frame};
+use monty_proto::{FrameReader, PROTOCOL_VERSION, WireFunctionCall, os_call_to_proto, pb, write_frame};
 use monty_types::{CallArgs, IMPORT_STUBS_CALL_ID, MontyObject, OsFunctionCall, SourceRange};
 
 fn main() {
@@ -15,7 +15,7 @@ fn main() {
         let clock = match &kind {
             pb::parent_request::Kind::Configure(config) if config.script_name == "legacy" => {
                 assert_eq!(
-                    config.protocol_version, 6,
+                    config.protocol_version, PROTOCOL_VERSION,
                     "legacy worker rejects newer protocol versions"
                 );
                 None

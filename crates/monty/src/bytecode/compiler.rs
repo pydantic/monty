@@ -29,7 +29,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, StringId},
+    intern::{CompileInterns, FunctionId, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -926,7 +926,13 @@ impl<'a, 'i> Compiler<'a, 'i> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the body recursively.
+        // 1. Compile the `__annotate__` function (PEP 649) and the body
+        //    recursively; nested functions are pushed first, so they get lower ids.
+        let annotate = func_def
+            .annotate
+            .as_deref()
+            .map(|annotate| self.compile_annotate(annotate))
+            .transpose()?;
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
         let body_code = compile_body(self.interns, namespace_size)?;
 
@@ -944,7 +950,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             })
             .collect();
         let function = Function::new(
-            func_def.name,
+            self.function_name(func_def),
             func_def.signature.clone(),
             func_def.namespace_size,
             enclosing_slot_metadata,
@@ -955,7 +961,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_def.is_async,
             body_code,
         )
-        .with_annotations(func_def.annotations.clone().into_boxed_slice());
+        .with_annotate(annotate);
         let func_id = self.interns.push_function(function);
 
         // 3. Compile and push default values (evaluated at definition time)
@@ -991,6 +997,46 @@ impl<'a, 'i> Compiler<'a, 'i> {
         Ok(())
     }
 
+    /// Compiles a `def`'s `__annotate__(format)` body and interns it, returning
+    /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
+    /// function value is built on `f.__annotate__` access from the owner's
+    /// globals, since it has no defaults or captured cells of its own.
+    fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
+        debug_assert!(
+            annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
+            "an annotate function captures nothing and has no defaults"
+        );
+        let namespace_size = check_namespace_size_u16(annotate.namespace_size, "annotate function")?;
+        let code = Self::compile_function_body(annotate, self.interns, namespace_size, self.flags)?;
+        let function = Function::new(
+            self.function_name(annotate),
+            annotate.signature.clone(),
+            annotate.namespace_size,
+            Vec::new(),
+            annotate.free_var_slots.clone(),
+            annotate.cell_var_slots.clone(),
+            annotate.cell_param_indices.clone(),
+            0,
+            false,
+            code,
+        );
+        let func_id = self.interns.push_function(function);
+        Ok(FunctionId::from_index(check_function_count_u16(
+            func_id,
+            annotate.name.position,
+        )?))
+    }
+
+    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
+    /// called that, as in CPython, whatever a class body binds it as.
+    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
+        let mut name = func_def.name;
+        if func_def.is_annotate {
+            name.name_id = self.interns.intern_static(StaticStrings::DunderAnnotate);
+        }
+        name
+    }
+
     /// Compiles a `class Foo: ...` definition.
     ///
     /// Modelled on CPython's class-body code object: the class body is compiled
@@ -1018,7 +1064,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         }
 
         if keywords.is_empty() {
-            // Fast path: Arguments for type.__build_class__(name, bases, dict, future_annotations):
+            // Fast path: Arguments for type(name, bases, dict):
             let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
             self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
 
@@ -1034,18 +1080,15 @@ impl<'a, 'i> Compiler<'a, 'i> {
             self.code.set_location(position, None);
             self.code.emit_u8(Opcode::CallFunction, 0)?;
 
-            let future_const = self.code.add_const(Value::Bool(self.flags.future_annotations))?;
-            self.code.emit_u16(Opcode::LoadConst, future_const)?;
-
-            // Call the 4-arg type.__build_class__() builtin, which constructs the Class object.
+            // Call the 3-arg type() builtin, which constructs the Class object.
             self.code.set_location(position, None);
-            self.code.emit_call_builtin_function(BuiltinsFunctions::BuildClass as u8, 4)?;
+            self.code.emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         } else {
-            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, pos_3, kw_val_0, kw_val_1, ...]
-            let build_class_const = self
+            // Stack layout for CallFunctionKw: [callable, pos_0, pos_1, pos_2, kw_val_0, kw_val_1, ...]
+            let type_const = self
                 .code
-                .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::BuildClass)))?;
-            self.code.emit_u16(Opcode::LoadConst, build_class_const)?;
+                .add_const(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type)))?;
+            self.code.emit_u16(Opcode::LoadConst, type_const)?;
 
             let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
             self.code.emit_u16(Opcode::LoadConst, class_name_const)?;
@@ -1068,12 +1111,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 .map_err(|_| CompileError::new("too many keyword arguments in class definition", position))?;
             self.code.emit_u8(Opcode::SinkTop, kw_count)?;
 
-            let future_const = self.code.add_const(Value::Bool(self.flags.future_annotations))?;
-            self.code.emit_u16(Opcode::LoadConst, future_const)?;
-            self.code.emit_u8(Opcode::SinkTop, kw_count)?;
-
             self.code.set_location(position, None);
-            self.code.emit_call_function_kw(4, &kwname_ids)?;
+            self.code.emit_call_function_kw(3, &kwname_ids)?;
         }
 
         // Each call consumes the callable below the current value: `deco(value)`.
@@ -1139,8 +1178,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
         Ok(())
     }
 
-    /// Compiles a class body, mirroring
-    /// [`compile_function_body`](Self::compile_function_body) but replacing the
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
     /// implicit `LoadNone; ReturnValue` tail with code that builds the namespace

@@ -62,6 +62,18 @@ pub(crate) enum FrameNamespace {
         #[serde(default)]
         missing: MissingNames,
     },
+    /// A frame running an `__annotate__` function (PEP 649): names resolve by
+    /// name through `classdict`, a copy of the class namespace for a class's
+    /// annotations, then `globals` — CPython's `LOAD_FROM_DICT_OR_GLOBALS` —
+    /// with `missing` supplying CPython's "fake globals" for `FORWARDREF` and `STRING`.
+    Annotate {
+        /// Where the function's globals live.
+        globals: FrameGlobals,
+        /// The class namespace consulted first, for a class's `__annotate__`.
+        classdict: Option<HeapId>,
+        /// What a name nothing resolves loads as.
+        missing: MissingNames,
+    },
 }
 
 /// What a snippet does with a name nothing resolves.
@@ -82,6 +94,9 @@ pub(crate) enum MissingNames {
         /// annotation raised, which runs it against empty globals.
         every_name: bool,
     },
+    /// Raise `NameError` without asking the host: the plain evaluation
+    /// `annotationlib`'s `FORWARDREF` tries first, which must never suspend.
+    NameError,
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for MissingNames {
@@ -100,9 +115,17 @@ impl FrameNamespace {
             Self::Snippet {
                 globals: FrameGlobals::Slots,
                 ..
+            }
+            | Self::Annotate {
+                globals: FrameGlobals::Slots,
+                ..
             } => None,
             Self::Function { globals }
             | Self::Snippet {
+                globals: FrameGlobals::Dict(globals),
+                ..
+            }
+            | Self::Annotate {
                 globals: FrameGlobals::Dict(globals),
                 ..
             } => Some(*globals),
@@ -129,6 +152,11 @@ impl<C: ContainsHeap> DropWithContext<C> for Box<FrameNamespace> {
                 locals,
                 missing,
                 ..
+            }
+            | FrameNamespace::Annotate {
+                globals,
+                classdict: locals,
+                missing,
             } => {
                 if let FrameGlobals::Dict(globals) = globals {
                     ctx.heap_mut().dec_ref(globals);
@@ -187,6 +215,18 @@ impl<'h> VM<'h> {
                     };
                     self.heap.inc_ref(dict);
                     (FrameGlobals::Dict(dict), locals)
+                }
+                // An annotation's `eval()` sees the annotate function's globals and locals.
+                Some(FrameNamespace::Annotate { globals, .. }) => {
+                    let globals = *globals;
+                    let locals = match locals {
+                        Some(dict) => Some(dict),
+                        None => Some(self.snapshot_locals()?),
+                    };
+                    if let FrameGlobals::Dict(dict) = globals {
+                        self.heap.inc_ref(dict);
+                    }
+                    (globals, locals)
                 }
                 None => {
                     let locals = match (locals, self.namespace_frame().function_id) {
@@ -271,7 +311,7 @@ impl<'h> VM<'h> {
                 locals: None,
                 ..
             }) => self.snapshot_globals()?,
-            Some(FrameNamespace::Function { .. }) => self.snapshot_locals()?,
+            Some(FrameNamespace::Function { .. } | FrameNamespace::Annotate { .. }) => self.snapshot_locals()?,
             None if self.namespace_frame().function_id.is_none() => self.snapshot_globals()?,
             None => self.snapshot_locals()?,
         };
@@ -305,6 +345,7 @@ impl<'h> VM<'h> {
     pub(super) fn load_name(&mut self, slot: u16, name_id: StringId, flags: u8) -> RunResult<Option<FrameExit>> {
         let (globals, locals) = self.frame_namespace();
         let stringify = self.frame_stringifies_names();
+        let without_host = self.frame_names_without_host();
         if stringify == Some(true) {
             let stringifier = self.stringifier(name_id);
             self.push(stringifier);
@@ -327,16 +368,19 @@ impl<'h> VM<'h> {
             }
         }
         match globals {
-            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 && stringify.is_none() => {
+            FrameGlobals::Slots if flags & NAME_CALLABLE != 0 && stringify.is_none() && !without_host => {
                 self.load_global_callable(slot, name_id);
                 Ok(None)
             }
-            // An unresolved name stringifies rather than asking the host.
+            // An unresolved name stringifies, or raises, rather than asking the host.
             FrameGlobals::Slots => match self.load_global(slot)? {
                 Some(FrameExit::NameLookup { .. }) if stringify.is_some() => {
                     let stringifier = self.stringifier(name_id);
                     self.push(stringifier);
                     Ok(None)
+                }
+                Some(FrameExit::NameLookup { .. }) if without_host => {
+                    Err(ExcType::name_error(self.interns.get_str(name_id)).into())
                 }
                 exit => Ok(exit),
             },
@@ -366,21 +410,51 @@ impl<'h> VM<'h> {
     /// it stringifies every name (see [`MissingNames::ForwardRef`]).
     fn frame_stringifies_names(&self) -> Option<bool> {
         match self.current_frame.namespace.as_deref() {
-            Some(FrameNamespace::Snippet {
-                missing: MissingNames::ForwardRef { every_name, .. },
-                ..
-            }) => Some(*every_name),
+            Some(
+                FrameNamespace::Snippet {
+                    missing: MissingNames::ForwardRef { every_name, .. },
+                    ..
+                }
+                | FrameNamespace::Annotate {
+                    missing: MissingNames::ForwardRef { every_name, .. },
+                    ..
+                },
+            ) => Some(*every_name),
             _ => None,
         }
     }
 
+    /// Whether the current frame raises `NameError` for a name the host would
+    /// otherwise be asked for (see [`MissingNames::NameError`]).
+    fn frame_names_without_host(&self) -> bool {
+        matches!(
+            self.current_frame.namespace.as_deref(),
+            Some(
+                FrameNamespace::Snippet {
+                    missing: MissingNames::NameError,
+                    ..
+                } | FrameNamespace::Annotate {
+                    missing: MissingNames::NameError,
+                    ..
+                }
+            )
+        )
+    }
+
     /// A new `ForwardRef` stringifier for `name_id`, owned by the current frame's annotation owner.
     fn stringifier(&mut self, name_id: StringId) -> Value {
-        let Some(FrameNamespace::Snippet {
-            globals,
-            missing: MissingNames::ForwardRef { owner, is_class, .. },
-            ..
-        }) = self.current_frame.namespace.as_deref()
+        let Some(
+            FrameNamespace::Snippet {
+                globals,
+                missing: MissingNames::ForwardRef { owner, is_class, .. },
+                ..
+            }
+            | FrameNamespace::Annotate {
+                globals,
+                missing: MissingNames::ForwardRef { owner, is_class, .. },
+                ..
+            },
+        ) = self.current_frame.namespace.as_deref()
         else {
             unreachable!("stringifier requested outside a FORWARDREF evaluation")
         };
@@ -405,10 +479,15 @@ impl<'h> VM<'h> {
             .any(|frame| {
                 matches!(
                     frame.namespace.as_deref(),
-                    Some(FrameNamespace::Snippet {
-                        missing: MissingNames::ForwardRef { .. },
-                        ..
-                    })
+                    Some(
+                        FrameNamespace::Snippet {
+                            missing: MissingNames::ForwardRef { .. },
+                            ..
+                        } | FrameNamespace::Annotate {
+                            missing: MissingNames::ForwardRef { .. },
+                            ..
+                        }
+                    )
                 )
             })
     }
@@ -523,6 +602,7 @@ impl<'h> VM<'h> {
             None => (FrameGlobals::Slots, None),
             Some(FrameNamespace::Function { globals }) => (FrameGlobals::Dict(*globals), None),
             Some(FrameNamespace::Snippet { globals, locals, .. }) => (*globals, *locals),
+            Some(FrameNamespace::Annotate { globals, classdict, .. }) => (*globals, *classdict),
         }
     }
 

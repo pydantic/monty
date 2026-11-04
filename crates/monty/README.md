@@ -158,6 +158,8 @@ answer is the call's result, and running without a host gives `{}`.
   Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
+  A loaded dump keeps the policy it was taken under until the host calls `MontyRepl::set_os_policy` or
+  `ReplProgress::set_os_policy`; the worker applies the restoring checkout's policy this way.
 
 ## Monty crates
 

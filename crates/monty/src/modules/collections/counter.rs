@@ -17,9 +17,11 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     py_value::PyValue,
     resource_checks::check_repeat_size,
+    sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
     types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
     value::{VALUE_SIZE, Value},
 };
@@ -89,24 +91,6 @@ fn count_holds(lhs: &Value, rhs: &Value, op: CountCmp, vm: &mut VM<'_>) -> RunRe
         CmpOrder::Unordered => Ok(false),
         CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
             op.symbol(),
-            &lhs.py_type_name(vm),
-            &rhs.py_type_name(vm),
-        )),
-    }
-}
-
-/// Orders two counts for *sorting* (`most_common`, Counter repr), raising the
-/// sort's `<` `TypeError` when they are incomparable.
-///
-/// Unlike the algebra's [`count_holds`], a `NaN` pair is treated as **equal**
-/// here: Python's `sorted`/`heapq` never raise on `NaN`, they just leave it
-/// wherever the (ill-defined for `NaN`) ordering happens to place it.
-fn count_sort_cmp(lhs: &Value, rhs: &Value, vm: &mut VM<'_>) -> RunResult<Ordering> {
-    match lhs.py_cmp(rhs, vm)? {
-        CmpOrder::Ordered(ordering) => Ok(ordering),
-        CmpOrder::Unordered => Ok(Ordering::Equal),
-        CmpOrder::Incomparable => Err(ExcType::type_error_ordering(
-            "<",
             &lhs.py_type_name(vm),
             &rhs.py_type_name(vm),
         )),
@@ -333,34 +317,21 @@ pub(crate) fn counter_total<'h>(counter: &HeapObjectRead<'h, Dict>, vm: &mut VM<
 }
 
 /// Orders entry indices for `most_common` / Counter repr: count descending,
-/// ties in insertion order (the sort is stable).
+/// ties in insertion order, as CPython's `sorted(items, key=count, reverse=True)`.
 ///
 /// Takes the counts by value because the comparison needs `&mut VM` (big ints
 /// live on the heap), which callers cannot hold alongside a `Dict` borrow.
 /// Consumes `counts`.
 pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    defer_drop!(counts, vm);
+    sort_counts(counts, vm)
+}
+
+/// [`counter_order`] over borrowed counts.
+fn sort_counts(counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
     let mut order: Vec<usize> = (0..counts.len()).collect();
-    // `sort_by` needs an infallible comparator, so a comparison error is stashed
-    // and reported once the sort finishes; the ordering it produces in that case
-    // is discarded.
-    let mut failure = None;
-    order.sort_by(|&a, &b| {
-        if failure.is_some() {
-            return Ordering::Equal;
-        }
-        match count_sort_cmp(&counts[b], &counts[a], vm) {
-            Ok(ordering) => ordering,
-            Err(e) => {
-                failure = Some(e);
-                Ordering::Equal
-            }
-        }
-    });
-    counts.drop_with(vm);
-    match failure {
-        Some(e) => Err(e),
-        None => Ok(order),
-    }
+    sort_indices(&mut order, counts, true, vm)?;
+    Ok(order)
 }
 
 /// `Counter.most_common([n])` — a list of `(element, count)` tuples ordered by
@@ -392,16 +363,19 @@ pub(crate) fn counter_most_common<'h>(
     // the snapshot. CPython's `sorted(self.items(), ...)` snapshots the same way.
     let pairs = counter.clone_all_pairs(vm)?;
     defer_drop!(pairs, vm);
-    let counts = pairs.iter().map(|(_, count)| count.clone_with_heap(vm.heap)).collect();
-    let order = counter_order(counts, vm)?;
-    let take = limit.unwrap_or(order.len()).min(order.len());
+    let counts: Vec<Value> = pairs.iter().map(|(_, count)| count.clone_with_heap(vm.heap)).collect();
+    defer_drop!(counts, vm);
+    let order = match limit {
+        None => sort_counts(counts, vm)?,
+        Some(n) => nlargest(n, counts, vm)?,
+    };
     // Below the length, CPython's `heapq.nlargest` compares while iterating the
     // live dict, so a comparison that resized it raises there.
-    if take < pairs.len() && counter.get(vm.heap).len() != pairs.len() {
+    if order.len() < pairs.len() && counter.get(vm.heap).len() != pairs.len() {
         return Err(ExcType::runtime_error_dict_changed_size());
     }
 
-    let items = order[..take]
+    let items = order
         .iter()
         .map(|&i| {
             let (key, count) = &pairs[i];
@@ -412,6 +386,133 @@ pub(crate) fn counter_most_common<'h>(
         })
         .collect();
     Ok(vm.heap.allocate_as(List::new(items)).into_value())
+}
+
+/// Indices of the `n` largest of `counts` (`n > 0`), largest first, picked as CPython's
+/// `heapq.nlargest(n, items, key=count)` picks them, making the same comparisons.
+///
+/// The comparisons matter when counts are not totally ordered (`NaN`, sets) or cannot be compared at all: the
+/// items chosen, their order and the error raised all follow from which pairs are compared, in which order.
+fn nlargest(n: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    if counts.is_empty() {
+        Ok(Vec::new())
+    } else if n == 1 {
+        // CPython's shortcut: `max()`, which keeps the first of equal counts.
+        let mut best = 0;
+        for i in 1..counts.len() {
+            vm.heap.tracker.check_time_every(i)?;
+            if vm.cmp_values(CmpOperator::Gt, &counts[i], &counts[best])? {
+                best = i;
+            }
+        }
+        Ok(vec![best])
+    } else if n >= counts.len() {
+        sort_counts(counts, vm)
+    } else {
+        nlargest_heap(n, counts, vm)
+    }
+}
+
+/// `heapq.nlargest`'s general case for `1 < n < len(counts)`: a min-heap of the best `n` so far.
+///
+/// CPython's heap holds `(count, order, item)` tuples, where `order` counts down from 0 so that, of equal counts,
+/// the item that entered the heap first ranks higher; tuple comparison never reaches `item`.
+fn nlargest_heap(n: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
+    let mut heap: Vec<HeapEntry> = (0..n).map(|i| HeapEntry { index: i, rank: i }).collect();
+    heapify(&mut heap, counts, vm)?;
+    let mut rank = n;
+    for (i, count) in counts.iter().enumerate().skip(n) {
+        vm.heap.tracker.check_time_every(i)?;
+        if py_lt(&counts[heap[0].index], count, vm)? {
+            heap[0] = HeapEntry { index: i, rank };
+            sift_up(&mut heap, 0, counts, vm)?;
+            rank += 1;
+        }
+    }
+    // CPython's `result.sort(reverse=True)`.
+    let mut ids: Vec<usize> = (0..heap.len()).collect();
+    sort_indices_by(&mut ids, true, vm, |a, b, vm| heap[a].lt(heap[b], counts, vm))?;
+    Ok(ids.into_iter().map(|id| heap[id].index).collect())
+}
+
+/// One `(count, order, item)` tuple of [`nlargest_heap`], naming the item by its index into the counts.
+#[derive(Clone, Copy)]
+struct HeapEntry {
+    index: usize,
+    /// When the item entered the heap, `0, 1, 2, ...`: CPython's `order` negated.
+    rank: usize,
+}
+
+impl HeapEntry {
+    /// Tuple `<`: the counts decide unless they are equal, then the later entry is the lesser.
+    fn lt(self, other: Self, counts: &[Value], vm: &mut VM<'_>) -> RunResult<bool> {
+        let (a, b) = (&counts[self.index], &counts[other.index]);
+        if py_eq_item(a, b, vm)? {
+            Ok(self.rank > other.rank)
+        } else {
+            py_lt(a, b, vm)
+        }
+    }
+}
+
+/// A port of CPython's `heapify` (`Modules/_heapqmodule.c`), including the cache-friendly order it uses above 2500
+/// entries, since the order of comparisons decides the result for counts that are not totally ordered.
+fn heapify(heap: &mut [HeapEntry], counts: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    let n = heap.len();
+    if n > 2500 {
+        let m = n >> 1; // first childless node
+        let leftmost = keep_top_bit(m + 1) - 1; // leftmost node in the row of `m`
+        let mhalf = m >> 1; // parent of the first childless node
+        for i in (mhalf..leftmost).rev().chain((leftmost..m).rev()) {
+            let mut j = i;
+            loop {
+                sift_up(heap, j, counts, vm)?;
+                if j & 1 == 0 {
+                    break;
+                }
+                j >>= 1;
+            }
+        }
+    } else {
+        for i in (0..n >> 1).rev() {
+            sift_up(heap, i, counts, vm)?;
+        }
+    }
+    Ok(())
+}
+
+/// `n` with every bit below its highest set bit cleared.
+fn keep_top_bit(n: usize) -> usize {
+    if n == 0 { 0 } else { 1 << n.ilog2() }
+}
+
+/// CPython's `siftup`: moves the smaller child up from `pos` until reaching a leaf, then sifts the entry that was
+/// at `pos` back down into place.
+fn sift_up(heap: &mut [HeapEntry], mut pos: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    let start = pos;
+    let limit = heap.len() >> 1;
+    while pos < limit {
+        let mut child = 2 * pos + 1;
+        if child + 1 < heap.len() && !heap[child].lt(heap[child + 1], counts, vm)? {
+            child += 1;
+        }
+        heap.swap(child, pos);
+        pos = child;
+    }
+    sift_down(heap, start, pos, counts, vm)
+}
+
+/// CPython's `siftdown`: moves the entry at `pos` towards `start` while it is less than its parent.
+fn sift_down(heap: &mut [HeapEntry], start: usize, mut pos: usize, counts: &[Value], vm: &mut VM<'_>) -> RunResult<()> {
+    while pos > start {
+        let parent = (pos - 1) >> 1;
+        if !heap[pos].lt(heap[parent], counts, vm)? {
+            break;
+        }
+        heap.swap(pos, parent);
+        pos = parent;
+    }
+    Ok(())
 }
 
 /// `Counter.elements()` — a list repeating each element by its count, skipping

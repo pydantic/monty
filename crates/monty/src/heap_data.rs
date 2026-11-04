@@ -10,6 +10,7 @@ use std::{
 use monty_types::ExcType;
 
 use crate::{
+    annotations,
     args::ArgValues,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
@@ -562,6 +563,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
         let defaults = closure.defaults.iter().map(|v| v.clone_with_heap(vm)).collect();
         call_def(func_id, &cells, defaults, globals, args, vm)
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let closure = self.get(vm.heap);
+        let (func_id, globals) = (closure.func_id, closure.globals);
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let closure = self.get(vm.heap);
+        let (func_id, globals) = (closure.func_id, closure.globals);
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
@@ -602,6 +616,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
         let (func_id, globals) = (function.func_id, function.globals);
         let defaults = function.defaults.iter().map(|v| v.clone_with_heap(vm)).collect();
         call_def(func_id, &[], defaults, globals, args, vm)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let function = self.get(vm.heap);
+        let (func_id, globals) = (function.func_id, function.globals);
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let function = self.get(vm.heap);
+        let (func_id, globals) = (function.func_id, function.globals);
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
     }
 }
 
@@ -901,6 +928,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
 
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         heap_read_output_py_trait_forward!(self, |value| value.py_iadd_impl(other, vm), else Ok(false))
+    }
+
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_imul_impl(other, vm), else Ok(false))
+    }
+
+    fn py_ixor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_ixor_impl(other, vm), else Ok(false))
     }
 
     fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {

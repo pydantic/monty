@@ -3036,6 +3036,20 @@ fn repl_failed_exec_locals_snapshot_releases_globals() {
     }
 }
 
+/// A resource limit hit by a user `__repr__` while a host-driven call's return
+/// value is exported fails the call, rather than becoming a repr string.
+#[test]
+fn repl_call_function_return_export_propagates_memory_error() {
+    let (mut repl, _) = init_repl(
+        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ndef make():\n    return functools.partial(print, R())",
+    );
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(1024 * 1024));
+    let error = repl.call_function("make", vec![], PrintWriter::Disabled).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    *repl.tracker_mut() = ResourceTracker::default();
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
+}
+
 /// Rejected snippets retain diagnostic locations without committing their source or intern IDs.
 #[test]
 fn repl_rejected_snippet_locations() {

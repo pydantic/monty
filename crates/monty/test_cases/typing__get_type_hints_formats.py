@@ -282,3 +282,65 @@ class NoTypeCheck:
 
 # `__no_type_check__` is read before the format
 assert get_type_hints(NoTypeCheck, format=7) == {}
+
+
+# === A hand-written __annotate__ is asked for the format first ===
+def custom_annotate(format):
+    if format == Format.STRING:
+        return {'a': 'custom'}
+    return {'a': int}
+
+
+Custom = type('Custom', (), {'__annotate__': custom_annotate})
+assert Custom.__annotations__ == {'a': int}
+assert get_annotations(Custom, format=Format.STRING) == {'a': 'custom'}
+assert get_annotations(Custom, format=Format.FORWARDREF) == {'a': int}
+assert get_type_hints(Custom, format=Format.STRING) == {'a': 'custom'}
+
+
+# One that only knows VALUE is stringized from its values, as the compiler's is
+def value_only(format):
+    if format > Format.VALUE:
+        raise NotImplementedError
+    return {'a': int, 'b': 'Later', 'c': None}
+
+
+ValueOnly = type('ValueOnly', (), {'__annotate__': value_only})
+assert get_annotations(ValueOnly, format=Format.STRING) == {'a': 'int', 'b': 'Later', 'c': 'None'}
+assert get_annotations(ValueOnly, format=Format.FORWARDREF) == {'a': int, 'b': 'Later', 'c': None}
+
+
+# === FORWARDREF leaves a class uncached until a plain evaluation succeeds ===
+class Nested:
+    x: list[Missing]
+
+
+fwd = get_annotations(Nested, format=Format.FORWARDREF)
+assert fwd['x'].__args__[0].__forward_arg__ == 'Missing'
+
+
+class Missing:
+    pass
+
+
+assert Nested.__annotations__ == {'x': list[Missing]}
+assert get_annotations(Nested, format=Format.FORWARDREF) == {'x': list[Missing]}
+
+
+# === A hand-written __annotate__ returning a non-dict ===
+def not_a_dict(format):
+    return [1]
+
+
+NotADict = type('NotADict', (), {'__annotate__': not_a_dict})
+for fmt in [Format.FORWARDREF, Format.STRING]:
+    try:
+        get_annotations(NotADict, format=fmt)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == f'{NotADict!r}.__annotate__ returned a non-dict'
+try:
+    NotADict.__annotations__
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "__annotate__ returned non-dict of type 'list'"
