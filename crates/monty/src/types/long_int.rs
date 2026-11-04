@@ -32,7 +32,6 @@ use crate::{
     heap::{Heap, HeapData, HeapObjectRead},
     identity::Identity,
     intern::LongIntId,
-    py_value::PyValue,
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{
         LazyHeapSet, PyTrait, Type,
@@ -170,16 +169,6 @@ impl<'h> PyInt<'h> {
             |value| usize::try_from(value.max(0)).unwrap_or(usize::MAX),
             |value| if value.is_negative() { 0 } else { usize::MAX },
         )
-    }
-
-    /// Resolves a sequence repetition count, treating negatives as zero.
-    pub(crate) fn repeat_count(&self, vm: &VM<'h>) -> RunResult<usize> {
-        self.with_value(
-            vm,
-            |value| usize::try_from(value.max(0)).ok(),
-            |value| if value.is_negative() { Some(0) } else { value.to_usize() },
-        )
-        .ok_or_else(|| ExcType::overflow_index_sized_int().into())
     }
 
     /// Runs size-specific integer operations without materializing or cloning a BigInt.
@@ -635,15 +624,6 @@ impl LongInt {
                 Ok(Self::new(BigInt::from(value) << shift).into_value(vm.heap))
             }
         }
-    }
-}
-
-/// Extracts a Python integer as a sequence repetition count.
-pub(crate) fn repeat_count(value: &Value, vm: &VM<'_>) -> RunResult<Option<usize>> {
-    match value.py_value(vm) {
-        PyValue::Int(value) => value.repeat_count(vm).map(Some),
-        PyValue::Bool(value) => Ok(Some(usize::from(value))),
-        _ => Ok(None),
     }
 }
 

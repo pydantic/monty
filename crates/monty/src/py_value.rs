@@ -156,6 +156,26 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Converts an integer or an object implementing `__index__` into a repetition count.
+    /// Returns `None` for unsupported operands; out-of-range counts raise `OverflowError`.
+    /// Negative counts within range become zero.
+    pub(crate) fn repeat_count(self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+        let count = self.py_index_impl(vm)?;
+        // An integer may return itself; release its reader before cleaning up the result.
+        drop(self);
+        let Some(count) = count else {
+            return Ok(None);
+        };
+        defer_drop!(count, vm);
+
+        // Check overflow before clamping: even an oversized negative count must raise.
+        let count = count.as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())?;
+        // In-range negatives mean no repetitions; check that the result fits the host's usize.
+        Ok(Some(
+            usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
+        ))
+    }
+
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
     pub(crate) fn subscript(self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {

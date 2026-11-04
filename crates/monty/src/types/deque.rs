@@ -17,7 +17,6 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
-        long_int::repeat_count,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -583,7 +582,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// `deque * int` — repetition that keeps the deque's `maxlen`, so a bounded
     /// deque builds only its surviving suffix rather than the full product.
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
@@ -597,7 +596,44 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect()
         };
         let result = repeat_deque(source, maxlen, count, vm)?;
-        Ok(Some(result))
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Deque(result)))))
+    }
+
+    /// Repeats for integer or `__index__` counts, retaining identity and respecting `maxlen`.
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
+            return Ok(false);
+        };
+
+        // These no-op repetitions must not invalidate iterators already traversing this deque.
+        if count == 1 || self.get(vm.heap).items.is_empty() {
+            return Ok(true);
+        }
+
+        // `__index__` may mutate the deque; capture its contents and bound afterward.
+        let maxlen = self.get(vm.heap).maxlen;
+        let len = self.get(vm.heap).items.len();
+        vm.heap
+            .tracker
+            .check_allocation(if count == 0 { 0 } else { len.saturating_mul(VALUE_SIZE) })?;
+        let source = if count == 0 {
+            Vec::new()
+        } else {
+            self.get(vm.heap)
+                .iter()
+                .map(|item| item.clone_with_heap(vm.heap))
+                .collect()
+        };
+
+        // Build first so allocation/time failures preserve the original contents.
+        let mut result = repeat_deque(source, maxlen, count, vm)?;
+        // Advance the old mutation counter so iterators detect replacement at unchanged length.
+        result.state = self.get(vm.heap).state.wrapping_add(1);
+        let old = mem::replace(self.get_mut(vm.heap), result);
+        for item in old.items {
+            item.drop_with(vm);
+        }
+        Ok(true)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -1096,7 +1132,7 @@ fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, v
 /// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
 /// shortcut and materializes the full product (may hit resource limits, like
 /// CPython's `MemoryError`).
-fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Deque> {
     let len = source.len();
     // `source` is an owned copy of the deque's items; release it on every exit.
     defer_drop!(source, vm);
@@ -1133,7 +1169,7 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
     // no refcounts need releasing — `debug_assert` guards that invariant.
     let (new_deque, evicted) = Deque::new(result, maxlen);
     debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))))
+    Ok(new_deque)
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {

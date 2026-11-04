@@ -491,9 +491,62 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// For lists/deques, tries user `__radd__` before native extension from an iterable.
+    /// A reflected result replaces the value; native extension preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        // CPython tries numeric addition, including the RHS's `__radd__`, before
+        // sequence in-place concatenation. A user operand can therefore replace
+        // the assigned value even if it is iterable; aliases keep the original container.
+        // Only an absent or declined `__radd__` permits native extension; errors propagate.
+        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        if sequence
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && let Some(result) = other.py_radd_impl(self, vm)?
+        {
+            let old = mem::replace(self, result);
+            old.drop_with(vm);
+            return Ok(true);
+        }
+
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iadd_impl(other, vm)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
+    /// A reflected result replaces the value; native repetition preserves the container's identity.
+    fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
+        // sequence in-place repetition. A user operand can therefore replace
+        // the assigned value even if it implements `__index__`; aliases keep the original container.
+        // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
+        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        if sequence
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && let Some(result) = other.py_rmul_impl(self, vm)?
+        {
+            let old = mem::replace(self, result);
+            old.drop_with(vm);
+            return Ok(true);
+        }
+
+        if let Self::Ref(id) = self {
+            let handled = vm.heap.read(*id).py_imul_impl(other, vm)?;
+            if !handled && sequence && matches!(other.py_type_heap(vm.heap), Type::Instance(_)) {
+                // `__rmul__` already declined; binary dispatch would call it a second time.
+                return Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
+            }
+            Ok(handled)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_ixor_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_ixor_impl(other, vm)
         } else {
             Ok(false)
         }
@@ -1471,8 +1524,24 @@ impl Value {
         )
     }
 
-    /// Performs Python `*` with reflected-operation fallback.
+    /// Performs Python `*`, trying the left implementation then the right reflected implementation.
+    /// Same-class user instances skip the reflected retry. For a builtin sequence on the left
+    /// and a user instance on the right, `__rmul__` precedes `__index__`-based repetition.
+    /// Absent or declined methods allow fallback; exceptions propagate immediately.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if matches!(other, Self::Ref(_))
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && self.py_type_heap(vm.heap).has_sequence_repeat()
+        {
+            // Numeric reflected multiplication precedes the sequence's `__index__` conversion.
+            if let Some(result) = other.py_rmul_impl(self, vm)? {
+                return Ok(result);
+            }
+            return self
+                .py_mul_impl(other, vm)?
+                .ok_or_else(|| ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
+        }
+
         self.binary_op(
             other,
             vm,
