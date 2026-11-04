@@ -1116,7 +1116,8 @@ class AsyncMontyRemote:
         Arguments:
             url: `http://`/`https://` URL of the server — a relay, or any
                 server that bridges a stream to a worker. `ws://`/`wss://`
-                are read as those two.
+                are read as those two. An `https://` certificate is verified
+                against the operating system's trust store.
             max_processes: Cap on concurrent streams (defaults to the CPU
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before

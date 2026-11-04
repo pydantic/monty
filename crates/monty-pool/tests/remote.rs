@@ -393,6 +393,33 @@ async fn request_timeout_bounds_opening_the_stream() {
     silent.abort();
 }
 
+/// An `https://` server is verified against the operating system's trust
+/// store, not a root list bundled into the pool: a certificate the server
+/// signed itself is refused, and the checkout reports the dial failure.
+#[tokio::test]
+async fn an_untrusted_server_certificate_fails_the_dial() {
+    let server = MockServer::start_self_signed().await;
+    let url = server.url();
+    let pool = Pool::new(PoolConfig::remote(&url)).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("a self-signed certificate must not be trusted");
+    };
+    let PoolError::Spawn(message) = err else {
+        panic!("got {err:?}");
+    };
+    // Each platform's verifier words the refusal in its own way; tonic's chain
+    // then repeats the cause at every layer of the transport error.
+    let cause = if cfg!(target_vendor = "apple") {
+        "invalid peer certificate: Other(OtherError(\"“rcgen self signed cert” certificate is not trusted: -67843\"))"
+    } else {
+        "invalid peer certificate: UnknownIssuer"
+    };
+    assert_eq!(
+        message,
+        format!("{url}: UNAVAILABLE: {cause}: transport error: {cause}: {cause}")
+    );
+}
+
 /// A URL tonic cannot parse fails pool creation with the same `{url}: {err}`
 /// shape as every other dial failure — before any checkout, since the channel
 /// is built once for the pool.

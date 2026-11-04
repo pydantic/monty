@@ -23,6 +23,7 @@ use monty_proto::{
     MAX_FRAME_LEN,
     grpc::{BytesCodec, SESSION_PATH},
 };
+use rcgen::generate_simple_self_signed;
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
@@ -38,7 +39,7 @@ use tonic::{
     body::Body,
     metadata::MetadataMap,
     server::{Grpc, NamedService, StreamingService},
-    transport::Server,
+    transport::{Identity, Server, ServerTlsConfig},
 };
 use tower::Service;
 
@@ -62,6 +63,21 @@ pub struct MockServer {
 impl MockServer {
     /// Binds an ephemeral loopback port and serves the session RPC on it.
     pub async fn start() -> Self {
+        Self::start_with(None).await
+    }
+
+    /// Serves over TLS with a certificate it signed itself, which no trust
+    /// store knows: a pool that verifies certificates must refuse it. The
+    /// certificate names the address the pool dials, so only trust can fail.
+    pub async fn start_self_signed() -> Self {
+        let certified = generate_simple_self_signed(["127.0.0.1".to_owned()]).expect("self-signed certificate");
+        let identity = Identity::from_pem(certified.cert.pem(), certified.signing_key.serialize_pem());
+        Self::start_with(Some(ServerTlsConfig::new().identity(identity))).await
+    }
+
+    /// Binds an ephemeral loopback port and serves the session RPC on it,
+    /// over TLS when given a server identity.
+    async fn start_with(tls: Option<ServerTlsConfig>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
         let (tx, incoming) = mpsc::channel();
@@ -70,18 +86,23 @@ impl MockServer {
             incoming: tx,
             refuse: Arc::clone(&refuse),
         };
+        let scheme = if tls.is_some() { "https" } else { "http" };
+        let mut builder = Server::builder();
+        if let Some(tls) = tls {
+            builder = builder.tls_config(tls).expect("server TLS config");
+        }
         let (shutdown, signal) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let serve = Server::builder().add_service(service).serve_with_incoming_shutdown(
-                TcpListenerStream::new(listener),
-                async {
-                    let _ = signal.await;
-                },
-            );
+            let serve =
+                builder
+                    .add_service(service)
+                    .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                        let _ = signal.await;
+                    });
             let _ = serve.await;
         });
         Self {
-            url: format!("http://127.0.0.1:{port}"),
+            url: format!("{scheme}://127.0.0.1:{port}"),
             incoming,
             refuse,
             task,

@@ -93,8 +93,9 @@ export class MontyRemote {
 
   /**
    * Creates the pool. `url` is the server's `http://` or `https://` URL
-   * (`ws://` and `wss://` are read as those two). Nothing is dialed until
-   * the first checkout.
+   * (`ws://` and `wss://` are read as those two); an `https://` certificate
+   * is verified against the operating system's trust store. Nothing is
+   * dialed until the first checkout.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
     if (options.connectHeaders !== undefined && options.metadata !== undefined) {

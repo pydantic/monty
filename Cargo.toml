@@ -160,10 +160,18 @@ rustix = { version = "1.1", features = ["fs"] }
 nix = { version = "0.31", features = ["fs"] }
 cpu-time = "1.0"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
-# first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
+# first `https://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
 # tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# Server certificates are checked against the operating system's trust store
+# rather than a root list bundled at build time, so a root the OS has distrusted
+# is refused without a monty release. macOS (Security framework) and Windows
+# (CryptoAPI) also apply the OS's revocation data; Linux checks the chain against
+# the distro CA bundle through webpki, with no revocation checking.
+rustls-platform-verifier = "0.7"
+# Self-signed certificates for the pool's TLS test server.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
