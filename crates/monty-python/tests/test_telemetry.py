@@ -348,7 +348,7 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
 
 
 async def test_deferred_coroutine_keeps_future_resolution_telemetry():
-    """A stored awaitable still has a separate wait span and future-results record."""
+    """A stored awaitable starts without a call span, logging the start and its results separately."""
     install_telemetry()
 
     async def fetch() -> int:
@@ -359,19 +359,17 @@ async def test_deferred_coroutine_keeps_future_resolution_telemetry():
             assert await session.feed_run('pending = fetch()\nawait pending', external_lookup={'fetch': fetch}) == 42
 
     spans = _span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == [
-        'call {function_name}',
-        'resolve futures',
-        'run code',
-        'session {script_name}',
-    ]
-    call, waiting, _run, _session = spans
-    assert call.attributes is not None
-    assert call.attributes['return_value'] == f'future {call.attributes["call_id"]}'
-    [log] = _log_exporter.get_finished_logs()
-    assert log.log_record.body == 'future results'
+    assert [span.name for span in spans] == ['resolve futures', 'run code', 'session {script_name}']
+    waiting, run, _session = spans
+    started, results = _log_exporter.get_finished_logs()
+    assert started.log_record.body == 'start call fetch'
+    assert started.log_record.attributes is not None
+    assert started.log_record.attributes['function_name'] == 'fetch'
+    assert run.context is not None
+    assert started.log_record.span_id == run.context.span_id
+    assert results.log_record.body == 'future results'
     assert waiting.context is not None
-    assert log.log_record.span_id == waiting.context.span_id
+    assert results.log_record.span_id == waiting.context.span_id
 
 
 @pytest.mark.parametrize('kind', ['function', 'os', 'name', 'future'])

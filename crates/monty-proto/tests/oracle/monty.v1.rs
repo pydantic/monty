@@ -851,8 +851,8 @@ pub struct Configure {
     pub execution_clock: ::core::option::Option<i32>,
     /// The parent accepts `StartedCalls`, so calls to async host functions
     /// (`Function.is_async`, `Feed.async_functions`) may start without
-    /// suspending. Absent or false, the child suspends with `FunctionCall` for
-    /// them as for any call. A child that predates the field ignores it, so no
+    /// suspending in a feed that sets `Feed.start_calls`. Absent or false, the
+    /// child suspends with `FunctionCall` for them as for any call. A child that predates the field ignores it, so no
     /// protocol version change is needed. A forwarder that cannot pass
     /// `StartedCalls` on must clear it before forwarding.
     #[prost(bool, tag = "15")]
@@ -881,9 +881,14 @@ pub struct Feed {
     /// Names of host functions whose calls in this feed start without waiting,
     /// as for `Function.is_async`. Covers a call of a bare name the parent never
     /// supplied a value for, which reaches the parent only as a `FunctionCall`
-    /// by name. Ignored unless `Configure.started_calls` is set.
+    /// by name. Ignored unless `start_calls` is set.
     #[prost(string, repeated, tag = "6")]
     pub async_functions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Calls to async host functions in this feed start without suspending
+    /// (see `Configure.started_calls`, which must also be set). False makes them
+    /// suspend like any call, for a parent that answers every call itself.
+    #[prost(bool, tag = "7")]
+    pub start_calls: bool,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,

@@ -73,8 +73,8 @@ const data = await session.feedRun('await fetch_data()', {
 console.log(data) // data
 ```
 
-Wrapping a host function in `asyncFunction()` lets the worker start its calls without waiting for the host, so a
-`gather` over many calls costs one round trip; see [starting calls without
+The worker starts calls to an `async` host function without waiting for the host when the sandbox does not await
+them at once, so a `gather` over many calls costs one round trip; see [starting calls without
 waiting](../host-functions.md#starting-calls-without-waiting).
 
 Keyword arguments from the sandbox arrive as a trailing object on the call.

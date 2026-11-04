@@ -28,6 +28,7 @@ fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
+        start_calls: false,
     }));
     let (bytes, _) = dispatch_frame(child, &request);
     let (_, event) = split_turn(&bytes);
@@ -278,6 +279,7 @@ fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, p
         skip_type_check: false,
         cwd: cwd.to_owned(),
         async_functions: Vec::new().into(),
+        start_calls: false,
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -422,6 +424,7 @@ fn inputs_are_injected() {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
+        start_calls: false,
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -671,6 +674,7 @@ fn turn_events_carry_the_suspension_budget() {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
+        start_calls: false,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     let events = decode_full_events(&bytes);
@@ -843,6 +847,7 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
         skip_type_check: true,
         cwd: String::new(),
         async_functions: Vec::new().into(),
+        start_calls: false,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_import(split_turn(&bytes).1), "tools");
@@ -1200,6 +1205,7 @@ fn feed_inputs(child: &mut Child, code: &str, inputs: Vec<(&str, MontyObject)>) 
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
+        start_calls: true,
     }));
     decode_events(&dispatch_frame(child, &request).0)
 }
@@ -1357,6 +1363,7 @@ fn feed_async_functions_cover_bare_calls() {
         code: "a = fetch(1)\nb = fetch(2)\nsync_call()".to_owned(),
         cwd: "/".to_owned(),
         async_functions: vec!["fetch".to_owned()].into(),
+        start_calls: true,
         ..pb::Feed::default()
     }));
     let events = decode_events(&dispatch_frame(&mut child, &request).0);
@@ -1371,6 +1378,46 @@ fn feed_async_functions_cover_bare_calls() {
         panic!("expected the sync call to suspend, got {events:?}")
     };
     assert_eq!(call.function_name, "sync_call");
+}
+
+/// A call awaited at once with nothing else to run gains nothing from starting,
+/// so it suspends for the parent to answer eagerly: one suspension, not two.
+#[test]
+fn immediately_awaited_async_calls_suspend() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let events = feed_inputs(
+        &mut child,
+        "await f(1)",
+        vec![("f", MontyObject::async_function("f", None))],
+    );
+    assert_eq!(started_calls(&events), vec![]);
+    let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
+        panic!("expected the awaited call to suspend, got {events:?}")
+    };
+    assert_eq!(call.function_name, "f");
+    assert!(call.allow_eager_await);
+}
+
+/// A feed without `start_calls`, as `feed_start` sends, suspends at every call
+/// to an async host function so each one reaches the parent's snapshot.
+#[test]
+fn feeds_without_start_calls_suspend_async_calls() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: "a = fetch(1)\nawait a".to_owned(),
+        cwd: "/".to_owned(),
+        async_functions: vec!["fetch".to_owned()].into(),
+        start_calls: false,
+        ..pb::Feed::default()
+    }));
+    let events = decode_events(&dispatch_frame(&mut child, &request).0);
+    assert_eq!(started_calls(&events), vec![]);
+    let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
+        panic!("expected the call to suspend, got {events:?}")
+    };
+    assert_eq!(call.function_name, "fetch");
 }
 
 /// A loop of calls it never awaits would otherwise run unbounded, so the
@@ -1395,6 +1442,7 @@ fn started_calls_stop_at_max_suspensions() {
         code: "while True:\n    fetch()".to_owned(),
         cwd: "/".to_owned(),
         async_functions: vec!["fetch".to_owned()].into(),
+        start_calls: true,
         ..pb::Feed::default()
     }));
     let events = decode_events(&dispatch_frame(&mut child, &request).0);

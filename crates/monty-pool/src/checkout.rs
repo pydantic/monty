@@ -455,9 +455,9 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
-    /// Names sent as `Feed.async_functions` with every later feed; see
-    /// [`Checkout::set_async_functions`].
-    async_functions: Vec<String>,
+    /// Names sent as `Feed.async_functions` with every later feed, or `None`
+    /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
+    async_functions: Option<Vec<String>>,
     /// Calls to async host functions started since the caller last took them.
     /// Cleared as a `Feed`, `Load` or `Reset` goes out, so a feed never sees another's.
     started_calls: Vec<StartedCall>,
@@ -832,7 +832,7 @@ impl Checkout {
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
-            async_functions: Vec::new(),
+            async_functions: Some(Vec::new()),
             started_calls: Vec::new(),
             session_id: None,
             redial: redial.map(Box::new),
@@ -995,7 +995,8 @@ impl Checkout {
             values: Some(values),
             skip_type_check,
             cwd,
-            async_functions: self.async_functions.clone().into(),
+            async_functions: self.async_functions.clone().unwrap_or_default().into(),
+            start_calls: self.async_functions.is_some(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1401,15 +1402,16 @@ impl Checkout {
         self.session_id.as_deref()
     }
 
-    /// Names the host's async functions for the feeds that follow, replacing
-    /// any earlier set: calls to these names start without waiting for the
-    /// host, as for a value made with [`MontyObject::async_function`], and
-    /// arrive through [`Self::take_started_calls`].
+    /// Sets how the feeds that follow treat calls to async host functions,
+    /// replacing any earlier choice. With `Some(names)` (the default, with no
+    /// names) calls to a [`MontyObject::async_function`] value or to one of
+    /// `names` start without waiting and arrive through [`Self::take_started_calls`];
+    /// `None` makes them suspend like any call, for a host answering each call itself.
     ///
-    /// Needed for names the sandbox calls without ever reading as a value,
+    /// `names` covers names the sandbox calls without ever reading as a value,
     /// which reach the host only as a call by name. A worker that predates
-    /// `StartedCalls` ignores them and suspends on each call as before.
-    pub fn set_async_functions(&mut self, names: Vec<String>) {
+    /// `StartedCalls` ignores all of this and suspends on each call as before.
+    pub fn set_async_functions(&mut self, names: Option<Vec<String>>) {
         self.async_functions = names;
     }
 

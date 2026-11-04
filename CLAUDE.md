@@ -200,7 +200,7 @@ subprocesses:
     `StartedCalls` carries calls to async host functions the worker started
     without suspending; it is sent only to a parent that set
     `Configure.started_calls`, since forwarders may drop a session on an event
-    tag they do not know.
+    tag they do not know, and only in a feed that set `Feed.start_calls`.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and

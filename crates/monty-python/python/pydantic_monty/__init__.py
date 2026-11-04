@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import datetime
-import functools
 from types import EllipsisType
-from typing import Any, Callable, Literal, ParamSpec, Protocol, TypeVar
+from typing import Any, Callable, Literal, Protocol
 
 from typing_extensions import NotRequired, TypeAlias, TypedDict
 
@@ -76,7 +75,6 @@ __all__ = (
     'SyncSnapshot',
     'AsyncSnapshot',
     'instrument_telemetry',
-    'async_function',
     # class_instance
     'ClassInstance',
     'ClassType',
@@ -135,35 +133,6 @@ def instrument_telemetry(*, tracer: Any | None = None, meter: Any | None = None,
     enabled independently by supplying its component.
     """
     _install_telemetry(tracer, meter, logger)
-
-
-_P = ParamSpec('_P')
-_R = TypeVar('_R')
-
-
-def async_function(func: Callable[_P, _R], /) -> Callable[_P, _R]:
-    """Mark a host function so sandbox calls to it start without waiting for the host.
-
-    A call returns an awaitable at once. The worker sends the call to the host
-    and keeps running, so `asyncio.gather` over several calls costs one round
-    trip to the worker rather than one per call, which matters most for a
-    remote worker. The host still runs `func` as usual and the result arrives
-    at the `await`.
-
-    The trade-off: the sandbox no longer pauses at the call, so errors raised
-    by `func`, or a name the host cannot find, surface at the `await`.
-    Use it in `external_lookup` or on an `ExternalModule`'s functions with
-    `AsyncMonty`; `feed_start()` snapshots reject marked functions.
-    """
-    if not callable(func):
-        raise TypeError(f'async_function() argument must be callable, not {type(func).__name__}')
-
-    @functools.wraps(func)
-    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        return func(*args, **kwargs)
-
-    wrapper.__pydantic_monty_async__ = True  # pyright: ignore[reportAttributeAccessIssue]
-    return wrapper
 
 
 class ResourceLimits(TypedDict, total=False):

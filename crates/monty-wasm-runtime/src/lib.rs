@@ -322,6 +322,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             skip_type_check: request.skip_type_check,
             cwd: request.cwd,
             async_functions: Vec::new().into(),
+            start_calls: false,
         }),
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,

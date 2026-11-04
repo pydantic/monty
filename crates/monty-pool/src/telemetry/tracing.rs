@@ -1264,6 +1264,7 @@ mod tests {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "double".to_owned(),
@@ -1452,6 +1453,7 @@ mod tests {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
             MontyObject::int(1),

@@ -24,7 +24,6 @@ import {
 } from './remote_servers.js'
 
 import {
-  asyncFunction,
   MontyDisconnectError,
   MontyRefusedError,
   MontyRemote,
@@ -71,13 +70,13 @@ test('inputs, prints and async external functions cross the stream', async () =>
   t.deepEqual(printed, ['stdout:hi\n'])
 })
 
-test('calls to asyncFunction()-marked functions start without suspending the remote worker', async () => {
+test('calls to async functions start without suspending the remote worker', async () => {
   const { url } = await server(relay)
   const log: string[] = []
-  const fetch = asyncFunction(async (x: number) => {
+  const fetch = async (x: number) => {
     log.push(`fetch(${x})`)
     return x * 10
-  })
+  }
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout()
   const code = "import asyncio\naws = [fetch(i) for i in range(3)]\nprint('started')\nawait asyncio.gather(*aws)"

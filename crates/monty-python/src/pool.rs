@@ -30,7 +30,6 @@
 use std::{
     collections::HashSet,
     future::{Future, ready},
-    mem,
     num::NonZeroU32,
     path::PathBuf,
     pin::Pin,
@@ -1557,19 +1556,17 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         instances,
     } = args;
     let lookup = ExternalLookup::new(py, names, &instances);
-    let async_functions = names.async_functions.clone();
     let mut sleeps: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
     // Only system sleeps may create futures in the synchronous API.
     let mut sleep_ids: HashSet<u32> = HashSet::new();
-    // Started calls, run as they arrive and delivered at the next `ResolveFutures`.
-    let mut settled: Vec<(u32, ResumeValue)> = Vec::new();
     let mut event = run_turn_sync(
         py,
         &checkout,
         &print_target,
         turn_fn(move |c, p| {
             Box::pin(async move {
-                c.set_async_functions(async_functions);
+                // coroutine functions cannot run here, so their calls suspend as any call
+                c.set_async_functions(None);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -1579,18 +1576,10 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
         // answer discards the checkout (see `sync_turn_answer`).
-        let (native, started) = py.detach(|| block_on_sync(callback_context_and_started_calls(&checkout)))?;
+        // no calls are started in this API; a worker that starts some anyway
+        // leaves futures the `ResolveFutures` check below rejects
+        let (native, _) = py.detach(|| block_on_sync(callback_context_and_started_calls(&checkout)))?;
         let callback_guard = callback_context.enter(py, &native)?;
-        for StartedCall {
-            function_name,
-            args,
-            call_id,
-            ..
-        } in started
-        {
-            let outcome = started_call_outcome(ext_to_resume(lookup.call(&function_name, &args))?, &function_name);
-            settled.push((call_id, outcome.map_or_else(ResumeValue::Error, ResumeValue::Return)));
-        }
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
             matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
@@ -1641,8 +1630,6 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
                     TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
                 }
             },
-            // Delivered first: each started call settled when it arrived.
-            TurnEvent::ResolveFutures { .. } if !settled.is_empty() => TurnAnswer::Futures(mem::take(&mut settled)),
             // Unknown future IDs cannot be resolved by this loop.
             TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
                 if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
@@ -1847,7 +1834,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
             Box::pin(async move {
-                c.set_async_functions(async_functions);
+                c.set_async_functions(Some(async_functions));
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })

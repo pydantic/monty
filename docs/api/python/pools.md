@@ -30,4 +30,3 @@ Install as [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) — see 
             - PrintCallback
             - ExternalModule
             - ModuleValue
-            - async_function

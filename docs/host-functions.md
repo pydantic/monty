@@ -304,13 +304,13 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 
 ### Starting calls without waiting
 
-By default every call to a host function suspends the worker until the host answers it, even when the answer is only
-that the call returned a coroutine.
-Against a remote worker each answer is a network round trip, so a `gather` over 20 calls waits for 21 of them.
-Marking a function with [`async_function`][pydantic_monty.async_function] in Python, or `asyncFunction()` in
-JavaScript, removes the wait at the call: the worker sends the call to the host and keeps running, and the sandbox
-blocks once, when every task is waiting.
+A call to an ordinary host function suspends the worker until the host answers it.
+Against a remote worker each answer is a network round trip, so a `gather` over 20 calls would wait for 21 of them.
+Calls to `async` host functions (`async def` in Python, `async function` in JavaScript) skip that wait when the sandbox
+does not await them at once: `feed_run` / `feedRun` lets the worker send the call to the host and keep running, and
+the sandbox blocks once, when every task is waiting.
 The 20-call `gather` then costs one round trip plus the slowest call.
+A call awaited at once, as in `await fetch(url)`, still suspends, since nothing else could run in the meantime.
 
 === "Python"
 
@@ -320,7 +320,6 @@ The 20-call `gather` then costs one round trip plus the slowest call.
     import pydantic_monty
 
 
-    @pydantic_monty.async_function
     async def fetch(url: str) -> str:
         return f'contents of {url}'
 
@@ -346,11 +345,11 @@ The 20-call `gather` then costs one round trip plus the slowest call.
 === "TypeScript"
 
     ```ts
-    import { asyncFunction, Monty } from '@pydantic/monty'
+    import { Monty } from '@pydantic/monty'
 
-    const fetch = asyncFunction(async function fetch(url: string): Promise<string> {
+    async function fetch(url: string): Promise<string> {
       return `contents of ${url}`
-    })
+    }
 
     const code = `
     import asyncio
@@ -364,17 +363,21 @@ The 20-call `gather` then costs one round trip plus the slowest call.
     console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 20
     ```
 
+Python detects these functions with `inspect.iscoroutinefunction`, which also accepts a `functools.partial` of an
+`async def` and a function marked with `inspect.markcoroutinefunction`.
+JavaScript reads the function's `AsyncFunction` tag, which bound functions keep; an `async function` transpiled to an
+older target is a plain function returning a promise, so its calls suspend.
+
 The cost is control at the call site.
 The sandbox has moved on by the time the host sees the call, so the host cannot stop execution there, and an error the
 call raises, including a name the host cannot resolve, surfaces at the `await` instead
-(see [asyncio limitations](limitations/asyncio.md#calls-to-async_function-host-functions-raise-at-the-await)).
-A marked function returns an awaitable even when it returns a plain value, so the sandbox must `await` its calls.
+(see [asyncio limitations](limitations/asyncio.md#calls-to-async-host-functions-raise-at-the-await)).
 Each started call counts against `max_suspensions` like the suspension it replaces.
-Marked functions work in `external_lookup` and on [`ExternalModule`][pydantic_monty.ExternalModule] functions, with
-`feed_run` / `feedRun`, on local and remote pools.
-`feed_start()` / `feedStart()` snapshots reject them.
-The WebAssembly worker cannot start calls: it suspends at each call to a marked function, which still returns an
-awaitable and raises at the `await`, except that a name the host cannot resolve raises `NameError` at the call.
+This applies to `external_lookup` and to [`ExternalModule`][pydantic_monty.ExternalModule] functions, on local and
+remote pools.
+`feed_start()` / `feedStart()` suspend at every call so that each reaches a snapshot, and the sync
+[`Monty`][pydantic_monty.Monty] pool suspends because it cannot run coroutines.
+The WebAssembly worker cannot start calls either: it suspends at each one, with the same results.
 
 ## Importing host modules
 

@@ -710,7 +710,7 @@ impl<'e> GraphEncoder<'e> {
                 Ok(self.leaf(MontyNode::Function {
                     name,
                     docstring: None,
-                    is_async: is_async_marked(&func_obj),
+                    is_async: is_async_function(&func_obj, env).unwrap_or(false),
                 }))
             }
             ValueType::Symbol | ValueType::External => {
@@ -1233,16 +1233,16 @@ fn get_string_property(obj: &Object, name: &str) -> Result<Option<String>> {
     }
 }
 
-/// The own property `asyncFunction()` (`ts/asyncFunction.ts`) sets on a host function.
-const ASYNC_MARKER: &str = "__monty_async__";
-
-/// Whether `asyncFunction()` marked `func`, so its calls start without waiting
-/// for the host. A missing, non-boolean or throwing marker counts as unmarked.
-fn is_async_marked(func: &Object) -> bool {
-    func.get_named_property::<Unknown>(ASYNC_MARKER)
-        .and_then(|marker| match marker.get_type()? {
-            ValueType::Boolean => marker.coerce_to_bool(),
-            _ => Ok(false),
-        })
-        .unwrap_or(false)
+/// Whether `func` is an `async function`, so its calls start without waiting for
+/// the host. Reads its `Object.prototype.toString` tag, as `isAsyncFunction` in
+/// `ts/asyncFunction.ts` does, which bound and proxied async functions keep.
+fn is_async_function(func: &Object, env: &Env) -> Result<bool> {
+    // `Object` is a function, so read it as `Unknown` and view it as an object
+    let object = env
+        .get_global()?
+        .get_named_property::<Unknown>("Object")?
+        .coerce_to_object()?;
+    let prototype: Object = object.get_named_property("prototype")?;
+    let to_string: Function<(), String> = prototype.get_named_property("toString")?;
+    Ok(to_string.apply(*func, ())? == "[object AsyncFunction]")
 }

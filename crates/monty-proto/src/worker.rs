@@ -235,6 +235,8 @@ pub struct Child {
     /// The parent set `Configure.started_calls`, so calls to async host
     /// functions stream as `StartedCalls` instead of suspending.
     started_calls: bool,
+    /// The current feed's `Feed.start_calls`; started calls also need `started_calls`.
+    feed_starts_calls: bool,
     /// The current feed's `Feed.async_functions`: calls to these names start
     /// like calls to an async host function value. Replaced by every `Feed`.
     feed_async_functions: HashSet<String>,
@@ -254,6 +256,7 @@ impl Default for Child {
             os_policy: OsPolicy::default(),
             module_stubs: Vec::new(),
             started_calls: false,
+            feed_starts_calls: false,
             feed_async_functions: HashSet::new(),
             calls_started: 0,
         }
@@ -608,6 +611,7 @@ impl Child {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
+        self.feed_starts_calls = feed.start_calls;
         self.feed_async_functions = feed.async_functions.into_inner().into_iter().collect();
         // Check nesting before the import scan, ty or the compiler parses the snippet.
         let code = feed.code;
@@ -1152,14 +1156,19 @@ impl Child {
         }
     }
 
-    /// Whether `call` streams as a started call: the parent accepts them, the
-    /// callee is an async host function value or a name the feed declared, and
-    /// the session has started fewer calls than `max_suspensions`.
+    /// Whether `call` streams as a started call: the parent accepts them in
+    /// this feed, the callee is an async host function value or a name the feed declared,
+    /// the call is not awaited at once and the session has started fewer calls than `max_suspensions`.
+    ///
+    /// An immediate `await` with nothing else to run gains nothing from starting,
+    /// so it suspends for the host to answer eagerly, costing one suspension, not two.
     ///
     /// Past the limit the call suspends instead, so the parent's suspension
     /// budget aborts the feed: a loop of started calls never suspends otherwise.
     fn starts_without_waiting(&self, call: &monty::ReplFunctionCall, tracker: &ResourceTracker) -> bool {
         self.started_calls
+            && self.feed_starts_calls
+            && !call.allow_eager_await
             && self.calls_started < tracker.max_suspensions()
             && (call.is_async || (call.object_id.is_none() && self.feed_async_functions.contains(&call.function_name)))
     }
@@ -1209,6 +1218,7 @@ impl Child {
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
         self.started_calls = false;
+        self.feed_starts_calls = false;
         self.feed_async_functions.clear();
         self.calls_started = 0;
     }

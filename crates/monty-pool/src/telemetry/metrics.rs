@@ -1134,6 +1134,7 @@ mod tests {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         }))
     }
 

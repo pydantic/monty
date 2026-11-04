@@ -554,6 +554,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })),
         ..pb::ParentRequest::default()
     };

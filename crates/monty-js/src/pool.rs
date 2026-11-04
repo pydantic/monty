@@ -224,8 +224,9 @@ pub struct NativeFeedOptions {
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
     pub skip_type_check: bool,
-    /// `externalLookup` keys marked with `asyncFunction()`, so a bare call to
-    /// one starts without waiting (see `Checkout::set_async_functions`).
+    /// `externalLookup` keys holding async functions, so a bare call to one
+    /// starts without waiting; unset makes every call suspend, as `feedStart()`
+    /// needs (see `Checkout::set_async_functions`).
     pub async_functions: Option<Vec<String>>,
 }
 
@@ -569,7 +570,7 @@ impl NativeSession {
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
-                    checkout.set_async_functions(async_functions.unwrap_or_default());
+                    checkout.set_async_functions(async_functions);
                     checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
                         .await

@@ -168,7 +168,6 @@ pub(crate) fn feed_start_sync(
         instances,
         callback_context: _,
     } = args;
-    let async_functions = names.async_functions.clone();
     let ctx = DriveContext::new(
         checkout,
         instances,
@@ -183,7 +182,8 @@ pub(crate) fn feed_start_sync(
         ctx,
         turn_fn(move |c, p| {
             Box::pin(async move {
-                c.set_async_functions(async_functions);
+                // every call suspends, so each one reaches a snapshot
+                c.set_async_functions(None);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -212,7 +212,6 @@ pub(crate) fn feed_start_async(
         instances,
         callback_context: _,
     } = args;
-    let async_functions = names.async_functions.clone();
     let ctx = DriveContext::new(
         checkout,
         instances,
@@ -227,7 +226,8 @@ pub(crate) fn feed_start_async(
             ctx,
             turn_fn(move |c, p| {
                 Box::pin(async move {
-                    c.set_async_functions(async_functions);
+                    // every call suspends, so each one reaches a snapshot
+                    c.set_async_functions(None);
                     c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                         .await
                 })
@@ -290,12 +290,10 @@ async fn reject_started_calls_async(checkout: &SharedCheckout) -> PyResult<()> {
     }
 }
 
-/// Snapshots surface one suspension at a time and have no way yet to hand
-/// the caller calls the sandbox started without suspending.
+/// `feed_start` never asks the worker to start calls, and a snapshot has no way
+/// to hand the caller calls the sandbox started without suspending.
 fn started_calls_unsupported() -> PyErr {
-    PyRuntimeError::new_err(
-        "functions marked with pydantic_monty.async_function are not supported by feed_start(); use feed_run()",
-    )
+    PyRuntimeError::new_err("worker started host calls during feed_start()")
 }
 
 /// Answers a suspended OS call from the feed's mounts, returning the next

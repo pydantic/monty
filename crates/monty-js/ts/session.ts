@@ -12,7 +12,7 @@
 import { context as ContextAPI, type Context } from '@opentelemetry/api'
 
 import type { NativeSession } from '../native-addon.js'
-import { isAsyncFunction, markAsync } from './asyncFunction.js'
+import { isAsyncFunction } from './asyncFunction.js'
 import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
 import {
   AttrNotExposed,
@@ -311,7 +311,7 @@ export class MontySession {
       {
         cwd: options.cwd,
         skipTypeCheck: options.skipTypeCheck ?? false,
-        asyncFunctions: asyncFunctionNames(options.externalLookup),
+        // no `asyncFunctions`: every call suspends, so each reaches a snapshot
       },
       driver.onPrint,
     )) as NativeTurn
@@ -584,7 +584,7 @@ class TurnAnswerer {
         } else {
           const v = lookup[turn.name]
           if (isAsyncFunction(v)) {
-            // by value, so the native converter sees the marker
+            // by value, so the native converter sees that it is async
             next = this.native.resumeNameLookup(null, { value: v }, onPrint)
           } else if (typeof v === 'function') {
             next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
@@ -625,11 +625,6 @@ class TurnAnswerer {
       return this.native.resumeError('TypeError', notCallableMessage(entry), onPrint)
     }
     const fn = entry as ExternalFunction
-    if (isAsyncFunction(fn)) {
-      // A marked call that suspended anyway (a WebAssembly worker, or one past
-      // `maxSuspensions`) still returns an awaitable, raising at the `await`.
-      return this.answerAwaitedCall(call, this.callAsPromise(fn, call), onPrint)
-    }
     let returned: unknown
     try {
       const [args, kwargs] = restoreCallArgs(call, this.instances)
@@ -666,7 +661,7 @@ class TurnAnswerer {
     const attr = functionName.slice(dot + 1)
     const entry = ownEntry(resolved.attrs, attr)
     // Preserve the receiver of `module.attr(...)`.
-    return boxed(typeof entry === 'function' ? bindHostFunction(entry as ExternalFunction, resolved.receiver) : entry)
+    return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(resolved.receiver) : entry)
   }
 
   /**
@@ -1162,11 +1157,9 @@ class SnapshotDriver {
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
     if (startedCallsOf(turn).length > 0) {
-      // A snapshot surfaces one suspension at a time and cannot hand over calls
-      // that started without one; the worker is left waiting on their futures.
-      throw this.poison(
-        new Error('functions marked with asyncFunction() are not supported by feedStart(); use feedRun()'),
-      )
+      // `feedStart` never asks the worker to start calls, and a snapshot cannot
+      // hand over calls that started without a suspension.
+      throw this.poison(new Error('worker started host calls during feedStart()'))
     }
     for (;;) {
       switch (turn.kind) {
@@ -1650,29 +1643,20 @@ function moduleValue(path: string, entry: ExternalModule): HostModuleValue {
   return new HostModuleValue(path, entry.id, attrs)
 }
 
+/** A proxy named by its dotted path; async when `fn` is, so its calls still start without waiting. */
 function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {
-  const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
+  const proxy: ExternalFunction = isAsyncFunction(fn)
+    ? async (...args: unknown[]) => await fn(...(args as never[]))
+    : (...args: unknown[]) => fn(...(args as never[]))
   Object.defineProperty(proxy, 'name', { value: name })
-  if (isAsyncFunction(fn)) {
-    markAsync(proxy)
-  }
   return proxy
 }
 
-/** Binds a module function to its receiver, keeping an `asyncFunction()` marker. */
-function bindHostFunction(fn: ExternalFunction, receiver: unknown): ExternalFunction {
-  const bound = fn.bind(receiver) as ExternalFunction
-  if (isAsyncFunction(fn)) {
-    markAsync(bound)
-  }
-  return bound
-}
-
 /**
- * The own `externalLookup` keys holding `asyncFunction()`-marked functions, sent
- * with the feed so a bare call to one starts without waiting for the host.
+ * The own `externalLookup` keys holding async functions, sent with the feed so
+ * a bare call to one starts without waiting for the host.
  * Reads data properties only: a getter runs lazily, when the sandbox reads its
- * name, and the value it returns carries its own marker then.
+ * name, and the converter checks the value it returns then.
  */
 function asyncFunctionNames(lookup: Record<string, unknown> | undefined): string[] {
   if (lookup === undefined) {

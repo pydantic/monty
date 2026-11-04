@@ -1681,6 +1681,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1726,6 +1727,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1775,6 +1777,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -3162,6 +3165,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -3269,6 +3273,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
+            start_calls: false,
         })),
         ..pb::ParentRequest::default()
     };

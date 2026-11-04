@@ -125,6 +125,7 @@ name, or the `await` the main task is blocked on.
 Calls to async host functions do not suspend: a `MontyObject::async_function` value, or a name passed to
 [`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
 The worker sends them mid-turn and keeps running.
+`set_async_functions(None)` makes them suspend like any other call.
 Take them with [`Checkout::take_started_calls`](../api/rust/monty-pool.md#checkout) after every turn, start each, and
 settle them with `resume_futures` once `ResolveFutures` names them.
 
