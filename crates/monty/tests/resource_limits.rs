@@ -2147,3 +2147,35 @@ fn call_function_starts_a_fresh_feed_budget() {
         .expect("the call gets its own budget");
     assert_eq!(value, MontyObject::int(49_995_000));
 }
+
+#[test]
+fn timeout_in_bytearray_native_scans() {
+    for (setup, operation) in [
+        ("a = bytearray(b'x' * (16 * 1024 * 1024))", "a.expandtabs()"),
+        ("a = bytearray(b'\\t')", "a.expandtabs(64 * 1024 * 1024)"),
+        ("a = bytearray(b'x' * (16 * 1024 * 1024))", "a.translate(None)"),
+        ("a = bytearray(b'x' * (16 * 1024 * 1024))", "a.translate(None, a)"),
+        ("a = bytearray(b'x' * (4 * 1024 * 1024))", "a.maketrans(a, a)"),
+    ] {
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();
+        let full_scan = fastest_of_attempts(|| {
+            let start = ThreadTime::now();
+            repl.feed_run(operation, vec![], PrintWriter::Stdout).unwrap();
+            start.elapsed()
+        });
+        let elapsed = fastest_of_attempts(|| {
+            repl.tracker_mut().set_max_feed_duration(full_scan / 10);
+            let start = ThreadTime::now();
+            let exc = repl
+                .feed_run(operation, vec![], PrintWriter::Stdout)
+                .expect_err("the native byte loop must observe the time limit");
+            assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{operation}");
+            start.elapsed()
+        });
+        assert!(
+            elapsed < full_scan / 2,
+            "{operation} must stop during native work: full {full_scan:?}, timed {elapsed:?}"
+        );
+    }
+}

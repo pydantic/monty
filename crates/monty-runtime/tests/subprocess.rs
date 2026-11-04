@@ -1391,8 +1391,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         child.shutdown();
     }
 
-    // A single byte can double a full buffer beyond the allocator's headroom.
+    // Bytearray growth and copied method results must fail softly before the hard ceiling.
     for code in [
+        "bytearray(b'x').ljust(16 * 1024 * 1024)",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.split(b'!')",
+        "padding = bytearray(8 * 1024 * 1024)\na = bytearray(7 * 1024 * 1024)\na[:2] = b'x!'\na.partition(b'!')",
         "a = bytearray(16 * 1024 * 1024)\na.append(0)",
         "a = bytearray(16 * 1024 * 1024)\na.insert(0, 0)",
         "import itertools\nbytearray(itertools.chain(itertools.repeat(0, 16 * 1024 * 1024 + 1)))",

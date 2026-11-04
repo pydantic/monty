@@ -676,7 +676,7 @@ impl Type {
             }
             (Self::ByteArray, Some(StaticStrings::Fromhex)) => {
                 let value = bytes_fromhex(args, vm)?;
-                Ok(CallResult::Value(super::bytearray::convert_result(value, vm)))
+                Ok(CallResult::Value(super::bytearray::convert_result(value, vm)?))
             }
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)
