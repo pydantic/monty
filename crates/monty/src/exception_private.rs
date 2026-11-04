@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
+    mem,
 };
 
 use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
@@ -11,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{DropWithContext, HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
@@ -175,6 +176,31 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `typing.get_type_hints()` raises for an object that
+    /// is neither annotated nor callable: `5 does not have annotations`.
+    fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
+        match obj.py_repr(vm) {
+            Ok(repr_value) => {
+                defer_drop!(repr_value, vm);
+                let repr = repr_value
+                    .as_str(vm)
+                    .map_or_else(|| format!("<{}>", obj.py_type_name(vm)), str::to_owned);
+                Self::type_error(format!("{repr} does not have annotations"))
+            }
+            Err(err) => err,
+        }
+    }
+
+    /// Creates the SyntaxError `typing.get_type_hints()` raises for a forward
+    /// reference that does not compile as an expression, e.g. `' int'` or `'x = 1'`.
+    fn forward_ref_not_expression(source: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::SyntaxError,
+            format!("Forward reference must be an expression -- got {}", StringRepr(source)),
+        )
+        .into()
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.
@@ -267,7 +293,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                if let Ok(s) = key_value.to_str(vm) {
+                if let Some(s) = key_value.as_str(vm) {
                     s.to_owned()
                 } else {
                     format!("<{}>", key.py_type_name(vm))
@@ -783,12 +809,27 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 
     /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{path}'`,
-    /// as raised by `os.chdir('')` without consulting the host.
+    /// as raised for an empty path without consulting the host.
     #[must_use]
     fn file_not_found_error(path: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::FileNotFoundError,
             format!("[Errno 2] No such file or directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
+    /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{src}' -> '{dst}'`,
+    /// CPython's two-path form for `os.rename` / `os.replace` with an empty path.
+    #[must_use]
+    fn file_not_found_error_pair(src: &str, dst: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::FileNotFoundError,
+            format!(
+                "[Errno 2] No such file or directory: {} -> {}",
+                StringRepr(src),
+                StringRepr(dst)
+            ),
         )
         .into()
     }
@@ -820,6 +861,12 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn type_error_mixed_path_components() -> RunError {
         Self::type_error("Can't mix strings and bytes in path components")
+    }
+
+    /// `object of type '{type}' has no len()`
+    #[must_use]
+    fn type_error_no_len(type_name: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("object of type '{type_name}' has no len()")).into()
     }
 
     /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
@@ -1046,7 +1093,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Ok(repr_value) => {
                 defer_drop!(repr_value, vm);
                 repr_value
-                    .to_str(vm)
+                    .try_to_str(vm)
                     .map_or_else(|_| format!("<{}>", key.py_type_name(vm)), str::to_owned)
             }
             Err(err) => return err,
@@ -1081,12 +1128,19 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
     }
 
-    /// The `OverflowError` the `time` conversion functions raise for epoch
-    /// seconds outside the range a broken-down time can hold:
+    /// The `OverflowError` the `time` conversion functions and `fromtimestamp()`
+    /// raise for epoch seconds outside the range a broken-down time can hold:
     /// `timestamp out of range for platform time_t`.
     #[must_use]
     fn timestamp_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
+    }
+
+    /// The `ValueError` CPython's time conversions raise for a NaN length or
+    /// timestamp: `Invalid value NaN (not a number)`.
+    #[must_use]
+    fn invalid_nan() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Invalid value NaN (not a number)").into()
     }
 
     /// `time.mktime()`'s `OverflowError` for a wall clock it cannot place on
@@ -1721,22 +1775,35 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an ImportError for when a name cannot be imported from a module.
     ///
-    /// Matches CPython's format for built-in modules:
+    /// Matches CPython's format, which names the file a module was loaded from:
     /// `ImportError: cannot import name 'name' from 'module' (unknown location)`
     ///
     /// Sets `hide_caret: true` because CPython doesn't show carets for import errors.
     #[must_use]
-    fn cannot_import_name(name: &str, module_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::ImportError,
-            format!("cannot import name '{name}' from '{module_name}' (unknown location)"),
-        );
-        RunError::Exc(ExceptionRaise {
-            exc,
-            frame: None,
-            snippet_frame: None,
-            hide_caret: true,
-        })
+    fn cannot_import_name(name: &str, module_name: &str, origin: Option<&str>) -> RunError {
+        let origin = origin.unwrap_or("unknown location");
+        import_error_without_caret(format!("cannot import name '{name}' from '{module_name}' ({origin})"))
+    }
+
+    /// The `RuntimeError` for a host answering anything but an `import` call
+    /// with a module file.
+    #[must_use]
+    fn module_file_for_non_import() -> RunError {
+        SimpleException::new_msg(
+            ExcType::RuntimeError,
+            "only an import can be answered with a module file",
+        )
+        .into()
+    }
+
+    /// The `ImportError` for `from module import name` while `module`'s body is
+    /// still running, CPython's hint at a circular import.
+    #[must_use]
+    fn cannot_import_name_partial(name: &str, module_name: &str, origin: &str) -> RunError {
+        import_error_without_caret(format!(
+            "cannot import name '{name}' from partially initialized module '{module_name}' \
+             (most likely due to a circular import) ({origin})"
+        ))
     }
 
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
@@ -2591,7 +2658,7 @@ impl ExcTypeExt for ExcType {
 ///
 /// This is used for performance reasons for common exception patterns.
 /// Exception messages use `String` for owned storage.
-#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
@@ -2599,6 +2666,41 @@ pub(crate) struct SimpleException {
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
     data: ExcData,
+    /// The chained exceptions; only the heap-resident object owns them. Boxed
+    /// because most exceptions have none and `HeapData` has a size ceiling.
+    #[serde(default)]
+    chain: Option<Box<ExceptionChain>>,
+}
+
+/// `Clone` rebuilds the copy without its [`ExceptionChain`]: a raw `HeapId` copied
+/// out of the heap object would be a second, uncounted owner. The chain lives on the
+/// raised heap object, which `raise` reuses, so it is only lost where an exception is
+/// rebuilt from a copy, such as after a nested synchronous call.
+impl Clone for SimpleException {
+    fn clone(&self) -> Self {
+        Self {
+            exc_type: self.exc_type,
+            arg: self.arg.clone(),
+            data: self.data.clone(),
+            chain: None,
+        }
+    }
+}
+
+/// An exception's `__cause__`, `__context__` and `__suppress_context__`.
+///
+/// Both references are owned by the heap-resident exception and released by its
+/// `py_dec_ref_ids`. Exceptions stay GC leaves, so a cycle through them
+/// (`raise e from e`) is only reclaimed with the session; `__context__` links
+/// that would loop are cut when attached, as CPython cuts them.
+#[derive(Debug, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExceptionChain {
+    /// Owned: set by `raise ... from`.
+    cause: Option<HeapId>,
+    /// Owned: the exception being handled when this one was raised.
+    context: Option<HeapId>,
+    /// Set by `raise ... from`, hiding the context in a chained traceback.
+    suppress_context: bool,
 }
 
 impl fmt::Display for SimpleException {
@@ -2612,6 +2714,7 @@ impl From<MontyException> for SimpleException {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
             arg: exc.into_message(),
+            chain: None,
         }
     }
 }
@@ -2624,6 +2727,7 @@ impl SimpleException {
             exc_type,
             arg,
             data: ExcData::None,
+            chain: None,
         }
     }
 
@@ -2634,6 +2738,7 @@ impl SimpleException {
             exc_type,
             arg: Some(arg.to_string()),
             data: ExcData::None,
+            chain: None,
         }
     }
 
@@ -2644,6 +2749,7 @@ impl SimpleException {
             exc_type,
             arg: None,
             data: ExcData::None,
+            chain: None,
         }
     }
 
@@ -2674,15 +2780,43 @@ impl SimpleException {
             (_, None) => String::new(),
         }
     }
-}
 
-impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    /// The `__cause__`, borrowed.
+    pub(crate) fn cause(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.cause)
     }
-}
 
-impl SimpleException {
+    /// The `__context__`, borrowed.
+    pub(crate) fn context(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.context)
+    }
+
+    /// `__suppress_context__`: whether this exception was raised with `from`.
+    pub(crate) fn suppress_context(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| chain.suppress_context)
+    }
+
+    /// Replaces the cause with an owned reference and sets `__suppress_context__`,
+    /// returning the previous owned cause for the caller to release.
+    pub(crate) fn set_cause(&mut self, cause: Option<HeapId>) -> Option<HeapId> {
+        let chain = self.chain.get_or_insert_default();
+        chain.suppress_context = true;
+        mem::replace(&mut chain.cause, cause)
+    }
+
+    /// Replaces the context with an owned reference, returning the previous owned
+    /// context for the caller to release.
+    pub(crate) fn set_context(&mut self, context: Option<HeapId>) -> Option<HeapId> {
+        mem::replace(&mut self.chain.get_or_insert_default().context, context)
+    }
+
+    /// Both owned chain references, for `py_dec_ref_ids`.
+    pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> {
+        self.chain
+            .iter()
+            .flat_map(|chain| chain.cause.into_iter().chain(chain.context))
+    }
+
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         let type_str: &'static str = self.exc_type.into();
@@ -2719,27 +2853,46 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    /// Gets an attribute from this exception.
-    ///
-    /// Handles the `.args` attribute by allocating a tuple containing the message.
-    /// Returns `None` for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        // Fast path: interned strings can be matched by ID
-        let is_args = attr
-            .static_string(vm.interns)
-            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
+        Type::Exception(self.get(vm.heap).exc_type)
+    }
 
-        if is_args {
-            // Construct tuple with 0 or 1 elements based on whether arg exists
-            let elements = if let Some(arg_str) = &self.get(vm.heap).arg {
-                smallvec![allocate_string(arg_str.as_str(), vm.heap)]
-            } else {
-                smallvec![]
-            };
-            Some(CallResult::Value(allocate_tuple(elements, vm.heap)))
-        } else {
-            None
+    /// Gets an attribute from this exception: `args` (a tuple of the message, if
+    /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
+    /// for all other attributes.
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+        // Interned names match by ID; only `args` can also arrive as a dynamic string.
+        let name = attr.static_string(vm.interns);
+        let exc = self.get(vm.heap);
+        let value = match name {
+            Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
+            Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
+            Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
+            Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
+            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
+            _ => return None,
+        };
+        Some(CallResult::Value(value))
+    }
+}
+
+/// `exc.args`: a tuple holding the message, or empty.
+fn args_tuple(arg: Option<&str>, vm: &VM<'_>) -> Value {
+    let elements = match arg {
+        Some(arg) => smallvec![allocate_string(arg, vm.heap)],
+        None => smallvec![],
+    };
+    allocate_tuple(elements, vm.heap)
+}
+
+/// A new reference to a chained exception, or `None`.
+fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
+    match id {
+        Some(id) => {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
         }
+        None => Value::None,
     }
 }
 
@@ -2792,17 +2945,15 @@ impl ExceptionRaise {
     /// this sets its name instead of creating a new parent. This happens when the error
     /// is raised from a namespace lookup - the initial frame has the position but not
     /// the function name, which gets filled in as the error propagates.
-    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId) {
-        self.add_caller_frame_inner(position, name, false);
-    }
-
-    fn add_caller_frame_inner(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
+    ///
+    /// `hide_caret` omits the added frame's carets, as CPython does under an
+    /// `import` whose module body raised; a nameless frame keeps its own.
+    pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
         if let Some(ref mut frame) = self.frame {
             // If innermost frame has no name, set it instead of adding a parent
             // This handles errors from namespace lookups which create nameless frames
             if frame.frame_name.is_none() {
                 frame.frame_name = Some(name);
-                frame.hide_caret = hide_caret;
                 return;
             }
             // Find the outermost frame (the one with no parent) and add the new frame as its parent
@@ -2862,8 +3013,10 @@ impl ExceptionRaise {
                     let sm_idx = if let Some(i) = cache.iter().position(|(k, _)| *k == fname_id) {
                         i
                     } else {
-                        let src =
-                            eval_source.unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
+                        // An imported file also carries its own source, but shows its lines.
+                        let src = eval_source
+                            .or_else(|| interns.file_source(fname_id))
+                            .unwrap_or_else(|| source_for(interns.get_filename(fname_id)).unwrap_or(""));
                         cache.push((fname_id, SourceMap::new(src)));
                         cache.len() - 1
                     };
@@ -3045,6 +3198,16 @@ impl RunError {
 /// CPython's `ModuleNotFoundError` message for `module_name`.
 fn no_module_named(module_name: &str) -> String {
     format!("No module named '{module_name}'")
+}
+
+/// An `ImportError` shown without carets, as CPython shows import errors.
+fn import_error_without_caret(msg: String) -> RunError {
+    RunError::Exc(ExceptionRaise {
+        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        frame: None,
+        snippet_frame: None,
+        hide_caret: true,
+    })
 }
 
 /// Formats a list of parameter names for error messages, matching CPython's

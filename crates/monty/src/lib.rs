@@ -4,6 +4,7 @@ mod boundary_uuid;
 mod heap;
 mod heap_traits;
 
+mod annotations;
 mod args;
 mod asyncio;
 mod builtins;

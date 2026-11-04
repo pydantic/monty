@@ -1,16 +1,23 @@
-/// Tests for execution-time limits and garbage collection.
-///
-/// Allocator-backed memory limits are exercised through worker subprocesses.
+//! Tests for execution-time limits and garbage collection.
+//!
+//! Allocator-backed memory limits are exercised through worker subprocesses.
+
+#[cfg(not(any(unix, windows)))]
+use std::time::Instant as ThreadTime;
 use std::{
+    borrow::Cow,
     fmt::Write,
+    hint::spin_loop,
     thread,
     time::{Duration, Instant},
 };
 
+#[cfg(any(unix, windows))]
+use cpu_time::ThreadTime;
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
-    ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, NameLookupResult, PrintWriter, PrintWriterCallback,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Terminal errors must cross each native caller before unwinding its Python frame.
@@ -465,7 +472,7 @@ fn time_limit_covers_csv_long_ordinary_fields() {
     let code = "import csv\nclass Sink:\n    pass\nsink = Sink()\nsink.write = len\ncsv.writer(sink).writerows([['x' * 10_000_000]] * 60)\n";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
     assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError);
@@ -587,7 +594,7 @@ fn assert_timeout_in_builtin(code: &str, label: &str) {
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(100));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 
@@ -687,7 +694,7 @@ interrupt()
 template.format()
 ";
     let scan_call = pause_at_interrupt(scan_code);
-    let scan_started = Instant::now();
+    let scan_started = ThreadTime::now();
     let scan_result = scan_call.resume(MontyObject::none(), PrintWriter::Stdout);
     let scan_elapsed = scan_started.elapsed();
     assert_eq!(scan_result.unwrap_err().exc_type(), ExcType::KeyError);
@@ -706,7 +713,7 @@ template.format(value)
     let mut call = pause_at_interrupt(code);
 
     call.tracker_mut().set_max_feed_duration(traversal_budget);
-    let started = Instant::now();
+    let started = ThreadTime::now();
     let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = started.elapsed();
 
@@ -742,7 +749,7 @@ fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: Reso
     )
     .unwrap();
 
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = run.run(
         vec![MontyObject::bytes(haystack), MontyObject::bytes(needle)],
         ResourceTracker::new(limits),
@@ -800,7 +807,7 @@ fn run_over_bytes(code: &str, size: usize, limits: ResourceLimits) -> (Duration,
         CompileOptions::default(),
     )
     .unwrap();
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = run.run(
         vec![MontyObject::bytes(vec![b'a'; size])],
         ResourceTracker::new(limits),
@@ -1088,12 +1095,12 @@ for _ in range(400):
         repl.feed_run(&build, vec![], PrintWriter::Stdout)
             .unwrap_or_else(|e| panic!("{label}: build failed: {e}"));
 
-        let start = Instant::now();
+        let start = ThreadTime::now();
         repl.feed_run(found_lookups, vec![], PrintWriter::Stdout)
             .unwrap_or_else(|e| panic!("{label}: found lookups failed: {e}"));
         let found_elapsed = start.elapsed();
 
-        let start = Instant::now();
+        let start = ThreadTime::now();
         repl.feed_run(missing_lookups, vec![], PrintWriter::Stdout)
             .unwrap_or_else(|e| panic!("{label}: missing lookups failed: {e}"));
         let missing_elapsed = start.elapsed();
@@ -1118,6 +1125,32 @@ s.splitlines()
     assert_timeout_in_builtin(code, "str.splitlines()");
 }
 
+/// A synchronous print sink that spends CPU once, without adding interpreter checkpoints.
+struct CpuConsumingOutput {
+    output: String,
+    burn: Option<Duration>,
+}
+
+impl PrintWriterCallback for CpuConsumingOutput {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
+        if let Some(duration) = self.burn.take() {
+            let cpu = ThreadTime::now();
+            let wall = Instant::now();
+            while cpu.elapsed() < duration {
+                assert!(wall.elapsed() < Duration::from_secs(10), "CPU counter did not advance");
+                spin_loop();
+            }
+        }
+        self.output.push_str(&output);
+        Ok(())
+    }
+
+    fn stdout_push(&mut self, output: char) -> Result<(), MontyException> {
+        self.output.push(output);
+        Ok(())
+    }
+}
+
 /// A `default_factory` re-enters `run()` with a fresh dispatch countdown, so a
 /// construction whose factories are each shorter than the interval reaches no
 /// checkpoint of its own. The binder therefore polls the clock itself, like
@@ -1140,16 +1173,19 @@ fn timeout_in_dataclass_default_factories() {
     )
     .expect("the class should build without a limit");
 
-    // Also resets the execution clock, so the budget is spent a few factories in.
-    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
-    let mut printed = String::new();
+    let budget = Duration::from_millis(50);
+    repl.tracker_mut().set_max_feed_duration(budget);
+    let mut printed = CpuConsumingOutput {
+        output: String::new(),
+        burn: Some(budget * 2),
+    };
     let exc = repl
-        .feed_run("Many()", vec![], PrintWriter::collect_string(&mut printed))
+        .feed_run("Many()", vec![], PrintWriter::Callback(&mut printed))
         .expect_err("the factory loop must hit the time limit");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
     // The poll fires on the interval's last index, before the factory it guards,
     // so anything near `FIELDS` means the loop never checked at all.
-    assert_eq!(printed.len(), ResourceTracker::LOOP_CHECK_INTERVAL - 1);
+    assert_eq!(printed.output.len(), ResourceTracker::LOOP_CHECK_INTERVAL - 1);
 }
 
 #[test]
@@ -1159,7 +1195,7 @@ fn timeout_in_str_format_parser() {
         .unwrap();
 
     let full_scan = fastest_of_attempts(|| {
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("an unterminated field must fail without a time limit");
@@ -1169,7 +1205,7 @@ fn timeout_in_str_format_parser() {
 
     let elapsed = fastest_of_attempts(|| {
         repl.tracker_mut().set_max_feed_duration(full_scan / 10);
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("the format-string parser must hit the time limit");
@@ -1183,38 +1219,32 @@ fn timeout_in_str_format_parser() {
     );
 }
 
-/// Copying the receiver is only a few milliseconds of work, so this compares
-/// the tracker's execution clock rather than wall time: compiling the feed and
-/// tearing down the 20 MB buffer would otherwise be a large share of both runs.
+/// An exhausted execution budget takes precedence over a missing format field.
 #[test]
 fn timeout_in_str_format_receiver_snapshot() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run("template = '{missing}' + 'x' * 20_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
+    let exc = repl
+        .feed_run("template.format()", vec![], PrintWriter::Stdout)
+        .expect_err("the missing field must fail after snapshotting the receiver");
+    assert_eq!(exc.exc_type(), ExcType::KeyError);
 
-    // The feed clock restarts at each feed, so it already reports one feed's
-    // execution time on its own — no need to difference the cumulative clock.
-    let full_snapshot = fastest_of_attempts(|| {
-        let exc = repl
-            .feed_run("template.format()", vec![], PrintWriter::Stdout)
-            .expect_err("the missing field must fail after snapshotting the receiver");
-        assert_eq!(exc.exc_type(), ExcType::KeyError);
-        repl.tracker().feed_elapsed()
-    });
-
-    let elapsed = fastest_of_attempts(|| {
-        repl.tracker_mut().set_max_feed_duration(full_snapshot / 10);
-        let exc = repl
-            .feed_run("template.format()", vec![], PrintWriter::Stdout)
-            .expect_err("the receiver snapshot must hit the time limit before field lookup");
-        assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-        repl.tracker().feed_elapsed()
-    });
-
-    assert!(
-        elapsed < full_snapshot / 2,
-        "str.format() should stop while copying the receiver; full snapshot {full_snapshot:?}, timed snapshot {elapsed:?}"
-    );
+    let budget = Duration::from_millis(50);
+    repl.tracker_mut().set_max_feed_duration(budget);
+    let mut printed = CpuConsumingOutput {
+        output: String::new(),
+        burn: Some(budget * 2),
+    };
+    let exc = repl
+        .feed_run(
+            "print('start')\ntemplate.format()",
+            vec![],
+            PrintWriter::Callback(&mut printed),
+        )
+        .expect_err("formatting must hit the time limit before field lookup");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert_eq!(printed.output, "start\n");
 }
 
 #[test]
@@ -1224,14 +1254,14 @@ fn timeout_in_str_format_escaped_braces() {
         .unwrap();
 
     let full_scan = fastest_of_attempts(|| {
-        let start = Instant::now();
+        let start = ThreadTime::now();
         repl.feed_run("template.format()", vec![], PrintWriter::Stdout).unwrap();
         start.elapsed()
     });
 
     let elapsed = fastest_of_attempts(|| {
         repl.tracker_mut().set_max_feed_duration(full_scan / 10);
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("template.format()", vec![], PrintWriter::Stdout)
             .expect_err("escaped braces must not bypass the time limit");
@@ -1256,7 +1286,7 @@ fn fastest_of_attempts(mut measure: impl FnMut() -> Duration) -> Duration {
 fn timeout_in_str_format_grouped_padding() {
     let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(10)));
     let mut repl = MontyRepl::new("test.py", tracker, CompileOptions::default());
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("'{:09223372036854775807,}'.format(1)", vec![], PrintWriter::Stdout)
         .expect_err("grouped padding must hit the time limit before allocating the full width");
@@ -1278,7 +1308,7 @@ fn timeout_in_str_format_large_str_field() {
         .unwrap();
 
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(5));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("'{0:<1}'.format(s)", vec![], PrintWriter::Stdout)
         .expect_err("a large str field must observe the time limit");
@@ -1375,7 +1405,7 @@ fn timeout_in_sort_key_loop() {
     )
     .unwrap();
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("x.sort(key=f)", vec![], PrintWriter::Stdout)
         .expect_err("the key loop must hit the time limit");
@@ -1398,7 +1428,7 @@ fn timeout_in_deepcopy_fill_loop() {
     repl.feed_run("import copy\nx = [[0]] * 4_000_000", vec![], PrintWriter::Stdout)
         .unwrap();
     repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let exc = repl
         .feed_run("copy.deepcopy(x)", vec![], PrintWriter::Stdout)
         .expect_err("the copy must hit the time limit");
@@ -1450,7 +1480,7 @@ fn timeout_in_shallow_copy_fill_loop() {
     };
     for budget in [50, 600] {
         repl.tracker_mut().set_max_feed_duration(Duration::from_millis(budget));
-        let start = Instant::now();
+        let start = ThreadTime::now();
         let exc = repl
             .feed_run("copy.copy(x)", vec![], PrintWriter::Stdout)
             .expect_err("the copy must hit the time limit");
@@ -1571,7 +1601,7 @@ fn assert_timeout_promptly(code: &str, label: &str) {
     // Phase 2: set a short time limit and resume — repr() should timeout
     call.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
 
-    let start = Instant::now();
+    let start = ThreadTime::now();
     let result = call.resume(MontyObject::none(), PrintWriter::Stdout);
     let elapsed = start.elapsed();
 

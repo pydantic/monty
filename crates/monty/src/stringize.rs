@@ -1,11 +1,11 @@
 //! Rendering a ruff AST expression back to source text, the way CPython's
 //! PEP 563 stringizer does.
 //!
-//! The inverse of [`parse`](crate::parse). Class annotations are the only caller
-//! today (they are stored stringized, not evaluated — see
-//! `limitations/typing.md`), but the contract is "match CPython's stringizer", so
-//! any future stringization belongs here. Unparsing rather than slicing the
-//! source is what makes `x: dict[str,int]` yield `'dict[str, int]'` on both.
+//! The inverse of [`parse`](crate::parse). Annotations under
+//! `from __future__ import annotations` are the only caller today, but the
+//! contract is "match CPython's stringizer", so any future stringization belongs
+//! here. Unparsing rather than slicing the source is what makes
+//! `x: dict[str,int]` yield `'dict[str, int]'` on both.
 
 use ruff_python_ast::{
     self as ast, AtomicNodeIndex, Expr as AstExpr,

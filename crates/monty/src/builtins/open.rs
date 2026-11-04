@@ -17,8 +17,8 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::HeapData,
     os_dispatch::{PostConversionEffect, value_as_path_str},
+    py_value::PyValue,
     types::{
         PyTrait, Type,
         file::{FileMode, FileName, extract_str_payload},
@@ -63,7 +63,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
     validate_ignored_open_kwarg("closefd", closefd, vm)?;
     validate_ignored_open_kwarg("opener", opener, vm)?;
 
-    let path = extract_path_string(file, vm)?.to_owned();
+    let path = extract_path_string(file, vm)?;
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
     let file_mode = mode
@@ -131,13 +131,13 @@ struct OpenArgs {
 /// and `os.DirEntry`. The error message mentions `os.PathLike` to match
 /// CPython, even though full PathLike support is limited to the variants
 /// listed above.
-fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
-    let opt = match value {
-        Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
-        Value::Ref(id) if let HeapData::Bytes(b) = vm.heap.get(*id) => decode_utf8_path(b.as_slice())?,
-        _ => value_as_path_str(value, vm.heap, vm.interns),
+fn extract_path_string(value: &Value, vm: &VM<'_>) -> RunResult<String> {
+    let path = match value.py_value(vm) {
+        PyValue::Str(text) => Some(text.as_str(vm).to_owned()),
+        PyValue::Bytes(bytes) => decode_utf8_path(bytes.as_slice(vm))?.map(str::to_owned),
+        _ => value_as_path_str(value, vm.heap, vm.interns).map(str::to_owned),
     };
-    opt.ok_or_else(|| path_type_error(value, vm))
+    path.ok_or_else(|| path_type_error(value, vm))
 }
 
 /// Decodes a byte path as strict UTF-8, raising `UnicodeDecodeError` on
@@ -209,18 +209,11 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
         "encoding" => {
             if matches!(value, Value::None) {
                 true
-            } else if value.is_str(vm.heap) {
-                let s = match value {
-                    Value::InternString(id) => vm.interns.get_str(*id),
-                    Value::Ref(id) => match vm.heap.get(*id) {
-                        HeapData::Str(s) => s.as_str(),
-                        _ => "",
-                    },
-                    _ => "",
+            } else {
+                let Some(s) = value.as_str(vm) else {
+                    return Err(kwarg_type_error(name, value, vm));
                 };
                 s.eq_ignore_ascii_case("utf-8") || s.eq_ignore_ascii_case("utf8")
-            } else {
-                return Err(kwarg_type_error(name, value, vm));
             }
         }
         // `errors` accepts str or None in CPython; only the default (None)

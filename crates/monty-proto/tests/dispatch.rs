@@ -12,8 +12,8 @@ use monty_proto::{
     write_frame,
 };
 use monty_types::{
-    CompileOptions, ExcType, IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject, MontyUuid, NamedValues,
-    PrintWriter, ResourceLimits, ResourceTracker, unstable,
+    CompileOptions, ExcType, ExecutionClock, IMPORT_STUBS_CALL_ID, MONTY_VERSION, MontyException, MontyObject,
+    MontyUuid, NamedValues, PrintWriter, ResourceLimits, ResourceTracker, unstable,
 };
 
 /// Starts a feed with `f` already bound, leaving the worker at its first external call.
@@ -42,6 +42,33 @@ fn future_reply(call_id: u32, kind: pb::ext_function_result::Kind) -> pb::Future
         call_id,
         result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
     }
+}
+
+#[test]
+fn error_replies_report_the_remaining_suspension() {
+    let mut child = Child::default();
+    let call = start_external_call(&mut child, "f(); 1 / 0");
+    let resume = |call_id| {
+        frame_request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(pb::ExtFunctionResult {
+                kind: Some(pb::ext_function_result::Kind::ReturnValue(0)),
+            }),
+            values: Some(arena(MontyObject::none())),
+        }))
+    };
+    for (call_id, suspended) in [(call.call_id + 1, true), (call.call_id, false)] {
+        let (bytes, outcome) = dispatch_frame(&mut child, &resume(call_id));
+        assert_eq!(outcome, HandleOutcome::Continue);
+        let event = FrameReader::new(bytes.as_slice())
+            .read::<pb::ChildEvent>()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event.kind, Some(pb::child_event::Kind::Error(_))));
+        assert_eq!(event.feed_suspended, Some(suspended));
+    }
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::int(2));
 }
 
 /// A `ResumeFutures` whose arena holds `value` at index 0, the root every
@@ -188,6 +215,9 @@ fn decode_events(bytes: &[u8]) -> Vec<pb::child_event::Kind> {
     let mut reader = FrameReader::new(bytes);
     let mut events = Vec::new();
     while let Some(event) = reader.read::<pb::ChildEvent>().expect("reply frames decode") {
+        if matches!(event.kind, Some(pb::child_event::Kind::TypingError(_))) {
+            assert_eq!(event.feed_suspended, Some(false));
+        }
         events.push(event.kind.expect("event has a kind"));
     }
     events
@@ -916,7 +946,17 @@ fn load_restores_a_suspended_import() {
         panic!("expected the re-announced import");
     };
     let call_id = call.call_id;
-    assert!(matches!(call.call, Some(pb::os_call::Call::Import(pb::os_call::Import { module })) if module == "tools"));
+    let Some(pb::os_call::Call::Import(import)) = call.call else {
+        panic!("expected the re-announced import, got {:?}", call.call);
+    };
+    // the search path survives the dump: the working directory at the import
+    assert_eq!(
+        (
+            import.module.as_str(),
+            import.search_path.into_iter().collect::<Vec<_>>()
+        ),
+        ("tools", vec!["/".to_owned()])
+    );
 
     let tools = MontyObject::class_instance(
         MontyObject::class_type("tools", MontyUuid::from_u128(1), true, true, []),
@@ -1009,4 +1049,115 @@ fn a_committed_import_carries_into_the_next_feed() {
     assert!(matches!(event, pb::child_event::Kind::Complete(_)), "{event:?}");
     let (_, event) = feed(&mut child, "m.sqrt('4')");
     insta::assert_snapshot!(expect_typing_error(event), @r#"main.py:1:8: error[invalid-argument-type] Argument to function `sqrt` is incorrect: Expected `SupportsFloat | SupportsIndex`, found `Literal["4"]`"#);
+}
+
+#[test]
+fn load_requires_the_saved_clock_for_idle_and_suspended_sessions() {
+    for saved_clock in [ExecutionClock::Wall, ExecutionClock::Cpu] {
+        for suspended in [false, true] {
+            let repl = MontyRepl::new(
+                "saved.py",
+                ResourceTracker::new(ResourceLimits::default()).with_execution_clock(saved_clock),
+                CompileOptions::default(),
+            );
+            let state = if suspended {
+                let progress = repl
+                    .feed_start(
+                        "pause()",
+                        vec![("pause".to_owned(), MontyObject::function("pause".to_owned(), None))],
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap();
+                dump("saved.py", None, &[], SessionRef::Suspended(&progress)).unwrap()
+            } else {
+                dump("saved.py", None, &[], SessionRef::Idle(&repl)).unwrap()
+            };
+            // CPU mode is Linux-only; elsewhere a CPU dump can still be saved but not loaded.
+            for destination in [ExecutionClock::Wall, ExecutionClock::Cpu]
+                .into_iter()
+                .filter(|clock| clock.is_available())
+            {
+                let mut child = Child::default();
+                let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+                    execution_clock: Some(pb::ExecutionClock::from(destination) as i32),
+                    protocol_version: PROTOCOL_VERSION,
+                    ..Default::default()
+                }));
+                let (bytes, _) = dispatch_frame(&mut child, &configure);
+                assert!(matches!(split_turn(&bytes).1, pb::child_event::Kind::Ok(_)));
+                let load = frame_request(pb::parent_request::Kind::Load(pb::Load {
+                    state: state.clone().into(),
+                }));
+                let (bytes, _) = dispatch_frame(&mut child, &load);
+                let event = split_turn(&bytes).1;
+                if saved_clock == destination {
+                    if suspended {
+                        assert!(matches!(event, pb::child_event::Kind::FunctionCall(_)), "{event:?}");
+                    } else {
+                        assert!(matches!(event, pb::child_event::Kind::Ok(_)), "{event:?}");
+                    }
+                } else {
+                    assert_eq!(
+                        expect_error_message(event),
+                        "protocol violation: snapshot execution clock differs from Configure"
+                    );
+                    let (_, event) = feed(&mut child, "2 + 2");
+                    assert!(
+                        matches!(event, pb::child_event::Kind::Complete(_)),
+                        "failed load consumed the configured session"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn unknown_execution_clock_is_rejected_before_configuration() {
+    let mut child = Child::default();
+    let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+        execution_clock: Some(42),
+        protocol_version: PROTOCOL_VERSION,
+        ..Default::default()
+    }));
+    let (bytes, _) = dispatch_frame(&mut child, &configure);
+    assert_eq!(
+        expect_error_message(split_turn(&bytes).1),
+        "protocol violation: invalid execution_clock"
+    );
+    create_repl(&mut child);
+    let (_, event) = feed(&mut child, "2 + 2");
+    assert!(matches!(event, pb::child_event::Kind::Complete(_)));
+}
+
+#[test]
+fn configuration_acknowledges_the_selected_execution_clock() {
+    for clock in [pb::ExecutionClock::Wall, pb::ExecutionClock::Cpu] {
+        let mut child = Child::default();
+        let configure = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
+            execution_clock: Some(clock as i32),
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        }));
+        let (bytes, _) = dispatch_frame(&mut child, &configure);
+        let event = FrameReader::new(bytes.as_slice())
+            .read::<pb::ChildEvent>()
+            .unwrap()
+            .unwrap();
+        if ExecutionClock::from(clock).is_available() {
+            assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
+            assert_eq!(event.execution_clock, Some(clock as i32));
+        } else {
+            assert_eq!(
+                expect_error_message(event.kind.unwrap()),
+                "protocol violation: CPU execution clock is unavailable"
+            );
+        }
+    }
+}
+
+/// CPU mode is Linux-only, so the worker refuses it elsewhere instead of silently using wall time.
+#[test]
+fn cpu_clock_availability_matches_the_platform() {
+    assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(target_os = "linux"));
 }

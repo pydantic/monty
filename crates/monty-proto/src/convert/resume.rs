@@ -3,7 +3,7 @@
 //! value is an index into the arena the same message carries.
 
 use monty_types::{
-    ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    ExtFunctionResult, ModuleFile, MontyException, MontyObject, NameLookupResult,
     unstable::{self, MontyGraph, NodeId},
 };
 
@@ -28,6 +28,7 @@ pub fn ext_result_to_proto(result: ExtFunctionResult) -> (pb::ExtFunctionResult,
         ExtFunctionResult::Error(exc) => (pb::ext_function_result::Kind::Error((&exc).into()), None),
         ExtFunctionResult::Future(call_id) => (pb::ext_function_result::Kind::Future(call_id), None),
         ExtFunctionResult::NotFound(name) => (pb::ext_function_result::Kind::NotFound(name), None),
+        ExtFunctionResult::ModuleFile(file) => (pb::ext_function_result::Kind::ModuleFile(file.into()), None),
     };
     (pb::ExtFunctionResult { kind: Some(kind) }, values)
 }
@@ -47,6 +48,7 @@ pub fn ext_result_from_proto(
         pb::ext_function_result::Kind::Error(err) => Ok(ExtFunctionResult::Error(MontyException::try_from(err)?)),
         pb::ext_function_result::Kind::Future(call_id) => Ok(ExtFunctionResult::Future(call_id)),
         pb::ext_function_result::Kind::NotFound(name) => Ok(ExtFunctionResult::NotFound(name)),
+        pb::ext_function_result::Kind::ModuleFile(file) => Ok(ExtFunctionResult::ModuleFile(file.into())),
         // NotHandled has no monty equivalent: it resolves against the
         // suspended OS call, so the child intercepts it before this
         // conversion (see `Child::handle_resume_call`); anywhere else it
@@ -55,6 +57,24 @@ pub fn ext_result_from_proto(
             field: "ExtFunctionResult.kind",
             reason: "NotHandled is only valid answering a suspended OS call".to_owned(),
         }),
+    }
+}
+
+impl From<ModuleFile> for pb::ModuleFile {
+    fn from(file: ModuleFile) -> Self {
+        Self {
+            path: file.path,
+            source: file.source,
+        }
+    }
+}
+
+impl From<pb::ModuleFile> for ModuleFile {
+    fn from(file: pb::ModuleFile) -> Self {
+        Self {
+            path: file.path,
+            source: file.source,
+        }
     }
 }
 
@@ -111,6 +131,7 @@ pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::Re
                 ExtFunctionResult::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
                 ExtFunctionResult::Future(id) => pb::ext_function_result::Kind::Future(id),
                 ExtFunctionResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
+                ExtFunctionResult::ModuleFile(file) => pb::ext_function_result::Kind::ModuleFile(file.into()),
             };
             pb::FutureResult {
                 call_id,

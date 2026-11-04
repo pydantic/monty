@@ -96,14 +96,15 @@ pub fn check_protocol_version(version: u32) -> Result<(), String> {
 pub use budget_vec::BudgetVec;
 pub use convert::{
     ProtoConvertError, ext_result_from_proto, ext_result_to_proto, future_results_from_proto, future_results_to_proto,
-    named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto, resume_call_from_proto,
+    import_stubs_from_answer, named_values_from_proto, named_values_to_proto, os_call_from_proto, os_call_to_proto,
+    resume_call_from_proto,
 };
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
 pub use decode_budget::{decode_budget_remaining, with_decode_budget};
 pub use frame::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_framed_into,
-    encode_to_capped_vec, exceeds_max_frame_len, write_frame,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, decode_frame_with_budget,
+    encode_framed_into, encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;

@@ -24,6 +24,7 @@ export interface MontyWebsocketOptions {
    * `MontyCrashedError` (`timedOut: true`). Without it, a server that accepts
    * the connection but never answers blocks the turn until the far end closes.
    * `installDependencies` is a turn too, and a real install can exceed 10s.
+   * CPU-mode servers require a finite `requestTimeout`.
    */
   requestTimeout?: number | null
   /**
@@ -32,9 +33,12 @@ export interface MontyWebsocketOptions {
    * after a server shutdown reuses the headers of the original checkout.
    */
   connectHeaders?: () => Record<string, string> | Promise<Record<string, string>>
-  /** As [`MontyOptions.feedDurationLimitGrace`] (default 1, `null` disables). */
+  /**
+   * Client grace for server wall-time budgets (default 1, `null` disables).
+   * CPU mode uses the server's supervisor and grace instead.
+   */
   feedDurationLimitGrace?: number | null
-  /** As [`MontyOptions.turnDurationLimitGrace`] (default 1, `null` disables). */
+  /** The same client wall-time grace for `maxTurnDurationSecs`. */
   turnDurationLimitGrace?: number | null
   /**
    * When a server that stores sessions drains, redial, load the state it named

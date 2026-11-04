@@ -34,7 +34,7 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     types::{
-        Dict, Module, NamedTupleClass, PyTrait, Type,
+        BuiltinType, Dict, Module, NamedTupleClass, PyTrait,
         iter::collect_owned_iterable,
         str::{StringRepr, str_isidentifier},
     },
@@ -46,7 +46,11 @@ use crate::{
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Collections, vm.interns);
 
-    module.set_attr(StaticStrings::Deque, Value::Builtin(Builtins::Type(Type::Deque)), vm);
+    module.set_attr(
+        StaticStrings::Deque,
+        Value::Builtin(Builtins::Type(BuiltinType::Deque)),
+        vm,
+    );
     module.set_attr(
         StaticStrings::Namedtuple,
         Value::ModuleFunction(super::ModuleFunctions::Collections(CollectionsFunctions::Namedtuple)),
@@ -56,12 +60,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // functions, so `type(d) is defaultdict` and `isinstance(c, Counter)` hold.
     module.set_attr(
         StaticStrings::Defaultdict,
-        Value::Builtin(Builtins::Type(Type::DefaultDict)),
+        Value::Builtin(Builtins::Type(BuiltinType::DefaultDict)),
         vm,
     );
     module.set_attr(
         StaticStrings::Counter,
-        Value::Builtin(Builtins::Type(Type::Counter)),
+        Value::Builtin(Builtins::Type(BuiltinType::Counter)),
         vm,
     );
 
@@ -222,7 +226,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         name
     } else {
         let as_str = typename.py_str(vm)?;
-        let owned = as_str.to_str(vm).map(str::to_owned);
+        let owned = as_str.try_to_str(vm).map(str::to_owned);
         as_str.drop_with(vm);
         EitherStr::from(owned?)
     };
@@ -278,7 +282,7 @@ fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Stri
             defer_drop!(item, vm);
             let as_str = item.py_str(vm)?;
             defer_drop!(as_str, vm);
-            names.push(as_str.to_str(vm)?.to_owned());
+            names.push(as_str.as_str(vm).expect("py_str returns str").to_owned());
         }
         Ok(names)
     }

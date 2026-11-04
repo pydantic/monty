@@ -33,7 +33,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
+        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -858,7 +858,10 @@ impl<'h> HeapObjectRead<'h, Decimal> {
             DecimalMethod::DunderReduce => {
                 let text = allocate_string(d.to_sci_string(false, true), vm.heap);
                 let args = allocate_tuple(smallvec![text], vm.heap);
-                allocate_tuple(smallvec![Value::Builtin(Builtins::Type(Type::Decimal)), args], vm.heap)
+                allocate_tuple(
+                    smallvec![Value::Builtin(Builtins::Type(BuiltinType::Decimal)), args],
+                    vm.heap,
+                )
             }
             DecimalMethod::DunderComplex => {
                 let real = d.to_f64()?;

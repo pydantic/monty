@@ -32,10 +32,10 @@ assert interned_result == 'hello'
 
 # Negative count path with a HEAP-allocated input: the short-circuit shares the
 # same heap object back to the caller, so input_str and result alias each other.
-# (Concatenation at runtime defeats compile-time literal interning.)
-input_str = 'hel' + 'lo'
+# Concatenation defeats literal interning; the result exceeds inline capacity.
+input_str = 'hello' + ' world of strings'
 result = p.sub('repl', input_str, -1)
-assert result == 'hello'
+assert result == 'hello world of strings'
 
 # repl_list: 1 (variable)
 # input_list: 1 (variable)

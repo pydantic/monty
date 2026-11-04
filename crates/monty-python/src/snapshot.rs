@@ -35,7 +35,7 @@ use std::{
 };
 
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value, uuid_to_py};
+use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value, uuid_to_py};
 use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange};
 use pyo3::{
     Borrowed,
@@ -53,18 +53,20 @@ mod tests;
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
         dispatch_module_coroutine, wait_for_futures,
     },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
     external::{
-        CallResult, ExternalLookup, HostNames, is_module_call, resolve_object_attr, sync_module_coroutines_error,
-        wire_call_arguments,
+        CallResult, ExternalLookup, HostNames, is_intercepted_os_call, resolve_object_attr,
+        sync_module_coroutines_error, wire_call_arguments,
     },
+    import_files::{find_import_file_async, find_import_file_sync, import_search},
     pool::{
-        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
-        dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
+        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, decode_result, discard_checkout,
+        discard_checkout_sync, dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync,
+        turn_fn,
     },
     print_target::PrintTarget,
     telemetry::{capture_otel_context, snapshot_trace_context},
@@ -485,6 +487,7 @@ fn ext_result_to_resume(result: ExtFunctionResult) -> ResumeValue {
             let _ = name;
             ResumeValue::NotFound
         }
+        ExtFunctionResult::ModuleFile(file) => ResumeValue::ModuleFile(file),
     }
 }
 
@@ -744,9 +747,9 @@ impl PyFunctionSnapshot {
             context.enter(py, &native)
         })?;
         let call = &self.0.call;
-        // the host's modules answer their own OS calls, ahead of mounts and `os=`
-        let module_call = call.is_os_function && is_module_call(&call.function_name);
-        let value = if call.is_os_function && !module_call {
+        // intercepted OS calls are answered here, ahead of mounts and `os=`
+        let intercepted = call.is_os_function && is_intercepted_os_call(&call.function_name);
+        let value = if call.is_os_function && !intercepted {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
                 return build_snapshot(py, ctx, event, false);
             }
@@ -767,8 +770,8 @@ impl PyFunctionSnapshot {
                 }
             }
         } else {
-            let result = if module_call {
-                dispatch_module_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
+            let result = if intercepted {
+                dispatch_intercepted_os_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
             } else {
                 dispatch_function_call(
                     &call.function_name,
@@ -793,6 +796,22 @@ impl PyFunctionSnapshot {
                     exc_py_to_monty(py, &sync_module_coroutines_error(py, &names, &coros)),
                 )),
             }
+        };
+        // no host module: the file search, `os=` then mounts
+        let search = intercepted
+            .then(|| import_search(&call.function_name, &call.args))
+            .flatten();
+        let value = match (value, search) {
+            (ResumeValue::NotFound, Some(search)) => {
+                match find_import_file_sync(py, &search, ctx.os.as_ref(), &ctx.instances, &ctx.checkout) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        discard_checkout_sync(py, &ctx.checkout);
+                        return Err(err);
+                    }
+                }
+            }
+            (value, _) => value,
         };
         drop(guard);
         drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p))))
@@ -905,9 +924,9 @@ impl PyAsyncFunctionSnapshot {
             // asyncio task-locals that `future_into_py`'s scope establishes.
             // Dispatch (and convert any coroutine) under the callback context;
             // only a handed-back await runs outside it.
-            // the host's modules answer their own OS calls, ahead of mounts and `os=`
-            let module_call = call.is_os_function && is_module_call(&call.function_name);
-            let dispatched = if call.is_os_function && !module_call {
+            // intercepted OS calls are answered here, ahead of mounts and `os=`
+            let intercepted = call.is_os_function && is_intercepted_os_call(&call.function_name);
+            let dispatched = if call.is_os_function && !intercepted {
                 // mounts get first refusal, then the captured `os=`
                 let mounted = run_turn_async(
                     &ctx.checkout,
@@ -940,8 +959,8 @@ impl PyAsyncFunctionSnapshot {
                 let mut join_set = ctx.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
-                    let result = if module_call {
-                        dispatch_module_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
+                    let result = if intercepted {
+                        dispatch_intercepted_os_call(&call.function_name, &call.args, &ctx.names, &ctx.instances)
                     } else {
                         dispatch_function_call(
                             &call.function_name,
@@ -986,6 +1005,17 @@ impl PyAsyncFunctionSnapshot {
                 }
                 Ok(Dispatched::AsValue(future)) => Ok(ext_result_to_resume(future.await)),
                 Err(err) => Err(err),
+            };
+            // no host module: the file search, `os=` then mounts
+            let search = intercepted
+                .then(|| import_search(&call.function_name, &call.args))
+                .flatten();
+            let answer = match (answer, search) {
+                (Ok(ResumeValue::NotFound), Some(search)) => {
+                    let (os, instances) = (ctx.os.as_ref(), &ctx.instances);
+                    find_import_file_async(&search, os, instances, &ctx.checkout, &context, &native).await
+                }
+                (answer, _) => answer,
             };
             let value = match answer {
                 Ok(value) => value,
@@ -1424,7 +1454,7 @@ pub struct MontyComplete {
 impl MontyComplete {
     #[getter]
     fn output(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        monty_to_py(py, &self.value, &self.instances)
+        decode_result(py, &self.value, &self.instances)
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {

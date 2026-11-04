@@ -10,7 +10,7 @@ use crate::{
     builtins::Builtins,
     heap::{Heap, HeapId},
     modules::ModuleFunctions,
-    types::{LongInt, Property},
+    types::{LongInt, Property, inline_str::InlineStr},
     value::{Marker, Value},
 };
 
@@ -42,6 +42,8 @@ pub(crate) enum Identity {
     Float(u64),
     /// Identity of an interned string.
     InternString(usize),
+    /// Content identity of a short string stored inline.
+    InlineString(InlineStr),
     /// Identity of an interned bytes value.
     InternBytes(usize),
     /// Identity of an interned long integer literal.
@@ -72,6 +74,7 @@ impl Identity {
             Value::Int(value) => Self::Int(*value),
             Value::Float(value) => Self::Float(value.to_bits()),
             Value::InternString(id) => Self::InternString(id.index()),
+            Value::InlineString(text) => Self::InlineString(*text),
             Value::InternBytes(id) => Self::InternBytes(id.index()),
             Value::InternLongInt(id) => Self::InternLongInt(id.index()),
             Value::Builtin(builtin) => Self::Builtin(*builtin),
@@ -102,6 +105,7 @@ impl Identity {
             | Self::InternLongInt(index)
             | Self::DefFunction(index)
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
+            Self::InlineString(text) => bytes_payload(text.as_str().as_bytes()),
             Self::Builtin(value) => fixed_serde_payload(value),
             Self::ModuleFunction(value) => fixed_serde_payload(value),
             Self::Marker(value) => fixed_serde_payload(value),
@@ -128,6 +132,7 @@ impl Identity {
             Self::Int(_) => 5,
             Self::Float(_) => 6,
             Self::InternString(_) => 7,
+            Self::InlineString(_) => 17,
             Self::InternBytes(_) => 8,
             Self::InternLongInt(_) => 9,
             Self::Builtin(_) => 10,

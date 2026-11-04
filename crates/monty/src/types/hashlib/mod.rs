@@ -38,6 +38,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
+    py_value::PyValue,
     types::{LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
@@ -513,10 +514,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
                 }
                 let data = args.get_one_arg(&method("update"), vm.heap)?;
                 defer_drop!(data, vm);
+                let data = data.py_value(vm);
                 // The input borrows the heap, so the state is lifted out while
                 // it is absorbed and put back on every path.
                 let mut hash = mem::take(self.get_mut(vm.heap));
-                let absorbed = hash_input(data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
+                let absorbed = hash_input(&data, vm).and_then(|input| hash.update(input, &vm.heap.tracker));
                 *self.get_mut(vm.heap) = hash;
                 absorbed.map(|()| CallResult::Value(Value::None))
             }
@@ -579,15 +581,10 @@ fn xof_length(length: u64, bytes_per_output: usize, vm: &VM<'_>) -> RunResult<us
 
 /// Borrows the bytes a hash accepts, with the two messages `_hashlib` uses:
 /// `str` is told to encode first, anything else is not a buffer.
-pub(crate) fn hash_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
+pub(crate) fn hash_input<'a, 'h>(value: &'a PyValue<'h>, vm: &'a VM<'h>) -> RunResult<&'a [u8]> {
     match value {
-        Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
-            HeapData::Str(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
-            _ => Err(ExcType::type_error("object supporting the buffer API required")),
-        },
-        Value::InternString(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
+        PyValue::Str(_) => Err(ExcType::type_error("Strings must be encoded before hashing")),
+        PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm)),
         _ => Err(ExcType::type_error("object supporting the buffer API required")),
     }
 }

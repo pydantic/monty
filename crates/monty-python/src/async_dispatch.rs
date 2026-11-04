@@ -25,10 +25,11 @@ use crate::external::{
     AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
-/// Answers an `import` or `import_stubs` OS call (see
-/// [`is_module_call`](crate::external::is_module_call)) from `names`,
-/// returning `CallResult::ModuleCoroutine` when a factory must be awaited first.
-pub(crate) fn dispatch_module_call(
+/// Answers an intercepted OS call (see
+/// [`is_intercepted_os_call`](crate::external::is_intercepted_os_call)): imports and stubs
+/// from the host's names and modules, type hints from the named function or the `ClassType`
+/// in `instances`. Returns `CallResult::ModuleCoroutine` when a factory must be awaited first.
+pub(crate) fn dispatch_intercepted_os_call(
     function_name: &str,
     args: &CallArgs,
     names: &HostNames,
@@ -36,8 +37,8 @@ pub(crate) fn dispatch_module_call(
 ) -> CallResult {
     Python::attach(|py| {
         ExternalLookup::new(py, names, instances)
-            .module_call_or_coroutine(function_name, args)
-            .expect("only a module OS call is dispatched here")
+            .intercepted_os_call_or_coroutine(function_name, args)
+            .expect("only an intercepted OS call is dispatched here")
     })
 }
 
@@ -226,7 +227,7 @@ fn coroutine_future(
 
 /// Schedules `coro` on the caller's event loop, under the task-locals the
 /// current `future_into_py` scope established.
-fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
+pub(crate) fn python_future(coro: Py<PyAny>) -> PyResult<impl Future<Output = PyResult<Py<PyAny>>> + Send + use<>> {
     Python::attach(|py| {
         let locals = get_current_locals(py)?.copy_context(py)?;
         into_future_with_locals(&locals, coro.into_bound(py))

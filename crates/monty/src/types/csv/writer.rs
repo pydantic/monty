@@ -259,7 +259,7 @@ pub(crate) fn format_row(
                 append_field_data(
                     dialect,
                     terminator_chars,
-                    text.to_str(vm)?,
+                    text.as_str(vm).expect("py_str returns str"),
                     &mut quoted,
                     &mut field_buffer,
                     &vm.heap.tracker,

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+import sys
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, dataclass
 from fractions import Fraction
 from functools import cached_property
+from types import MappingProxyType
 from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
@@ -1309,3 +1312,101 @@ def test_same_qualname_distinct_classes(monty_run: RunMonty):
         'b': ClassInstance(second(), eager_attrs='all', class_type=pydantic_monty.ClassType(second, id=uuid4())),
     }
     assert monty_run('(type(a) == type(b), a == b)', inputs=inputs) == snapshot((False, False))
+
+
+@dataclass
+class Typed:
+    name: str
+    tags: list[str]
+    parent: Typed | None = None
+
+
+def test_class_type_hints(monty_run: RunMonty):
+    code = 'from typing import get_type_hints\nget_type_hints(T)'
+    # builtin types cross as themselves, anything else as text
+    assert monty_run(code, inputs={'T': ClassType(Typed)}) == snapshot(
+        {'name': str, 'tags': 'list[str]', 'parent': 'test_class_instance.Typed | None'}
+    )
+
+
+def test_class_type_hints_read_only_when_asked(monty_run: RunMonty):
+    calls: list[str] = []
+
+    class Counting(ClassType):
+        def get_type_hints(self) -> Mapping[str, Any]:
+            calls.append('get_type_hints')
+            return super().get_type_hints()
+
+    T = Counting(Typed)
+    assert monty_run('T.__name__', inputs={'T': T}) == snapshot('Typed')
+    assert calls == snapshot([])
+    code = 'from typing import get_type_hints\nget_type_hints(T)["name"]'
+    assert monty_run(code, inputs={'T': T}) is str
+    assert calls == snapshot(['get_type_hints'])
+
+
+def test_class_type_hints_latest_wrapper_wins(monty_run: RunMonty):
+    # wrappers sharing an id are one sandbox class: the last one sent answers for its hints
+    class Renamed(ClassType):
+        def get_type_hints(self) -> dict[str, Any]:
+            return {'renamed': int}
+
+    class_id = uuid4()
+    code = 'from typing import get_type_hints\n(a is b, get_type_hints(b))'
+    inputs = {'a': ClassType(Typed, id=class_id), 'b': Renamed(Typed, id=class_id)}
+    assert monty_run(code, inputs=inputs) == snapshot((True, {'renamed': int}))
+
+
+def test_class_type_hints_of_an_instance_id(monty_run: RunMonty):
+    # an instance wrapper of the class object, sent last, takes over the class's id
+    class_id = uuid4()
+    code = 'from typing import get_type_hints\nget_type_hints(T)'
+    inputs = {'T': ClassType(Typed, id=class_id), 'i': ClassInstance(Typed, id=class_id)}
+    assert monty_run(code, inputs=inputs) == snapshot({})
+
+
+def test_class_type_hints_any_mapping(monty_run: RunMonty):
+    class Proxied(ClassType):
+        def get_type_hints(self) -> Mapping[str, Any]:
+            return MappingProxyType({'name': str, 'count': int})
+
+    code = 'from typing import get_type_hints\nget_type_hints(T)'
+    assert monty_run(code, inputs={'T': Proxied(Typed)}) == snapshot({'name': str, 'count': int})
+
+
+def test_class_type_hints_not_a_mapping(monty_run: RunMonty):
+    class Broken(ClassType):
+        def get_type_hints(self) -> Mapping[str, Any]:
+            return [('name', str)]  # pyright: ignore[reportReturnType]
+
+    code = """
+from typing import get_type_hints
+try:
+    get_type_hints(T)
+except TypeError as e:
+    result = str(e)
+result
+"""
+    assert monty_run(code, inputs={'T': Broken(Typed)}) == snapshot(
+        'ClassType.get_type_hints() must return a mapping, not list'
+    )
+
+
+@pytest.mark.skipif(sys.version_info < (3, 14), reason='earlier versions evaluate annotations at class creation')
+def test_class_hints_unresolvable_at_runtime(monty_run: RunMonty):
+    # without `from __future__ import annotations`, a name imported only for type
+    # checkers makes evaluating the hints raise, which the sandbox sees
+    ns: dict[str, Any] = {}
+    source = 'from dataclasses import dataclass\n@dataclass\nclass Price:\n    amount: Decimal\n    currency: str'
+    # `dont_inherit` drops this module's `from __future__ import annotations`
+    exec(compile(source, '<price>', 'exec', dont_inherit=True), ns)
+    x = ClassInstance(ns['Price'](1, 'USD'), eager_attrs='all')
+    code = """
+from typing import get_type_hints
+try:
+    get_type_hints(type(x))
+except NameError as e:
+    result = (x.currency, str(e))
+result
+"""
+    assert monty_run(code, inputs={'x': x}) == snapshot(('USD', "name 'Decimal' is not defined"))
