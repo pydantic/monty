@@ -364,7 +364,7 @@ A call awaited at once, as in `await fetch(url)`, still suspends, since nothing 
     ```
 
 Python detects these functions with `inspect.iscoroutinefunction`, which also accepts a `functools.partial` of an
-`async def` and a function marked with `inspect.markcoroutinefunction`.
+`async def` and, on Python 3.12+, a function marked with `inspect.markcoroutinefunction`.
 JavaScript reads the function's `AsyncFunction` tag, which bound functions keep; an `async function` transpiled to an
 older target is a plain function returning a promise, so its calls suspend.
 

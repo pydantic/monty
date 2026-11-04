@@ -900,6 +900,22 @@ impl ReplFunctionCall {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 
+    /// [`Self::resume_pending`] within the current host turn, for a host that starts
+    /// the call without ending the turn: its time keeps counting against `max_turn_duration`.
+    pub fn resume_pending_in_turn(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot
+            .run_inner(ExtFunctionResult::Future(self.call_id), None, Turn::Continue, print)
+    }
+
+    /// [`Self::resume`] within the current host turn; see [`Self::resume_pending_in_turn`].
+    pub fn resume_in_turn(
+        self,
+        result: impl Into<ExtFunctionResult>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run_inner(result.into(), None, Turn::Continue, print)
+    }
+
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
@@ -910,6 +926,7 @@ impl ReplFunctionCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -985,6 +1002,7 @@ impl ReplOsCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -1346,6 +1364,15 @@ fn starts_with_triple_quote(source: &str) -> bool {
 // ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
 
+/// Whether a resume starts a new host turn, resetting the `max_turn_duration` clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    /// The host answered after the turn ended.
+    New,
+    /// The host resumed within the turn, having started the call without ending it.
+    Continue,
+}
+
 /// Restores the REPL VM and aborts uncatchably, preserving its globals.
 ///
 /// Any armed OS effect is rolled back.
@@ -1442,15 +1469,16 @@ impl ReplSnapshot {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.run_inner(result.into(), None, print)
+        self.run_inner(result.into(), None, Turn::New, print)
     }
 
-    /// Shared body of [`Self::run`] and [`ReplFunctionCall::resume_eager`];
-    /// `eager_call_id` is set only for the latter.
+    /// Shared body of [`Self::run`], the eager resumes and the in-turn resumes;
+    /// `eager_call_id` is set only for an eager resume.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
         eager_call_id: Option<u32>,
+        turn: Turn,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1459,7 +1487,9 @@ impl ReplSnapshot {
             vm_state,
         } = self;
 
-        repl.heap.tracker.on_turn_start();
+        if turn == Turn::New {
+            repl.heap.tracker.on_turn_start();
+        }
         let (converted, vm_state) = HeapReader::with(
             &mut repl.heap,
             &mut (&mut executor, print),

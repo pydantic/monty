@@ -92,6 +92,24 @@ test('an async call runs on the host after the sandbox has moved on', async (ctx
   t.deepEqual(log, ['after the call\n', 'fetch(1)'])
 })
 
+test('a failed print stops started calls from running on the host', async (ctx) => {
+  skipIfWasm(ctx)
+  let calls = 0
+  const effect = async () => {
+    calls += 1
+  }
+  const error = await t.throwsAsync(() =>
+    run("print('x')\na = effect()\nawait a", {
+      externalLookup: { effect },
+      printCallback: () => {
+        throw new Error('print rejected')
+      },
+    }),
+  )
+  t.is(error.message, 'print rejected')
+  t.is(calls, 0)
+})
+
 test('a sync host function still suspends at the call', async (ctx) => {
   skipIfWasm(ctx)
   const log: string[] = []
@@ -117,7 +135,11 @@ test('an async function the host cannot find raises NameError at the await', asy
 test('feedStart suspends at every call to an async function', async () => {
   const fetch = async (x: number) => x * 2
   await using session = await pool().checkout()
-  const step = await session.feedStart('a = fetch(1)\nawait a', { externalLookup: { fetch } })
-  t.true(step instanceof FunctionSnapshot)
-  t.is((step as FunctionSnapshot).functionName, 'fetch')
+  const code = 'a = fetch(1)\nb = fetch(2)\nawait a + await b'
+  const first = await session.feedStart(code, { externalLookup: { fetch } })
+  t.true(first instanceof FunctionSnapshot)
+  t.deepEqual((first as FunctionSnapshot).args, [1])
+  const second = await (first as FunctionSnapshot).resume(2)
+  t.true(second instanceof FunctionSnapshot)
+  t.deepEqual((second as FunctionSnapshot).args, [2])
 })

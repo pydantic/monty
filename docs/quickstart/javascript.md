@@ -73,8 +73,8 @@ const data = await session.feedRun('await fetch_data()', {
 console.log(data) // data
 ```
 
-The worker starts calls to an `async` host function without waiting for the host when the sandbox does not await
-them at once, so a `gather` over many calls costs one round trip; see [starting calls without
+Native and remote workers start calls to an `async` host function without waiting for the host when the sandbox does
+not await them at once (the WebAssembly worker suspends at each), so a `gather` over many calls costs one round trip; see [starting calls without
 waiting](../host-functions.md#starting-calls-without-waiting).
 
 Keyword arguments from the sandbox arrive as a trailing object on the call.

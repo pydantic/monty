@@ -134,8 +134,8 @@ Older workers omit the flag, which defaults to false, so newer parents retain th
 
 Calls to async host functions start without suspending when the parent sets `Configure.started_calls` and the feed
 sets `Feed.start_calls`; a parent answering every call itself, as `feed_start` does, leaves the feed's flag unset.
-A function is async when its `Function` value has `is_async` set, or when the feed lists its name in
-`Feed.async_functions`.
+A call is eligible when its callee's `Function` value has `is_async` set, or when the call has no receiver and the
+feed lists its name in `Feed.async_functions` (the case of a bare name the parent never supplied a value for).
 A call the sandbox awaits at once with no other task to run still suspends, so the parent can answer it eagerly.
 The worker registers the call's future itself, sends the call in a `StartedCalls` event and keeps running.
 `StartedCalls`, like `Print`, does not end the turn, and every started call is sent before the turn-ending event that

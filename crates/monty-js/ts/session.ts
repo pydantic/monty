@@ -239,14 +239,16 @@ export class MontySession {
       onPrint,
     )) as NativeTurn
     for (;;) {
-      // before the turn is answered: a `resolveFutures` turn may name these calls
-      await answerer.startCalls(turn)
+      // A failed print is checked before any started call runs on the host, so
+      // an output limit or a throwing print callback stops host-side effects too.
       switch (turn.kind) {
         case 'complete':
           printTarget.throwIfFailed()
+          await answerer.startCalls(turn)
           return restore(turn.value, this.instances)
         case 'error':
           printTarget.throwIfFailed()
+          await answerer.startCalls(turn)
           throw montyErrorFromNative(turn.exception)
         case 'typingError':
           printTarget.throwIfFailed()
@@ -266,6 +268,8 @@ export class MontySession {
       } catch (err) {
         throw this.poison(err instanceof Error ? err : new Error(String(err)))
       }
+      // before the turn is answered: a `resolveFutures` turn may name these calls
+      await answerer.startCalls(turn)
       try {
         turn = await answerer.answer(turn, onPrint)
       } catch (err) {

@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import sys
 from typing import Any
 
 import pytest
@@ -122,6 +123,7 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
             assert str(exc_info2.value) == snapshot('this checkout has already been finished')
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason='inspect.markcoroutinefunction needs Python 3.12')
 async def test_coroutine_function_calls_start_without_suspending():
     """A call that is not awaited at once reaches the host after the sandbox has moved on."""
     log: list[str] = []
