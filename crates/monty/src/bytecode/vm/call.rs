@@ -194,7 +194,7 @@ impl<'h> VM<'h> {
     /// and returns the result.
     pub(super) fn exec_call_function(&mut self, arg_count: usize) -> Result<CallResult, RunError> {
         let callable_index = self.stack.len() - arg_count - 1;
-        if let Value::DefFunction(func_id) = self.stack[callable_index]
+        if let Some(func_id) = self.exact_def_function_id(&self.stack[callable_index])
             && let Some(result) = self.try_call_exact_def_function(func_id, callable_index, arg_count)
         {
             result
@@ -761,6 +761,20 @@ impl<'h> VM<'h> {
     // Frame Setup
     // ========================================================================
 
+    /// Recognizes functions whose call needs neither defaults nor an explicit globals namespace.
+    fn exact_def_function_id(&self, callable: &Value) -> Option<FunctionId> {
+        match callable {
+            Value::DefFunction(func_id) => Some(*func_id),
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::FunctionDefaults(function) if function.defaults.is_empty() && function.globals.is_none() => {
+                    Some(function.func_id)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Bypasses argument binding when a direct call matches its cached call plan.
     fn try_call_exact_def_function(
         &mut self,
@@ -782,7 +796,7 @@ impl<'h> VM<'h> {
 
     /// Pushes a simple function frame using arguments already present on the VM stack.
     ///
-    /// Removing the immediate callable shifts its arguments into the parameter
+    /// Removing the callable shifts its arguments into the parameter
     /// slots, avoiding argument wrappers, binding, scratch storage, and a copy.
     fn call_exact_sync_function(
         &mut self,
@@ -796,7 +810,8 @@ impl<'h> VM<'h> {
         let code = &func.code;
 
         let callable = self.stack.remove(callable_index);
-        debug_assert_exact_callable(&callable, func_id);
+        debug_assert_eq!(self.exact_def_function_id(&callable), Some(func_id));
+        callable.drop_with(self);
         self.stack
             .resize_with(callable_index + namespace_size, || Value::Undefined);
 
@@ -821,7 +836,8 @@ impl<'h> VM<'h> {
         self.install_closure_cells(func, &[], &mut namespace);
 
         let callable = self.pop();
-        debug_assert_exact_callable(&callable, func_id);
+        debug_assert_eq!(self.exact_def_function_id(&callable), Some(func_id));
+        callable.drop_with(self);
 
         let coroutine = Coroutine::new(func_id, namespace, None);
         let coroutine_id = self.heap.allocate(HeapData::Coroutine(coroutine));
@@ -1278,14 +1294,44 @@ fn clone_args_from_tuple(items: &[Value], vm: &impl ContainsHeap) -> RunResult<V
     Ok(args)
 }
 
-/// Asserts a callable popped off the stack by an exact-positional-call fast
-/// path is the function that fast path was chosen for.
-///
-/// Shared by [`VM::call_exact_sync_function`] and [`VM::create_exact_coroutine`],
-/// which both remove their callable from the stack after already having
-/// dispatched on its `FunctionId` in [`VM::try_call_exact_def_function`].
-fn debug_assert_exact_callable(callable: &Value, func_id: FunctionId) {
-    debug_assert!(matches!(callable, Value::DefFunction(id) if *id == func_id));
+#[cfg(test)]
+mod tests {
+    use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
+
+    use super::VM;
+    use crate::{
+        heap::{Heap, HeapReader},
+        run::{Executor, Program},
+        value::Value,
+    };
+
+    /// Exact heap-backed calls move owned arguments without allocating a binding namespace.
+    #[test]
+    fn heap_exact_call_keeps_arguments_on_stack() {
+        let mut executor = Executor::new(
+            "def pick(first, second, third):\n    return first\n\
+             item = [1, 2, 3]\nalias = pick\n\
+             assert alias(item, [], {}) is item\nlen(item)"
+                .to_owned(),
+            "exact.py",
+            vec![],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let globals = (0..executor.namespace_size()).map(|_| Value::Undefined).collect();
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut executor, |reader, executor| {
+            let mut vm = VM::new(
+                globals,
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            assert_eq!(Program::run_to_completion(&mut vm).unwrap(), MontyObject::int(3));
+            assert_eq!(vm.namespace_scratch.capacity(), 0);
+        });
+    }
 }
 
 /// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,

@@ -243,8 +243,8 @@ direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`
 ## Function hashes
 
 Distinct functions created from the same `def` share a hash value in Monty.
-Dicts and sets still distinguish these function objects, but storing many of
-them as keys can be slower than in CPython because they share a hash bucket.
+Dicts and sets still distinguish these function objects.
+Inserting many of them as keys has quadratic worst-case cost because they share a hash bucket.
 
 ## What *does* work
 

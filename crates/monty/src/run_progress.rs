@@ -6,7 +6,10 @@
 //! The internal [`Snapshot`] type is `pub(crate)` — callers interact exclusively with
 //! the per-variant structs.
 
-use std::mem;
+use std::{
+    mem,
+    ops::{Deref, DerefMut},
+};
 
 use monty_types::{
     CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
@@ -57,9 +60,13 @@ impl RunProgress {
             Self::FunctionCall(FunctionCall { snapshot, .. })
             | Self::OsCall(OsCall { snapshot, .. })
             | Self::NameLookup(NameLookup { snapshot, .. }) => {
+                let snapshot = &mut **snapshot;
                 Some((&mut snapshot.heap, &snapshot.executor.tables.interns))
             }
-            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &executor.tables.interns)),
+            Self::ResolveFutures(ResolveFutures { snapshot, .. }) => {
+                let snapshot = &mut **snapshot;
+                Some((&mut snapshot.heap, &snapshot.executor.tables.interns))
+            }
             Self::Complete(_) => None,
         }
     }
@@ -143,7 +150,7 @@ pub struct FunctionCall {
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal execution snapshot.
-    snapshot: Snapshot,
+    snapshot: OwnedSnapshot<Snapshot>,
 }
 
 impl FunctionCall {
@@ -164,7 +171,7 @@ impl FunctionCall {
             object_id,
             allow_eager_await,
             position,
-            snapshot,
+            snapshot: OwnedSnapshot::new(snapshot),
         }
     }
 
@@ -194,7 +201,7 @@ impl FunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        self.snapshot.run(result.into(), print)
+        self.snapshot.into_inner().run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` instead of a concrete value.
@@ -209,7 +216,9 @@ impl FunctionCall {
     /// # Arguments
     /// * `print` — Writer for print output.
     pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
+        self.snapshot
+            .into_inner()
+            .run(ExtFunctionResult::Future(self.call_id), print)
     }
 
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
@@ -219,7 +228,7 @@ impl FunctionCall {
         result: Result<MontyObject, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        self.snapshot.run_inner(
+        self.snapshot.into_inner().run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
             print,
@@ -228,7 +237,7 @@ impl FunctionCall {
 
     /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        self.snapshot.abort(exc, print)
+        self.snapshot.into_inner().abort(exc, print)
     }
 }
 
@@ -259,7 +268,7 @@ pub struct OsCall {
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal execution snapshot.
-    snapshot: Snapshot,
+    snapshot: OwnedSnapshot<Snapshot>,
 }
 
 impl OsCall {
@@ -276,7 +285,7 @@ impl OsCall {
             call_id,
             allow_eager_await,
             position,
-            snapshot,
+            snapshot: OwnedSnapshot::new(snapshot),
         }
     }
 
@@ -290,7 +299,7 @@ impl OsCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        self.snapshot.run(result.into(), print)
+        self.snapshot.into_inner().run(result.into(), print)
     }
 
     /// Dispatches the call to `handler` and resumes execution with its result.
@@ -305,7 +314,7 @@ impl OsCall {
         handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
     ) -> Result<RunProgress, MontyException> {
         let result = handler(self.function_call);
-        self.snapshot.run(result, print)
+        self.snapshot.into_inner().run(result, print)
     }
 
     /// Resumes with the wait already performed, as [`FunctionCall::resume_eager`]
@@ -317,7 +326,7 @@ impl OsCall {
         result: Result<MontyObject, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
-        self.snapshot.run_inner(
+        self.snapshot.into_inner().run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
             print,
@@ -329,7 +338,7 @@ impl OsCall {
     /// The exception builds a traceback but bypasses sandbox handlers. Pending
     /// file effects roll back. Always returns `Err`.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        self.snapshot.abort(exc, print)
+        self.snapshot.into_inner().abort(exc, print)
     }
 
     /// Returns the resource tracker while execution is suspended.
@@ -403,7 +412,7 @@ pub struct NameLookup {
     /// Where the resolved value lands (namespace slot or instance attribute).
     scope: LookupScope,
     /// Internal execution snapshot.
-    snapshot: Snapshot,
+    snapshot: OwnedSnapshot<Snapshot>,
 }
 
 impl NameLookup {
@@ -413,7 +422,7 @@ impl NameLookup {
             name,
             position,
             scope,
-            snapshot,
+            snapshot: OwnedSnapshot::new(snapshot),
         }
     }
 
@@ -432,7 +441,7 @@ impl NameLookup {
 
     /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        self.snapshot.abort(exc, print)
+        self.snapshot.into_inner().abort(exc, print)
     }
 
     /// Resumes execution after name resolution.
@@ -458,7 +467,7 @@ impl NameLookup {
             mut heap,
             mut executor,
             vm_state: snapshot_vm_state,
-        } = self.snapshot;
+        } = self.snapshot.into_inner();
         let scope = self.scope;
         let name = self.name;
 
@@ -666,12 +675,9 @@ fn undefined_lookup_error(scope: &LookupScope, name: &str) -> RunError {
 /// [`resume`](Self::resume) with some or all of the results.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResolveFutures {
-    /// The executor containing compiled code and interns.
-    executor: Executor,
-    /// The VM state containing stack, frames, globals, and exception state.
-    vm_state: VMSnapshot,
-    /// The heap containing all allocated objects.
-    heap: Heap,
+    /// Owned execution roots, flattened to retain the persisted field layout.
+    #[serde(flatten)]
+    snapshot: OwnedSnapshot<Snapshot>,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
     /// Where the main task's blocked `await` is in the source.
@@ -688,9 +694,11 @@ impl ResolveFutures {
         position: SourceRange,
     ) -> Self {
         Self {
-            executor,
-            vm_state,
-            heap,
+            snapshot: OwnedSnapshot::new(Snapshot {
+                executor,
+                vm_state,
+                heap,
+            }),
             pending_call_ids,
             position,
         }
@@ -711,17 +719,16 @@ impl ResolveFutures {
     /// Returns the resource tracker while execution is suspended.
     #[must_use]
     pub fn tracker(&self) -> &ResourceTracker {
-        &self.heap.tracker
+        &self.snapshot.heap.tracker
     }
 
     /// Aborts with an uncatchable exception and abandons pending futures.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
-        let Self {
+        let Snapshot {
             executor,
             vm_state,
             heap,
-            ..
-        } = self;
+        } = self.snapshot.into_inner();
         abort_restored(executor, vm_state, heap, exc, print)
     }
 
@@ -736,12 +743,15 @@ impl ResolveFutures {
     #[must_use]
     pub fn __force_gc_for_tests(self) -> Self {
         let Self {
-            mut executor,
-            vm_state,
-            mut heap,
+            snapshot,
             pending_call_ids,
             position,
         } = self;
+        let Snapshot {
+            mut executor,
+            vm_state,
+            mut heap,
+        } = snapshot.into_inner();
 
         let vm_state = HeapReader::with(&mut heap, &mut executor, |reader, executor| {
             let mut vm = VM::restore(
@@ -767,7 +777,7 @@ impl ResolveFutures {
     #[doc(hidden)]
     #[must_use]
     pub fn __live_task_count_for_tests(&self) -> usize {
-        self.vm_state.live_task_count()
+        self.snapshot.vm_state.live_task_count()
     }
 
     /// Resumes execution with results for some or all pending futures.
@@ -791,12 +801,15 @@ impl ResolveFutures {
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         let Self {
-            mut executor,
-            vm_state,
-            mut heap,
+            snapshot,
             pending_call_ids,
             ..
         } = self;
+        let Snapshot {
+            mut executor,
+            vm_state,
+            mut heap,
+        } = snapshot.into_inner();
 
         // Validate that all provided call_ids are in the pending set before restoring VM.
         let invalid_call_id = results
@@ -838,6 +851,62 @@ impl ResolveFutures {
 // Snapshot (pub(crate))
 // ---------------------------------------------------------------------------
 
+/// Execution roots that must be released while their owning heap is still alive.
+pub(crate) trait SnapshotCleanup {
+    /// Discards a suspended execution and all of its roots.
+    fn cleanup(self);
+}
+
+/// Drops abandoned execution roots, while serializing exactly the underlying snapshot.
+#[derive(Debug)]
+pub(crate) struct OwnedSnapshot<T: SnapshotCleanup>(Option<T>);
+
+impl<T: SnapshotCleanup> OwnedSnapshot<T> {
+    /// Takes ownership of a suspended execution.
+    pub(crate) fn new(snapshot: T) -> Self {
+        Self(Some(snapshot))
+    }
+
+    /// Transfers roots to the resume or explicit abandonment path without cleaning them twice.
+    pub(crate) fn into_inner(mut self) -> T {
+        self.0.take().expect("snapshot is still owned")
+    }
+}
+
+impl<T: SnapshotCleanup> Deref for OwnedSnapshot<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_ref().expect("snapshot is still owned")
+    }
+}
+
+impl<T: SnapshotCleanup> DerefMut for OwnedSnapshot<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect("snapshot is still owned")
+    }
+}
+
+impl<T: SnapshotCleanup + serde::Serialize> serde::Serialize for OwnedSnapshot<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.deref().serialize(serializer)
+    }
+}
+
+impl<'de, T: SnapshotCleanup + serde::Deserialize<'de>> serde::Deserialize<'de> for OwnedSnapshot<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Self::new)
+    }
+}
+
+impl<T: SnapshotCleanup> Drop for OwnedSnapshot<T> {
+    fn drop(&mut self) {
+        if let Some(snapshot) = self.0.take() {
+            snapshot.cleanup();
+        }
+    }
+}
+
 /// Internal execution state that can be resumed after suspension.
 ///
 /// This is a `pub(crate)` implementation detail wrapped by the per-variant
@@ -851,6 +920,15 @@ pub(crate) struct Snapshot {
     pub(crate) vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
     pub(crate) heap: Heap,
+}
+
+impl SnapshotCleanup for Snapshot {
+    fn cleanup(self) {
+        let Self { vm_state, mut heap, .. } = self;
+        let state = vm_state.abandon(&mut heap);
+        state.globals.drop_with(&mut heap);
+        state.modules.drop_with(&mut heap);
+    }
 }
 
 impl Snapshot {
@@ -1283,5 +1361,66 @@ pub(crate) fn build_run_progress(
         ConvertedExit::Error(err) => {
             Err(err.into_python_exception(&executor.tables.interns, |_| Some(&*executor.program.code)))
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::run::{CompileOptions, MontyRun};
+
+    /// The ownership guard keeps the flat future fields written by earlier v15 builds readable.
+    #[test]
+    fn legacy_flat_future_snapshot_resumes() {
+        /// Named fields used before suspended roots gained an ownership guard.
+        #[derive(serde::Serialize)]
+        struct LegacyFuture<'a> {
+            executor: &'a Executor,
+            vm_state: &'a VMSnapshot,
+            heap: &'a Heap,
+            pending_call_ids: &'a [u32],
+            position: &'a SourceRange,
+        }
+
+        let runner = MontyRun::new(
+            "async def helper():\n    return await external()\nawait helper()".to_owned(),
+            "legacy.py",
+            vec!["external".to_owned()],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let call = runner
+            .start(
+                vec![MontyObject::function("external".to_owned(), None)],
+                ResourceTracker::default(),
+                PrintWriter::Disabled,
+            )
+            .unwrap()
+            .into_function_call()
+            .unwrap();
+        let state = call
+            .resume_pending(PrintWriter::Disabled)
+            .unwrap()
+            .into_resolve_futures()
+            .unwrap();
+        let legacy = LegacyFuture {
+            executor: &state.snapshot.executor,
+            vm_state: &state.snapshot.vm_state,
+            heap: &state.snapshot.heap,
+            pending_call_ids: &state.pending_call_ids,
+            position: &state.position,
+        };
+        let mut bytes = Vec::new();
+        serde::Serialize::serialize(&legacy, &mut minicbor_serde::Serializer::new(&mut bytes)).unwrap();
+        let loaded: ResolveFutures =
+            serde::Deserialize::deserialize(&mut minicbor_serde::Deserializer::new(&bytes)).unwrap();
+        let call_id = loaded.pending_call_ids()[0];
+        let done = loaded
+            .resume(
+                vec![(call_id, ExtFunctionResult::Return(MontyObject::int(42)))],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        assert_eq!(done.into_complete(), Some(MontyObject::int(42)));
     }
 }

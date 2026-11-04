@@ -1,8 +1,9 @@
 //! Function identity, aliases and persisted container keys survive session dumps.
 
-use monty::{Dump, MontyRepl, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
 use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
 
+/// Distinct function objects and their container entries survive a dump round trip.
 #[test]
 fn distinct_functions_and_container_keys_round_trip() {
     let mut repl = MontyRepl::new("functions.py", ResourceTracker::default(), CompileOptions::default());
@@ -48,10 +49,66 @@ fn version_15_function_aliases_and_keys_remain_usable() {
     run(&mut restored, "assert mapping[fresh] == 4\nassert fresh != plain");
 }
 
+/// Hosts may drop suspended calls and futures without first resuming or recovering their sessions.
+#[test]
+fn dropped_function_snapshots_release_owned_roots() {
+    for code in [
+        "def helper():\n    return external()\nhelper()",
+        "async def helper():\n    return await external()\nawait helper()",
+    ] {
+        let runner = MontyRun::new(
+            code.to_owned(),
+            "drop.py",
+            vec!["external".to_owned()],
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let progress = runner
+            .start(
+                vec![monty_types::MontyObject::function("external".to_owned(), None)],
+                ResourceTracker::default(),
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        let call = progress.into_function_call().expect("expected an external call");
+        if code.starts_with("async") {
+            let waiting = call.resume_pending(PrintWriter::Disabled).unwrap();
+            assert!(matches!(waiting, monty::RunProgress::ResolveFutures(_)));
+            drop(waiting);
+        } else {
+            drop(call);
+        }
+
+        let repl = MontyRepl::new("drop.py", ResourceTracker::default(), CompileOptions::default());
+        let progress = repl
+            .feed_start(
+                code,
+                vec![(
+                    "external".to_owned(),
+                    monty_types::MontyObject::function("external".to_owned(), None),
+                )],
+                PrintWriter::Disabled,
+            )
+            .unwrap();
+        let call = progress.into_function_call().expect("expected an external call");
+        if code.starts_with("async") {
+            let waiting = call.resume_pending(PrintWriter::Disabled).unwrap();
+            assert!(matches!(waiting, monty::ReplProgress::ResolveFutures(_)));
+            let bytes = dump("drop.py", None, &[], SessionRef::Suspended(&waiting)).unwrap();
+            drop(waiting);
+            drop(Dump::load(&bytes).unwrap());
+        } else {
+            drop(call);
+        }
+    }
+}
+
+/// Runs identity assertions in the current session.
 fn run(repl: &mut MontyRepl, code: &str) {
     repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();
 }
 
+/// Restores an idle session from its persisted state.
 fn restore(bytes: &[u8]) -> MontyRepl {
     match Dump::load(bytes).unwrap().state {
         Session::Idle(repl) => *repl,

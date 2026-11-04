@@ -52,3 +52,51 @@ def closure_factory():
 
 first, second = closure_factory()
 examples.append(check_pair(first, second, 2, 2))
+
+
+# Direct calls preserve argument ownership and callable aliases.
+def call_factory():
+    def choose(first, second, third):
+        return first
+
+    return choose
+
+
+choose = call_factory()
+payload = [1, 2, 3]
+assert choose(payload, [], {}) is payload
+assert choose(choose, [], {}) is choose
+assert call_factory()(payload, [], {}) is payload
+
+
+# Defaults, captured cells and explicit globals still use their own namespaces.
+def with_default(first, second, third=payload):
+    return third
+
+
+assert with_default(None, None) is payload
+assert with_default(None, None, choose) is choose
+namespace = {'payload': payload}
+exec('def pick(first, second, third):\n    return payload', namespace)
+assert namespace['pick'](None, None, None) is payload
+
+
+def captured_factory(item):
+    def pick(first, second, third):
+        return item
+
+    return pick
+
+
+assert captured_factory(payload)(None, None, None) is payload
+
+
+import asyncio
+
+
+async def async_choose(first, second, third):
+    return first
+
+
+assert asyncio.run(async_choose(payload, [], {})) is payload
+assert asyncio.run(async_choose(async_choose, [], {})) is async_choose

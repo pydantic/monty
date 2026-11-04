@@ -32,8 +32,8 @@ use crate::{
     parse::source_nesting_exception,
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
-        ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
-        resume_lookup, resume_with_result,
+        ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, OwnedSnapshot, SnapshotCleanup,
+        convert_frame_exit, resume_lookup, resume_with_result,
     },
     source_nesting::source_within_nesting_bound,
     types::{SessionRandom, tuple::allocate_tuple},
@@ -737,10 +737,12 @@ impl ReplProgress {
             Self::FunctionCall(ReplFunctionCall { snapshot, .. })
             | Self::OsCall(ReplOsCall { snapshot, .. })
             | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
+                let snapshot = &mut **snapshot;
                 (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
             }
-            Self::ResolveFutures(ReplResolveFutures { repl, executor, .. }) => {
-                (&mut repl.heap, &executor.tables.interns)
+            Self::ResolveFutures(ReplResolveFutures { snapshot, .. }) => {
+                let snapshot = &mut **snapshot;
+                (&mut snapshot.repl.heap, &snapshot.executor.tables.interns)
             }
             Self::Complete { repl, .. } => repl.heap_and_interns(),
         }
@@ -809,7 +811,7 @@ impl ReplProgress {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),
             Self::OsCall(call) => call.snapshot.repl.tracker(),
-            Self::ResolveFutures(state) => state.repl.tracker(),
+            Self::ResolveFutures(state) => state.snapshot.repl.tracker(),
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker(),
             Self::Complete { repl, .. } => repl.tracker(),
         }
@@ -820,7 +822,7 @@ impl ReplProgress {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker_mut(),
             Self::OsCall(call) => call.snapshot.repl.tracker_mut(),
-            Self::ResolveFutures(state) => state.repl.tracker_mut(),
+            Self::ResolveFutures(state) => state.snapshot.repl.tracker_mut(),
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
             Self::Complete { repl, .. } => repl.tracker_mut(),
         }
@@ -868,7 +870,7 @@ pub struct ReplFunctionCall {
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot,
+    snapshot: OwnedSnapshot<ReplSnapshot>,
 }
 
 impl ReplFunctionCall {
@@ -877,7 +879,7 @@ impl ReplFunctionCall {
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
-        self.snapshot.into_repl()
+        self.snapshot.into_inner().into_repl()
     }
 
     /// Resumes snippet execution with an external result.
@@ -886,14 +888,16 @@ impl ReplFunctionCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run(result.into(), print)
+        self.snapshot.into_inner().run(result.into(), print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.
     ///
     /// Uses `self.call_id` internally — no need to pass it again.
     pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
+        self.snapshot
+            .into_inner()
+            .run(ExtFunctionResult::Future(self.call_id), print)
     }
 
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
@@ -903,7 +907,7 @@ impl ReplFunctionCall {
         result: Result<MontyObject, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run_inner(
+        self.snapshot.into_inner().run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
             print,
@@ -912,7 +916,7 @@ impl ReplFunctionCall {
 
     /// Aborts the snippet with an uncatchable exception; see [`ReplOsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.abort(exc, print)
+        self.snapshot.into_inner().abort(exc, print)
     }
 }
 
@@ -935,7 +939,7 @@ pub struct ReplOsCall {
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot,
+    snapshot: OwnedSnapshot<ReplSnapshot>,
 }
 
 impl ReplOsCall {
@@ -944,7 +948,7 @@ impl ReplOsCall {
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
-        self.snapshot.into_repl()
+        self.snapshot.into_inner().into_repl()
     }
 
     /// Resumes snippet execution with the OS call result.
@@ -953,7 +957,7 @@ impl ReplOsCall {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run(result.into(), print)
+        self.snapshot.into_inner().run(result.into(), print)
     }
 
     /// REPL mirror of [`crate::OsCall::resume_with`] — dispatches the call
@@ -965,7 +969,7 @@ impl ReplOsCall {
         handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let result = handler(self.function_call);
-        self.snapshot.run(result, print)
+        self.snapshot.into_inner().run(result, print)
     }
 
     /// Raises `exc` uncatchably at the suspended call.
@@ -978,7 +982,7 @@ impl ReplOsCall {
         result: Result<MontyObject, MontyException>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.run_inner(
+        self.snapshot.into_inner().run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
             print,
@@ -987,7 +991,7 @@ impl ReplOsCall {
 
     /// Always returns `Err` with a reusable session; see [`crate::OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.abort(exc, print)
+        self.snapshot.into_inner().abort(exc, print)
     }
 }
 
@@ -1012,7 +1016,7 @@ pub struct ReplNameLookup {
     /// Where the resolved value lands (namespace slot or host attribute).
     scope: LookupScope,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot,
+    snapshot: OwnedSnapshot<ReplSnapshot>,
 }
 
 impl ReplNameLookup {
@@ -1021,7 +1025,7 @@ impl ReplNameLookup {
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
-        self.snapshot.into_repl()
+        self.snapshot.into_inner().into_repl()
     }
 
     /// Identity of the receiver for a lazy attribute lookup; `None` for a
@@ -1033,7 +1037,7 @@ impl ReplNameLookup {
 
     /// Aborts the snippet with an uncatchable exception; see [`ReplOsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.snapshot.abort(exc, print)
+        self.snapshot.into_inner().abort(exc, print)
     }
 
     /// Resumes execution after name resolution.
@@ -1052,7 +1056,7 @@ impl ReplNameLookup {
             mut repl,
             mut executor,
             vm_state,
-        } = snapshot;
+        } = snapshot.into_inner();
 
         repl.heap.tracker.on_turn_start();
         let (converted, vm_state) = HeapReader::with(
@@ -1103,12 +1107,9 @@ impl ReplNameLookup {
 /// This is the REPL-aware counterpart to [`ResolveFutures`](crate::ResolveFutures).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ReplResolveFutures {
-    /// Persistent REPL session state while this snippet is suspended.
-    repl: MontyRepl,
-    /// Compiled snippet and intern/function tables for this execution.
-    executor: Executor,
-    /// VM stack/frame state at suspension.
-    vm_state: VMSnapshot,
+    /// Owned execution roots, flattened to retain the persisted field layout.
+    #[serde(flatten)]
+    snapshot: OwnedSnapshot<ReplSnapshot>,
     /// Pending call IDs expected by this snapshot.
     pending_call_ids: Vec<u32>,
     /// Where the main task's blocked `await` is in the source.
@@ -1119,7 +1120,7 @@ impl ReplResolveFutures {
     /// Points the session and the blocked snippet's program at `os_policy`,
     /// as [`ReplSnapshot`] does for the other suspensions.
     fn set_os_policy(&mut self, os_policy: Arc<OsPolicy>) {
-        set_session_os_policy(&mut self.repl, &mut self.executor, os_policy);
+        self.snapshot.set_os_policy(os_policy);
     }
 
     /// Extracts the REPL session, restoring globals from the suspended VM state.
@@ -1133,19 +1134,7 @@ impl ReplResolveFutures {
     /// rebound a global to a function or literal only they can resolve.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
-        let Self {
-            mut repl,
-            executor,
-            vm_state,
-            ..
-        } = self;
-        let state = vm_state.abandon(&mut repl.heap);
-        repl.globals = state.globals;
-        repl.cwd = Arc::from(state.cwd);
-        repl.random = state.random;
-        repl.modules = state.modules;
-        repl.commit_executor(executor);
-        repl
+        self.snapshot.into_inner().into_repl()
     }
 
     /// Returns unresolved call IDs for this suspended state.
@@ -1162,12 +1151,11 @@ impl ReplResolveFutures {
 
     /// Aborts with an uncatchable exception and abandons pending futures.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
-        let Self {
+        let ReplSnapshot {
             repl,
             executor,
             vm_state,
-            ..
-        } = self;
+        } = self.snapshot.into_inner();
         abort_restored(repl, executor, vm_state, exc, print)
     }
 
@@ -1185,12 +1173,15 @@ impl ReplResolveFutures {
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
-            mut repl,
-            mut executor,
-            vm_state,
+            snapshot,
             pending_call_ids,
             ..
         } = self;
+        let ReplSnapshot {
+            mut repl,
+            mut executor,
+            vm_state,
+        } = snapshot.into_inner();
 
         let invalid_call_id = results
             .iter()
@@ -1393,6 +1384,12 @@ pub(crate) struct ReplSnapshot {
     vm_state: VMSnapshot,
 }
 
+impl SnapshotCleanup for ReplSnapshot {
+    fn cleanup(self) {
+        drop(self.into_repl());
+    }
+}
+
 impl ReplSnapshot {
     /// Points both the session and the suspended snippet's program at `os_policy`,
     /// which a resumed VM reads from the program.
@@ -1579,7 +1576,7 @@ fn build_repl_progress(
             object_id,
             allow_eager_await,
             position,
-            snapshot: new_repl_snapshot!(),
+            snapshot: OwnedSnapshot::new(new_repl_snapshot!()),
         })),
         ConvertedExit::OsCall {
             function_call,
@@ -1591,15 +1588,17 @@ fn build_repl_progress(
             call_id,
             allow_eager_await,
             position,
-            snapshot: new_repl_snapshot!(),
+            snapshot: OwnedSnapshot::new(new_repl_snapshot!()),
         })),
         ConvertedExit::ResolveFutures {
             pending_call_ids,
             position,
         } => Ok(ReplProgress::ResolveFutures(ReplResolveFutures {
-            repl,
-            executor,
-            vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+            snapshot: OwnedSnapshot::new(ReplSnapshot {
+                repl,
+                executor,
+                vm_state: vm_state.expect("snapshot should exist for ResolveFutures"),
+            }),
             pending_call_ids,
             position,
         })),
@@ -1607,7 +1606,7 @@ fn build_repl_progress(
             name,
             position,
             scope,
-            snapshot: new_repl_snapshot!(),
+            snapshot: OwnedSnapshot::new(new_repl_snapshot!()),
         })),
         ConvertedExit::Error(err) => {
             // Resolve traceback frames against every snippet the REPL has
