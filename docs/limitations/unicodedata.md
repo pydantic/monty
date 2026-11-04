@@ -30,7 +30,3 @@ them raises `AttributeError`.
 - `lookup` requires a `str` argument; CPython also accepts `bytes`. A non-`str`
     argument raises `TypeError: "expected string, not <type>"` rather than
     CPython's bytes-oriented message.
-- All implemented functions are positional-only, but keyword-argument error
-    wording does not match CPython. CPython raises
-    `unicodedata.<fn>() takes no keyword arguments`; Monty reports the generated
-    positional arity or unexpected-keyword error.

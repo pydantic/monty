@@ -103,7 +103,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: UnicodedataFunctions, args: ArgVal
 /// Returns e.g. `"Lu"` (uppercase letter), `"Nd"` (decimal digit), or `"Cn"`
 /// for unassigned code points.
 fn uni_category(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("category", vm.heap)?;
+    let value = one_arg(args, "unicodedata.category", vm)?;
     defer_drop!(value, vm);
     let c = single_char(value, "category", None, vm)?;
     Ok(allocate_string(category_abbrev(get_general_category(c)), vm.heap))
@@ -137,7 +137,7 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
 /// that name. Unlike CPython, named sequences are not resolved.
 fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("lookup", vm.heap)?;
+    let value = one_arg(args, "unicodedata.lookup", vm)?;
     defer_drop!(value, vm);
     let name = value.try_to_str(vm)?;
     match unicode_names2::character(name) {
@@ -150,7 +150,7 @@ fn uni_lookup(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 ///
 /// Returns `0` for characters with no combining class (the common case).
 fn uni_combining(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("combining", vm.heap)?;
+    let value = one_arg(args, "unicodedata.combining", vm)?;
     defer_drop!(value, vm);
     let c = single_char(value, "combining", None, vm)?;
     Ok(Value::Int(i64::from(canonical_combining_class(c))))
@@ -293,12 +293,17 @@ fn single_char(value: &Value, fn_name: &str, arg_num: Option<u32>, vm: &VM<'_>) 
         Some(n) => format!("argument {n}"),
         None => "argument".to_string(),
     };
-    let s = value.as_str(vm).ok_or_else(|| {
-        ExcType::type_error(format!(
-            "{fn_name}() {arg_word} must be a unicode character, not {}",
+    let Some(s) = value.as_str(vm) else {
+        // `_PyArg_BadArgument` writes `None` for `None`, not its type's name.
+        let type_name = if matches!(value, Value::None) {
+            "None".into()
+        } else {
             value.py_type_name(vm)
-        ))
-    })?;
+        };
+        return Err(ExcType::type_error(format!(
+            "{fn_name}() {arg_word} must be a unicode character, not {type_name}"
+        )));
+    };
     let mut chars = s.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) => Ok(c),
@@ -307,6 +312,16 @@ fn single_char(value: &Value, fn_name: &str, arg_num: Option<u32>, vm: &VM<'_>) 
             s.chars().count()
         ))),
     }
+}
+
+/// The argument of a `METH_O` function such as `unicodedata.category()`.
+///
+/// CPython names these functions with their module in both argument errors:
+/// `unicodedata.category() takes no keyword arguments` and
+/// `unicodedata.category() takes exactly one argument (0 given)`.
+fn one_arg(args: ArgValues, qualified_name: &str, vm: &mut VM<'_>) -> RunResult<Value> {
+    args.reject_kwargs(qualified_name, vm.heap)?
+        .get_one_arg(qualified_name, vm.heap)
 }
 
 /// Maps a [`GeneralCategory`] to its two-letter Unicode abbreviation.
