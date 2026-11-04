@@ -1,5 +1,7 @@
 use std::ptr;
 
+use monty_types::ResourceTracker;
+
 use super::*;
 
 #[test]
@@ -29,14 +31,15 @@ fn unicode_cache_survives_table_growth_and_resets_on_clone() {
     let store = AccessCacheStore::default();
     let text = "aé中🐍".repeat(4096);
     let original = store.get(3);
+    let tracker = ResourceTracker::default();
     for i in 0..1000 {
-        assert!(original.character(&text, (i * 7919) % 16384).is_some());
+        original.character(&text, (i * 7919) % 16384, &tracker).unwrap();
     }
-    assert!(original.has_cursor());
+    assert!(original.has_checkpoints());
     for index in 1024..2048 {
         store.get(index * PAGE_SIZE).char_len("é中");
     }
     assert!(ptr::eq(original, store.get(3)));
-    assert!(original.has_cursor());
+    assert!(original.has_checkpoints());
     assert!(store.clone().0.get().is_none());
 }

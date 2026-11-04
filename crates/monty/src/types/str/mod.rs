@@ -578,8 +578,8 @@ fn str_getitem<'h>(
                 (start, stop)
             } else {
                 (
-                    string_byte_offset(text, index, start),
-                    string_byte_offset(text, index, stop),
+                    string_byte_offset(text, index, start, &vm.heap.tracker)?,
+                    string_byte_offset(text, index, stop, &vm.heap.tracker)?,
                 )
             };
             // Large copies retain cooperative time checks; short slices still use inline storage directly.
@@ -604,7 +604,7 @@ fn str_getitem<'h>(
             && !matches!(index, 0 | -1)
             && let Some(cache) = cache.get(vm)
         {
-            cache.character(text, index)
+            cache.character(text, index, &vm.heap.tracker)?
         } else {
             get_char_at_index(text, ascii, index)
         }
@@ -1003,12 +1003,12 @@ fn str_find<'h>(
     };
     let s = s.get(vm.heap);
     let index = cache.get(vm);
-    let start_byte = string_byte_offset(s, index, start);
-    let end_byte = string_byte_offset(s, index, end);
+    let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
+    let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
     let result = match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, index, start_byte + pos);
+            let char_pos = string_char_offset(s, index, start_byte + pos, &vm.heap.tracker)?;
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -1033,12 +1033,12 @@ fn str_rfind<'h>(
     };
     let s = s.get(vm.heap);
     let index = cache.get(vm);
-    let start_byte = string_byte_offset(s, index, start);
-    let end_byte = string_byte_offset(s, index, end);
+    let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
+    let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
     let result = match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, index, start_byte + pos);
+            let char_pos = string_char_offset(s, index, start_byte + pos, &vm.heap.tracker)?;
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -1062,12 +1062,12 @@ fn str_index<'h>(
     };
     let s = s.get(vm.heap);
     let index = cache.get(vm);
-    let start_byte = string_byte_offset(s, index, start);
-    let end_byte = string_byte_offset(s, index, end);
+    let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
+    let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
     match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, index, start_byte + pos);
+            let char_pos = string_char_offset(s, index, start_byte + pos, &vm.heap.tracker)?;
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -1091,12 +1091,12 @@ fn str_rindex<'h>(
     };
     let s = s.get(vm.heap);
     let index = cache.get(vm);
-    let start_byte = string_byte_offset(s, index, start);
-    let end_byte = string_byte_offset(s, index, end);
+    let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
+    let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
     match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = string_char_offset(s, index, start_byte + pos);
+            let char_pos = string_char_offset(s, index, start_byte + pos, &vm.heap.tracker)?;
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -1121,8 +1121,8 @@ fn str_count<'h>(
     };
     let s = s.get(vm.heap);
     let index = cache.get(vm);
-    let start_byte = string_byte_offset(s, index, start);
-    let end_byte = string_byte_offset(s, index, end);
+    let start_byte = string_byte_offset(s, index, start, &vm.heap.tracker)?;
+    let end_byte = string_byte_offset(s, index, end, &vm.heap.tracker)?;
     let slice = &s[start_byte..end_byte];
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
@@ -1202,8 +1202,8 @@ fn str_starts_ends_with<'h>(
     } else {
         cache.get(vm)
     };
-    let start = string_byte_offset(text, index, start);
-    let end = string_byte_offset(text, index, end);
+    let start = string_byte_offset(text, index, start, &vm.heap.tracker)?;
+    let end = string_byte_offset(text, index, end, &vm.heap.tracker)?;
     Ok(Value::Bool(affix_matches(
         affix,
         &text[start..end],
@@ -1306,34 +1306,44 @@ fn string_search_range<'h>(
 
 /// Resolves character bounds for slicing; `usize::MAX` denotes the omitted end without counting text.
 /// Inline strings use the bounded scan fallback because they have no persistent cache.
-fn string_byte_offset(text: &str, cache: Option<&AccessCache>, target: usize) -> usize {
+fn string_byte_offset(
+    text: &str,
+    cache: Option<&AccessCache>,
+    target: usize,
+    tracker: &ResourceTracker,
+) -> RunResult<usize> {
     if target == 0 {
-        return 0;
+        return Ok(0);
     }
     if target == usize::MAX {
-        return text.len();
+        return Ok(text.len());
     }
     if text.is_ascii() {
-        return target.min(text.len());
+        return Ok(target.min(text.len()));
     }
     if let Some(cache) = cache {
-        return cache.byte_offset(text, target);
+        return cache.byte_offset(text, target, tracker);
     }
-    text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte)
+    Ok(text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte))
 }
 
 /// Converts a match's byte position back to Python's character index using the same cursor as bounds.
-fn string_char_offset(text: &str, cache: Option<&AccessCache>, byte: usize) -> usize {
+fn string_char_offset(
+    text: &str,
+    cache: Option<&AccessCache>,
+    byte: usize,
+    tracker: &ResourceTracker,
+) -> RunResult<usize> {
     if byte == 0 {
-        return 0;
+        return Ok(0);
     }
     if text.is_ascii() {
-        return byte;
+        return Ok(byte);
     }
     if let Some(cache) = cache {
-        return cache.char_offset(text, byte);
+        return cache.char_offset(text, byte, tracker);
     }
-    text[..byte].chars().count()
+    Ok(text[..byte].chars().count())
 }
 
 /// Extracts a string from a Value, returning an error if not a string.
@@ -2319,20 +2329,21 @@ mod tests {
             bytes
         };
         let cold = encode(&text);
+        let tracker = ResourceTracker::default();
         text.char_len();
         text.1.set(Some(hash_python_str(text.as_str())));
         for i in 0..1000 {
             let position = i * 7919 % 16384;
             assert_eq!(
-                text.3.character(text.as_str(), position),
+                text.3.character(text.as_str(), position, &tracker).unwrap(),
                 "aé中🐍".chars().nth(usize::try_from(position % 4).unwrap())
             );
         }
-        assert!(text.3.has_cursor());
+        assert!(text.3.has_checkpoints());
         assert_eq!(encode(&text), cold);
 
         let reset = <Str as serde::Deserialize>::deserialize(&mut minicbor_serde::Deserializer::new(&cold)).unwrap();
-        assert!(!reset.3.has_cursor());
+        assert!(!reset.3.has_checkpoints());
         assert!(reset.1.get().is_none());
         assert!(reset.2.get().is_none());
         assert_eq!(reset.as_str(), text.as_str());

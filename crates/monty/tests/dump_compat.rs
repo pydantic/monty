@@ -672,11 +672,11 @@ fn unicode_string_access_caches_rebuild_after_dump() {
     let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
         panic!("expected idle session");
     };
-    // Restored strings reconstruct derived length and cursor state on access.
+    // Repeated distant reads exceed the scan budget again after loading resets the cache.
     restored.feed_run("for i in range(1000):\n    assert text[(i * 7919) % len(text)] == 'aé中🐍'[(i * 7919) % 4]\nassert len(text) == 16384\nassert text[-2] == '中'\nassert text.find('中🐍', 100) == 102\nassert text.rfind('中🐍') == 16382\n", vec![], PrintWriter::Stdout).unwrap();
     let after = dump("strings.py", None, &[], SessionRef::Idle(&restored)).unwrap();
     let Session::Idle(mut restored_again) = Dump::load(&after).unwrap().state else {
-        panic!("expected idle session after rebuilding the cursor");
+        panic!("expected idle session after rebuilding the index");
     };
     restored_again
         .feed_run(
