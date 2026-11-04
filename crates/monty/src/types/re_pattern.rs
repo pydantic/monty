@@ -23,6 +23,7 @@ use crate::{
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
+    string_builder::StringBuilder,
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
@@ -368,11 +369,17 @@ impl RePattern {
     /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
     /// opcode handles iteration over the returned list.
     pub fn finditer(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
+        self.finditer_limit(subject, text, usize::MAX, heap)
+    }
+
+    /// [`Self::finditer`] that stops after `limit` matches, so that `sub()` with a
+    /// `count` and a function replacement does not collect matches it will not use.
+    pub fn finditer_limit(&self, subject: &Value, text: &str, limit: usize, heap: &Heap) -> RunResult<Value> {
         // Every match shares one refcounted subject reference, not a copy each.
         let all_ascii = text.is_ascii();
 
         let mut results = Vec::new();
-        for caps in self.compiled.captures_iter(text) {
+        for caps in self.compiled.captures_iter(text).take(limit) {
             check_results_growth(&results, heap)?;
             let caps = caps.map_err(ExcType::re_pattern_error)?;
             results.push(self.build_match(&caps, subject, all_ascii, heap));
@@ -573,18 +580,15 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
 
     let count = extract_count(count_val, vm)?;
 
-    // Check that repl is a string — callable replacement is not supported.
-    // CPython processes the replacement template *before* its match loop, so
-    // this check must precede the negative-count early return below: a bad
-    // repl raises even when zero substitutions will run.
-    let Ok(repl) = repl_val.try_to_str(vm) else {
-        return Err(ExcType::type_error(
-            "callable replacement is not yet supported in re.sub()",
-        ));
-    };
+    // CPython processes the replacement *before* its match loop, so this check
+    // must precede the negative-count early return below: a bad repl raises
+    // even when zero substitutions will run.
+    let template = sub_template(repl_val, vm)?;
     let Some(count) = count else {
-        // Validate octal escapes even when the negative count skips matching.
-        translate_replacement(repl)?;
+        if let Some(template) = template {
+            // Validate octal escapes even when the negative count skips matching.
+            translate_replacement(template)?;
+        }
         // Negative count — Pattern.sub returns the input string unchanged.
         // The subject is still type-checked (`try_to_str` raises this method's
         // `expected string, not {t}` wording) before the refcount bump; no
@@ -594,7 +598,123 @@ fn call_pattern_sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: 
     };
 
     let text = string_val.try_to_str(vm)?;
-    pattern.get(vm.heap).sub(repl, text, count, vm.heap)
+    if let Some(template) = template {
+        pattern.get(vm.heap).sub(template, text, count, vm.heap)
+    } else {
+        let limit = if count == 0 { usize::MAX } else { count };
+        let matches = pattern.get(vm.heap).finditer_limit(string_val, text, limit, vm.heap)?;
+        sub_with_function(matches, repl_val, string_val, count, vm)
+    }
+}
+
+/// A `sub()` replacement: `Some(template)` for a `str`, `None` for a function
+/// to call with each match, and CPython's error for anything else.
+pub(crate) fn sub_template<'a>(repl: &'a Value, vm: &'a VM<'_>) -> RunResult<Option<&'a str>> {
+    if let Some(template) = repl.as_str(vm) {
+        Ok(Some(template))
+    } else if repl.is_callable(vm) {
+        Ok(None)
+    } else {
+        Err(ExcType::type_error(format!(
+            "decoding to str: need a bytes-like object, {} found",
+            repl.py_type_name(vm)
+        )))
+    }
+}
+
+/// `sub()` with a function as `repl`: each of the first `count` matches (all
+/// of them when `count` is 0) is replaced by `repl(match)`, in order.
+///
+/// `matches` is the list that [`RePattern::finditer_limit`] built, made up front
+/// because a call needs the whole VM while the pattern borrows the heap. As in
+/// CPython's `pattern_subx`, a `None` result adds nothing, and a result that is
+/// not a `str` fails only after every call has run, when the pieces are joined.
+pub(crate) fn sub_with_function(
+    matches: Value,
+    repl: &Value,
+    subject: &Value,
+    count: usize,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
+    defer_drop!(matches, vm);
+    let text_len = subject.try_to_str(vm)?.len();
+    let limit = if count == 0 { usize::MAX } else { count };
+
+    let mut result = String::new();
+    let mut last_end = 0;
+    // CPython joins a list made of each non-empty run of text before a match and
+    // each result that is not `None`; its error names the first bad item.
+    let mut item = 0;
+    let mut first_bad: Option<(usize, String)> = None;
+    for index in 0..limit {
+        // Each call re-enters `run()` with a fresh dispatch countdown, so a short
+        // `repl` reaches no checkpoint. Poll for every match: with nested `sub()`
+        // calls, few matches at each level can still make many calls in all.
+        vm.heap.tracker.check_time()?;
+        let Some(m) = match_at(matches, index, vm) else {
+            break;
+        };
+        let (start, end) = match m {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::ReMatch(m) => m.byte_span(),
+                _ => unreachable!("finditer builds a list of matches"),
+            },
+            _ => unreachable!("finditer builds a list of matches"),
+        };
+        if start > last_end {
+            push_checked(&mut result, &subject.try_to_str(vm)?[last_end..start], vm)?;
+            item += 1;
+        }
+        // Clone the match only here, so that an error above has no reference to release.
+        let m = m.clone_with_heap(vm);
+        let replacement = vm.evaluate_function(repl, ArgValues::One(m))?;
+        defer_drop!(replacement, vm);
+        if !matches!(replacement, Value::None) {
+            match replacement.as_str(vm) {
+                Some(text) => push_checked(&mut result, text, vm)?,
+                None => {
+                    if first_bad.is_none() {
+                        first_bad = Some((item, replacement.py_type_name(vm).into_owned()));
+                    }
+                }
+            }
+            item += 1;
+        }
+        last_end = end;
+        // Check running size: current result + remaining unprocessed text.
+        check_estimated_size(result.len() + (text_len - last_end), &vm.heap.tracker)?;
+    }
+
+    if let Some((item, type_name)) = first_bad {
+        return Err(ExcType::type_error(format!(
+            "sequence item {item}: expected str instance, {type_name} found"
+        )));
+    }
+    push_checked(&mut result, &subject.try_to_str(vm)?[last_end..], vm)?;
+    Ok(allocate_string(result, vm.heap))
+}
+
+/// The match at `index` in the list that [`RePattern::finditer_limit`] built,
+/// or `None` after the last one.
+fn match_at<'v>(matches: &Value, index: usize, vm: &'v VM<'_>) -> Option<&'v Value> {
+    match matches {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => list.as_slice().get(index),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Appends `piece` to `result` after the same growth check as [`StringBuilder::push_str`].
+///
+/// A builder cannot live across the calls to the replacement function, which need
+/// the whole VM, so each append wraps the string for that one push.
+fn push_checked(result: &mut String, piece: &str, vm: &VM<'_>) -> RunResult<()> {
+    let mut builder = StringBuilder::from_existing(mem::take(result), &vm.heap.tracker);
+    builder.push_str(piece)?;
+    *result = builder.finish_raw()?;
+    Ok(())
 }
 
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.

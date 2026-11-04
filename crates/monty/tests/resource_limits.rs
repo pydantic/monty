@@ -1188,6 +1188,36 @@ fn timeout_in_dataclass_default_factories() {
     assert_eq!(printed.output.len(), ResourceTracker::LOOP_CHECK_INTERVAL - 1);
 }
 
+/// A `sub()` replacement function re-enters `run()` with a fresh dispatch
+/// countdown, so a short function reaches no checkpoint of its own, and nested
+/// `sub()` calls can make many calls with few matches at each level. The match
+/// loop therefore polls the clock before every call.
+#[test]
+fn timeout_in_re_sub_function() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "import re\ndef tick(m):\n    print('.', end='')\n    return ''",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .expect("the function should build without a limit");
+
+    // Also resets the execution clock, so the budget is spent before the first match.
+    repl.tracker_mut().set_max_feed_duration(Duration::from_nanos(1));
+    let mut printed = String::new();
+    let exc = repl
+        .feed_run(
+            "re.sub('a', tick, 'a' * 50)",
+            vec![],
+            PrintWriter::collect_string(&mut printed),
+        )
+        .expect_err("the match loop must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // There are fewer matches than `LOOP_CHECK_INTERVAL`, so only a poll for
+    // every match stops the loop before its first call.
+    assert_eq!(printed, "");
+}
+
 #[test]
 fn timeout_in_str_format_parser() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
