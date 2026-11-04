@@ -509,6 +509,8 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
+    /// A reflected result replaces the value; native repetition preserves the container's identity.
     fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         // Try user `__rmul__` before native list/deque repetition.
         let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
@@ -1507,7 +1509,10 @@ impl Value {
         )
     }
 
-    /// Performs Python `*` with reflected-operation fallback.
+    /// Performs Python `*`, trying the left implementation then the right reflected implementation.
+    /// Same-class user instances skip the reflected retry. For a builtin sequence on the left
+    /// and a user instance on the right, `__rmul__` precedes `__index__`-based repetition.
+    /// Absent or declined methods allow fallback; exceptions propagate immediately.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if matches!(other, Self::Ref(_))
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
