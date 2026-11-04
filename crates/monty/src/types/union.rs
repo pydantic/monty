@@ -24,7 +24,7 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_should_truncate,
+        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, repr::repr_should_truncate,
         tuple::allocate_tuple,
     },
     value::{EitherStr, VALUE_SIZE, Value},

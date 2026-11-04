@@ -9,7 +9,7 @@ use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
 use super::{
-    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_should_truncate,
+    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, repr::repr_should_truncate,
 };
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
