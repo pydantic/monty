@@ -914,6 +914,7 @@ pub(crate) fn value_as_bytes<'a>(value: &Value, heap: &'a Heap, interns: &'a Int
         Value::InternBytes(id) => Some(interns.get_bytes(*id)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Bytes(b) => Some(b.as_slice()),
+            HeapData::ByteArray(b) => Some(b.as_slice()),
             _ => None,
         },
         _ => None,

@@ -1,7 +1,7 @@
 from collections import deque, namedtuple
 
 Pair = namedtuple('Pair', ['a', 'b'])
-sequences = [[1, 2], deque([1, 2]), (1, 2), Pair(1, 2), 'ab', b'ab']
+sequences = [[1, 2], deque([1, 2]), (1, 2), Pair(1, 2), 'ab', b'ab', bytearray(b'ab')]
 # Runtime construction keeps these long buffers on the heap.
 sequences.extend([''.join(['ab'] * 32), b''.join([b'ab'] * 32)])
 events = []

@@ -175,3 +175,7 @@ All of them need somewhere safe to run the generated code, and Monty is that pla
 - [Security model](security.md) for what "secure" does and does not mean here.
 - [Examples](examples.md), including Code Mode in Pydantic AI.
 - [Limitations](limitations/index.md): the Python subset, and every known divergence from CPython.
+
+Mutable binary data can use `bytearray` inside the sandbox.
+See the [builtin limitations](../limitations/builtins.md#bytearray) and
+[host conversion rules](../limitations/host-values.md#mutable-byte-buffers).

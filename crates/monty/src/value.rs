@@ -26,6 +26,7 @@ use crate::{
     py_value::PyValue,
     types::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
+        bytearray::read_buffer,
         bytes::PyBytes,
         decimal, host_class_type,
         inline_str::InlineStr,
@@ -423,11 +424,11 @@ impl<'h> PyTrait<'h> for Value {
                 Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
             }
             // Cross-type bytes comparisons: interned vs heap-allocated
-            (Self::InternBytes(b1), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
-                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2.as_slice())))
+            (Self::InternBytes(b1), Self::Ref(_)) if let Some(b2) = read_buffer(other, vm) => {
+                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2)))
             }
-            (Self::Ref(id1), Self::InternBytes(b2)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
-                Ok(CmpOrder::Ordered(b1.as_slice().cmp(interns.get_bytes(*b2))))
+            (Self::Ref(_), Self::InternBytes(b2)) if let Some(b1) = read_buffer(self, vm) => {
+                Ok(CmpOrder::Ordered(b1.cmp(interns.get_bytes(*b2))))
             }
             _ => decimal_cmp_or_incomparable(self, other, vm),
         }
@@ -491,14 +492,14 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// For lists/deques, tries user `__radd__` before native extension from an iterable.
-    /// A reflected result replaces the value; native extension preserves the container's identity.
+    /// For lists/deques/bytearrays, tries user `__radd__` before native concatenation.
+    /// A reflected result replaces the value; native concatenation preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         // CPython tries numeric addition, including the RHS's `__radd__`, before
         // sequence in-place concatenation. A user operand can therefore replace
         // the assigned value even if it is iterable; aliases keep the original container.
         // Only an absent or declined `__radd__` permits native extension; errors propagate.
-        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque | Type::ByteArray);
         if sequence
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
             && let Some(result) = other.py_radd_impl(self, vm)?
@@ -515,14 +516,14 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
+    /// For lists/deques/bytearrays, tries user `__rmul__` before native repetition through `__index__`.
     /// A reflected result replaces the value; native repetition preserves the container's identity.
     fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
         // sequence in-place repetition. A user operand can therefore replace
         // the assigned value even if it implements `__index__`; aliases keep the original container.
         // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
-        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque | Type::ByteArray);
         if sequence
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
             && let Some(result) = other.py_rmul_impl(self, vm)?
@@ -845,6 +846,13 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
             Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
         }
         (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
+            a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
+        )),
+        (HeapReadOutput::ByteArray(a), HeapReadOutput::ByteArray(b)) => a.py_cmp(&b, vm),
+        (HeapReadOutput::Bytes(a), HeapReadOutput::ByteArray(b)) => Ok(CmpOrder::Ordered(
+            a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
+        )),
+        (HeapReadOutput::ByteArray(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
             a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
         )),
         (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
@@ -2007,7 +2015,11 @@ pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
 pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternBytes(id) => Some(b == vm.interns.get_bytes(*id)),
-        Value::Ref(id) if let HeapData::Bytes(o) = vm.heap.get(*id) => Some(b == o.as_slice()),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Bytes(o) => Some(b == o.as_slice()),
+            HeapData::ByteArray(o) => Some(b == o.as_slice()),
+            _ => None,
+        },
         _ => None,
     }
 }

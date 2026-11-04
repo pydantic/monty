@@ -14,7 +14,7 @@ Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
+`bool`, `bytearray`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
 `set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 
@@ -27,7 +27,7 @@ These raise `NameError`:
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
-- **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
+- **Construction / coercion**: `memoryview`, `object`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission: with no class inheritance either
@@ -211,3 +211,10 @@ These raise `NameError`:
         `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
         class) is not preserved as a type; it degrades to a callable, appearing inside
         the sandbox as a `function` rather than a `type`.
+
+## `bytearray`
+
+`memoryview` and persistent exported buffers are not implemented.
+`del buffer[index]` and `del buffer[start:stop]` are not supported; use slice assignment with an empty buffer instead.
+Constructors and mutation methods collect iterables synchronously; suspendable user iteration is not supported.
+Error messages inherited from shared byte algorithms may refer to `bytes` rather than `bytearray`.
