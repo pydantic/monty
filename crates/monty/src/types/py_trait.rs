@@ -505,6 +505,11 @@ pub(crate) trait PyTrait<'h>: PyObjectIdentity {
         Ok(false)
     }
 
+    /// Python in-place bitwise XOR (`__ixor__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
+    fn py_ixor_impl(&mut self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(false)
+    }
+
     /// Calls this value itself (`obj(...)`), the counterpart of
     /// [`py_call_attr`](Self::py_call_attr) for the callable rather than one of
     /// its methods.

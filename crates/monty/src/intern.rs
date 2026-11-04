@@ -947,6 +947,8 @@ pub enum StaticStrings {
     DictWriter,
     /// `set.difference()` method.
     Difference,
+    /// `set.difference_update()` method.
+    DifferenceUpdate,
     /// `sys.float_info.dig` field.
     Dig,
     /// `digest()` method of a hash object.
@@ -1472,6 +1474,8 @@ pub enum StaticStrings {
     Interactive,
     /// `set.intersection()` method.
     Intersection,
+    /// `set.intersection_update()` method.
+    IntersectionUpdate,
     /// `decimal.InvalidContext` condition.
     #[strum(serialize = "InvalidContext")]
     InvalidContext,
@@ -2404,6 +2408,8 @@ pub enum StaticStrings {
     Swapcase,
     /// `set.symmetric_difference()` method.
     SymmetricDifference,
+    /// `set.symmetric_difference_update()` method.
+    SymmetricDifferenceUpdate,
     /// Module name for `import sys`.
     Sys,
     /// Named-tuple type name of `sys.flags`.

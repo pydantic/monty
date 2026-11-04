@@ -124,6 +124,11 @@ impl VM<'_> {
         self.inplace_op(PyTrait::py_ior_impl, |lhs, rhs, vm| lhs.py_or(rhs, vm))
     }
 
+    /// `^=` — an in-place mutation (a `set` keeps its identity), or binary `^`.
+    pub(super) fn inplace_xor(&mut self) -> Result<(), RunError> {
+        self.inplace_op(PyTrait::py_ixor_impl, |lhs, rhs, vm| lhs.py_xor(rhs, vm))
+    }
+
     /// Binary matrix multiplication (`@` operator).
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_matmul(rhs, vm))
