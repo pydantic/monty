@@ -7,7 +7,71 @@ assert sum(()) == 0
 assert sum([], 5) == 5
 assert sum(range(5)) == 10
 assert sum([1.5, 2.5, 3.0], 0.0) == 7.0
-# Note: sum of floats without start requires py_add to support int+float
+assert sum([2**62, 2**62, 1]) == 2**63 + 1
+
+# floats are added with compensated summation, as in CPython 3.12+, so rounding errors
+# don't build up the way they do in a plain left-to-right loop
+assert sum([0.1, 0.2, 0.3]) == 0.6
+assert sum([0.1] * 10) == 1.0
+assert sum([0.1] * 10, 0.0) == 1.0
+assert sum([1e100, 1.0, -1e100]) == 1.0
+assert sum([1.0, 1e16, -1e16, 1.0]) == 2.0
+assert sum([0.1, 1, 0.2, True, 0.3]) == 2.6
+assert sum([0.5, 2**64, -(2**64)]) == 0.5
+# complex totals are compensated per part, and a real item only changes the real part
+assert sum([0.1j] * 10) == 1j
+assert sum([1j, 0.1, 0.2, 0.3]) == 0.6 + 1j
+assert sum([0.1, 0.2, 0.3], 0j) == 0.6 + 0j
+assert sum([0.5j, 2**64, 0.5, -(2**64)]) == 0.5 + 0.5j
+assert repr(sum([1.0], complex(0.0, -0.0))) == '(1-0j)'
+# the compensation is left out where it would drop the sign of a zero or turn inf into nan
+assert repr(sum([-0.0], -0.0)) == '-0.0'
+assert sum([1e308, 1e308]) == float('inf')
+# CPython's fast loops only run while the total is an int, float or complex, so after a
+# bool start or an int total past 64 bits the rest is added with plain `+`
+assert sum([1e100, 1.0, -1e100], True) == 0.0
+assert sum([2**63, -(2**63), 0.1, 0.2, 0.3]) == 0.6000000000000001
+# and a float total is rounded when a complex item turns it complex, dropping its compensation
+assert sum([0.1, 0.2, 1j, 0.3]) == 0.6000000000000001 + 1j
+
+
+# items that can't join a total fail as they would with `+`, and so does the iterator
+class FailAfter:
+    def __init__(self, item):
+        self.items = [item]
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.items:
+            return self.items.pop()
+        raise ValueError('boom')
+
+
+for compute, message in [
+    (lambda: sum([0.5, 10**400]), 'OverflowError: int too large to convert to float'),
+    (lambda: sum([1j, 10**400]), 'OverflowError: int too large to convert to float'),
+    (lambda: sum([1, 'x']), "TypeError: unsupported operand type(s) for +: 'int' and 'str'"),
+    (lambda: sum([0.5, 'x']), "TypeError: unsupported operand type(s) for +: 'float' and 'str'"),
+    (lambda: sum([1j, 'x']), "TypeError: unsupported operand type(s) for +: 'complex' and 'str'"),
+    (lambda: sum(FailAfter(0.5)), 'ValueError: boom'),
+    (lambda: sum(FailAfter(1j)), 'ValueError: boom'),
+]:
+    try:
+        compute()
+        assert False, f'expected {message}'
+    except (OverflowError, TypeError, ValueError) as e:
+        assert f'{type(e).__name__}: {e}' == message
+
+
+# an item that `+` can still take ends the fast loop without an error
+class Tally:
+    def __radd__(self, other):
+        return 'tally'
+
+
+assert sum([1j, Tally()]) == 'tally'
 
 # str/bytes start values are rejected, pointing at join() instead
 try:
