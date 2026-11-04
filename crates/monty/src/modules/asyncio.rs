@@ -5,14 +5,17 @@
 //! - `gather(*awaitables)`: Collects coroutines for concurrent execution
 //! - `sleep(delay, result=None)`: An awaitable governed by the session's `SleepMode`
 //!
-//! `create_task` and the `Task` methods live in the [`task`] submodule. The
-//! host acts as the event loop - Monty yields control when tasks are blocked.
+//! `create_task` and the `Task` methods live in the [`task`] submodule, and
+//! `wait` lives in [`wait`]. The host acts as the event loop - Monty yields
+//! control when tasks are blocked.
 
 mod task;
+mod wait;
 
 use monty_types::{OsFunctionCall, sleep_duration_saturating};
 use num_traits::ToPrimitive;
 pub(crate) use task::{create_task, task_call_method};
+pub(crate) use wait::wait;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -28,8 +31,8 @@ use crate::{
         ModuleFunctions,
         time::{HostSleep, host_sleep},
     },
-    os_dispatch::PostConversionEffect,
-    types::{BuiltinType, Module},
+    os_dispatch::{PostConversionEffect, SleepDestination},
+    types::{BuiltinType, Module, str::allocate_string},
     value::Value,
 };
 
@@ -42,12 +45,13 @@ pub(crate) enum AsyncioFunctions {
     Gather,
     Run,
     Sleep,
+    Wait,
 }
 
 /// Creates the `asyncio` module and allocates it on the heap.
 ///
-/// The module contains `run`, `gather`, `sleep`, `create_task`, `Task` and
-/// `InvalidStateError`. Other asyncio functions require VM features Monty does not have.
+/// The module exposes `run`, `gather`, `sleep`, `create_task`, `wait`, `Task`,
+/// `InvalidStateError` and the `wait` completion constants.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Asyncio, vm.interns);
 
@@ -72,6 +76,11 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
     module.set_attr(
+        StaticStrings::Wait,
+        Value::ModuleFunction(ModuleFunctions::Asyncio(AsyncioFunctions::Wait)),
+        vm,
+    );
+    module.set_attr(
         StaticStrings::Task,
         Value::Builtin(Builtins::Type(BuiltinType::Task)),
         vm,
@@ -79,6 +88,21 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(
         StaticStrings::InvalidStateError,
         Value::Builtin(Builtins::ExcType(ExcType::InvalidStateError)),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::FirstCompleted,
+        allocate_string("FIRST_COMPLETED", vm.heap),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::FirstException,
+        allocate_string("FIRST_EXCEPTION", vm.heap),
+        vm,
+    );
+    module.set_attr(
+        StaticStrings::AllCompleted,
+        allocate_string("ALL_COMPLETED", vm.heap),
         vm,
     );
 
@@ -90,6 +114,7 @@ pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
         AsyncioFunctions::Sleep => sleep(vm, args),
+        AsyncioFunctions::Wait => wait(vm, args),
     }
 }
 
@@ -119,7 +144,11 @@ fn sleep(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     };
     Ok(CallResult::OsCallWithEffect {
         call,
-        effect: PostConversionEffect::SleepResult { result }.into(),
+        effect: PostConversionEffect::SleepResult {
+            result,
+            destination: SleepDestination::Value,
+        }
+        .into(),
     })
 }
 
@@ -174,7 +203,7 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 ///
 /// 1. Each coroutine is spawned as a separate Task
 /// 2. External futures are tracked for resolution by the host
-/// 3. Nested gather futures use the existing awaiter chains
+/// 3. Nested gather and wait futures use the existing awaiter chains
 /// 4. The current task blocks until all items complete
 /// 5. Results are collected in order and returned as a list
 /// 6. On any task failure the exception propagates; siblings keep running and
@@ -206,6 +235,7 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                         | HeapData::ExternalFuture(_)
                         | HeapData::GatherFuture(_)
                         | HeapData::Task(_)
+                        | HeapData::WaitFuture(_)
                 )
         ) {
             return Err(ExcType::type_error(

@@ -3,9 +3,9 @@
 //! These tests verify the behavior of the async execution model, specifically around
 //! resolving external futures incrementally via `ResolveFutures::resume()`.
 
-use std::thread;
+use std::{thread, time::Duration};
 
-use monty::{Dump, MontyRun, ResolveFutures, RunProgress, Session, SessionRef, dump};
+use monty::{Dump, MontyRun, OsCall, ResolveFutures, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
     ResourceTracker,
@@ -412,6 +412,47 @@ fn resume_with_empty_results() {
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
     assert_eq!(result, MontyObject::int(42));
+}
+
+/// A resolved wait input is converted while no task is runnable; that delivery
+/// must still be charged to the execution clock, or a host batch is free work.
+#[test]
+fn resolving_a_large_wait_input_is_charged_to_the_clock() {
+    let runner = MontyRun::new(
+        "import asyncio\nf1 = foo()\nf2 = bar()\nawait asyncio.wait([f1, f2])".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    assert_eq!(call_ids.len(), 2);
+    let before = state.tracker().elapsed();
+    let large = MontyObject::list((0..100_000).map(MontyObject::int));
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(large))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let state = progress
+        .into_resolve_futures()
+        .expect("one wait input is still pending");
+    assert!(
+        state.tracker().elapsed() > before,
+        "delivering the result should be charged to the execution clock"
+    );
+    // Finish the turn so the suspended heap is torn down through the VM.
+    let progress = state
+        .resume(
+            vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::int(0)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    progress.into_complete().expect("wait completes");
 }
 
 // === Test: Resume with error result ===
@@ -1567,6 +1608,46 @@ caught
     });
 }
 
+/// A failed queued task must not leave its awakened waiter on the ready queue:
+/// once that waiter blocks again, the stale entry would be activated twice.
+#[test]
+fn reused_coroutine_failure_does_not_duplicate_its_waiter() {
+    let code = r"
+import asyncio
+
+async def child():
+    return 1
+
+async def other():
+    return await external()
+
+async def main():
+    coro = child()
+    await coro
+    task = asyncio.create_task(coro)
+    try:
+        await task
+    except RuntimeError as exc:
+        assert str(exc) == 'cannot reuse already awaited coroutine'
+    return await other()
+
+await main()
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    assert_eq!(call_ids.len(), 1);
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::int(7)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(progress.into_complete().unwrap(), MontyObject::int(7));
+}
+
 /// Runs `body` on a 2 MiB thread, the stack a worker gets — libtest's own 8 MiB
 /// would hide an overflow that a real session hits.
 fn run_on_a_worker_stack(body: impl FnOnce() + Send + 'static) {
@@ -1998,7 +2079,6 @@ await main()
         "only the awaited failure reached the main task"
     );
 }
-
 /// A queued reused coroutine that fails while the only other task blocks on a
 /// pending host future must yield to the host instead of dispatching a parked frame.
 #[test]
@@ -2031,4 +2111,76 @@ asyncio.run(main())
         )
         .unwrap();
     assert_eq!(progress.into_complete().unwrap(), MontyObject::none());
+}
+
+/// Starts a feed that queues 15k consumed coroutines, then pauses at a host
+/// sleep, so resuming drains them before the next bytecode runs.
+fn start_reused_task_drain() -> OsCall {
+    let code = r"
+import asyncio
+
+async def child():
+    return 1
+
+async def main():
+    coros = [child() for _ in range(15_000)]
+    for coro in coros:
+        await coro
+    for coro in coros:
+        asyncio.create_task(coro)
+    await asyncio.sleep(0.001)
+    return await external()
+
+asyncio.run(main())
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+        .unwrap()
+        .into_os_call()
+        .expect("expected the host sleep call")
+}
+
+/// Resuming a wait drains queued tasks on the execution clock, so their work
+/// counts toward the feed budget.
+#[test]
+#[cfg(feature = "test-hooks")]
+fn reused_task_activation_counts_toward_the_feed_budget() {
+    let mut call = start_reused_task_drain();
+    call.tracker_mut().set_max_feed_duration(Duration::from_millis(5));
+
+    let err = call
+        .resume(MontyObject::none(), PrintWriter::Disabled)
+        .expect_err("the queued reused coroutines must exceed the time limit");
+    assert_eq!(err.exc_type(), ExcType::TimeoutError);
+}
+
+/// The same drain is visible in the telemetry clock, separate from the budget.
+#[test]
+fn reused_task_activation_is_charged_to_the_execution_clock() {
+    let call = start_reused_task_drain();
+    let before = call.tracker().elapsed();
+
+    let progress = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
+    let call = progress
+        .into_function_call()
+        .expect("expected the external call after activation");
+    let activation = call
+        .tracker()
+        .elapsed()
+        .checked_sub(before)
+        .expect("execution time must not go backwards");
+
+    assert!(
+        activation >= Duration::from_millis(5),
+        "the queued reused coroutines must be charged to the execution clock, took {activation:?}"
+    );
+
+    // Close the feed through the host teardown path: dropping a live
+    // suspension leaves the roots its snapshot holds unreleased.
+    call.abort(
+        MontyException::new(ExcType::RuntimeError, Some("test finished".to_owned())),
+        PrintWriter::Disabled,
+    )
+    .unwrap_err();
 }

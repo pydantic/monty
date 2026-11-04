@@ -10,7 +10,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapId, HeapObjectRead, HeapReadOutput},
+    heap::{HEAP_ENTRY_SIZE, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
     heap_traits::{DropGuard, DropWithContext},
     intern::StaticStrings,
     types::{PyTrait, Type, str::allocate_string},
@@ -20,10 +20,10 @@ use crate::{
 /// Implementation of `asyncio.create_task(coro, *, name=None)`.
 ///
 /// The wrapped coroutine is handed to the scheduler as a user task. An
-/// external host future needs no scheduler task: it already owns its own
-/// completion state, so this registers a [`Awaiter::UserTask`] that completes
-/// the Python-visible task when it settles. A coroutine that is already
-/// driving another task yields a task that fails on first access with
+/// external host future or wait future needs no scheduler task: each already
+/// owns its own completion state, so this registers a [`Awaiter::UserTask`]
+/// that completes the Python-visible task when it settles. A coroutine that is
+/// already driving another task yields a task that fails on first access with
 /// CPython's reuse error.
 pub(crate) fn create_task(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let CreateTaskArgs { coro, name } = CreateTaskArgs::from_args(args, vm)?;
@@ -37,6 +37,7 @@ pub(crate) fn create_task(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
         match coro {
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Coroutine(_)) => TaskStart::Coroutine,
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::ExternalFuture(_)) => TaskStart::ExternalFuture,
+            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::WaitFuture(_)) => TaskStart::WaitFuture,
             _ => {
                 let rendered = coro.py_repr(vm)?;
                 defer_drop!(rendered, vm);
@@ -71,6 +72,7 @@ pub(crate) fn create_task(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
     match start {
         TaskStart::Coroutine => start_coroutine_task(vm, coro_id, handle),
         TaskStart::ExternalFuture => start_external_future_task(vm, coro_id, handle),
+        TaskStart::WaitFuture => vm.start_wait_task(coro_id, handle)?,
     }
 
     Ok(Value::Ref(handle))
@@ -80,6 +82,7 @@ pub(crate) fn create_task(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 enum TaskStart {
     Coroutine,
     ExternalFuture,
+    WaitFuture,
 }
 
 /// Serves `asyncio.Task` attributes that are plain Python values.
@@ -126,7 +129,11 @@ pub(crate) fn task_call_method<'h>(
         }
         StaticStrings::GetName => {
             args.check_zero_args("Task.get_name", vm.heap)?;
-            allocate_string(task.get(vm.heap).name.clone(), vm.heap)
+            let name = &task.get(vm.heap).name;
+            if let Err(error) = vm.heap.tracker.check_allocation(name.len()) {
+                return Err(error.into());
+            }
+            allocate_string(name.clone(), vm.heap)
         }
         StaticStrings::SetName => {
             let name = args.get_one_arg("Task.set_name", vm.heap)?;
@@ -162,6 +169,12 @@ pub(crate) fn task_call_method<'h>(
                 }
                 TaskFutureState::Completed(_) => Value::None,
                 TaskFutureState::Failed(error) => {
+                    // The cached error and the exception object built from it
+                    // are alive together, so preflight both copies and the new
+                    // heap entry.
+                    vm.heap
+                        .tracker
+                        .check_allocation(exception_value_allocation_size(error))?;
                     let error = error.clone();
                     exception_value(&error, vm)
                 }
@@ -266,6 +279,18 @@ struct CreateTaskArgs {
     name: Option<Value>,
 }
 
+/// Heap bytes `exception_value` needs for a cached error: the run-error copy,
+/// the exception payload it materialises, and that exception's heap entry.
+fn exception_value_allocation_size(error: &RunError) -> usize {
+    let copies = match error {
+        RunError::Exc(_) | RunError::UncatchableExc(_) => error.clone_allocation_size().saturating_mul(2),
+        // A borrowed internal message costs nothing to clone, but `new_msg`
+        // still allocates it for the exception argument.
+        RunError::Internal(message) => error.clone_allocation_size().saturating_add(message.len()),
+    };
+    copies.saturating_add(HEAP_ENTRY_SIZE)
+}
+
 /// Materialises a task's cached [`RunError`] as a Python exception object for
 /// `Task.exception()`. Internal errors have no exception payload, so they
 /// surface as a `RuntimeError` carrying the internal message.
@@ -280,7 +305,12 @@ fn exception_value(error: &RunError, vm: &mut VM<'_>) -> Value {
 /// Renders a value with `str()` and extracts the resulting text.
 fn value_to_string(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let rendered = value.py_str(vm)?;
-    let text = rendered.as_str(vm).map(str::to_owned).unwrap_or_default();
+    let text = rendered.as_str(vm).unwrap_or_default();
+    if let Err(error) = vm.heap.tracker.check_allocation(text.len()) {
+        rendered.drop_with(vm);
+        return Err(error.into());
+    }
+    let text = text.to_owned();
     rendered.drop_with(vm);
     Ok(text)
 }

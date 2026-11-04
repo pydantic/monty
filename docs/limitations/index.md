@@ -35,7 +35,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `match` statements with every PEP 634 pattern kind and guards, see [match.md](match.md)
 - f-strings (including the `=` debug form), `str.format()` and `format()`, with `!r` / `!s` / `!a` conversions,
     format specs and nested replacement fields
-- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.create_task` / `asyncio.sleep`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather` / `asyncio.create_task` / `asyncio.wait` /
+    `asyncio.sleep`
 - `import x`, `import x.y`, `from x import y, z as w`; a module the sandbox does not have is requested from the host,
     see [modules.md](modules.md#host-modules), which may answer with the module's `.py` file from the working
     directory instead, see [modules from files](modules.md#modules-from-files)
@@ -135,8 +136,8 @@ Each links to the page that owns it, which is where the full account lives:
     `__bool__` and the `__getattr__` family are ignored silently, so an instance is always truthy
     ([classes.md](classes.md)).
 - **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio` exposes `run`, `gather`,
-    `create_task`, `sleep`, `Task` and `InvalidStateError`; everything else does not exist
-    ([asyncio.md](asyncio.md)).
+    `create_task`, `wait`, `sleep`, `Task`, `InvalidStateError` and the three `wait` constants; everything else
+    does not exist ([asyncio.md](asyncio.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise `LookupError`
     ([encoding.md](encoding.md)).
 

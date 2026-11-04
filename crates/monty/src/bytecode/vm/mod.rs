@@ -56,7 +56,7 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
-        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, check_raw_call_paths,
+        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, SleepDestination, check_raw_call_paths,
         release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
@@ -2156,9 +2156,24 @@ impl<'h> VM<'h> {
                 self.push(Value::None);
                 return self.run_external();
             }
-            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
-                let settled = self.settled_awaitable(result);
-                self.push(settled);
+            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result, destination })) => {
+                match destination {
+                    SleepDestination::Value => {
+                        let settled = self.settled_awaitable(result);
+                        self.push(settled);
+                    }
+                    SleepDestination::Wait(wait) => {
+                        // A timer answer is only a wake-up signal: its value is
+                        // irrelevant, and an already-settled timer is what the
+                        // wait reads at first await.
+                        result.drop_with(self);
+
+                        let timer = self.settled_awaitable(Value::None);
+                        let wait = self.install_wait_timer(wait, timer);
+
+                        self.push(wait);
+                    }
+                }
                 return self.resume_after_async_wait();
             }
             effect => {
@@ -2353,9 +2368,9 @@ impl<'h> VM<'h> {
                     effect @ (PostConversionEffect::BufferLoad { .. }
                     | PostConversionEffect::FileNext { .. }
                     | PostConversionEffect::LoadThenCall { .. }
-                    | PostConversionEffect::SeedRandom { .. }),
+                    | PostConversionEffect::SeedRandom { .. }
+                    | PostConversionEffect::SleepResult { .. }),
                 ) => effect.release(self.heap),
-                PendingEffect::Post(PostConversionEffect::SleepResult { result }) => result.drop_with(self),
                 // A walk or glob turns an `OSError` into its result, as CPython's
                 // do for a failed `scandir`; anything else still raises.
                 PendingEffect::Scan(effect) if effect.absorbs(&error) => {

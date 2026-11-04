@@ -8,6 +8,7 @@
 
 use std::{mem, task::Poll};
 
+use ahash::AHashSet;
 use monty_types::{InvalidInputError, MontyException, ResourceError, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
@@ -18,19 +19,21 @@ use super::{
 use crate::{
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
-        GatherState, PendingChildren, TaskFuture, TaskFutureState, TaskId,
+        GatherState, PendingChildren, TaskFuture, TaskFutureState, TaskId, UnawaitedWait, WaitCondition, WaitFuture,
+        WaitFutureState, WaitPending,
     },
     bytecode::vm::scheduler::SerializedTaskFrame,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput, HeapReader,
     },
-    intern::FunctionId,
+    intern::{FunctionId, StaticStrings},
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
-    types::List,
+    string_builder::StringBuilder,
+    types::{List, PyTrait, Set, allocate_tuple, collect_iterable, set::SetEntry},
     value::Value,
 };
 
@@ -86,6 +89,7 @@ impl<'h> VM<'h> {
                     HeapReadOutput::GatherFuture(gather) => this.await_gather_future(gather, awaiter)?,
                     HeapReadOutput::ExternalFuture(fut) => this.await_external_future(&fut, awaiter)?,
                     HeapReadOutput::Task(task) => this.await_task(&task, awaiter)?,
+                    HeapReadOutput::WaitFuture(wait) => this.await_wait_future(&wait, awaiter)?,
                     _ => return Err(ExcType::object_not_awaitable(&awaitable.py_type_name(this))),
                 };
 
@@ -311,7 +315,15 @@ impl<'h> VM<'h> {
                         Poll::Pending
                     }
                 },
-                _ => panic!("gather item is not a Coroutine, ExternalFuture, GatherFuture, or Task"),
+                HeapReadOutput::WaitFuture(wait) => {
+                    self.heap.inc_ref(gather_id);
+                    let sub_awaiter = Awaiter::GatherSlot {
+                        gather: gather_id,
+                        source: item_id,
+                    };
+                    self.await_wait_future(&wait, sub_awaiter)?
+                }
+                _ => panic!("gather item is not a Coroutine, ExternalFuture, GatherFuture, WaitFuture, or Task"),
             };
 
             match poll {
@@ -398,9 +410,7 @@ impl<'h> VM<'h> {
                 Ok(Poll::Ready(value))
             }
             ExternalFutureState::Failed(err) => Err(err.clone()),
-            ExternalFutureState::Pending { awaiter: Some(_) } => {
-                Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited future").into())
-            }
+            ExternalFutureState::Pending { awaiter: Some(_) } => Err(ExcType::cannot_reuse_already_awaited_future()),
             ExternalFutureState::Pending { awaiter: None } => {
                 let awaiter = awaiter_guard.into_inner();
                 fut.get_mut(self.heap).state = ExternalFutureState::Pending { awaiter: Some(awaiter) };
@@ -417,6 +427,516 @@ impl<'h> VM<'h> {
     /// Spawns the task behind a Python-visible `asyncio.Task` handle.
     pub(crate) fn spawn_python_task(&mut self, coroutine_id: HeapId, handle: HeapId) -> Option<TaskId> {
         self.scheduler.spawn_python_task(self.heap, coroutine_id, handle)
+    }
+
+    /// Drives a `create_task(wait(...))` handle.
+    ///
+    /// A wait future completes a task through `Awaiter::UserTask`, like a host
+    /// future. Catchable errors while committing the wait are cached on the task
+    /// rather than raised from `create_task`, so awaiting the task reports them
+    /// the way a coroutine body would. A terminal error (a resource limit, say)
+    /// cannot be cached, so it propagates from `create_task` instead of letting
+    /// the program continue past it.
+    pub(crate) fn start_wait_task(&mut self, wait_id: HeapId, handle: HeapId) -> RunResult<()> {
+        let HeapReadOutput::WaitFuture(wait) = self.heap.read(wait_id) else {
+            panic!("create_task's wait future disappeared")
+        };
+
+        self.heap.inc_ref(handle);
+        let result = self.await_wait_future(&wait, Awaiter::UserTask { task: handle });
+        drop(wait);
+        match result {
+            Ok(Poll::Ready(value)) => {
+                let HeapReadOutput::Task(task) = self.heap.read(handle) else {
+                    panic!("create_task's wait task disappeared")
+                };
+
+                task.get_mut(self.heap).state = TaskFutureState::Completed(value);
+                Ok(())
+            }
+            Ok(Poll::Pending) => Ok(()),
+            Err(error @ RunError::Exc(_)) => {
+                let HeapReadOutput::Task(task) = self.heap.read(handle) else {
+                    panic!("create_task's wait task disappeared")
+                };
+
+                task.get_mut(self.heap).state = TaskFutureState::Failed(error);
+                Ok(())
+            }
+            Err(error) => {
+                // `create_task` fails without returning the handle, which still
+                // owns the wait future.
+                self.heap.dec_ref(handle);
+                Err(error)
+            }
+        }
+    }
+
+    /// Awaits an `asyncio.wait()` future.
+    ///
+    /// The first await materialises `fs`, deduplicates it by identity, and
+    /// either completes immediately or attaches a `WaitSlot` to every pending
+    /// task/future. Later awaits raise as a coroutine would.
+    fn await_wait_future(
+        &mut self,
+        wait: &HeapObjectRead<'h, WaitFuture>,
+        awaiter: Awaiter,
+    ) -> Result<Poll<Value>, RunError> {
+        let wait_id = wait.id();
+        let mut awaiter_guard = DropGuard::new(awaiter, self);
+
+        let this = awaiter_guard.ctx();
+        let old = mem::replace(&mut wait.get_mut(this.heap).state, WaitFutureState::Consumed);
+
+        let immediate = match old {
+            WaitFutureState::Consumed => Err(ExcType::cannot_reuse_already_awaited_coroutine()),
+            WaitFutureState::Pending(pending) => {
+                wait.get_mut(this.heap).state = WaitFutureState::Pending(pending);
+
+                Err(ExcType::cannot_reuse_already_awaited_coroutine())
+            }
+            WaitFutureState::Unawaited(unawaited) => this.commit_wait_unawaited(wait_id, unawaited),
+        }?;
+
+        let pending = matches!(immediate, Poll::Pending);
+        if pending {
+            let HeapReadOutput::WaitFuture(wait) = this.heap.read(wait_id) else {
+                panic!("wait id stopped referring to a WaitFuture")
+            };
+
+            assert!(
+                matches!(wait.get(this.heap).state, WaitFutureState::Pending(_)),
+                "commit_wait_unawaited must leave a pending wait future"
+            );
+        }
+
+        let awaiter = awaiter_guard.into_inner();
+
+        if pending {
+            let HeapReadOutput::WaitFuture(wait) = self.heap.read(wait_id) else {
+                panic!("wait id stopped referring to a WaitFuture")
+            };
+            match &mut wait.get_mut(self.heap).state {
+                WaitFutureState::Pending(pending) => pending.awaiter = Some(awaiter),
+                _ => panic!("commit_wait_unawaited must leave a pending wait future"),
+            }
+        } else {
+            // The awaiter owns a gather or task reference; an immediate result
+            // never installs it, so release it here.
+            awaiter.drop_with(self);
+        }
+
+        Ok(immediate)
+    }
+
+    /// Preflights the temporary and result storage for a wait over `inputs` entries.
+    ///
+    /// The inputs come from a guest iterable, so neither the commit bookkeeping
+    /// nor the result sets may reserve guest-counted capacity without a check:
+    /// the next checkpoint would otherwise be after the allocator's hard limit.
+    fn preflight_wait_storage(&self, inputs: usize) -> Result<(), ResourceError> {
+        let per_input = mem::size_of::<SetEntry>()
+            .saturating_mul(2)
+            .saturating_add(mem::size_of::<HeapId>().saturating_mul(5))
+            .saturating_add(mem::size_of::<Awaiter>());
+        self.heap.tracker.check_allocation(inputs.saturating_mul(per_input))
+    }
+
+    /// Validates and materialises the first await of a wait future.
+    fn commit_wait_unawaited(&mut self, wait_id: HeapId, unawaited: UnawaitedWait) -> RunResult<Poll<Value>> {
+        let UnawaitedWait {
+            fs,
+            return_when,
+            timer,
+            timed_out,
+        } = unawaited;
+
+        // Every early return must release the input set, the `return_when` value
+        // and the timer exactly once; the guard keeps that cleanup out of each
+        // branch, and fields are taken as their ownership moves on.
+        let this = self;
+        let args = WaitCommitArgs {
+            fs: Some(fs),
+            return_when,
+            timer,
+        };
+        defer_drop_mut!(args, this);
+
+        let fs = args.fs.as_ref().expect("wait arguments hold the input set");
+        if let Some(label) = single_waitable_label(fs, this.heap) {
+            return Err(ExcType::type_error(format!("expect a list of futures, not {label}")));
+        }
+
+        if !fs.py_bool(this)? {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "Set of Tasks/Futures is empty.").into());
+        }
+
+        let entries = collect_iterable(fs, this)?;
+        // Release the guest's input set before preflighting; holding it as well
+        // as the entries would double-count the same storage.
+        args.fs
+            .take()
+            .expect("wait arguments hold the input set")
+            .drop_with(this);
+
+        let condition = match parse_wait_condition(args.return_when.take(), this) {
+            Ok(condition) => condition,
+            Err(err) => {
+                entries.drop_with(this);
+
+                return Err(err);
+            }
+        };
+
+        if let Err(err) = this.preflight_wait_storage(entries.len()) {
+            entries.drop_with(this);
+
+            return Err(err.into());
+        }
+
+        let mut inputs = Vec::with_capacity(entries.len());
+        let mut seen = AHashSet::with_capacity(entries.len());
+
+        // Every rejected input must release the unchecked values after it too,
+        // so the iterator owns the remainder and drops it on any early return.
+        let entries = entries.into_iter();
+        defer_drop_mut!(entries, this);
+        for value in entries.by_ref() {
+            let Value::Ref(id) = &value else {
+                let type_name = value.py_type_name(this);
+                value.drop_with(this);
+                this.drop_wait_inputs(inputs);
+
+                let error = SimpleException::new_msg(
+                    ExcType::AttributeError,
+                    format!("'{type_name}' object has no attribute 'add_done_callback'"),
+                );
+
+                return Err(error.into());
+            };
+
+            let id = *id;
+            if matches!(
+                this.heap.read(id),
+                HeapReadOutput::Coroutine(_) | HeapReadOutput::WaitFuture(_)
+            ) {
+                value.drop_with(this);
+                this.drop_wait_inputs(inputs);
+
+                let error = SimpleException::new_msg(
+                    ExcType::TypeError,
+                    "Passing coroutines is forbidden, use tasks explicitly.",
+                );
+
+                return Err(error.into());
+            }
+            if matches!(
+                this.heap.read(id),
+                HeapReadOutput::Task(_) | HeapReadOutput::ExternalFuture(_)
+            ) {
+                if seen.insert(id) {
+                    inputs.push(value.into_ref_id().expect("wait input is a reference"));
+                } else {
+                    value.drop_with(this);
+                }
+            } else {
+                let type_name = value.py_type_name(this);
+                value.drop_with(this);
+                this.drop_wait_inputs(inputs);
+
+                let error = SimpleException::new_msg(
+                    ExcType::AttributeError,
+                    format!("'{type_name}' object has no attribute 'add_done_callback'"),
+                );
+
+                return Err(error.into());
+            }
+        }
+
+        if inputs.is_empty() {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "Set of Tasks/Futures is empty.").into());
+        }
+
+        let mut done = Vec::new();
+        let mut pending = AHashSet::new();
+        let mut failed_any = false;
+
+        for id in &inputs {
+            let (settled, failed) = wait_child_status(this.heap, *id);
+            failed_any |= failed;
+
+            if settled {
+                done.push(*id);
+            } else {
+                pending.insert(*id);
+            }
+        }
+
+        // A timer answer can arrive before the first await, leaving a settled
+        // awaitable in the slot; it counts exactly like a post-commit firing.
+        let timed_out = timed_out || this.wait_timer_has_fired(args.timer);
+
+        if wait_condition_met(condition, &done, &pending, failed_any, timed_out) {
+            if let Some(timer) = args.timer.take() {
+                this.drop_wait_timer(timer);
+            }
+
+            let value = this.wait_result(inputs, &done)?;
+            return Ok(Poll::Ready(value));
+        }
+
+        for id in &pending {
+            let available = match this.heap.read(*id) {
+                HeapReadOutput::Task(_) => true,
+                HeapReadOutput::ExternalFuture(future) => {
+                    matches!(
+                        future.get(this.heap).state,
+                        ExternalFutureState::Pending { awaiter: None }
+                    )
+                }
+                _ => unreachable!("wait inputs are validated tasks or futures"),
+            };
+            if !available {
+                this.drop_wait_inputs(inputs);
+
+                return Err(ExcType::cannot_reuse_already_awaited_future());
+            }
+        }
+
+        for id in &pending {
+            match this.heap.read(*id) {
+                HeapReadOutput::Task(task) => {
+                    this.heap.inc_ref(wait_id);
+                    task.get_mut(this.heap).awaiters.push(Awaiter::WaitSlot {
+                        wait: wait_id,
+                        source: *id,
+                    });
+                }
+                HeapReadOutput::ExternalFuture(future) => {
+                    this.heap.inc_ref(wait_id);
+                    future.get_mut(this.heap).state = ExternalFutureState::Pending {
+                        awaiter: Some(Awaiter::WaitSlot {
+                            wait: wait_id,
+                            source: *id,
+                        }),
+                    };
+                }
+                _ => unreachable!("wait inputs are validated tasks or futures"),
+            }
+        }
+
+        let HeapReadOutput::WaitFuture(wait) = this.heap.read(wait_id) else {
+            panic!("wait id stopped referring to a WaitFuture")
+        };
+
+        wait.get_mut(this.heap).state = WaitFutureState::Pending(WaitPending {
+            inputs,
+            pending,
+            done,
+            failed_any,
+            return_when: condition,
+            awaiter: None,
+            timer: args.timer.take(),
+            timed_out,
+        });
+
+        Ok(Poll::Pending)
+    }
+
+    /// Builds the `(done, pending)` tuple from the inputs a wait future owns.
+    fn wait_result(&mut self, inputs: Vec<HeapId>, done: &[HeapId]) -> RunResult<Value> {
+        if let Err(err) = self.preflight_wait_storage(inputs.len()) {
+            self.drop_wait_inputs(inputs);
+            return Err(err.into());
+        }
+
+        let done_ids: AHashSet<HeapId> = done.iter().copied().collect();
+
+        let mut done_set = Set::with_capacity(done.len());
+        let mut pending_set = Set::with_capacity(inputs.len().saturating_sub(done.len()));
+
+        for id in inputs {
+            let value = Value::Ref(id);
+
+            if done_ids.contains(&id) {
+                done_set.add(value, self)?;
+            } else {
+                pending_set.add(value, self)?;
+            }
+        }
+
+        let done_value = Value::Ref(self.heap.allocate(HeapData::Set(done_set)));
+        let pending_value = Value::Ref(self.heap.allocate(HeapData::Set(pending_set)));
+
+        Ok(allocate_tuple(smallvec![done_value, pending_value], self.heap))
+    }
+
+    /// Cancels and releases an owned wait timer.
+    fn drop_wait_timer(&mut self, timer: HeapId) {
+        if let HeapReadOutput::ExternalFuture(future) = self.heap.read(timer) {
+            let call_id = future.get(self.heap).call_id;
+            if self.scheduler.take_pending_external(call_id).is_some() {
+                self.heap.dec_ref(timer);
+            }
+        }
+        self.heap.dec_ref(timer);
+    }
+
+    /// Resolves a child that completed successfully; the wait result ignores
+    /// the child's value because it only reports which children finished.
+    fn resolve_wait_child_success(
+        &mut self,
+        wait_id: HeapId,
+        source: HeapId,
+        value: Value,
+    ) -> RunResult<Option<(Awaiter, Value)>> {
+        value.drop_with(self);
+        self.complete_wait_after_child(wait_id, source, true)
+    }
+
+    /// Resolves a failed child: `wait` completes normally with the child in
+    /// its done set, and only `FIRST_EXCEPTION` looks at the failure flag.
+    fn resolve_wait_child_failure(
+        &mut self,
+        wait_id: HeapId,
+        source: HeapId,
+        _error: &RunError,
+    ) -> RunResult<Option<(Awaiter, Value)>> {
+        self.complete_wait_after_child(wait_id, source, false)
+    }
+
+    /// Records a settled child and completes the wait if its condition is met.
+    fn complete_wait_after_child(
+        &mut self,
+        wait_id: HeapId,
+        source: HeapId,
+        success: bool,
+    ) -> RunResult<Option<(Awaiter, Value)>> {
+        let HeapReadOutput::WaitFuture(wait) = self.heap.read(wait_id) else {
+            return Ok(None);
+        };
+        let complete = {
+            let WaitFutureState::Pending(pending) = &mut wait.get_mut(self.heap).state else {
+                return Ok(None);
+            };
+            if pending.timer == Some(source) {
+                pending.timed_out = true;
+            } else if !pending.pending.remove(&source) {
+                return Ok(None);
+            } else {
+                pending.done.push(source);
+                pending.failed_any |= !success;
+            }
+            wait_condition_met(
+                pending.return_when,
+                &pending.done,
+                &pending.pending,
+                pending.failed_any,
+                pending.timed_out,
+            )
+        };
+        if complete { self.finish_wait(wait_id) } else { Ok(None) }
+    }
+
+    /// Consumes a completed `WaitPending` and returns its awaiter.
+    ///
+    /// Inputs still pending when an early condition (`FIRST_COMPLETED`,
+    /// `FIRST_EXCEPTION`, a timeout) finishes the wait lose their
+    /// [`Awaiter::WaitSlot`] links here. Nothing else can reach the consumed
+    /// wait, and each leftover slot would keep its `Awaiter` (and the wait
+    /// reference it owns) alive until that input settled, so a
+    /// "wait until something finishes" loop would retain one slot per input
+    /// per round. The delivering slot still owns a reference, so the wait
+    /// entry cannot be freed under this call.
+    fn finish_wait(&mut self, wait_id: HeapId) -> RunResult<Option<(Awaiter, Value)>> {
+        let old = {
+            let HeapReadOutput::WaitFuture(wait) = self.heap.read(wait_id) else {
+                return Ok(None);
+            };
+
+            mem::replace(&mut wait.get_mut(self.heap).state, WaitFutureState::Consumed)
+        };
+
+        let WaitFutureState::Pending(WaitPending {
+            inputs,
+            pending,
+            done,
+            awaiter,
+            timer,
+            ..
+        }) = old
+        else {
+            return Ok(None);
+        };
+
+        self.detach_wait_slots(wait_id, &pending);
+        if let Some(timer) = timer {
+            self.drop_wait_timer(timer);
+        }
+
+        let Some(awaiter) = awaiter else {
+            let value = self.wait_result(inputs, &done)?;
+            value.drop_with(self);
+            return Ok(None);
+        };
+
+        let value = match self.wait_result(inputs, &done) {
+            Ok(value) => value,
+            Err(error) => {
+                awaiter.drop_with(self);
+                return Err(error);
+            }
+        };
+
+        Ok(Some((awaiter, value)))
+    }
+
+    /// Removes `wait_id`'s [`Awaiter::WaitSlot`] links from inputs that are
+    /// still pending, releasing the wait reference each slot owns.
+    ///
+    /// A task holds several awaiters (a gather or another wait may also be
+    /// watching it), so only this wait's slots are retained away; an external
+    /// future holds a single awaiter and returns to the unawaited state.
+    fn detach_wait_slots(&mut self, wait_id: HeapId, pending: &AHashSet<HeapId>) {
+        for id in pending {
+            let removed = match self.heap.read(*id) {
+                HeapReadOutput::Task(task) => {
+                    let awaiters = &mut task.get_mut(self.heap).awaiters;
+                    let before = awaiters.len();
+
+                    awaiters.retain(|awaiter| !matches!(awaiter, Awaiter::WaitSlot { wait, .. } if *wait == wait_id));
+                    before - awaiters.len()
+                }
+                HeapReadOutput::ExternalFuture(future) => {
+                    let state = &mut future.get_mut(self.heap).state;
+
+                    if matches!(
+                        state,
+                        ExternalFutureState::Pending {
+                            awaiter: Some(Awaiter::WaitSlot { wait, .. })
+                        } if *wait == wait_id
+                    ) {
+                        *state = ExternalFutureState::Pending { awaiter: None };
+
+                        1
+                    } else {
+                        0
+                    }
+                }
+                _ => 0,
+            };
+
+            for _ in 0..removed {
+                self.heap.dec_ref(wait_id);
+            }
+        }
+    }
+
+    /// Releases raw owned heap ids that are not yet inside a `Value`.
+    fn drop_wait_inputs(&mut self, inputs: Vec<HeapId>) {
+        for id in inputs {
+            self.heap.dec_ref(id);
+        }
     }
 
     /// Awaits a Python-visible task.
@@ -508,24 +1028,35 @@ impl<'h> VM<'h> {
     /// The current task is requeued rather than blocked: the host result is
     /// already on its stack, so it must resume once the other ready tasks have
     /// had a turn.
-    pub(super) fn resume_after_async_wait(&mut self) -> Result<FrameExit, RunError> {
-        if let Some(next_task_id) = self.scheduler.next_ready_task() {
+    pub(crate) fn resume_after_async_wait(&mut self) -> Result<FrameExit, RunError> {
+        // Draining queued tasks that fail on a reused coroutine does work;
+        // charge that drain and the subsequent run to one execution window.
+        self.heap.tracker.on_execution_start();
+        let activation = if let Some(next_task_id) = self.scheduler.next_ready_task() {
             self.scheduler.requeue_current();
-            match self.activate_task(next_task_id) {
-                Ok(true) => {}
-                Ok(false) => {
-                    let pending = self.scheduler.pending_call_ids();
-                    if pending.is_empty() {
-                        return Err(RunError::internal(
-                            "asyncio scheduler stalled: no ready tasks and no pending external calls",
-                        ));
-                    }
-                    return Ok(FrameExit::ResolveFutures(pending));
+            Some(self.activate_task(next_task_id))
+        } else {
+            None
+        };
+        let result = match activation {
+            None | Some(Ok(true)) => self.run(),
+            Some(Ok(false)) => {
+                let pending = self.scheduler.pending_call_ids();
+                if pending.is_empty() {
+                    Err(RunError::internal(
+                        "asyncio scheduler stalled: no ready tasks and no pending external calls",
+                    ))
+                } else {
+                    Ok(FrameExit::ResolveFutures(pending))
                 }
-                Err(error) => return self.resume_with_exception(error),
             }
-        }
-        self.run_external()
+            Some(Err(error)) => {
+                self.heap.tracker.on_execution_stop();
+                return self.resume_with_exception(error);
+            }
+        };
+        self.heap.tracker.on_execution_stop();
+        self.finish_host_turn(result)
     }
 
     /// Removes a completed child and delivers its result, discarding it if its gather already settled.
@@ -561,10 +1092,11 @@ impl<'h> VM<'h> {
             self.deliver_awaiter_success(awaiter, result)
         } else {
             result.drop_with(self);
-            None
+            Ok(None)
         };
 
         self.cleanup_current_task();
+        let delivery = delivery?;
 
         if self.resume_after_task_exit(delivery)? {
             Ok(AwaitResult::FramePushed)
@@ -586,7 +1118,7 @@ impl<'h> VM<'h> {
     /// A settled gather discards the error. Any returned error belongs to the newly active task
     /// and must go through exception handling before that task executes bytecode.
     pub(super) fn handle_task_failure(&mut self, error: RunError) -> Result<(), RunError> {
-        let delivery = self.fail_current_task(error);
+        let delivery = self.fail_current_task(error)?;
         self.resume_after_task_exit(delivery)?;
         Ok(())
     }
@@ -595,7 +1127,7 @@ impl<'h> VM<'h> {
     ///
     /// The caller owns task selection: `handle_task_failure` switches to the returned waiter,
     /// while `activate_task` keeps this state to retry a queued task without recursing.
-    fn fail_current_task(&mut self, error: RunError) -> Option<TaskId> {
+    fn fail_current_task(&mut self, error: RunError) -> RunResult<Option<TaskId>> {
         let task_id = self
             .scheduler
             .current_task_id()
@@ -610,8 +1142,10 @@ impl<'h> VM<'h> {
         self.scheduler.cancel_task(task_id, self.heap);
         if let Some(handle) = python_handle {
             self.deliver_awaiter_failure(Awaiter::UserTask { task: handle }, error)
+        } else if let Some(awaiter) = awaiter {
+            self.deliver_awaiter_failure(awaiter, error)
         } else {
-            awaiter.and_then(|awaiter| self.deliver_awaiter_failure(awaiter, error))
+            Ok(None)
         }
     }
 
@@ -706,8 +1240,13 @@ impl<'h> VM<'h> {
                     // successor here instead of through `resume_after_task_exit`,
                     // which would recurse once per queued task and can exhaust the
                     // native stack.
-                    let waiter = self.fail_current_task(error);
-                    next = waiter.or_else(|| self.scheduler.next_ready_task());
+                    let waiter = self.fail_current_task(error)?;
+                    next = if let Some(waiter) = waiter {
+                        self.scheduler.remove_from_ready_queue(waiter);
+                        Some(waiter)
+                    } else {
+                        self.scheduler.next_ready_task()
+                    };
                 }
                 Err(LoadTaskError::Other(error)) => return Err(error),
             }
@@ -772,12 +1311,9 @@ impl<'h> VM<'h> {
             // reader panics.
             drop(coro);
             if is_new {
-                self.init_task_from_coroutine(coro_id)
-                    .map_err(LoadTaskError::Other)?;
+                self.init_task_from_coroutine(coro_id).map_err(LoadTaskError::Other)?;
             } else {
-                return Err(LoadTaskError::Reused(
-                    ExcType::cannot_reuse_already_awaited_coroutine(),
-                ));
+                return Err(LoadTaskError::Reused(ExcType::cannot_reuse_already_awaited_coroutine()));
             }
         } else {
             // This shouldn't happen - task with no frames and no coroutine
@@ -843,12 +1379,12 @@ impl<'h> VM<'h> {
     /// Called by the host when an async external call completes. Looks up
     /// the `ExternalFuture` heap entry for `call_id`, transitions it to
     /// `Resolved(value)`, and delivers `value` to the awaiter (if any).
-    pub fn resolve_future(&mut self, call_id: u32, value: Value) {
+    pub fn resolve_future(&mut self, call_id: u32, value: Value) -> RunResult<()> {
         let call_id = CallId::new(call_id);
 
         let Some(future_id) = self.scheduler.take_pending_external(call_id) else {
             value.drop_with(self);
-            return;
+            return Ok(());
         };
 
         // Ensure future cleaned up on all paths
@@ -883,14 +1419,88 @@ impl<'h> VM<'h> {
         fut.get_mut(this.heap).state = ExternalFutureState::Resolved(value);
 
         if let Some((awaiter, value)) = awaiter_and_value {
-            this.deliver_awaiter_success(awaiter, value);
+            this.deliver_awaiter_success(awaiter, value)?;
+        }
+        Ok(())
+    }
+
+    /// Returns whether the wait's timeout awaitable has already settled.
+    ///
+    /// An inline host answer produces a settled timer, and a pending one can
+    /// resolve before the wait is first awaited. Both mean the timeout elapsed.
+    fn wait_timer_has_fired(&self, timer: Option<HeapId>) -> bool {
+        let Some(timer) = timer else {
+            return false;
+        };
+
+        match self.heap.read(timer) {
+            HeapReadOutput::ExternalFuture(future) => matches!(
+                future.get(self.heap).state,
+                ExternalFutureState::Resolved(_) | ExternalFutureState::Failed(_)
+            ),
+            _ => false,
         }
     }
 
-    /// Records that a wait future's host timer fired before it completed.
+    /// Installs `timer` as `wait`'s timeout and returns the wait future so the
+    /// caller can make it the pending call's value.
+    ///
+    /// Takes ownership of both values: the wait keeps the timer entry alive,
+    /// and a pending timer keeps the wait alive through its [`Awaiter::WaitSlot`].
+    /// An already-settled timer needs no awakener; the first await sees it as
+    /// fired, which also makes a rejected host call count as a timeout.
+    pub(crate) fn install_wait_timer(&mut self, wait: Value, timer: Value) -> Value {
+        let Some(wait_id) = wait.into_ref_id() else {
+            panic!("wait timer effect does not own a WaitFuture")
+        };
 
-    /// Installs a host timer future on an unawaited wait future and registers
-    /// this wait as the timer's downstream.
+        let Some(timer_id) = timer.into_ref_id() else {
+            panic!("wait timer is not a heap reference")
+        };
+
+        let HeapReadOutput::WaitFuture(wait_future) = self.heap.read(wait_id) else {
+            panic!("wait timer effect does not point to a WaitFuture")
+        };
+
+        match &mut wait_future.get_mut(self.heap).state {
+            WaitFutureState::Unawaited(unawaited) => unawaited.timer = Some(timer_id),
+            WaitFutureState::Pending(_) | WaitFutureState::Consumed => {
+                unreachable!("wait() returns only after its timer is installed")
+            }
+        }
+
+        drop(wait_future);
+
+        let HeapReadOutput::ExternalFuture(timer_future) = self.heap.read(timer_id) else {
+            panic!("wait timer is not an ExternalFuture")
+        };
+
+        let pending = matches!(
+            timer_future.get(self.heap).state,
+            ExternalFutureState::Pending { awaiter: None }
+        );
+
+        drop(timer_future);
+
+        if pending {
+            self.heap.inc_ref(wait_id);
+
+            let HeapReadOutput::ExternalFuture(timer_future) = self.heap.read(timer_id) else {
+                panic!("wait timer is not an ExternalFuture")
+            };
+
+            let ExternalFutureState::Pending { awaiter } = &mut timer_future.get_mut(self.heap).state else {
+                unreachable!("the timer was pending a moment ago")
+            };
+
+            *awaiter = Some(Awaiter::WaitSlot {
+                wait: wait_id,
+                source: timer_id,
+            });
+        }
+
+        Value::Ref(wait_id)
+    }
 
     /// Pushes `value` onto a blocked task's stack and queues it, returning the awakened task.
     /// Drops the value if the task is gone or its awaitable has already settled.
@@ -943,7 +1553,7 @@ impl<'h> VM<'h> {
     /// Delivers a value through nested gathers and tasks, queueing every
     /// terminal task that becomes ready. Returns the first awakened task, or
     /// `None` when every downstream already settled.
-    fn deliver_awaiter_success(&mut self, awaiter: Awaiter, value: Value) -> Option<TaskId> {
+    fn deliver_awaiter_success(&mut self, awaiter: Awaiter, value: Value) -> RunResult<Option<TaskId>> {
         let this = self;
         let mut stack = vec![(awaiter, value)];
         let mut first = None;
@@ -968,6 +1578,25 @@ impl<'h> VM<'h> {
                         awaiter = success.awaiter;
                         value = Value::Ref(success.list_id);
                     }
+                    Awaiter::WaitSlot { wait, source } => {
+                        let resolved = this.resolve_wait_child_success(wait, source, value);
+                        this.heap.dec_ref(wait);
+                        let resolved = match resolved {
+                            Ok(resolved) => resolved,
+                            Err(error) => {
+                                for (awaiter, value) in stack {
+                                    awaiter.drop_with(this);
+                                    value.drop_with(this);
+                                }
+                                return Err(error);
+                            }
+                        };
+                        let Some((next, result)) = resolved else {
+                            break;
+                        };
+                        awaiter = next;
+                        value = result;
+                    }
                     Awaiter::UserTask { task } => {
                         let mut waiters = this.record_task_success(task, &value);
                         this.heap.dec_ref(task);
@@ -985,13 +1614,15 @@ impl<'h> VM<'h> {
                 }
             }
         }
-        first
+        Ok(first)
     }
 
     /// Fails each downstream in the awaiter chain and queues its terminal task
-    /// to raise `error`. Returns the first awakened task, or `None` if
-    /// everything already settled.
-    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+    /// to raise `error`. A failing child of `wait` does not propagate: it marks
+    /// the wait failed and the wait completes with its result tuple instead.
+    /// Returns the first awakened task, or `None` if everything already
+    /// settled.
+    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> RunResult<Option<TaskId>> {
         let mut stack = vec![(awaiter, error)];
         let mut first = None;
         while let Some((mut awaiter, error)) = stack.pop() {
@@ -1019,6 +1650,35 @@ impl<'h> VM<'h> {
                         };
                         awaiter = next;
                     }
+                    Awaiter::WaitSlot { wait, source } => {
+                        let resolved = self.resolve_wait_child_failure(wait, source, &error);
+                        self.heap.dec_ref(wait);
+                        let resolved = match resolved {
+                            Ok(resolved) => resolved,
+                            Err(error) => {
+                                for (awaiter, _) in stack {
+                                    awaiter.drop_with(self);
+                                }
+                                return Err(error);
+                            }
+                        };
+                        let Some((next, result)) = resolved else {
+                            break;
+                        };
+                        match self.deliver_awaiter_success(next, result) {
+                            Ok(Some(awakened)) => {
+                                first.get_or_insert(awakened);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                for (awaiter, _) in stack {
+                                    awaiter.drop_with(self);
+                                }
+                                return Err(error);
+                            }
+                        }
+                        break;
+                    }
                     Awaiter::UserTask { task } => {
                         let mut waiters = self.record_task_failure(task, &error);
                         self.heap.dec_ref(task);
@@ -1026,6 +1686,27 @@ impl<'h> VM<'h> {
                             break;
                         }
                         let last = waiters.pop().expect("waiters is not empty");
+                        let additional = waiters.len().saturating_add(1);
+                        let required = error
+                            .clone_allocation_size()
+                            .saturating_mul(waiters.len())
+                            .saturating_add(
+                                stack
+                                    .capacity()
+                                    .saturating_add(additional)
+                                    .saturating_mul(mem::size_of::<(Awaiter, RunError)>()),
+                            );
+                        if let Err(err) = self.heap.tracker.check_allocation(required) {
+                            for waiter in waiters {
+                                waiter.drop_with(self);
+                            }
+                            last.drop_with(self);
+                            for (awaiter, _) in stack {
+                                awaiter.drop_with(self);
+                            }
+                            return Err(err.into());
+                        }
+                        stack.reserve_exact(additional);
                         for waiter in waiters {
                             stack.push((waiter, error.clone()));
                         }
@@ -1035,14 +1716,14 @@ impl<'h> VM<'h> {
                 }
             }
         }
-        first
+        Ok(first)
     }
 
     /// Records a host rejection and queues the task that must raise it.
     /// Task selection waits until the whole batch has been ingested.
-    pub fn fail_future(&mut self, call_id: u32, error: RunError) {
+    pub fn fail_future(&mut self, call_id: u32, error: RunError) -> RunResult<()> {
         let Some(future_id) = self.scheduler.take_pending_external(CallId::new(call_id)) else {
-            return;
+            return Ok(());
         };
         let fut_val = Value::Ref(future_id);
         let this = self;
@@ -1065,8 +1746,9 @@ impl<'h> VM<'h> {
         drop(fut);
         sleep_result.drop_with(this);
         if let Some(awaiter) = awaiter {
-            this.deliver_awaiter_failure(awaiter, error);
+            this.deliver_awaiter_failure(awaiter, error)?;
         }
+        Ok(())
     }
 
     /// Allocates an `ExternalFuture` for `call_id` and pushes a `Value::Ref`
@@ -1143,28 +1825,82 @@ impl<'h> VM<'h> {
         self.resume_with_exception(RunError::uncatchable(exc))
     }
 
+    /// Returns whether a host answer for `call_id` has no consumer.
+    ///
+    /// Unknown and already-settled calls are dropped, as is the wait timer,
+    /// whose value only signals that the timer fired. Other wait inputs keep
+    /// their value for a later `await future`, so they are still converted.
+    fn future_result_is_ignored(&self, call_id: u32) -> bool {
+        let Some(future_id) = self.scheduler.pending_external(CallId::new(call_id)) else {
+            return true;
+        };
+        let HeapReadOutput::ExternalFuture(future) = self.heap.read(future_id) else {
+            return false;
+        };
+        let wait_id = match &future.get(self.heap).state {
+            ExternalFutureState::Pending {
+                awaiter: Some(Awaiter::WaitSlot { wait, .. }),
+            } => Some(*wait),
+            ExternalFutureState::Pending { .. } => None,
+            ExternalFutureState::Resolved(_) | ExternalFutureState::Failed(_) => return true,
+        };
+        drop(future);
+        wait_id.is_some_and(|wait_id| self.is_wait_timer(wait_id, future_id))
+    }
+
+    /// Returns whether `future_id` is the timer of the wait future at `wait_id`.
+    fn is_wait_timer(&self, wait_id: HeapId, future_id: HeapId) -> bool {
+        let HeapReadOutput::WaitFuture(wait) = self.heap.read(wait_id) else {
+            return false;
+        };
+        match &wait.get(self.heap).state {
+            WaitFutureState::Unawaited(unawaited) => unawaited.timer == Some(future_id),
+            WaitFutureState::Pending(pending) => pending.timer == Some(future_id),
+            WaitFutureState::Consumed => false,
+        }
+    }
+
     /// Caches host results and wakes their awaiters without executing bytecode.
     /// Eager results have no awaiter yet; their following `await` reads the cached result.
+    ///
+    /// Delivery is charged to the execution clock: resolving a large batch builds
+    /// Python objects and wakes tasks, so it must not escape the time budget.
+    /// The memory limit is re-checked too, since the batch may have allocated heavily.
     pub fn apply_future_results(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<()> {
+        self.heap.tracker.on_execution_start();
+        let result = self.apply_future_results_inner(results);
+        self.heap.tracker.on_execution_stop();
+        result?;
+        self.heap.tracker.check_memory_time().map_err(RunError::from)
+    }
+
+    /// Applies a host result batch; `apply_future_results` owns clock accounting.
+    fn apply_future_results_inner(&mut self, results: Vec<(u32, ExtFunctionResult)>) -> RunResult<()> {
         for (call_id, ext_result) in results {
             match ext_result {
                 ExtFunctionResult::Return(obj) => {
                     // A resource error is a `MemoryError` here as in `resume`,
                     // so a large host value is not misreported as a bad type.
-                    let value = obj.to_value(self).map_err(|e| match e {
-                        InvalidInputError::Resource(err) => RunError::from(err),
-                        other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
-                            format!("Invalid return value for call {call_id}: {other}"),
-                        )),
-                    })?;
-                    self.resolve_future(call_id, value);
+                    let value = if self.future_result_is_ignored(call_id) {
+                        Value::None
+                    } else {
+                        obj.to_value(self).map_err(|e| match e {
+                            InvalidInputError::Resource(err) => RunError::from(err),
+                            other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
+                                format!("Invalid return value for call {call_id}: {other}"),
+                            )),
+                        })?
+                    };
+                    self.resolve_future(call_id, value)?;
                 }
-                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc)),
+                ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc))?,
                 ExtFunctionResult::Future(_) => {}
                 ExtFunctionResult::NotFound(function_name) => {
-                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name));
+                    self.fail_future(call_id, ExtFunctionResult::not_found_exc(&function_name))?;
                 }
-                ExtFunctionResult::ModuleFile(_) => self.fail_future(call_id, ExcType::module_file_for_non_import()),
+                ExtFunctionResult::ModuleFile(_) => {
+                    self.fail_future(call_id, ExcType::module_file_for_non_import())?;
+                }
             }
         }
         Ok(())
@@ -1408,4 +2144,115 @@ impl<'h> HeapReadMut<'h, GatherFuture> {
 
         Some(waiter)
     }
+}
+
+/// Arguments of a wait's first await while [`VM::commit_wait_unawaited`] validates them.
+///
+/// Every early return must release the input set, the `return_when` value and
+/// the timer exactly once; the guard keeps that cleanup out of each branch.
+struct WaitCommitArgs {
+    fs: Option<Value>,
+    return_when: Option<Value>,
+    timer: Option<HeapId>,
+}
+
+impl<'h> DropWithContext<VM<'h>> for WaitCommitArgs {
+    fn drop_with(self, vm: &mut VM<'h>) {
+        if let Some(fs) = self.fs {
+            fs.drop_with(vm);
+        }
+
+        if let Some(return_when) = self.return_when {
+            return_when.drop_with(vm);
+        }
+
+        if let Some(timer) = self.timer {
+            vm.drop_wait_timer(timer);
+        }
+    }
+}
+
+/// Names a single awaitable passed where `asyncio.wait` expects an iterable.
+fn single_waitable_label(value: &Value, heap: &HeapReader<'_>) -> Option<&'static str> {
+    let Value::Ref(id) = value else {
+        return None;
+    };
+    Some(match heap.read(*id) {
+        HeapReadOutput::Task(_) => "Task",
+        HeapReadOutput::ExternalFuture(_) => "Future",
+        HeapReadOutput::Coroutine(_) | HeapReadOutput::WaitFuture(_) => "coroutine",
+        HeapReadOutput::GatherFuture(_) => "GatheringFuture",
+        _ => return None,
+    })
+}
+
+/// Parses `asyncio.wait`'s `return_when` argument.
+///
+/// CPython tests membership in the three constants with `==`, so an object that
+/// compares equal is accepted and an object that merely stringifies to one is
+/// not. Use Python equality here rather than `str()` to preserve that.
+fn parse_wait_condition(value: Option<Value>, vm: &mut VM<'_>) -> RunResult<WaitCondition> {
+    let Some(value) = value else {
+        return Ok(WaitCondition::AllCompleted);
+    };
+    let mut value_guard = DropGuard::new(value, vm);
+    for (name, condition) in [
+        (StaticStrings::FirstCompleted, WaitCondition::FirstCompleted),
+        (StaticStrings::FirstException, WaitCondition::FirstException),
+        (StaticStrings::AllCompleted, WaitCondition::AllCompleted),
+    ] {
+        let (value, vm) = value_guard.as_parts();
+        let constant = Value::InternString(vm.interns.intern_static(name));
+        if value.py_eq_operator(&constant, vm)? {
+            let (value, vm) = value_guard.into_parts();
+            value.drop_with(vm);
+            return Ok(condition);
+        }
+    }
+    let (value, vm) = value_guard.into_parts();
+    let rendered = value.py_str(vm);
+    value.drop_with(vm);
+    let rendered = rendered?;
+    defer_drop!(rendered, vm);
+    let text = rendered.as_str(vm).expect("str() always returns a string");
+    let prefix = "Invalid return_when value: ";
+    let mut message = StringBuilder::with_capacity(prefix.len().saturating_add(text.len()), &vm.heap.tracker)?;
+    message.push_str(prefix)?;
+    message.push_str(text)?;
+    let message = message.finish_raw()?;
+    Err(SimpleException::new(ExcType::ValueError, Some(message)).into())
+}
+
+/// Returns whether a wait input has settled and whether it failed.
+fn wait_child_status(heap: &HeapReader<'_>, id: HeapId) -> (bool, bool) {
+    match heap.read(id) {
+        HeapReadOutput::Task(task) => match &task.get(heap).state {
+            TaskFutureState::Completed(_) => (true, false),
+            TaskFutureState::Failed(_) => (true, true),
+            TaskFutureState::Pending => (false, false),
+        },
+        HeapReadOutput::ExternalFuture(future) => match &future.get(heap).state {
+            ExternalFutureState::Resolved(_) => (true, false),
+            ExternalFutureState::Failed(_) => (true, true),
+            ExternalFutureState::Pending { .. } => (false, false),
+        },
+        _ => unreachable!("wait inputs are validated tasks or futures"),
+    }
+}
+
+/// Applies `return_when` to the current wait state.
+fn wait_condition_met(
+    condition: WaitCondition,
+    done: &[HeapId],
+    pending: &AHashSet<HeapId>,
+    failed_any: bool,
+    timed_out: bool,
+) -> bool {
+    timed_out
+        || match condition {
+            WaitCondition::AllCompleted => pending.is_empty(),
+            WaitCondition::FirstCompleted => !done.is_empty(),
+            // CPython falls back to ALL_COMPLETED when nothing raises.
+            WaitCondition::FirstException => failed_any || pending.is_empty(),
+        }
 }

@@ -22,7 +22,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 #[cfg(feature = "ref-count-return")]
 use crate::types::Type;
 use crate::{
-    asyncio::{Awaiter, ExternalFutureState, GatherState, TaskFutureState},
+    asyncio::{Awaiter, ExternalFutureState, GatherState, TaskFutureState, WaitFutureState},
     types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
     value::Value,
 };
@@ -2134,8 +2134,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::ExternalFuture(fut) => {
-            // `Pending`'s awaiter may own an inc_ref on a gather or task.
-            // `Resolved` owns the cached value, and a pending
+            // `Pending`'s awaiter may own an inc_ref on a gather, wait
+            // future or task. `Resolved` owns the cached value, and a pending
             // sleep owns the `result` it will resolve with.
             if let Some(Value::Ref(id)) = &fut.sleep_result {
                 on_child(*id);
@@ -2161,6 +2161,31 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        HeapData::WaitFuture(wait) => match &wait.state {
+            WaitFutureState::Unawaited(unawaited) => {
+                if let Value::Ref(id) = &unawaited.fs {
+                    on_child(*id);
+                }
+                if let Some(Value::Ref(id)) = &unawaited.return_when {
+                    on_child(*id);
+                }
+                if let Some(timer) = unawaited.timer {
+                    on_child(timer);
+                }
+            }
+            WaitFutureState::Pending(pending) => {
+                for input in &pending.inputs {
+                    on_child(*input);
+                }
+                if let Some(id) = pending.awaiter.as_ref().and_then(Awaiter::heap_ref) {
+                    on_child(id);
+                }
+                if let Some(timer) = pending.timer {
+                    on_child(timer);
+                }
+            }
+            WaitFutureState::Consumed => {}
+        },
         HeapData::DateTime(dt) => {
             // Aware datetimes retain a heap reference to the tzinfo object so that
             // `dt.tzinfo is tz` identity is preserved across attribute lookups.
@@ -2309,6 +2334,21 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 value.py_dec_ref_ids(stack);
             }
         }
+        HeapData::WaitFuture(wait) => match &mut wait.state {
+            WaitFutureState::Unawaited(unawaited) => {
+                unawaited.fs.py_dec_ref_ids(stack);
+                if let Some(return_when) = &mut unawaited.return_when {
+                    return_when.py_dec_ref_ids(stack);
+                }
+                stack.extend(unawaited.timer);
+            }
+            WaitFutureState::Pending(pending) => {
+                stack.extend(pending.inputs.iter().copied());
+                stack.extend(pending.awaiter.as_ref().and_then(Awaiter::heap_ref));
+                stack.extend(pending.timer);
+            }
+            WaitFutureState::Consumed => {}
+        },
         HeapData::DateTime(dt) => {
             // Mirror `for_each_child_id`: when an aware datetime is freed we must
             // also drop the retained tzinfo reference so its refcount is balanced.

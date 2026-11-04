@@ -248,6 +248,11 @@ impl Scheduler {
         self.pending_externals.remove(&call_id)
     }
 
+    /// Returns the registered `ExternalFuture` for `call_id` without consuming it.
+    pub fn pending_external(&self, call_id: CallId) -> Option<HeapId> {
+        self.pending_externals.get(&call_id).copied()
+    }
+
     /// Marks the current task as `Blocked` on the awaitable at `awaitable_id`.
     ///
     /// The task will be unblocked when the awaitable settles and its awaiter

@@ -308,6 +308,23 @@ else:
     assert await adopted == 'adopted'  # pyright: ignore
 
 
+# === create_task adopts a host future left pending by an early wait ===
+early_future = async_call('early-adopted')
+early_quick = asyncio.create_task(asyncio.sleep(0, 'quick'))
+done, pending = await asyncio.wait([early_quick, early_future], return_when=asyncio.FIRST_COMPLETED)  # pyright: ignore
+if sys.platform == 'monty':
+    # The early wait must leave the host future pending; CPython's async_call()
+    # fixture resolves it before the wait starts.
+    assert done == {early_quick}
+    assert pending == {early_future}
+try:
+    early_task = asyncio.create_task(early_future)
+except TypeError as exc:
+    assert str(exc).startswith('a coroutine was expected, got ')
+else:
+    assert await early_task == 'early-adopted'  # pyright: ignore
+
+
 # === create_task accepts sleep's awaitable ===
 sleep_task = asyncio.create_task(asyncio.sleep(0, 'slept'))
 assert await sleep_task == 'slept'  # pyright: ignore

@@ -299,6 +299,7 @@ impl<'h> PyValue<'h> {
                 string_repr_fmt(&task.name, f)?;
                 Ok(f.write_str(">")?)
             }
+            Self::WaitFuture(_) => Ok(f.write_str("<coroutine object wait>")?),
         })
     }
 }
@@ -437,6 +438,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
             Self::Module(value) => Ok(Some(identity_hash(value.id()))),
             Self::Task(value) => Ok(Some(identity_hash(value.id()))),
+            Self::GatherFuture(value) => Ok(Some(identity_hash(value.id()))),
+            Self::ExternalFuture(value) => Ok(Some(identity_hash(value.id()))),
             Self::Undefined => Value::Undefined.py_hash(vm),
             Self::Ellipsis => Value::Ellipsis.py_hash(vm),
             Self::NotImplemented => Value::NotImplemented.py_hash(vm),
@@ -480,6 +483,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
             Self::Task(_) => Type::Task,
+            Self::WaitFuture(_) => Type::Coroutine,
         })
     }
 

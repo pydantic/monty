@@ -366,6 +366,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::GatherFuture(_)
         | HeapReadOutput::ExternalFuture(_)
         | HeapReadOutput::Task(_)
+        | HeapReadOutput::WaitFuture(_)
         | HeapReadOutput::OpenFile(_)
         | HeapReadOutput::ExtFunction(_)
         | HeapReadOutput::Cell(_)
