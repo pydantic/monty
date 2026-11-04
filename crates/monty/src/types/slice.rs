@@ -164,7 +164,8 @@ pub(crate) type SearchRange = Option<(usize, usize)>;
 
 /// The optional `start` and `end` of a `str` or `bytes` search, adjusted as
 /// CPython's `ADJUST_INDICES` does: both are converted like
-/// [`optional_sequence_bound`] and clamped at zero, and `end` at `len`.
+/// [`value_to_option_i64`], with negative bounds relative to `len` and clamped at zero.
+/// `end` is also clamped at `len`.
 ///
 /// `start` is not clamped at `len`, so a `start` past `end` stays apart from an
 /// empty range at the end. That range is `None`: CPython finds nothing there,
