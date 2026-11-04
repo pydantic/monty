@@ -585,7 +585,7 @@ class MontyRefusedError(MontyError):
     so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
     server that could not be reached, that answered with any other status
     (such as `UNIMPLEMENTED` from a URL that is no Monty server), or that is
-    no gRPC server at all (a web server's error page), raises `RuntimeError`
+    no gRPC server at all (such as a web server's page), raises `RuntimeError`
     instead.
 
     Cannot be constructed directly from Python.
