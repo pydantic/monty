@@ -2,8 +2,8 @@
 
 Monty's `re` module is backed by the Rust `fancy-regex` crate, not
 CPython's regex engine.
-Patterns are parsed with CPython's grammar first, so the same patterns are accepted and invalid ones raise CPython's
-messages; the differences below are in what the engine can compile and how it matches.
+Patterns are parsed with CPython's grammar first, so patterns CPython's parser rejects raise CPython's messages.
+The differences below are in what the engine can compile and how it matches.
 
 ## Module functions
 
@@ -50,7 +50,8 @@ Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
 `ASCII` is accepted but has no effect: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
 
 Not implemented: `VERBOSE` / `X`, `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U`
-(Unicode is always on). The inline `(?x)` flag and the value `64` do enable verbose mode.
+(Unicode is always on). `re.VERBOSE` / `re.X` are not exposed, but the inline `(?x)` flag and the bit value `64`
+enable verbose mode.
 Unknown flag bits within the accepted `u16` range are
 silently accepted; bits above that range are rejected by the integer range
 check.

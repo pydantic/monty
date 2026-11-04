@@ -112,6 +112,9 @@ assert pattern_error('(?(1)a|b)') == 'invalid group reference 1 at position 3'
 assert pattern_error('(?(n)a|b)') == "unknown group name 'n' at position 3"
 assert pattern_error('(?(0)a)') == 'bad group number at position 3'
 assert pattern_error('(a)(?(1)a|b|c)') == 'conditional backref with more than two branches at position 11'
+# many distinct conditionals are checked in linear time; the first unknown group is reported
+assert pattern_error(''.join(f'(?({i})a)' for i in range(1, 50_001))) == 'invalid group reference 1 at position 3'
+assert pattern_error('(a)(?(2)a)(?(1)b)(?(2)c)(?(3)d)') == 'invalid group reference 2 at position 6'
 
 # === Lookbehind must be fixed width ===
 assert re.findall('(?<=ab|cd)e', 'abe cde') == ['e', 'e']

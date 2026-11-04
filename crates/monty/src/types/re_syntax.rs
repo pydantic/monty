@@ -293,7 +293,7 @@ struct Translator {
     group_names: HashMap<String, usize>,
     /// Number of groups when the outermost enclosing lookbehind opened.
     lookbehind_groups: Option<usize>,
-    /// Groups named by numbered conditionals and where, in order; checked once all groups are known.
+    /// Groups named by numbered conditionals and where, in order, repeats included; checked once all groups are known.
     groupref_pos: Vec<(u64, usize)>,
     /// The first lookbehind CPython's compiler would reject, by start position, and its message.
     lookbehind_error: Option<(usize, &'static str)>,
@@ -871,9 +871,9 @@ impl Translator {
                 let msg = format!("invalid group reference {}", name.trim_start_matches('0'));
                 return Err(self.source.error(msg, offset));
             }
-            if !self.groupref_pos.iter().any(|&(group, _)| group == number) {
-                self.groupref_pos.push((number, self.source.tell() - offset));
-            }
+            // Repeats are kept rather than searched for: `finish` reports the first entry, so this matches
+            // CPython's first-position dict without making many conditionals quadratic.
+            self.groupref_pos.push((number, self.source.tell() - offset));
             usize::try_from(number).expect("below MAXGROUPS")
         } else {
             self.source.check_group_name(&name, 1)?;
