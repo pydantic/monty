@@ -578,12 +578,21 @@ async def test_module_stubs_over_grpc(relay_url: str):
             assert await session.feed_run('import tools\ntools.add(1, 2)') == snapshot(3)
 
 
-async def test_host_decode_budget_rejects_large_results(relay_url: str):
+@pytest.mark.parametrize(
+    'code,error',
+    [
+        # under the smallest message limit, so decoding hits the budget
+        ('[0] * 1_000', 'frame exceeds decode memory budget'),
+        # over the message limit, so the frame is refused before it is buffered
+        ('[0] * 100_000', r'frame of \d+ bytes exceeds maximum of 65536 bytes'),
+    ],
+)
+async def test_host_decode_budget_rejects_large_results(relay_url: str, code: str, error: str):
     async with AsyncMontyRemote(relay_url, max_decode_bytes=4096) as pool:
         async with pool.checkout() as session:
             assert await session.feed_run('6 * 7') == snapshot(42)
-            with pytest.raises(RuntimeError, match='frame exceeds decode memory budget'):
-                await session.feed_run('[0] * 100_000')
+            with pytest.raises(RuntimeError, match=error):
+                await session.feed_run(code)
         async with pool.checkout() as session:
             assert await session.feed_run('6 * 7') == snapshot(42)
 

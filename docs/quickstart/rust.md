@@ -191,6 +191,7 @@ See [the security model](../security.md#remote-workers) before using it.
 each protocol frame from a subprocess or remote worker. Values above 1 GiB do not
 raise the ceiling. The budget excludes wire buffers and host-language conversion.
 Exhaustion discards the worker without replaying the request.
+On the remote transport it also caps each message's size (never below 64 KiB), so a larger message is refused before it is buffered.
 
 ## The in-process interpreter
 

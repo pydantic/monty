@@ -141,7 +141,7 @@ impl Remote {
             map.insert(key, value);
         }
         let mut grpc = Grpc::new(self.channel.clone())
-            .max_decoding_message_size(MAX_FRAME_LEN as usize)
+            .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
         let deadline = Instant::now() + self.connect_timeout;
         let mut retries = 0;
@@ -198,6 +198,17 @@ impl Remote {
         })
     }
 }
+
+/// The largest message tonic assembles for a stream decoding under
+/// `max_decode_bytes`: a frame cannot decode in less than its own size, so a
+/// larger one is refused before it is buffered. Never below
+/// [`MIN_MESSAGE_LIMIT`], which keeps control events through a tiny budget.
+fn message_limit(max_decode_bytes: usize) -> usize {
+    max_decode_bytes.clamp(MIN_MESSAGE_LIMIT, MAX_FRAME_LEN as usize)
+}
+
+/// The smallest [`message_limit`].
+const MIN_MESSAGE_LIMIT: usize = 64 * 1024;
 
 /// How many more times a stream the server never took is opened: once on the
 /// connection that was closing, once on the one the channel dials to replace it.
@@ -380,6 +391,7 @@ async fn read_events(
     max_decode_bytes: usize,
     decode_permits: Arc<Semaphore>,
 ) {
+    let mut pings = PingLimit::new();
     // an Err from reserve means the receiver dropped: the worker is gone
     while let Ok(permit) = events.reserve().await {
         let result = loop {
@@ -399,6 +411,12 @@ async fn read_events(
                     };
                     match decoded {
                         Ok(event) if matches!(event.kind, Some(pb::child_event::Kind::Ping(_))) => {
+                            // no turn deadline covers an idle stream, so a ping
+                            // too large or too frequent ends it instead
+                            if let Err(abuse) = pings.admit(body.len()) {
+                                let _ = disconnect.set(RemoteDisconnect::failure(abuse));
+                                break Err(FrameError::Truncated);
+                            }
                             // answered here, not by the checkout: a ping can land
                             // between turns, when nothing else polls the stream
                             if let Some(pongs) = pongs.upgrade() {
@@ -426,6 +444,10 @@ async fn read_events(
                     break Err(FrameError::Truncated);
                 }
                 Err(status) => {
+                    if let Some(err) = oversized_message(&status) {
+                        let _ = disconnect.set(RemoteDisconnect::failure(err.to_string()));
+                        break Err(err);
+                    }
                     let _ = disconnect.set(RemoteDisconnect::from_status(&status));
                     break Err(FrameError::Truncated);
                 }
@@ -441,6 +463,68 @@ async fn read_events(
     // the worker is gone, so this is a closed stream: hold it open until the
     // server ends its side, so the half-close is read ahead of any reset
     while let Ok(Some(_)) = stream.message().await {}
+}
+
+/// Bounds the pings a server may send: each at most [`MAX_PING_BYTES`], and
+/// at most [`MAX_PINGS_PER_WINDOW`] per [`PING_WINDOW`]. A keepalive pings
+/// every few seconds; anything past these is a server burning the host's CPU.
+struct PingLimit {
+    window_start: Instant,
+    in_window: u32,
+}
+
+impl PingLimit {
+    fn new() -> Self {
+        Self {
+            window_start: Instant::now(),
+            in_window: 0,
+        }
+    }
+
+    /// Counts one ping of `len` bytes, or says why the server broke the limit.
+    fn admit(&mut self, len: usize) -> Result<(), String> {
+        let now = Instant::now();
+        if now.duration_since(self.window_start) >= PING_WINDOW {
+            self.window_start = now;
+            self.in_window = 0;
+        }
+        self.in_window += 1;
+        if len > MAX_PING_BYTES {
+            Err(format!(
+                "server sent a {len}-byte ping, above the {MAX_PING_BYTES}-byte limit"
+            ))
+        } else if self.in_window > MAX_PINGS_PER_WINDOW {
+            Err(format!(
+                "server sent more than {MAX_PINGS_PER_WINDOW} pings in {PING_WINDOW:?}"
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// The largest ping message accepted; a ping is two bytes on the wire.
+const MAX_PING_BYTES: usize = 64;
+
+/// See [`PingLimit`].
+const MAX_PINGS_PER_WINDOW: u32 = 10;
+const PING_WINDOW: Duration = Duration::from_secs(1);
+
+/// The frame error for tonic refusing a message above [`message_limit`],
+/// which it reports as a local `OUT_OF_RANGE` status naming both sizes.
+fn oversized_message(status: &Status) -> Option<FrameError> {
+    if status.code() != Code::OutOfRange {
+        return None;
+    }
+    let sizes = status
+        .message()
+        .strip_prefix("Error, decoded message length too large: found ")?
+        .strip_suffix(" bytes")?;
+    let (len, max) = sizes.split_once(" bytes, the limit is: ")?;
+    Some(FrameError::FrameTooLarge {
+        len: len.parse().unwrap_or(u32::MAX),
+        max: max.parse().ok()?,
+    })
 }
 
 /// The encoded `Pong` request, built once per answer (it is two bytes).

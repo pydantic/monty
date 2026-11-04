@@ -2975,6 +2975,117 @@ async fn pings_are_answered_while_idle() {
     drop(checkout);
 }
 
+/// A ping above the size limit ends the stream: no turn deadline covers an
+/// idle stream, so only the reader bounds what a server sends on it.
+#[tokio::test]
+async fn an_oversized_ping_ends_the_stream() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        // a ping padded with 100 bytes of unknown field 111, which decoding skips
+        let mut body = encode_to_capped_vec(&event_kind(pb::child_event::Kind::Ping(pb::Ping {}))).expect("encode");
+        body.extend([0xfa, 0x06, 100]);
+        body.extend([0; 100]);
+        socket.send(Bytes::from(body)).expect("send the ping");
+        drain_requests(&mut socket);
+    });
+
+    let details = disconnect_after_a_feed(config).await;
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("server sent a 105-byte ping, above the 64-byte limit")
+    );
+    join_server(server).await;
+}
+
+/// A server pinging far faster than any keepalive ends the stream.
+#[tokio::test]
+async fn a_ping_flood_ends_the_stream() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        for _ in 0..11 {
+            if socket
+                .send(Bytes::from(
+                    encode_to_capped_vec(&event_kind(pb::child_event::Kind::Ping(pb::Ping {}))).expect("encode"),
+                ))
+                .is_err()
+            {
+                break;
+            }
+        }
+        drain_requests(&mut socket);
+    });
+
+    let details = disconnect_after_a_feed(config).await;
+    assert_eq!(
+        details.transport_error.as_deref(),
+        Some("server sent more than 10 pings in 1s")
+    );
+    join_server(server).await;
+}
+
+/// Checks out from `config`, feeds once, and returns the disconnect that ended
+/// the stream.
+async fn disconnect_after_a_feed(config: PoolConfig) -> Box<monty_pool::RemoteDisconnect> {
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the stream must end");
+    let PoolError::Disconnected {
+        remote: Some(details), ..
+    } = err
+    else {
+        panic!("got {err:?}");
+    };
+    details
+}
+
+/// Reads until the pool ends its side, ignoring what it sends.
+fn drain_requests(socket: &mut MockStream) {
+    while socket.read().is_some() {}
+}
+
+/// A message above the decode budget is refused before tonic buffers it, and
+/// fails the turn as a protocol error naming both sizes.
+#[tokio::test]
+async fn a_message_above_the_decode_budget_is_refused_unbuffered() {
+    let (mock, mut config) = mock_pool_config().await;
+    config.max_decode_bytes = 100_000;
+    let complete = event_kind(pb::child_event::Kind::Complete(pb::Complete::from(
+        MontyObject::string("x".repeat(200_000)),
+    )));
+    let body = encode_to_capped_vec(&complete).expect("encode");
+    let len = body.len();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1");
+        let _ = socket.send(Bytes::from(body));
+        drain_requests(&mut socket);
+    });
+
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the result is over budget");
+    let PoolError::Protocol(message) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(
+        message,
+        format!("invalid payload from worker: frame of {len} bytes exceeds maximum of 100000 bytes")
+    );
+    drop(checkout);
+    join_server(server).await;
+}
+
 // === teardown says goodbye ===
 
 /// Reads until the client ends its side of the stream, panicking on a request.

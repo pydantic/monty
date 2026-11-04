@@ -1814,6 +1814,10 @@ impl Checkout {
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
+                // a frame larger than the reader accepts: the worker misbehaved
+                Err(err @ FrameError::FrameTooLarge { .. }) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
             let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
@@ -1909,6 +1913,10 @@ impl Checkout {
                 // validation, which happens during decode) — the worker
                 // misbehaved, it didn't die
                 Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                // a frame larger than the reader accepts: the worker misbehaved
+                Err(err @ FrameError::FrameTooLarge { .. }) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),

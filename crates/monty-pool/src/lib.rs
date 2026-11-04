@@ -114,7 +114,8 @@ pub struct PoolConfig {
     pub request_timeout: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
-    /// the sandbox's memory limit.
+    /// the sandbox's memory limit. On the remote transport it also caps each
+    /// message's size (never below 64 KiB), refusing a larger one unbuffered.
     pub max_decode_bytes: usize,
     /// Extra feed allowance in the pool's clock. CPU mode grants it once per feed.
     /// Wall mode uses reported time; CPU mode uses OS CPU. Exhaustion kills with `Timeout` or `CpuLimit`, respectively.
