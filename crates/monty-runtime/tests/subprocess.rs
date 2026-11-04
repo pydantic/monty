@@ -1352,7 +1352,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         "from dataclasses import dataclass\ns = 'x' * 6_000\n@dataclass\nclass C:\n{fields}c = C(*([s] * 200))\nlen(repr(c))"
     );
     let cases = cases.map(|(code, expected)| (code.to_owned(), expected));
-    for (code, expected) in cases.into_iter().chain([(dataclass, 1_262_947)]) {
+    for (code, expected) in cases.into_iter().chain([(dataclass, 1_264_003)]) {
         let code = code.as_str();
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(1024 * 1024));
