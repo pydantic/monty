@@ -37,6 +37,13 @@ The snippet can call host functions and raise into the caller; top-level `await`
 
 - A `SyntaxError` in the snippet carries CPython's `(<string>, line N)` suffix, but the message before it is the
     parser's own wording, and the traceback has no extra `File "<string>", line N` frame for the syntax error.
+- An unexpected indent, such as `eval('\n  1')`, `eval('1\n  ')` or `exec('  x = 1')`, raises `SyntaxError` rather
+    than `IndentationError`, which Monty does not implement (see [exceptions.md](exceptions.md)).
+- A source with no expression in it reports its `SyntaxError` one line later than CPython when it is empty, holds only
+    spaces and tabs, or ends with a newline: `eval('')` and `eval('  ')` report `line 1` (CPython: `line 0`), and
+    `eval('\n')` and `eval('#c\n')` report `line 2` (CPython: `line 1`).
+- A lone `\r` does not start a new line in snippet line numbers: `eval('(1,\r1/0)')` reports `line 1`, where CPython
+    reports `line 2`.
 - Frames of snippet code appear in tracebacks as `File "<string>", line N, in <module>` with no source line, as in
     CPython.
 

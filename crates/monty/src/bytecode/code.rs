@@ -132,6 +132,16 @@ impl Code {
         after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
+    /// Visits every source range in the location table, for a dump upgrade that rebases positions.
+    pub(crate) fn for_each_position_mut(&mut self, mut f: impl FnMut(&mut CodeRange)) {
+        for entry in &mut self.location_table {
+            f(&mut entry.range);
+            if let Some(focus) = &mut entry.focus {
+                f(focus);
+            }
+        }
+    }
+
     /// Finds an exception handler for the given bytecode offset.
     ///
     /// Searches the exception table for an entry whose protected range contains
