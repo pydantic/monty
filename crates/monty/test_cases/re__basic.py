@@ -835,6 +835,21 @@ for repl, count, expected in [
     except re.PatternError as e:
         assert str(e) == expected
 
+# === \N backreference followed by a letter, digit or underscore ===
+# A group reference has one or two digits; whatever follows is literal text.
+assert re.sub('(a)', r'\1b', 'a') == 'ab'
+assert re.sub('(a)', r'\1_', 'a') == 'a_'
+assert re.sub('(a)(b)', r'\2\1x', 'ab') == 'bax'
+assert re.sub(r'(\d+)', r'\1px', 'w 10') == 'w 10px'
+ten_groups = '(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)'
+assert re.sub(ten_groups, r'\10', 'abcdefghij') == 'j'
+assert re.sub(ten_groups, r'\10x', 'abcdefghij') == 'jx'
+assert re.sub(ten_groups, r'\1\10', 'abcdefghij') == 'aj'
+twenty_groups = ''.join('(' + c + ')' for c in 'abcdefghijklmnopqrst')
+assert re.sub(twenty_groups, r'\189', 'abcdefghijklmnopqrst') == 'r9'
+assert re.sub(twenty_groups, r'\128', 'abcdefghijklmnopqrst') == 'l8'
+assert re.compile('(a)').sub(r'\1b', 'a') == 'ab'
+
 # === \g<N> numeric backreference in replacement ===
 result = re.sub(r'(\w+)\s+(\w+)', r'\g<2> \g<1>', 'hello world')
 assert result == 'world hello'
