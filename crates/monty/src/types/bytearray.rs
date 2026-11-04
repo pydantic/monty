@@ -6,14 +6,14 @@ use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, heap_read_ref_as_field},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, heap_read_ref_as_field},
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
     resource_checks::check_repeat_size,
     types::{BytesIterator, CmpOrder, LazyHeapSet, PyTrait, Type, iter::checked_preallocation_hint},
-    value::{EitherStr, Value, eq_bytes},
+    value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
 };
 
 /// A bytearray owns its buffer; heap capabilities keep scoped borrows valid across aliases.
@@ -181,7 +181,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
         let value = percent_format_bytes(&template, other, vm)?;
-        Ok(Some(convert_result(value, vm)))
+        convert_result(value, vm).map(Some)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
@@ -198,7 +198,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         if matches!(key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Slice(_))) {
             let field = heap_read_ref_as_field!(self, ByteArray, 0);
             let value = super::bytes::bytes_getitem(&field.as_slice(), key, vm)?;
-            Ok(convert_result(value, vm))
+            convert_result(value, vm)
         } else {
             let index = key.as_index(vm, Type::ByteArray)?;
             let byte = super::bytes::get_byte_at_index(self.get(vm.heap).as_slice(), index)
@@ -345,7 +345,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             "maketrans" => return maketrans(args, vm).map(CallResult::Value),
             "fromhex" => {
                 let result = super::bytes::bytes_fromhex(args, vm)?;
-                return Ok(CallResult::Value(convert_result(result, vm)));
+                return Ok(CallResult::Value(convert_result(result, vm)?));
             }
             "resize" => {
                 let value = args.get_one_arg("bytearray.resize", vm.heap)?;
@@ -443,59 +443,79 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         };
         let field = heap_read_ref_as_field!(self, ByteArray, 0);
         let result = super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, vm)?;
-        Ok(CallResult::Value(convert_result(result, vm)))
+        Ok(CallResult::Value(convert_result(result, vm)?))
     }
 }
 
 /// Byte-returning operations on bytearray return fresh mutable storage.
-pub(crate) fn convert_result(value: Value, vm: &mut VM<'_>) -> Value {
-    let data = match &value {
-        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id).to_vec()),
+pub(crate) fn convert_result(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    let mut guard = DropGuard::new(value, vm);
+    let (value, vm) = guard.as_parts_mut();
+    let data = match value {
+        Value::InternBytes(id) => {
+            let bytes = vm.interns.get_bytes(*id);
+            vm.heap.tracker.check_allocation(bytes.len())?;
+            Some(bytes.to_vec())
+        }
         Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Some(bytes.as_slice().to_vec()),
+            HeapData::Bytes(bytes) => {
+                // The temporary bytes stay alive during this copy, so budget for both buffers.
+                vm.heap.tracker.check_allocation(bytes.as_slice().len())?;
+                Some(bytes.as_slice().to_vec())
+            }
             _ => None,
         },
         _ => None,
     };
     if let Some(data) = data {
+        let (value, vm) = guard.into_parts();
         value.drop_with(vm);
-        ByteArray::allocate(data, vm)
-    } else {
-        let sequence = match &value {
-            Value::Ref(id) => match vm.heap.get(*id) {
-                HeapData::List(list) => Some((
-                    false,
-                    list.as_slice()
-                        .iter()
-                        .map(|v| v.clone_with_heap(vm.heap))
-                        .collect::<Vec<_>>(),
-                )),
-                HeapData::Tuple(tuple) => Some((
-                    true,
-                    tuple
-                        .as_slice()
-                        .iter()
-                        .map(|v| v.clone_with_heap(vm.heap))
-                        .collect::<Vec<_>>(),
-                )),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some((tuple, items)) = sequence {
-            value.drop_with(vm);
-            let items = items.into_iter().map(|item| convert_result(item, vm));
-            if tuple {
-                super::tuple::allocate_tuple(items.collect(), vm.heap)
-            } else {
-                let list = super::List::new(items.collect());
-                Value::Ref(vm.heap.allocate(HeapData::List(list)))
-            }
-        } else {
-            value
-        }
+        return Ok(ByteArray::allocate(data, vm));
     }
+
+    let sequence = match value {
+        Value::Ref(id) => {
+            let (tuple, items) = match vm.heap.get(*id) {
+                HeapData::List(list) => (false, list.as_slice()),
+                HeapData::Tuple(tuple) => (true, tuple.as_slice()),
+                _ => {
+                    let (value, _) = guard.into_parts();
+                    return Ok(value);
+                }
+            };
+            // Both the input snapshot and converted output hold one slot per item.
+            vm.heap
+                .tracker
+                .check_allocation(items.len().saturating_mul(2 * VALUE_SIZE))?;
+            Some((
+                tuple,
+                items.iter().map(|v| v.clone_with_heap(vm.heap)).collect::<Vec<_>>(),
+            ))
+        }
+        _ => None,
+    };
+    let (value, vm) = guard.into_parts();
+    let Some((tuple, items)) = sequence else {
+        return Ok(value);
+    };
+    value.drop_with(vm);
+    let iter = items.into_iter();
+    defer_drop_mut!(iter, vm);
+    let mut output = DropGuard::new(Vec::with_capacity(iter.len()), vm);
+    for item in iter {
+        let (output, vm) = output.as_parts_mut();
+        output.push(convert_result(item, vm)?);
+    }
+    let (items, vm) = output.into_parts();
+    Ok(if tuple {
+        super::tuple::allocate_tuple(items.into_iter().collect(), vm.heap)
+    } else {
+        Value::Ref(vm.heap.allocate(HeapData::List(super::List::new(items))))
+    })
 }
+
+// Limit each uninterrupted scan or fill to 64 KiB, including a single expanded tab.
+const BYTE_WORK_CHUNK: usize = 64 * 1024;
 
 #[derive(FromArgs)]
 #[from_args(name = "expandtabs")]
@@ -513,7 +533,10 @@ fn expandtabs<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &m
     let bytes = value.get(vm.heap).as_slice();
     let mut size = 0usize;
     let mut column = 0usize;
-    for byte in bytes {
+    for (index, byte) in bytes.iter().enumerate() {
+        if index % BYTE_WORK_CHUNK == BYTE_WORK_CHUNK - 1 {
+            vm.heap.tracker.check_time()?;
+        }
         if *byte == b'\t' {
             let spaces = if tabsize == 0 { 0 } else { tabsize - column % tabsize };
             size = size.saturating_add(spaces);
@@ -533,10 +556,18 @@ fn expandtabs<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &m
         .try_reserve_exact(size)
         .map_err(|_| ExcType::allocation_too_large())?;
     column = 0;
-    for byte in bytes {
+    for (index, byte) in bytes.iter().enumerate() {
+        if index % BYTE_WORK_CHUNK == BYTE_WORK_CHUNK - 1 {
+            vm.heap.tracker.check_time()?;
+        }
         if *byte == b'\t' {
             let spaces = if tabsize == 0 { 0 } else { tabsize - column % tabsize };
-            result.resize(result.len() + spaces, b' ');
+            let end = result.len() + spaces;
+            while end - result.len() > BYTE_WORK_CHUNK {
+                result.resize(result.len() + BYTE_WORK_CHUNK, b' ');
+                vm.heap.tracker.check_time()?;
+            }
+            result.resize(end, b' ');
             column += spaces;
         } else {
             result.push(*byte);
@@ -578,22 +609,24 @@ fn translate<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mu
     }
     let mut deleted = [false; 256];
     if let Some(delete) = delete {
-        for byte in buffer_argument(delete, vm)? {
+        for (index, byte) in buffer_argument(delete, vm)?.iter().enumerate() {
             deleted[usize::from(*byte)] = true;
+            if index % BYTE_WORK_CHUNK == BYTE_WORK_CHUNK - 1 {
+                vm.heap.tracker.check_time()?;
+            }
         }
     }
-    let result = value
-        .get(vm.heap)
-        .as_slice()
-        .iter()
-        .filter_map(|byte| {
+    let mut result = Vec::new();
+    for chunk in value.get(vm.heap).as_slice().chunks(BYTE_WORK_CHUNK) {
+        result.extend(chunk.iter().filter_map(|byte| {
             if deleted[usize::from(*byte)] {
                 None
             } else {
                 Some(table.map_or(*byte, |table| table[usize::from(*byte)]))
             }
-        })
-        .collect();
+        }));
+        vm.heap.tracker.check_time()?;
+    }
     Ok(ByteArray::allocate(result, vm))
 }
 
@@ -607,8 +640,11 @@ pub(crate) fn maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         return Err(ExcType::value_error("maketrans arguments must have same length"));
     }
     let mut table: Vec<u8> = (0..=255).collect();
-    for (from, to) in from.iter().zip(to) {
+    for (index, (from, to)) in from.iter().zip(to).enumerate() {
         table[usize::from(*from)] = *to;
+        if index % BYTE_WORK_CHUNK == BYTE_WORK_CHUNK - 1 {
+            vm.heap.tracker.check_time()?;
+        }
     }
     Ok(super::bytes::allocate_bytes(table, vm.heap))
 }
