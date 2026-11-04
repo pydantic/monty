@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn random_local_and_inverse_offsets() {
-    for text in ["", "ascii", "aé中🐍", "abcdefghüijk中🐍"].map(|s| s.repeat(300)) {
+    for text in ["ascii", "aé中🐍", "abcdefghüijk中🐍"].map(|s| s.repeat(300)) {
         let index = AccessCache::default();
         let characters: Vec<_> = text.chars().collect();
         let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).chain([text.len()]).collect();
@@ -47,8 +47,18 @@ fn clone_resets_length_and_cursor() {
     assert!(index.has_cursor());
     let cloned = index.clone();
     assert!(index.has_cursor());
-    assert_eq!(index.length.get(), 16385);
-    assert_eq!(cloned.length.get(), 0);
+    assert_eq!(index.length.get(), NonZeroUsize::new(16384));
+    assert_eq!(cloned.length.get(), None);
     assert!(!cloned.has_cursor());
     assert_eq!(cloned.character(&text, 8001), Some('中'));
+}
+
+#[test]
+fn length_cache_stores_the_character_count_directly() {
+    let cache = AccessCache::default();
+    assert_eq!(cache.byte_offset("aé中🐍", 2), 3);
+    assert_eq!(cache.length.get(), None);
+    assert_eq!(cache.char_len("aé中🐍"), 4);
+    assert_eq!(cache.length.get(), NonZeroUsize::new(4));
+    assert_eq!(cache.byte_offset("aé中🐍", 4), 10);
 }

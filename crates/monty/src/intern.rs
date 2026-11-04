@@ -2809,14 +2809,11 @@ impl FunctionId {
 }
 
 /// Prehashed core strings reused when constructing independent interners.
-static CORE_ENTRIES: LazyLock<Vec<(StaticStrings, bool, WithHash<InternedText>)>> = LazyLock::new(|| {
+static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
     CORE_STATIC_STRINGS
         .iter()
         .copied()
-        .map(|value| {
-            let entry = InternedString::static_string(value);
-            (value, entry.ascii, entry.text)
-        })
+        .map(InternedString::static_string)
         .collect()
 });
 
@@ -3034,15 +3031,12 @@ impl Interns {
             compiling: Cell::new(false),
             hint_snippets: RefCell::default(),
         };
-        for (value, ascii, text) in CORE_ENTRIES.iter() {
+        for entry in CORE_ENTRIES.iter() {
+            let value = entry.static_value().expect("core entries are static");
             let id = next_string_id(interns.strings.len());
-            // Only immutable prehashed text is shared; access caches belong to the session.
-            interns.strings.push(InternedString {
-                static_tag: Some(*value),
-                ascii: *ascii,
-                text: text.clone(),
-            });
-            interns.static_string_ids.borrow_mut().insert(*value, id);
+            // Cloned entries contain no access state; caches belong to the session's store.
+            interns.strings.push(entry.clone());
+            interns.static_string_ids.borrow_mut().insert(value, id);
         }
         interns
     }

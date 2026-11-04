@@ -6,20 +6,23 @@
 //!
 //! Cursor state is boxed and allocated only after a nontrivial Unicode access.
 //! Clones and snapshots discard these derived caches; the text determines their validity.
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    num::NonZeroUsize,
+};
 
-/// Belongs to one immutable string; offsets cannot be reused with different text.
+/// Belongs to one immutable nonempty string; offsets cannot be reused with different text.
 #[derive(Debug)]
 pub(crate) struct AccessCache {
-    // Zero means unknown; every string length is representable after adding one.
-    length: Cell<usize>,
+    // None means the character length has not been counted yet.
+    length: Cell<Option<NonZeroUsize>>,
     state: RefCell<Option<Box<State>>>,
 }
 
 impl Default for AccessCache {
     fn default() -> Self {
         Self {
-            length: Cell::new(0),
+            length: Cell::new(None),
             state: RefCell::new(None),
         }
     }
@@ -46,12 +49,12 @@ impl AccessCache {
     }
 
     pub fn char_len(&self, text: &str) -> usize {
-        if let Some(length) = self.length.get().checked_sub(1) {
-            length
+        if let Some(length) = self.length.get() {
+            length.get()
         } else {
-            let length = text.chars().count();
-            self.length.set(length + 1);
-            length
+            let length = NonZeroUsize::new(text.chars().count()).expect("access caches require nonempty text");
+            self.length.set(Some(length));
+            length.get()
         }
     }
 
@@ -79,7 +82,7 @@ impl AccessCache {
         if target == 0 {
             return 0;
         }
-        if target == usize::MAX || self.length.get().checked_sub(1).is_some_and(|length| target >= length) {
+        if target == usize::MAX || self.length.get().is_some_and(|length| target >= length.get()) {
             return text.len();
         }
         let mut state = self.state.borrow_mut();
