@@ -60,9 +60,8 @@ exactly, except for the comprehension target restriction in
     see [with.md](with.md).
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`,
     `too many statically nested blocks`, …).
-- Class-body annotations count against the budget even though they are stringized rather than evaluated (see
-    [typing.md](typing.md)), as do class-variable values and method parameter defaults; all three are walked before
-    being parsed. CPython imposes no comparable limit on a stringized annotation.
+- Class-body annotations count against the budget, as do class-variable values and method parameter defaults; all
+    three are walked before being parsed.
 - A source longer than `CompileOptions::source_scan_threshold` bytes (4 KiB by default) is first scanned token by
     token and rejected with the same `SyntaxError` when its estimated parser nesting exceeds the cap.
     The scan bounds how much native stack the parser grows on a long source, memory the sandbox allocator does not
@@ -78,8 +77,7 @@ exactly, except for the comprehension target restriction in
     brackets is rejected the same way even when it is plain data.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
-    That includes function parameter and return annotations, which the compiler otherwise drops unchecked, so
-    `def f(a: A | B | ...)` with more than 200 members is rejected only when type checking.
+    That includes function parameter and return annotations.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
@@ -100,9 +98,10 @@ exactly, except for the comprehension target restriction in
 binds nothing. Of CPython's ten features, eight became mandatory in Python 3.7
 or earlier and so are inert there too. `annotations` is recorded on the
 module's code, and on the `exec()` snippets and later REPL feeds that inherit
-it, so `typing.get_type_hints()` evaluates their annotations as PEP 563 strings
-(see [typing.md](typing.md#get_type_hints)); class `__annotations__` are strings
-either way. Divergences:
+it: a class body under it stores its annotations as PEP 563 strings in
+`__annotations__` and a `def`'s `__annotate__` returns the strings, which
+`typing.get_type_hints()` evaluates as forward references (see
+[typing.md](typing.md#annotations)). Divergences:
 
 - **`barry_as_FLUFL`** (PEP 401) raises
     `NotImplementedError: "The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
@@ -171,8 +170,9 @@ nor safe to surface in the sandbox.
 
 ## Function objects
 
-A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
-`__module__` all raise `AttributeError: 'function' object has no attribute '<name>'`, and new ones cannot be set —
+A function exposes only `__annotations__` and `__annotate__` (see [typing.md](typing.md#annotations)):
+`__name__`, `__doc__`, `__qualname__` and `__module__` all raise
+`AttributeError: 'function' object has no attribute '<name>'`, and attributes cannot be set —
 `fn.tag = True` raises
 `AttributeError: 'function' object has no attribute 'tag' and no __dict__ for setting new attributes`. CPython supports
 all of these.

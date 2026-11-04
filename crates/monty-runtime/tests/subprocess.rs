@@ -1221,6 +1221,39 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
             1_103_055,
         ),
+        // A `typing` alias copies its subscript into its `__args__`, and a class's
+        // `__annotations__` copies the namespace into the dict the annotations
+        // evaluate under; both are preflighted like any container copy.
+        ("from typing import Tuple\nTuple[(None,) * 40_000]", 1_323_877),
+        (
+            "class C:\n    x: int\nfor i in range(16_000):\n    setattr(C, str(i), i)\nC.__annotations__",
+            1_146_458,
+        ),
+        // `Literal` copies its values to deduplicate them, `Callable` its
+        // parameter list; both copies are preflighted.
+        ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_323_889),
+        ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_323_909),
+        // `__metadata__` copies an `Annotated` alias's metadata, preflighted too.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [None] * 30_000\na.__metadata__",
+            1_170_898,
+        ),
+        // Flattening a nested `Annotated` copies both aliases' arguments into
+        // one buffer, preflighted as a whole.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\ninner = Annotated[(int,) + meta]\nAnnotated[(inner,) + meta]",
+            1_407_153,
+        ),
+        // Comparing or hashing a `Literal` copies its values again, so an alias
+        // that fits is refused when the copy would not.
+        (
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nL == L",
+            1_106_815,
+        ),
+        (
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nhash(L)",
+            1_106_816,
+        ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
