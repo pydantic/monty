@@ -727,7 +727,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(true)
     }
 
-    /// Repeats for integer or `__index__` counts, retaining aliases and shared elements.
+    /// Repeats for integer or `__index__` counts, retaining identity and shared elements.
     fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(false);
@@ -735,10 +735,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
         // `__index__` can resize this list; read its length only after conversion.
         let len = self.get(vm.heap).items.len();
+        // These no-op repetitions need neither allocation nor reference-count changes.
         if count == 1 || len == 0 {
             return Ok(true);
         }
 
+        // Clear the existing list rather than replacing it, so aliases also see an empty list.
+        // Detach the items before releasing their references, which may include the list itself.
         if count == 0 {
             let items = mem::take(&mut self.get_mut(vm.heap).items);
             self.get_mut(vm.heap).contains_refs = false;
@@ -746,6 +749,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             return Ok(true);
         }
 
+        // Check and reserve the entire result before appending, so allocation failure leaves it unchanged.
         check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
         let total = len.checked_mul(count).ok_or_else(ExcType::allocation_too_large)?;
         self.get_mut(vm.heap)
@@ -753,7 +757,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
             .try_reserve_exact(total - len)
             .map_err(|_| ExcType::allocation_too_large())?;
 
-        // Clone references from the original prefix so repeated elements stay shared.
+        // Grow from the original prefix without a snapshot; only the vector's storage may move.
+        // Cloning preserves element identity; `contains_refs` stays valid because every element is already present.
         for index in len..total {
             let item = self.get(vm.heap).items[index % len].clone_with_heap(vm.heap);
             self.get_mut(vm.heap).items.push(item);
