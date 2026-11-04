@@ -741,15 +741,15 @@ impl Type {
     /// Calls registered methods on existing native views, binding class methods to their owner.
     pub(crate) fn call_attr<'h>(
         self,
-        this: &mut PyValue<'h>,
+        obj: &mut PyValue<'h>,
         attr: &EitherStr,
         args: ArgValues,
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
-            Some(AttrDef::Method(method)) => method(this, args, vm),
+            Some(AttrDef::Method(method)) => method(obj, args, vm),
             Some(AttrDef::ClassMethod(classmethod)) => classmethod(self.py_class(), args, vm),
-            _ => this.call_dynamic_attr(vm, attr, args),
+            _ => obj.call_dynamic_attr(vm, attr, args),
         }
     }
 
