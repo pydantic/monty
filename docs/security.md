@@ -507,7 +507,8 @@ process. The Python and JavaScript APIs do not offer an in-process execution mod
 ### Remote workers
 
 [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] (Python), `MontyRemote` (JavaScript) and [`PoolConfig::remote`](api/rust/monty-pool.md#poolconfig) (Rust) reach a remote worker over gRPC instead of spawning a local one: one HTTP/2 connection per pool, one stream per session.
-An `https://` server's certificate is verified by the operating system's trust store, not by roots bundled into the client, so a root the OS has distrusted or a certificate it knows to be revoked is refused without a Monty release.
+An `https://` server's certificate is verified against the operating system's trust store, not roots bundled into the client, so a root the OS has distrusted is refused without a Monty release.
+macOS and Windows verify with the OS and apply its revocation data; Linux checks the chain against the distro CA bundle only, with no revocation checking, and a Linux host with no CA bundle cannot create an `https://` pool.
 **A remote peer need not be a Monty sandbox at all.** It may be real CPython with no sandbox, no resource limits and
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the

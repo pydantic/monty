@@ -67,9 +67,10 @@ impl MockServer {
     }
 
     /// Serves over TLS with a certificate it signed itself, which no trust
-    /// store knows: a pool that verifies certificates must refuse it.
+    /// store knows: a pool that verifies certificates must refuse it. The
+    /// certificate names the address the pool dials, so only trust can fail.
     pub async fn start_self_signed() -> Self {
-        let certified = generate_simple_self_signed(["localhost".to_owned()]).expect("self-signed certificate");
+        let certified = generate_simple_self_signed(["127.0.0.1".to_owned()]).expect("self-signed certificate");
         let identity = Identity::from_pem(certified.cert.pem(), certified.signing_key.serialize_pem());
         Self::start_with(Some(ServerTlsConfig::new().identity(identity))).await
     }

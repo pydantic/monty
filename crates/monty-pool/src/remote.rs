@@ -102,9 +102,9 @@ impl Remote {
                 .keep_alive_while_idle(false);
         }
         if endpoint.uri().scheme_str() == Some("https") {
-            // The OS verifies the server certificate, so its trust store, its
-            // distrust decisions and its revocation data apply. On Linux this
-            // reads the distro CA bundle now; a host with none fails here.
+            // The server certificate is checked against the OS trust store:
+            // macOS and Windows verify it themselves, revocation included; Linux
+            // reads the distro CA bundle now, and a host with none fails here.
             let verifier = Verifier::new(install_crypto_provider()).map_err(|err| spawn_error(&err))?;
             endpoint = endpoint
                 .tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))
