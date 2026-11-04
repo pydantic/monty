@@ -294,6 +294,10 @@ pub struct Compiler<'a, 'i> {
 
 /// Compiler settings inherited by nested scopes, with await restrictions reset for functions.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches copied into nested scopes"
+)]
 struct ScopeFlags {
     /// Whether to compile pytest-style assert failure annotations.
     assert_message_annotations: bool,
@@ -304,6 +308,9 @@ struct ScopeFlags {
     /// Rejects `await` at snippet top level and in its class bodies.
     /// Nested function bodies reset this restriction.
     forbid_await: bool,
+    /// Whether the compile unit runs under `from __future__ import annotations`,
+    /// stamped on every `Code` it produces.
+    future_annotations: bool,
 }
 
 /// Jump targets needed to compile `break` and `continue`.
@@ -536,8 +543,9 @@ impl<'a, 'i> Compiler<'a, 'i> {
         interns: &mut CompileInterns<'_>,
         globals: &NameMap,
         options: CompileOptions,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, None)
+        Self::compile_module_inner(nodes, interns, globals, options, None, future_annotations)
     }
 
     /// Compiles a prepared `eval()` / `exec()` snippet, rejecting top-level await.
@@ -549,8 +557,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         globals_by_name: bool,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
-        Self::compile_module_inner(nodes, interns, globals, options, Some(globals_by_name))
+        Self::compile_module_inner(
+            nodes,
+            interns,
+            globals,
+            options,
+            Some(globals_by_name),
+            future_annotations,
+        )
     }
 
     /// Shared module compiler; `snippet` is `Some(globals_by_name)` for eval/exec.
@@ -560,6 +576,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         globals: &NameMap,
         options: CompileOptions,
         snippet: Option<bool>,
+        future_annotations: bool,
     ) -> Result<Code, CompileError> {
         check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
@@ -569,6 +586,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
             assert_message_annotations: options.assert_message_annotations.enabled(),
             globals_by_name: snippet.unwrap_or(false),
             forbid_await: snippet.is_some(),
+            future_annotations,
         };
         let mut compiler = Compiler::new(interns, true, 0, flags);
 
@@ -581,7 +599,12 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
+    }
+
+    /// Builds the compiled `Code`, stamped with the unit's `__future__` state.
+    fn finish(self) -> Code {
+        self.code.build().with_future_annotations(self.flags.future_annotations)
     }
 
     /// Compiles a function body to bytecode, appending any nested functions to `interns`.
@@ -622,7 +645,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit(Opcode::LoadNone)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles statements, retaining `finally` bodies for inline cleanup.
@@ -767,14 +790,19 @@ impl<'a, 'i> Compiler<'a, 'i> {
             } => self.compile_for(target, iter, body, or_else)?,
             Node::While { test, body, or_else } => self.compile_while(test, body, or_else)?,
             Node::Assert { test, msg } => self.compile_assert(test, msg.as_ref())?,
-            Node::Raise(expr) => {
-                if let Some(exc) = expr {
+            Node::Raise { exc, cause } => match (exc, cause) {
+                (Some(exc), Some(cause)) => {
+                    self.compile_expr(exc)?;
+                    self.compile_expr(cause)?;
+                    self.code.emit(Opcode::RaiseFrom)?;
+                }
+                (Some(exc), None) => {
                     self.compile_expr(exc)?;
                     self.code.emit(Opcode::Raise)?;
-                } else {
-                    self.code.emit(Opcode::Reraise)?;
                 }
-            }
+                // The parser rejects `raise from cause` without an exception.
+                (None, _) => self.code.emit(Opcode::Reraise)?,
+            },
             Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
@@ -1119,6 +1147,8 @@ impl<'a, 'i> Compiler<'a, 'i> {
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
+    /// Compiles a class body, mirroring
+    /// [`compile_function_body`](Self::compile_function_body) but replacing the
     /// implicit `LoadNone; ReturnValue` tail with code that builds the namespace
     /// `Dict` and returns it: for each member (in source order) push
     /// `LoadConst <name>` and the member's value from its class-body slot, build
@@ -1161,7 +1191,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
-        Ok(compiler.code.build())
+        Ok(compiler.finish())
     }
 
     /// Compiles an import, resolving the module only when execution reaches it.

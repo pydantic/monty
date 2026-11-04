@@ -208,6 +208,8 @@ pub(crate) enum BuiltinType {
     DecimalSignalDict,
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    #[strum(serialize = "annotationlib.ForwardRef")]
+    ForwardRef,
     Super,
 }
 
@@ -319,6 +321,7 @@ impl From<BuiltinType> for Type {
             BuiltinType::DecimalContext => Self::DecimalContext,
             BuiltinType::DecimalSignalDict => Self::DecimalSignalDict,
             BuiltinType::DecimalContextManager => Self::DecimalContextManager,
+            BuiltinType::ForwardRef => Self::ForwardRef,
             BuiltinType::Super => Self::Super,
         }
     }
@@ -434,6 +437,7 @@ impl TryFrom<Type> for BuiltinType {
             Type::DecimalContext => Self::DecimalContext,
             Type::DecimalSignalDict => Self::DecimalSignalDict,
             Type::DecimalContextManager => Self::DecimalContextManager,
+            Type::ForwardRef => Self::ForwardRef,
             Type::Super => Self::Super,
             Type::Instance(_) => return Err("user-defined classes use heap type objects"),
         })

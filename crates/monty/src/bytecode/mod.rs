@@ -26,8 +26,8 @@ pub use compiler::Compiler;
 pub(crate) use op::opcode_fingerprint;
 pub(crate) use op::{NAME_CALLABLE, NAME_GLOBAL_ONLY, Opcode};
 pub(crate) use vm::{
-    CallResult, ContainsVM, FrameGlobals, FrameNamespace, ModuleCache, PendingImport, PendingLookupEffect,
-    RecursionToken, RunReentryGuard, unpack_exact,
+    CallResult, ContainsVM, FrameGlobals, FrameNamespace, MissingNames, ModuleCache, PendingImport,
+    PendingLookupEffect, RecursionToken, RunReentryGuard, unpack_exact,
 };
 pub use vm::{FrameExit, VM, VMSnapshot};
 

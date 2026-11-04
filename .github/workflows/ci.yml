@@ -60,7 +60,7 @@ jobs:
           save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -72,7 +72,7 @@ jobs:
           node-version: 24
 
       # prek-action has no restore-only option, so manage its cache separately.
-      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: prek-cache
         with:
           path: ~/.cache/prek
@@ -144,7 +144,7 @@ jobs:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov
 
@@ -210,7 +210,7 @@ jobs:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
 
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov
 
@@ -269,7 +269,7 @@ jobs:
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov
 
@@ -280,7 +280,7 @@ jobs:
           # resolve the newest 3.14 patch, not whatever the runner image preinstalled
           check-latest: true
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -355,7 +355,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           name: rust-coverage
 
-      - uses: getsentry/codecov-action@88418cdae07a8bac2beaec1550bcafff9ec55c8b # 0.4.3
+      - uses: getsentry/codecov-action@b3db4e382bd9859c913a96093a3d369b67f59177 # 0.4.4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           files: coverage-reports/merged.info
@@ -390,7 +390,7 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Artifacts are only used for tests in this workflow run
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -442,7 +442,7 @@ jobs:
           cache-workspace-crates: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -587,8 +587,7 @@ jobs:
       matrix:
         target:
           - tokens_input_panic
-          # disable until https://github.com/astral-sh/ruff/issues/23198 is fixed
-          # - string_input_panic
+          - string_input_panic
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -688,7 +687,7 @@ jobs:
           save-if: ${{ env.SAVE_CI_CACHE }}
           prefix-key: 'v1-rust'
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts; it pushes generated markdown only
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -767,7 +766,7 @@ jobs:
           tar -xzf crates/monty-python/dist/pydantic_monty_client-*.tar.gz -C sdist-check --strip-components=1
           cargo check --manifest-path sdist-check/crates/monty-python/Cargo.toml
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           save-cache: ${{ env.SAVE_CI_CACHE }}
@@ -864,7 +863,7 @@ jobs:
           name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         if: matrix.os != 'linux' && matrix.pgo-runtime
         with:
           enable-cache: false
@@ -1053,7 +1052,7 @@ jobs:
           echo "Found $count files; expected 112 (8 Python variants × 12 platforms + 12 runtime wheels + 2 sdists + 2 metapackage files)"
           test "$count" -eq 112
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
 
@@ -1083,7 +1082,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           enable-cache: false
 
@@ -1134,7 +1133,7 @@ jobs:
 
       # exchanges the GitHub OIDC token for a short-lived crates.io token,
       # exported as CARGO_REGISTRY_TOKEN for the publish step
-      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
 
       - id: check-version

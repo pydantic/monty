@@ -79,10 +79,14 @@ impl Path {
 
     /// Returns the final component of the path.
     ///
-    /// Returns an empty string if the path ends with a separator or is empty.
+    /// Returns an empty string for `.`, the root, or an empty path.
     #[must_use]
     pub fn name(&self) -> &str {
-        self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+        if self.path == "." {
+            ""
+        } else {
+            self.path.rsplit_once('/').map_or(self.path.as_str(), |(_, name)| name)
+        }
     }
 
     /// Returns the path without its final component (parent directory).
@@ -156,10 +160,10 @@ impl Path {
 
     /// Returns the path components as a list of strings.
     ///
-    /// Absolute paths start with "/" as the first component.
+    /// Absolute paths start with "/" as the first component; `.` has no parts.
     #[must_use]
     pub fn parts(&self) -> Vec<&str> {
-        if self.path.is_empty() {
+        if self.path.is_empty() || self.path == "." {
             return Vec::new();
         }
 
@@ -440,6 +444,7 @@ fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> Opti
 /// - Removes `.` components (e.g. `/a/./b` → `/a/b`)
 /// - Collapses consecutive slashes (e.g. `//a///b` → `/a/b`)
 /// - Removes trailing slashes (except for root "/")
+/// - Turns a path with no components (`''`, `'.'`, `'./'`) into `.`
 /// - Does NOT resolve `..` components (that requires I/O for symlinks)
 fn normalize_path(mut path: String) -> String {
     // Convert backslashes to forward slashes
@@ -447,8 +452,8 @@ fn normalize_path(mut path: String) -> String {
         path = path.replace('\\', "/");
     }
 
-    // Fast path: no `.` component and no consecutive or trailing slashes
-    if !path.contains("/.") && !path.contains("//") && !path.starts_with("./") {
+    // Fast path: non-empty, no `.` component and no consecutive or trailing slashes
+    if !path.is_empty() && !path.contains("/.") && !path.contains("//") && !path.starts_with("./") {
         // Still strip trailing slashes
         while path.len() > 1 && path.ends_with('/') {
             path.pop();

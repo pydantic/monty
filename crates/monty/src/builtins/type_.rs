@@ -4,7 +4,7 @@ use std::mem;
 
 use super::{Builtins, BuiltinsFunctions};
 use crate::{
-    args::{ArgValues, KwargsValues},
+    args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -42,7 +42,9 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             let name = pos.next().expect("length checked");
             let bases = pos.next().expect("length checked");
             let namespace = pos.next().expect("length checked");
-            create_class(vm, name, bases, namespace, kwargs)
+            // A namespace built by hand holds real values, so its strings are
+            // forward references, as in CPython, whatever the caller's module declared.
+            create_class(vm, name, bases, namespace, kwargs, true)
         }
         _ => {
             pos.drop_with(vm);
@@ -50,6 +52,33 @@ pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             Err(ExcType::type_error("type() takes 1 or 3 arguments"))
         }
     }
+}
+
+/// Arguments of the compiled class body's tail call (see `compile_class_body`).
+#[derive(FromArgs)]
+#[from_args(name = "type.__build_class__", style = unpack)]
+struct BuildClassArgs {
+    #[from_args(pos_only)]
+    name: Value,
+    #[from_args(pos_only)]
+    namespace: Value,
+    #[from_args(pos_only)]
+    future_annotations: Value,
+}
+
+/// `type.__build_class__(name, namespace, future_annotations)`: builds the
+/// class a compiled body assembled, keeping the body's `from __future__ import
+/// annotations` state so `get_type_hints()` reads its stringized annotations
+/// the right way. Unreachable from Python code (see `BuiltinsFunctions::BuildClass`).
+pub fn builtin_build_class(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let BuildClassArgs {
+        name,
+        namespace,
+        future_annotations,
+    } = BuildClassArgs::from_args(args, vm)?;
+    let future_annotations = matches!(future_annotations, Value::Bool(true));
+    let bases = vm.heap.get_empty_tuple();
+    create_class(vm, name, bases, namespace, KwargsValues::Empty, future_annotations)
 }
 
 /// The 1-arg `type(obj)` form.
@@ -117,6 +146,7 @@ fn create_class(
     bases: Value,
     namespace: Value,
     kwargs: KwargsValues,
+    future_annotations: bool,
 ) -> RunResult<Value> {
     defer_drop!(name, vm);
     defer_drop!(bases, vm);
@@ -268,6 +298,41 @@ fn create_class(
         None => None,
     };
 
+    let mut inherited_methods = ahash::AHashSet::new();
+    let mut method_idx = 0;
+    for base in &mro {
+        if let ClassBase::Class(ancestor_id) = base
+            && let HeapData::Class(ancestor_cls) = vm.heap.get(*ancestor_id)
+        {
+            for &fid in ancestor_cls.defined_methods() {
+                vm.heap.tracker.check_time_every(method_idx)?;
+                method_idx += 1;
+                inherited_methods.insert(fid);
+            }
+        }
+    }
+
+    let mut defined_methods = Vec::new();
+    let mut seen_methods = ahash::AHashSet::new();
+    for (i, (_, val)) in source.iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
+        let fid = match val {
+            Value::DefFunction(fid) => Some(*fid),
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Closure(c) => Some(c.func_id),
+                HeapData::FunctionDefaults(d) => Some(d.func_id),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(fid) = fid
+            && !inherited_methods.contains(&fid)
+            && seen_methods.insert(fid)
+        {
+            defined_methods.push(fid);
+        }
+    }
+
     // Copy the namespace (CPython semantics: the class owns an independent
     // dict), stripping `__classcell__`. Check the deadline once beforehand so
     // that building the cloned pairs cannot exit early and leak heap refs.
@@ -316,6 +381,8 @@ fn create_class(
         bases_ids,
         bases,
         mro.clone(),
+        defined_methods,
+        future_annotations,
     ))));
 
     if let Some(cell_id) = classcell_id {
@@ -364,7 +431,6 @@ fn create_class(
     } else {
         kwargs.drop_with(vm.heap);
     }
-
     Ok(Value::Ref(class_id))
 }
 

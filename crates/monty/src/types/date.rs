@@ -66,7 +66,8 @@ pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
 
 /// `date`'s year-range error, raised both by construction and by the probe
 /// [`datetime.astimezone`](super::datetime) makes a day either side of a value.
-pub(crate) fn year_out_of_range(year: i32) -> RunError {
+pub(crate) fn year_out_of_range(year: impl Into<i64>) -> RunError {
+    let year = year.into();
     SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into()
 }
 
@@ -157,6 +158,22 @@ pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRes
             CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
         }
     })
+}
+
+/// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
+/// timestamp, read in the session zone as CPython reads it in the host's.
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let value = args
+        .reject_kwargs("date.fromtimestamp", vm.heap)?
+        .get_one_arg("date.fromtimestamp", vm.heap)?;
+    defer_drop!(value, vm);
+    // `date` floors to whole seconds and uses `__index__`-style wording, where
+    // `datetime` rounds to microseconds and names both numeric types.
+    let utc = datetime::timestamp_to_utc(value, datetime::TimestampRounding::Floor, vm)?
+        .ok_or_else(|| ExcType::type_error_not_integer(&value.py_type_name(vm)))?;
+    let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
+    let local = datetime::wall_clock_at(utc, offset)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
 }
 
 /// Classmethod `date.fromisoformat(date_string)`.
@@ -315,6 +332,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
+            // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
     }

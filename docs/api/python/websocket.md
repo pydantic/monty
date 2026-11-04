@@ -64,6 +64,16 @@ The redial uses the headers `connect_headers` returned when the session was ente
 resume fail.
 `MontyDisconnectError` is never resumed, because the request may have run.
 
+## Disconnect diagnostics
+
+[`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] exposes `stage`, `close_code`, `close_reason`, and `transport_error`.
+`stage` identifies where the first recorded failure occurred, either `send` or `receive`.
+If that failure is a peer Close frame, its code and reason are retained.
+An abrupt EOF, transport failure, or protocol failure supplies error text instead.
+A later Close frame does not replace an earlier failure.
+Missing evidence remains `None`, and a Close reason is peer-supplied text, not a verified explanation.
+These fields do not establish whether the request ran, so the client does not replay it.
+
 ## Dependencies
 
 [`install_dependencies()`][pydantic_monty.AsyncMontySession.install_dependencies] is supported only by embedded-CPython workers.

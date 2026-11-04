@@ -100,6 +100,11 @@ async fn main() -> Result<(), PoolError> {
 }
 ```
 
+Use `Checkout::finish` to reset a reusable session.
+Use `Checkout::terminate` to discard a subprocess and wait for its exit, including after a cancelled turn.
+Only `Some(ExitStatus)` confirms process exit. `None` does not confirm physical termination.
+Dropping a checkout requests cleanup without waiting for that confirmation.
+
 [`Checkout::feed`](../api/rust/monty-pool.md#checkout) takes the code, inputs (host values bound as sandbox globals), per-feed filesystem mounts
 ([`MountSpec`](../api/rust/monty-pool.md#mountspec)), a `skip_type_check` flag and a print sink;
 [`Checkout::feed_with_cwd`](../api/rust/monty-pool.md#checkout) also sets the sandbox's
@@ -145,7 +150,8 @@ see [snapshot security](../security.md#deserializing-snapshots).
     The first suspension over the limit ends the feed with an uncatchable `RuntimeError`.
 - **Untrusted children** — every frame from a possibly compromised worker is validated; wire decoding never panics, and
     a protocol violation discards the worker.
-- **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak; with `PoolConfig::subprocess`, `Some(1)` runs every session in a fresh process.
+- **Worker recycling** — `max_checkouts_per_worker` replaces a worker after [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`](../api/rust/monty-pool.md#default_max_checkouts_per_worker) (1000) checkouts; `None` never recycles, and with `PoolConfig::subprocess` `Some(1)` gives every session a fresh process.
+    WebSocket checkouts are single-use, so the setting does not apply to them.
     While a subprocess pool is open, recycled, crashed and discarded workers are replaced in the background until `min_processes` are live again, so checkouts usually find a warm worker.
 
 Runtime errors inside the sandbox ([`PoolError::Runtime`](../api/rust/monty-pool.md#poolerror)) are not crashes: the worker and its session stay alive and
@@ -404,3 +410,8 @@ assert_eq!(result, MontyObject::int(42));
 - [`FunctionCall::object_id`](../api/rust/monty.md#functioncall) and [`NameLookup::object_id`](../api/rust/monty.md#namelookup)
     identify the host receiver for routed calls and lookups, including class construction via `__call__`.
     Plain calls and lookups carry `None`.
+
+## Remote disconnects
+
+`PoolError::Disconnected` retains optional `websocket` details with the observed I/O stage, peer Close code and reason, or transport error.
+The peer reason is unverified text, and a disconnect does not establish whether the request ran.

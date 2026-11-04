@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, ops::Not};
 
 use monty_types::MontyUuid;
 
@@ -25,7 +25,7 @@ use crate::{
         BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
         HeapReader, heap_read_ref_as_field_mut,
     },
-    intern::{Interns, StringId},
+    intern::{FunctionId, Interns, StringId},
     types::{Union, str::allocate_string},
     value::{EitherStr, Value},
 };
@@ -62,10 +62,16 @@ pub(crate) struct Class {
     all_bases: Vec<ClassBase>,
     #[serde(default)]
     mro: Vec<ClassBase>,
+    #[serde(default)]
+    defined_methods: Vec<FunctionId>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
+    /// Whether the class body ran under `from __future__ import annotations`, so
+    /// `get_type_hints()` treats its `__annotations__` as PEP 563 forward references.
+    #[serde(default, skip_serializing_if = "Not::not")]
+    future_annotations: bool,
 }
 
 impl Class {
@@ -95,6 +101,11 @@ impl Class {
     /// Returns the method resolution order (base classes in C3 linearization order).
     pub(crate) fn mro(&self) -> &[ClassBase] {
         &self.mro
+    }
+
+    /// Returns the method IDs defined directly in this class body.
+    pub(crate) fn defined_methods(&self) -> &[FunctionId] {
+        &self.defined_methods
     }
 
     /// Whether this class inherits from `target`.
@@ -146,6 +157,8 @@ impl Class {
         bases: Vec<HeapId>,
         all_bases: Vec<ClassBase>,
         mro: Vec<ClassBase>,
+        defined_methods: Vec<FunctionId>,
+        future_annotations: bool,
     ) -> Self {
         Self {
             name,
@@ -153,8 +166,16 @@ impl Class {
             bases,
             all_bases,
             mro,
+            defined_methods,
             uuid: None,
+            future_annotations,
         }
+    }
+
+    /// Whether the class body ran under `from __future__ import annotations`.
+    #[must_use]
+    pub fn future_annotations(&self) -> bool {
+        self.future_annotations
     }
 
     /// Boundary identity of the class, generated and stored on first use so

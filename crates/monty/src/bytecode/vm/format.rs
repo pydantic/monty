@@ -6,12 +6,12 @@ use super::VM;
 use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     fstring::{
         ParseFormatSpecReason, ParsedFormatSpec, decode_format_spec, format_string, format_with_spec,
         validate_string_spec,
     },
-    heap::HeapReadOutput,
+    heap::{HeapData, HeapReadOutput},
     intern::StringId,
     string_builder::StringBuilder,
     types::{
@@ -116,18 +116,21 @@ impl VM<'_> {
             } else {
                 Ok(converted)
             }
-        } else if let Some(format_spec) = format_spec {
-            if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
-                Ok(formatted)
-            } else if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
-                Ok(formatted)
-            } else {
-                let value_type = value.py_type_name(self);
-                let spec = self.parse_runtime_spec(format_spec, &value_type)?;
-                self.format_parsed_value(value, 0, &spec)
-            }
         } else {
-            self.convert_value(value, 0)
+            self.reject_stringifier(value)?;
+            if let Some(format_spec) = format_spec {
+                if let Some(formatted) = self.try_format_temporal(value, format_spec)? {
+                    Ok(formatted)
+                } else if let Some(formatted) = self.try_format_decimal(value, format_spec)? {
+                    Ok(formatted)
+                } else {
+                    let value_type = value.py_type_name(self);
+                    let spec = self.parse_runtime_spec(format_spec, &value_type)?;
+                    self.format_parsed_value(value, 0, &spec)
+                }
+            } else {
+                self.convert_value(value, 0)
+            }
         }
     }
 
@@ -145,6 +148,7 @@ impl VM<'_> {
         spec: &ParsedFormatSpec,
     ) -> Result<String, RunError> {
         if conversion == 0 {
+            self.reject_stringifier(value)?;
             // Only a `Decimal` needs the spec back as text; checking first keeps the
             // render off every other value's path.
             if decimal::py::as_decimal(value, self).is_some()
@@ -156,6 +160,22 @@ impl VM<'_> {
         } else {
             let s = self.convert_value(value, conversion)?;
             self.format_parsed_string(&s, spec)
+        }
+    }
+
+    /// CPython's `_Stringifier.__format__` error: an f-string cannot render an
+    /// unresolved name while a `FORWARDREF` annotation evaluation composes text.
+    /// A `!r` / `!s` / `!a` conversion goes through the stringifier's repr instead,
+    /// which is its text, so only the unconverted paths check this.
+    fn reject_stringifier(&self, value: &Value) -> Result<(), RunError> {
+        if matches!(value, Value::Ref(id) if matches!(self.heap.get(*id), HeapData::ForwardRef(r) if r.is_stringifier()))
+            && self.in_forward_ref_evaluation()
+        {
+            Err(ExcType::type_error(
+                "Cannot stringify annotation containing string formatting",
+            ))
+        } else {
+            Ok(())
         }
     }
 
