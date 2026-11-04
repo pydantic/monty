@@ -1779,15 +1779,15 @@ fn re_finditer_error_releases_earlier_matches() {
 import re
 try:
     re.finditer('a|(x+x+)+\\1y', 'aaa' + 'x' * 30 + 'zy')
+    result = 'no error'
 except re.PatternError:
-    pass
-
-result = 'done'
+    result = 'raised'
 result
 ";
     let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
     let output = run.run_ref_counts(vec![]).expect("should run");
 
+    assert_eq!(output.value, MontyObject::string("raised".to_owned()));
     assert_eq!(output.unreachable, Vec::<String>::new());
 }
 

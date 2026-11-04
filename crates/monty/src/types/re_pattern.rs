@@ -406,7 +406,11 @@ impl RePattern {
             )?;
             spans.reserve(stride);
             push_spans(&caps, &mut spans);
-            text_len += caps.iter().flatten().map(|m| m.end() - m.start()).sum::<usize>();
+            // Saturating: on 32-bit targets overlapping captures can sum past `usize::MAX`.
+            text_len = caps
+                .iter()
+                .flatten()
+                .fold(text_len, |total, m| total.saturating_add(m.end() - m.start()));
         }
 
         let count = spans.len() / stride;

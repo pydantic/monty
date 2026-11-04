@@ -98,12 +98,15 @@ impl ReMatch {
             .map(|span| span.map(|(s, e)| text[s..e].to_owned()))
             .collect();
 
-        // Extract named group name→index mappings from the regex
-        let named_groups = regex
-            .capture_names()
-            .enumerate()
-            .filter_map(|(idx, name)| name.map(|name| (name.to_owned(), idx)))
-            .collect();
+        // Extract named group name→index mappings from the regex, sized exactly as
+        // `estimated_size` charges: `filter_map` would `collect` into at least 4 slots.
+        let mut named_groups = Vec::with_capacity(regex.capture_names().flatten().count());
+        named_groups.extend(
+            regex
+                .capture_names()
+                .enumerate()
+                .filter_map(|(idx, name)| name.map(|name| (name.to_owned(), idx))),
+        );
 
         Self {
             full_match: text[start..end].to_owned(),

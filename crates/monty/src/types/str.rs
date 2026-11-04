@@ -1601,6 +1601,11 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
+        // Empty and short lines cost no heap entry, so the per-item poll alone
+        // cannot stop the buffer's own doubling crossing the hard limit.
+        vm.heap
+            .tracker
+            .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
         lines.push(allocate_string(line, vm.heap));
 
         start = end;
