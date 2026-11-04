@@ -31,7 +31,7 @@ for method in ['find', 'count', 'index', 'rfind', 'rindex', 'startswith', 'endsw
                 elif method == 'startswith':
                     result = a.startswith(b'a', Bound('start'), Bound('end'))
                 elif method == 'endswith':
-                    result = a.endswith(b'a', Bound('start'), Bound('end'))
+                    result = a.endswith(b'cabc', Bound('start'), Bound('end'))
             except ValueError:
                 assert method in ['index', 'rindex'] and mutation == 'clear'
             else:
@@ -42,7 +42,7 @@ for method in ['find', 'count', 'index', 'rfind', 'rindex', 'startswith', 'endsw
                     'rfind': 3 if mutation == 'grow' else -1,
                     'rindex': 3,
                     'startswith': mutation == 'grow',
-                    'endswith': False,
+                    'endswith': mutation == 'grow',
                 }
                 assert result == expected[method], (method, position, mutation, result)
             assert calls == ['start', 'end']

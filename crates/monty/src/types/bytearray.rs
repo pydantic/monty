@@ -322,8 +322,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             return Ok(None);
         };
         let lhs = self.get(vm.heap).as_slice();
-        check_repeat_size(lhs.len().saturating_add(rhs.len()), 1, &vm.heap.tracker)?;
-        let mut bytes = lhs.to_vec();
+        let len = lhs.len().saturating_add(rhs.len());
+        check_repeat_size(len, 1, &vm.heap.tracker)?;
+        // Reserve the complete result so a small suffix cannot double the copied prefix's capacity.
+        let mut bytes = Vec::with_capacity(len);
+        bytes.extend_from_slice(lhs);
         bytes.extend_from_slice(rhs);
         Ok(Some(ByteArray::allocate(bytes, vm)))
     }
@@ -616,8 +619,11 @@ fn translate<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mu
             }
         }
     }
-    let mut result = Vec::new();
-    for chunk in value.get(vm.heap).as_slice().chunks(BYTE_WORK_CHUNK) {
+    let bytes = value.get(vm.heap).as_slice();
+    // The source remains live, and translation can retain every byte.
+    vm.heap.tracker.check_allocation(bytes.len())?;
+    let mut result = Vec::with_capacity(bytes.len());
+    for chunk in bytes.chunks(BYTE_WORK_CHUNK) {
         result.extend(chunk.iter().filter_map(|byte| {
             if deleted[usize::from(*byte)] {
                 None
