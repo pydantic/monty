@@ -583,9 +583,10 @@ class MontyRefusedError(MontyError):
     asked for (`permission_denied`); it says which in `status_code`,
     `status_message` and `cause`. No session existed,
     so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
-    server that could not be reached, or that answered with any other status
-    (such as `UNIMPLEMENTED` from a URL that is no Monty server), raises
-    `RuntimeError` instead.
+    server that could not be reached, that answered with any other status
+    (such as `UNIMPLEMENTED` from a URL that is no Monty server), or that is
+    no gRPC server at all (such as a web server's page), raises `RuntimeError`
+    instead.
 
     Cannot be constructed directly from Python.
     """

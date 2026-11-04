@@ -20,6 +20,8 @@ use std::{
 
 use bytes::Bytes;
 use grpc_mock::{MockServer, MockStream};
+use h2::server::handshake;
+use http::Response as HttpResponse;
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
@@ -546,6 +548,61 @@ async fn a_non_admission_status_is_a_spawn_failure() {
         panic!("expected Spawn error, got {err:?}");
     };
     assert_eq!(message, format!("{}: UNIMPLEMENTED: unknown service", mock.url()));
+}
+
+/// A URL that is an HTTP/2 server but no gRPC one — a web server's error
+/// page — fails the checkout as `Spawn`, rather than opening a session whose
+/// first turn then dies decoding the page as a message.
+#[tokio::test]
+async fn a_non_grpc_server_is_a_spawn_failure() {
+    for (status, content_type, described) in [
+        (405, Some("text/html"), "\"text/html\""),
+        (200, Some("application/grpc-web"), "\"application/grpc-web\""),
+        (200, None, "missing"),
+    ] {
+        let url = serve_plain_http2(status, content_type).await;
+        let mut config = PoolConfig::remote(url.clone());
+        config.max_processes = 1;
+        let pool = Pool::new(config).await.expect("pool");
+        let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+            panic!("a {status} {content_type:?} response must fail the checkout");
+        };
+        let PoolError::Spawn(message) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        assert_eq!(
+            message,
+            format!("{url}: not a gRPC server, the response's content-type is {described}")
+        );
+    }
+}
+
+/// Serves h2c on an ephemeral loopback port, answering every request with
+/// `status`, `content_type` and a small HTML body, as a web server does; returns its URL.
+async fn serve_plain_http2(status: u16, content_type: Option<&'static str>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let Ok(mut connection) = handshake(socket).await else {
+                    return;
+                };
+                // polling `accept` also drives the connection's frames
+                while let Some(Ok((_request, mut respond))) = connection.accept().await {
+                    let mut response = HttpResponse::builder().status(status);
+                    if let Some(content_type) = content_type {
+                        response = response.header("content-type", content_type);
+                    }
+                    let response = response.body(()).expect("response");
+                    if let Ok(mut body) = respond.send_response(response, false) {
+                        let _ = body.send_data(Bytes::from_static(b"<html>Method Not Allowed</html>"), true);
+                    }
+                }
+            });
+        }
+    });
+    url
 }
 
 /// `Debug` for [`CheckoutOptions`] names each metadata entry, never its value.

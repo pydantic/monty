@@ -279,9 +279,10 @@ export interface RefusalDetails {
  * credential asked for (`permission_denied`), which it says in `statusCode`,
  * `statusMessage` and `cause`. No session existed, so
  * nothing ran; unlike `MontyDisconnectError`, retrying is safe. A server that
- * cannot be reached, or that answers with any other status (such as
- * `UNIMPLEMENTED` from a URL that is no Monty server), rejects with a plain
- * `Error` instead.
+ * cannot be reached, that answers with any other status (such as
+ * `UNIMPLEMENTED` from a URL that is no Monty server), or that is no gRPC
+ * server at all (a web server's error page), rejects with a plain `Error`
+ * instead.
  */
 export class MontyRefusedError extends MontyError {
   /** The status code the server refused with, by name, or `null`. */
