@@ -13,6 +13,7 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NoReturn,
     Sequence,
     Set,
     Tuple,
@@ -236,6 +237,18 @@ for form in (ClassVar[int], Literal[1], Final[str]):
     except AttributeError as exc:
         assert str(exc) == 'foo'
 
+# === ... whether read or called, and through Annotated ===
+try:
+    ClassVar[int].foo()
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == 'foo'
+try:
+    Annotated[NoReturn, 'x'].foo
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == 'foo'
+
 # === ... and one on a `collections.abc` form's alias names that class ===
 for form, name in (
     (Callable[[int], str], 'Callable'),
@@ -247,3 +260,17 @@ for form, name in (
         assert False, 'expected AttributeError'
     except AttributeError as exc:
         assert str(exc) == f"type object '{name}' has no attribute 'foo'"
+
+try:
+    Callable[[int], str].foo()
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "type object 'Callable' has no attribute 'foo'"
+
+
+# === get_type_hints leaves Literal values alone ===
+def lit(x: Literal['int', 'red'], y: List['int']) -> Literal[1, 'one']:
+    pass
+
+
+assert get_type_hints(lit) == {'x': Literal['int', 'red'], 'y': List[int], 'return': Literal[1, 'one']}

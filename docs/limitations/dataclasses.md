@@ -68,8 +68,10 @@ field after a defaulted one
     stores (see [typing.md](typing.md#annotations)). The
     evaluation runs in the synchronous position of `default_factory` below, so an annotation that calls an external
     function raises `NotImplementedError` where CPython evaluates it.
-- **A non-string annotation key is skipped.** A `type()` namespace whose `__annotations__` has a key such as `1`
-    is decorated without it, where CPython raises `TypeError: attribute name must be string, not 'int'`.
+- **An annotation key that is not a string literal is skipped.** A `type()` namespace whose `__annotations__`
+    has a key such as `1` is decorated without it, where CPython raises
+    `TypeError: attribute name must be string, not 'int'`; a key built at run time (`'a' + b`) is skipped too,
+    where CPython makes it a field.
 - **`__dataclass_fields__` holds only real fields.** CPython keeps `ClassVar`
     (and `InitVar`) entries in the mapping, marked `_FIELD_CLASSVAR`, and filters
     them in `fields()`. Monty has no field kinds, so the mapping *is* the field

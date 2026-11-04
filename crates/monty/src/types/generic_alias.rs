@@ -407,6 +407,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                 let Some(HeapReadOutput::Tuple(args)) = args.read_heap(vm) else {
                     unreachable!("GenericAlias::args is always a tuple")
                 };
+                let count = args.get(vm.heap).as_slice().len() - 1;
+                vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
                 let metadata = args.get(vm.heap).as_slice()[1..]
                     .iter()
                     .map(|item| item.clone_with_heap(vm.heap))
@@ -425,14 +427,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                         let origin = self.get(vm.heap).origin_value(vm.heap);
                         defer_drop!(origin, vm);
                         match origin {
-                            // A special form (`ClassVar`, `Final`, `Literal`) raises the
-                            // bare name too, as CPython's `_SpecialForm.__getattr__` does.
-                            Value::Marker(Marker(
-                                StaticStrings::ClassVar | StaticStrings::FinalType | StaticStrings::Literal,
-                            )) => Err(SimpleException::new_msg(ExcType::AttributeError, name).into()),
                             // The forms standing in for a `collections.abc` class
                             // report it as the class CPython forwards to.
-                            Value::Marker(form) => Err(ExcType::attribute_error_type(form.0.into(), name)),
+                            Value::Marker(form) if is_abc_form(*form) => {
+                                Err(ExcType::attribute_error_type(form.0.into(), name))
+                            }
+                            // A special form (`ClassVar`, `Literal`, `NoReturn`) raises the
+                            // bare name too, as CPython's `_SpecialForm.__getattr__` does.
+                            Value::Marker(form) if form.py_type() == Type::SpecialForm => {
+                                Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
+                            }
                             _ => origin.py_getattr(attr, vm).map(Some),
                         }
                     }
@@ -455,13 +459,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                     | StaticStrings::DunderMetadata
             )
         );
+        let origin = self.get(vm.heap).origin_value(vm.heap);
+        defer_drop!(origin, vm);
         match self.get(vm.heap).origin {
             AliasOrigin::Builtin(origin) if !own_attribute => Type::from(origin).call_class_method(attr, args, vm),
             // A `typing` form's origin answers the call itself: a host class's
-            // lookup may suspend for the host, which only a call-attr carries.
-            AliasOrigin::Special(_) if !own_attribute && !is_dunder(attr.as_str(vm.interns)) => {
-                let origin = self.get(vm.heap).origin_value(vm.heap);
-                defer_drop!(origin, vm);
+            // lookup may suspend for the host, which only a call-attr carries. A
+            // form's own markers take the lookup path below, for its errors.
+            AliasOrigin::Special(_)
+                if !own_attribute && !is_dunder(attr.as_str(vm.interns)) && !matches!(origin, Value::Marker(_)) =>
+            {
                 origin.py_value(vm).py_call_attr(vm, attr, args)
             }
             _ => {
@@ -581,12 +588,19 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         smallvec![key.clone_with_heap(vm)]
     };
     // One level of flattening: a nested `Literal` was normalised when it was
-    // built. Values are taken out of `written` one at a time and `flattened` is
-    // guarded from the start, so a refused copy of a nested form leaks nothing.
+    // built. The flattened buffer and the deduplicated one it feeds are
+    // preflighted together; values are taken out of `written` one at a time and
+    // `flattened` is guarded from the start, so a refused copy leaks nothing.
     defer_drop_mut!(written, vm);
-    let mut flattened_guard = DropGuard::new(TupleVec::new(), vm);
+    let mut total = 0usize;
+    for value in written.iter() {
+        total = total.saturating_add(nested_literal_len(value, vm).unwrap_or(1));
+    }
+    vm.heap.tracker.check_allocation(total.saturating_mul(2 * VALUE_SIZE))?;
+    let mut flattened_guard = DropGuard::new(TupleVec::with_capacity(total), vm);
     let (flattened, vm) = flattened_guard.as_parts_mut();
     for index in 0..written.len() {
+        vm.heap.tracker.check_time_every(index)?;
         let value = mem::replace(&mut written[index], Value::None);
         let nested = match value.read_heap(vm) {
             Some(HeapReadOutput::GenericAlias(alias)) if alias.get(vm.heap).origin == LITERAL => {
@@ -641,6 +655,25 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     }
     let (params, vm) = params_guard.into_parts();
     Ok(allocate_tuple(params, vm.heap))
+}
+
+/// How many values a nested `Literal` contributes when flattened; `None` for
+/// any other value, which contributes itself.
+fn nested_literal_len(value: &Value, vm: &VM<'_>) -> Option<usize> {
+    let Value::Ref(id) = value else { return None };
+    let HeapData::GenericAlias(alias) = vm.heap.get(*id) else {
+        return None;
+    };
+    if alias.origin != LITERAL {
+        return None;
+    }
+    let Value::Ref(args) = alias.args else {
+        unreachable!("GenericAlias::args is always a tuple")
+    };
+    let HeapData::Tuple(items) = vm.heap.get(args) else {
+        unreachable!("GenericAlias::args is always a tuple")
+    };
+    Some(items.as_slice().len())
 }
 
 /// Whether two `Literal` values are one parameter: equal and of one type, so
@@ -743,6 +776,20 @@ fn is_dunder(name: &str) -> bool {
     name.len() > 4 && name.starts_with("__") && name.ends_with("__")
 }
 
+/// Whether `form` stands in for a `collections.abc` class in CPython
+/// (`typing.Callable[...]` is `collections.abc.Callable[...]`).
+fn is_abc_form(form: Marker) -> bool {
+    matches!(
+        form.0,
+        StaticStrings::Callable
+            | StaticStrings::Sequence
+            | StaticStrings::Mapping
+            | StaticStrings::Iterable
+            | StaticStrings::IteratorType
+            | StaticStrings::Generator
+    )
+}
+
 /// Owned clones of a tuple's items, preflighted like any container copy.
 fn tuple_items(tuple: &Value, vm: &mut VM<'_>) -> RunResult<TupleVec> {
     let Some(HeapReadOutput::Tuple(items)) = tuple.read_heap(vm) else {
@@ -786,8 +833,11 @@ pub(crate) fn call_alias_with(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Val
         let Some(HeapReadOutput::Tuple(stored)) = args.read_heap(vm) else {
             unreachable!("GenericAlias::args is always a tuple")
         };
-        let mut items = smallvec![inner];
-        for index in 1..stored.get(vm.heap).as_slice().len() {
+        defer_drop!(inner, vm);
+        let count = stored.get(vm.heap).as_slice().len();
+        vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+        let mut items = smallvec![inner.clone_with_heap(vm)];
+        for index in 1..count {
             items.push(stored.clone_item(index, vm));
         }
         let key = allocate_tuple(items, vm.heap);

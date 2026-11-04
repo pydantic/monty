@@ -130,7 +130,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
 /// `type.__annotations__` would. `eval_hint`'s last three arguments are the
 /// name mode, the owner and the class flag.
 pub(crate) const GET_ANNOTATIONS_SOURCE: &str = r"
-def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_, task, include_extras, is_class, call_annotate, cache, eval_hint, alias_with, forward_ref, type_repr_, isinstance_, len_, str_, tuple_, dict_, repr_, generic_alias, union, none_type, exception, not_implemented_error, syntax_error, value_error):
+def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_, task, include_extras, is_class, call_annotate, cache, eval_hint, alias_with, forward_ref, type_repr_, isinstance_, len_, str_, tuple_, dict_, repr_, generic_alias, literal_, union, none_type, exception, not_implemented_error, syntax_error, value_error):
     VALUE = 1
     FAKE_GLOBALS = 2
     FORWARDREF = 3
@@ -259,7 +259,8 @@ def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_,
                     if isinstance_(evaluated, str_):
                         evaluated = forward_ref(evaluated, module=value.__forward_module__, owner=owner, is_argument=value.__forward_is_argument__, is_class=value.__forward_is_class__)
                     value = evaluated
-                if isinstance_(value, generic_alias) or isinstance_(value, union):
+                # A `Literal` holds values, not types: its strings stay strings.
+                if (isinstance_(value, generic_alias) and value.__origin__ is not literal_) or isinstance_(value, union):
                     frame[0] = value
                     frame[1] = []
                     frame[2] = seen
@@ -598,6 +599,7 @@ fn resolve_hints(
             Value::Builtin(Builtins::Type(BuiltinType::Dict)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Repr)),
             Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
+            Value::Marker(Marker(StaticStrings::Literal)),
             Value::Builtin(Builtins::Type(BuiltinType::Union)),
             Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
             Value::Builtin(Builtins::ExcType(ExcType::Exception)),

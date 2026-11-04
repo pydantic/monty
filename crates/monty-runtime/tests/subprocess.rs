@@ -1208,6 +1208,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // parameter list; both copies are preflighted.
         ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_323_889),
         ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_323_909),
+        // `__metadata__` copies an `Annotated` alias's metadata, preflighted too.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [None] * 30_000\na.__metadata__",
+            1_170_898,
+        ),
         // Flattening a nested `Annotated` copies both aliases' arguments into
         // one buffer, preflighted as a whole.
         (
