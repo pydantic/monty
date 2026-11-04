@@ -88,7 +88,7 @@ impl Remote {
             // ones set both to one estimate, so a session whose host stopped
             // reading held the whole connection and starved every other session
             .initial_stream_window_size(STREAM_WINDOW_BYTES)
-            .initial_connection_window_size(CONNECTION_WINDOW_BYTES);
+            .initial_connection_window_size(connection_window(max_processes));
         if let Some(interval) = keep_alive {
             // Hop-local liveness while streams are open: a dead TCP peer is
             // noticed without waiting for a turn to time out (the in-band
@@ -324,15 +324,33 @@ const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"))
 /// interval between pings is `PoolConfig::keep_alive`.
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A stream's HTTP/2 receive window, and the connection's shared by every
-/// stream on the channel: a session whose host stopped reading holds at most
-/// one stream window, leaving the rest for its neighbours' replies.
+/// A stream's HTTP/2 receive window: a session whose host stopped reading
+/// holds at most this much of the connection's.
 const STREAM_WINDOW_BYTES: u32 = 2 * 1024 * 1024;
-const CONNECTION_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
+
+/// The smallest connection window, so a small pool keeps the window it had.
+const MIN_CONNECTION_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
+
+/// HTTP/2's largest flow-control window.
+const MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
+
+/// The connection's receive window, shared by every stream on the channel:
+/// room for each stream the pool can hold — `max_processes` live and as many
+/// closing — to sit on a full stream window with one to spare, so stalled
+/// sessions never take the credit a neighbour's reply needs.
+fn connection_window(max_processes: usize) -> u32 {
+    let streams = max_processes.max(1).saturating_mul(2).saturating_add(1);
+    u32::try_from(streams)
+        .ok()
+        .and_then(|streams| streams.checked_mul(STREAM_WINDOW_BYTES))
+        .map_or(MAX_WINDOW_BYTES, |window| window.min(MAX_WINDOW_BYTES))
+        .max(MIN_CONNECTION_WINDOW_BYTES)
+}
 
 /// How long a closed stream's reader stays up for the server to end its side
-/// after the half-close. Nothing waits on it; it bounds what a peer that
-/// stopped reading can hold open.
+/// after the half-close. The checkout does not wait on it, but a finished
+/// checkout's pool slot does (see [`crate::pool::PoolInner::release_worker`]);
+/// it also bounds what a peer that stopped reading can hold open.
 const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
 /// Depth of the request channel. The protocol sends one request per turn (plus
@@ -555,3 +573,7 @@ fn install_crypto_provider() {
         let _ = default_provider().install_default();
     });
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/remote.rs"]
+mod tests;

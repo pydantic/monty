@@ -17,7 +17,7 @@ import struct
 import sys
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from types import MappingProxyType, ModuleType
@@ -85,8 +85,9 @@ async def relay_url_capturing_metadata() -> AsyncIterator[tuple[str, list[dict[s
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         captured.append({key: value for key, value in context.invocation_metadata() or () if isinstance(value, str)})
-        async for event in relay.relay_behaviour(monty_bin)(requests, context):
-            yield event
+        async with aclosing(relay.relay_behaviour(monty_bin)(requests, context)) as events:
+            async for event in events:
+                yield event
 
     server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
     try:
@@ -129,6 +130,7 @@ class _StoringServer:
 
     def __init__(self, monty_bin: str) -> None:
         self.monty_bin = monty_bin
+        self.relay = _load_relay_script()
         self.records: dict[bytes, bytes] = {}
         self.minted = 0
         self.streams = 0
@@ -188,9 +190,7 @@ class _StoringServer:
                     if kind != _EVENT_PRINT:
                         break
         finally:
-            if child.returncode is None:
-                child.kill()
-            await child.wait()
+            await self.relay.reap(child)
 
 
 def _proto_fields(buf: bytes) -> dict[int, Any]:

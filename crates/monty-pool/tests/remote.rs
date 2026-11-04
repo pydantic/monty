@@ -3150,8 +3150,11 @@ async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
         let mut first = mock.accept();
         expect_configure(&mut first);
         expect_end(&mut first);
-        let early = mock.opens_within(Duration::from_millis(300));
-        assert!(!early, "the next stream opened before the server ended this one");
+        let early = mock.try_accept(Duration::from_millis(300));
+        assert!(
+            early.is_none(),
+            "the next stream opened before the server ended this one"
+        );
         drop(first);
         let mut second = mock.accept();
         expect_configure(&mut second);

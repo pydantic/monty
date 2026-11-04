@@ -143,10 +143,10 @@ impl MockServer {
         }
     }
 
-    /// Whether the pool opens another session stream within `wait`; a test
-    /// asserting the pool holds back calls it.
-    pub fn opens_within(&self, wait: Duration) -> bool {
-        self.incoming.recv_timeout(wait).is_ok()
+    /// The next session stream if the pool opens one within `wait`; a test
+    /// asserting the pool holds back expects `None`.
+    pub fn try_accept(&self, wait: Duration) -> Option<MockStream> {
+        self.incoming.recv_timeout(wait).ok()
     }
 
     /// Refuses the next stream with `status` before admitting it — what a

@@ -39,7 +39,8 @@ import ipaddress
 import os
 import shutil
 import struct
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import aclosing
 from typing import Any
 
 import grpc
@@ -87,7 +88,7 @@ async def spawn_child(monty_bin: str) -> asyncio.subprocess.Process:
     )
 
 
-async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subprocess.Process) -> AsyncIterator[bytes]:
+async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subprocess.Process) -> AsyncGenerator[bytes]:
     """Bridges one session stream to `child`, a `monty subprocess`.
 
     Pumps messages in both directions until either side ends, then tears the
@@ -141,10 +142,19 @@ async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subproces
 
 
 async def reap(child: asyncio.subprocess.Process) -> None:
-    """Ends `child` if it still runs, and waits for it either way."""
+    """Ends `child` if it still runs, and waits for it either way.
+
+    The wait finishes even when the caller is cancelled: a child nobody waited
+    for outlives the event loop that would have reaped it.
+    """
     if child.returncode is None:
         child.kill()
-    await child.wait()
+    wait = asyncio.ensure_future(child.wait())
+    try:
+        await asyncio.shield(wait)
+    except asyncio.CancelledError:
+        await wait
+        raise
 
 
 async def admit(context: aio.ServicerContext[bytes, bytes]) -> None:
@@ -183,8 +193,11 @@ def relay_behaviour(monty_bin: str) -> Behaviour:
             await reap(child)
             raise
         try:
-            async for event in bridge_stream(requests, child):
-                yield event
+            # closed with this generator, even one grpc abandons mid-send,
+            # so the bridge's teardown always reaps the child
+            async with aclosing(bridge_stream(requests, child)) as events:
+                async for event in events:
+                    yield event
         except ChildExited as exc:
             await context.abort(grpc.StatusCode.INTERNAL, str(exc))
 

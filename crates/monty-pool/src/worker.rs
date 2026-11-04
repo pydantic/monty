@@ -354,6 +354,9 @@ impl Worker {
                 let _ = w.child.start_kill();
                 w.child.wait().await.ok()
             }
+            // the caller's capacity guard frees the slot now: a discarded
+            // stream's server may still be stopping its work, which no grace
+            // period here bounds, and a clean finish is the common path
             WorkerKind::Remote(w) => {
                 w.close(|| {});
                 None
