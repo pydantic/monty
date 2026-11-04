@@ -490,8 +490,13 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// For lists/deques, tries user `__radd__` before native extension from an iterable.
+    /// A reflected result replaces the value; native extension preserves the container's identity.
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        // Try user `__radd__` before native list/deque extension.
+        // CPython tries numeric addition, including the RHS's `__radd__`, before
+        // sequence in-place concatenation. A user operand can therefore replace
+        // the assigned value even if it is iterable; aliases keep the original container.
+        // Only an absent or declined `__radd__` permits native extension; errors propagate.
         let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
         if sequence
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
@@ -512,7 +517,10 @@ impl<'h> PyTrait<'h> for Value {
     /// For lists/deques, tries user `__rmul__` before native repetition through `__index__`.
     /// A reflected result replaces the value; native repetition preserves the container's identity.
     fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        // Try user `__rmul__` before native list/deque repetition.
+        // CPython tries numeric multiplication, including the RHS's `__rmul__`, before
+        // sequence in-place repetition. A user operand can therefore replace
+        // the assigned value even if it implements `__index__`; aliases keep the original container.
+        // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
         let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
         if sequence
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))

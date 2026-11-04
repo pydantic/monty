@@ -166,7 +166,10 @@ impl<'h> PyValue<'h> {
             return Ok(None);
         };
         defer_drop!(count, vm);
+
+        // Check overflow before clamping: even an oversized negative count must raise.
         let count = count.as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())?;
+        // In-range negatives mean no repetitions; check that the result fits the host's usize.
         Ok(Some(
             usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
         ))
