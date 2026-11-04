@@ -227,8 +227,9 @@ impl ArgValues {
     }
 
     /// Exports the arguments into one arena for delivery to an external
-    /// function, so an object passed twice crosses once. Fails only with the
-    /// uncatchable error of a user `__repr__` run during export.
+    /// function, so an object passed twice crosses once. Fails only with a
+    /// resource limit hit during export, where a user `__repr__` can run;
+    /// callers outside the run loop wrap it in [`VM::export_on_clock`].
     pub fn into_call_args(self, vm: &mut VM<'_>) -> RunResult<CallArgs> {
         let mut exporter = GraphExporter::new();
         let mut call = CallArgs::new();

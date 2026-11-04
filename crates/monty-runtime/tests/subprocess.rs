@@ -935,19 +935,19 @@ fn exceeding_the_soft_memory_limit_preserves_the_worker() {
 
 /// A resource limit hit inside a user `__str__` / `__repr__` that Monty runs to
 /// build a message or export a value ends the feed with `MemoryError`, rather
-/// than becoming a catchable `KeyError` or a repr string.
+/// than becoming a `KeyError` or a repr string; `except MemoryError` cannot catch it.
 #[test]
 fn memory_errors_in_user_str_and_repr_are_uncatchable() {
     let cases = [
         // `KeyError` message for a missing dict key and set member
-        "class K:\n    def __hash__(self):\n        return 0\n    def __str__(self):\n        return 'x' * 10_000_000\ntry:\n    {}[K()]\nexcept KeyError:\n    pass\n'caught'",
-        "class K:\n    def __hash__(self):\n        return 0\n    def __str__(self):\n        return 'x' * 10_000_000\ntry:\n    set().remove(K())\nexcept KeyError:\n    pass\n'caught'",
+        "class K:\n    def __hash__(self):\n        return 0\n    def __str__(self):\n        return 'x' * 10_000_000\ntry:\n    {}[K()]\nexcept (KeyError, MemoryError):\n    pass\n'caught'",
+        "class K:\n    def __hash__(self):\n        return 0\n    def __str__(self):\n        return 'x' * 10_000_000\ntry:\n    set().remove(K())\nexcept (KeyError, MemoryError):\n    pass\n'caught'",
         // a result exported as its repr
         "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\nfunctools.partial(print, R())",
         // an external call's argument, exported before the call reaches the host
-        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\nadd(functools.partial(print, R()))",
+        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ntry:\n    add(functools.partial(print, R()))\nexcept MemoryError:\n    pass\n'caught'",
         // the `os.getenv` default, exported into the `OsCall`
-        "import functools, os\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\nos.getenv('KEY', functools.partial(print, R()))",
+        "import functools, os\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ntry:\n    os.getenv('KEY', functools.partial(print, R()))\nexcept MemoryError:\n    pass\n'caught'",
     ];
     for code in cases {
         let mut child = ChildProc::spawn();

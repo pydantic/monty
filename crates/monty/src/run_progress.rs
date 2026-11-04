@@ -1095,7 +1095,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
     // `instruction_ip` still names the opcode that suspended, so the current
     // position is the suspending expression for every exit but `ResolveFutures`.
     match result {
-        Ok(FrameExit::Return(value)) => match MontyObject::export(value, vm) {
+        Ok(FrameExit::Return(value)) => match vm.export_on_clock(|vm| MontyObject::export(value, vm)) {
             Ok(obj) => ConvertedExit::Complete(obj),
             Err(err) => ConvertedExit::Error(err),
         },
@@ -1107,7 +1107,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = function_name.into_string(vm.interns);
-            match args.into_call_args(vm) {
+            match vm.export_on_clock(|vm| args.into_call_args(vm)) {
                 Ok(args) => ConvertedExit::FunctionCall {
                     function_name: name,
                     args,
@@ -1145,7 +1145,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
         }) => {
             let position = vm.suspension_position();
             let name = method_name.into_string(vm.interns);
-            match args.into_call_args(vm) {
+            match vm.export_on_clock(|vm| args.into_call_args(vm)) {
                 Ok(args) => ConvertedExit::FunctionCall {
                     function_name: name,
                     args,

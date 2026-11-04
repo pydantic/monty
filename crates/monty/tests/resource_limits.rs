@@ -482,6 +482,21 @@ fn time_limit_covers_csv_long_ordinary_fields() {
     );
 }
 
+/// A user `__repr__` run to export a result or an external call's argument
+/// counts towards the time limits, although the export follows the run loop.
+#[test]
+fn time_limit_covers_export_repr() {
+    let repr_class = "import functools\nclass R:\n    def __repr__(self):\n        for _ in range(10**7):\n            pass\n        return 'r'\n";
+    for tail in ["functools.partial(print, R())", "add(functools.partial(print, R()))"] {
+        let code = format!("{repr_class}{tail}");
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let progress = run.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+        let exc = progress.and_then(resolve_name_lookups).map(|_| ()).unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{tail}");
+    }
+}
+
 #[test]
 fn time_limit_not_exceeded() {
     // Simple code that runs quickly

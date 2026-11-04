@@ -47,8 +47,9 @@ use crate::{
 /// [`MontyGraphExt::to_values`] directly so their values share one arena.
 pub(crate) trait MontyObjectExt: Sized {
     /// Exports a `Value` into its own arena, taking ownership of the `Value`
-    /// and dropping it via `drop_with`. Fails only with the uncatchable error
-    /// of a user `__repr__` that hit a resource limit (see [`GraphExporter::finish`]).
+    /// and dropping it via `drop_with`. Fails only with a resource limit hit
+    /// during export, where a user `__repr__` can run (see [`GraphExporter::finish`]);
+    /// callers outside the run loop wrap it in [`VM::export_on_clock`].
     fn export(value: Value, vm: &mut VM<'_>) -> RunResult<Self>;
 
     /// Imports this value into the heap. Fails with `InvalidInputError` on

@@ -532,11 +532,13 @@ impl MontyRepl {
                         loop {
                             run_result = match run_result {
                                 Ok(FrameExit::Return(value)) => {
-                                    break MontyObject::export(value, vm).map_err(|error| {
-                                        error.into_python_exception(vm.interns, |fname| {
-                                            self.sources.get(fname).map(|source| &**source)
-                                        })
-                                    });
+                                    break vm
+                                        .export_on_clock(|vm| MontyObject::export(value, vm))
+                                        .map_err(|error| {
+                                            error.into_python_exception(vm.interns, |fname| {
+                                                self.sources.get(fname).map(|source| &**source)
+                                            })
+                                        });
                                 }
                                 // No host answers inside a host-driven call, so the
                                 // lookup is `Undefined`: `hasattr()` is False,
