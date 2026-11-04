@@ -134,14 +134,19 @@ sha2 = "0.11"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
-# WebSocket client with rustls for `wss://`, used by the pool's remote
-# transport (monty-pool). The sync `tungstenite` is dev-only (mock servers in
-# monty-pool's tests); the pool itself dials with `tokio-tungstenite`. Both
-# pins must track the same underlying tungstenite version.
-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-# Stream/sink combinators (splitting the WebSocket into read/write halves).
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# gRPC over HTTP/2 for the pool's remote transport. Only the version is pinned
+# here: monty-proto takes the core (codec and status types) with no features,
+# monty-pool adds the `channel` client with rustls (`aws-lc` to match the
+# `rustls` pin below), and tests add `server` for in-process mock servers.
+tonic = { version = "0.14.9", default-features = false }
+# `Bytes` payloads for the opaque gRPC codec and the pool's event channel.
+bytes = "1"
+# `ReceiverStream` turns the pool's request channel into a gRPC request body.
+tokio-stream = { version = "0.1", default-features = false }
+# `PathAndQuery` for the session RPC path.
+http = "1"
+# Stream combinators for the pool's gRPC event reader and the Python driver.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
 # Capability-based filesystem access for monty-fs: every mount operation runs

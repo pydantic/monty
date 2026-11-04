@@ -27,6 +27,7 @@ import {
   MontyDisconnectError,
   MontyError,
   montyErrorFromNative,
+  MontyRefusedError,
   MontyShutdown,
   MontyTypingError,
   notCallableMessage,
@@ -409,7 +410,7 @@ export class MontySession {
    * format. The session stays usable; the bytes can only be restored by a
    * monty worker of the same version.
    *
-   * Against a `MontyWebsocket` server that stores sessions, returns the ID of
+   * Against a `MontyRemote` server that stores sessions, returns the ID of
    * a record holding the current state instead; `loadSession` / `loadSnapshot`
    * accept it like dump bytes. A server that stores nothing may refuse with
    * `MontyRuntimeError`, and the session carries on.
@@ -465,7 +466,7 @@ export class MontySession {
   }
 
   /**
-   * The opaque ID a `MontyWebsocket` server that stores sessions gave this
+   * The opaque ID a `MontyRemote` server that stores sessions gave this
    * session, or `undefined`: local workers, ephemeral sessions and servers that
    * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
    * to start a new session from the state stored under it. Changes when the
@@ -1700,7 +1701,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Checks `native` out of its pool, raising what a turn would for the same
- * failure: `MontyRuntimeError` when the server refuses the session,
+ * failure: `MontyRuntimeError` when the server rejects the session's
+ * configuration, `MontyRefusedError` when a remote server refuses to open
+ * the stream at all (no session existed, so retrying is safe),
  * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
  * is lost, and a `TimeoutError` `DOMException` when no worker became available
  * within the checkout timeout. Anything else (a failed spawn or dial) is a plain `Error`.
@@ -1708,9 +1711,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 export async function enterSession(
   native: NativeSession,
   telemetryContext: unknown,
-  connectHeaders?: { name: string; value: string }[],
+  metadata?: { name: string; value: string }[],
 ): Promise<void> {
-  const turn = (await native.enter(telemetryContext, connectHeaders)) as EnterTurn
+  const turn = (await native.enter(telemetryContext, metadata)) as EnterTurn
   switch (turn.kind) {
     case 'ok':
       return
@@ -1722,6 +1725,8 @@ export async function enterSession(
     case 'disconnected':
     case 'shutdown':
       throw lostSessionError(turn)
+    case 'refused':
+      throw new MontyRefusedError(turn.message, turn)
     case 'typingError':
       throw new Error(turn.diagnostics)
     case 'protocol':
@@ -1738,7 +1743,7 @@ function lostSessionError(turn: CrashedTurn | DisconnectedTurn | ShutdownTurn): 
     case 'crashed':
       return new MontyCrashedError(turn.message, turn)
     case 'disconnected':
-      return new MontyDisconnectError(turn.message)
+      return new MontyDisconnectError(turn.message, turn)
     case 'shutdown':
       return new MontyShutdown(turn.message, turn.dump === undefined ? null : bufferFrom(turn.dump))
   }

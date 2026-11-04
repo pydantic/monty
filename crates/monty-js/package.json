@@ -82,6 +82,7 @@
     "@napi-rs/wasm-runtime": "^1.1.5",
     "@opentelemetry/context-async-hooks": "^2.11.0",
     "@opentelemetry/instrumentation": "^0.222.0",
+    "@grpc/grpc-js": "^1.14.7",
     "@opentelemetry/sdk-logs": "^0.222.0",
     "@opentelemetry/sdk-metrics": "^2.11.0",
     "@opentelemetry/sdk-node": "^0.222.0",
@@ -89,15 +90,13 @@
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
-    "@types/ws": "^8.18.2",
     "@vitest/browser": "^3.2.4",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.2",
     "vite": "^6.3.5",
-    "vitest": "^3.2.4",
-    "ws": "^8.22.0"
+    "vitest": "^3.2.4"
   },
   "prettier": {
     "printWidth": 120,

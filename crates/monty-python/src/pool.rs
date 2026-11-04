@@ -55,7 +55,7 @@ use monty_types::{
 };
 use pyo3::{
     Borrowed,
-    exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
+    exceptions::{PyDeprecationWarning, PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
@@ -73,9 +73,11 @@ use crate::{
         CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
         dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
     },
-    build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
+    build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
-    exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
+    exceptions::{
+        MontyCrashedError, MontyDisconnectError, MontyError, MontyRefusedError, MontyShutdown, MontyTypingError,
+    },
     external::{
         CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_intercepted_os_call, resolve_object_attr,
         wire_call_arguments,
@@ -648,7 +650,7 @@ impl PyAsyncMonty {
             instances: InstanceStore::new(py),
             modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
-            connect_headers: None,
+            metadata: None,
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
@@ -656,39 +658,40 @@ impl PyAsyncMonty {
     }
 }
 
-/// Async context manager owning a pool of remote `monty` workers reached over a
-/// WebSocket. The intended peer is `monty-server` (one child per connection
-/// plus timeout/capacity/drain policy); any server that bridges to a worker fits,
-/// e.g. a relay pairing this connection with a child that dialed in from the
-/// other end, or the dev relay script.
+/// Async context manager owning a pool of remote `monty` workers reached over
+/// gRPC: one HTTP/2 connection to the configured URL, one stream per session.
+/// The intended peer is `monty-server` (one child per stream plus
+/// timeout/capacity/drain policy); any server that bridges a stream to a
+/// worker fits, e.g. the dev relay script.
 ///
 /// Mirrors [`PyAsyncMonty`] but, instead of spawning local subprocesses, each
-/// checkout dials the configured URL; `checkout()` yields the same
+/// checkout opens a stream to the server; `checkout()` yields the same
 /// [`PyAsyncMontySession`]. There is no sync counterpart — remote turns are
-/// network-bound, so the async API is the only one.
-#[pyclass(name = "AsyncMontyWebsocket", module = "pydantic_monty", frozen)]
-pub struct PyAsyncMontyWebsocket {
+/// network-bound, so the async API is the only one. Also exported as
+/// `AsyncMontyWebsocket`, its former name.
+#[pyclass(name = "AsyncMontyRemote", module = "pydantic_monty", frozen)]
+pub struct PyAsyncMontyRemote {
     config: PoolConfig,
     pool: SharedPool,
-    /// The `connect_headers` callback, handed to every session so it runs on
+    /// The `metadata` callback, handed to every session so it runs on
     /// the checking-out task (see [`PyAsyncMontySession::__aenter__`]).
-    connect_headers: Option<Py<PyAny>>,
+    metadata: Option<Py<PyAny>>,
 }
 
 #[pymethods]
-impl PyAsyncMontyWebsocket {
-    /// Creates the pool configuration; connections are made by `async with` and
-    /// each checkout (no workers are pre-warmed).
+impl PyAsyncMontyRemote {
+    /// Creates the pool configuration; the connection is made by the first
+    /// checkout (no workers are pre-warmed).
     ///
     /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
-    /// remote relay that accepts the connection but never produces a worker
-    /// would otherwise leave each turn blocked on the socket until the far end
-    /// closes it. Pass `None` to wait indefinitely.
+    /// server that admits the stream but never answers would otherwise leave
+    /// each turn blocked until the far end ends it. Pass `None` to wait
+    /// indefinitely.
     ///
     /// Note that `install_dependencies` is also a turn, so the default 10.0 is
     /// often too low for it — a real `uv pip install` (e.g. `numpy`) can exceed
     /// it and surface as `MontyCrashedError`. Raise `request_timeout` (or pass
-    /// `None`) when installing dependencies over the WebSocket transport.
+    /// `None`) when installing dependencies over the remote transport.
     #[new]
     #[pyo3(signature = (
         url,
@@ -696,11 +699,12 @@ impl PyAsyncMontyWebsocket {
         max_processes = None,
         checkout_timeout = None,
         request_timeout = 10.0,
-        connect_headers = None,
+        metadata = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
         max_decode_bytes = None,
+        connect_headers = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -709,14 +713,31 @@ impl PyAsyncMontyWebsocket {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
-        connect_headers: Option<Py<PyAny>>,
+        metadata: Option<Py<PyAny>>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
         max_decode_bytes: Option<usize>,
+        connect_headers: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
-        check_callable(py, connect_headers.as_ref())?;
-        let mut config = parse_websocket_config(
+        // the keyword's former name, kept for one release
+        let metadata = match (metadata, connect_headers) {
+            (Some(_), Some(_)) => {
+                return Err(PyTypeError::new_err("pass metadata, not connect_headers as well"));
+            }
+            (None, Some(callback)) => {
+                PyErr::warn(
+                    py,
+                    &py.get_type::<PyDeprecationWarning>(),
+                    c"connect_headers is deprecated, pass metadata",
+                    1,
+                )?;
+                Some(callback)
+            }
+            (metadata, None) => metadata,
+        };
+        check_callable(py, metadata.as_ref())?;
+        let mut config = parse_remote_config(
             url,
             max_processes,
             checkout_timeout,
@@ -738,7 +759,7 @@ impl PyAsyncMontyWebsocket {
         Ok(Self {
             config,
             pool: Arc::new(Mutex::new(None)),
-            connect_headers,
+            metadata,
         })
     }
 
@@ -824,7 +845,7 @@ impl PyAsyncMontyWebsocket {
             instances: InstanceStore::new(py),
             modules: external_modules.map(|m| HostModules::capture(py, m)).transpose()?,
             checkout: Arc::new(AsyncMutex::new(None)),
-            connect_headers: self.connect_headers.as_ref().map(|cb| cb.clone_ref(py)),
+            metadata: self.metadata.as_ref().map(|cb| cb.clone_ref(py)),
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
@@ -842,9 +863,9 @@ pub struct PyAsyncMontySession {
     /// `external_modules=`: the modules every feed of the session may import.
     modules: Option<HostModules>,
     checkout: SharedCheckout,
-    /// A WebSocket pool's `connect_headers` callback, called by `__aenter__`;
+    /// A remote pool's `metadata` callback, called by `__aenter__`;
     /// `None` for subprocess pools, which make no request.
-    connect_headers: Option<Py<PyAny>>,
+    metadata: Option<Py<PyAny>>,
     /// Set once the session has been fed or restored; `load_session` /
     /// `load_snapshot` are valid only while unset. See
     /// [`PyMontySession::load_snapshot`].
@@ -862,7 +883,7 @@ impl PyAsyncMontySession {
     /// Checks a worker out of the pool (spawning one if needed) and creates
     /// the REPL session in it.
     ///
-    /// Whatever must see the caller's contextvars (telemetry, `connect_headers`)
+    /// Whatever must see the caller's contextvars (telemetry, `metadata`)
     /// is captured here, on the caller's task with the GIL held, before the
     /// future moves to tokio.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
@@ -870,15 +891,15 @@ impl PyAsyncMontySession {
         let pool = active_pool(&this.pool)?;
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
-        let connect_headers = this
-            .connect_headers
+        let metadata = this
+            .metadata
             .as_ref()
-            .map(|cb| extract_connect_headers(py, cb))
+            .map(|cb| extract_metadata(py, cb))
             .transpose()?
             .unwrap_or_default();
         let options = CheckoutOptions::default()
             .with_telemetry(capture_telemetry_context(py))
-            .with_connect_headers(connect_headers);
+            .with_metadata(metadata);
         let session_id = Arc::clone(&this.session_id);
         future_into_py(py, async move {
             let checkout = pool
@@ -1187,7 +1208,7 @@ fn parse_pool_config(
 
 /// Rejects a non-callable optional callback with CPython's own `TypeError`
 /// text, so every entry point that accepts one (`os=` on `feed_run` /
-/// `feed_start` / `load_snapshot`, `connect_headers=`) fails the same way.
+/// `feed_start` / `load_snapshot`, `metadata=`) fails the same way.
 fn check_callable(py: Python<'_>, callback: Option<&Py<PyAny>>) -> PyResult<()> {
     if let Some(cb) = callback
         && !cb.bind(py).is_callable()
@@ -1283,11 +1304,11 @@ async fn finish_checkout(checkout: &SharedCheckout) {
     }
 }
 
-/// Builds the WebSocket-transport `monty-pool` config from the `AsyncMontyWebsocket`
-/// constructor arguments. Each checkout dials `url` verbatim; there is no
+/// Builds the remote-transport `monty-pool` config from the `AsyncMontyRemote`
+/// constructor arguments. Each checkout opens a stream to `url`; there is no
 /// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
-/// connections.
-fn parse_websocket_config(
+/// streams.
+fn parse_remote_config(
     url: String,
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
@@ -1295,7 +1316,7 @@ fn parse_websocket_config(
     graces: GraceArgs,
     auto_resume: bool,
 ) -> PyResult<PoolConfig> {
-    let mut config = PoolConfig::websocket(url);
+    let mut config = PoolConfig::remote(url);
     config.auto_resume = auto_resume;
     if let Some(max) = max_processes {
         config.max_processes = max;
@@ -2338,9 +2359,10 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
         PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => MontyCrashedError::new_err(py, message, true, None),
-        PoolError::Disconnected { websocket, .. } => {
-            MontyDisconnectError::new_err(py, message, websocket.map(|details| *details))
+        PoolError::Disconnected { remote, .. } => {
+            MontyDisconnectError::new_err(py, message, remote.map(|details| *details))
         }
+        PoolError::Refused { refusal, .. } => MontyRefusedError::new_err(py, message, *refusal),
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),

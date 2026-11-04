@@ -137,16 +137,33 @@ export interface ProtocolTurn {
   message: string
 }
 
-/** A remote worker's connection closed mid-session; the session is lost.
- *  WebSocket pools only. */
+/** A remote worker's stream ended mid-session; the session is lost. The
+ *  details are the status or transport failure that ended it, when known;
+ *  none of them says whether the in-flight request ran. Remote pools only. */
 export interface DisconnectedTurn {
   kind: 'disconnected'
   message: string
+  statusCode?: string
+  statusMessage?: string
+  cause?: string
+  transportError?: string
+}
+
+/** The remote server refused to open the session's stream, so no session
+ *  existed and nothing ran; the details are the status it refused with.
+ *  Only produced by `enter`. Remote pools only. */
+export interface RefusedTurn {
+  kind: 'refused'
+  message: string
+  statusCode?: string
+  statusMessage?: string
+  cause?: string
+  transportError?: string
 }
 
 /** A draining server declined the request, which did not run; the session is
  *  lost. `dump` restores it on a fresh session, when the server stored it.
- *  WebSocket pools only. */
+ *  Remote pools only. */
 export interface ShutdownTurn {
   kind: 'shutdown'
   message: string
@@ -181,6 +198,7 @@ export type EnterTurn =
   | CrashedTurn
   | ProtocolTurn
   | DisconnectedTurn
+  | RefusedTurn
   | ShutdownTurn
 
 /** The session's dump, or a storing server's record ID. Only produced by

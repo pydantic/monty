@@ -25,20 +25,20 @@ A minimal, secure Python sandbox written in Rust for code written by AI.
 
 Monty avoids the latency, complexity and cost of a container based sandbox for running LLM generated code.
 It comes in two forms: **OSS Monty**, the MIT licensed Python 3.14 sandbox you install as a package, and
-[**Full Monty**](server.md), the commercial server that runs the same sandbox behind a WebSocket as a service.
+[**Full Monty**](server.md), the commercial server that runs the same sandbox behind a gRPC stream as a service.
 
 ## Latency
 
 ![Time to get a new sandbox and run 10 REPL commands](img/startup-latency.svg)
 
-| Sandbox                | New sandbox¹ | Agent run² | Combined³ | Execution env⁴ |
-| ---------------------- | ------------ | ---------- | --------- | -------------- |
-| OSS Monty              | 0.80 ms      | 0.40 ms    | 1.20 ms   | local          |
-| Full Monty (WebSocket) | 1.70 ms      | 5.30 ms    | 7.00 ms   | remote         |
-| WASI / wasmtime        | 16 ms        | 180 ms     | 200 ms    | local          |
-| local Docker           | 195 ms       | 700 ms     | 900 ms    | local          |
-| Sandboxing service     | 1500 ms      | 400 ms     | 1900 ms   | remote         |
-| Pyodide in Deno        | 2700 ms      | 35 ms      | 2700 ms   | local          |
+| Sandbox            | New sandbox¹ | Agent run² | Combined³ | Execution env⁴ |
+| ------------------ | ------------ | ---------- | --------- | -------------- |
+| OSS Monty          | 0.80 ms      | 0.40 ms    | 1.20 ms   | local          |
+| Full Monty         | 1.70 ms      | 4.90 ms    | 6.60 ms   | remote         |
+| WASI / wasmtime    | 16 ms        | 180 ms     | 200 ms    | local          |
+| local Docker       | 195 ms       | 700 ms     | 900 ms    | local          |
+| Sandboxing service | 1500 ms      | 400 ms     | 1900 ms   | remote         |
+| Pyodide in Deno    | 2700 ms      | 35 ms      | 2700 ms   | local          |
 
 1. **New sandbox**: the time to get a fresh sandbox and run `1 + 1` in it.
     For OSS Monty and Full Monty that is a checkout from a pool the application already created.
@@ -79,7 +79,7 @@ Learn more in the [comparison to alternatives](alternatives.md).
     See [resource limits](resource-limits.md).
 1. **Local package for development, commercial option for scale.** OSS Monty provides packages for Python, JS and Rust,
     making it trivial to get started with Monty. For greater security guards and larger scale deployments,
-    [Full Monty](server.md) runs the same workers behind a WebSocket as a container image, adding OS-level isolation
+    [Full Monty](server.md) runs the same workers behind gRPC as a container image, adding OS-level isolation
     and horizontal scaling.
 
 ## Example
@@ -171,7 +171,7 @@ All of them need somewhere safe to run the generated code, and Monty is that pla
 
 - Getting started with [Python](quickstart/python.md), [JavaScript](quickstart/javascript.md) or
     [Rust](quickstart/rust.md).
-- [Commercial support](server.md): Full Monty, the same workers behind a WebSocket as a container image.
+- [Commercial support](server.md): Full Monty, the same workers behind gRPC as a container image.
 - [Security model](security.md) for what "secure" does and does not mean here.
 - [Examples](examples.md), including Code Mode in Pydantic AI.
 - [Limitations](limitations/index.md): the Python subset, and every known divergence from CPython.

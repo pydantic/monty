@@ -1,7 +1,7 @@
 //! A single worker the pool drives over the wire protocol: either a local
 //! `monty subprocess` child (framed stdio) or a remote child reached over a
-//! WebSocket. Both expose the same async send/recv/kill surface so the
-//! checkout turn loop is transport-agnostic.
+//! gRPC stream (see [`crate::remote`]). Both expose the same async
+//! send/recv/kill surface so the checkout turn loop is transport-agnostic.
 //!
 //! `recv` must be cancel-safe: the checkout races each turn against a
 //! `tokio::time` deadline, and dropping a plain `read_exact` future mid-frame
@@ -12,58 +12,37 @@
 //! across polls, so a dropped `recv` future loses nothing and the next call
 //! resumes exactly where it stopped.
 //!
-//! The WebSocket transport runs a background reader task instead — not for
-//! cancel-safety but for liveness: tokio-tungstenite pongs only while the
-//! stream is polled, and an idle client polls nothing, so a keepalive server
-//! would drop the session as vanished. `recv` reads the task's channel, which
-//! is cancel-safe.
+//! The remote transport runs a background reader task instead — not for
+//! cancel-safety but for liveness: an idle client polls nothing, so a server's
+//! `Ping` would go unanswered and a keepalive server would drop the session
+//! as vanished. `recv` reads the task's channel, which is cancel-safe.
 
 use std::{
     env, io,
     path::PathBuf,
     process::{ExitStatus, Stdio},
-    sync::{Arc, Once, OnceLock},
     time::Duration,
 };
 
-use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, decode_frame_with_budget, encode_framed_into,
-    encode_to_capped_vec, pb,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, decode_frame_with_budget, encode_framed_into, pb,
 };
 use monty_types::ExecutionClock;
-use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
     runtime::{Handle, RuntimeFlavor},
-    sync::mpsc,
-    task::{JoinHandle, block_in_place},
+    task::block_in_place,
     time::timeout,
-};
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
-    tungstenite::{
-        Bytes, Error as WsError, Message,
-        client::IntoClientRequest,
-        http::{HeaderName, HeaderValue, header::USER_AGENT},
-        protocol::WebSocketConfig,
-    },
 };
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::TurnMetrics, tracing::Recorder};
-use crate::{MontyTransport, PoolConfig, PoolError, WebSocketDisconnect, cpu_clock::Clock};
-
-// Private access lets these tests inject stream EOF and await the reader before a failed send.
-// Pool checkouts cannot select those transport states deterministically.
-#[cfg(test)]
-#[path = "../tests/unit/websocket_worker.rs"]
-mod tests;
-
-/// The async WebSocket stream type for a remote worker.
-type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+use crate::{
+    MontyTransport, PoolConfig, PoolError, RemoteDisconnect,
+    cpu_clock::Clock,
+    remote::{Remote, RemoteWorker},
+};
 
 /// A worker plus its recycle counter. The transport-specific I/O halves live
 /// in [`WorkerKind`]; both transports keep any partial-read state inside the
@@ -86,12 +65,12 @@ pub(crate) struct Worker {
 }
 
 /// The two transports a worker can speak the protocol over. Both variants are
-/// boxed: the WebSocket stream (TLS state and buffers) and the subprocess
-/// handles + frame-read state are each far larger than a pointer, and workers
-/// move through the idle queue by value.
+/// boxed: the stream's channel halves and the subprocess handles + frame-read
+/// state are each far larger than a pointer, and workers move through the
+/// idle queue by value.
 enum WorkerKind {
     Subprocess(Box<SubprocessWorker>),
-    WebSocket(Box<WebSocketWorker>),
+    Remote(Box<RemoteWorker>),
 }
 
 /// A local `monty subprocess` child: the process handle (kill-on-drop), its
@@ -106,76 +85,24 @@ struct SubprocessWorker {
     send_buf: Vec<u8>,
 }
 
-/// A remote child reached over a WebSocket. One binary message per protocol
-/// frame (no length prefix — the message boundary is the frame). The read half
-/// lives in a spawned reader task (see the module docs), so teardown must
-/// release both halves — see [`WebSocketWorker::close`].
-struct WebSocketWorker {
-    /// `send()` writes here; `None` after teardown (the closed-connection sentinel).
-    sink: Option<SplitSink<WsStream, Message>>,
-    /// Binary frames (or the terminal error) forwarded by the reader task.
-    events: mpsc::Receiver<Result<Bytes, FrameError>>,
-    /// The first failure, retained independently of queued protocol events.
-    disconnect: Arc<OnceLock<WebSocketDisconnect>>,
-    /// The task owning the read half; aborted on teardown/drop.
-    reader: JoinHandle<()>,
-}
-
-impl WebSocketWorker {
-    /// Ends the connection: a bounded Close frame, then abort the reader and
-    /// drop the sink — releasing both halves is what closes the socket.
-    ///
-    /// The frame is what a *proxied* peer sees: some load balancers forward a
-    /// Close but never a bare TCP disconnect, leaving the session (and its
-    /// capacity slot) alive until the far side's own idle timeout. Bounded so
-    /// a peer that stopped draining cannot hang teardown.
-    async fn close(&mut self) {
-        if let Some(sink) = &mut self.sink {
-            send_close(sink).await;
-        }
-        self.reader.abort();
-        self.sink = None;
-    }
-}
-
-/// Backstop for the synchronous teardown paths — an abandoned
-/// [`crate::Checkout`], a discarded worker — where `close` cannot be awaited:
-/// a detached task says goodbye instead. Best-effort, since a runtime shutting
-/// down cancels it; it then degrades to the plain drop this replaced.
-///
-/// The reader abort is unconditional: on a quiet connection the task never
-/// notices the worker is gone, and would hold the socket open forever.
-impl Drop for WebSocketWorker {
-    fn drop(&mut self) {
-        self.reader.abort();
-        if let Some(mut sink) = self.sink.take()
-            && let Ok(handle) = Handle::try_current()
-        {
-            handle.spawn(async move { send_close(&mut sink).await });
-        }
-    }
-}
-
-/// Writes the goodbye frame, shared by both paths above so they cannot drift.
-async fn send_close(sink: &mut SplitSink<WsStream, Message>) {
-    let _ = timeout(CLOSE_WRITE_TIMEOUT, sink.close()).await;
-}
-
 impl Worker {
-    /// Creates a worker for `config`'s transport. `connect_headers` go on the
-    /// WebSocket upgrade request; a subprocess makes no request and ignores them.
-    pub(crate) async fn new(config: &PoolConfig, connect_headers: &[(String, String)]) -> Result<Self, PoolError> {
+    /// Creates a worker for `config`'s transport: a spawned child, or a stream
+    /// opened on `remote` (the pool's channel, present exactly when the
+    /// transport is remote). `metadata` becomes the stream's request
+    /// metadata; a subprocess makes no request and ignores them.
+    pub(crate) async fn new(
+        config: &PoolConfig,
+        remote: Option<&Remote>,
+        metadata: &[(String, String)],
+    ) -> Result<Self, PoolError> {
         let worker = match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, config.execution_clock),
-            // Bound the dial by `request_timeout` (see `websocket`); a missing
-            // one falls back to a generous fixed budget.
-            MontyTransport::Websocket(url) => {
-                Self::websocket(
-                    url,
-                    config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT),
-                    connect_headers,
-                )
-                .await
+            MontyTransport::Remote(_) => {
+                let remote = remote.expect("a remote pool holds its channel");
+                remote
+                    .open(metadata, config.max_decode_bytes)
+                    .await
+                    .map(|worker| Self::from_kind(WorkerKind::Remote(Box::new(worker))))
             }
         };
         let worker = worker.map(|mut worker| {
@@ -233,84 +160,28 @@ impl Worker {
         };
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
-        Ok(Self {
-            max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
-            id: 0,
-            kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
-                child,
-                cpu_clock,
-                stdin,
-                recv: FrameRecv::new(stdout),
-                send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
-            })),
-            checkouts_served: 0,
-            #[cfg(feature = "telemetry")]
-            recorder: None,
-            #[cfg(feature = "telemetry")]
-            metrics: None,
-        })
+        Ok(Self::from_kind(WorkerKind::Subprocess(Box::new(SubprocessWorker {
+            child,
+            cpu_clock,
+            stdin,
+            recv: FrameRecv::new(stdout),
+            send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
+        }))))
     }
 
-    /// Connects to a remote child over a WebSocket, dialing `url` verbatim. Any
-    /// session/rendezvous routing the URL needs is the caller's responsibility;
-    /// `connect_headers` go on the upgrade request (see [`crate::CheckoutOptions`]).
-    ///
-    /// `dial_timeout` bounds the whole dial (DNS + TCP connect + TLS/WS
-    /// handshake): `checkout_timeout` only covers waiting for capacity, so a
-    /// hung dial would otherwise stall the checkout forever. Frame/message
-    /// limits are raised to monty's [`MAX_FRAME_LEN`] so the transport never
-    /// rejects a frame the protocol itself would accept.
-    async fn websocket(
-        url: &str,
-        dial_timeout: Duration,
-        connect_headers: &[(String, String)],
-    ) -> Result<Self, PoolError> {
-        install_crypto_provider();
-        let ws_config = WebSocketConfig::default()
-            .max_frame_size(Some(MAX_FRAME_LEN as usize))
-            .max_message_size(Some(MAX_FRAME_LEN as usize));
-        let mut request = url
-            .into_client_request()
-            .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
-
-        // set before the caller's headers so a `user-agent` entry there overrides it
-        request
-            .headers_mut()
-            .insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_VALUE));
-
-        // a malformed name/value is a caller bug: fail the dial
-        for (name, value) in connect_headers {
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?}: {err}")))?;
-            let value = HeaderValue::from_str(value)
-                .map_err(|err| PoolError::Spawn(format!("{url}: connect header {name:?} value: {err}")))?;
-            request.headers_mut().insert(name, value);
-        }
-        let dial = connect_async_tls_with_config(request, Some(ws_config), true, None);
-        let (stream, _response) = timeout(dial_timeout, dial)
-            .await
-            .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {dial_timeout:?}")))?
-            .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
-        // split so a background task can poll (and thereby pong) the read half
-        let (sink, read_half) = stream.split();
-        let (tx, events) = mpsc::channel(WS_EVENT_CHANNEL_DEPTH);
-        let disconnect = Arc::new(OnceLock::new());
-        let reader = tokio::spawn(read_ws_events(read_half, tx, Arc::clone(&disconnect)));
-        Ok(Self {
+    /// Wraps a transport in a fresh, unnumbered worker; `new` then applies the
+    /// pool's decode budget and metrics.
+    fn from_kind(kind: WorkerKind) -> Self {
+        Self {
+            kind,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             id: 0,
-            kind: WorkerKind::WebSocket(Box::new(WebSocketWorker {
-                sink: Some(sink),
-                events,
-                disconnect,
-                reader,
-            })),
             checkouts_served: 0,
             #[cfg(feature = "telemetry")]
             recorder: None,
             #[cfg(feature = "telemetry")]
             metrics: None,
-        })
+        }
     }
 
     #[cfg(feature = "telemetry")]
@@ -320,8 +191,8 @@ impl Worker {
             .map_or_else(opentelemetry::Context::new, |recorder| recorder.callback_context())
     }
 
-    /// Sends one request, flushed to the wire — the protocol is strict
-    /// alternation, so an unflushed frame would deadlock both sides. An
+    /// Sends one request, flushed to the wire — a reply is only ever read
+    /// after a request, so an unflushed frame would deadlock both sides. An
     /// oversize frame is rejected *before* any I/O so the stream stays synced
     /// (see `Checkout::request_turn`).
     pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
@@ -332,7 +203,7 @@ impl Worker {
                 // no flush
                 encode_framed_into(request, &mut w.send_buf)?;
                 w.stdin.write_all(&w.send_buf).await?;
-                // body only, matching the WebSocket transport and both receive
+                // body only, matching the remote transport and both receive
                 // paths, which never see the 4-byte length prefix
                 let len = w.send_buf.len() - 4;
                 // don't let one huge frame pin its capacity for the worker's life
@@ -341,20 +212,7 @@ impl Worker {
                 }
                 Ok(len)
             }
-            WorkerKind::WebSocket(w) => {
-                let body = encode_to_capped_vec(request)?;
-                let len = body.len();
-                match &mut w.sink {
-                    Some(sink) => match sink.send(Message::Binary(body.into())).await {
-                        Ok(()) => Ok(len),
-                        Err(err) => {
-                            let _ = w.disconnect.set(websocket_error("send", &err));
-                            Err(ws_to_frame_error(err))
-                        }
-                    },
-                    None => Err(FrameError::Truncated),
-                }
-            }
+            WorkerKind::Remote(w) => w.send(request).await,
         };
         // record only requests that hit the wire: a rejected oversize frame
         // leaves the turn (and any pending suspension) exactly where it was
@@ -377,10 +235,11 @@ impl Worker {
         result.map(drop)
     }
 
-    /// Copies the first recorded failure before teardown can add a local Close.
-    pub(crate) fn websocket_disconnect(&self) -> Option<Box<WebSocketDisconnect>> {
+    /// Copies the first recorded stream failure before teardown can add a
+    /// local one; `None` for a subprocess.
+    pub(crate) fn remote_disconnect(&self) -> Option<Box<RemoteDisconnect>> {
         match &self.kind {
-            WorkerKind::WebSocket(worker) => worker.disconnect.get().cloned().map(Box::new),
+            WorkerKind::Remote(worker) => worker.disconnect(),
             WorkerKind::Subprocess(_) => None,
         }
     }
@@ -418,19 +277,9 @@ impl Worker {
                 Some(framed) => Ok(framed),
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
-            WorkerKind::WebSocket(w) => {
-                // frames come from the reader task; a channel recv is
-                // cancel-safe, preserving the deadline race. A torn-down worker
-                // or closed channel is `Truncated` — a `PoolError::Disconnected`.
-                if w.sink.is_none() {
-                    return Err(FrameError::Truncated);
-                }
-                match w.events.recv().await {
-                    Some(Ok(data)) => decode_event(&data, self.max_decode_bytes).map(|event| (event, data.len())),
-                    Some(Err(err)) => Err(err),
-                    None => Err(FrameError::Truncated),
-                }
-            }
+            // events come from the reader task; a channel recv is
+            // cancel-safe, preserving the deadline race
+            WorkerKind::Remote(w) => w.recv().await,
         }?;
         // only after a complete decode, so a `recv` future dropped mid-frame
         // (deadline race) records nothing — cancel-safety intact
@@ -449,11 +298,11 @@ impl Worker {
     }
 
     /// The OS process id, when the worker is a local subprocess (`None` for a
-    /// remote WebSocket worker, or once the child has been reaped).
+    /// remote worker, or once the child has been reaped).
     pub(crate) fn pid(&self) -> Option<u32> {
         match &self.kind {
             WorkerKind::Subprocess(w) => w.child.id(),
-            WorkerKind::WebSocket(_) => None,
+            WorkerKind::Remote(_) => None,
         }
     }
 
@@ -464,7 +313,7 @@ impl Worker {
                 .cpu_clock
                 .clone()
                 .ok_or_else(|| io::Error::other("worker was spawned without a CPU clock")),
-            WorkerKind::WebSocket(_) => Err(io::Error::new(
+            WorkerKind::Remote(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "remote child CPU clock is unavailable",
             )),
@@ -472,12 +321,12 @@ impl Worker {
     }
 
     /// Whether the worker has already died (used to discard workers that died
-    /// while idle in the pool). WebSocket workers are never pooled idle, so
+    /// while idle in the pool). Remote workers are never pooled idle, so
     /// they always report alive here.
     pub(crate) fn is_dead(&mut self) -> bool {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
-            WorkerKind::WebSocket(_) => false,
+            WorkerKind::Remote(_) => false,
         }
     }
 
@@ -497,35 +346,36 @@ impl Worker {
         self.kill_and_reap().await
     }
 
-    /// Tears the worker down (kills the child / closes the connection) and
-    /// reaps it, returning the process exit status when there is one.
+    /// Tears the worker down (kills the child / ends the stream) and reaps
+    /// it, returning the process exit status when there is one.
     pub(crate) async fn kill_and_reap(&mut self) -> Option<ExitStatus> {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => {
                 let _ = w.child.start_kill();
                 w.child.wait().await.ok()
             }
-            WorkerKind::WebSocket(w) => {
-                w.close().await;
+            // the caller's capacity guard frees the slot now: a discarded
+            // stream's server may still be stopping its work, which no grace
+            // period here bounds, and a clean finish is the common path
+            WorkerKind::Remote(w) => {
+                w.close(|| {});
                 None
             }
         }
     }
 
-    /// Ends the connection behind a worker the caller is *not* discarding as
-    /// dead — a cleanly finished checkout's single-use WebSocket worker. A
-    /// no-op for subprocess workers, which the pool reuses or kills instead.
-    pub(crate) async fn close_transport(&mut self) {
-        if let WorkerKind::WebSocket(w) = &mut self.kind {
-            w.close().await;
+    /// Ends the stream behind a worker the caller is *not* discarding as
+    /// dead — a cleanly finished checkout's single-use remote worker — and
+    /// calls `on_closed` once the server has ended it too (or the close gave
+    /// up). Subprocess workers, which the pool reuses or kills instead, call
+    /// it at once.
+    pub(crate) fn close_transport(&mut self, on_closed: impl FnOnce() + Send + 'static) {
+        match &mut self.kind {
+            WorkerKind::Remote(w) => w.close(on_closed),
+            WorkerKind::Subprocess(_) => on_closed(),
         }
     }
 }
-
-/// How long teardown gives a WebSocket Close frame to reach the OS. Not a
-/// latency budget (no ACK or Close echo is awaited) — it only rides out
-/// back-pressure from a peer that stopped reading.
-const CLOSE_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Chunk size for speculative frame reads: large enough that a typical
 /// prefix + body arrives in a single `read` syscall, small enough to sit
@@ -543,7 +393,7 @@ const SEND_BUF_CAPACITY: usize = 1024;
 
 /// Frames at or above this size decode under `block_in_place` (see
 /// [`decode_event`]); below it (< ~4ms) inline decode beats the handoff.
-const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
+pub(crate) const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
 
 /// A cancel-safe reader of length-prefixed frames from the child's stdout.
 ///
@@ -640,7 +490,7 @@ impl FrameRecv {
 /// the bytes (no copy), can't outlive a cancelled turn (unlike
 /// `spawn_blocking`), and the runtime keeps its worker count. On a
 /// current-thread runtime, where `block_in_place` panics, decode is inline.
-fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::ChildEvent, FrameError> {
+pub(crate) fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::ChildEvent, FrameError> {
     // each decode is one synchronous call, so the thread-local decode budgets
     // (scoped by `decode_frame_with_budget`) cannot interleave
     if body.len() < DECODE_OFFLOAD_MIN || Handle::current().runtime_flavor() != RuntimeFlavor::MultiThread {
@@ -648,109 +498,4 @@ fn decode_event(body: &[u8], max_decode_bytes: usize) -> Result<pb::ChildEvent, 
     } else {
         block_in_place(|| decode_frame_with_budget(body, max_decode_bytes))
     }
-}
-
-/// Depth of the reader-task → `recv` channel. One slot, reserved before the
-/// poll, bounds an untrusted peer to a single queued frame (≤
-/// [`MAX_FRAME_LEN`]) per worker — what the unsplit stream held. Deeper buys
-/// nothing: pongs need polling, not buffering, and the server's print
-/// backpressure assumes unread data sits in the socket, not in client memory.
-const WS_EVENT_CHANNEL_DEPTH: usize = 1;
-
-/// The WebSocket reader task: polls the read half continuously so
-/// tokio-tungstenite pongs even while the worker is idle (see the module
-/// docs), forwarding each binary frame — or the terminal error — to `recv`.
-///
-/// Reserving the slot before polling keeps the reader polling (and ponging)
-/// rather than blocked holding a frame.
-async fn read_ws_events(
-    mut read_half: impl Stream<Item = Result<Message, WsError>> + Unpin,
-    events: mpsc::Sender<Result<Bytes, FrameError>>,
-    disconnect: Arc<OnceLock<WebSocketDisconnect>>,
-) {
-    // an Err from reserve means the receiver dropped: the worker is gone
-    while let Ok(permit) = events.reserve().await {
-        let result = loop {
-            match read_half.next().await {
-                Some(Ok(Message::Binary(data))) => break Ok(data),
-                // polling is itself what pongs: tungstenite queues the pong on
-                // read and flushes it during read polling
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                Some(Ok(Message::Close(frame))) => {
-                    let _ = disconnect.set(WebSocketDisconnect {
-                        stage: "receive",
-                        close_code: frame.as_ref().map(|frame| frame.code.into()),
-                        close_reason: frame.map(|frame| frame.reason.to_string()),
-                        transport_error: None,
-                    });
-                    break Err(FrameError::Truncated);
-                }
-                Some(Ok(Message::Text(_) | Message::Frame(_))) => {
-                    let _ = disconnect.set(websocket_failure("receive", "unexpected non-binary WebSocket message"));
-                    break Err(FrameError::Truncated);
-                }
-                None => {
-                    let _ = disconnect.set(websocket_failure(
-                        "receive",
-                        "WebSocket stream ended without a Close frame",
-                    ));
-                    break Err(FrameError::Truncated);
-                }
-                Some(Err(err)) => {
-                    let _ = disconnect.set(websocket_error("receive", &err));
-                    break Err(ws_to_frame_error(err));
-                }
-            }
-        };
-        // any error is terminal: deliver it and exit
-        let stop = result.is_err();
-        permit.send(result);
-        if stop {
-            return;
-        }
-    }
-}
-
-/// Retains the transport error without adding the dial URL or headers.
-fn websocket_error(stage: &'static str, err: &WsError) -> WebSocketDisconnect {
-    websocket_failure(stage, err.to_string())
-}
-
-/// Describes a transport failure for which no peer Close frame is available.
-fn websocket_failure(stage: &'static str, message: impl Into<String>) -> WebSocketDisconnect {
-    WebSocketDisconnect {
-        stage,
-        close_code: None,
-        close_reason: None,
-        transport_error: Some(message.into()),
-    }
-}
-
-/// Preserves I/O errors and classifies other WebSocket failures as a lost connection.
-fn ws_to_frame_error(err: WsError) -> FrameError {
-    match err {
-        WsError::Io(err) => FrameError::Io(err),
-        _ => FrameError::Truncated,
-    }
-}
-
-/// `User-Agent` on every WebSocket upgrade request, identifying this crate to
-/// the server or relay it dials; a `connect_headers` entry replaces it.
-const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"));
-
-/// Fallback dial budget when the pool sets no `request_timeout` (which otherwise
-/// also bounds the WebSocket dial). Generous, since it only guards a stuck dial.
-const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Installs the process-level rustls `CryptoProvider` exactly once before the
-/// first `wss://` dial. rustls 0.23 panics on first TLS use when it can't pick a
-/// provider automatically (both `aws-lc-rs` and `ring`, or neither, compiled
-/// in), so we name `aws_lc_rs` explicitly. Idempotent via `Once`, and the
-/// install error is ignored: another part of the process (e.g. a host embedding
-/// the pool) may have already installed a provider, which is fine.
-fn install_crypto_provider() {
-    static INSTALL: Once = Once::new();
-    INSTALL.call_once(|| {
-        let _ = default_provider().install_default();
-    });
 }
