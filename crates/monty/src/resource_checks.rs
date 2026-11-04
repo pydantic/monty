@@ -138,7 +138,14 @@ pub(crate) fn collect_checked<T>(
     items: impl IntoIterator<Item = T>,
     tracker: &ResourceTracker,
 ) -> Result<Vec<T>, ResourceError> {
-    let mut collected = Vec::new();
+    let mut items = items.into_iter();
+    let Some(first) = items.next() else {
+        return Ok(Vec::new());
+    };
+    // Allocate directly as std's `collect` does: a first push into an empty `Vec`
+    // takes the generic, out-of-line grow path, which dominates a short split.
+    let mut collected = Vec::with_capacity(4);
+    collected.push(first);
     for item in items {
         push_checked(&mut collected, item, tracker)?;
     }

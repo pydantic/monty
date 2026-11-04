@@ -1416,7 +1416,8 @@ fn bytes_split<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
     vm.heap
         .tracker
         .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
-    list_items.reserve(parts.len());
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_bytes(part.to_vec(), vm.heap));
@@ -1465,7 +1466,8 @@ fn bytes_rsplit<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
     vm.heap
         .tracker
         .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
-    list_items.reserve(parts.len());
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_bytes(part.to_vec(), vm.heap));

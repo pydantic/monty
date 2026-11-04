@@ -1373,7 +1373,8 @@ fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
     vm.heap
         .tracker
         .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
-    list_items.reserve(parts.len());
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
@@ -1431,7 +1432,8 @@ fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
     vm.heap
         .tracker
         .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
-    list_items.reserve(parts.len());
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
