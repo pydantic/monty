@@ -596,13 +596,14 @@ type ReCacheEntry = Option<(u64, Rc<RePattern>)>;
 
 /// Slot count of [`RePatternCache`] — power of two so the index modulo is a mask;
 /// 256 (vs CPython's 512 `re._MAXCACHE`) to halve the untracked worst-case retained
-/// memory of `CACHE_CAPACITY × (CACHED_SIZE_LIMIT + CACHED_PATTERN_LIMIT)`.
+/// memory: an entry can hold six regexes (see `RePattern`), each around
+/// [`CACHED_SIZE_LIMIT`] per delegated sub-regex plus its own copy of the source text.
 const CACHE_CAPACITY: usize = 256;
 
-/// `delegate_size_limit` for compiles retained in the cache. The cache is invisible
-/// to the resource tracker, so this caps retained *compiled* size at
-/// ~`CACHE_CAPACITY × CACHED_SIZE_LIMIT`. Patterns compiling bigger still work —
-/// recompiled per call at default limits, never retained.
+/// `delegate_size_limit` for compiles retained in the cache, which is invisible to the
+/// resource tracker. `fancy_regex` applies it per delegated sub-regex, so it bounds a regex
+/// loosely. Patterns compiling bigger still work — recompiled per call at default limits,
+/// never retained — and so do the forms of a cached pattern that `RePattern` compiles lazily.
 const CACHED_SIZE_LIMIT: usize = 64 * 1024;
 
 /// Longest *source* pattern retained — the text-side counterpart of
