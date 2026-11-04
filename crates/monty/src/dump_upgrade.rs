@@ -42,10 +42,10 @@ pub(crate) fn upgrade(version: u16, heap: &mut Heap, interns: &mut Interns) {
 /// build stripped, so it indexes the whole source as current positions do.
 ///
 /// `exec()` shares the snippet source table but never stripped anything. An
-/// eval source is recognised by failing to parse as a module, which any
-/// indentation or non-ASCII space before the expression causes. A source valid
-/// as both (only blank lines before the code) cannot be told apart and is left
-/// as it was, so its positions can still point a few lines early.
+/// eval source is recognised by failing to parse as a module, which indenting
+/// the expression's line or a non-ASCII space before it causes. A source valid
+/// as both (only blank or comment-only lines before unindented code) cannot be
+/// told apart and is left as it was, so its positions can still point early.
 fn rebase_legacy_eval_offsets(interns: &mut Interns) {
     let shifts: AHashMap<StringId, (u32, u32)> = interns
         .eval_sources()
