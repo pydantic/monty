@@ -111,15 +111,15 @@ fn slice_get_escape(heap: &mut Heap) {
     });
 }
 
-/// A box projection cannot outlive its box's allocation.
+/// Borrowed box contents cannot outlive the box's allocation.
 #[cfg(heap_reader_compile_fail_test_box_get_escape)]
 fn box_get_escape(heap: &mut Heap) {
     HeapReader::with(heap, &mut (), |heap, ()| {
         let escaped = {
             let source = Box::new(123_u64);
             let protected = heap.protect(&source);
-            let boxed = protected.as_box_value();
-            boxed.get(heap)
+            let boxed = protected.get(heap);
+            boxed.as_ref()
         };
         assert_eq!(*escaped, 123);
     });

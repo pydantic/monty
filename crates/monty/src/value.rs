@@ -18,14 +18,14 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
-    hash::{HashValue, hash_f64, hash_named, hash_one, hash_python_str},
+    hash::{HashValue, hash_f64, hash_named, hash_one},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
+        BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, Type,
         bytes::PyBytes,
         decimal, host_class_type,
         inline_str::InlineStr,
@@ -814,8 +814,8 @@ impl<'h> PyTrait<'h> for Value {
             PyValue::from_heap(*id, vm.heap).py_iter(vm)
         } else {
             match self {
-                Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
-                Self::InlineString(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
+                Self::InternString(id) => PyStr::Interned(*id).py_iter(vm),
+                Self::InlineString(text) => PyStr::Inline(*text).py_iter(vm),
                 Self::InternBytes(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
             }
@@ -841,9 +841,7 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
             Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
         }
-        (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-            Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
-        }
+        (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => PyStr::Heap(a).py_cmp(&PyStr::Heap(b), vm),
         (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
             a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
         )),
@@ -1177,8 +1175,8 @@ impl Value {
         // The hot arms (int/str/ref) return precomputed or cached hashes; only the
         // cold arms construct a hasher, via `hash_one`.
         match self {
-            Self::InternString(string_id) => Ok(Some(vm.interns.str_hash(*string_id))),
-            Self::InlineString(text) => Ok(Some(hash_python_str(text.as_str()))),
+            Self::InternString(string_id) => PyStr::Interned(*string_id).py_hash(vm),
+            Self::InlineString(text) => PyStr::Inline(*text).py_hash(vm),
             Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
             Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
