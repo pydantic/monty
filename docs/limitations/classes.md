@@ -40,8 +40,8 @@ and function-attributes-become-methods), bound methods, class variables
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
-`Foo.__annotations__` (ordered; values stringized and provisional, see
-[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+`Foo.__annotations__` (evaluated lazily, see [typing.md](typing.md#annotations)),
+`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
 [with.md](with.md).
 
@@ -373,9 +373,9 @@ every construction request. Divergences:
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
-    are all unavailable (`cls.__name__` and `cls.__annotations__` work, the
-    latter with stringized values, see [typing.md](typing.md)). A class decorator
-    can therefore discover fields and nothing else.
+    are all unavailable (`cls.__name__` and `cls.__annotations__` work, see
+    [typing.md](typing.md#annotations)). A class decorator can therefore
+    discover fields and nothing else.
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.
@@ -443,7 +443,8 @@ every construction request. Divergences:
     class object it does not write at all, where `Foo.x = v` sets a class member.
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
     and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
-    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
+    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__` of a compiled class
+    (a `type()` namespace may bind its own; see [typing.md](typing.md#annotations)), and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`

@@ -8,7 +8,7 @@ use std::{str, sync::Arc};
 
 use crate::{
     args::{ArgValues, FromArgs, Signature},
-    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, VM},
+    bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, MissingNames, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     expressions::{Identifier, Node},
@@ -16,7 +16,7 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
-    parse::{CodeRange, ParseError, parse_expression_with_interner, parse_module_with_filename_id},
+    parse::{CodeRange, ParseError, ParsedModule, parse_expression_with_interner, parse_module_with_filename_id},
     prepare::{SnippetNames, prepare_snippet},
     types::{Type, py_trait::PyTrait},
     value::Value,
@@ -125,22 +125,30 @@ fn run_snippet(
     Ok(CallResult::FramePushed)
 }
 
-/// Evaluates one stringized annotation for `typing.get_type_hints()`.
+/// Evaluates one annotation string for `typing.get_type_hints()`, `ForwardRef.evaluate()`
+/// and `get_annotations(eval_str=True)`.
 ///
 /// Runs in borrowed `globals` / `locals` dicts (`None` globals means the module slots),
-/// with `globals_first` letting bound slot globals shadow `locals`. A `forward_ref`
-/// compiles as CPython's `ForwardRef` does: a compile error or leading indentation
-/// raises its "must be an expression" error. Each distinct text and mode compiles once per session.
-/// The namespace is built here, not by `snippet_namespace`, which would inherit the
-/// calling frame's: the caller is frozen code.
+/// with `globals_first` letting bound slot globals shadow `locals`, and `missing`
+/// choosing between `NameError` and a `ForwardRef` stringifier for an unresolved
+/// name. A `forward_ref` compiles as CPython's `ForwardRef` does: a compile error or
+/// leading indentation raises its "must be an expression" error.
+///
+/// Each distinct text and mode compiles once per session, so names are always
+/// resolved at run time: a snippet compiled when `int` was the builtin must see a
+/// later `int = str`. The namespace is built here, not by `snippet_namespace`,
+/// which would inherit the calling frame's: the caller is frozen code.
 pub(crate) fn eval_hint(
     source: &Value,
     globals: Option<HeapId>,
     locals: Option<HeapId>,
     globals_first: bool,
     forward_ref: bool,
+    missing: MissingNames,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
+    let mut missing_guard = DropGuard::new(missing, vm);
+    let (_, vm) = missing_guard.as_parts_mut();
     let text = snippet_source("eval", source, vm)?;
     if forward_ref && first_code_line_indented(&text) {
         return Err(ExcType::forward_ref_not_expression(&text));
@@ -153,18 +161,20 @@ pub(crate) fn eval_hint(
         }
     };
     reject_null_bytes(&text).map_err(not_expression)?;
+    // The namespace owns `missing` from here, on every path.
+    let (missing, vm) = missing_guard.into_parts();
     for dict in globals.into_iter().chain(locals) {
         vm.heap.inc_ref(dict);
     }
-    let (globals, names) = match (globals, locals) {
-        (Some(dict), _) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
-        (None, Some(_)) => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
-        (None, None) => (FrameGlobals::Slots, SnippetNames::Slots),
+    let (globals, names) = match globals {
+        Some(dict) => (FrameGlobals::Dict(dict), SnippetNames::NameOverDict),
+        None => (FrameGlobals::Slots, SnippetNames::NameOverSlots),
     };
     let namespace = Box::new(FrameNamespace::Snippet {
         globals,
         locals,
         globals_first,
+        missing,
     });
     if let Some(func_id) = vm.interns.hint_snippet(names, &text) {
         vm.push_snippet_frame(func_id, None, namespace)?;
@@ -269,15 +279,31 @@ fn compile_snippet<'h>(
         SnippetSource::File { path } => e.into_file_run_error(path, source),
         SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
     };
-    let nodes = match kind {
-        SnippetSource::Exec | SnippetSource::File { .. } => {
-            parse_module_with_filename_id(source, filename_id, &mut overlay, options.source_scan_threshold)
-        }
+    // `eval()` / `exec()` inherit the caller's `from __future__ import annotations`,
+    // as CPython's do; an imported file starts afresh.
+    let inherited_future = match kind {
+        SnippetSource::Eval | SnippetSource::Exec => vm.frame_future_annotations(),
+        SnippetSource::File { .. } => false,
+    };
+    let ParsedModule {
+        nodes,
+        future_annotations,
+    } = match kind {
+        SnippetSource::Exec | SnippetSource::File { .. } => parse_module_with_filename_id(
+            source,
+            filename_id,
+            &mut overlay,
+            options.source_scan_threshold,
+            inherited_future,
+        ),
         SnippetSource::Eval => {
             let trimmed = source.trim_start();
             let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
             parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
-                .map(|expr| vec![Node::Return(Some(expr))])
+                .map(|expr| ParsedModule {
+                    nodes: vec![Node::Return(Some(expr))],
+                    future_annotations: inherited_future,
+                })
                 .map_err(|e| e.shifted(skipped))
         }
     }
@@ -291,11 +317,18 @@ fn compile_snippet<'h>(
         &mut *vm.global_names
     };
     let nodes = prepare_snippet(nodes, &overlay, globals, names).map_err(compile_error)?;
-    let code =
-        Compiler::compile_snippet(&nodes, &mut overlay, globals, options, globals_by_name).map_err(|e| match kind {
-            SnippetSource::File { path } => e.into_file_run_error(path, source),
-            SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
-        })?;
+    let code = Compiler::compile_snippet(
+        &nodes,
+        &mut overlay,
+        globals,
+        options,
+        globals_by_name,
+        future_annotations,
+    )
+    .map_err(|e| match kind {
+        SnippetSource::File { path } => e.into_file_run_error(path, source),
+        SnippetSource::Eval | SnippetSource::Exec => e.into_run_error(source),
+    })?;
 
     let position = CodeRange {
         filename: filename_id,

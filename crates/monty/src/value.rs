@@ -12,6 +12,7 @@ use serde::de::Error as _;
 use smallvec::smallvec;
 
 use crate::{
+    annotations,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -1239,6 +1240,12 @@ impl Value {
                     None => Err(t.attribute_error(attr, vm)),
                 };
             }
+            // A plain `def` has its PEP 649 attributes and nothing else.
+            Self::DefFunction(func_id) => {
+                if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
+                    return result;
+                }
+            }
             _ => {}
         }
         let type_name = self.py_type_name(vm);
@@ -2093,6 +2100,31 @@ impl Marker {
             StaticStrings::Missing => Type::MissingType,
             _ => Type::SpecialForm,
         }
+    }
+
+    /// Whether this `typing` form is subscriptable (`List[int]`, `ClassVar[int]`),
+    /// building a [`GenericAlias`](crate::types::GenericAlias); `Optional[X]`
+    /// builds a union instead, and `Any`, `TypeVar` and the rest are not generic.
+    pub(crate) fn is_generic_form(self) -> bool {
+        matches!(
+            self.0,
+            StaticStrings::ListType
+                | StaticStrings::DictType
+                | StaticStrings::TupleType
+                | StaticStrings::SetType
+                | StaticStrings::FrozenSet
+                | StaticStrings::Callable
+                | StaticStrings::Type
+                | StaticStrings::Sequence
+                | StaticStrings::Mapping
+                | StaticStrings::Iterable
+                | StaticStrings::IteratorType
+                | StaticStrings::Generator
+                | StaticStrings::ClassVar
+                | StaticStrings::FinalType
+                | StaticStrings::Literal
+                | StaticStrings::Annotated
+        )
     }
 
     /// Writes the Python repr for this marker.

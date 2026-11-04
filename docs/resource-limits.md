@@ -261,6 +261,13 @@ The session stays consistent and can be dumped; later feeds run until they suspe
 Restoring a dump preserves the limit but resets the count to zero; a `max_suspensions` set on the restoring checkout
 caps the dump's, so a worker cannot report a looser one.
 
+## Worker recycling
+
+Local pools replace a worker after 1000 checkouts, bounding how long a slow leak or a compromised worker survives.
+Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count: `0` and `1` both give
+every session a fresh worker, and `None` (`null`) never recycles.
+WebSocket checkouts are single-use, so the count does not apply to them.
+
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
@@ -286,6 +293,8 @@ caps the dump's, so a worker cannot report a looser one.
 - **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
     `max_urandom_bytes`, 1 MiB by default (`OSAccess(max_urandom_bytes=...)`).
     A custom entropy callback allocates in the host process, so it must apply its own cap.
+- **`OSAccess` files.** [`MemoryFile`][pydantic_monty.MemoryFile] content lives in the host process; `OSAccess` caps all of
+    it at `max_total_file_bytes` (50 MB) by default (see [write limits](limitations/filesystem.md#write-limits)).
 - **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see

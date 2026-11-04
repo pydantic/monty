@@ -6,6 +6,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
     intern::StringId,
+    resource_checks::check_estimated_size,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         instance::instance_defines_iter, slice::value_to_option_i64,
@@ -41,7 +42,13 @@ impl VM<'_> {
         let this = self;
         let items = this.pop_n(count * 2).into_iter();
         defer_drop_mut!(items, this);
-        let mut dict_guard = DropGuard::new(Dict::new(), this);
+
+        // Estimate keys, values, hashes and index storage, including unused buckets.
+        let entry_bytes = 2 * VALUE_SIZE + size_of::<u64>() + 3 * size_of::<usize>();
+        check_estimated_size(count.saturating_mul(entry_bytes), &this.heap.tracker)?;
+
+        // Exact sizing avoids spare slots; for example, five pairs would otherwise reserve eight.
+        let mut dict_guard = DropGuard::new(Dict::with_capacity(count), this);
         loop {
             let (dict, this) = dict_guard.as_parts_mut();
             let (Some(key), Some(value)) = (items.next(), items.next()) else {

@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
@@ -146,14 +146,29 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
 
 #[test]
 fn explicit_class_annotations_assignment_returns_not_implemented_error() {
-    // The synthesized `__annotations__` is the last class-body statement, so an
-    // explicit assignment would be silently clobbered and its entries lost.
-    // CPython merges the two; Monty rejects rather than dropping them quietly.
-    let err = get_parse_err("class C:\n    __annotations__ = {'a': 'b'}\n    x: int");
+    // Under PEP 563 the synthesized `__annotations__` is the last class-body
+    // statement, so an explicit assignment would be silently clobbered and its
+    // entries lost. CPython merges the two; Monty rejects rather than dropping
+    // them quietly.
+    let err =
+        get_parse_err("from __future__ import annotations\nclass C:\n    __annotations__ = {'a': 'b'}\n    x: int");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
         @"The monty syntax parser does not yet support assigning `__annotations__` in a class body with annotated names"
+    );
+    // Without the import the annotations compile to `__annotate__`, so the
+    // binding is an ordinary member that wins, as in CPython.
+    let mut runner = MontyRun::new(
+        "class C:\n    __annotations__ = {'a': 'b'}\n    x: int\nC.__annotations__".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::dict([(MontyObject::string("a"), MontyObject::string("b"))]),
     );
 }
 

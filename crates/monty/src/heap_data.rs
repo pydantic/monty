@@ -10,6 +10,7 @@ use std::{
 use monty_types::ExcType;
 
 use crate::{
+    annotations,
     args::ArgValues,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
@@ -166,6 +167,8 @@ macro_rules! heap_payloads {
             GenericAlias(inline $crate::types::GenericAlias),
             /// A `typing.Union` such as `int | None`.
             Union(inline $crate::types::Union),
+            /// An `annotationlib.ForwardRef`, also the stringifier a `FORWARDREF` evaluation composes.
+            ForwardRef(boxed $crate::types::ForwardRef),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -272,6 +275,7 @@ impl HeapData {
             | Self::Partial(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::ForwardRef(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -350,6 +354,7 @@ impl HeapData {
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
+            Self::ForwardRef(_) => Type::ForwardRef,
             Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
@@ -554,6 +559,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
         let defaults = closure.defaults.iter().map(|v| v.clone_with_heap(vm)).collect();
         call_def(func_id, &cells, defaults, globals, args, vm)
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let closure = self.get(vm.heap);
+        let (func_id, globals) = (closure.func_id, closure.globals);
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let closure = self.get(vm.heap);
+        let (func_id, globals) = (closure.func_id, closure.globals);
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
@@ -595,6 +613,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
         let defaults = function.defaults.iter().map(|v| v.clone_with_heap(vm)).collect();
         call_def(func_id, &[], defaults, globals, args, vm)
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let function = self.get(vm.heap);
+        let (func_id, globals) = (function.func_id, function.globals);
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let function = self.get(vm.heap);
+        let (func_id, globals) = (function.func_id, function.globals);
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+    }
 }
 
 /// Hashes a function identity, the hash both `def` representations report.
@@ -605,8 +636,10 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
 }
 
 impl HeapItem for SimpleException {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Exceptions don't contain heap references
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Only the chain holds references; they are always exceptions, so an
+        // exception still cannot reach a container and stays a GC leaf.
+        stack.extend(self.owned_chain_ids());
     }
 }
 
@@ -713,6 +746,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
+            Self::ForwardRef($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
@@ -1013,6 +1047,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::HashObject(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::ForwardRef(_)
             | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)

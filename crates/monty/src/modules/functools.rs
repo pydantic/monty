@@ -25,12 +25,12 @@ def __monty_functools_reduce(function, iterable, accumulator, has_initial, iter_
     try:
         iterator = iter_(iterable)
     except type_error:
-        raise type_error('reduce() arg 2 must support iteration') from None
+        raise type_error('reduce() arg 2 must support iteration')
     if not has_initial:
         try:
             accumulator = next_(iterator)
         except stop_iteration:
-            raise type_error('reduce() of empty iterable with no initial value') from None
+            raise type_error('reduce() of empty iterable with no initial value')
     while True:
         try:
             item = next_(iterator)

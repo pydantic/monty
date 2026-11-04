@@ -49,12 +49,11 @@ pub const MAX_NESTING_DEPTH: u16 = 30;
 /// Caps dotted-import components to bound quadratic storage for interned path prefixes.
 pub const MAX_IMPORT_COMPONENTS: usize = 32;
 
-/// `from __future__ import ...` features whose semantics Monty already provides,
-/// so importing them is a no-op rather than an error.
+/// `from __future__ import ...` features Monty accepts.
 ///
 /// All but the last are inert in CPython too, having become mandatory by 3.7.
-/// `annotations` is still meaningful there, and a no-op here only because Monty
-/// stringizes unconditionally (see `limitations/typing.md`) — what it asks for.
+/// `annotations` binds nothing either, but is recorded on the module's code so
+/// `typing.get_type_hints()` applies PEP 563's namespace rules.
 const SUPPORTED_FUTURES: [&str; 9] = [
     "nested_scopes",
     "generators",
@@ -148,9 +147,12 @@ pub struct RawFunctionDef {
     pub body: Vec<ParseNode>,
     /// Whether this is an async function (`async def`).
     pub is_async: bool,
-    /// `(parameter or "return", stringized annotation)` pairs in CPython's order,
-    /// read back by `typing.get_type_hints()`.
-    pub annotations: Vec<(StringId, StringId)>,
+    /// The `__annotate__(format)` function of an annotated `def` (PEP 649), built by
+    /// [`Parser::synthesize_annotate`]; `None` when nothing is annotated.
+    pub annotate: Option<Box<Self>>,
+    /// Whether this is a synthesized `__annotate__`: every name but the `format`
+    /// parameter resolves by name at run time and nothing is captured as a cell.
+    pub is_annotate: bool,
 }
 
 /// Type alias for parsed AST nodes (output of the parser).
@@ -201,29 +203,40 @@ fn code_range(filename: StringId, range: TextRange) -> CodeRange {
     }
 }
 
+/// A parsed module body.
+pub(crate) struct ParsedModule {
+    pub nodes: Vec<ParseNode>,
+    /// Whether the module runs under `from __future__ import annotations`,
+    /// inherited or imported; the compiler stamps it on every `Code`.
+    pub future_annotations: bool,
+}
+
 /// Parses code into a private interner overlay, discarded if any compilation stage fails.
+/// `future_annotations` is the flag inherited from an earlier REPL feed.
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
     interner: &mut CompileInterns<'_>,
-) -> Result<Vec<ParseNode>, ParseError> {
+    future_annotations: bool,
+) -> Result<ParsedModule, ParseError> {
     // Interned up front so a syntax error can be located without a `Parser`,
     // leaving the parser to be built once, fully populated, after parsing.
     let filename_id = interner.intern(filename);
     // Module sources are scanned for nesting by their entry points
     // (`MontyRun::new`, the REPL feeds), not here.
-    parse_module_with_filename_id(code, filename_id, interner, usize::MAX)
+    parse_module_with_filename_id(code, filename_id, interner, usize::MAX, future_annotations)
 }
 
 /// [`parse_with_interner`] for a filename already interned — an `exec()`
 /// snippet, whose `<string>` id is fresh per call so tracebacks can tell the
-/// snippets apart.
+/// snippets apart, and which inherits its caller's `future_annotations`.
 pub(crate) fn parse_module_with_filename_id(
     code: &str,
     filename_id: StringId,
     interner: &mut CompileInterns<'_>,
     source_scan_threshold: usize,
-) -> Result<Vec<ParseNode>, ParseError> {
+    future_annotations: bool,
+) -> Result<ParsedModule, ParseError> {
     check_source_nesting(code, Mode::Module, filename_id, source_scan_threshold)?;
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
@@ -234,8 +247,12 @@ pub(crate) fn parse_module_with_filename_id(
         .filter(|token| token.kind() == TokenKind::Class)
         .map(Ranged::start)
         .collect();
-    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
-    parser.parse_statements(parsed.into_syntax().body)
+    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets, future_annotations);
+    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
+    Ok(ParsedModule {
+        nodes,
+        future_annotations: parser.future_annotations,
+    })
 }
 
 /// Parses `code` as a single expression, as `eval()` does.
@@ -252,7 +269,8 @@ pub(crate) fn parse_expression_with_interner(
     let parsed = parse_expression(code)
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
     // No `class` keywords can occur in a bare expression.
-    let mut parser = Parser::new(code, filename_id, interner, Vec::new());
+    // An expression holds no annotations, so the `__future__` state is moot.
+    let mut parser = Parser::new(code, filename_id, interner, Vec::new(), false);
     parser.parse_expression(*parsed.into_syntax().body)
 }
 
@@ -336,6 +354,12 @@ pub struct Parser<'a, 'i> {
     /// class's traceback frame needs the concrete position. Read only by
     /// [`Parser::class_keyword_range`].
     class_keyword_offsets: Vec<TextSize>,
+    /// Whether the module runs under `from __future__ import annotations`:
+    /// inherited by an `exec()` snippet or REPL feed, or set by the import.
+    future_annotations: bool,
+    /// Whether a `__future__` import may still appear: only a docstring and
+    /// other `__future__` imports precede one, at module level.
+    future_allowed: bool,
 }
 
 impl<'a, 'i> Parser<'a, 'i> {
@@ -344,6 +368,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         filename_id: StringId,
         interner: &'a mut CompileInterns<'i>,
         class_keyword_offsets: Vec<TextSize>,
+        future_annotations: bool,
     ) -> Self {
         Self {
             code,
@@ -351,6 +376,8 @@ impl<'a, 'i> Parser<'a, 'i> {
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
             class_keyword_offsets,
+            future_annotations,
+            future_allowed: true,
         }
     }
 
@@ -369,7 +396,12 @@ impl<'a, 'i> Parser<'a, 'i> {
         // pass either `Vec<Stmt>` or ruff's `ThinVec<Stmt>` without an intermediate copy.
         let iter = statements.into_iter();
         let mut out = Vec::with_capacity(iter.len());
-        for stmt in iter {
+        for (index, stmt) in iter.enumerate() {
+            // Any other statement, including one whose body this is, ends the
+            // stretch of the file where `__future__` imports are allowed.
+            if self.future_allowed && !(is_future_import(&stmt) || (index == 0 && is_docstring(&stmt))) {
+                self.future_allowed = false;
+            }
             out.push(self.parse_statement(stmt)?);
         }
         Ok(out)
@@ -811,13 +843,16 @@ impl<'a, 'i> Parser<'a, 'i> {
                 Ok(node)
             }
             Stmt::Match(m) => self.parse_match(m),
-            Stmt::Raise(ast::StmtRaise { exc, .. }) => {
-                // TODO add cause to Node::Raise
-                let expr = match exc {
+            Stmt::Raise(ast::StmtRaise { exc, cause, .. }) => {
+                let exc = match exc {
                     Some(expr) => Some(self.parse_expression(*expr)?),
                     None => None,
                 };
-                Ok(Node::Raise(expr))
+                let cause = match cause {
+                    Some(expr) => Some(self.parse_expression(*expr)?),
+                    None => None,
+                };
+                Ok(Node::Raise { exc, cause })
             }
             Stmt::Try(ast::StmtTry {
                 body,
@@ -896,6 +931,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                 // what it says. `level == 0` keeps `from .__future__ import x` an
                 // ordinary relative import, falling through to the `ImportError`.
                 if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__future__") {
+                    if !self.future_allowed {
+                        return Err(ParseError::syntax(
+                            "from __future__ imports must occur at the beginning of the file",
+                            position,
+                        ));
+                    }
                     return match names
                         .iter()
                         .find(|a| a.asname.is_some() || !SUPPORTED_FUTURES.contains(&a.name.id.as_str()))
@@ -921,7 +962,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                             "aliasing a `__future__` feature",
                             self.convert_range(alias.range),
                         )),
-                        None => Ok(Node::Pass),
+                        None => {
+                            if names.iter().any(|a| a.name.id.as_str() == "annotations") {
+                                self.future_annotations = true;
+                            }
+                            Ok(Node::Pass)
+                        }
                     };
                 }
                 // We only support absolute imports (level 0)
@@ -1016,7 +1062,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         mut function: ast::StmtFunctionDef,
     ) -> Result<(RawFunctionDef, Vec<ExprLoc>), ParseError> {
         let decorators = self.parse_decorators(function.decorator_list)?;
-        let annotations = self.parse_function_annotations(&mut function.parameters, function.returns.as_deref_mut())?;
+        let annotations = self.take_function_annotations(&mut function.parameters, function.returns.take());
 
         let params = &function.parameters;
 
@@ -1044,6 +1090,16 @@ impl<'a, 'i> Parser<'a, 'i> {
         };
 
         let name = self.identifier(&function.name.id, function.name.range);
+        let annotate = if annotations.is_empty() {
+            None
+        } else {
+            let annotate_id = self.interner.intern("__annotate__");
+            Some(Box::new(self.synthesize_annotate(
+                annotations,
+                annotate_id,
+                name.position,
+            )?))
+        };
         // Parse function body recursively
         let body = self.parse_statements(function.body)?;
         let is_async = function.is_async;
@@ -1054,20 +1110,21 @@ impl<'a, 'i> Parser<'a, 'i> {
                 signature,
                 body,
                 is_async,
-                annotations,
+                annotate,
+                is_annotate: false,
             },
             decorators,
         ))
     }
 
-    /// Stringizes a `def`'s parameter and return annotations, in the order
-    /// CPython stores them: regular parameters before positional-only ones,
-    /// then `*args`, keyword-only, `**kwargs` and `return`.
-    fn parse_function_annotations(
+    /// Takes a `def`'s parameter and return annotations out of the signature, in
+    /// the order CPython stores them: regular parameters before positional-only
+    /// ones, then `*args`, keyword-only, `**kwargs` and `return`.
+    fn take_function_annotations(
         &mut self,
         params: &mut ast::Parameters,
-        returns: Option<&mut AstExpr>,
-    ) -> Result<Vec<(StringId, StringId)>, ParseError> {
+        returns: Option<Box<AstExpr>>,
+    ) -> Vec<(StringId, Box<AstExpr>)> {
         let ast::Parameters {
             posonlyargs,
             args,
@@ -1076,22 +1133,106 @@ impl<'a, 'i> Parser<'a, 'i> {
             kwarg,
             ..
         } = params;
-        let annotated = args
+        let mut annotations: Vec<(StringId, Box<AstExpr>)> = args
             .iter_mut()
             .chain(posonlyargs.iter_mut())
             .map(|p| &mut p.parameter)
             .chain(vararg.as_deref_mut())
             .chain(kwonlyargs.iter_mut().map(|p| &mut p.parameter))
             .chain(kwarg.as_deref_mut())
-            .filter_map(|p| Some((p.name.id.as_str(), p.annotation.as_deref_mut()?)))
-            .chain(returns.map(|r| ("return", r)));
-        let mut annotations = Vec::new();
-        for (name, annotation) in annotated {
-            self.check_annotation(annotation)?;
-            let text = stringize_annotation(annotation);
-            annotations.push((self.interner.intern(name), self.interner.intern(&text)));
+            .filter_map(|p| Some((self.interner.intern(&p.name.id), p.annotation.take()?)))
+            .collect();
+        if let Some(returns) = returns {
+            annotations.push((self.interner.intern("return"), returns));
         }
-        Ok(annotations)
+        annotations
+    }
+
+    /// Builds the `__annotate__(format)` function CPython's compiler emits for an
+    /// annotated `def` or class body (PEP 649):
+    ///
+    /// ```python test="skip"
+    /// def __annotate__(format):
+    ///     if format > 2:
+    ///         raise NotImplementedError
+    ///     return {'x': <annotation>, ...}
+    /// ```
+    ///
+    /// Under `from __future__ import annotations` the dict holds the stringized
+    /// text instead, so `__annotations__` reads as PEP 563 strings.
+    fn synthesize_annotate(
+        &mut self,
+        annotations: Vec<(StringId, Box<AstExpr>)>,
+        name_id: StringId,
+        position: CodeRange,
+    ) -> Result<RawFunctionDef, ParseError> {
+        let items = self.annotation_items(annotations, position)?;
+        let format_id = self.interner.intern("format");
+        let name = |parser: &mut Self, text: &str| {
+            let id = parser.interner.intern(text);
+            ExprLoc::new(position, Expr::Name(Identifier::new(id, position)))
+        };
+        let test = ExprLoc::new(
+            position,
+            Expr::CmpOp {
+                left: Box::new(name(self, "format")),
+                op: CmpOperator::Gt,
+                right: Box::new(ExprLoc::new(position, Expr::Literal(Literal::Int(2)))),
+            },
+        );
+        let raise = Node::Raise {
+            exc: Some(name(self, "NotImplementedError")),
+            cause: None,
+        };
+        let body = vec![
+            Node::If {
+                test,
+                body: vec![raise],
+                or_else: Vec::new(),
+            },
+            Node::Return(Some(ExprLoc::new(position, Expr::Dict(items)))),
+        ];
+        Ok(RawFunctionDef {
+            name: Identifier::new(name_id, position),
+            signature: ParsedSignature {
+                args: vec![ParsedParam {
+                    name: format_id,
+                    default: None,
+                }],
+                ..ParsedSignature::default()
+            },
+            body,
+            is_async: false,
+            annotate: None,
+            is_annotate: true,
+        })
+    }
+
+    /// The `'name': annotation` pairs of an `__annotations__` dict: each
+    /// annotation parsed as an expression, or under `from __future__ import
+    /// annotations` stringized to the text CPython would store.
+    ///
+    /// A stringized annotation never reaches [`Parser::parse_expression`], so
+    /// the depth check guarding stringization's recursive passes is made here.
+    fn annotation_items(
+        &mut self,
+        annotations: Vec<(StringId, Box<AstExpr>)>,
+        position: CodeRange,
+    ) -> Result<Vec<DictItem>, ParseError> {
+        let mut items = Vec::with_capacity(annotations.len());
+        for (name, mut annotation) in annotations {
+            self.check_annotation(&annotation)?;
+            let key = ExprLoc::new(position, Expr::Literal(Literal::Str(name)));
+            let value = if self.future_annotations {
+                let range = self.convert_range(annotation.range());
+                let text_id = self.interner.intern(&stringize_annotation(&mut annotation));
+                ExprLoc::new(range, Expr::Literal(Literal::Str(text_id)))
+            } else {
+                self.parse_expression(*annotation)?
+            };
+            items.push(DictItem::Pair(key, value));
+        }
+        Ok(items)
     }
 
     /// Parses decorator expressions in source order.
@@ -1121,7 +1262,7 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// recorded in `members`, in source order, for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
-    /// member, and annotated names a stringized `__annotations__`. Class
+    /// member, and annotated names the class's `__annotate__` function. Class
     /// decorators are supported (enclosing scope, applied bottom-up);
     /// inheritance, function/method decorators, and anything else in the body
     /// are rejected as not-implemented, reserving the syntax for later.
@@ -1147,9 +1288,10 @@ impl<'a, 'i> Parser<'a, 'i> {
         // namespace dict from the body's locals.
         let mut body = Vec::new();
         let mut members = Vec::new();
-        // `(name, "source text")` pairs assembled into `__annotations__` below;
-        // always stringized (PEP 563). See `limitations/typing.md`.
-        let mut annotations: Vec<DictItem> = Vec::new();
+        // `(name, annotation)` pairs, compiled into the class's `__annotate__`
+        // below (or, under `from __future__ import annotations`, stringized
+        // into `__annotations__`).
+        let mut annotations: Vec<(StringId, Box<AstExpr>)> = Vec::new();
 
         // CPython stores the class docstring as a real `__doc__` entry in the
         // class dict (`None` when absent), so synthesize a `__doc__ = <docstring
@@ -1207,12 +1349,12 @@ impl<'a, 'i> Parser<'a, 'i> {
                     self.parse_class_var(ident, *value, &mut members, &mut body)?;
                 }
                 // `name: T [= <expr>]` — an annotated class-level name. The
-                // annotation is recorded (stringized) in `__annotations__`; a
+                // annotation goes into the class's `__annotate__` (see below); a
                 // value additionally makes it a class variable. A bare `name: T`
                 // records the annotation but binds no value (matching CPython).
                 Stmt::AnnAssign(ast::StmtAnnAssign {
                     target,
-                    mut annotation,
+                    annotation,
                     value,
                     range,
                     ..
@@ -1222,7 +1364,7 @@ impl<'a, 'i> Parser<'a, 'i> {
                     }) = *target
                     {
                         let ident = self.identifier(&id, name_range);
-                        annotations.push(self.parse_class_annotation(ident, &mut annotation)?);
+                        annotations.push((ident.name_id, annotation));
                         if let Some(value) = value {
                             self.parse_class_var(ident, *value, &mut members, &mut body)?;
                         }
@@ -1273,26 +1415,36 @@ impl<'a, 'i> Parser<'a, 'i> {
         );
 
         // Last statement so the values are assembled after all members exist.
-        // Always present (empty dict) to match `Cls.__annotations__ == {}`.
-        let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
-        let body_binds_annotations = members.iter().any(|m| m.name_id == annotations_target.name_id);
-        if body_binds_annotations && !annotations.is_empty() {
-            // Being last, the synthetic assignment would clobber the body's own
-            // binding and lose these entries. CPython stores into whatever the name
-            // holds instead — merging into a dict, `TypeError` otherwise.
-            return Err(ParseError::not_implemented(
-                "assigning `__annotations__` in a class body with annotated names",
-                position,
-            ));
-        }
-        // With nothing to store, the body's own binding stands — synthesizing an
-        // empty dict over it would break class bodies CPython accepts.
-        if !body_binds_annotations {
-            members.push(annotations_target);
-            body.push(Node::Assign {
-                target: annotations_target,
-                object: ExprLoc::new(position, Expr::Dict(annotations)),
-            });
+        // CPython's compiler stores the class's `__annotate__` under
+        // `__annotate_func__`; under `from __future__ import annotations` it
+        // stores the stringized dict as `__annotations__` instead.
+        if !annotations.is_empty() {
+            if self.future_annotations {
+                let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
+                if members.iter().any(|m| m.name_id == annotations_target.name_id) {
+                    // Being last, the synthetic assignment would clobber the body's own
+                    // binding and lose these entries. CPython stores into whatever the name
+                    // holds instead — merging into a dict, `TypeError` otherwise.
+                    return Err(ParseError::not_implemented(
+                        "assigning `__annotations__` in a class body with annotated names",
+                        position,
+                    ));
+                }
+                let items = self.annotation_items(annotations, position)?;
+                members.push(annotations_target);
+                body.push(Node::Assign {
+                    target: annotations_target,
+                    object: ExprLoc::new(position, Expr::Dict(items)),
+                });
+            } else {
+                let annotate_target = Identifier::new(self.interner.intern("__annotate_func__"), position);
+                let def = self.synthesize_annotate(annotations, annotate_target.name_id, position)?;
+                members.push(annotate_target);
+                body.push(Node::FunctionDef {
+                    def,
+                    decorators: Vec::new(),
+                });
+            }
         }
 
         // Wrap the body statements in a synthetic zero-arg function. The class
@@ -1304,7 +1456,8 @@ impl<'a, 'i> Parser<'a, 'i> {
             signature: ParsedSignature::default(),
             body,
             is_async: false,
-            annotations: Vec::new(),
+            annotate: None,
+            is_annotate: false,
         };
 
         Ok(Node::ClassDef {
@@ -1346,24 +1499,6 @@ impl<'a, 'i> Parser<'a, 'i> {
             start_byte: start,
             end_byte: class.range.end().into(),
         }
-    }
-
-    /// Builds the `'name': 'annotation'` pair for one annotated class-body name.
-    ///
-    /// The annotation is stringized rather than evaluated (see
-    /// `limitations/typing.md`); [`stringize_annotation`] owns rendering it back
-    /// to the text CPython would store.
-    ///
-    /// The annotation never reaches [`Parser::parse_expression`], so the depth
-    /// check guarding stringization's two recursive passes is made here.
-    fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> Result<DictItem, ParseError> {
-        self.check_annotation(annotation)?;
-        let ann_range = annotation.range();
-        let ann_id = self.interner.intern(&stringize_annotation(annotation));
-        Ok(DictItem::Pair(
-            ExprLoc::new(ident.position, Expr::Literal(Literal::Str(ident.name_id))),
-            ExprLoc::new(self.convert_range(ann_range), Expr::Literal(Literal::Str(ann_id))),
-        ))
     }
 
     /// Parses a class-variable value and records the binding: rejects class-scope
@@ -2643,6 +2778,17 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
         RuffConversionFlag::Repr => ConversionFlag::Repr,
         RuffConversionFlag::Ascii => ConversionFlag::Ascii,
     }
+}
+
+/// Whether `stmt` is a `from __future__ import ...` directive; a relative
+/// `from .__future__` is an ordinary import and ends the stretch like any other.
+fn is_future_import(stmt: &Stmt) -> bool {
+    matches!(stmt, Stmt::ImportFrom(ast::StmtImportFrom { module: Some(module), level: 0, .. }) if module.as_str() == "__future__")
+}
+
+/// Whether `stmt` is a bare string literal, the docstring when it comes first.
+fn is_docstring(stmt: &Stmt) -> bool {
+    matches!(stmt, Stmt::Expr(ast::StmtExpr { value, .. }) if matches!(**value, AstExpr::StringLiteral(_)))
 }
 
 /// Does `expr` contain a `:=` that binds in the enclosing (class-body) scope?
