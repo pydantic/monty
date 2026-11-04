@@ -336,7 +336,7 @@ skip = [
     "crates/monty-bench/benches/python/pyperformance_*.py",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
-    "crates/monty/src/types/str.rs",
+    "crates/monty/src/types/str/mod.rs",
 ]
 
 [tool.inline-snapshot]

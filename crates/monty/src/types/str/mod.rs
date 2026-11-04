@@ -1,5 +1,10 @@
+mod access_cache;
+mod access_cache_store;
+
 use std::{cell::Cell, fmt::Write, ops, str};
 
+pub(crate) use access_cache::AccessCache;
+pub(crate) use access_cache_store::AccessCacheStore;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
@@ -32,18 +37,15 @@ use crate::{
     value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
 
-/// Heap-backed Python string with cached hash and ASCII status.
-/// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
-///
-/// Caches its Python hash and whether it is ASCII, both computed on first use and
-/// never serialized. ASCII text has one byte per character, so `len()` and
-/// indexing are O(1) instead of a UTF-8 walk. Both caches assume the text never changes.
+/// Immutable UTF-8 with derived hash, ASCII status, length and access caches.
+/// Caches are omitted from snapshots; ASCII indexing addresses bytes directly.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub(crate) struct Str(
     Box<str>,
     #[serde(skip)] Cell<Option<HashValue>>,
     #[serde(skip)] Cell<Option<bool>>,
+    #[serde(skip)] AccessCache,
 );
 
 impl PartialEq for Str {
@@ -60,7 +62,7 @@ impl Str {
     /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
     fn new(s: impl Into<Box<str>>) -> Self {
-        Self(s.into(), Cell::new(None), Cell::new(None))
+        Self(s.into(), Cell::new(None), Cell::new(None), AccessCache::default())
     }
 
     /// Returns a reference to the inner string.
@@ -85,7 +87,7 @@ impl Str {
         if self.is_ascii() {
             self.0.len()
         } else {
-            self.0.chars().count()
+            self.3.char_len(&self.0)
         }
     }
 
@@ -157,6 +159,14 @@ impl<'h> PyStr<'h> {
         }
     }
 
+    fn access_cache<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s AccessCache> {
+        match self {
+            PyStr::Heap(string) => Some(&string.get(vm.heap).3),
+            PyStr::Interned(id) => vm.interns.str_access_cache(*id),
+            PyStr::Inline(_) => None,
+        }
+    }
+
     /// ASCII strings use byte coordinates directly.
     fn is_ascii(&self, vm: &VM<'h>) -> bool {
         match self {
@@ -166,32 +176,31 @@ impl<'h> PyStr<'h> {
         }
     }
 
-    /// Returns the number of Unicode code points; ASCII strings use their byte length.
+    /// Returns Unicode code points, reusing the owner's cached count when available.
     fn char_len(&self, vm: &VM<'h>) -> usize {
         match self {
             PyStr::Heap(string) => string.get(vm.heap).char_len(),
-            PyStr::Interned(id) => {
-                let text = vm.interns.get_str(*id);
-                if vm.interns.str_is_ascii(*id) {
-                    text.len()
-                } else {
-                    text.chars().count()
-                }
-            }
+            PyStr::Interned(id) => vm.interns.str_len(*id),
             PyStr::Inline(text) => text.as_str().chars().count(),
         }
     }
 
-    /// Resolves Python's positive or negative character index.
+    /// Resolves Python's positive or negative character index; endpoints need no cursor.
     fn character(&self, index: i64, vm: &VM<'h>) -> Option<char> {
         let text = self.as_str(vm);
         let ascii = self.is_ascii(vm);
+        if !ascii
+            && !matches!(index, 0 | -1)
+            && let Some(cache) = self.access_cache(vm)
+        {
+            return cache.character(text, index);
+        }
         get_char_at_index(text, ascii, index)
     }
 
     /// Converts a Python character index into a UTF-8 byte offset for slicing and bounded searches.
     /// For `"aé🐍b"`, character range `1..3` becomes byte range `1..7`, covering `"é🐍"`.
-    /// ASCII indices are already byte offsets; Unicode conversion scans character boundaries.
+    /// ASCII indices are already byte offsets; Unicode conversions reuse the access cache when available.
     /// Indices past the character count clamp to the byte length; `usize::MAX` denotes an omitted end.
     fn byte_offset(&self, target: usize, vm: &VM<'h>) -> usize {
         let text = self.as_str(vm);
@@ -204,12 +213,15 @@ impl<'h> PyStr<'h> {
         if self.is_ascii(vm) {
             return target.min(text.len());
         }
+        if let Some(cache) = self.access_cache(vm) {
+            return cache.byte_offset(text, target);
+        }
         text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte)
     }
 
     /// Converts a UTF-8 byte offset into the Python character index returned by find/rfind/index/rindex.
     /// Rust's search for `"🐍"` in `"aé🐍b"` returns byte offset 3; Python must return character index 2.
-    /// ASCII offsets are already character indices; Unicode conversion counts the preceding characters.
+    /// ASCII offsets are already character indices; Unicode conversions reuse the access cache when available.
     /// The offset must be in bounds and on a UTF-8 boundary, as returned by a successful string search.
     fn char_offset(&self, byte: usize, vm: &VM<'h>) -> usize {
         if byte == 0 {
@@ -219,6 +231,9 @@ impl<'h> PyStr<'h> {
             return byte;
         }
         let text = self.as_str(vm);
+        if let Some(cache) = self.access_cache(vm) {
+            return cache.char_offset(text, byte);
+        }
         text[..byte].chars().count()
     }
 
@@ -299,7 +314,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_format_template(self.as_str(vm), &vm.heap.tracker)?;
+        let template = copy_with_time_checks(self.as_str(vm), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
     }
 
@@ -532,7 +547,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
 
     /// `str % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
+        let template = copy_with_time_checks(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
         percent_format(&template, other, vm).map(Some)
     }
 
@@ -557,8 +572,9 @@ fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
 
 /// Indexes protected text, allowing `__index__` to execute before borrowing it.
 ///
+/// Contiguous Unicode slices reuse character/byte offsets and copy UTF-8 without a
+/// temporary character collection; stepped slices retain the iterator fallback.
 fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    let ascii = s.is_ascii(vm);
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
@@ -573,11 +589,15 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
             let stop = usize::try_from(stop).expect("normalized slice stop");
             let start = s.byte_offset(start, vm);
             let stop = s.byte_offset(stop, vm);
+            // Large copies retain cooperative time checks; short slices still use inline storage directly.
             let result = &text[start..stop];
-            // Contiguous slices copy UTF-8 directly, without collecting characters.
+            if result.len() > STRING_COPY_CHUNK {
+                let copied = copy_with_time_checks(result, &vm.heap.tracker)?;
+                return Ok(allocate_string(copied, vm.heap));
+            }
             return Ok(allocate_string(result, vm.heap));
         }
-        let result: Box<str> = if ascii {
+        let result: Box<str> = if s.is_ascii(vm) {
             // Byte iterators count and skip in O(1), unlike `chars()`.
             slice_collect_iterator(vm, slice, text.bytes(), char::from)?
         } else {
@@ -597,16 +617,16 @@ impl HeapItem for Str {
     }
 }
 
-const FORMAT_TEMPLATE_COPY_CHUNK: usize = 64 * 1024;
+const STRING_COPY_CHUNK: usize = 64 * 1024;
 
-/// Copies a formatting template with resource checks before Python callbacks can mutate the heap.
-pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
+/// Copies UTF-8 in polled chunks, including formatting templates borrowed before Python callbacks.
+pub(crate) fn copy_with_time_checks(template: &str, tracker: &ResourceTracker) -> RunResult<String> {
     tracker.check_time()?;
     let mut copy = StringBuilder::with_capacity(template.len(), tracker)?;
     let mut start = 0;
     while start < template.len() {
         tracker.check_time()?;
-        let mut end = start.saturating_add(FORMAT_TEMPLATE_COPY_CHUNK).min(template.len());
+        let mut end = start.saturating_add(STRING_COPY_CHUNK).min(template.len());
         while !template.is_char_boundary(end) {
             end -= 1;
         }
@@ -716,7 +736,7 @@ fn call_str_method_impl<'h>(
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
         StaticStrings::Format => {
-            let template = match copy_format_template(s.as_str(vm), &vm.heap.tracker) {
+            let template = match copy_with_time_checks(s.as_str(vm), &vm.heap.tracker) {
                 Ok(template) => template,
                 Err(error) => {
                     args.drop_with(vm);
@@ -2227,6 +2247,35 @@ mod tests {
     };
 
     #[test]
+    fn derived_string_caches_do_not_change_dump_bytes() {
+        let text = Str::new("aé中🐍".repeat(4096));
+        let encode = |text: &Str| {
+            let mut bytes = Vec::new();
+            serde::Serialize::serialize(text, &mut minicbor_serde::Serializer::new(&mut bytes)).unwrap();
+            bytes
+        };
+        let cold = encode(&text);
+        text.char_len();
+        text.1.set(Some(hash_python_str(text.as_str())));
+        for i in 0..1000 {
+            let position = i * 7919 % 16384;
+            assert_eq!(
+                text.3.character(text.as_str(), position),
+                "aé中🐍".chars().nth(usize::try_from(position % 4).unwrap())
+            );
+        }
+        assert!(text.3.has_cursor());
+        assert_eq!(encode(&text), cold);
+
+        let reset = <Str as serde::Deserialize>::deserialize(&mut minicbor_serde::Deserializer::new(&cold)).unwrap();
+        assert!(!reset.3.has_cursor());
+        assert!(reset.1.get().is_none());
+        assert!(reset.2.get().is_none());
+        assert_eq!(reset.as_str(), text.as_str());
+        assert_eq!(encode(&reset), cold);
+    }
+
+    #[test]
     fn characters_use_reserved_or_inline_storage() {
         for character in ['\0', 'a', '\x7f'] {
             assert!(
@@ -2337,5 +2386,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/format_template.rs"]
+#[path = "../../../tests/unit/format_template.rs"]
 mod format_template_tests;
