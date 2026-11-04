@@ -3116,6 +3116,18 @@ impl Interns {
         id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
     }
 
+    /// Returns the character count, caching it for non-ASCII strings.
+    pub fn str_len(&self, id: StringId) -> usize {
+        let text = self.get_str(id);
+        if self.str_is_ascii(id) {
+            text.len()
+        } else {
+            self.str_access_cache(id)
+                .expect("non-ASCII interned string")
+                .char_len(text)
+        }
+    }
+
     /// Returns a Unicode cache, allocating its directory/page and empty shell as needed.
     /// Cursor state remains lazy; reserved and ASCII strings return `None`.
     pub(crate) fn str_access_cache(&self, id: StringId) -> Option<&AccessCache> {
