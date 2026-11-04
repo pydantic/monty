@@ -23,8 +23,7 @@ use crate::{
     py_value::PyValue,
     types::{
         BoundMethod, BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial,
-        Path, PyTrait,
-        Random, Range, Set, Slice, Str, TimeZone, Tuple,
+        Path, PyTrait, Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
