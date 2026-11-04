@@ -638,7 +638,8 @@ message Configure {
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
   // Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
-  // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+  // with parent-serviced sleeps capped at 10s. It also governs a session restored by
+  // `Load`, replacing the policy the dump was taken under.
   optional OsPolicy os_policy = 11;
   // Relay-only: whether a serving relay may store the session. Children ignore
   // it.

@@ -353,8 +353,8 @@ export class MontySession {
    * Re-supply the same `mount`s the paused feed used (their host paths are not
    * in the dump), or its filesystem calls degrade into unhandled OS calls.
    * The checkout's `osPolicy` replaces the dump's, so the rest of the feed reads
-   * its clock, zone, sleep and random settings. Throws if the dump is actually an
-   * idle session.
+   * its clock, zone, sleep, process-time and random settings. Throws if the dump
+   * is actually an idle session.
    */
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()

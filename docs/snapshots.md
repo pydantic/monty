@@ -358,6 +358,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     random-start settings govern every call after restoration, including the rest of a restored suspended feed.
     A call already suspended when the dump was taken keeps the form it was issued in, and a `random` generator that
     had already started keeps its state.
+    A `checkout()` without `os_policy` restores under the default policy (system clock, UTC, OS entropy), so pass the
+    dumped session's policy again to keep a fixed clock or seed.
 - **Host modules restore as module objects.** Their attributes, including functions named `tools.<attr>`, survive
     restoration, and a function call resolves through the restoring `checkout()`'s `external_modules`.
     An `import` after restoration asks the host again.

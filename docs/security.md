@@ -314,7 +314,8 @@ Under `datetime='call_host'` it learns whatever your handler answers; the defaul
 [`OSAccess`][pydantic_monty.OSAccess] handler answers with the host's real clock and zone.
 See [datetime](limitations/datetime.md#reading-the-clock).
 
-A restored session uses the policy of the `checkout()` that restored it, not the one it was dumped under (see
+A restored session uses the whole `os_policy` of the `checkout()` that restored it, not the one it was dumped under:
+its clock, zone, sleep, process clock and entropy settings (see
 [snapshots](snapshots.md#what-restoring-does-and-does-not-carry)).
 
 ### Entropy
