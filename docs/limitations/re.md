@@ -12,6 +12,13 @@ Implemented: `compile`, `search`, `match`, `fullmatch`, `findall`, `sub`,
 Not implemented: `subn`, `purge`, `template`. The pre-compiled `re._compile`
 internal is not exposed.
 
+`re.finditer` and `Pattern.finditer` return a `list` of matches, not CPython's lazy `callable_iterator`:
+
+- Every match is found when `finditer` is called, so an error a later match hits (such as the backtracking limit)
+    is raised by the call itself rather than by the iteration that reaches it.
+- `next(re.finditer(...))` raises `TypeError: 'list' object is not an iterator`.
+- The result can be iterated more than once, where CPython's iterator is empty the second time.
+
 The module-level functions accept the same positional-or-keyword arguments
 as CPython (including compiled `re.Pattern` objects as the first argument,
 with `re.compile(p) is p` and the `cannot process flags argument with a compiled pattern` `ValueError`), and their

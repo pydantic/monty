@@ -1268,6 +1268,20 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new(ExcType::MemoryError, None).into()
     }
 
+    /// Creates the OverflowError CPython raises when `str * n` would exceed
+    /// `Py_ssize_t` bytes (`'ab' * 2**62`).
+    #[must_use]
+    fn repeated_string_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated string is too long").into()
+    }
+
+    /// Creates the OverflowError CPython raises when `bytes * n` would exceed
+    /// `Py_ssize_t` bytes (`b'ab' * 2**62`).
+    #[must_use]
+    fn repeated_bytes_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated bytes are too long").into()
+    }
+
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
     /// non-integer `step`.
     #[must_use]

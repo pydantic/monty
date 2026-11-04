@@ -3,7 +3,7 @@ use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracke
 
 use crate::{
     bytecode::VM,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     value::{VALUE_SIZE, Value},
 };
 
@@ -14,6 +14,30 @@ use crate::{
 /// where the result size is a simple product of two known values.
 pub fn check_repeat_size(item_len: usize, count: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_estimated_size(item_len.saturating_mul(count), tracker)
+}
+
+/// The length of `len * count` repetitions, or CPython's message-less
+/// `MemoryError` when a buffer of `elem_size`-byte elements that long could not
+/// be addressed at all (`[1, 2] * 2**62`), instead of a capacity-overflow panic.
+pub(crate) fn repeated_len(len: usize, count: usize, elem_size: usize) -> RunResult<usize> {
+    len.checked_mul(count)
+        .filter(|total| {
+            total
+                .checked_mul(elem_size)
+                .is_some_and(|bytes| bytes <= isize::MAX.unsigned_abs())
+        })
+        .ok_or_else(ExcType::allocation_too_large)
+}
+
+/// Allocates an empty `Vec` with room for `capacity` elements, raising `MemoryError`
+/// rather than aborting when the allocator refuses; with no `max_memory` set
+/// nothing else stops an attacker-sized repetition.
+pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> RunResult<Vec<T>> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(capacity)
+        .map_err(|_| ExcType::allocation_too_large())?;
+    Ok(buffer)
 }
 
 /// Pre-checks that `base ** exponent` won't exceed resource limits before computing.
@@ -103,6 +127,31 @@ pub fn check_replace_size(
     };
 
     check_estimated_size(estimated, tracker)
+}
+
+/// Collects an iterator into a `Vec`, preflighting each reallocation of the buffer.
+///
+/// For scans bounded only by an attacker-sized input (split pieces), whose
+/// buffer would otherwise double past the allocator's hard headroom before any
+/// checkpoint. Also polls the time limit, amortized with `check_time_every`.
+pub(crate) fn collect_checked<T>(
+    items: impl IntoIterator<Item = T>,
+    tracker: &ResourceTracker,
+) -> Result<Vec<T>, ResourceError> {
+    let mut collected = Vec::new();
+    for item in items {
+        push_checked(&mut collected, item, tracker)?;
+    }
+    Ok(collected)
+}
+
+/// Pushes one item onto a scan buffer after [`ResourceTracker::check_growth`] and an
+/// amortized time poll; the single-push form of [`collect_checked`].
+pub(crate) fn push_checked<T>(buffer: &mut Vec<T>, item: T, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    tracker.check_time_every(buffer.len())?;
+    tracker.check_growth(buffer.len(), buffer.capacity(), size_of::<T>())?;
+    buffer.push(item);
+    Ok(())
 }
 
 /// Pre-checks the reallocation a push into a full `Value` buffer causes,

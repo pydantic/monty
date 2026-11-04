@@ -500,10 +500,12 @@ limit's job. The exception is a loop allocating per item, where a preflight on
 the result buffer cannot see what the items themselves cost:
 `tracker.check_memory_time_every(i)` is the amortized poll for that, as in
 `parse_json_array` and `re_pattern`'s match and split loops. `*args`, parsed
-JSON arrays and `re.findall` with at most one capture group are preflighted now
-— each killed the worker on ordinary code while listed as bounded-by-input
-above; a wider `findall` and `re.finditer` allocate per match between the checks
-and are still open. Test each graceful path in
+JSON arrays, `str`/`bytes` split pieces and `re.findall` with at most one capture
+group are preflighted now — each killed the worker on ordinary code while listed
+as bounded-by-input above. `re.finditer` scans spans under growth and time checks,
+then preflights the whole build pass with a per-match estimate, since it cannot
+stop part way; a wider `findall` allocates per match between the checks and is
+still open. Test each graceful path in
 `large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.

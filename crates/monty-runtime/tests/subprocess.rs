@@ -1285,6 +1285,14 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_042_653,
         ),
+        // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_216_168),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_595_320),
+        // A split's piece buffer is grown under the same checks as `re.split`'s.
+        ("('ab,' * 100_000).split(',')", 1_391_348),
+        ("('ab,' * 100_000).rsplit(',')", 1_391_349),
+        ("(b'ab ' * 100_000).split()", 1_399_566),
+        ("(b'ab,' * 100_000).rsplit(b',')", 1_399_573),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_167_196),
         // `randbytes` charges its word buffer and the byte buffer it fills.
