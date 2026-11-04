@@ -1198,6 +1198,33 @@ except TypeError as e:
     else:
         assert str(e) == "__new__() got an unexpected keyword argument 'foo'", f'td foo kw: {e}'
 
+# === timedelta: a day count past the C int range ===
+# CPython converts the day count to a C int before it checks the range.
+for call, message in [
+    (lambda: datetime.timedelta(days=2**31 - 1), 'days=2147483647; must have magnitude <= 999999999'),
+    (lambda: datetime.timedelta(days=-(2**31)), 'days=-2147483648; must have magnitude <= 999999999'),
+    (lambda: datetime.timedelta(days=2**31), 'Python int too large to convert to C int'),
+    (lambda: datetime.timedelta(days=-(2**31) - 1), 'Python int too large to convert to C int'),
+    (lambda: datetime.timedelta(seconds=2**31 * 86400), 'Python int too large to convert to C int'),
+    (lambda: datetime.timedelta(days=999999999) * 2, 'days=1999999998; must have magnitude <= 999999999'),
+    (lambda: datetime.timedelta.max * 3, 'Python int too large to convert to C int'),
+    (lambda: datetime.timedelta.max * 2**62, 'Python int too large to convert to C int'),
+    (lambda: datetime.timedelta.max * 2**63, 'Python int too large to convert to C int'),
+    (lambda: 2**63 * datetime.timedelta.max, 'Python int too large to convert to C int'),
+    (lambda: datetime.timedelta(microseconds=1) * 2**130, 'Python int too large to convert to C int'),
+]:
+    try:
+        call()
+        assert False, f'expected OverflowError: {message}'
+    except OverflowError as e:
+        assert str(e) == message
+# A multiplier past `i64` can still give a duration in range.
+assert datetime.timedelta(microseconds=1) * 2**63 == datetime.timedelta(
+    days=106751991, seconds=14454, microseconds=775808
+)
+assert 2**70 * datetime.timedelta(0) == datetime.timedelta(0)
+assert 2**130 * datetime.timedelta(0) == datetime.timedelta(0)
+
 # === FromArgs migration: invalid argument-type coverage ===
 # Monty's int extraction reports CPython's `'<type>' object cannot be
 # interpreted as an integer`. timedelta is the one remaining divergence:
