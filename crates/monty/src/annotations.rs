@@ -130,13 +130,16 @@ pub(crate) fn class_annotations(class_id: HeapId, vm: &mut VM<'_>) -> RunResult<
             ],
         )
     } else {
-        let annotations = empty_dict(vm);
+        // The guard releases the dict if caching it fails.
+        let mut annotations_guard = DropGuard::new(empty_dict(vm), vm);
+        let (annotations, vm) = annotations_guard.as_parts_mut();
         set_class_attr(
             class_id,
             StaticStrings::DunderAnnotationsCache,
             annotations.clone_with_heap(vm),
             vm,
         )?;
+        let (annotations, _) = annotations_guard.into_parts();
         Ok(CallResult::Value(annotations))
     }
 }

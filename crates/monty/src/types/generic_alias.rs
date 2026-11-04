@@ -538,9 +538,20 @@ fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
             Some(HeapReadOutput::GenericAlias(inner)) if inner.get(vm.heap).is_annotated() => {
                 let (_, inner_args) = inner.parts(vm);
                 defer_drop!(inner_args, vm);
+                let Some(HeapReadOutput::Tuple(inner_items)) = inner_args.read_heap(vm) else {
+                    unreachable!("GenericAlias::args is always a tuple")
+                };
                 let count = items.get(vm.heap).as_slice().len();
-                vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
-                let mut flattened = tuple_items(inner_args, vm)?;
+                let inner_count = inner_items.get(vm.heap).as_slice().len();
+                // One preflight for the whole buffer: the inner alias's args
+                // plus this subscript's metadata.
+                vm.heap
+                    .tracker
+                    .check_allocation((inner_count + count - 1).saturating_mul(VALUE_SIZE))?;
+                let mut flattened = TupleVec::with_capacity(inner_count + count - 1);
+                for index in 0..inner_count {
+                    flattened.push(inner_items.clone_item(index, vm));
+                }
                 for index in 1..count {
                     flattened.push(items.clone_item(index, vm));
                 }
