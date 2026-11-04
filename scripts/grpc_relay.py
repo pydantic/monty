@@ -137,8 +137,11 @@ async def bridge_stream(requests: AsyncIterator[bytes], child: asyncio.subproces
         # tear the child down.
         for task in pumps:
             task.cancel()
-        await asyncio.gather(*pumps, return_exceptions=True)
-        await reap(child)
+        try:
+            await asyncio.gather(*pumps, return_exceptions=True)
+        finally:
+            # a second cancel can land in the gather; the child is reaped anyway
+            await reap(child)
 
 
 async def reap(child: asyncio.subprocess.Process) -> None:

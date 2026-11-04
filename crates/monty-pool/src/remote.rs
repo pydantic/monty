@@ -55,7 +55,7 @@ pub(crate) struct Remote {
     channel: Channel,
     /// Bounds opening a stream: the TCP+TLS dial on a cold channel plus the
     /// server's admission (which, for a relay, includes dialing a worker).
-    connect_timeout: Duration,
+    dial_timeout: Duration,
     /// Caps decodes of large frames at the pool's `max_processes`, across every
     /// reader. A dropped checkout frees its capacity slot at once, while its
     /// reader may be inside a decode an abort cannot interrupt, so without
@@ -73,7 +73,7 @@ impl Remote {
     /// fails at `Pool::new` rather than at its first checkout.
     pub(crate) fn connect(
         url: &str,
-        connect_timeout: Duration,
+        dial_timeout: Duration,
         keep_alive: Option<Duration>,
         max_processes: usize,
     ) -> Result<Self, PoolError> {
@@ -82,12 +82,12 @@ impl Remote {
             .map_err(|err| spawn_error(&err))?
             .user_agent(USER_AGENT_VALUE)
             .map_err(|err| spawn_error(&err))?
-            .connect_timeout(connect_timeout)
+            .connect_timeout(dial_timeout)
             .tcp_nodelay(true)
             // fixed windows, the connection's well above a stream's: adaptive
             // ones set both to one estimate, so a session whose host stopped
             // reading held the whole connection and starved every other session
-            .initial_stream_window_size(STREAM_WINDOW_BYTES)
+            .initial_stream_window_size(stream_window(max_processes))
             .initial_connection_window_size(connection_window(max_processes));
         if let Some(interval) = keep_alive {
             // Hop-local liveness while streams are open: a dead TCP peer is
@@ -108,7 +108,7 @@ impl Remote {
         Ok(Self {
             url: url.to_owned(),
             channel: endpoint.connect_lazy(),
-            connect_timeout,
+            dial_timeout,
             decode_permits: Arc::new(Semaphore::new(max_processes.max(1))),
             closing: Arc::new(Semaphore::new(max_processes.max(1))),
         })
@@ -143,7 +143,7 @@ impl Remote {
         let mut grpc = Grpc::new(self.channel.clone())
             .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
-        let deadline = Instant::now() + self.connect_timeout;
+        let deadline = Instant::now() + self.dial_timeout;
         let mut retries = 0;
         let (requests, response) = loop {
             let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
@@ -159,9 +159,11 @@ impl Remote {
                 // taking it (a GOAWAY as it drains, a refused stream): the
                 // channel reconnects, and the same budget covers the retries
                 Ok(Err(status)) if retries < OPEN_RETRIES && stream_not_taken(&status) => retries += 1,
-                // the server's own answer, kept structured; a status tonic
-                // synthesised for a transport failure has a source error
-                Ok(Err(status)) if Error::source(&status).is_none() => {
+                // the server's own admission decision, kept structured; a
+                // status tonic synthesised for a transport failure has a
+                // source error, and any other code (`UNIMPLEMENTED` from a URL
+                // that is no Monty server) is a misconfiguration, not a refusal
+                Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
                     return Err(PoolError::Refused {
                         url: url.to_owned(),
                         refusal: Box::new(RemoteDisconnect::from_status(&status)),
@@ -173,7 +175,7 @@ impl Remote {
                 Err(_) => {
                     return Err(PoolError::Spawn(format!(
                         "{url}: connect timed out after {:?}",
-                        self.connect_timeout
+                        self.dial_timeout
                     )));
                 }
             }
@@ -209,6 +211,20 @@ fn message_limit(max_decode_bytes: usize) -> usize {
 
 /// The smallest [`message_limit`].
 const MIN_MESSAGE_LIMIT: usize = 64 * 1024;
+
+/// Whether `code` is one a server refuses a stream's admission with: no room
+/// (`RESOURCE_EXHAUSTED`, `UNAVAILABLE`), bad credentials (`UNAUTHENTICATED`,
+/// `PERMISSION_DENIED`), or a request it cannot serve (`FAILED_PRECONDITION`).
+fn refuses_admission(code: Code) -> bool {
+    matches!(
+        code,
+        Code::ResourceExhausted
+            | Code::Unavailable
+            | Code::Unauthenticated
+            | Code::PermissionDenied
+            | Code::FailedPrecondition
+    )
+}
 
 /// How many more times a stream the server never took is opened: once on the
 /// connection that was closing, once on the one the channel dials to replace it.
@@ -335,9 +351,12 @@ const USER_AGENT_VALUE: &str = concat!("monty-pool/", env!("CARGO_PKG_VERSION"))
 /// interval between pings is `PoolConfig::keep_alive`.
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A stream's HTTP/2 receive window: a session whose host stopped reading
-/// holds at most this much of the connection's.
+/// A stream's HTTP/2 receive window, unless the pool is too large for every
+/// stream to hold this much (see [`stream_window`]).
 const STREAM_WINDOW_BYTES: u32 = 2 * 1024 * 1024;
+
+/// The smallest stream window: HTTP/2's default.
+const MIN_STREAM_WINDOW_BYTES: u32 = 65_535;
 
 /// The smallest connection window, so a small pool keeps the window it had.
 const MIN_CONNECTION_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
@@ -345,15 +364,27 @@ const MIN_CONNECTION_WINDOW_BYTES: u32 = 32 * 1024 * 1024;
 /// HTTP/2's largest flow-control window.
 const MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
 
-/// The connection's receive window, shared by every stream on the channel:
-/// room for each stream the pool can hold — `max_processes` live and as many
-/// closing — to sit on a full stream window with one to spare, so stalled
-/// sessions never take the credit a neighbour's reply needs.
-fn connection_window(max_processes: usize) -> u32 {
+/// How many streams the connection window leaves room for: `max_processes`
+/// live, as many closing, and one to spare for a neighbour's reply.
+fn window_streams(max_processes: usize) -> u32 {
     let streams = max_processes.max(1).saturating_mul(2).saturating_add(1);
-    u32::try_from(streams)
-        .ok()
-        .and_then(|streams| streams.checked_mul(STREAM_WINDOW_BYTES))
+    u32::try_from(streams).unwrap_or(u32::MAX)
+}
+
+/// A stream's receive window: [`STREAM_WINDOW_BYTES`], shrunk for a pool so
+/// large that every stream stalled on it would overrun HTTP/2's largest
+/// connection window. Below [`MIN_STREAM_WINDOW_BYTES`] it stops shrinking, so
+/// a pool past about 16,000 processes can again be starved by stalled streams.
+fn stream_window(max_processes: usize) -> u32 {
+    (MAX_WINDOW_BYTES / window_streams(max_processes)).clamp(MIN_STREAM_WINDOW_BYTES, STREAM_WINDOW_BYTES)
+}
+
+/// The connection's receive window, shared by every stream on the channel:
+/// room for each of [`window_streams`] to sit on a full [`stream_window`], so
+/// stalled sessions never take the credit a neighbour's reply needs.
+fn connection_window(max_processes: usize) -> u32 {
+    window_streams(max_processes)
+        .checked_mul(stream_window(max_processes))
         .map_or(MAX_WINDOW_BYTES, |window| window.min(MAX_WINDOW_BYTES))
         .max(MIN_CONNECTION_WINDOW_BYTES)
 }
@@ -628,7 +659,9 @@ fn code_name(code: Code) -> &'static str {
 /// The URL tonic dials: `ws`/`wss` read as `http`/`https`, the scheme matched
 /// without regard to case, and any other scheme refused. tonic accepts any
 /// scheme and enables TLS only for `https`, so an unrecognised one would dial
-/// in plaintext, metadata and all.
+/// in plaintext, metadata and all. A path (other than `/`), query or fragment
+/// is refused too: tonic keeps only the scheme and authority, so it would be
+/// dropped without a word.
 fn dial_url(url: &str) -> Result<String, PoolError> {
     let (scheme, rest) = url
         .split_once("://")
@@ -642,6 +675,12 @@ fn dial_url(url: &str) -> Result<String, PoolError> {
             "{url}: unsupported URL scheme {scheme:?}, expected http or https"
         )));
     };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    if !matches!(&rest[authority_end..], "" | "/") {
+        return Err(PoolError::Spawn(format!(
+            "{url}: a URL path, query or fragment is not supported; the session path is fixed"
+        )));
+    }
     Ok(format!("{normalised}://{rest}"))
 }
 

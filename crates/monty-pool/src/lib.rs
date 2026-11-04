@@ -60,10 +60,6 @@ impl MontyTransport {
 /// itself before killing it.
 pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 
-/// Default [`PoolConfig::connect_timeout`]. Generous, since it only guards a
-/// stuck dial or a server that never admits the stream.
-pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Default [`PoolConfig::keep_alive`]: the fastest cadence a gRPC server's
 /// default ping policy permits (grpc-go, grpc-java and grpc-core all refuse
 /// pings closer than five minutes apart and answer with `GOAWAY` after two).
@@ -93,11 +89,6 @@ pub struct PoolConfig {
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
-    /// How long opening a remote session stream may take, from a cold dial
-    /// (TCP, TLS) through the server's admission, before the checkout fails
-    /// with [`PoolError::Spawn`]. Ignored by the subprocess transport.
-    /// Defaults to [`DEFAULT_CONNECT_TIMEOUT`].
-    pub connect_timeout: Duration,
     /// How often the remote transport sends an HTTP/2 `PING` on its
     /// connection while a stream is open, to notice a dead TCP peer on the
     /// first hop; `None` sends none. Liveness through proxies is the server's
@@ -111,6 +102,8 @@ pub struct PoolConfig {
     /// backstops the child-side `ResourceLimits` — it also catches a child
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
+    /// On the remote transport it also bounds opening a stream, from a cold
+    /// dial through the server's admission (30 s when `None`).
     pub request_timeout: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
@@ -170,7 +163,6 @@ impl PoolConfig {
             transport,
             execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
-            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             keep_alive: Some(DEFAULT_KEEP_ALIVE),
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
@@ -231,9 +223,11 @@ pub enum PoolError {
     /// failed or timed out, a malformed metadata entry.
     Spawn(String),
     /// The remote server refused to open the session stream (remote transport
-    /// only). `refusal` carries the status it answered with, so a caller can act
-    /// on its code and cause rather than on the message. No session existed,
-    /// so nothing ran.
+    /// only) with an admission code: `RESOURCE_EXHAUSTED`, `UNAVAILABLE`,
+    /// `UNAUTHENTICATED`, `PERMISSION_DENIED` or `FAILED_PRECONDITION`; any
+    /// other status is [`Self::Spawn`]. `refusal` carries the status, so a
+    /// caller can act on its code and cause rather than on the message. No
+    /// session existed, so nothing ran.
     Refused {
         /// The server's URL, as configured.
         url: String,

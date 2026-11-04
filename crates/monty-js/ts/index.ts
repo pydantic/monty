@@ -4,9 +4,9 @@ export {
   MontyRemote,
   type MontyRemoteOptions,
   type RemoteCheckoutOptions,
-  // the remote pool's former names, kept as plain aliases
-  MontyRemote as MontyWebsocket,
-  type MontyRemoteOptions as MontyWebsocketOptions,
-  type RemoteCheckoutOptions as WebsocketCheckoutOptions,
+  // the remote pool's former names, deprecated
+  MontyWebsocket,
+  type MontyWebsocketOptions,
+  type WebsocketCheckoutOptions,
 } from './remote.js'
 export * from './shared.js'

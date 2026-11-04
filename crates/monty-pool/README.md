@@ -273,7 +273,7 @@ input so adapters that do not support metrics continue to work.
   HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
   checkout opens one `MontySession.Session` stream on it. A stream the server never took
   — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
-  the stream was sent — is opened again, up to twice, within the same `connect_timeout`. These workers are single-use:
+  the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
   a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
@@ -292,8 +292,8 @@ input so adapters that do not support metrics continue to work.
   cannot delay it. A ping over 64 bytes, or more than ten in a second, ends the stream as
   a transport failure. `PoolConfig::keep_alive` (five minutes by default, the fastest cadence a
   gRPC server's default policy permits; `None` for none) adds an HTTP/2 `PING` on the first
-  hop while streams are open. `PoolConfig::connect_timeout`
-  (30 s by default) bounds opening a stream, from a cold dial through the server's admission.
+  hop while streams are open. `PoolConfig::request_timeout` (30 s when unset) also bounds
+  opening a stream, from a cold dial through the server's admission.
 
 A stream ended mid-session reports `PoolError::Disconnected`.
 Its optional `remote` details retain the first recorded failure: the gRPC status the server ended the stream with

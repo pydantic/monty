@@ -13,7 +13,7 @@ The pool holds one HTTP/2 connection to the server and each checkout opens one `
 a stream is never reused.
 See [running monty-server](../../server.md) and the [remote-worker trust boundary](../../security.md#remote-workers).
 A remote peer may be CPython rather than a Monty sandbox; the transport does not provide isolation.
-[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyRemote] is the same class under its former name, and a `ws://` or
+[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyRemote] is the same class under its deprecated former name, and a `ws://` or
 `wss://` URL is read as `http://` or `https://`.
 
 `checkout(profile='...')` names a server-side profile to run the session under; `None` takes the server's default.
@@ -25,7 +25,9 @@ ignores it.
 [`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream: at
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, no session existed, and retrying is safe.
-A server that cannot be reached at all raises `RuntimeError`.
+It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+A server that cannot be reached, or that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
+no Monty server), raises `RuntimeError`.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
 A server that ended it by policy says so in the error's status and cause (see
 [disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.

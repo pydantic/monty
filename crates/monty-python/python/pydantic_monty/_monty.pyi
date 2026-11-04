@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, NoReturn, final
 
 from opentelemetry.context import Context
-from typing_extensions import Self
+from typing_extensions import Self, deprecated
 
 from . import (
     AsyncSnapshot,
@@ -583,7 +583,9 @@ class MontyRefusedError(MontyError):
     asked for (`permission_denied`); it says which in `status_code`,
     `status_message` and `cause`. No session existed,
     so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
-    server that could not be reached at all raises `RuntimeError` instead.
+    server that could not be reached, or that answered with any other status
+    (such as `UNIMPLEMENTED` from a URL that is no Monty server), raises
+    `RuntimeError` instead.
 
     Cannot be constructed directly from Python.
     """
@@ -1119,9 +1121,9 @@ class AsyncMontyRemote:
                 raising `TimeoutError`. `None` waits forever.
             request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
                 worker that exceeds it has its connection killed and the call
-                raises `MontyCrashedError` with `timed_out=True`. Opening the
-                stream, which includes the server's admission, is bounded
-                separately (30 seconds). CPU-mode servers require a finite value.
+                raises `MontyCrashedError` with `timed_out=True`. It also bounds
+                opening the stream, including the server's admission (30
+                seconds when `None`). CPU-mode servers require a finite value.
                 Pass `None` to wait indefinitely with wall-mode servers.
                 Under contention, this wall deadline can expire before a server
                 CPU budget. Choose it for the expected budgets and scheduling delays.
@@ -1197,8 +1199,10 @@ class AsyncMontyRemote:
                 as-is; the `monty` worker itself ignores it.
         """
 
-# The remote pool's former name, kept as a plain alias of the class.
-AsyncMontyWebsocket = AsyncMontyRemote
+@deprecated('`AsyncMontyWebsocket` is the former name of `AsyncMontyRemote`; use that instead.')
+@final
+class AsyncMontyWebsocket(AsyncMontyRemote):  # type: ignore[misc]
+    """The former name of `AsyncMontyRemote`, which it is at runtime; deprecated."""
 
 @final
 class AsyncMontySession:

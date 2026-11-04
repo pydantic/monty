@@ -19,7 +19,7 @@ pip install pydantic-monty-client
 ## Usage with a remote monty server
 
 You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
-stream per session. `AsyncMontyWebsocket` is the same class under its former name.
+stream per session. `AsyncMontyWebsocket` is the same class under its former name, deprecated.
 
 ```python test="skip"
 from pydantic_monty import AsyncMontyRemote
@@ -45,6 +45,7 @@ the request did or did not run.
 The client does not automatically replay a disconnected request.
 `MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
 nothing ran, so retrying is safe.
+It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
 
 ## Host decode budget
 

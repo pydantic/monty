@@ -30,7 +30,7 @@ from inline_snapshot import snapshot
 
 from pydantic_monty import (
     AsyncMontyRemote,
-    AsyncMontyWebsocket,
+    AsyncMontyWebsocket,  # pyright: ignore[reportDeprecated]
     ExternalModule,
     MontyDisconnectError,
     MontyRefusedError,
@@ -263,12 +263,12 @@ async def test_feed_run_over_grpc(relay_url: str):
 
 def test_websocket_name_is_an_alias():
     """The former name still resolves to the same class."""
-    assert AsyncMontyWebsocket is AsyncMontyRemote
+    assert AsyncMontyWebsocket is AsyncMontyRemote  # pyright: ignore[reportDeprecated]
 
 
 async def test_websocket_urls_are_accepted(relay_url: str):
     """A `ws://` URL kept from the WebSocket days dials the same server over gRPC."""
-    async with AsyncMontyWebsocket('ws://' + relay_url.removeprefix('http://'), request_timeout=30.0) as pool:
+    async with AsyncMontyRemote('ws://' + relay_url.removeprefix('http://'), request_timeout=30.0) as pool:
         async with pool.checkout() as session:
             assert await session.feed_run('1 + 1') == snapshot(2)
 

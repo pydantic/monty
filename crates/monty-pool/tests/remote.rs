@@ -39,7 +39,7 @@ use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 #[cfg(not(windows))]
 use tokio::time::timeout;
-use tokio::{runtime::Builder, task::spawn_blocking};
+use tokio::{net::TcpListener, runtime::Builder, task::spawn_blocking};
 use tonic::Status;
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
@@ -365,6 +365,34 @@ async fn malformed_metadata_fail_the_dial() {
     }
 }
 
+/// `request_timeout` bounds opening a stream too: a server that takes the TCP
+/// connection but never speaks HTTP/2 fails the checkout at that deadline.
+#[tokio::test]
+async fn request_timeout_bounds_opening_the_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}/", listener.local_addr().expect("addr"));
+    let silent = tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+
+    let mut config = PoolConfig::remote(&url);
+    config.request_timeout = Some(Duration::from_millis(200));
+    let pool = Pool::new(config).await.expect("pool");
+    let start = Instant::now();
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("a server that never answers cannot admit a stream");
+    };
+    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
+    let PoolError::Spawn(message) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(message, format!("{url}: connect timed out after 200ms"));
+    silent.abort();
+}
+
 /// A URL tonic cannot parse fails pool creation with the same `{url}: {err}`
 /// shape as every other dial failure — before any checkout, since the channel
 /// is built once for the pool.
@@ -413,6 +441,32 @@ async fn url_schemes_are_normalised_and_unknown_ones_refused() {
     }
 }
 
+/// tonic dials only the scheme and authority, so a URL naming a path, query or
+/// fragment fails pool creation rather than dropping it silently; a bare `/`
+/// is the root and fine.
+#[tokio::test]
+async fn url_paths_are_refused() {
+    for url in [
+        "http://127.0.0.1:9/relay",
+        "http://127.0.0.1:9/?x=1",
+        "http://127.0.0.1:9#a",
+    ] {
+        let Err(err) = Pool::new(PoolConfig::remote(url)).await else {
+            panic!("{url} must fail pool creation");
+        };
+        let PoolError::Spawn(msg) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        assert_eq!(
+            msg,
+            format!("{url}: a URL path, query or fragment is not supported; the session path is fixed")
+        );
+    }
+    for url in ["http://127.0.0.1:9", "http://127.0.0.1:9/"] {
+        Pool::new(PoolConfig::remote(url)).await.expect("a root URL is fine");
+    }
+}
+
 /// A server that refuses the stream before admitting it — at capacity, or
 /// rejecting the caller — fails the checkout with its status kept structured,
 /// so the caller acts on the code and cause rather than the message, and never
@@ -448,6 +502,23 @@ async fn a_refused_stream_fails_the_checkout() {
     let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     checkout.finish().await.expect("finish");
     join_server(server).await;
+}
+
+/// Only an admission code is a refusal: a status such as `UNIMPLEMENTED`, from
+/// a URL that is no Monty server, is a misconfiguration, so it fails as `Spawn`
+/// and a retry loop on `Refused` does not spin on it.
+#[tokio::test]
+async fn a_non_admission_status_is_a_spawn_failure() {
+    let (mock, config) = mock_pool_config().await;
+    mock.refuse_next(Status::unimplemented("unknown service"));
+    let pool = Pool::new(config).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("an unimplemented session RPC must fail the checkout");
+    };
+    let PoolError::Spawn(message) = err else {
+        panic!("expected Spawn error, got {err:?}");
+    };
+    assert_eq!(message, format!("{}: UNIMPLEMENTED: unknown service", mock.url()));
 }
 
 /// `Debug` for [`CheckoutOptions`] names each metadata entry, never its value.

@@ -24,7 +24,8 @@ export interface MontyRemoteOptions {
    * that gets no answer in time has its stream ended and fails with
    * `MontyCrashedError` (`timedOut: true`). Without it, a server that admits
    * the stream but never answers blocks the turn until the far end ends it.
-   * `installDependencies` is a turn too, and a real install can exceed 10s.
+   * It also bounds opening the stream, including the server's admission (30s
+   * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
    * CPU-mode servers require a finite `requestTimeout`.
    */
   requestTimeout?: number | null
@@ -72,7 +73,7 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
  * peer is `monty-server`. The pool keeps one HTTP/2 connection to `url` and
  * each checkout opens a session stream on it; streams are never pre-warmed
  * or reused. The transport provides no isolation of its own: the server is
- * responsible for sandboxing. Also exported as `MontyWebsocket`, its former name.
+ * responsible for sandboxing. Also exported as `MontyWebsocket`, its deprecated former name.
  *
  * ```ts
  * await using pool = await MontyRemote.create('http://127.0.0.1:8000/')
@@ -174,6 +175,15 @@ function headerList(headers: unknown): { name: string; value: string }[] {
     return { name, value }
   })
 }
+
+/** @deprecated `MontyWebsocket` is the former name of `MontyRemote`; use that instead. */
+export const MontyWebsocket = MontyRemote
+/** @deprecated `MontyWebsocket` is the former name of `MontyRemote`; use that instead. */
+export type MontyWebsocket = MontyRemote
+/** @deprecated The former name of `MontyRemoteOptions`; use that instead. */
+export type MontyWebsocketOptions = MontyRemoteOptions
+/** @deprecated The former name of `RemoteCheckoutOptions`; use that instead. */
+export type WebsocketCheckoutOptions = RemoteCheckoutOptions
 
 /** Names a value's type for an error message. */
 function describe(value: unknown): string {

@@ -412,7 +412,7 @@ unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).
 The transport adds no isolation of its own: see [remote workers](../security.md#remote-workers).
 `MontyRemote` is native-only; `@pydantic/monty/wasm` does not export it.
-`MontyWebsocket` is the same class under its former name, and still accepts `ws://`/`wss://` URLs.
+`MontyWebsocket` is the same class under its deprecated former name, and still accepts `ws://`/`wss://` URLs.
 
 ## Browsers and WebAssembly
 

@@ -13,7 +13,7 @@ from ._monty import (
     AsyncMonty,
     AsyncMontyRemote,
     AsyncMontySession,
-    AsyncMontyWebsocket,
+    AsyncMontyWebsocket,  # pyright: ignore[reportDeprecated]
     AsyncNameLookupSnapshot,
     CollectStreams,
     CollectString,
