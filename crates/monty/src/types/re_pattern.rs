@@ -6,6 +6,9 @@
 //! to ReDoS. Monty's resource limits (time and allocation budgets) are the primary defense
 //! against catastrophic backtracking in untrusted patterns.
 //!
+//! Patterns are translated from CPython's syntax by [`re_syntax::translate`] before `fancy_regex`
+//! sees them, so CPython's errors are raised and `fancy_regex`'s own extensions are unreachable.
+//!
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
@@ -25,7 +28,7 @@ use crate::{
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
+        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple, re_syntax,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
@@ -100,7 +103,8 @@ impl RePattern {
     ///
     /// Returns `re.PatternError` if the pattern is invalid.
     pub fn compile(pattern: String, flags: u16) -> RunResult<Self> {
-        Self::compile_inner(pattern, flags, None).map_err(ExcType::re_pattern_error)
+        let source = re_syntax::translate(&pattern, flags)?;
+        Self::compile_inner(pattern, &source, flags, None).map_err(ExcType::re_pattern_error)
     }
 
     /// As [`RePattern::compile`], but caps the compiled size of the delegated regex
@@ -113,7 +117,8 @@ impl RePattern {
         flags: u16,
         delegate_size_limit: usize,
     ) -> Result<Self, BoundedCompileError> {
-        Self::compile_inner(pattern, flags, Some(delegate_size_limit)).map_err(|err| {
+        let source = re_syntax::translate(&pattern, flags).map_err(BoundedCompileError::Invalid)?;
+        Self::compile_inner(pattern, &source, flags, Some(delegate_size_limit)).map_err(|err| {
             if is_size_limit_error(&err) {
                 BoundedCompileError::TooBig
             } else {
@@ -132,8 +137,15 @@ impl RePattern {
     }
 
     /// Shared constructor for [`RePattern::compile`] / [`RePattern::compile_bounded`].
-    fn compile_inner(pattern: String, flags: u16, delegate_size_limit: Option<usize>) -> Result<Self, RegexError> {
-        let compiled = compile_regex_limited(&pattern, flags, delegate_size_limit)?;
+    ///
+    /// `source` is `pattern` translated by [`re_syntax::translate`].
+    fn compile_inner(
+        pattern: String,
+        source: &str,
+        flags: u16,
+        delegate_size_limit: Option<usize>,
+    ) -> Result<Self, RegexError> {
+        let compiled = compile_regex_limited(source, flags, delegate_size_limit)?;
         Ok(Self {
             pattern,
             flags,
@@ -146,18 +158,16 @@ impl RePattern {
 
     /// Returns the `\A(?:pattern)` regex for `match()`, compiling it on first use.
     ///
+    /// The pattern is translated again rather than kept, since cached patterns should stay small.
     /// Wrapping a pattern that already compiled essentially never fails, so any
     /// error surfaces (as `re.PatternError`) at `match()` rather than `re.compile()`.
     fn match_regex(&self) -> RunResult<&Regex> {
         if let Some(regex) = self.compiled_match.get() {
             return Ok(regex);
         }
-        let compiled = compile_regex_limited(
-            &anchored_source(&self.pattern, ""),
-            self.flags,
-            self.delegate_size_limit,
-        )
-        .map_err(ExcType::re_pattern_error)?;
+        let source = re_syntax::translate(&self.pattern, self.flags)?;
+        let compiled = compile_regex_limited(&anchored_source(&source, ""), self.flags, self.delegate_size_limit)
+            .map_err(ExcType::re_pattern_error)?;
         // `set` only fails on a concurrent init, impossible on the single-threaded VM.
         let _ = self.compiled_match.set(compiled);
         Ok(self.compiled_match.get().expect("cell was just initialised"))
@@ -168,12 +178,9 @@ impl RePattern {
         if let Some(regex) = self.compiled_fullmatch.get() {
             return Ok(regex);
         }
-        let compiled = compile_regex_limited(
-            &anchored_source(&self.pattern, "\\z"),
-            self.flags,
-            self.delegate_size_limit,
-        )
-        .map_err(ExcType::re_pattern_error)?;
+        let source = re_syntax::translate(&self.pattern, self.flags)?;
+        let compiled = compile_regex_limited(&anchored_source(&source, "\\z"), self.flags, self.delegate_size_limit)
+            .map_err(ExcType::re_pattern_error)?;
         let _ = self.compiled_fullmatch.set(compiled);
         Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
     }
@@ -742,7 +749,7 @@ fn anchored_source(pattern: &str, suffix: &str) -> String {
     format!("\\A(?:{pattern}(?x)\n){suffix}")
 }
 
-/// Compiles a Python regex pattern string with flags into a Rust `Regex`.
+/// Compiles a pattern already translated by [`re_syntax::translate`], with flags, into a Rust `Regex`.
 ///
 /// Translates Python flag constants into inline regex flag prefixes:
 /// - `re.IGNORECASE` (2) → `(?i)` prefix
