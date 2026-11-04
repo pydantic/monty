@@ -140,11 +140,6 @@ pub struct FunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
-    /// The callee is an async host function (see
-    /// [`MontyObject::async_function`](monty_types::MontyObject::async_function)):
-    /// the host may answer with [`Self::resume_pending`] without running it first.
-    #[serde(default)]
-    pub is_async: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal execution snapshot.
@@ -1028,7 +1023,7 @@ pub(crate) enum ConvertedExit {
         call_id: u32,
         object_id: Option<MontyUuid>,
         allow_eager_await: bool,
-        /// See [`FunctionCall::is_async`].
+        /// See [`ReplFunctionCall::is_async`](crate::ReplFunctionCall::is_async).
         is_async: bool,
         /// The call expression.
         position: SourceRange,
@@ -1231,7 +1226,8 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
-            is_async,
+            // only REPL hosts start calls without waiting (`ReplFunctionCall::is_async`)
+            is_async: _,
             position,
         } => Ok(RunProgress::FunctionCall(FunctionCall {
             function_name,
@@ -1239,7 +1235,6 @@ pub(crate) fn build_run_progress(
             call_id,
             object_id,
             allow_eager_await,
-            is_async,
             position,
             snapshot: new_snapshot!(),
         })),
