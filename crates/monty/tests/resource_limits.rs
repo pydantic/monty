@@ -1434,6 +1434,30 @@ fn timeout_in_sort_key_loop() {
     );
 }
 
+/// Many references to 16 long strings sharing a 1 MB prefix: each comparison scans the prefix, so the sort must
+/// poll between comparisons rather than run Rust's uninterruptible `sort_by`.
+#[test]
+fn timeout_in_sort_of_long_strings() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "s = 'a' * 1_000_000\nkeys = [s + chr(97 + i) for i in range(16)]\nx = [keys[i * 7 % 16] for i in range(20_000)]",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+    let start = ThreadTime::now();
+    let exc = repl
+        .feed_run("x.sort()", vec![], PrintWriter::Stdout)
+        .expect_err("the sort must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "should stop promptly, took {elapsed:?}"
+    );
+}
+
 /// `deepcopy` walks the whole graph inside a single call, reaching no dispatch
 /// checkpoint, so its fill loops are all that bound it. The source is built in
 /// an earlier feed, leaving only the copy to run against the limit.
