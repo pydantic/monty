@@ -387,6 +387,25 @@ assert 'hi'.rjust(6) == '    hi'
 assert 'hi'.rjust(6, '-') == '----hi'
 assert 'hi'.rjust(2) == 'hi'
 
+# fill character errors of center(), ljust() and rjust()
+for justify in [
+    lambda fill: 'hi'.center(5, fill),
+    lambda fill: 'hi'.ljust(5, fill),
+    lambda fill: 'hi'.rjust(5, fill),
+]:
+    for fill, expected in [
+        ('ab', 'The fill character must be exactly one character long'),
+        ('', 'The fill character must be exactly one character long'),
+        (b'a', 'The fill character must be a unicode character, not bytes'),
+        (1, 'The fill character must be a unicode character, not int'),
+        (None, 'The fill character must be a unicode character, not NoneType'),
+    ]:
+        try:
+            justify(fill)
+            assert False, 'expected TypeError'
+        except TypeError as e:
+            assert str(e) == expected
+
 # zfill()
 assert '42'.zfill(5) == '00042'
 assert '-42'.zfill(5) == '-0042'

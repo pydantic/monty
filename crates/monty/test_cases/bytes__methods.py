@@ -263,6 +263,26 @@ assert b'hello'.rjust(10) == b'     hello'
 assert b'hello'.rjust(10, b'*') == b'*****hello'
 assert b'hello'.rjust(3) == b'hello'
 
+# === Fill byte errors of center(), ljust() and rjust() ===
+# CPython names the bare method and words a wrong length and a wrong type differently.
+for name, justify in [
+    ('center', lambda fill: b'hi'.center(5, fill)),
+    ('ljust', lambda fill: b'hi'.ljust(5, fill)),
+    ('rjust', lambda fill: b'hi'.rjust(5, fill)),
+]:
+    for fill, expected in [
+        (b'ab', f'{name}(): argument 2 must be a byte string of length 1, not a bytes object of length 2'),
+        (b'', f'{name}(): argument 2 must be a byte string of length 1, not a bytes object of length 0'),
+        ('a', f'{name}() argument 2 must be a byte string of length 1, not str'),
+        (1, f'{name}() argument 2 must be a byte string of length 1, not int'),
+        (None, f'{name}() argument 2 must be a byte string of length 1, not None'),
+    ]:
+        try:
+            justify(fill)
+            assert False, 'expected TypeError'
+        except TypeError as e:
+            assert str(e) == expected
+
 # === bytes.zfill() ===
 assert b'42'.zfill(5) == b'00042'
 assert b'-42'.zfill(5) == b'-0042'
