@@ -1,5 +1,8 @@
+mod access_cache;
+
 use std::{cell::Cell, fmt::Write, ops, str};
 
+pub(crate) use access_cache::AccessCache;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
@@ -26,7 +29,6 @@ use crate::{
     resource_checks::{check_repeat_size, check_replace_size},
     str_format::str_format,
     string_builder::StringBuilder,
-    string_index::StringIndex,
     types::{
         LazyHeapSet, Type,
         py_trait::PyObjectIdentity,
@@ -44,10 +46,10 @@ enum StringCache<'s, 'h> {
 }
 
 impl<'h> StringCache<'_, 'h> {
-    fn get<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s StringIndex> {
+    fn get<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s AccessCache> {
         match self {
             Self::Heap(string) => Some(&string.get(vm.heap).3),
-            Self::Interned(id) => vm.interns.str_index(*id),
+            Self::Interned(id) => vm.interns.str_access_cache(*id),
             Self::Inline => None,
         }
     }
@@ -61,7 +63,7 @@ pub(crate) struct Str(
     Box<str>,
     #[serde(skip)] Cell<Option<HashValue>>,
     #[serde(skip)] Cell<Option<bool>>,
-    #[serde(skip)] StringIndex,
+    #[serde(skip)] AccessCache,
 );
 
 impl PartialEq for Str {
@@ -78,7 +80,7 @@ impl Str {
     /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
     fn new(s: impl Into<Box<str>>) -> Self {
-        Self(s.into(), Cell::new(None), Cell::new(None), StringIndex::default())
+        Self(s.into(), Cell::new(None), Cell::new(None), AccessCache::default())
     }
 
     /// Returns a reference to the inner string.
@@ -230,7 +232,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
                     text.len()
                 } else {
                     vm.interns
-                        .str_index(*id)
+                        .str_access_cache(*id)
                         .expect("non-ASCII interned string")
                         .char_len(text)
                 })
@@ -1302,7 +1304,7 @@ fn string_search_range<'h>(
 
 /// Resolves character bounds for slicing; `usize::MAX` denotes the omitted end without counting text.
 /// Inline strings use the bounded scan fallback because they have no persistent cache.
-fn string_byte_offset(text: &str, cache: Option<&StringIndex>, target: usize) -> usize {
+fn string_byte_offset(text: &str, cache: Option<&AccessCache>, target: usize) -> usize {
     if target == 0 {
         return 0;
     }
@@ -1319,7 +1321,7 @@ fn string_byte_offset(text: &str, cache: Option<&StringIndex>, target: usize) ->
 }
 
 /// Converts a match's byte position back to Python's character index using the same cursor as bounds.
-fn string_char_offset(text: &str, cache: Option<&StringIndex>, byte: usize) -> usize {
+fn string_char_offset(text: &str, cache: Option<&AccessCache>, byte: usize) -> usize {
     if byte == 0 {
         return 0;
     }
@@ -2446,5 +2448,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/format_template.rs"]
+#[path = "../../../tests/unit/format_template.rs"]
 mod format_template_tests;

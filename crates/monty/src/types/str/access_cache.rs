@@ -10,13 +10,13 @@ use std::cell::{Cell, RefCell};
 
 /// Belongs to one immutable string; offsets cannot be reused with different text.
 #[derive(Debug)]
-pub(crate) struct StringIndex {
+pub(crate) struct AccessCache {
     // Zero means unknown; every string length is representable after adding one.
     length: Cell<usize>,
     state: RefCell<Option<Box<State>>>,
 }
 
-impl Default for StringIndex {
+impl Default for AccessCache {
     fn default() -> Self {
         Self {
             length: Cell::new(0),
@@ -25,7 +25,7 @@ impl Default for StringIndex {
     }
 }
 
-impl Clone for StringIndex {
+impl Clone for AccessCache {
     fn clone(&self) -> Self {
         // Cloning text must not retain the source's access history.
         Self::default()
@@ -39,7 +39,7 @@ struct State {
     last: (usize, usize),
 }
 
-impl StringIndex {
+impl AccessCache {
     #[cfg(test)]
     pub(crate) fn has_cursor(&self) -> bool {
         self.state.borrow().is_some()
@@ -130,5 +130,5 @@ impl StringIndex {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/string_index.rs"]
+#[path = "../../../tests/unit/str_access_cache.rs"]
 mod tests;

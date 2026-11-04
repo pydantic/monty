@@ -664,7 +664,7 @@ fn legacy_wall_clock_snapshot_preserves_consumption() {
 }
 
 #[test]
-fn unicode_string_cursors_rebuild_after_dump() {
+fn unicode_string_access_caches_rebuild_after_dump() {
     let mut repl = MontyRepl::new("strings.py", ResourceTracker::default(), CompileOptions::default());
     let setup = "text = 'aé中🐍' * 4096\nfor i in range(1000):\n    assert text[(i * 7919) % len(text)] == 'aé中🐍'[(i * 7919) % 4]\n";
     repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();

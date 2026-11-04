@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn random_local_and_inverse_offsets() {
     for text in ["", "ascii", "aé中🐍", "abcdefghüijk中🐍"].map(|s| s.repeat(300)) {
-        let index = StringIndex::default();
+        let index = AccessCache::default();
         let characters: Vec<_> = text.chars().collect();
         let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).chain([text.len()]).collect();
         for n in 0..4096 {
@@ -26,7 +26,7 @@ fn random_local_and_inverse_offsets() {
 #[test]
 fn endpoints_do_not_allocate_a_cursor() {
     let text = "a中é🐍".repeat(4096);
-    let index = StringIndex::default();
+    let index = AccessCache::default();
     for _ in 0..100 {
         assert_eq!(index.character(&text, 0), Some('a'));
         assert_eq!(index.character(&text, -1), Some('🐍'));
@@ -41,7 +41,7 @@ fn endpoints_do_not_allocate_a_cursor() {
 #[test]
 fn clone_resets_length_and_cursor() {
     let text = "a中é🐍".repeat(4096);
-    let index = StringIndex::default();
+    let index = AccessCache::default();
     assert_eq!(index.char_len(&text), 16384);
     assert_eq!(index.character(&text, 8000), Some('a'));
     assert!(index.has_cursor());
