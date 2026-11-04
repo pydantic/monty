@@ -122,9 +122,9 @@ impl GenericAlias {
         // `_type_check` does — except `Literal` values and `Annotated` metadata.
         let key = match form.0 {
             StaticStrings::Literal => literal_params(key, vm)?,
-            StaticStrings::Annotated => flatten_annotated(none_to_none_type(key, 1, vm), vm),
-            StaticStrings::Callable => none_to_none_type(callable_params(key, vm)?, usize::MAX, vm),
-            _ => none_to_none_type(key, usize::MAX, vm),
+            StaticStrings::Annotated => flatten_annotated(none_to_none_type(key, 1, vm)?, vm)?,
+            StaticStrings::Callable => none_to_none_type(callable_params(key, vm)?, usize::MAX, vm)?,
+            _ => none_to_none_type(key, usize::MAX, vm)?,
         };
         Ok(Self::allocate(AliasOrigin::Special(form), key, vm))
     }
@@ -485,16 +485,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
 }
 
 /// Replaces `None` with `NoneType` in the first `limit` items of a subscript
-/// (`key` itself when it is not a tuple), taking and returning ownership.
-fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> Value {
+/// (`key` itself when it is not a tuple), taking and returning ownership. The
+/// copy is preflighted like any container copy.
+fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> RunResult<Value> {
     let none_type = || Value::Builtin(Builtins::Type(BuiltinType::NoneType));
     // The reader on `key` must be released before `key`, possibly the last
     // reference to a fresh tuple, is dropped below.
     let converted = {
         let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
-            return if matches!(key, Value::None) { none_type() } else { key };
+            return Ok(if matches!(key, Value::None) { none_type() } else { key });
         };
         let count = items.get(vm.heap).as_slice().len();
+        if let Err(err) = vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE)) {
+            drop(items);
+            key.drop_with(vm);
+            return Err(err.into());
+        }
         let mut converted = smallvec![];
         for index in 0..count {
             let item = items.clone_item(index, vm);
@@ -507,14 +513,15 @@ fn none_to_none_type(key: Value, limit: usize, vm: &mut VM<'_>) -> Value {
         converted
     };
     key.drop_with(vm);
-    allocate_tuple(converted, vm.heap)
+    Ok(allocate_tuple(converted, vm.heap))
 }
 
 /// `Annotated[Annotated[T, a], b]` is `Annotated[T, a, b]`: nested metadata
 /// flattens, innermost first, as CPython's `Annotated.__class_getitem__` does.
 /// Takes and returns ownership of the args tuple.
-fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> Value {
-    // The readers on `key` must be released before it can be dropped below.
+fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    defer_drop!(key, vm);
+    // The readers on `key` must be released before it can be dropped.
     let flattened = {
         let Some(HeapReadOutput::Tuple(items)) = key.read_heap(vm) else {
             unreachable!("Annotated takes at least two arguments")
@@ -525,8 +532,10 @@ fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> Value {
             Some(HeapReadOutput::GenericAlias(inner)) if inner.get(vm.heap).is_annotated() => {
                 let (_, inner_args) = inner.parts(vm);
                 defer_drop!(inner_args, vm);
-                let mut flattened = tuple_items(inner_args, vm);
-                for index in 1..items.get(vm.heap).as_slice().len() {
+                let count = items.get(vm.heap).as_slice().len();
+                vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+                let mut flattened = tuple_items(inner_args, vm)?;
+                for index in 1..count {
                     flattened.push(items.clone_item(index, vm));
                 }
                 Some(flattened)
@@ -534,13 +543,10 @@ fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> Value {
             _ => None,
         }
     };
-    match flattened {
-        Some(flattened) => {
-            key.drop_with(vm);
-            allocate_tuple(flattened, vm.heap)
-        }
-        None => key,
-    }
+    Ok(match flattened {
+        Some(flattened) => allocate_tuple(flattened, vm.heap),
+        None => key.clone_with_heap(vm),
+    })
 }
 
 /// `Literal`'s parameters as CPython stores them: a nested `Literal` is
@@ -549,13 +555,18 @@ fn flatten_annotated(key: Value, vm: &mut VM<'_>) -> Value {
 fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(key, vm);
     let written = if matches!(key.read_heap(vm), Some(HeapReadOutput::Tuple(_))) {
-        tuple_items(key, vm)
+        tuple_items(key, vm)?
     } else {
         smallvec![key.clone_with_heap(vm)]
     };
-    // One level of flattening: a nested `Literal` was normalised when it was built.
-    let mut flattened: TupleVec = smallvec![];
-    for value in written {
+    // One level of flattening: a nested `Literal` was normalised when it was
+    // built. Values are taken out of `written` one at a time and `flattened` is
+    // guarded from the start, so a refused copy of a nested form leaks nothing.
+    defer_drop_mut!(written, vm);
+    let mut flattened_guard = DropGuard::new(TupleVec::new(), vm);
+    let (flattened, vm) = flattened_guard.as_parts_mut();
+    for index in 0..written.len() {
+        let value = mem::replace(&mut written[index], Value::None);
         let nested = match value.read_heap(vm) {
             Some(HeapReadOutput::GenericAlias(alias)) if alias.get(vm.heap).origin == LITERAL => {
                 Some(alias.parts(vm).1)
@@ -565,12 +576,13 @@ fn literal_params(key: Value, vm: &mut VM<'_>) -> RunResult<Value> {
         match nested {
             Some(args) => {
                 defer_drop!(args, vm);
-                flattened.extend(tuple_items(args, vm));
                 value.drop_with(vm);
+                flattened.extend(tuple_items(args, vm)?);
             }
             None => flattened.push(value),
         }
     }
+    let (flattened, vm) = flattened_guard.into_parts();
     // Values are taken out one at a time, so the guard still releases the rest
     // when a comparison fails. Hashable values are bucketed by type and hash,
     // keeping deduplication linear; unhashable ones are compared one by one.
@@ -620,9 +632,9 @@ fn same_literal_value(a: &Value, b: &Value, vm: &mut VM<'_>) -> RunResult<bool> 
 /// deduplicated. An unhashable value raises the `TypeError` CPython's set
 /// comparison does.
 fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
-    let items = tuple_items(args, vm);
+    let items = tuple_items(args, vm)?;
     defer_drop!(items, vm);
-    let others = tuple_items(other_args, vm);
+    let others = tuple_items(other_args, vm)?;
     defer_drop!(others, vm);
     // Bucket the other side by type and hash, so the comparison is linear.
     let mut buckets: AHashMap<(Type, u64), SmallVec<[usize; 1]>> = AHashMap::new();
@@ -667,7 +679,7 @@ fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bo
 /// `Literal`'s argument hash: each value's hash paired with its type, as the
 /// equality pairs them, combined in any order; `None` when a value is unhashable.
 fn literal_hash(args: &Value, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
-    let items = tuple_items(args, vm);
+    let items = tuple_items(args, vm)?;
     defer_drop!(items, vm);
     let mut combined: u64 = 0;
     for (index, item) in items.iter().enumerate() {
@@ -710,13 +722,14 @@ fn is_dunder(name: &str) -> bool {
     name.len() > 4 && name.starts_with("__") && name.ends_with("__")
 }
 
-/// Owned clones of a tuple's items.
-fn tuple_items(tuple: &Value, vm: &mut VM<'_>) -> TupleVec {
+/// Owned clones of a tuple's items, preflighted like any container copy.
+fn tuple_items(tuple: &Value, vm: &mut VM<'_>) -> RunResult<TupleVec> {
     let Some(HeapReadOutput::Tuple(items)) = tuple.read_heap(vm) else {
         unreachable!("GenericAlias::args is always a tuple")
     };
     let count = items.get(vm.heap).as_slice().len();
-    (0..count).map(|index| items.clone_item(index, vm)).collect()
+    vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+    Ok((0..count).map(|index| items.clone_item(index, vm)).collect())
 }
 
 /// CPython's `TypeError` for instantiating one of `collections.abc`'s classes.

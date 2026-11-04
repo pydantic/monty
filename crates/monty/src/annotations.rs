@@ -16,7 +16,7 @@ use crate::{
     heap_data::FunctionDefaults,
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
-    types::Dict,
+    types::{Dict, dict},
     value::Value,
 };
 
@@ -194,10 +194,12 @@ pub(crate) fn set_class_annotations(class_id: HeapId, value: Value, vm: &mut VM<
 
 /// A fresh heap dict holding the class namespace's entries, CPython's
 /// `dict(vars(cls))`: the locals a class's annotations evaluate against.
+/// The pair buffer and the dict are preflighted like a dict copy.
 pub(crate) fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         unreachable!("class_namespace_copy takes a class");
     };
+    dict::check_pairs_into_fresh_dict(class.namespace().len(), vm)?;
     let pairs = class
         .namespace()
         .iter()
