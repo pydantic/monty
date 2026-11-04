@@ -18,12 +18,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{
-        DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView, heap_read_ref_as_field,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView,
+        heap_read_ref_as_field,
     },
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
-    resource_checks::{check_repeat_size, check_replace_size},
+    resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
@@ -31,7 +32,7 @@ use crate::{
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{EitherStr, Value, eq_str},
+    value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
 
 /// Heap-backed Python string with cached hash and ASCII status.
@@ -354,9 +355,24 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
 }
 
 /// Preflights the repeated string allocation.
+///
+/// Raises CPython's `OverflowError` past `isize::MAX` bytes and `MemoryError` when the
+/// allocator refuses, where `str::repeat` would panic or abort with no memory limit set.
 fn repeat_str(value: &str, count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
+    let total = repeated_len(value.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
     check_repeat_size(value.len(), count, &vm.heap.tracker)?;
-    Ok(Some(allocate_string(value.repeat(count), vm.heap)))
+    let mut repeated = String::new();
+    repeated
+        .try_reserve_exact(total)
+        .map_err(|_| ExcType::allocation_too_large())?;
+    if total > 0 {
+        // Doubling copies: each pass appends a whole number of copies, so every cut is a char boundary.
+        repeated.push_str(value);
+        while repeated.len() < total {
+            repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
+        }
+    }
+    Ok(Some(allocate_string(repeated, vm.heap)))
 }
 
 /// Creates a single-character string without allocating.
@@ -1322,6 +1338,9 @@ fn str_removesuffix<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM
 fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+    // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
+    let mut items_guard = DropGuard::new(Vec::new(), vm);
+    let (list_items, vm) = items_guard.as_parts_mut();
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1331,32 +1350,37 @@ fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                s.split(sep.as_str()).collect()
+                collect_checked(s.split(sep.as_str()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                s.splitn(max.saturating_add(1), sep.as_str()).collect()
+                collect_checked(s.splitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?
             }
         }
         None => {
             // Split on whitespace, filtering empty strings
             if maxsplit < 0 {
-                s.split(is_space).filter(|part| !part.is_empty()).collect()
+                collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                split_whitespace_n(s, max)
+                split_whitespace_n(s, max, &vm.heap.tracker)?
             }
         }
     };
 
     // Convert to list of strings (using interned empty string when applicable)
-    let mut list_items = Vec::with_capacity(parts.len());
+    vm.heap
+        .tracker
+        .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
     }
 
+    let (list_items, vm) = items_guard.into_parts();
     let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
@@ -1369,6 +1393,9 @@ fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+    // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
+    let mut items_guard = DropGuard::new(Vec::new(), vm);
+    let (list_items, vm) = items_guard.as_parts_mut();
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1378,11 +1405,13 @@ fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                s.rsplit(sep.as_str()).collect::<Vec<_>>().into_iter().rev().collect()
+                let mut parts = collect_checked(s.rsplit(sep.as_str()), &vm.heap.tracker)?;
+                parts.reverse();
+                parts
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                let mut parts: Vec<_> = s.rsplitn(max.saturating_add(1), sep.as_str()).collect();
+                let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?;
                 parts.reverse();
                 parts
             }
@@ -1390,22 +1419,27 @@ fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
         None => {
             // Split on whitespace from right
             if maxsplit < 0 {
-                s.split(is_space).filter(|part| !part.is_empty()).collect()
+                collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                rsplit_whitespace_n(s, max)
+                rsplit_whitespace_n(s, max, &vm.heap.tracker)?
             }
         }
     };
 
     // Convert to list of strings (using interned empty string when applicable)
-    let mut list_items = Vec::with_capacity(parts.len());
+    vm.heap
+        .tracker
+        .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
     }
 
+    let (list_items, vm) = items_guard.into_parts();
     let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
@@ -1450,14 +1484,18 @@ struct RsplitArgs {
 }
 
 /// Split string on whitespace, returning at most `maxsplit + 1` parts.
-fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
+fn split_whitespace_n<'a>(
+    s: &'a str,
+    maxsplit: usize,
+    tracker: &ResourceTracker,
+) -> Result<Vec<&'a str>, ResourceError> {
     let mut parts = Vec::new();
     let mut remaining = s.trim_start_matches(is_space);
     let mut count = 0;
 
     while !remaining.is_empty() && count < maxsplit {
         if let Some(end) = remaining.find(is_space) {
-            parts.push(&remaining[..end]);
+            push_checked(&mut parts, &remaining[..end], tracker)?;
             remaining = remaining[end..].trim_start_matches(is_space);
             count += 1;
         } else {
@@ -1466,14 +1504,18 @@ fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     }
 
     if !remaining.is_empty() {
-        parts.push(remaining);
+        push_checked(&mut parts, remaining, tracker)?;
     }
 
-    parts
+    Ok(parts)
 }
 
 /// Split string on whitespace from the right, returning at most `maxsplit + 1` parts.
-fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
+fn rsplit_whitespace_n<'a>(
+    s: &'a str,
+    maxsplit: usize,
+    tracker: &ResourceTracker,
+) -> Result<Vec<&'a str>, ResourceError> {
     let mut parts = Vec::new();
     let mut remaining = s.trim_end_matches(is_space);
     let mut count = 0;
@@ -1481,7 +1523,7 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     while !remaining.is_empty() && count < maxsplit {
         if let Some(start) = remaining.rfind(is_space) {
             let ws_len = remaining[start..].chars().next().unwrap().len_utf8();
-            parts.push(&remaining[start + ws_len..]);
+            push_checked(&mut parts, &remaining[start + ws_len..], tracker)?;
             remaining = remaining[..start].trim_end_matches(is_space);
             count += 1;
         } else {
@@ -1490,11 +1532,11 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     }
 
     if !remaining.is_empty() {
-        parts.push(remaining);
+        push_checked(&mut parts, remaining, tracker)?;
     }
 
     parts.reverse();
-    parts
+    Ok(parts)
 }
 
 /// Implements Python's `str.splitlines(keepends?)` method.
@@ -1515,9 +1557,11 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
     };
 
     let keepends = parse_splitlines_args(args, vm)?;
+    // Guarded before the subject borrow, so a limit error mid-loop releases the lines built so far.
+    let mut lines_guard = DropGuard::new(Vec::new(), vm);
+    let (lines, vm) = lines_guard.as_parts_mut();
     let s = s.get(vm.heap);
 
-    let mut lines = Vec::new();
     let mut start = 0;
     let bytes = s.as_bytes();
     let len = bytes.len();
@@ -1557,11 +1601,17 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
+        // Empty and short lines cost no heap entry, so the per-item poll alone
+        // cannot stop the buffer's own doubling crossing the hard limit.
+        vm.heap
+            .tracker
+            .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
         lines.push(allocate_string(line, vm.heap));
 
         start = end;
     }
 
+    let (lines, vm) = lines_guard.into_parts();
     let list = super::List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))

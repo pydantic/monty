@@ -1285,6 +1285,16 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
             16_042_653,
         ),
+        // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_216_168),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_595_320),
+        // A split's piece buffer is grown under the same checks as `re.split`'s.
+        ("('ab,' * 100_000).split(',')", 1_391_348),
+        ("('ab,' * 100_000).rsplit(',')", 1_391_349),
+        ("(b'ab ' * 100_000).split()", 1_399_566),
+        ("(b'ab,' * 100_000).rsplit(b',')", 1_399_573),
+        // Empty lines allocate no heap entry, so only the line buffer's growth check sees them.
+        ("('\\n' * 200_000).splitlines()", 1_291_526),
         // The json encoder preflights each doubling of its output buffer.
         ("import json\njson.dumps(['x' * 1000] * 2000)", 1_167_196),
         // `randbytes` charges its word buffer and the byte buffer it fills.
@@ -1395,6 +1405,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         "a = [None] * 1_000_000\na *= 2",
         "a = [None] * 1_000_000\na += range(1_000_000)",
         "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+        // The line buffer's next doubling would land past the hard headroom.
+        "('\\n' * 2_000_000).splitlines()",
     ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
@@ -1410,6 +1422,16 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     assert_eq!(
         child.feed_complete("a = [None] * 1_000_000\nalias = a\na += [None]\nlen(alias)"),
         MontyObject::int(1_000_001),
+    );
+    child.shutdown();
+
+    // A result `finditer` preflights as fitting must build within that estimate: a
+    // named group's table once took 4 slots per match, killing the worker here.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("import re\nlen(re.finditer('(?P<x>)', 'a' * 60_000))"),
+        MontyObject::int(60_001),
     );
     child.shutdown();
 }

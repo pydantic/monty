@@ -76,6 +76,28 @@ assert [] * 5 == []
 assert [1, 2] * 1 == [1, 2]
 assert [[1]] * 2 == [[1], [1]]
 
+# Counts past `Py_ssize_t`, and results past it in bytes, raise rather than panic
+try:
+    [1, 2] * 2**62
+    assert False, 'expected [1, 2] * 2**62 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    [1] * 2**60
+    assert False, 'expected [1] * 2**60 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    [1, 2] * 2**63
+    assert False, 'expected [1, 2] * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+try:
+    [1] * -(2**70)
+    assert False, 'expected [1] * -(2**70) to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
 # === List repetition augmented assignment (*=) ===
 lst = [1, 2]
 lst *= 2
