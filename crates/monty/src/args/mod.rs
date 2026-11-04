@@ -82,9 +82,12 @@ impl ArgValues {
 
     /// Checks that exactly one positional argument was passed, returning it.
     ///
+    /// A keyword raises `{name}() takes no keyword arguments` before the count is
+    /// checked, as in CPython.
+    ///
     /// On error, properly drops all contained values to maintain reference counts.
     pub fn get_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Value> {
-        match self {
+        match self.reject_kwargs(name, heap)? {
             Self::One(a) => Ok(a),
             other => {
                 let count = other.count();
@@ -96,9 +99,12 @@ impl ArgValues {
 
     /// Checks that exactly two positional arguments were passed, returning them as a tuple.
     ///
+    /// A keyword raises `{name}() takes no keyword arguments` before the count is
+    /// checked, as in CPython.
+    ///
     /// On error, properly drops all contained values to maintain reference counts.
     pub fn get_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
-        match self {
+        match self.reject_kwargs(name, heap)? {
             Self::Two(a1, a2) => Ok((a1, a2)),
             other => {
                 let count = other.count();
@@ -110,9 +116,12 @@ impl ArgValues {
 
     /// Checks that one or two arguments were passed, returning them as a tuple.
     ///
+    /// A keyword raises `{name}() takes no keyword arguments` before the count is
+    /// checked, as in CPython.
+    ///
     /// On error, properly drops all contained values to maintain reference counts.
     pub fn get_one_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Option<Value>)> {
-        match self {
+        match self.reject_kwargs(name, heap)? {
             Self::One(a) => Ok((a, None)),
             Self::Two(a1, a2) => Ok((a1, Some(a2))),
             other => {
@@ -129,9 +138,12 @@ impl ArgValues {
 
     /// Checks that zero or one argument was passed, returning the optional value.
     ///
+    /// A keyword raises `{name}() takes no keyword arguments` before the count is
+    /// checked, as in CPython.
+    ///
     /// On error, properly drops all contained values to maintain reference counts.
     pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Option<Value>> {
-        match self {
+        match self.reject_kwargs(name, heap)? {
             Self::Empty => Ok(None),
             Self::One(a) => Ok(Some(a)),
             other => {
