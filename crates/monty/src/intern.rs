@@ -3171,7 +3171,7 @@ impl Interns {
     }
 
     /// Returns a Unicode cache, allocating its directory/page and empty shell as needed.
-    /// Cursor state and checkpoints remain lazy; reserved and ASCII strings return `None`.
+    /// Cursor state remains lazy; reserved and ASCII strings return `None`.
     pub(crate) fn str_index(&self, id: StringId) -> Option<&StringIndex> {
         let index = id.index().checked_sub(INTERN_STRING_ID_OFFSET)?;
         if self.strings[index].ascii {
@@ -3289,16 +3289,15 @@ mod cache_layout_tests {
         let indexes = StringIndexes::default();
         let text = "aé中🐍".repeat(4096);
         let original = indexes.get(3);
-        let tracker = ResourceTracker::default();
         for i in 0..1000 {
-            original.character(&text, (i * 7919) % 16384, &tracker).unwrap();
+            assert!(original.character(&text, (i * 7919) % 16384).is_some());
         }
-        assert!(original.has_checkpoints());
+        assert!(original.has_cursor());
         for index in 1024..2048 {
             indexes.get(index * STRING_INDEX_PAGE_SIZE).char_len("é中");
         }
         assert!(ptr::eq(original, indexes.get(3)));
-        assert!(original.has_checkpoints());
+        assert!(original.has_cursor());
         assert!(indexes.clone().0.get().is_none());
     }
 }
