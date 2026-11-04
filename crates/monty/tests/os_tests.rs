@@ -75,6 +75,11 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
             mode: "r".parse::<FileMode>().unwrap(),
             position: 0,
         }),
+        OsFunctionCall::CreateExclusive(args) => MontyObject::file_handle(MontyFileHandle {
+            path: args.path.as_str().to_owned(),
+            mode: args.mode,
+            position: 0,
+        }),
         OsFunctionCall::Getenv(_) => MontyObject::string("mock_env_value".to_owned()),
         OsFunctionCall::GetEnviron => MontyObject::dict([]),
         OsFunctionCall::DateToday => MontyObject::date(MontyDate {

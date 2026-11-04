@@ -24,6 +24,54 @@ from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess
 # Alias for brevity in tests
 P = PurePosixPath
 
+
+def test_create_exclusive_callback_preserves_collisions():
+    osa = OSAccess([MemoryFile('/existing', 'original')])
+    handle = osa(
+        name='Path.create_exclusive',
+        args=(P('/new'), 'wb'),
+        kwargs={'permissions': 0o600},
+        is_async=False,
+    )
+    assert (handle.path, handle.mode, handle.position) == snapshot(('/new', 'wb', 0))
+    assert osa.path_read_bytes(P('/new')) == snapshot(b'')
+    assert osa.path_stat(P('/new')).st_mode & 0o777 == snapshot(0o600)
+    for path in ['/existing', '/new']:
+        with pytest.raises(FileExistsError):
+            osa.path_create_exclusive(P(path), 'w', permissions=0o600)
+    assert osa.path_read_text(P('/existing')) == snapshot('original')
+
+
+def test_create_exclusive_validation_precedes_mutation():
+    osa = OSAccess([MemoryFile('/existing', 'original')])
+    for permissions in [-1, 0o1000]:
+        with pytest.raises(ValueError, match='permissions must be between'):
+            osa.path_create_exclusive(P('/new'), 'w', permissions=permissions)
+    with pytest.raises(ValueError, match='update modes'):
+        osa.path_create_exclusive(P('/new'), 'w+', permissions=0o600)
+    with pytest.raises(FileNotFoundError):
+        osa.path_create_exclusive(P('/missing/new'), 'w', permissions=0o600)
+    with pytest.raises(FileExistsError):
+        osa.path_create_exclusive(P('/'), 'w', permissions=0o600)
+    assert osa.path_exists(P('/new')) == snapshot(False)
+    assert osa.path_read_text(P('/existing')) == snapshot('original')
+
+
+@pytest.mark.parametrize('mode', ['w', 'wb', 'a', 'ab'])
+def test_create_exclusive_handle_works_in_sandbox(monty_run: RunMonty, mode: str):
+    osa = OSAccess()
+    handle = osa.path_create_exclusive(P('/new'), mode, permissions=0o600)
+    content = b'created' if handle.binary else 'created'
+    result = monty_run(
+        'f.write(content); f.close(); f.closed',
+        inputs={'f': handle, 'content': content},
+        os=osa,
+        skip_type_check=True,
+    )
+    assert result is True
+    assert osa.path_read_bytes(P('/new')) == snapshot(b'created')
+
+
 # =============================================================================
 # OSAccess Initialization & Validation
 # =============================================================================

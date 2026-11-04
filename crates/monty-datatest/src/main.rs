@@ -1188,6 +1188,38 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             .into(),
         },
         OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::string(p.as_str().to_owned()).into(),
+        OsFunctionCall::CreateExclusive(args) => {
+            let path = args.path.as_str().to_owned();
+            if let Err(message) = args.validate() {
+                return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
+            }
+            if get_virtual_file(&path).is_some() || is_virtual_dir(&path) {
+                return MontyException::new(ExcType::FileExistsError, Some(path)).into();
+            }
+            if let Some((parent, _)) = path.rsplit_once('/')
+                && !parent.is_empty()
+                && !is_virtual_dir(parent)
+            {
+                let exc_type = if get_virtual_file(parent).is_some() {
+                    ExcType::NotADirectoryError
+                } else {
+                    ExcType::FileNotFoundError
+                };
+                return MontyException::new(exc_type, Some(path)).into();
+            }
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                vfs.files
+                    .insert(path.clone(), (Vec::new(), i64::from(args.permissions)));
+                vfs.deleted_files.remove(&path);
+            });
+            MontyObject::file_handle(MontyFileHandle {
+                path,
+                mode: args.mode,
+                position: 0,
+            })
+            .into()
+        }
         OsFunctionCall::Open(args) => {
             let path = args.path.as_str().to_owned();
             let file_mode = args.mode;
