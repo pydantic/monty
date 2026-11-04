@@ -176,6 +176,6 @@ All of them need somewhere safe to run the generated code, and Monty is that pla
 - [Examples](examples.md), including Code Mode in Pydantic AI.
 - [Limitations](limitations/index.md): the Python subset, and every known divergence from CPython.
 
-Mutable binary data can use `bytearray` inside the sandbox.
-See the [builtin limitations](../limitations/builtins.md#bytearray) and
-[host conversion rules](../limitations/host-values.md#mutable-byte-buffers).
+Mutable binary data can use `bytearray` inside the sandbox; `memoryview` shares its storage without copying and supports numeric casts and multidimensional shapes.
+See the [builtin limitations](limitations/builtins.md#bytearray) and
+[host conversion rules](limitations/host-values.md#mutable-byte-buffers).

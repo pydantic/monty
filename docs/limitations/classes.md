@@ -111,7 +111,8 @@ order and error wording, but with these divergences:
     An external or OS call raises `NotImplementedError` rather than yielding to the host.
     `__call__` uses the ordinary suspendable call path.
 - **Ordering dunders are still not dispatched**; see the entry above.
-    Instances are always truthy (no `__bool__`/`__len__` dispatch).
+    Outside boolean-format [memoryview](builtins.md#memoryview) writes, instances are always truthy
+    (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access
     creates a fresh object, so `obj.method == obj.method` is `False` and two
     accesses hash differently. CPython compares/hashes bound methods by
@@ -382,7 +383,8 @@ every construction request. Divergences:
     Every decorator in a stack reports that same location; only the callee frame
     identifies which one raised.
 - Dunder protocols not dispatched for user-defined instances include `__new__`, `__ne__`, ordering comparisons,
-    `__bool__`, `__len__`, `__complex__`, `__format__`, and all in-place arithmetic dunders (`__iadd__`, etc.).
+    `__bool__` and `__len__` (outside boolean-format memoryview writes), `__complex__`, `__format__`,
+    and all in-place arithmetic dunders (`__iadd__`, etc.).
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
     except `@=`, which is rejected at compile time.
     `__ne__` is always the negation of `__eq__`, so a custom `__ne__` is ignored.

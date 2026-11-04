@@ -238,8 +238,9 @@ impl RandomTarget {
 /// first.
 ///
 /// Ints use their absolute value; floats CPython's `hash()`; `str`/`bytes` are
-/// SHA-512 extended (version 2) or folded by the version 1 loop. Any other type
-/// is rejected with `random.py`'s message.
+/// SHA-512 extended (version 2) or folded by the version 1 loop. `bytearray`
+/// follows `bytes` for version 2 and is unhashable for other versions.
+/// Remaining types are rejected with `random.py`'s message.
 pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> RunResult<Vec<u32>> {
     let key = match value.py_value(vm) {
         PyValue::Bool(value) => vec![u32::from(value)],

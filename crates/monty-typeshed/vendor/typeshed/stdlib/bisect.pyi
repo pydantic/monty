@@ -25,6 +25,15 @@ def bisect_left(
 ) -> int: ...
 @overload
 def insort_left(
+    a: bytearray,
+    x: SupportsIndex,
+    lo: SupportsIndex = 0,
+    hi: SupportsIndex | None = None,
+    *,
+    key: Callable[[int], SupportsRichComparison] | None = None,
+) -> None: ...
+@overload
+def insort_left(
     a: MutableSequence[SupportsRichComparisonT],
     x: SupportsRichComparisonT,
     lo: SupportsIndex = 0,

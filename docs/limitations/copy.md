@@ -41,7 +41,8 @@ has.
 
 `copy.copy` and `copy.deepcopy` raise `TypeError: cannot pickle '<type>' object`
 for modules, open files, coroutines, futures, external functions, iterators of
-every kind, dict views, and host class instances.
+every kind, dict views, memoryviews, and host class instances.
+Memoryviews use the message `cannot pickle memoryview objects`.
 
 A host class instance is refused because its identity belongs to the host: a
 copy would carry the same instance id, so any attribute outside the eagerly

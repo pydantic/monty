@@ -26,7 +26,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource_checks::check_estimated_size,
-    types::{CmpOrder, Module, PyTrait, bytes::bytes_repr},
+    types::{CmpOrder, Module, PyTrait, Type, bytes::bytes_repr},
     value::Value,
 };
 
@@ -188,6 +188,9 @@ fn call_b64encode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // type-checks it, so a 1-byte `str` is an AssertionError, not a TypeError.
         assert_len(altchars, 2, vm)?;
         let alt = encode_input(altchars, vm)?.into_owned();
+        if alt.len() != 2 {
+            return Err(ExcType::value_error("maketrans arguments must have same length"));
+        }
         translate(&mut encoded, b"+/", &alt);
     }
     Ok(allocate_bytes(encoded, vm.heap))
@@ -207,7 +210,7 @@ fn call_b64decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     if !matches!(altchars, Value::None) {
         // Unlike the encode path, CPython coerces before asserting the length.
         let alt = decode_input(altchars, vm)?.into_owned();
-        assert_len_bytes(&alt, 2)?;
+        assert_len_decoded(altchars, &alt, 2, vm)?;
         translate(&mut data, &alt, b"+/");
     }
     let strict = validate.py_bool(vm)?;
@@ -275,7 +278,7 @@ fn call_b32decode(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     if !matches!(map01, Value::None) {
         let map = decode_input(map01, vm)?.into_owned();
-        assert_len_bytes(&map, 1)?;
+        assert_len_decoded(map01, &map, 1, vm)?;
         translate(&mut data, b"01", &[b'O', map[0]]);
     }
     let decoded = b32_decode(&data, B32_ALPHABET, casefold.py_bool(vm)?)?;
@@ -331,7 +334,12 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let EncodebytesArgs { s } = EncodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
 
-    let data = input_type_check(s, vm)?;
+    input_type_check(s, vm)?;
+    // CPython never acquires a chunk buffer when the input sequence is empty.
+    if s.checked_len(vm)? == Some(0) {
+        return Ok(allocate_bytes(Vec::new(), vm.heap));
+    }
+    let data = encode_input(s, vm)?;
     // Each `MAX_BIN_SIZE` chunk becomes `MAX_LINE_SIZE` characters plus a
     // newline. The per-chunk encode only ever sees 57 bytes, so the whole
     // output has to be preflighted here.
@@ -353,7 +361,9 @@ fn call_encodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 fn call_decodebytes(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let DecodebytesArgs { s } = DecodebytesArgs::from_args(args, vm)?;
     defer_drop!(s, vm);
-    let decoded = b64_decode(input_type_check(s, vm)?.as_ref(), false)?;
+    input_type_check(s, vm)?;
+    let data = decode_input_described(s, vm, "bytes, buffer or ASCII string")?;
+    let decoded = b64_decode(data.as_ref(), false)?;
     Ok(allocate_bytes(decoded, vm.heap))
 }
 
@@ -1232,12 +1242,17 @@ pub(super) fn encode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Co
 /// first — the base32 and base85 pair — whose `TypeError` is prefixed as a
 /// result. The base64 and base16 encoders reach `binascii` directly instead.
 fn memoryview_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+    if let Value::Ref(id) = value
+        && let HeapData::MemoryView(view) = vm.heap.get(*id)
+    {
+        return Ok(Cow::Owned(view.to_vec(vm)?));
+    }
     encode_input_prefixed(value, vm, "memoryview: ")
 }
 
 /// Shared body of the encoder coercions, where `prefix` selects the wording.
 fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> RunResult<Cow<'a, [u8]>> {
-    value_as_bytes(value, vm).ok_or_else(|| {
+    value_as_bytes(value, vm)?.ok_or_else(|| {
         ExcType::type_error(format!(
             "{prefix}a bytes-like object is required, not '{}'",
             value.py_type_name(vm)
@@ -1249,6 +1264,11 @@ fn encode_input_prefixed<'a>(value: &'a Value, vm: &'a VM<'_>, prefix: &str) -> 
 ///
 /// Decoders additionally accept `str`, provided it is pure ASCII.
 pub(super) fn decode_input<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
+    if let Value::Ref(id) = value
+        && let HeapData::MemoryView(view) = vm.heap.get(*id)
+    {
+        return Ok(Cow::Owned(view.to_vec(vm)?));
+    }
     decode_input_described(value, vm, "a bytes-like object or ASCII string")
 }
 
@@ -1266,7 +1286,14 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
             .into())
         }
     } else {
-        value_as_bytes(value, vm).ok_or_else(|| {
+        // binascii's ASCII converter clears ordinary buffer-acquisition errors.
+        let input = match value_as_bytes(value, vm) {
+            Err(RunError::Exc(error)) if matches!(error.exc.exc_type(), ExcType::BufferError | ExcType::ValueError) => {
+                None
+            }
+            other => other?,
+        };
+        input.ok_or_else(|| {
             ExcType::type_error(format!(
                 "argument should be {expected}, not '{}'",
                 value.py_type_name(vm)
@@ -1275,33 +1302,55 @@ pub(super) fn decode_input_described<'a>(value: &'a Value, vm: &'a VM<'_>, expec
     }
 }
 
-/// Borrows the bytes of an `encodebytes` / `decodebytes` argument.
-///
-/// These two go through `base64._input_type_check`, whose message differs from
-/// both other paths.
-fn input_type_check<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Cow<'a, [u8]>> {
-    value_as_bytes(value, vm)
-        .ok_or_else(|| ExcType::type_error(format!("expected bytes-like object, not {}", value.py_type_name(vm))))
+/// MIME helpers require one-dimensional views with an unprefixed byte format.
+fn input_type_check(value: &Value, vm: &VM<'_>) -> RunResult<()> {
+    if let Value::Ref(id) = value
+        && let HeapData::MemoryView(view) = vm.heap.get(*id)
+    {
+        view.check_live()?;
+        let format = view.format_name();
+        if !matches!(format.as_str(), "B" | "b" | "c") {
+            return Err(ExcType::type_error(format!(
+                "expected single byte elements, not '{format}' from memoryview"
+            )));
+        }
+        if view.ndim() != 1 {
+            return Err(ExcType::type_error(format!(
+                "expected 1-D data, not {}-D data from memoryview",
+                view.ndim()
+            )));
+        }
+        return Ok(());
+    }
+    if matches!(value.py_type(vm), Type::Bytes | Type::ByteArray) {
+        Ok(())
+    } else {
+        Err(ExcType::type_error(format!(
+            "expected bytes-like object, not {}",
+            value.py_type_name(vm)
+        )))
+    }
 }
 
 /// Borrows the bytes behind a `bytes` value, interned or heap-allocated.
 ///
 /// `None` for anything else — each caller supplies its own error message.
-fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<Cow<'a, [u8]>> {
-    match value {
+fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<Option<Cow<'a, [u8]>>> {
+    Ok(match value {
         Value::InternBytes(bytes_id) => Some(Cow::Borrowed(vm.interns.get_bytes(*bytes_id))),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Bytes(bytes) => Some(Cow::Borrowed(bytes.as_slice())),
             HeapData::ByteArray(bytes) => Some(Cow::Borrowed(bytes.as_slice())),
+            HeapData::MemoryView(view) => Some(Cow::Borrowed(view.contiguous(vm)?)),
             _ => None,
         },
         _ => None,
-    }
+    })
 }
 
 /// Reproduces `assert len(value) == expected, repr(value)` on a raw argument.
 fn assert_len(value: &Value, expected: usize, vm: &mut VM<'_>) -> RunResult<()> {
-    let Some(len) = value.py_len(vm) else {
+    let Some(len) = value.checked_len(vm)? else {
         return Err(ExcType::type_error(format!(
             "object of type '{}' has no len()",
             value.py_type_name(vm)
@@ -1314,14 +1363,12 @@ fn assert_len(value: &Value, expected: usize, vm: &mut VM<'_>) -> RunResult<()> 
     }
 }
 
-/// The same assertion, but against already-coerced bytes.
-///
-/// The decoders coerce before asserting, so both the length and the `repr` in
-/// the message come from the bytes — `b64decode(s, altchars='-')` reports
-/// `b'-'`, not the `str` the caller passed.
-fn assert_len_bytes(bytes: &[u8], expected: usize) -> RunResult<()> {
+/// Decoders preserve bytearrays but coerce strings and other buffers before asserting.
+fn assert_len_decoded(value: &Value, bytes: &[u8], expected: usize, vm: &mut VM<'_>) -> RunResult<()> {
     if bytes.len() == expected {
         Ok(())
+    } else if value.py_type(vm) == Type::ByteArray {
+        Err(assertion_error(value, vm)?)
     } else {
         Err(SimpleException::new_msg(ExcType::AssertionError, bytes_repr(bytes)).into())
     }

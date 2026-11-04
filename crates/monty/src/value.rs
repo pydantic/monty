@@ -892,6 +892,16 @@ impl<C: ContainsHeap> DropWithContext<C> for Value {
 }
 
 impl Value {
+    /// Unlike the infallible length hint, preserve errors from released or zero-dimensional views.
+    pub(crate) fn checked_len(&self, vm: &VM<'_>) -> RunResult<Option<usize>> {
+        if let Self::Ref(id) = self
+            && let HeapData::MemoryView(view) = vm.heap.get(*id)
+        {
+            return view.checked_len().map(Some);
+        }
+        Ok(self.py_len(vm))
+    }
+
     /// Opens a Python-type view without copying heap payloads or borrowing this owner.
     /// Drop the view before releasing the owning `Value`, so its heap readers are gone at cleanup.
     pub(crate) fn py_value<'h>(&self, vm: &VM<'h>) -> PyValue<'h> {

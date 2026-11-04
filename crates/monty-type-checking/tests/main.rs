@@ -629,3 +629,110 @@ fn bisect_does_not_declare_runtime_all_metadata() {
     let diagnostics = check_concise("import bisect\nbisect.__all__", "main.py").expect("__all__ is absent at runtime");
     assert_snapshot!(diagnostics, @"main.py:2:1: error[unresolved-attribute] Module `bisect` has no member `__all__`");
 }
+
+#[test]
+fn memoryview_builtin_types() {
+    let source = "from typing import Any, assert_type\na = bytearray(b'abc')\nv = memoryview(a)\nassert_type(v, memoryview[int])\nassert_type(v.tolist(), Any)\nv[0] = 65\nv.release()";
+    assert!(check(source, "main.py").is_none());
+}
+
+#[test]
+fn memoryview_numeric_cast_types() {
+    let source = "from typing import Any, assert_type\nv = memoryview(bytearray(8))\nassert_type(v.cast('Q'), memoryview[int])\nassert_type(v.cast('N').tolist(), Any)\nassert_type(v.cast('e'), memoryview[float])\nassert_type(v.cast('@?'), memoryview[bool])\nv.cast('H', shape=[2, 2])[1, 1] = 5";
+    assert!(check(source, "main.py").is_none());
+}
+
+#[test]
+fn bytearray_supported_surface() {
+    let valid = check(
+        "from typing import assert_type\na = bytearray(b'abc')\na.append(1)\na[0] = 2\na[:] = b'x'\nassert_type(a % (), bytearray)\nb''.join([memoryview(bytearray(8)).cast('d')])\n",
+        "main.py",
+    );
+    assert!(valid.is_none(), "{valid:?}");
+    for expression in [
+        "del a[0]",
+        "a.__buffer__(0)",
+        "a.__release_buffer__(memoryview(a))",
+        "a.__alloc__()",
+    ] {
+        let source = format!("a = bytearray()\n{expression}");
+        let diagnostics = check_concise(&source, "main.py").expect("expected unsupported API diagnostic");
+        let rule = if expression.starts_with("del ") {
+            "not-subscriptable"
+        } else {
+            "unresolved-attribute"
+        };
+        assert!(diagnostics.contains(rule), "{expression}: {diagnostics}");
+    }
+}
+
+#[test]
+fn native_buffer_consumers_and_scalar_types() {
+    let source = r"
+from typing import Any, assert_type
+import base64
+import binascii
+import hashlib
+owner = bytearray(8)
+view = memoryview(owner).cast('d')
+assert_type(view.tolist(), Any)
+assert_type(view.toreadonly(), memoryview[float])
+assert_type(memoryview(owner).cast('c').tolist(), Any)
+assert_type(memoryview(owner).cast('?').toreadonly(), memoryview[bool])
+assert_type(hashlib.sha256(view).digest(), bytes)
+hashlib.sha256().update(owner)
+assert_type(hashlib.blake2b(view, key=owner, salt=view, person=owner).digest(), bytes)
+assert_type(hashlib.pbkdf2_hmac('sha256', owner, view, 2), bytes)
+assert_type(base64.b64encode(view, altchars=bytearray(b'-_')), bytes)
+assert_type(base64.b64decode(memoryview(b'AAAA')), bytes)
+assert_type(binascii.hexlify(owner, sep=b':'), bytes)
+assert_type(binascii.crc32(view), int)
+";
+    assert!(check(source, "main.py").is_none());
+    for expression in [
+        "hashlib.sha256('text')",
+        "binascii.hexlify(owner, sep=owner)",
+        "view.__buffer__(0)",
+        "view.__release_buffer__(view)",
+    ] {
+        let code =
+            format!("import hashlib\nimport binascii\nowner = bytearray()\nview = memoryview(owner)\n{expression}");
+        let diagnostics = check_concise(&code, "main.py").expect("expected invalid buffer diagnostic");
+        let rule = if expression.starts_with("view.") {
+            "unresolved-attribute"
+        } else {
+            "invalid-argument-type"
+        };
+        assert!(diagnostics.contains(rule), "{expression}: {diagnostics}");
+    }
+}
+
+#[test]
+fn memoryview_zero_dimensional_ellipsis_types() {
+    let source = "from typing import assert_type\nv = memoryview(bytearray(8)).cast('d', [])\nassert_type(v[...], memoryview[float])\nv[...] = 1.25\nassert_type(v[()], float)";
+    let result = check(source, "main.py");
+    assert!(result.is_none(), "{result:?}");
+}
+
+#[test]
+fn buffer_sequence_consumer_types() {
+    let source = "import bisect\nimport random\nfrom typing import assert_type\na = bytearray([1, 3])\nbisect.insort(a, 2)\nbisect.insort_left(a, 2, key=lambda x: x)\nassert_type(bisect.bisect(memoryview(a), 2), int)\nassert_type(random.sample(a, 1), list[int])\nassert_type(random.sample(memoryview(a), 1), list[int])\nrandom.Random(a).seed(a)";
+    let result = check(source, "main.py");
+    assert!(result.is_none(), "{result:?}");
+}
+
+#[test]
+fn native_buffer_shuffle_types() {
+    let source = "import random\na = bytearray([1, 2, 3, 4])\nrandom.shuffle(a)\nrandom.Random(3).shuffle(memoryview(a).cast('H'))";
+    let result = check(source, "main.py");
+    assert!(result.is_none(), "{result:?}");
+    let diagnostics =
+        check_concise("import random\nrandom.shuffle(b'abc')", "main.py").expect("immutable bytes rejected");
+    assert!(diagnostics.contains("invalid-argument-type"), "{diagnostics}");
+}
+
+#[test]
+fn memoryview_tolist_all_shapes() {
+    let source = "from typing import Any, assert_type\nv = memoryview(bytearray(8)).cast('d')\nassert_type(v.tolist(), Any)\nassert_type(v.cast('B').cast('d', []).tolist(), Any)\nassert_type(memoryview(bytearray(8)).cast('B', [2, 4]).tolist(), Any)";
+    assert!(check(source, "main.py").is_none());
+}

@@ -300,6 +300,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'io.UnsupportedOperation',
   'AssertionError',
   'MemoryError',
+  'BufferError',
   'StopIteration',
   'SyntaxError',
   'TimeoutError',

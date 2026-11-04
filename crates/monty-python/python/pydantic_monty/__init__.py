@@ -283,6 +283,7 @@ ExcType = Literal[
     'io.UnsupportedOperation',
     'AssertionError',
     'MemoryError',
+    'BufferError',
     'StopIteration',
     'SyntaxError',
     'TimeoutError',

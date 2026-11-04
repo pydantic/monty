@@ -496,7 +496,7 @@ fn hex_separator(sep: Option<&Value>, vm: &VM<'_>) -> RunResult<Option<u8>> {
         return Ok(None);
     };
     let length = sep
-        .py_len(vm)
+        .checked_len(vm)?
         .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", sep.py_type_name(vm))))?;
 
     if length != 1 {

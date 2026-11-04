@@ -346,6 +346,9 @@ pub enum Type {
     ByteArray,
     #[strum(serialize = "bytearray_iterator")]
     ByteArrayIterator,
+    MemoryView,
+    #[strum(serialize = "memory_iterator")]
+    MemoryViewIterator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -430,6 +433,7 @@ impl Type {
             Self::Str => Some("str"),
             Self::Bytes => Some("bytes"),
             Self::ByteArray => Some("bytearray"),
+            Self::MemoryView => Some("memoryview"),
             Self::List => Some("list"),
             Self::Tuple => Some("tuple"),
             Self::Dict => Some("dict"),
@@ -462,6 +466,7 @@ impl Type {
             "str" => Some(Self::Str),
             "bytes" => Some(Self::Bytes),
             "bytearray" => Some(Self::ByteArray),
+            "memoryview" => Some(Self::MemoryView),
             "list" => Some(Self::List),
             "tuple" => Some(Self::Tuple),
             "dict" => Some(Self::Dict),
@@ -498,6 +503,7 @@ impl Type {
                 | Self::Partial
                 | Self::RePattern
                 | Self::ReMatch
+                | Self::MemoryView
                 // The one `itertools` type CPython gives a
                 // `__class_getitem__`; the rest reject a subscript.
                 | Self::ItertoolsChain
@@ -524,6 +530,7 @@ impl Type {
                 | Self::StrAsciiIterator
                 | Self::StrIterator
                 | Self::ByteArrayIterator
+                | Self::MemoryViewIterator
                 | Self::BytesIterator
                 | Self::RangeIterator
                 | Self::DictKeyIterator
@@ -612,6 +619,7 @@ impl Type {
             Self::Path => Some(13),
             Self::Complex => Some(14),
             Self::ByteArray => Some(15),
+            Self::MemoryView => Some(16),
             _ => None,
         }
     }
@@ -638,6 +646,7 @@ impl Type {
             13 => Some(Self::Path),
             14 => Some(Self::Complex),
             15 => Some(Self::ByteArray),
+            16 => Some(Self::MemoryView),
             _ => None,
         }
     }
@@ -672,8 +681,7 @@ impl Type {
                 super::bytearray::maketrans(args, vm).map(CallResult::Value)
             }
             (Self::ByteArray, Some(StaticStrings::Fromhex)) => {
-                let value = bytes_fromhex(args, vm)?;
-                Ok(CallResult::Value(super::bytearray::convert_result(value, vm)))
+                super::bytearray::fromhex(args, vm).map(CallResult::Value)
             }
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)
@@ -841,6 +849,7 @@ impl Type {
             Self::Str => Str::init(vm, args),
             Self::Bytes => Bytes::init(vm, args),
             Self::ByteArray => ByteArray::init(vm, args),
+            Self::MemoryView => super::MemoryView::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
             Self::Date => date::init(vm, args),

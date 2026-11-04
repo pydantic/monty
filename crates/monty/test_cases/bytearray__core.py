@@ -93,3 +93,17 @@ a.resize(4)
 assert a == b'ab\0\0'
 a.resize(1)
 assert a == b'a'
+
+for template in [b'%c', bytearray(b'%c')]:
+    result = template % bytearray(b'A')
+    assert result == b'A'
+    assert type(result) is type(template)
+    for bad in [bytearray(), bytearray(b'AB')]:
+        try:
+            template % bad
+        except TypeError as exc:
+            assert str(exc) == (
+                f'%c requires an integer in range(256) or a single byte, not a bytearray object of length {len(bad)}'
+            )
+        else:
+            assert False

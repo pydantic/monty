@@ -294,11 +294,11 @@ class SupportsGetItemViewable(Protocol[_KT, _VT_co]):
 # from writable buffers. We use these aliases for readability for now.
 # Perhaps a future extension of the buffer protocol will allow us to
 # distinguish these cases in the type system.
-ReadOnlyBuffer: TypeAlias = Buffer  # stable
+ReadOnlyBuffer: TypeAlias = bytes | bytearray | memoryview[Any]  # stable
 # Anything that implements the read-write buffer interface.
-WriteableBuffer: TypeAlias = Buffer
+WriteableBuffer: TypeAlias = bytes | bytearray | memoryview[Any]
 # Same as WriteableBuffer, but also includes read-only buffer types (like bytes).
-ReadableBuffer: TypeAlias = Buffer  # stable
+ReadableBuffer: TypeAlias = bytes | bytearray | memoryview[Any]  # stable
 
 class SliceableBuffer(Buffer, Protocol):
     def __getitem__(self, slice: slice[SupportsIndex | None], /) -> Sequence[int]: ...

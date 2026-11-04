@@ -1,15 +1,21 @@
 import math
 
 argument = ['retained argument']
-source = b'61!'[:-1]
-for value in [b'61', source]:
+source = b'!1x'[:-1]
+for value in [b'!1', source]:
     try:
         bytes.fromhex(value)
-    except TypeError:
+    except ValueError:
         pass
     else:
-        assert False, 'bytes.fromhex accepts only str in Monty'
+        assert False, 'invalid hexadecimal input must fail'
 value = None
+try:
+    bytes.fromhex(argument)
+except TypeError:
+    pass
+else:
+    assert False, 'fromhex must reject non-buffer arguments'
 
 alias = list[int]
 for operation in [

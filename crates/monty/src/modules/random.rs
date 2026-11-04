@@ -827,6 +827,7 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
     let k = k.as_int(vm)?;
 
     let picks = if matches!(counts, Value::None) {
+        check_sample_view(target, population, n, k, vm)?;
         let indices = sample_indices(target, n, k, vm)?;
         collect_items(population, indices.into_iter(), vm)?
     } else {
@@ -854,26 +855,8 @@ fn sample(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<V
 /// The positions `sample` picks from a population of `n` — the whole
 /// algorithm from `random.py`, so the draws match CPython's.
 fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> RunResult<Vec<usize>> {
-    let k = match usize::try_from(k) {
-        Ok(k) if k <= n => k,
-        _ => return Err(ExcType::value_error("Sample larger than population or is negative")),
-    };
-    // `setsize = 21 + 4 ** ceil(log(k * 3, 4))` for k > 5: the point where a
-    // k-sized set costs less than an n-sized pool.
-    // `k` can be a `range` length near `i64::MAX`, so the arithmetic here must
-    // not overflow before `check_allocation` refuses the request.
-    let setsize: usize = if k > 5 {
-        let exponent = (k.saturating_mul(3) as f64).ln() / 4f64.ln();
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "small positive exponent"
-        )]
-        let exponent = exponent.ceil() as u32;
-        4usize.checked_pow(exponent).map_or(usize::MAX, |table| 21 + table)
-    } else {
-        21
-    };
+    let k = sample_count(n, k)?;
+    let setsize = sample_set_size(k);
     // The index buffer, the result list built from it, and the pool if used.
     let pool_bytes = if n <= setsize {
         n.saturating_mul(mem::size_of::<usize>())
@@ -914,6 +897,58 @@ fn sample_indices(target: RandomTarget, n: usize, k: i64, vm: &mut VM<'_>) -> Ru
         }
         Ok(result)
     })
+}
+
+/// A multidimensional view cannot provide elements, but CPython's failing branch still determines RNG state.
+fn check_sample_view(target: RandomTarget, population: &Value, n: usize, k: i64, vm: &mut VM<'_>) -> RunResult<()> {
+    let is_multidimensional = matches!(population, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::MemoryView(view) if view.ndim() > 1));
+    if !is_multidimensional {
+        return Ok(());
+    }
+    let k = sample_count(n, k)?;
+    let pooled = n <= sample_set_size(k);
+    if !pooled && k > 0 {
+        target.with_generator(vm, |random, vm| random.rng().randbelow(n as u128, &vm.heap.tracker))?;
+    }
+    if pooled || k > 0 {
+        if let Value::Ref(id) = population
+            && let HeapData::MemoryView(view) = vm.heap.get(*id)
+        {
+            view.check_live()?;
+        }
+        return Err(SimpleException::new_msg(
+            ExcType::NotImplementedError,
+            "multi-dimensional sub-views are not implemented",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn sample_count(n: usize, k: i64) -> RunResult<usize> {
+    match usize::try_from(k) {
+        Ok(k) if k <= n => Ok(k),
+        _ => Err(ExcType::value_error("Sample larger than population or is negative")),
+    }
+}
+
+fn sample_set_size(k: usize) -> usize {
+    // `setsize = 21 + 4 ** ceil(log(k * 3, 4))` for k > 5: the point where a
+    // k-sized set costs less than an n-sized pool.
+    // `k` can be a `range` length near `i64::MAX`, so the arithmetic here must
+    // not overflow before `check_allocation` refuses the request.
+    if k > 5 {
+        let exponent = (k.saturating_mul(3) as f64).ln() / 4f64.ln();
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "small positive exponent"
+        )]
+        let exponent = exponent.ceil() as u32;
+        4usize.checked_pow(exponent).map_or(usize::MAX, |table| 21 + table)
+    } else {
+        21
+    }
 }
 
 /// `list(accumulate(counts))` for `sample(counts=...)`, which must be ints.
@@ -1001,6 +1036,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
         None => {
             // `floor(random() * n)` with `n` as a float, as CPython computes it.
             let n_f = n as f64;
+            check_choices_lookup(target, population, n, k, vm)?;
             target.with_generator(vm, |random, vm| {
                 let rng = random.rng();
                 let mut indices = Vec::with_capacity(k);
@@ -1029,6 +1065,7 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
                 return Err(ExcType::value_error("Total of weights must be finite"));
             }
             let hi = n - 1;
+            check_choices_lookup(target, population, n, k, vm)?;
             target.with_generator(vm, |random, vm| {
                 let rng = random.rng();
                 let mut indices = Vec::with_capacity(k);
@@ -1042,6 +1079,25 @@ fn choices(target: RandomTarget, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
     };
     let picks = collect_items(population, indices.into_iter(), vm)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(picks)))))
+}
+
+/// CPython stops after the first draw when no scalar lookup can succeed.
+fn check_choices_lookup(
+    target: RandomTarget,
+    population: &Value,
+    n: usize,
+    k: usize,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    let multidimensional = matches!(population, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::MemoryView(view) if view.ndim() > 1));
+    if k > 0 && (n == 0 || multidimensional) {
+        target.with_generator(vm, |random, _| {
+            random.rng().random();
+            Ok::<_, RunError>(())
+        })?;
+        population.py_getitem(&Value::Int(0), vm)?.drop_with(vm);
+    }
+    Ok(())
 }
 
 /// `list(accumulate(weights))` for `choices`, as floats.
@@ -1059,17 +1115,22 @@ fn cumulative_weights(weights: &Value, vm: &mut VM<'_>) -> RunResult<Vec<f64>> {
 
 /// `population[i]` for each index, as owned values for a new list.
 fn collect_items(population: &Value, indices: impl Iterator<Item = usize>, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
-    let mut items: Vec<Value> = Vec::new();
-    for index in indices {
-        match population.py_getitem(&Value::Int(i64::try_from(index).expect("index fits i64")), vm) {
-            Ok(item) => items.push(item),
-            Err(err) => {
-                items.drop_with(vm);
-                return Err(err);
-            }
-        }
+    // View indexing creates scalars rather than borrowing existing sequence items.
+    if let Value::Ref(id) = population
+        && let HeapData::MemoryView(view) = vm.heap.get(*id)
+    {
+        vm.heap
+            .tracker
+            .check_allocation(indices.size_hint().0.saturating_mul(view.scalar_allocation_cost_hint()))?;
     }
-    Ok(items)
+
+    let mut items_guard = DropGuard::new(Vec::<Value>::new(), vm);
+    let (items, vm) = items_guard.as_parts_mut();
+    for (position, index) in indices.enumerate() {
+        vm.heap.tracker.check_time_every(position)?;
+        items.push(population.py_getitem(&Value::Int(i64::try_from(index).expect("index fits i64")), vm)?);
+    }
+    Ok(items_guard.into_inner())
 }
 
 /// `bisect.bisect_right(a, x)` over cumulative counts.
@@ -1096,7 +1157,14 @@ fn bisect_right_f64(a: &[f64], x: f64, hi: usize) -> usize {
 fn is_sequence(ty: Type) -> bool {
     matches!(
         ty,
-        Type::List | Type::Tuple | Type::Str | Type::Bytes | Type::Range | Type::Deque
+        Type::List
+            | Type::Tuple
+            | Type::Str
+            | Type::Bytes
+            | Type::ByteArray
+            | Type::MemoryView
+            | Type::Range
+            | Type::Deque
     )
 }
 
@@ -1104,7 +1172,7 @@ fn is_sequence(ty: Type) -> bool {
 /// `OverflowError` for a `range` longer than `ssize_t`.
 fn len_of(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
     let len = value
-        .py_len(vm)
+        .checked_len(vm)?
         .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", value.py_type_name(vm))))?;
     if i64::try_from(len).is_ok() {
         Ok(len)

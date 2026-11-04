@@ -20,7 +20,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     os_dispatch::{value_as_bytes, value_as_path_str},
-    types::{List, Module, str::allocate_string},
+    types::{List, Module, bytearray::read_buffer, str::allocate_string},
     value::Value,
 };
 
@@ -183,6 +183,14 @@ impl Text {
     /// A subject handed straight to the compiled pattern: `str` or `bytes`, with
     /// `re`'s error for anything else (a path object included).
     fn from_subject(value: &Value, vm: &VM<'_>) -> RunResult<Self> {
+        if let Value::Ref(id) = value
+            && let HeapData::MemoryView(view) = vm.heap.get(*id)
+        {
+            return view.contiguous(vm).map(Self::bytes);
+        }
+        if let Some(bytes) = read_buffer(value, vm) {
+            return Ok(Self::bytes(bytes));
+        }
         Self::extract_text(value, vm).ok_or_else(|| {
             ExcType::type_error(format!(
                 "expected string or bytes-like object, got '{}'",
@@ -194,12 +202,25 @@ impl Text {
     /// `fnmatchcase`'s pattern, which CPython reads with `len()` first: `str` or
     /// `bytes`, else `object of type 'X' has no len()`.
     fn from_pattern(value: &Value, vm: &VM<'_>) -> RunResult<Self> {
+        if matches!(value, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::ByteArray(_))) {
+            return Err(ExcType::type_error_unhashable("bytearray"));
+        }
         Self::extract_text(value, vm).ok_or_else(|| ExcType::type_error_no_len(&value.py_type_name(vm)))
     }
 
     /// `translate`'s pattern, which must be `str`: CPython indexes a `bytes`
     /// pattern into ints and fails decoding the first one.
     fn from_pattern_str(value: &Value, vm: &VM<'_>) -> RunResult<Vec<char>> {
+        if let Value::Ref(id) = value
+            && let HeapData::ByteArray(bytes) = vm.heap.get(*id)
+        {
+            if bytes.as_slice().is_empty() {
+                return Ok(Vec::new());
+            }
+            return Err(ExcType::type_error(
+                "decoding to str: need a bytes-like object, int found",
+            ));
+        }
         let text = Self::from_pattern(value, vm)?;
         if text.is_bytes && !text.chars.is_empty() {
             Err(ExcType::type_error(

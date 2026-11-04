@@ -60,6 +60,7 @@ ALLOWED_CLASSES = {
     'str',
     'bytes',
     'bytearray',
+    'memoryview',
     # Container types
     'list',
     'tuple',
@@ -358,8 +359,97 @@ def filter_builtins(source: str) -> str:
     """
     tree = ast.parse(source)
     tree.body = filter_statements(tree.body)
+    update_memoryview_formats(tree)
+    narrow_buffer_surfaces(tree)
     ast.fix_missing_locations(tree)
     return ast.unparse(tree)
+
+
+def update_memoryview_formats(tree: ast.Module) -> None:
+    """Fill native-format gaps in the pinned upstream memoryview signatures."""
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == '_IntegerFormats'
+        ):
+            if isinstance(node.value, ast.Subscript) and isinstance(node.value.slice, ast.Tuple):
+                existing = {item.value for item in node.value.slice.elts if isinstance(item, ast.Constant)}
+                node.value.slice.elts.extend(
+                    ast.Constant(value) for value in ['n', 'N', '@n', '@N'] if value not in existing
+                )
+        if not isinstance(node, ast.ClassDef) or node.name != 'memoryview':
+            continue
+        for method in ast.walk(node):
+            if not isinstance(method, ast.FunctionDef):
+                continue
+            if method.name == 'tolist':
+                method.returns = ast.Name('Any', ast.Load())
+                continue
+            if method.name == 'toreadonly':
+                method.returns = ast.Subscript(
+                    ast.Name('memoryview', ast.Load()), ast.Name('_I', ast.Load()), ast.Load()
+                )
+                continue
+            if method.name != 'cast':
+                continue
+            annotation = method.args.args[1].annotation
+            if isinstance(annotation, ast.Name) and annotation.id == '_IntegerFormats':
+                method.returns = ast.Subscript(
+                    ast.Name('memoryview', ast.Load()), ast.Name('int', ast.Load()), ast.Load()
+                )
+            elif isinstance(annotation, ast.Subscript):
+                formats = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
+                values = {item.value for item in formats if isinstance(item, ast.Constant)}
+                additions = ['e', '@e'] if 'f' in values else ['@?'] if '?' in values else []
+                formats.extend(ast.Constant(value) for value in additions if value not in values)
+                annotation.slice = ast.Tuple(formats, ast.Load())
+
+        update_memoryview_indexing(node)
+
+
+def update_memoryview_indexing(node: ast.ClassDef) -> None:
+    """Allow zero-dimensional Ellipsis indexing without losing the view's scalar type."""
+    overload = ast.parse('@overload\ndef __getitem__(self, key: types.EllipsisType, /) -> Self: ...').body[0]
+    first = next(
+        i for i, member in enumerate(node.body) if isinstance(member, ast.FunctionDef) and member.name == '__getitem__'
+    )
+    node.body.insert(first, overload)
+    for member in node.body:
+        if isinstance(member, ast.FunctionDef) and member.name == '__setitem__':
+            key = [*member.args.posonlyargs, *member.args.args][1]
+            annotation = key.annotation
+            if isinstance(annotation, ast.BinOp):
+                key.annotation = ast.BinOp(
+                    annotation, ast.BitOr(), ast.Attribute(ast.Name('types', ast.Load()), 'EllipsisType', ast.Load())
+                )
+
+
+def narrow_buffer_surfaces(tree: ast.Module) -> None:
+    """Exclude unsupported Python buffer hooks and inherited bytearray deletion."""
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name not in {'bytearray', 'memoryview'}:
+            continue
+        unsupported = {'__buffer__', '__release_buffer__'}
+        if node.name == 'bytearray':
+            unsupported |= {'__delitem__', '__alloc__'}
+            node.bases = [ast.Subscript(ast.Name('Sequence', ast.Load()), ast.Name('int', ast.Load()), ast.Load())]
+        node.body = [
+            member for member in node.body if not isinstance(member, ast.FunctionDef) or member.name not in unsupported
+        ]
+        for member in node.body:
+            if node.name == 'bytearray' and isinstance(member, ast.FunctionDef) and member.name == '__mod__':
+                member.returns = ast.Name('bytearray', ast.Load())
+
+
+def narrow_buffer_aliases(source: str) -> str:
+    """Describe native buffers without advertising unsupported PEP 688 hooks."""
+    for alias in ['ReadOnlyBuffer', 'WriteableBuffer', 'ReadableBuffer']:
+        original = f'{alias}: TypeAlias = Buffer'
+        if original not in source:
+            raise ValueError(f'Expected upstream buffer alias: {original}')
+        source = source.replace(original, f'{alias}: TypeAlias = bytes | bytearray | memoryview[Any]')
+    return source
 
 
 def main() -> int:
@@ -399,7 +489,10 @@ def main() -> int:
         if src_file.exists():
             dest_file = STDLIB_DIR / file_path
             dest_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dest_file)
+            if file_path == '_typeshed/__init__.pyi':
+                dest_file.write_text(narrow_buffer_aliases(src_file.read_text()))
+            else:
+                shutil.copy2(src_file, dest_file)
         else:
             raise ValueError(f'{file_path} not found in typeshed')
     print(f'Copied {len(COPY_FILES)} stdlib typeshed files')

@@ -5,7 +5,6 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    types::PyTrait,
     value::Value,
 };
 
@@ -15,7 +14,7 @@ use crate::{
 pub fn builtin_len(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("len", vm.heap)?;
     defer_drop!(value, vm);
-    if let Some(len) = value.py_len(vm) {
+    if let Some(len) = value.checked_len(vm)? {
         Ok(Value::Int(
             i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?,
         ))

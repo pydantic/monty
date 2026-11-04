@@ -180,14 +180,19 @@ See the [builtin limitations](https://github.com/pydantic/monty/blob/main/docs/l
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.
 
-## License
-
-MIT
-
-### Mutable byte buffers
+## Mutable byte buffers
 
 `bytearray` owns a native contiguous byte buffer and uses heap capabilities for scoped reads and writes.
 A mutable slice permits content changes while Rust's borrow prevents resizing or releasing its storage.
 Byte algorithms are shared with `bytes`; mutation methods retain the bytearray's identity.
-See [the builtin limitations](../../limitations/builtins.md#bytearray) and
-[host conversion rules](../../limitations/host-values.md#mutable-byte-buffers).
+`memoryview` retains its source by heap identity and resolves offsets on access, without retaining storage pointers.
+Bytearray exports block resizing until every view is released or freed; slices keep their own export.
+Snapshots preserve the owners, export counts, shapes, and strides.
+Numeric formats use a fixed little-endian LP64 representation; pointer-format values remain integers.
+Views resolve scalar coordinates against their retained buffer, without turning a pointer-format value into an address.
+See [the builtin limitations](https://github.com/pydantic/monty/blob/main/docs/limitations/builtins.md#bytearray) and
+[host conversion rules](https://github.com/pydantic/monty/blob/main/docs/limitations/host-values.md#mutable-byte-buffers).
+
+## License
+
+MIT

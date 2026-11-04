@@ -1440,6 +1440,10 @@ impl Heap {
                     // on the slow path.
                     let mut value = reader.heap.entries.entry(current_id).expect("already looked up").free();
 
+                    if let HeapData::MemoryView(view) = value.data.0.get_mut() {
+                        view.remove_export(reader.heap);
+                    }
+
                     // Collect child IDs and push onto work stack for iterative processing
                     py_dec_ref_ids_for_data(value.data.0.get_mut(), &mut work_stack);
                 }
@@ -1604,6 +1608,18 @@ impl Heap {
             // Clear weak entries before freeing their slots, just as `dec_ref`.
             let weak_key = Self::weak_index_key(value.data.0.get_mut());
             self.remove_weak_index_entry(weak_key, id);
+            if let HeapData::MemoryView(view) = value.data.0.get_mut() {
+                // A White owner may already have been swept through another edge.
+                // Its export count no longer matters; live owners still need the release.
+                let live_owner = view.owner_id().is_some_and(|id| {
+                    self.entries
+                        .entry(id)
+                        .is_some_and(|mut entry| entry.get_mut().color.get() != CcColor::White)
+                });
+                if live_owner {
+                    view.remove_export(self);
+                }
+            }
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
             // under `memory-model-checks` so dropping the freed entry's data
@@ -1854,6 +1870,16 @@ impl Drop for Heap {
 /// freeing/decref paths; the two must stay in sync.
 fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
     match data {
+        HeapData::MemoryView(view) => {
+            if let Some(id) = view.owner_id() {
+                on_child(id);
+            }
+        }
+        HeapData::MemoryViewIterator(iter) => {
+            if let Some(id) = iter.owner_id() {
+                on_child(id);
+            }
+        }
         HeapData::List(list) => {
             // Skip iteration if no refs - major GC optimization for lists of primitives
             if !list.contains_refs() {
@@ -2189,6 +2215,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
 
 fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
     match data {
+        HeapData::MemoryView(view) => view.py_dec_ref_ids(stack),
+        HeapData::MemoryViewIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Str(s) => s.py_dec_ref_ids(stack),
         HeapData::Bytes(b) => b.py_dec_ref_ids(stack),
         HeapData::List(l) => l.py_dec_ref_ids(stack),

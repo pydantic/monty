@@ -185,8 +185,12 @@ miri: ## Run library inline tests under miri (particularly relevant for heap.rs)
 miri-test-cases: ## Run library inline tests under miri (particularly relevant for heap.rs)
 	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri run -p monty-datatest -- run_test_cases_monty
 
+.PHONY: test-typeshed
+test-typeshed: ## Test typeshed stub transforms
+	uv run python -m unittest discover -s crates/monty-typeshed -p 'test_update.py'
+
 .PHONY: test-type-checking
-test-type-checking: ## Run rust tests on monty-type-checking
+test-type-checking: test-typeshed ## Run rust tests on monty-type-checking
 	cargo test -p monty-type-checking -p monty-typeshed
 
 .PHONY: test-subprocess
@@ -270,7 +274,7 @@ update-typeshed: ## Update vendored typeshed from upstream
 	uv run ruff check --fix --fix-only --silent
 
 .PHONY: check-typeshed
-check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
+check-typeshed: test-typeshed ## Check vendored typeshed stubs are in sync with upstream
 	uv run crates/monty-typeshed/check.py
 
 .PHONY: check-publish

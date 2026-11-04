@@ -104,3 +104,5 @@ DecimalSignalDict 104
 DecimalContextManager 105
 ByteArray 106
 ByteArrayIterator 107
+MemoryView 108
+MemoryViewIterator 109

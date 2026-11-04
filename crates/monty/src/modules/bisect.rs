@@ -158,7 +158,7 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
             i64::try_from(range.get(vm.heap).len_i128()).map_err(|_| ExcType::overflow_c_ssize_t())?
         } else {
             let len = a
-                .py_len(vm)
+                .checked_len(vm)?
                 .ok_or_else(|| ExcType::type_error_no_len(&a.py_type_name(vm)))?;
             i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?
         };
@@ -170,6 +170,8 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
         | Type::NamedTuple
         | Type::Str
         | Type::Bytes
+        | Type::ByteArray
+        | Type::MemoryView
         | Type::Range
         | Type::Deque
         | Type::Counter => {}

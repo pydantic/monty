@@ -1295,7 +1295,6 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
         child.shutdown();
     }
-
     // A single byte can double a full buffer beyond the allocator's headroom.
     for code in [
         "a = bytearray(16 * 1024 * 1024)\na.append(0)",
@@ -3157,5 +3156,131 @@ fn slice_assignment_rejects_large_replacement_without_killing_worker() {
         assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
         child.shutdown();
+    }
+}
+
+#[test]
+fn memoryview_aliases_share_the_source_allocation() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete(
+            "owner = bytearray(2_000_000)\nviews = [memoryview(owner)[::2] for i in range(1000)]\nlen(views)"
+        ),
+        MontyObject::int(1000)
+    );
+    assert_eq!(
+        child.feed_complete("views = None\nowner.append(1)\nlen(owner)"),
+        MontyObject::int(2_000_001)
+    );
+    child.shutdown();
+}
+
+#[test]
+fn memoryview_large_results_preserve_the_worker() {
+    for operation in ["view.tolist()", "view.hex()", "view.hex(':')"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete("owner = bytearray(3_000_000)\nview = memoryview(owner)\nlen(view)"),
+            MontyObject::int(3_000_000)
+        );
+        let (_, event) = child.feed(operation);
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{operation}");
+        assert_eq!(
+            child.feed_complete("view.release()\nowner.append(1)\nlen(owner)"),
+            MontyObject::int(3_000_001)
+        );
+        child.shutdown();
+    }
+}
+
+#[test]
+fn memoryview_failed_copy_preserves_the_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("owner = bytearray(6_000_000)\nview = memoryview(owner)\nlen(view)"),
+        MontyObject::int(6_000_000)
+    );
+    let (_, event) = child.feed("view.hex(bytes(bytearray(b':')))");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete("view.release()\nowner.clear()\nowner.append(1)\nlen(owner)"),
+        MontyObject::int(1)
+    );
+    child.shutdown();
+}
+
+#[test]
+fn memoryview_numeric_multidimensional_results_preserve_worker() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    assert_eq!(
+        child
+            .feed_complete("owner = bytearray(3_000_000)\nview = memoryview(owner).cast('Q', [750, 500])\nview.nbytes"),
+        MontyObject::int(3_000_000)
+    );
+    let (_, event) = child.feed("view.tolist()");
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    assert_eq!(
+        child.feed_complete("view.release()\nowner.clear()\nlen(owner)"),
+        MontyObject::int(0)
+    );
+    child.shutdown();
+}
+
+#[test]
+fn memoryview_contiguous_multidimensional_hash_does_not_copy_buffer() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete(
+            "owner = b'\\0' * 6_000_000\nview = memoryview(owner).cast('B', [2000, 3000])\nisinstance(hash(view), int)"
+        ),
+        MontyObject::bool(true)
+    );
+    child.shutdown();
+}
+
+#[test]
+fn memoryview_slice_assignment_preflights_temporary_copy() {
+    for rhs in [
+        "rhs = b'x' * (2 * 1024 * 1024)",
+        "rhs = bytearray(2 * 1024 * 1024)\nrhs[0] = 120",
+        "rhs = memoryview(b'x' * (2 * 1024 * 1024))",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(7 * 1024 * 1024));
+        child.feed_complete(&format!(
+            "owner = bytearray(4 * 1024 * 1024)\nview = memoryview(owner)\n{rhs}"
+        ));
+        let (_, event) = child.feed("view[::2] = rhs");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{rhs}");
+        assert_eq!(
+            child.feed_complete(
+                "assert owner[0] == 0\nview.release()\nowner.clear()\nowner.append(1)\nassert owner == b'\\x01'\n1 + 1"
+            ),
+            MontyObject::int(2),
+        );
+        child.shutdown();
+    }
+}
+
+#[test]
+fn memoryview_sample_preflights_scalar_allocations() {
+    for (format, itemsize) in [("Q", 8), ("c", 1)] {
+        for expression in ["rng.sample(view, 100_000)", "rng.choices(view, k=100_000)"] {
+            let mut child = ChildProc::spawn();
+            child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+            child.feed_complete(&format!(
+                "import random\nview = memoryview(b'\\xff' * {}).cast('{format}')\nrng = random.Random(3)",
+                100_000 * itemsize
+            ));
+            let (_, event) = child.feed(expression);
+            assert_eq!(expect_error(event).exc_type, "MemoryError", "{format}");
+            assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+            child.shutdown();
+        }
     }
 }

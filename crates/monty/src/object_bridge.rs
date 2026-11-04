@@ -256,6 +256,8 @@ impl GraphExporter {
             HeapReadOutput::Str(s) => MontyNode::String(s.get(vm.heap).as_str().to_owned()),
             HeapReadOutput::Bytes(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
             HeapReadOutput::ByteArray(b) => MontyNode::Bytes(b.get(vm.heap).as_slice().to_owned()),
+            HeapReadOutput::MemoryView(_) => repr_node(value, vm),
+            HeapReadOutput::MemoryViewIterator(_) => MontyNode::Repr("<memory_iterator object>".to_owned()),
             HeapReadOutput::List(list) => {
                 // Snapshot before recursing: a nested `__repr__` may mutate this list.
                 let children: Vec<Value> = list
@@ -793,7 +795,9 @@ impl MontyTypeExt for MontyType {
             | Type::DecimalSignalDict
             | Type::DecimalContextManager
             | Type::ByteArray
-            | Type::ByteArrayIterator => return None,
+            | Type::ByteArrayIterator
+            | Type::MemoryView
+            | Type::MemoryViewIterator => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

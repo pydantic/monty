@@ -2,8 +2,8 @@
 
 `bisect_left`, `bisect_right`, `insort_left`, `insort_right`, and the aliases `bisect` and `insort` are available.
 
-- **Sequences must be built-in containers.** Searches accept lists, tuples, strings, bytes, ranges and deques;
-    integer-indexed `Counter` objects also support searches. Insertion accepts lists and deques. User-defined
+- **Sequences must be built-in containers.** Searches accept lists, tuples, strings, bytes, bytearrays, memoryviews, ranges and deques;
+    integer-indexed `Counter` objects also support searches. Insertion accepts lists, bytearrays and deques. User-defined
     sequences cannot supply `__len__` and `__getitem__`, following the general [class limitations](classes.md).
 - **Index width is fixed at 64 bits.** Bounds and implicit range lengths use signed 64-bit indices even on
     32-bit WebAssembly; CPython uses its platform index width.

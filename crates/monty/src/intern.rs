@@ -2201,6 +2201,8 @@ pub enum StaticStrings {
     /// `hashlib.shake_256()` function and hash name.
     #[strum(serialize = "shake_256")]
     Shake256,
+    /// Memoryview cast dimensions.
+    Shape,
     /// The value of `sys.float_repr_style`.
     Short,
     /// `random.shuffle()` function.

@@ -28,7 +28,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`),
     `field()` (with `default=...` / `default_factory=...`) and `__post_init__`, but no `fields()` or `asdict()`, plus host
     class instances passed in and out (and host classes the sandbox may instantiate when granted)
-- Mutable `bytearray` buffers; see [builtins.md](builtins.md#bytearray) for unsupported operations
+- Mutable `bytearray` buffers and shared `memoryview` objects; see [bytearray](builtins.md#bytearray) and [memoryview](builtins.md#memoryview) for unsupported operations
 - List, dict and set comprehensions
 - `try` / `except` / `else` / `finally`, `raise ... from ...`
 - `for`, `while`, `if` / `elif` / `else`, `break`, `continue`, `pass`, `assert`, `global`, `nonlocal`, `return`

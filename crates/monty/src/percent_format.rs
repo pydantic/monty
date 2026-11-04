@@ -253,6 +253,11 @@ impl Target for BytesTarget {
 
     /// Buffer providers support `%b`; custom `__bytes__` hooks are not implemented.
     fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
+        if let Value::Ref(id) = value
+            && let HeapData::MemoryView(view) = vm.heap.get(*id)
+        {
+            return Ok(Self::from_bytes(&view.to_vec(vm)?, spec.precision));
+        }
         let bytes = read_buffer(value, vm).ok_or_else(|| {
             ExcType::type_error(format!(
                 "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
@@ -971,7 +976,8 @@ fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
             u8::try_from(integer.to_i64(vm).ok_or_else(byte_range_error)?).map_err(|_| byte_range_error())
         }
         PyValue::Bool(value) => Ok(u8::from(value)),
-        PyValue::Bytes(value) => single_byte(value.as_slice(vm)),
+        PyValue::Bytes(value) => single_byte(value.as_slice(vm), "bytes"),
+        PyValue::ByteArray(value) => single_byte(value.get(vm.heap).as_slice(), "bytearray"),
         _ => match value.py_index_impl(vm)? {
             Some(index) => {
                 defer_drop!(index, vm);
@@ -986,11 +992,11 @@ fn byte_char(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
 }
 
 /// The one byte of a `bytes` `%c` operand.
-fn single_byte(bytes: &[u8]) -> RunResult<u8> {
+fn single_byte(bytes: &[u8], kind: &str) -> RunResult<u8> {
     match bytes {
         [byte] => Ok(*byte),
         _ => Err(ExcType::type_error(format!(
-            "%c requires an integer in range(256) or a single byte, not a bytes object of length {}",
+            "%c requires an integer in range(256) or a single byte, not a {kind} object of length {}",
             bytes.len()
         ))),
     }

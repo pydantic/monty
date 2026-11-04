@@ -16,7 +16,7 @@ these built-ins; `raise MyClass()` on a plain user class raises
 `UnboundLocalError`, `ValueError`, `UnicodeDecodeError`, `UnicodeEncodeError`,
 `ImportError`, `ModuleNotFoundError`, `OSError`, `FileNotFoundError`, `FileExistsError`,
 `IsADirectoryError`, `NotADirectoryError`, `PermissionError`,
-`AssertionError`, `MemoryError`, `StopIteration`, `SyntaxError`,
+`AssertionError`, `BufferError`, `MemoryError`, `StopIteration`, `SyntaxError`,
 `TimeoutError`, `TypeError`.
 
 Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
@@ -26,7 +26,7 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 ## Exception classes NOT implemented
 
 `Warning` and all its subclasses (`DeprecationWarning`, etc.),
-`BufferError`, `EOFError`, `FloatingPointError`, `GeneratorExit`,
+`EOFError`, `FloatingPointError`, `GeneratorExit`,
 `ConnectionError` and subclasses (`ConnectionAbortedError`,
 `ConnectionRefusedError`, `ConnectionResetError`,
 `BrokenPipeError`), `BlockingIOError`, `ChildProcessError`,

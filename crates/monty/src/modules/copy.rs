@@ -14,7 +14,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{Dict, List, Module, hash_table::TableCursor, instance_call_copy_hook},
+    types::{Dict, List, Module, Type, hash_table::TableCursor, instance_call_copy_hook},
     value::{VALUE_SIZE, Value},
 };
 
@@ -344,7 +344,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         // answer lazy attribute reads through the very object it was supposed
         // to be detached from. See `limitations/copy.md` for the cases where
         // CPython manages to copy one of these and Monty does not.
-        HeapReadOutput::HostClass(_)
+        HeapReadOutput::MemoryView(_)
+        | HeapReadOutput::MemoryViewIterator(_)
+        | HeapReadOutput::HostClass(_)
         | HeapReadOutput::HashObject(_)
         | HeapReadOutput::DictKeysView(_)
         | HeapReadOutput::DictItemsView(_)
@@ -685,5 +687,9 @@ fn same_object(a: &Value, b: &Value) -> bool {
 
 /// The `TypeError` CPython's pickler raises for a type it cannot rebuild.
 fn cannot_copy(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!("cannot pickle '{}' object", value.py_type_name(vm)))
+    if value.py_type_heap(vm.heap) == Type::MemoryView {
+        ExcType::type_error("cannot pickle memoryview objects")
+    } else {
+        ExcType::type_error(format!("cannot pickle '{}' object", value.py_type_name(vm)))
+    }
 }

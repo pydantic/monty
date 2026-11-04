@@ -575,6 +575,7 @@ fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
             HeapData::ByteArray(bytes) => Ok(bytes.as_slice()),
+            HeapData::MemoryView(view) => view.contiguous(vm),
             _ => Err(not_bytes_like(value, vm)),
         },
         _ => Err(not_bytes_like(value, vm)),

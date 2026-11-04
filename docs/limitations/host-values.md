@@ -17,6 +17,7 @@ have their own identity rules.
 
 A sandbox `bytearray` crosses the host boundary as a copy of its contents in the `bytes` representation.
 Sending it back creates immutable bytes; mutable identity and type are not preserved across the boundary.
+A sandbox `memoryview` is exported as its sandbox representation (`<memory at 0x0>` or `<released memory at 0x0>`), rather than a host view of its buffer.
 
 ## Lossy outputs
 

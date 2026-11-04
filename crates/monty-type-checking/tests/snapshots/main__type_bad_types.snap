@@ -28,7 +28,7 @@ bad_types.py:136:19: error[invalid-argument-type] Argument to function `takes_in
 bad_types.py:137:19: error[invalid-argument-type] Argument to function `takes_str` is incorrect: Expected `str`, found `int`
 bad_types.py:140:7: error[unresolved-attribute] Module `sys` has no member `missing`
 bad_types.py:141:1: error[unresolved-attribute] Module `hashlib` has no member `file_digest`
-bad_types.py:142:16: error[invalid-argument-type] Argument to function `sha256` is incorrect: Expected `bytes`, found `Literal["text"]`
+bad_types.py:142:16: error[invalid-argument-type] Argument to function `sha256` is incorrect: Expected `bytes | bytearray | memoryview[Any]`, found `Literal["text"]`
 bad_types.py:143:15: error[invalid-argument-type] Argument to function `loads` is incorrect: Expected `str`, found `Literal[b"a = 1"]`
 bad_types.py:144:14: error[invalid-argument-type] Argument to function `load` is incorrect: Expected `SupportsRead[bytes]`, found `Literal["pyproject.toml"]`
 bad_types.py:145:24: error[unknown-argument] Argument `parse_float` does not match any known parameter of function `loads`
@@ -42,7 +42,7 @@ bad_types.py:173:1: error[no-matching-overload] No overload of function `open` m
 bad_types.py:174:1: error[no-matching-overload] No overload of function `open` matches arguments
 bad_types.py:175:27: error[invalid-argument-type] Argument to function `open` is incorrect: Expected `str | None`, found `Literal[1]`
 bad_types.py:176:38: error[invalid-argument-type] Argument to bound method `_TextIOBase.write` is incorrect: Expected `str`, found `Literal[b"hello"]`
-bad_types.py:177:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `Buffer`, found `Literal["hello"]`
+bad_types.py:177:39: error[invalid-argument-type] Argument to bound method `BufferedWriter.write` is incorrect: Expected `bytes | bytearray | memoryview[Any]`, found `Literal["hello"]`
 bad_types.py:178:1: error[invalid-assignment] Cannot assign to read-only property `closed` on object of type `TextIOWrapper[_WrappedBuffer]`: Attempted assignment to `TextIOWrapper[_WrappedBuffer].closed` here
 bad_types.py:181:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
 bad_types.py:182:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`

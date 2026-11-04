@@ -1,4 +1,4 @@
-use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
+use std::{borrow::Cow, cell::Cell, ffi::c_int, fmt::Write, ops, str};
 
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
@@ -88,6 +88,7 @@ use crate::{
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
+    string_builder::StringBuilder,
     types::{
         List,
         long_int::repeat_count,
@@ -222,6 +223,7 @@ impl Bytes {
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
                 HeapData::ByteArray(b) => b.as_slice().to_vec(),
+                HeapData::MemoryView(view) => view.to_vec(vm)?,
                 _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
@@ -353,7 +355,7 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
                     return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
                 };
                 let bytes = vm.heap.protect(vm.interns.get_bytes(*id));
-                call_bytes_method_impl(&*bytes, method, args, vm).map(CallResult::Value)
+                call_bytes_method_impl(&*bytes, Type::Bytes, method, args, vm).map(CallResult::Value)
             }
             Self::Heap(value) => value.py_call_attr(vm, attr, args),
         }
@@ -469,7 +471,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
         let field = heap_read_ref_as_field!(self, Bytes, 0);
         let bytes = field.as_slice();
-        call_bytes_method_impl(&bytes, method, args, vm).map(CallResult::Value)
+        call_bytes_method_impl(&bytes, Type::Bytes, method, args, vm).map(CallResult::Value)
     }
 }
 
@@ -508,6 +510,7 @@ impl HeapItem for Bytes {
 /// (`Value::InternBytes`).
 pub(crate) fn call_bytes_method_impl<'h>(
     bytes: &impl HeapView<'h, [u8]>,
+    receiver: Type,
     method: StaticStrings,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -606,7 +609,7 @@ pub(crate) fn call_bytes_method_impl<'h>(
         StaticStrings::Fromhex => bytes_fromhex(args, vm),
         _ => {
             args.drop_with(vm.heap);
-            Err(ExcType::attribute_error(Type::Bytes, method.into()))
+            Err(ExcType::attribute_error(receiver, method.into()))
         }
     }
 }
@@ -847,16 +850,7 @@ fn bytes_index<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
 fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
     let (prefix_arg, range) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` matches nothing: `b'abc'.startswith(b'', 4) == False`
-        return Ok(Value::Bool(false));
-    };
-
-    let slice = &bytes.get(vm.heap)[start..end];
-    let result = match prefix_arg {
-        PrefixSuffixArg::Single(prefix_bytes) => slice.starts_with(&prefix_bytes),
-        PrefixSuffixArg::Multiple(prefixes) => prefixes.iter().any(|p| slice.starts_with(p)),
-    };
+    let result = matches_byte_edge(bytes.get(vm.heap), range, prefix_arg, false)?;
     Ok(Value::Bool(result))
 }
 
@@ -868,16 +862,7 @@ fn bytes_startswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
 fn bytes_endswith<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let len = bytes.get(vm.heap).len();
     let (suffix_arg, range) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
-    let Some((start, end)) = range else {
-        // `start` past `end` matches nothing: `b'abc'.endswith(b'', 4) == False`
-        return Ok(Value::Bool(false));
-    };
-
-    let slice = &bytes.get(vm.heap)[start..end];
-    let result = match suffix_arg {
-        PrefixSuffixArg::Single(suffix_bytes) => slice.ends_with(&suffix_bytes),
-        PrefixSuffixArg::Multiple(suffixes) => suffixes.iter().any(|s| slice.ends_with(s)),
-    };
+    let result = matches_byte_edge(bytes.get(vm.heap), range, suffix_arg, true)?;
     Ok(Value::Bool(result))
 }
 
@@ -889,7 +874,32 @@ enum PrefixSuffixArg {
     /// A single bytes value to match
     Single(Vec<u8>),
     /// Multiple bytes values to match (from a tuple)
-    Multiple(Vec<Vec<u8>>),
+    Multiple(Vec<RunResult<Vec<u8>>>),
+}
+
+fn matches_byte_edge(bytes: &[u8], range: SearchRange, prefixes: PrefixSuffixArg, suffix: bool) -> RunResult<bool> {
+    let matches = |prefix: &[u8]| {
+        range.is_some_and(|(start, end)| {
+            let slice = &bytes[start..end];
+            if suffix {
+                slice.ends_with(prefix)
+            } else {
+                slice.starts_with(prefix)
+            }
+        })
+    };
+    match prefixes {
+        PrefixSuffixArg::Single(prefix) => Ok(matches(&prefix)),
+        PrefixSuffixArg::Multiple(prefixes) => {
+            // CPython stops at a matching entry before inspecting later invalid entries.
+            for prefix in prefixes {
+                if matches(&prefix?) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
 }
 
 /// Parses arguments for bytes.startswith/endswith methods.
@@ -908,8 +918,8 @@ fn parse_bytes_prefix_suffix_args(
 
     match pos.as_slice() {
         [prefix_value, bounds @ ..] if bounds.len() <= 2 => {
-            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
             let range = search_range(bounds.first(), bounds.get(1), len, vm)?;
+            let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
             Ok((prefix, range))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -927,6 +937,8 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
 
     match value.py_value(vm) {
         PyValue::Bytes(bytes) => Ok(PrefixSuffixArg::Single(bytes.as_slice(vm).to_vec())),
+        PyValue::ByteArray(bytes) => Ok(PrefixSuffixArg::Single(bytes.get(vm.heap).as_slice().to_vec())),
+        PyValue::MemoryView(view) => Ok(PrefixSuffixArg::Single(view.get(vm.heap).contiguous(vm)?.to_vec())),
         PyValue::Str(_) => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not str"
         ))),
@@ -934,16 +946,8 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
             // Extract each element as bytes
             let items = tuple.get(vm.heap).as_slice();
             let mut prefixes = Vec::with_capacity(items.len());
-            for (i, item) in items.iter().enumerate() {
-                if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
-                    prefixes.push(b);
-                } else {
-                    let item_type = item.py_type_name(vm);
-                    return Err(ExcType::type_error(format!(
-                        "{method_name} first arg must be bytes or a tuple of bytes, \
-                         not tuple containing {item_type} at index {i}"
-                    )));
-                }
+            for item in items {
+                prefixes.push(extract_bytes_only(item, vm).map(<[u8]>::to_vec));
             }
             Ok(PrefixSuffixArg::Multiple(prefixes))
         }
@@ -951,15 +955,6 @@ fn extract_bytes_for_prefix_suffix(value: &Value, method: &str, vm: &VM<'_>) -> 
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
             value.py_type_name(vm)
         ))),
-    }
-}
-
-/// Extracts a single bytes value for tuple element in startswith/endswith.
-fn extract_single_bytes_for_prefix_suffix(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
-    match value.py_value(vm) {
-        PyValue::Bytes(bytes) => Ok(bytes.as_slice(vm).to_vec()),
-        PyValue::Str(_) => Err(ExcType::type_error("expected bytes, not str")),
-        _ => Err(ExcType::type_error("expected bytes")),
     }
 }
 
@@ -976,10 +971,17 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
             HeapData::ByteArray(b) => Ok(b.as_slice()),
+            HeapData::MemoryView(view) => view.contiguous(vm),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
-            _ => Err(ExcType::type_error("a bytes-like object is required")),
+            _ => Err(ExcType::type_error(format!(
+                "a bytes-like object is required, not '{}'",
+                value.py_type_name(vm)
+            ))),
         },
-        _ => Err(ExcType::type_error("a bytes-like object is required")),
+        _ => Err(ExcType::type_error(format!(
+            "a bytes-like object is required, not '{}'",
+            value.py_type_name(vm)
+        ))),
     }
 }
 
@@ -1006,7 +1008,21 @@ fn parse_bytes_sub_args(
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
-    let sub = extract_bytes_only(sub_value, vm)?.to_owned();
+    let sub = if matches!(sub_value.py_value(vm), PyValue::Int(_) | PyValue::Bool(_)) {
+        let n = sub_value.saturating_index(vm)?;
+        vec![u8::try_from(n).map_err(|_| ExcType::value_error("byte must be in range(0, 256)"))?]
+    } else if let Value::Ref(id) = sub_value
+        && let HeapData::MemoryView(view) = vm.heap.get(*id)
+    {
+        view.contiguous(vm)?.to_vec()
+    } else if let Some(sub) = super::bytearray::read_buffer(sub_value, vm) {
+        sub.to_vec()
+    } else {
+        return Err(ExcType::type_error(format!(
+            "argument should be integer or bytes-like object, not '{}'",
+            sub_value.py_type_name(vm)
+        )));
+    };
     Ok((sub, range))
 }
 
@@ -1477,7 +1493,7 @@ fn coerce_bytes_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunR
 
 /// Argument shape for `bytes.split(sep=None, maxsplit=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "split")]
+#[from_args(name = "split", at_most_total)]
 struct BytesSplitArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -1487,7 +1503,7 @@ struct BytesSplitArgs {
 
 /// Argument shape for `bytes.rsplit(sep=None, maxsplit=-1)`.
 #[derive(FromArgs)]
-#[from_args(name = "rsplit")]
+#[from_args(name = "rsplit", at_most_total)]
 struct BytesRsplitArgs {
     #[from_args(default = Value::None)]
     sep: Value,
@@ -1732,7 +1748,7 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bo
 /// `keepends` for truthiness rather than strict-typing, so the field stays as
 /// a raw `Value` for `py_bool` to inspect.
 #[derive(FromArgs)]
-#[from_args(name = "splitlines")]
+#[from_args(name = "splitlines", at_most_total)]
 struct BytesSplitlinesArgs {
     #[from_args(default)]
     keepends: Option<Value>,
@@ -2045,12 +2061,32 @@ fn extract_justify_width(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 
 /// Reads a justify method's `fillbyte`, which must be exactly one byte.
 fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u8> {
-    let fill_bytes = extract_bytes_only(value, vm)?;
+    let method = method.rsplit('.').next().expect("method name");
+    let fill_bytes = match value {
+        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Bytes(bytes) => Some(bytes.as_slice()),
+            HeapData::ByteArray(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(fill_bytes) = fill_bytes else {
+        let type_name = if matches!(value, Value::None) {
+            Cow::Borrowed("None")
+        } else {
+            value.py_type_name(vm)
+        };
+        return Err(ExcType::type_error(format!(
+            "{method}() argument 2 must be a byte string of length 1, not {type_name}"
+        )));
+    };
     if fill_bytes.len() == 1 {
         Ok(fill_bytes[0])
     } else {
         Err(ExcType::type_error(format!(
-            "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
+            "{method}(): argument 2 must be a byte string of length 1, not a {} object of length {}",
+            value.py_type_name(vm),
             fill_bytes.len()
         )))
     }
@@ -2123,28 +2159,20 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
             result.extend_from_slice(separator.get(vm.heap));
         }
 
-        // Check item is bytes and extract its content
-        match item {
-            Value::InternBytes(id) => {
-                result.extend_from_slice(vm.interns.get_bytes(*id));
-            }
-            Value::Ref(heap_id) => {
-                if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
-                    result.extend_from_slice(b.as_slice());
-                } else {
-                    let t = item.py_type_name(vm);
-                    return Err(ExcType::type_error(format!(
-                        "sequence item {index}: expected a bytes-like object, {t} found"
-                    )));
-                }
-            }
-            _ => {
-                let t = item.py_type_name(vm);
-                return Err(ExcType::type_error(format!(
-                    "sequence item {index}: expected a bytes-like object, {t} found"
-                )));
-            }
-        }
+        let buffer = if let Value::Ref(id) = item
+            && let HeapData::MemoryView(view) = vm.heap.get(*id)
+        {
+            view.contiguous(vm).ok()
+        } else {
+            super::bytearray::read_buffer(item, vm)
+        };
+        let Some(buffer) = buffer else {
+            let t = item.py_type_name(vm);
+            return Err(ExcType::type_error(format!(
+                "sequence item {index}: expected a bytes-like object, {t} found"
+            )));
+        };
+        result.extend_from_slice(buffer);
         index += 1;
     }
 
@@ -2158,140 +2186,82 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
 /// Implements Python's `bytes.hex([sep[, bytes_per_sep]])` method.
 ///
 /// Returns a string containing the hexadecimal representation of the bytes.
-fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(super) fn bytes_hex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (sep, bytes_per_sep) = parse_bytes_hex_args(args, vm)?;
+    hex_data(bytes.get(vm.heap), sep, bytes_per_sep, vm)
+}
 
-    let bytes = bytes.get(vm.heap);
-    let hex_chars: Vec<char> = bytes
-        .iter()
-        .flat_map(|b| {
-            let hi = (b >> 4) & 0xf;
-            let lo = b & 0xf;
-            let hi_char = if hi < 10 {
-                (b'0' + hi) as char
-            } else {
-                (b'a' + hi - 10) as char
-            };
-            let lo_char = if lo < 10 {
-                (b'0' + lo) as char
-            } else {
-                (b'a' + lo - 10) as char
-            };
-            [hi_char, lo_char]
-        })
-        .collect();
-
-    let result = if let Some(sep) = sep {
-        if bytes_per_sep == 0 || bytes.is_empty() {
-            hex_chars.iter().collect()
-        } else {
-            // Insert separator every `bytes_per_sep` bytes (2*bytes_per_sep hex chars).
-            // `saturating_mul` guards against overflow when `bytes_per_sep == i64::MIN`,
-            // whose `unsigned_abs()` is `2^63` and would wrap `* 2` to zero, triggering
-            // a panic in `chunks(0)` below.
-            let chars_per_group = usize::try_from(bytes_per_sep.unsigned_abs())
-                .unwrap_or(usize::MAX)
-                .saturating_mul(2);
-            let mut result = String::new();
-
-            if bytes_per_sep > 0 {
-                // Positive: count from right, so partial group is at the START
-                let total_len = hex_chars.len();
-                let first_chunk_len = total_len % chars_per_group;
-                let first_chunk_len = if first_chunk_len == 0 {
-                    chars_per_group
-                } else {
-                    first_chunk_len
-                };
-
-                result.extend(&hex_chars[..first_chunk_len]);
-                for chunk in hex_chars[first_chunk_len..].chunks(chars_per_group) {
-                    result.push(sep);
-                    result.extend(chunk);
-                }
-            } else {
-                // Negative: count from left, so partial group is at the END
-                for (i, chunk) in hex_chars.chunks(chars_per_group).enumerate() {
-                    if i > 0 {
-                        result.push(sep);
-                    }
-                    result.extend(chunk);
-                }
-            }
-            result
-        }
+pub(super) fn hex_data(bytes: &[u8], sep: Option<char>, bytes_per_sep: i64, vm: &VM<'_>) -> RunResult<Value> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let group = usize::try_from(bytes_per_sep.unsigned_abs()).unwrap_or(usize::MAX);
+    let separators = if sep.is_some() && group != 0 && !bytes.is_empty() {
+        (bytes.len() - 1) / group
     } else {
-        hex_chars.iter().collect()
+        0
     };
-
-    Ok(super::str::allocate_string(result, vm.heap))
+    let capacity = bytes
+        .len()
+        .checked_mul(2)
+        .and_then(|size| size.checked_add(separators))
+        .ok_or_else(ExcType::allocation_too_large)?;
+    let mut result = StringBuilder::with_capacity(capacity, &vm.heap.tracker)?;
+    for (index, byte) in bytes.iter().enumerate() {
+        if index != 0
+            && group != 0
+            && let Some(sep) = sep
+        {
+            let boundary = if bytes_per_sep > 0 {
+                (bytes.len() - index).is_multiple_of(group)
+            } else {
+                index.is_multiple_of(group)
+            };
+            if boundary {
+                result.push(sep)?;
+            }
+        }
+        result.push(char::from(HEX[usize::from(byte >> 4)]))?;
+        result.push(char::from(HEX[usize::from(byte & 0xf)]))?;
+    }
+    result.finish(vm.heap)
 }
 
 /// Parses arguments for bytes.hex method.
-fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<char>, i64)> {
+pub(super) fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Option<char>, i64)> {
     let BytesHexArgs { sep, bytes_per_sep } = BytesHexArgs::from_args(args, vm)?;
     defer_drop!(sep, vm);
     defer_drop!(bytes_per_sep, vm);
 
-    let Some(sep_value) = (match &sep {
-        Value::None => None,
-        v => Some(v),
-    }) else {
-        // CPython treats absent `sep` as "no separator", regardless of `bytes_per_sep`.
-        return Ok((None, 1));
+    // Clinic converts the grouping count before the body examines separator length and type.
+    let raw = bytes_per_sep.as_int_with_overflow(vm, ExcType::overflow_c_int)?;
+    let bytes_per_sep = i64::from(c_int::try_from(raw).map_err(|_| ExcType::overflow_c_int())?);
+    let Some(sep_value) = sep else {
+        return Ok((None, bytes_per_sep));
     };
-
+    let len = sep_value
+        .py_len(vm)
+        .ok_or_else(|| ExcType::type_error(format!("object of type '{}' has no len()", sep_value.py_type_name(vm))))?;
+    if len != 1 {
+        return Err(ExcType::value_error("sep must be length 1."));
+    }
     let sep_char = match sep_value.py_value(vm) {
-        PyValue::Str(sep) => match sep.as_str(vm).as_bytes() {
-            [b] if b.is_ascii() => *b as char,
-            _ => {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
-                );
-            }
-        },
-        PyValue::Bytes(sep) => match sep.as_slice(vm) {
-            [b] if b.is_ascii() => *b as char,
-            _ => {
-                return Err(
-                    SimpleException::new_msg(ExcType::ValueError, "sep must be a single ASCII character").into(),
-                );
-            }
-        },
-        _ => return Err(ExcType::type_error("sep must be str or bytes")),
+        PyValue::Str(sep) => sep.as_str(vm).chars().next().expect("one character"),
+        PyValue::Bytes(sep) => char::from(sep.as_slice(vm)[0]),
+        _ => return Err(ExcType::type_error("sep must be str or bytes.")),
     };
-
-    let bytes_per_sep = match bytes_per_sep {
-        Value::None => 1,
-        bps_value => {
-            // CPython parses `bytes_per_sep` with the `i` format (C int), so values outside
-            // c_int range raise OverflowError before any computation happens.
-            let raw = bps_value.as_int(vm)?;
-            c_int::try_from(raw).map_err(|_| ExcType::overflow_c_int())?.into()
-        }
-    };
+    if !sep_char.is_ascii() {
+        return Err(ExcType::value_error("sep must be ASCII."));
+    }
 
     Ok((Some(sep_char), bytes_per_sep))
 }
 
-/// `bytes.hex([sep[, bytes_per_sep]])` — CPython accepts `sep` and
-/// `bytes_per_sep` as positional-or-keyword, but Monty has not threaded
-/// kwarg dispatch through to the type-checking body yet.
-/// `kwargs_not_supported_yet` rejects any kwarg with
-/// `NotImplementedError: bytes.hex() does not yet support keyword
-/// arguments` (replacing the previous `TypeError: bytes.hex() takes no
-/// keyword arguments` from `into_pos_only`) while the macro takes over
-/// arity validation, upgrading the too-many-args wording from
-/// `bytes.hex expected at most 2 arguments, got N` to CPython's
-/// `bytes.hex() takes at most 2 arguments (N given)`. Fields become real
-/// kwargs and the flag goes away when the kwarg dispatch is plumbed
-/// through.
+/// Missing `sep` differs from explicitly passing `None` to CPython's converter.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.hex", style = c_named, at_most_total, kwargs_not_supported_yet)]
+#[from_args(name = "hex", at_most_total)]
 struct BytesHexArgs {
-    #[from_args(default = Value::None)]
-    sep: Value,
-    #[from_args(default = Value::None)]
+    #[from_args(default)]
+    sep: Option<Value>,
+    #[from_args(default = Value::Int(1))]
     bytes_per_sep: Value,
 }
 
@@ -2312,6 +2282,7 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         PyValue::Str(value) => Box::new(value.as_str(vm).chars()),
         PyValue::Bytes(value) => Box::new(value.as_slice(vm).iter().copied().map(char::from)),
         PyValue::ByteArray(value) => Box::new(value.get(vm.heap).as_slice().iter().copied().map(char::from)),
+        PyValue::MemoryView(value) => Box::new(value.get(vm.heap).contiguous(vm)?.iter().copied().map(char::from)),
         _ => {
             let t = hex_value.py_type_name(vm);
             return Err(ExcType::type_error(format!(

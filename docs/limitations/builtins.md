@@ -14,7 +14,7 @@ Python.
 
 ## Implemented type constructors (also builtins)
 
-`bool`, `bytearray`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `range`,
+`bool`, `bytearray`, `bytes`, `complex`, `dict`, `float`, `frozenset`, `int`, `list`, `memoryview`, `range`,
 `set`, `slice`, `str`, `tuple`. Exception classes (`ValueError`,
 `TypeError`, etc.) are also names in the builtin namespace.
 
@@ -27,7 +27,7 @@ These raise `NameError`:
 - **Interactive**: `input`, `breakpoint`, `help`.
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
     `super`. (`@property` on functions is not recognized; use a method.)
-- **Construction / coercion**: `memoryview`, `object`, `ascii`.
+- **Construction / coercion**: `object`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission: with no class inheritance either
@@ -135,9 +135,8 @@ These raise `NameError`:
     and multi-iterable `map` stop at the shortest input, so pairing an infinite
     iterable with a finite or empty one stays bounded. A plain `for x in container` is lazy and does detect mutation.
     See [itertools.md](itertools.md).
-- **Arity-error wording for some str/bytes methods** — a handful of
-    keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
-    equivalents) report too-many-arguments as `split expected at most 2 arguments, got 3`, where CPython 3.14's Argument
+- **Arity-error wording for some str methods** — a handful of
+    keyword-accepting methods (e.g. `str.split` and `str.rsplit`) report too-many-arguments as `split expected at most 2 arguments, got 3`, where CPython 3.14's Argument
     Clinic pre-counts
     positionals *plus* kwargs and says `split() takes at most 2 arguments (3 given)`. Methods audited against CPython
     (`encode`, `decode`,
@@ -214,7 +213,17 @@ These raise `NameError`:
 
 ## `bytearray`
 
-`memoryview` and persistent exported buffers are not implemented.
 `del buffer[index]` and `del buffer[start:stop]` are not supported; use slice assignment with an empty buffer instead.
 Constructors and mutation methods collect iterables synchronously; suspendable user iteration is not supported.
-Error messages inherited from shared byte algorithms may refer to `bytes` rather than `bytearray`.
+The `bytearray` type object crosses the host boundary as a representation string, rather than a host type.
+
+## `memoryview`
+
+Custom buffer providers (`__buffer__`) are not implemented.
+If a valid index or coordinate's `__index__` releases its view, Monty raises `ValueError` before converting later coordinates or accessing its buffer.
+Native formats use a fixed little-endian LP64 layout on every host.
+`l`, `L`, `n`, `N`, and `P` are always eight bytes, so their widths differ from Windows or 32-bit CPython where applicable.
+Native byte order differs from CPython on big-endian hosts.
+Indirect buffers are not implemented.
+The type checker cannot distinguish writable and readonly views; `random.shuffle` accepts either statically, but a swap on a readonly view raises `TypeError`.
+A view cannot cross the host boundary as shared storage; see [host-values.md](host-values.md#mutable-byte-buffers).

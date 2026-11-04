@@ -212,6 +212,10 @@ pub(crate) enum BuiltinType {
     ByteArray,
     #[strum(serialize = "bytearray_iterator")]
     ByteArrayIterator,
+    #[strum(serialize = "memoryview")]
+    MemoryView,
+    #[strum(serialize = "memory_iterator")]
+    MemoryViewIterator,
 }
 
 impl From<BuiltinType> for Type {
@@ -235,6 +239,8 @@ impl From<BuiltinType> for Type {
             BuiltinType::Bytes => Self::Bytes,
             BuiltinType::ByteArray => Self::ByteArray,
             BuiltinType::ByteArrayIterator => Self::ByteArrayIterator,
+            BuiltinType::MemoryView => Self::MemoryView,
+            BuiltinType::MemoryViewIterator => Self::MemoryViewIterator,
             BuiltinType::List => Self::List,
             BuiltinType::Tuple => Self::Tuple,
             BuiltinType::NamedTuple => Self::NamedTuple,
@@ -351,6 +357,8 @@ impl TryFrom<Type> for BuiltinType {
             Type::Bytes => Self::Bytes,
             Type::ByteArray => Self::ByteArray,
             Type::ByteArrayIterator => Self::ByteArrayIterator,
+            Type::MemoryView => Self::MemoryView,
+            Type::MemoryViewIterator => Self::MemoryViewIterator,
             Type::List => Self::List,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

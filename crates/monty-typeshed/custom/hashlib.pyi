@@ -3,11 +3,10 @@
 # and `scrypt` are absent so type checking rejects them up front instead of
 # letting them fail with `AttributeError`. Extend in lockstep with
 # `crates/monty/src/modules/hashlib.rs`.
-#
-# Parameters typed `ReadableBuffer` upstream are `bytes` here: Monty has no
-# `bytearray` or `memoryview`.
 
 from typing import Final, Literal, final, overload
+
+from _typeshed import ReadableBuffer
 
 @final
 class HASH:
@@ -20,7 +19,7 @@ class HASH:
     def copy(self) -> HASH: ...
     def digest(self) -> bytes: ...
     def hexdigest(self) -> str: ...
-    def update(self, obj: bytes, /) -> None: ...
+    def update(self, obj: ReadableBuffer, /) -> None: ...
 
 @final
 class HASHXOF:
@@ -33,7 +32,7 @@ class HASHXOF:
     def copy(self) -> HASHXOF: ...
     def digest(self, length: int) -> bytes: ...
     def hexdigest(self, length: int) -> str: ...
-    def update(self, obj: bytes, /) -> None: ...
+    def update(self, obj: ReadableBuffer, /) -> None: ...
 
 @final
 class blake2b:
@@ -46,13 +45,13 @@ class blake2b:
     name: str
     def __new__(
         cls,
-        data: bytes = b'',
+        data: ReadableBuffer = b'',
         /,
         *,
         digest_size: int = 64,
-        key: bytes = b'',
-        salt: bytes = b'',
-        person: bytes = b'',
+        key: ReadableBuffer = b'',
+        salt: ReadableBuffer = b'',
+        person: ReadableBuffer = b'',
         fanout: int = 1,
         depth: int = 1,
         leaf_size: int = 0,
@@ -61,12 +60,12 @@ class blake2b:
         inner_size: int = 0,
         last_node: bool = False,
         usedforsecurity: bool = True,
-        string: bytes | None = None,
+        string: ReadableBuffer | None = None,
     ) -> blake2b: ...
     def copy(self) -> blake2b: ...
     def digest(self) -> bytes: ...
     def hexdigest(self) -> str: ...
-    def update(self, data: bytes, /) -> None: ...
+    def update(self, data: ReadableBuffer, /) -> None: ...
 
 @final
 class blake2s:
@@ -79,13 +78,13 @@ class blake2s:
     name: str
     def __new__(
         cls,
-        data: bytes = b'',
+        data: ReadableBuffer = b'',
         /,
         *,
         digest_size: int = 32,
-        key: bytes = b'',
-        salt: bytes = b'',
-        person: bytes = b'',
+        key: ReadableBuffer = b'',
+        salt: ReadableBuffer = b'',
+        person: ReadableBuffer = b'',
         fanout: int = 1,
         depth: int = 1,
         leaf_size: int = 0,
@@ -94,30 +93,30 @@ class blake2s:
         inner_size: int = 0,
         last_node: bool = False,
         usedforsecurity: bool = True,
-        string: bytes | None = None,
+        string: ReadableBuffer | None = None,
     ) -> blake2s: ...
     def copy(self) -> blake2s: ...
     def digest(self) -> bytes: ...
     def hexdigest(self) -> str: ...
-    def update(self, data: bytes, /) -> None: ...
+    def update(self, data: ReadableBuffer, /) -> None: ...
 
 @overload
 def new(
     name: Literal['shake_128', 'shake_256'],
-    data: bytes = b'',
+    data: ReadableBuffer = b'',
     *,
     usedforsecurity: bool = True,
-    string: bytes | None = None,
+    string: ReadableBuffer | None = None,
 ) -> HASHXOF: ...
 @overload
 def new(
     name: Literal['blake2b'],
-    data: bytes = b'',
+    data: ReadableBuffer = b'',
     *,
     digest_size: int = 64,
-    key: bytes = b'',
-    salt: bytes = b'',
-    person: bytes = b'',
+    key: ReadableBuffer = b'',
+    salt: ReadableBuffer = b'',
+    person: ReadableBuffer = b'',
     fanout: int = 1,
     depth: int = 1,
     leaf_size: int = 0,
@@ -126,17 +125,17 @@ def new(
     inner_size: int = 0,
     last_node: bool = False,
     usedforsecurity: bool = True,
-    string: bytes | None = None,
+    string: ReadableBuffer | None = None,
 ) -> blake2b: ...
 @overload
 def new(
     name: Literal['blake2s'],
-    data: bytes = b'',
+    data: ReadableBuffer = b'',
     *,
     digest_size: int = 32,
-    key: bytes = b'',
-    salt: bytes = b'',
-    person: bytes = b'',
+    key: ReadableBuffer = b'',
+    salt: ReadableBuffer = b'',
+    person: ReadableBuffer = b'',
     fanout: int = 1,
     depth: int = 1,
     leaf_size: int = 0,
@@ -145,23 +144,47 @@ def new(
     inner_size: int = 0,
     last_node: bool = False,
     usedforsecurity: bool = True,
-    string: bytes | None = None,
+    string: ReadableBuffer | None = None,
 ) -> blake2s: ...
 @overload
-def new(name: str, data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def md5(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha1(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha224(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha256(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha384(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha512(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha3_224(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha3_256(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha3_384(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def sha3_512(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASH: ...
-def shake_128(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASHXOF: ...
-def shake_256(data: bytes = b'', *, usedforsecurity: bool = True, string: bytes | None = None) -> HASHXOF: ...
-def pbkdf2_hmac(hash_name: str, password: bytes, salt: bytes, iterations: int, dklen: int | None = None) -> bytes: ...
+def new(
+    name: str, data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def md5(data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None) -> HASH: ...
+def sha1(data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None) -> HASH: ...
+def sha224(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha256(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha384(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha512(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha3_224(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha3_256(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha3_384(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def sha3_512(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASH: ...
+def shake_128(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASHXOF: ...
+def shake_256(
+    data: ReadableBuffer = b'', *, usedforsecurity: bool = True, string: ReadableBuffer | None = None
+) -> HASHXOF: ...
+def pbkdf2_hmac(
+    hash_name: str, password: ReadableBuffer, salt: ReadableBuffer, iterations: int, dklen: int | None = None
+) -> bytes: ...
 
 algorithms_guaranteed: set[str]
 algorithms_available: set[str]
