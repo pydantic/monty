@@ -8,6 +8,7 @@ use monty_types::CompileOptions;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    annotations,
     args::ArgValues,
     builtins::next,
     bytecode::{CallResult, Compiler, VM},
@@ -17,7 +18,7 @@ use crate::{
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{forward_ref, iter, lru_cache},
+    types::{forward_ref, generic_alias, iter, lru_cache},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -36,12 +37,15 @@ pub(crate) enum FrozenFunction {
     /// Return a default when a suspendable user `__next__` method is exhausted.
     #[serde(rename = "builtins.next_default")]
     NextDefault,
-    /// Evaluate stringized annotations for `typing.get_type_hints` and `annotationlib.get_annotations`.
-    #[serde(rename = "typing.get_type_hints")]
-    TypingGetTypeHints,
+    /// Evaluate annotations for `annotationlib.get_annotations` and `typing.get_type_hints`.
+    #[serde(rename = "annotationlib.get_annotations")]
+    GetAnnotations,
     /// `ForwardRef.evaluate()`, applying the format's rules to one evaluation.
     #[serde(rename = "annotationlib.ForwardRef.evaluate")]
     ForwardRefEvaluate,
+    /// Evaluate and cache a class's `__annotations__` from its `__annotate__`.
+    #[serde(rename = "type.__annotations__")]
+    ClassAnnotations,
 }
 
 impl FrozenFunction {
@@ -80,8 +84,9 @@ impl FrozenFunction {
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
-            Self::TypingGetTypeHints => typing::GET_TYPE_HINTS_SOURCE,
+            Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
             Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
+            Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,
         }
     }
 }
@@ -91,12 +96,20 @@ impl FrozenFunction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, strum::Display)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum FrozenFunctions {
+    /// Rebuild a generic alias around resolved arguments (see `generic_alias::call_alias_with`).
+    AliasWith,
+    /// Cache a class's evaluated `__annotations__` under `__annotations_cache__`.
+    CacheClassAnnotations,
+    /// Call an `__annotate__` function in an `annotationlib.Format` (see `annotations::call_annotate_helper`).
+    CallAnnotate,
     /// Evaluate one annotation string in explicit namespaces and name-resolution mode.
     EvalHint,
     /// Call a user `__iter__` without validating its result yet.
     GetIter,
     /// Insert a successful result into a cache wrapper.
     Store,
+    /// `annotationlib.type_repr`: a type by name, anything else by repr.
+    TypeRepr,
     /// Check the result returned by a user `__iter__` method.
     ValidateIterator,
 }
@@ -104,9 +117,15 @@ pub(crate) enum FrozenFunctions {
 /// Dispatches private helpers using the same argument ownership rules as public natives.
 pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     match function {
+        FrozenFunctions::AliasWith => generic_alias::call_alias_with(args, vm).map(CallResult::Value),
+        FrozenFunctions::CacheClassAnnotations => {
+            annotations::cache_class_annotations_helper(args, vm).map(CallResult::Value)
+        }
+        FrozenFunctions::CallAnnotate => annotations::call_annotate_helper(args, vm),
         FrozenFunctions::EvalHint => typing::call_eval_hint(args, vm),
         FrozenFunctions::GetIter => iter::call_get_iter(args, vm),
         FrozenFunctions::Store => lru_cache::call_store(args, vm).map(CallResult::Value),
+        FrozenFunctions::TypeRepr => typing::call_type_repr(args, vm).map(CallResult::Value),
         FrozenFunctions::ValidateIterator => iter::call_validate_iterator(args, vm).map(CallResult::Value),
     }
 }

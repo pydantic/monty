@@ -5,9 +5,9 @@
 //! - Common type hints as `Marker` values (Any, Optional, List, Dict, etc.)
 //! - `Union`, the type behind `int | None` (see `types/union.rs`)
 //! - `ForwardRef`, shared with `annotationlib` (see `types/forward_ref.rs`)
-//! - `get_type_hints()`, evaluating the stringized annotations Monty stores in
-//!   any `annotationlib.Format`; `annotationlib.get_annotations()` shares its
-//!   machinery through [`collect_hints`]
+//! - `get_type_hints()`, evaluating annotations from their `__annotate__`
+//!   function (PEP 649) in any `annotationlib.Format`;
+//!   `annotationlib.get_annotations()` shares its machinery through [`collect_hints`]
 //!
 //! These markers exist so code that imports typing constructs works correctly,
 //! though Monty doesn't perform static type checking. `Optional[X]` is the one
@@ -17,19 +17,19 @@ use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
 
 use crate::{
+    annotations::{self, empty_dict},
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions, eval_exec},
     bytecode::{CallResult, MissingNames, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
-    heap::{DropGuard, HeapData, HeapId},
+    heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
-    stringize::string_literal_text,
     types::{
-        BuiltinType, ClassAnnotations, Dict, LazyHeapSet, List, Module, PyTrait, allocate_string, allocate_tuple,
-        forward_ref::format_code, generic_alias::repr_type_arg,
+        BuiltinType, LazyHeapSet, Module, PyTrait, allocate_string, allocate_tuple, forward_ref::format_code,
+        generic_alias::repr_type_arg,
     },
     value::{Marker, Value},
 };
@@ -115,61 +115,117 @@ pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) 
     }
 }
 
-/// Evaluates stringized annotations as CPython 3.14's `annotationlib.get_annotations`
-/// and `typing.get_type_hints` do.
+/// Evaluates annotations as CPython 3.14's `annotationlib.get_annotations` and
+/// `typing.get_type_hints` do, from an `__annotate__` function or a stored dict.
 ///
-/// `hints` holds `[name, text]` pairs, rewritten in place; `scopes` is
-/// `(globals, locals, fwd_globals, fwd_locals, fwd_globals_first)`: where a stored
-/// annotation evaluates, then where a forward reference does. `format_` is the
-/// `annotationlib.Format` code, `task` 0 for `get_annotations`, 1 for it with
-/// `eval_str=True` and 2 for `get_type_hints`, and `future` marks PEP 563 strings.
-/// `eval_hint`'s last three arguments are the name mode (0 raise, 1 stringify
-/// unresolved names, 2 stringify every name), the owner and the class flag.
-pub(crate) const GET_TYPE_HINTS_SOURCE: &str = r"
-def __monty_typing_get_type_hints(hints, scopes, format_, task, future, owner, is_class, eval_hint, forward_ref, isinstance_, len_, str_, tuple_, generic_alias, union, none_type, exception, syntax_error):
+/// `annotate` and `stored` are the object's `__annotate__` function and bound
+/// `__annotations__` dict (`None` when absent), `classdict` a copy of a class's
+/// namespace, and `scopes` `(globals, locals, globals_first)`: where a forward
+/// reference evaluates. `format_` is the `annotationlib.Format` code, `task` 0
+/// for `get_annotations`, 1 for it with `eval_str=True` and 2 for
+/// `get_type_hints`. `call_annotate` runs the function with a format and a
+/// fake-globals mode (0 none, 1 stringify unresolved names, 2 every name, 3
+/// raise `NameError` without asking the host);
+/// `cache`, for a class, stores a plain evaluation as CPython's
+/// `type.__annotations__` would. `eval_hint`'s last three arguments are the
+/// name mode, the owner and the class flag.
+pub(crate) const GET_ANNOTATIONS_SOURCE: &str = r"
+def __monty_get_annotations(owner, annotate, stored, classdict, scopes, format_, task, include_extras, is_class, call_annotate, cache, eval_hint, alias_with, forward_ref, type_repr_, isinstance_, len_, str_, tuple_, dict_, repr_, generic_alias, literal_, union, none_type, exception, not_implemented_error, syntax_error, value_error):
+    VALUE = 1
+    FAKE_GLOBALS = 2
     FORWARDREF = 3
     STRING = 4
-    globalns, localns, fwd_globalns, fwd_localns, fwd_globals_first = scopes
-    # Pass 1, CPython's `__annotate__(VALUE)`: every annotation evaluates where it
-    # was written before any forward reference resolves. PEP 563 strings and the
-    # STRING format are reported as stored.
-    if not future and format_ != STRING:
-        for entry in hints:
-            text = entry[1]
-            if not isinstance_(text, str_):
-                continue
-            if format_ != FORWARDREF:
-                entry[1] = eval_hint(text, globalns, localns, False, False, 0, None, False)
-                continue
+    fwd_globalns, fwd_localns, fwd_globals_first = scopes
+    # `annotationlib.get_annotations`: a stored dict is reported as is (STRING
+    # prefers the function, so a cached evaluation never hides the source);
+    # otherwise `__annotate__` runs, first asked for the format itself (a
+    # hand-written one may support it), then under fake globals
+    # (`call_annotate_function`).
+    if format_ == STRING:
+        if annotate is None:
+            annotations = stored
+        else:
             try:
-                entry[1] = eval_hint(text, globalns, localns, False, False, 1, owner, is_class)
-            except exception:
-                # annotationlib's fallback for an annotation that raises: stringify
-                # every name, then evaluate the reference once more, keeping it on failure.
-                value = eval_hint(text, globalns, localns, False, False, 2, owner, is_class)
-                if isinstance_(value, forward_ref):
-                    try:
-                        evaluated = eval_hint(text, globalns, localns, False, True, 1, owner, is_class)
-                    except exception:
-                        evaluated = value
-                    if not (isinstance_(evaluated, forward_ref) and text.isidentifier()):
-                        value = evaluated
-                entry[1] = value
+                annotations = call_annotate(annotate, classdict, STRING, 0, owner, is_class)
+            except not_implemented_error:
+                try:
+                    annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 2, owner, is_class)
+                except not_implemented_error:
+                    annotations = call_annotate(annotate, classdict, VALUE, 0, owner, is_class)
+            if not isinstance_(annotations, dict_):
+                raise value_error(repr_(owner) + '.__annotate__ returned a non-dict')
+        result = {}
+        for name, value in annotations.items():
+            if isinstance_(value, forward_ref):
+                value = value.__forward_arg__
+            elif value is ...:
+                value = '...'
+            elif not isinstance_(value, str_):
+                value = type_repr_(value)
+            result[name] = value
+        return result
+    if stored is not None:
+        annotations = stored
+    elif format_ == VALUE:
+        annotations = call_annotate(annotate, classdict, VALUE, 0, owner, is_class)
+        if cache is not None:
+            cache(owner, annotations)
+    else:
+        # FORWARDREF: the plain evaluation `__annotations__` makes first, which a
+        # class caches; it raises `NameError` where it would ask the host for a
+        # name, so this format never does. Then `call_annotate_function`: the
+        # function's own support, else fake globals stringifying unresolved
+        # names, and if that run raises, every name is stringified and each
+        # reference then evaluated on its own.
+        # A non-dict from the plain evaluation is the `TypeError` `__annotations__`
+        # raises, which `get_annotations` swallows like any other failure.
+        plain = True
+        try:
+            annotations = call_annotate(annotate, classdict, VALUE, 3, owner, is_class)
+        except exception:
+            plain = False
+        if plain and not isinstance_(annotations, dict_):
+            plain = False
+        if plain:
+            if cache is not None:
+                cache(owner, annotations)
+        else:
+            try:
+                annotations = call_annotate(annotate, classdict, FORWARDREF, 0, owner, is_class)
+            except not_implemented_error:
+                try:
+                    annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 1, owner, is_class)
+                except exception:
+                    annotations = call_annotate(annotate, classdict, FAKE_GLOBALS, 2, owner, is_class)
+                    if not isinstance_(annotations, dict_):
+                        raise value_error(repr_(owner) + '.__annotate__ returned a non-dict')
+                    evaluated = {}
+                    for name, value in annotations.items():
+                        if isinstance_(value, forward_ref):
+                            value = value.evaluate(format=FORWARDREF)
+                        evaluated[name] = value
+                    annotations = evaluated
+            if not isinstance_(annotations, dict_):
+                raise value_error(repr_(owner) + '.__annotate__ returned a non-dict')
     # `get_annotations(eval_str=True)` evaluates string values with plain `eval()`.
     if task == 1:
-        for entry in hints:
-            if isinstance_(entry[1], str_):
-                entry[1] = eval_hint(entry[1], fwd_globalns, fwd_localns, False, False, 0, None, False)
-    if task != 2 or format_ == STRING:
         result = {}
-        for name, value in hints:
+        for name, value in annotations.items():
+            if isinstance_(value, str_):
+                value = eval_hint(value, fwd_globalns, fwd_localns, False, False, 0, None, False)
+            result[name] = value
+        return result
+    if task != 2:
+        result = {}
+        for name, value in annotations.items():
             result[name] = value
         return result
     # Pass 2, `typing._eval_type`: resolve forward references at any depth of a
-    # generic alias or union. An explicit stack, since frozen code cannot recurse;
-    # each frame is [value, resolved args or None, texts seen, next index, parent reference].
+    # generic alias or union (`alias_with` also strips `Annotated` unless
+    # `include_extras`). An explicit stack, since frozen code cannot recurse; each frame is
+    # [value, resolved args or None, texts seen, next index, parent reference].
     result = {}
-    for name, value in hints:
+    for name, value in annotations.items():
         if isinstance_(value, str_):
             value = forward_ref(value, is_argument=not is_class, is_class=is_class)
         stack = [[value, None, (), 0, None]]
@@ -203,7 +259,8 @@ def __monty_typing_get_type_hints(hints, scopes, format_, task, future, owner, i
                     if isinstance_(evaluated, str_):
                         evaluated = forward_ref(evaluated, module=value.__forward_module__, owner=owner, is_argument=value.__forward_is_argument__, is_class=value.__forward_is_class__)
                     value = evaluated
-                if isinstance_(value, generic_alias) or isinstance_(value, union):
+                # A `Literal` holds values, not types: its strings stay strings.
+                if (isinstance_(value, generic_alias) and value.__origin__ is not literal_) or isinstance_(value, union):
                     frame[0] = value
                     frame[1] = []
                     frame[2] = seen
@@ -227,13 +284,12 @@ def __monty_typing_get_type_hints(hints, scopes, format_, task, future, owner, i
                 stack.append([arg, None, frame[2], 0, None])
                 continue
             resolved = tuple_(frame[1])
-            if resolved != args:
-                if isinstance_(value, generic_alias):
-                    value = value.__origin__[resolved]
-                else:
-                    value = resolved[0]
-                    for member in resolved[1:]:
-                        value = value | member
+            if isinstance_(value, generic_alias):
+                value = alias_with(value, resolved, include_extras)
+            elif resolved != args:
+                value = resolved[0]
+                for member in resolved[1:]:
+                    value = value | member
             stack.pop()
             if stack:
                 stack[-1][1].append(value)
@@ -252,7 +308,6 @@ struct GetTypeHintsArgs {
     globalns: Value,
     #[from_args(default = Value::None)]
     localns: Value,
-    /// Accepted and ignored: Monty has no `Annotated` metadata to strip.
     #[from_args(default = Value::Bool(false))]
     include_extras: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -283,12 +338,14 @@ fn get_type_hints(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let format = HintFormat::parse(format, true, vm)?;
     let globalns = namespace_dict(globalns, "get_type_hints", "globalns", vm)?;
     let localns = namespace_dict(localns, "get_type_hints", "localns", vm)?;
+    let include_extras = include_extras.py_bool(vm)?;
     collect_hints(
         obj,
         &HintsRequest {
             format,
             globalns,
             localns,
+            include_extras,
             task: HintsTask::TypeHints,
         },
         vm,
@@ -378,74 +435,80 @@ pub(crate) struct HintsRequest {
     pub format: HintFormat,
     pub globalns: Option<HeapId>,
     pub localns: Option<HeapId>,
+    /// `get_type_hints(include_extras=True)`: keep `Annotated` metadata.
+    pub include_extras: bool,
     pub task: HintsTask,
 }
 
-/// Collects `obj`'s stringized annotations and the namespaces they evaluate in,
-/// then hands them to the frozen evaluator, which can push frames and suspend
-/// for host name lookups. A host function or class suspends with an OS call
-/// instead: only the host can evaluate its hints, in `VALUE` form.
+/// Finds `obj`'s `__annotate__` function or stored `__annotations__` and the
+/// namespaces its forward references evaluate in, then hands them to the frozen
+/// evaluator, which can push frames and suspend for host name lookups. A host
+/// function or class suspends with an OS call instead: only the host can
+/// evaluate its hints, in `VALUE` form.
 pub(crate) fn collect_hints(obj: &Value, request: &HintsRequest, vm: &mut VM<'_>) -> RunResult<CallResult> {
     match hint_source(obj, vm) {
         HintSource::Function(func_id, globals) => {
-            let function = vm.interns.get_function(func_id);
-            let future = function.code.future_annotations();
-            let pairs: Vec<(Value, Value)> = function
-                .annotations
-                .iter()
-                .map(|&(name, hint)| (Value::InternString(name), Value::InternString(hint)))
-                .collect();
-            // An annotation evaluates in the function's globals, as its `__annotate__`
-            // would; a forward reference in `globalns` (default: those globals), then
-            // `localns` (default: `globalns`).
-            let scopes = Scopes {
-                globals,
-                locals: None,
-                fwd_globals: request.globalns.or(globals),
-                fwd_locals: request.localns,
-                fwd_globals_first: false,
+            let annotate = annotations::function_annotate(func_id, globals, vm);
+            defer_drop!(annotate, vm);
+            if matches!(annotate, Value::None) {
+                return Ok(CallResult::Value(empty_dict(vm)));
+            }
+            // A forward reference evaluates in `globalns` (default: the function's
+            // globals), then `localns` (default: `globalns`).
+            let scopes = ForwardRefScopes {
+                globals: request.globalns.or(globals),
+                locals: request.localns,
+                globals_first: false,
             };
-            evaluate_hints(&pairs, scopes, future, obj, false, request, vm)
+            let source = AnnotationSource {
+                annotate: annotate.clone_with_heap(vm),
+                stored: Value::None,
+                classdict: Value::None,
+                cache: false,
+            };
+            resolve_hints(obj, source, scopes, false, request, vm)
         }
         HintSource::Class(class_id) => {
-            let HeapData::Class(class) = vm.heap.get(class_id) else {
-                unreachable!("hint_source classified a class");
-            };
-            let future = class.future_annotations();
-            let annotations = match class.annotations(vm.heap, vm.interns) {
-                ClassAnnotations::Missing => return Ok(CallResult::Value(empty_dict(vm))),
-                ClassAnnotations::Dict(annotations) => annotations,
-                // CPython's `annotationlib` rejects `None` here too.
-                ClassAnnotations::NotADict => return Err(not_a_dict_error(class_id, vm)),
-            };
-            let pairs: Vec<(Value, Value)> = annotations
-                .iter()
-                .map(|(name, hint)| (name.clone_with_heap(vm.heap), hint.clone_with_heap(vm.heap)))
-                .collect();
-            defer_drop!(pairs, vm);
-            // An annotation evaluates with a copy of the class namespace (CPython's
-            // `dict(vars(cls))`) over the module globals, as its `__annotate__` would.
-            let namespace = class_namespace_copy(class_id, vm)?;
-            defer_drop!(namespace, vm);
-            let namespace_id = namespace.ref_id();
-            let (fwd_globals, fwd_locals, fwd_globals_first) = match request.task {
+            let stored = annotations::stored_class_annotations(class_id, vm);
+            defer_drop!(stored, vm);
+            // CPython's `annotationlib` rejects a non-dict binding such as `None`.
+            if let Some(stored) = stored
+                && !matches!(stored, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)))
+            {
+                return Err(not_a_dict_error(class_id, vm));
+            }
+            let annotate = annotations::class_annotate(class_id, vm);
+            defer_drop!(annotate, vm);
+            if stored.is_none() && annotate.is_none() {
+                return Ok(CallResult::Value(empty_dict(vm)));
+            }
+            // The annotations evaluate with a copy of the class namespace (CPython's
+            // `dict(vars(cls))`) over the module globals.
+            let classdict = annotations::class_namespace_copy(class_id, vm)?;
+            defer_drop!(classdict, vm);
+            let classdict_id = classdict.ref_id();
+            let (globals, locals, globals_first) = match request.task {
                 // Without explicit namespaces `get_type_hints` searches the module
                 // globals before the class namespace, as CPython swaps them.
                 HintsTask::TypeHints => match (request.globalns, request.localns) {
-                    (None, None) => (None, namespace_id, true),
-                    (Some(_), None) => (request.globalns, namespace_id, false),
+                    (None, None) => (None, classdict_id, true),
+                    (Some(_), None) => (request.globalns, classdict_id, false),
                     (_, Some(_)) => (request.globalns, request.localns, false),
                 },
-                HintsTask::Annotations { .. } => (request.globalns, request.localns.or(namespace_id), false),
+                HintsTask::Annotations { .. } => (request.globalns, request.localns.or(classdict_id), false),
             };
-            let scopes = Scopes {
-                globals: None,
-                locals: namespace_id,
-                fwd_globals,
-                fwd_locals,
-                fwd_globals_first,
+            let scopes = ForwardRefScopes {
+                globals,
+                locals,
+                globals_first,
             };
-            evaluate_hints(pairs, scopes, future, obj, true, request, vm)
+            let source = AnnotationSource {
+                annotate: annotate.as_ref().map_or(Value::None, |value| value.clone_with_heap(vm)),
+                stored: stored.as_ref().map_or(Value::None, |value| value.clone_with_heap(vm)),
+                classdict: classdict.clone_with_heap(vm),
+                cache: true,
+            };
+            resolve_hints(obj, source, scopes, true, request, vm)
         }
         HintSource::Host(target) => match request.format {
             HintFormat::String => Err(ExcType::not_implemented(format!(
@@ -461,103 +524,100 @@ pub(crate) fn collect_hints(obj: &Value, request: &HintsRequest, vm: &mut VM<'_>
     }
 }
 
-/// The namespaces an evaluation uses: `globals` / `locals` for a stored annotation
-/// and `fwd_*` for a forward reference, each a borrowed dict id or `None` for the
-/// module slots (globals) or no locals.
-struct Scopes {
+/// The namespaces a forward reference evaluates in: each a borrowed dict id or
+/// `None` for the module slots (globals) or no locals.
+struct ForwardRefScopes {
     globals: Option<HeapId>,
     locals: Option<HeapId>,
-    fwd_globals: Option<HeapId>,
-    fwd_locals: Option<HeapId>,
-    /// Bound module globals shadow `fwd_locals`.
-    fwd_globals_first: bool,
+    /// Bound module globals shadow `locals`.
+    globals_first: bool,
 }
 
-impl Scopes {
+impl ForwardRefScopes {
     /// The `scopes` tuple the frozen evaluator takes, each dict a new reference.
     fn into_tuple(self, vm: &VM<'_>) -> Value {
         let mut items = SmallVec::new();
-        for scope in [self.globals, self.locals, self.fwd_globals, self.fwd_locals] {
+        for scope in [self.globals, self.locals] {
             items.push(scope.map_or(Value::None, |id| {
                 vm.heap.inc_ref(id);
                 Value::Ref(id)
             }));
         }
-        items.push(Value::Bool(self.fwd_globals_first));
+        items.push(Value::Bool(self.globals_first));
         allocate_tuple(items, vm.heap)
     }
 }
 
-/// Runs the frozen evaluator over borrowed `(name, text)` pairs; with none, `{}`
-/// without a call. `future` marks PEP 563 strings, `owner` is the annotated
-/// object and `is_class` whether the annotations come from a class body.
-fn evaluate_hints(
-    pairs: &[(Value, Value)],
-    scopes: Scopes,
-    future: bool,
+/// What the frozen evaluator reads an object's annotations from, each an OWNED
+/// value or `None`: its `__annotate__` function, its stored `__annotations__`
+/// dict, and for a class the namespace copy its annotations evaluate under.
+struct AnnotationSource {
+    annotate: Value,
+    stored: Value,
+    classdict: Value,
+    /// Cache a plain evaluation on the owner, as `type.__annotations__` does.
+    cache: bool,
+}
+
+/// Runs the frozen evaluator for `owner`, consuming `source`.
+fn resolve_hints(
     owner: &Value,
+    source: AnnotationSource,
+    scopes: ForwardRefScopes,
     is_class: bool,
     request: &HintsRequest,
     vm: &mut VM<'_>,
 ) -> RunResult<CallResult> {
-    if pairs.is_empty() {
-        return Ok(CallResult::Value(empty_dict(vm)));
-    }
-    let mut entries_guard = DropGuard::new(Vec::with_capacity(pairs.len()), vm);
-    let (entries, vm) = entries_guard.as_parts_mut();
-    for (name, hint) in pairs {
-        // `STRING` reports a plain string literal unquoted, as annotationlib's
-        // stringifier does; a PEP 563 string is already in that form.
-        let hint = match hint.as_str(vm) {
-            Some(text) if request.format == HintFormat::String && !future => match string_literal_text(text) {
-                Some(literal) => allocate_string(literal, vm.heap),
-                None => hint.clone_with_heap(vm),
-            },
-            // A value assigned to `__annotations__`, which `annotations_to_string` stringizes.
-            None if request.format == HintFormat::String => type_repr(hint, vm)?,
-            _ => hint.clone_with_heap(vm),
-        };
-        let entry = List::new(vec![name.clone_with_heap(vm), hint]);
-        entries.push(Value::Ref(vm.heap.allocate(HeapData::List(entry))));
-    }
-    let (entries, vm) = entries_guard.into_parts();
-    let hints = Value::Ref(vm.heap.allocate(HeapData::List(List::new(entries))));
+    let cache = if source.cache {
+        Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::CacheClassAnnotations))
+    } else {
+        Value::None
+    };
     let scopes = scopes.into_tuple(vm);
     vm.call_frozen_exact(
-        FrozenFunction::TypingGetTypeHints,
+        FrozenFunction::GetAnnotations,
         [
-            hints,
+            owner.clone_with_heap(vm),
+            source.annotate,
+            source.stored,
+            source.classdict,
             scopes,
             Value::Int(request.format.code()),
             Value::Int(request.task.code()),
-            Value::Bool(future),
-            owner.clone_with_heap(vm),
+            Value::Bool(request.include_extras),
             Value::Bool(is_class),
+            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::CallAnnotate)),
+            cache,
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
+            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::AliasWith)),
             Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::TypeRepr)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
             Value::Builtin(Builtins::Type(BuiltinType::Str)),
             Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
+            Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+            Value::Builtin(Builtins::Function(BuiltinsFunctions::Repr)),
             Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
+            Value::Marker(Marker(StaticStrings::Literal)),
             Value::Builtin(Builtins::Type(BuiltinType::Union)),
             Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
             Value::Builtin(Builtins::ExcType(ExcType::Exception)),
+            Value::Builtin(Builtins::ExcType(ExcType::NotImplementedError)),
             Value::Builtin(Builtins::ExcType(ExcType::SyntaxError)),
+            Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
         ],
     )
 }
 
-/// CPython's `annotationlib.type_repr`: a type by its name, anything else by its repr.
-fn type_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+/// Frozen helper: CPython's `annotationlib.type_repr`, a type by its name and
+/// anything else by its repr, for `STRING` format.
+pub(crate) fn call_type_repr(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    let value = args.get_one_arg("type_repr", vm.heap)?;
+    defer_drop!(value, vm);
     let mut text = String::new();
     repr_type_arg(value, &mut text, vm, &mut LazyHeapSet::default())?;
     Ok(allocate_string(text, vm.heap))
-}
-
-/// A fresh empty dict.
-fn empty_dict(vm: &VM<'_>) -> Value {
-    Value::Ref(vm.heap.allocate(HeapData::Dict(Dict::new())))
 }
 
 /// Where an object's annotations come from.
@@ -624,7 +684,7 @@ pub(crate) fn owner_globals(owner: &Value, vm: &VM<'_>) -> Value {
 /// namespace, nothing otherwise.
 pub(crate) fn owner_locals(owner: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     match hint_source(owner, vm) {
-        HintSource::Class(class_id) => class_namespace_copy(class_id, vm),
+        HintSource::Class(class_id) => annotations::class_namespace_copy(class_id, vm),
         _ => Ok(Value::None),
     }
 }
@@ -656,20 +716,6 @@ fn not_a_dict_error(class_id: HeapId, vm: &mut VM<'_>) -> RunError {
         }
         Err(err) => err,
     }
-}
-
-/// A fresh heap dict holding the class namespace's entries.
-fn class_namespace_copy(class_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    let HeapData::Class(class) = vm.heap.get(class_id) else {
-        unreachable!("hint_source classified a class");
-    };
-    let pairs = class
-        .namespace()
-        .iter()
-        .map(|(name, value)| (name.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)))
-        .collect();
-    let dict = Dict::from_pairs(pairs, vm)?;
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))))
 }
 
 /// Validates a namespace argument of `function`: `None`, or a dict whose id is returned (borrowed).

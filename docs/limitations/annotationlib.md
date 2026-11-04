@@ -6,8 +6,8 @@
 
 ## Not implemented
 
-- `call_annotate_function`, `call_evaluate_function` and `get_annotate_from_class_namespace`:
-    there are no `__annotate__` functions, since annotations are stored stringized (see [typing.md](typing.md)).
+- `call_annotate_function`, `call_evaluate_function` and `get_annotate_from_class_namespace`.
+    Functions do have `__annotate__` (see [typing.md](typing.md#annotations)); the helpers that call one are not provided.
 - `annotations_to_string` and `type_repr`.
 
 ## `Format`
@@ -58,10 +58,12 @@ Divergences:
 ## `get_annotations`
 
 `get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=Format.VALUE)` returns `obj`'s
-annotations evaluated where they were written, or as stored under `from __future__ import annotations` or in
-`STRING` format; a string stays a string unless `eval_str=True`.
-It shares the [`get_type_hints`](typing.md#get_type_hints) divergences on function scopes, `exec()` classes,
-re-evaluation, modules, tracebacks and host objects, and adds:
+annotations: its `__annotate__` run in the format, or its stored `__annotations__` dict; a string stays a string
+unless `eval_str=True`.
+As in CPython, `FORWARDREF` and `STRING` run the same `__annotate__` under namespaces whose unresolved names (or,
+for `STRING`, every name) are stringifiers, after asking the function for the format itself.
+It shares the [`get_type_hints`](typing.md#get_type_hints) and [Annotations](typing.md#annotations) divergences on
+name resolution, re-evaluation, modules, tracebacks and host objects, and adds:
 
 - **`globals` / `locals` must be a dict or `None`.**
     Anything else raises `TypeError: get_annotations() globals must be a dict, not int`, where CPython fails later

@@ -74,10 +74,7 @@ fn format_class(vm: &mut VM<'_>) -> Value {
             .expect("class attribute keys are interned, so hashing cannot fail");
     }
     let name = EitherStr::Interned(vm.interns.intern_static(StaticStrings::FormatClass));
-    Value::Ref(
-        vm.heap
-            .allocate(HeapData::Class(Box::new(Class::new(name, namespace, false)))),
-    )
+    Value::Ref(vm.heap.allocate(HeapData::Class(Box::new(Class::new(name, namespace)))))
 }
 
 /// Arguments of `get_annotations(obj, *, globals=None, locals=None, eval_str=False, format=Format.VALUE)`.
@@ -126,6 +123,7 @@ fn get_annotations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             format,
             globalns,
             localns,
+            include_extras: true,
             task: HintsTask::Annotations { eval_str },
         },
         vm,
