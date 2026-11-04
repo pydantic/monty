@@ -59,12 +59,12 @@ use std::{cell::Cell, ffi::c_int, fmt::Write, ops, str};
 /// - `ljust(width[, fillbyte])` - Left justify with fill byte
 /// - `rjust(width[, fillbyte])` - Right justify with fill byte
 /// - `zfill(width)` - Pad with zeros
+/// - `expandtabs(tabsize=8)` - Tab expansion
 ///
 /// ## Other Methods
 /// - `join(iterable)` - Join bytes sequences
 ///
 /// # Unimplemented Methods
-/// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
 use memchr::memmem::{Finder, FinderRev};
@@ -72,7 +72,7 @@ use monty_types::ResourceError;
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
 
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
+use super::{CmpOrder, LazyHeapSet, PyTrait, Type, str::parse_expandtabs_tabsize};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -88,6 +88,7 @@ use crate::{
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
+    string_builder::BytesBuilder,
     types::{
         List,
         long_int::repeat_count,
@@ -603,6 +604,7 @@ fn call_bytes_method_impl<'h>(
         StaticStrings::Ljust => bytes_ljust(bytes, args, vm),
         StaticStrings::Rjust => bytes_rjust(bytes, args, vm),
         StaticStrings::Zfill => bytes_zfill(bytes, args, vm),
+        StaticStrings::Expandtabs => bytes_expandtabs(bytes, args, vm),
         // Join method
         StaticStrings::Join => {
             let iterable = args.get_one_arg("bytes.join", vm.heap)?;
@@ -2061,6 +2063,41 @@ fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u
             fill_bytes.len()
         )))
     }
+}
+
+/// Implements Python's `bytes.expandtabs(tabsize=8)` method.
+///
+/// The same expansion as `str.expandtabs()`, with one column per byte: each tab
+/// becomes spaces up to the next multiple of `tabsize`, and `\n` or `\r` starts
+/// a new line.
+fn bytes_expandtabs<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+    let tabsize = parse_expandtabs_tabsize(args, vm)?;
+
+    let bytes = bytes.get(vm.heap);
+    // A `tabsize` of zero or less drops the tabs, so `(b'\t' * n).expandtabs(0)` reserves nothing
+    let kept = if tabsize > 0 {
+        bytes.len()
+    } else {
+        bytes.iter().filter(|&&byte| byte != b'\t').count()
+    };
+    let mut builder = BytesBuilder::with_capacity(kept, &vm.heap.tracker)?;
+    let mut column = 0;
+    for (i, &byte) in bytes.iter().enumerate() {
+        // `push_repeated` polls the clock per chunk of one tab only, so many large
+        // tabs would otherwise expand without a time check
+        vm.heap.tracker.check_time_every(i)?;
+        if byte == b'\t' {
+            if tabsize > 0 {
+                let spaces = tabsize - (column % tabsize);
+                builder.push_repeated(b' ', spaces)?;
+                column += spaces;
+            }
+        } else {
+            builder.push_slice(&[byte])?;
+            column = if byte == b'\n' || byte == b'\r' { 0 } else { column + 1 };
+        }
+    }
+    Ok(allocate_bytes(builder.finish(), vm.heap))
 }
 
 /// Implements Python's `bytes.zfill(width)` method.
