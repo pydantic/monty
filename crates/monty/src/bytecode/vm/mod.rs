@@ -1144,6 +1144,22 @@ impl<'h> VM<'h> {
         self.finish_host_turn(result)
     }
 
+    /// Runs an export made after [`Self::run_external`] has returned, with the
+    /// execution clock running, so a user `__repr__` it calls counts towards
+    /// the time limits. Like `run_external` it must not nest: an export inside
+    /// the loop (`os.getenv`'s default) is already on the clock and calls
+    /// `export` directly.
+    pub(crate) fn export_on_clock<T>(&mut self, export: impl FnOnce(&mut Self) -> RunResult<T>) -> RunResult<T> {
+        self.heap.tracker.on_execution_start();
+        let result = export(self);
+        self.heap.tracker.on_execution_stop();
+        // A container repr truncates on timeout (`...[timeout]`) rather than failing.
+        result.and_then(|value| match self.heap.tracker.check_time() {
+            Ok(()) => Ok(value),
+            Err(err) => Err(err.into()),
+        })
+    }
+
     /// Epilogue for every host-boundary execution window (here, and the
     /// uncaught branch of `resume_with_exception`, which ends a turn without
     /// entering the loop): re-checks both resource limits so an
