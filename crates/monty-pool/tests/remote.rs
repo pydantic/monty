@@ -20,6 +20,8 @@ use std::{
 
 use bytes::Bytes;
 use grpc_mock::{MockServer, MockStream};
+use h2::server::handshake;
+use http::Response as HttpResponse;
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
@@ -393,6 +395,33 @@ async fn request_timeout_bounds_opening_the_stream() {
     silent.abort();
 }
 
+/// An `https://` server is verified against the operating system's trust
+/// store, not a root list bundled into the pool: a certificate the server
+/// signed itself is refused, and the checkout reports the dial failure.
+#[tokio::test]
+async fn an_untrusted_server_certificate_fails_the_dial() {
+    let server = MockServer::start_self_signed().await;
+    let url = server.url();
+    let pool = Pool::new(PoolConfig::remote(&url)).await.expect("pool");
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+        panic!("a self-signed certificate must not be trusted");
+    };
+    let PoolError::Spawn(message) = err else {
+        panic!("got {err:?}");
+    };
+    // Each platform's verifier words the refusal in its own way; tonic's chain
+    // then repeats the cause at every layer of the transport error.
+    let cause = if cfg!(target_vendor = "apple") {
+        "invalid peer certificate: Other(OtherError(\"“rcgen self signed cert” certificate is not trusted: -67843\"))"
+    } else {
+        "invalid peer certificate: UnknownIssuer"
+    };
+    assert_eq!(
+        message,
+        format!("{url}: UNAVAILABLE: {cause}: transport error: {cause}: {cause}")
+    );
+}
+
 /// A URL tonic cannot parse fails pool creation with the same `{url}: {err}`
 /// shape as every other dial failure — before any checkout, since the channel
 /// is built once for the pool.
@@ -519,6 +548,61 @@ async fn a_non_admission_status_is_a_spawn_failure() {
         panic!("expected Spawn error, got {err:?}");
     };
     assert_eq!(message, format!("{}: UNIMPLEMENTED: unknown service", mock.url()));
+}
+
+/// A URL that is an HTTP/2 server but no gRPC one — a web server's error
+/// page — fails the checkout as `Spawn`, rather than opening a session whose
+/// first turn then dies decoding the page as a message.
+#[tokio::test]
+async fn a_non_grpc_server_is_a_spawn_failure() {
+    for (status, content_type, described) in [
+        (405, Some("text/html"), "\"text/html\""),
+        (200, Some("application/grpc-web"), "\"application/grpc-web\""),
+        (200, None, "missing"),
+    ] {
+        let url = serve_plain_http2(status, content_type).await;
+        let mut config = PoolConfig::remote(url.clone());
+        config.max_processes = 1;
+        let pool = Pool::new(config).await.expect("pool");
+        let Err(err) = pool.checkout(&ReplConfig::default()).await else {
+            panic!("a {status} {content_type:?} response must fail the checkout");
+        };
+        let PoolError::Spawn(message) = err else {
+            panic!("expected Spawn error, got {err:?}");
+        };
+        assert_eq!(
+            message,
+            format!("{url}: not a gRPC server, the response's content-type is {described}")
+        );
+    }
+}
+
+/// Serves h2c on an ephemeral loopback port, answering every request with
+/// `status`, `content_type` and a small HTML body, as a web server does; returns its URL.
+async fn serve_plain_http2(status: u16, content_type: Option<&'static str>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let url = format!("http://{}", listener.local_addr().expect("addr"));
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let Ok(mut connection) = handshake(socket).await else {
+                    return;
+                };
+                // polling `accept` also drives the connection's frames
+                while let Some(Ok((_request, mut respond))) = connection.accept().await {
+                    let mut response = HttpResponse::builder().status(status);
+                    if let Some(content_type) = content_type {
+                        response = response.header("content-type", content_type);
+                    }
+                    let response = response.body(()).expect("response");
+                    if let Ok(mut body) = respond.send_response(response, false) {
+                        let _ = body.send_data(Bytes::from_static(b"<html>Method Not Allowed</html>"), true);
+                    }
+                }
+            });
+        }
+    });
+    url
 }
 
 /// `Debug` for [`CheckoutOptions`] names each metadata entry, never its value.

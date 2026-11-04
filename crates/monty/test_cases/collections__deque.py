@@ -239,6 +239,16 @@ try:
 except OverflowError as exc:
     assert str(exc) == "cannot fit 'int' into an index-sized integer", str(exc)
 try:
+    deque([1, 2]) * 2**62
+    assert False, 'expected deque([1, 2]) * 2**62 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    deque([1, 2]) * 2**63
+    assert False, 'expected deque([1, 2]) * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+try:
     deque([1, 2]) * 2**70
     assert False, 'expected OverflowError'
 except OverflowError as exc:

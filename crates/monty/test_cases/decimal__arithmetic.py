@@ -245,6 +245,12 @@ try:
     assert False, 'expected InvalidOperation'
 except InvalidOperation as e:
     assert str(e) == "[<class 'decimal.InvalidOperation'>]"
+# sorting compares with `<`, which signals on a NaN
+try:
+    sorted([D(1), D('NaN')])
+    assert False, 'expected InvalidOperation'
+except InvalidOperation as e:
+    assert str(e) == "[<class 'decimal.InvalidOperation'>]"
 
 # === Untrapped signals give their default results ===
 with localcontext(Context(traps=[])) as ctx:

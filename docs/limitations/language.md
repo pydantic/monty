@@ -240,6 +240,11 @@ unequal to itself. *Distinct* `NaN` objects agree on both
 (`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
 direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
 
+`Counter.most_common(n)` differs the same way: CPython ranks equal counts by
+tuple comparison, so the same `NaN` held as several counts can come back in
+another order (`Counter(a=x, b=x, c=x).most_common(2)` is
+`[('a', x), ('b', x)]` in CPython, `[('b', x), ('a', x)]` in Monty).
+
 ## Function hashes
 
 Distinct functions created from the same `def` share a hash value in Monty.

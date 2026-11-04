@@ -213,7 +213,7 @@ pub enum Session {
 
 impl Session {
     /// The session heap and its interns, or `None` for a one-shot run that has completed.
-    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
+    fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
         match self {
             Self::Idle(repl) => Some(repl.heap_and_interns()),
             Self::Suspended(progress) => Some(progress.heap_and_interns()),

@@ -89,10 +89,9 @@ Containers a program grows one element at a time are pre-checked as well, at the
 rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
 assigning a new dict key.
 So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
-text `json.dumps` and `json.dump` build, the pieces `re.split` collects, and the list `re.findall` builds for a pattern
-with at most one capture group.
-A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
-[the limitations note](limitations/resource_limits.md).
+text `json.dumps` and `json.dump` build, the pieces `str.split`, `bytes.split` and `re.split` collect, the matches
+`re.finditer` builds, and the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall` allocates a tuple per match and is not covered — see [the limitations note](limitations/resource_limits.md).
 
 A few integer operations carry their own caps regardless of `max_memory`:
 
