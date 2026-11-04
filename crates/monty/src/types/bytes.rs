@@ -90,7 +90,6 @@ use crate::{
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
-        long_int::repeat_count,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -327,7 +326,7 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         repeat_bytes(self.as_slice(vm), count, vm)
@@ -456,7 +455,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         repeat_bytes(self.get(vm.heap).as_slice(), count, vm)

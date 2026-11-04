@@ -17,7 +17,6 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
-        long_int::repeat_count,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -583,7 +582,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
     /// `deque * int` — repetition that keeps the deque's `maxlen`, so a bounded
     /// deque builds only its surviving suffix rather than the full product.
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
@@ -602,7 +601,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
 
     /// Repeats for integer or `__index__` counts, retaining identity and respecting `maxlen`.
     fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(false);
         };
 

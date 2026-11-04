@@ -42,7 +42,6 @@ use crate::{
     types::{
         Dict, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
-        long_int::repeat_count,
         py_trait::LazyHeapSet,
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::allocate_string,
@@ -448,7 +447,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     /// `namedtuple * int` — repetition into a plain tuple, matching CPython's
     /// inherited `tuple.__mul__`.
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         let len = self.get(vm.heap).len();

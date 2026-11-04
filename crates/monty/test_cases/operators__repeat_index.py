@@ -87,8 +87,10 @@ class RaisingCount:
         raise ValueError('count failed')
 
 
+# Parsing at runtime also exercises cleanup of heap-backed integer operands.
+heap_count = int('1180591620717411303424')
 for sequence in sequences:
-    for count in [2**70, -(2**70)]:
+    for count in [2**70, -(2**70), heap_count, -heap_count]:
         for reverse in [False, True]:
             try:
                 result = count * sequence if reverse else sequence * count

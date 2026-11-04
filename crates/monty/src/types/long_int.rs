@@ -27,7 +27,6 @@ use smallvec::smallvec;
 use self::arithmetic::IntArithmetic;
 use crate::{
     bytecode::VM,
-    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData, HeapObjectRead},
@@ -626,20 +625,6 @@ impl LongInt {
             }
         }
     }
-}
-
-/// Converts an integer or an object implementing `__index__` into a repetition count;
-/// returns `None` when the operand is neither an integer nor an object implementing `__index__`.
-/// Negative counts become zero; overflow uses Python's index-sized integer error.
-pub(crate) fn repeat_count(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<usize>> {
-    let Some(count) = value.py_index_impl(vm)? else {
-        return Ok(None);
-    };
-    defer_drop!(count, vm);
-    let count = count.as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())?;
-    Ok(Some(
-        usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
-    ))
 }
 
 /// Compares a `BigInt` against an `f64` *exactly*, matching CPython's mixed

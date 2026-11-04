@@ -28,7 +28,6 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
-        long_int::repeat_count,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
@@ -228,7 +227,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         repeat_str(self.as_str(vm), count, vm)
@@ -482,7 +481,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = repeat_count(other, vm)? else {
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         repeat_str(self.get(vm.heap).as_str(), count, vm)

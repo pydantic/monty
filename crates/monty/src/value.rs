@@ -1509,7 +1509,10 @@ impl Value {
 
     /// Performs Python `*` with reflected-operation fallback.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        if self.py_type(vm).has_sequence_repeat() && matches!(other.py_type(vm), Type::Instance(_)) {
+        if matches!(other, Self::Ref(_))
+            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && self.py_type_heap(vm.heap).has_sequence_repeat()
+        {
             // Numeric reflected multiplication precedes the sequence's `__index__` conversion.
             if let Some(result) = other.py_rmul_impl(self, vm)? {
                 return Ok(result);
