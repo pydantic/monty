@@ -65,3 +65,61 @@ for sequence, _ in sequences:
 for value, name in [(range(2), 'range'), ({}, 'dict'), (BadCount(), 'BadCount')]:
     assert multiply_error(value, 1.5) == f"unsupported operand type(s) for *: '{name}' and 'float'"
     assert multiply_error(1.5, value) == f"unsupported operand type(s) for *: 'float' and '{name}'"
+
+
+# === A count with `__index__` repeats the sequence in either operand order ===
+class Count:
+    def __init__(self, n):
+        self.n = n
+
+    def __index__(self):
+        return self.n
+
+
+for sequence, _ in sequences:
+    assert sequence * Count(2) == sequence * 2
+    assert Count(2) * sequence == sequence * 2
+    assert sequence * Count(-1) == sequence * 0
+    repeated = sequence * 1
+    repeated *= Count(3)
+    assert repeated == sequence * 3
+
+
+class RaisingCount:
+    def __index__(self):
+        raise ValueError('no count')
+
+
+try:
+    [1] * RaisingCount()
+    assert False, 'expected ValueError'
+except ValueError as exc:
+    assert str(exc) == 'no count'
+assert multiply_error('ab', Count('2')) == '__index__ returned non-int (type str)'
+assert multiply_error(Count(None), (1,)) == '__index__ returned non-int (type NoneType)'
+
+
+# === A count too large for an index names the count's type ===
+def overflow_error(left, right):
+    try:
+        left * right
+        assert False, 'expected multiplication to raise OverflowError'
+    except OverflowError as exc:
+        return str(exc)
+
+
+for sequence, _ in sequences:
+    assert overflow_error(sequence, Count(2**100)) == "cannot fit 'Count' into an index-sized integer"
+    assert overflow_error(Count(2**100), sequence) == "cannot fit 'Count' into an index-sized integer"
+    assert overflow_error(sequence, 2**100) == "cannot fit 'int' into an index-sized integer"
+    # the check applies in both directions, from just past the index range
+    assert overflow_error(sequence, Count(-(2**100))) == "cannot fit 'Count' into an index-sized integer"
+    assert overflow_error(sequence, -(2**63) - 1) == "cannot fit 'int' into an index-sized integer"
+    assert overflow_error(sequence, 2**63) == "cannot fit 'int' into an index-sized integer"
+    assert sequence * -(2**31) == sequence * 0
+repeated = [1]
+try:
+    repeated *= Count(2**100)
+    assert False, 'expected augmented multiplication to raise OverflowError'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'Count' into an index-sized integer"
