@@ -1298,6 +1298,33 @@ fn fastest_of_attempts(mut measure: impl FnMut() -> Duration) -> Duration {
 }
 
 #[test]
+fn timeout_during_contiguous_string_copy() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("text = 'x' * 64_000_000\nlen(text)", vec![], PrintWriter::Disabled)
+        .unwrap();
+
+    let full_copy = fastest_of_attempts(|| {
+        let start = ThreadTime::now();
+        repl.feed_run("copy = text[:]", vec![], PrintWriter::Disabled).unwrap();
+        start.elapsed()
+    });
+
+    let elapsed = fastest_of_attempts(|| {
+        repl.tracker_mut().set_max_feed_duration(full_copy / 10);
+        let start = ThreadTime::now();
+        let error = repl
+            .feed_run("copy = text[:]", vec![], PrintWriter::Disabled)
+            .unwrap_err();
+        assert_eq!(error.exc_type(), ExcType::TimeoutError);
+        start.elapsed()
+    });
+    assert!(
+        elapsed < full_copy / 2,
+        "slicing should stop during the copy; full copy {full_copy:?}, timed copy {elapsed:?}"
+    );
+}
+
+#[test]
 fn timeout_in_str_format_grouped_padding() {
     let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::from_millis(10)));
     let mut repl = MontyRepl::new("test.py", tracker, CompileOptions::default());

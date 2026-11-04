@@ -40,6 +40,7 @@ use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     prepare::SnippetNames,
+    types::str::{AccessCache, AccessCacheStore},
 };
 
 /// Index into the string interner's storage.
@@ -2677,12 +2678,12 @@ pub enum StaticStrings {
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.
-/// Snapshots store only text; loading reconstructs the tag and cached hash.
+/// Snapshots store only text; loading reconstructs the tag, hash and ASCII status.
 #[derive(Debug, Clone)]
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
-    // Immutable text needs only one ASCII scan, including after snapshot loading.
+    /// Cached at construction so repeated literal indexing never scans the text.
     ascii: bool,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
@@ -2808,11 +2809,14 @@ impl FunctionId {
 }
 
 /// Prehashed core strings reused when constructing independent interners.
-static CORE_ENTRIES: LazyLock<Vec<InternedString>> = LazyLock::new(|| {
+static CORE_ENTRIES: LazyLock<Vec<(StaticStrings, bool, WithHash<InternedText>)>> = LazyLock::new(|| {
     CORE_STATIC_STRINGS
         .iter()
         .copied()
-        .map(InternedString::static_string)
+        .map(|value| {
+            let entry = InternedString::static_string(value);
+            (value, entry.ascii, entry.text)
+        })
         .collect()
 });
 
@@ -2895,6 +2899,8 @@ fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
     strings: Entries<InternedString>,
+    #[serde(skip)]
+    string_access_caches: AccessCacheStore,
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
@@ -2958,6 +2964,7 @@ impl TryFrom<InternsWire> for Interns {
         }
         Ok(Self {
             strings: wire.strings,
+            string_access_caches: AccessCacheStore::default(),
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
@@ -2996,6 +3003,7 @@ impl Interns {
     fn placeholder() -> Self {
         Self {
             strings: Entries::default(),
+            string_access_caches: AccessCacheStore::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -3014,6 +3022,7 @@ impl Interns {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
             strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+            string_access_caches: AccessCacheStore::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -3025,11 +3034,15 @@ impl Interns {
             compiling: Cell::new(false),
             hint_snippets: RefCell::default(),
         };
-        for entry in CORE_ENTRIES.iter() {
-            let value = entry.static_value().expect("core entries are static");
+        for (value, ascii, text) in CORE_ENTRIES.iter() {
             let id = next_string_id(interns.strings.len());
-            interns.strings.push(entry.clone());
-            interns.static_string_ids.borrow_mut().insert(value, id);
+            // Only immutable prehashed text is shared; access caches belong to the session.
+            interns.strings.push(InternedString {
+                static_tag: Some(*value),
+                ascii: *ascii,
+                text: text.clone(),
+            });
+            interns.static_string_ids.borrow_mut().insert(*value, id);
         }
         interns
     }
@@ -3109,6 +3122,16 @@ impl Interns {
         id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
     }
 
+    /// Returns a Unicode cache, allocating its directory/page and empty shell as needed.
+    /// Cursor state and checkpoints remain lazy; reserved and ASCII strings return `None`.
+    pub(crate) fn str_access_cache(&self, id: StringId) -> Option<&AccessCache> {
+        let index = id.index().checked_sub(INTERN_STRING_ID_OFFSET)?;
+        if self.strings[index].ascii {
+            return None;
+        }
+        Some(self.string_access_caches.get(index))
+    }
+
     /// Returns the same hash as an equal heap string.
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
@@ -3161,3 +3184,7 @@ impl Interns {
         get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/intern_access_cache.rs"]
+mod cache_layout_tests;
