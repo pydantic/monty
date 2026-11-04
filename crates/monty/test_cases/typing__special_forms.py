@@ -235,3 +235,15 @@ for form in (ClassVar[int], Literal[1], Final[str]):
         assert False, 'expected AttributeError'
     except AttributeError as exc:
         assert str(exc) == 'foo'
+
+# === ... and one on a `collections.abc` form's alias names that class ===
+for form, name in (
+    (Callable[[int], str], 'Callable'),
+    (Sequence[int], 'Sequence'),
+    (Generator[int, None, None], 'Generator'),
+):
+    try:
+        form.foo
+        assert False, 'expected AttributeError'
+    except AttributeError as exc:
+        assert str(exc) == f"type object '{name}' has no attribute 'foo'"

@@ -424,12 +424,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, GenericAlias> {
                     } else {
                         let origin = self.get(vm.heap).origin_value(vm.heap);
                         defer_drop!(origin, vm);
-                        // A special form (`ClassVar`, `Literal`) raises the bare
-                        // name too, as CPython's `_SpecialForm.__getattr__` does.
-                        if matches!(origin, Value::Marker(_)) {
-                            Err(SimpleException::new_msg(ExcType::AttributeError, name).into())
-                        } else {
-                            origin.py_getattr(attr, vm).map(Some)
+                        match origin {
+                            // A special form (`ClassVar`, `Final`, `Literal`) raises the
+                            // bare name too, as CPython's `_SpecialForm.__getattr__` does.
+                            Value::Marker(Marker(
+                                StaticStrings::ClassVar | StaticStrings::FinalType | StaticStrings::Literal,
+                            )) => Err(SimpleException::new_msg(ExcType::AttributeError, name).into()),
+                            // The forms standing in for a `collections.abc` class
+                            // report it as the class CPython forwards to.
+                            Value::Marker(form) => Err(ExcType::attribute_error_type(form.0.into(), name)),
+                            _ => origin.py_getattr(attr, vm).map(Some),
                         }
                     }
                 }

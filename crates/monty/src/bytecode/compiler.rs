@@ -29,7 +29,7 @@ use crate::{
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
-    intern::{CompileInterns, FunctionId, StringId},
+    intern::{CompileInterns, FunctionId, StaticStrings, StringId},
     name_map::NameMap,
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try, syntax_error_in_snippet},
@@ -999,16 +999,6 @@ impl<'a, 'i> Compiler<'a, 'i> {
     /// its id for the owning [`Function`]. No `MakeFunction` is emitted: the
     /// function value is built on `f.__annotate__` access from the owner's
     /// globals, since it has no defaults or captured cells of its own.
-    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
-    /// called that, as in CPython, whatever a class body binds it as.
-    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
-        let mut name = func_def.name;
-        if func_def.is_annotate {
-            name.name_id = self.interns.intern("__annotate__");
-        }
-        name
-    }
-
     fn compile_annotate(&mut self, annotate: &PreparedFunctionDef) -> Result<FunctionId, CompileError> {
         debug_assert!(
             annotate.free_var_enclosing_slots.is_empty() && annotate.default_exprs.is_empty(),
@@ -1033,6 +1023,16 @@ impl<'a, 'i> Compiler<'a, 'i> {
             func_id,
             annotate.name.position,
         )?))
+    }
+
+    /// The name a function reports in tracebacks: a synthesized `__annotate__` is
+    /// called that, as in CPython, whatever a class body binds it as.
+    fn function_name(&mut self, func_def: &PreparedFunctionDef) -> Identifier {
+        let mut name = func_def.name;
+        if func_def.is_annotate {
+            name.name_id = self.interns.intern_static(StaticStrings::DunderAnnotate);
+        }
+        name
     }
 
     /// Compiles a `class Foo: ...` definition.
