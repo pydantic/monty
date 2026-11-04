@@ -88,6 +88,7 @@ overlap on the host or repeat a virtual path fail the feed with a session-preser
 It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
 
 `Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
+The restored session uses the restoring checkout's `ReplConfig::os_policy`, not the one it was dumped under.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
 Invalid snapshots have no correctness or availability guarantees.

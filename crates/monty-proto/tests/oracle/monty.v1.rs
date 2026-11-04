@@ -826,7 +826,8 @@ pub struct Configure {
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
     /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
-    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    /// with parent-serviced sleeps capped at 10s. It also governs a session restored by
+    /// `Load`, replacing the policy the dump was taken under.
     #[prost(message, optional, tag = "11")]
     pub os_policy: ::core::option::Option<OsPolicy>,
     /// Relay-only: whether a serving relay may store the session. Children ignore
@@ -933,6 +934,8 @@ pub struct Dump {}
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`. A relay
 /// without session storage answers `Error` and the session carries on.
+/// The restored session takes the preceding `Configure`'s `os_policy` (the
+/// default without one), not the policy it was dumped under.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
     /// Either:

@@ -313,6 +313,7 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load (it replaces the
    * whole session); throws otherwise. Checkout limits cap the restored limits.
    * The execution clock must match the dump. Type-check state comes from the dump.
+   * The checkout's `osPolicy` replaces the dump's.
    * Throws if the dump is actually a suspended snapshot.
    *
    * Only load unmodified bytes from a trusted, compatible Monty producer.
@@ -352,7 +353,9 @@ export class MontySession {
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
    * in the dump), or its filesystem calls degrade into unhandled OS calls.
-   * Throws if the dump is actually an idle session.
+   * The checkout's `osPolicy` replaces the dump's, so the rest of the feed reads
+   * its clock, zone, sleep, process-time and random settings. Throws if the dump
+   * is actually an idle session.
    */
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()

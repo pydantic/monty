@@ -227,7 +227,7 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
-    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
+    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL or restoring one by `Load`.
     os_policy: OsPolicy,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
@@ -991,9 +991,17 @@ impl Child {
             return protocol_violation("snapshot execution clock differs from Configure");
         }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
+        // The checkout's `OsPolicy` replaces the dump's: the policy is the restoring host's
+        // authority over the clock, zone, sleeps and entropy, not session state.
         match &mut state {
-            Session::Idle(repl) => repl.tracker_mut().tighten_limits(&limits),
-            Session::Suspended(progress) => progress.tracker_mut().tighten_limits(&limits),
+            Session::Idle(repl) => {
+                repl.tracker_mut().tighten_limits(&limits);
+                repl.set_os_policy(self.os_policy.clone());
+            }
+            Session::Suspended(progress) => {
+                progress.tracker_mut().tighten_limits(&limits);
+                progress.set_os_policy(self.os_policy.clone());
+            }
             Session::Running(_) => {}
         }
         // In-process Rust producers can dump suspensions exceeding the wire size limit;
