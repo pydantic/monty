@@ -2595,6 +2595,7 @@ pub enum StaticStrings {
     Zfill,
     /// `itertools.zip_longest()` function.
     ZipLongest,
+    Delete,
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.

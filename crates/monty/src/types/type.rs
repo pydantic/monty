@@ -18,8 +18,8 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range, Set, Slice,
-        Str, TimeZone, Tuple,
+        ByteArray, Bytes, Deque, Dict, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
+        Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
@@ -342,6 +342,10 @@ pub enum Type {
     /// The manager `decimal.localcontext()` returns.
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    #[strum(serialize = "bytearray")]
+    ByteArray,
+    #[strum(serialize = "bytearray_iterator")]
+    ByteArrayIterator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -425,6 +429,7 @@ impl Type {
             Self::Complex => Some("complex"),
             Self::Str => Some("str"),
             Self::Bytes => Some("bytes"),
+            Self::ByteArray => Some("bytearray"),
             Self::List => Some("list"),
             Self::Tuple => Some("tuple"),
             Self::Dict => Some("dict"),
@@ -456,6 +461,7 @@ impl Type {
             "complex" => Some(Self::Complex),
             "str" => Some(Self::Str),
             "bytes" => Some(Self::Bytes),
+            "bytearray" => Some(Self::ByteArray),
             "list" => Some(Self::List),
             "tuple" => Some(Self::Tuple),
             "dict" => Some(Self::Dict),
@@ -503,7 +509,7 @@ impl Type {
     pub(crate) const fn has_sequence_repeat(self) -> bool {
         matches!(
             self,
-            Self::Str | Self::Bytes | Self::List | Self::Tuple | Self::NamedTuple | Self::Deque
+            Self::Str | Self::Bytes | Self::ByteArray | Self::List | Self::Tuple | Self::NamedTuple | Self::Deque
         )
     }
 
@@ -517,6 +523,7 @@ impl Type {
                 | Self::TupleIterator
                 | Self::StrAsciiIterator
                 | Self::StrIterator
+                | Self::ByteArrayIterator
                 | Self::BytesIterator
                 | Self::RangeIterator
                 | Self::DictKeyIterator
@@ -604,6 +611,7 @@ impl Type {
             Self::Iterator => Some(12),
             Self::Path => Some(13),
             Self::Complex => Some(14),
+            Self::ByteArray => Some(15),
             _ => None,
         }
     }
@@ -629,6 +637,7 @@ impl Type {
             12 => Some(Self::Iterator),
             13 => Some(Self::Path),
             14 => Some(Self::Complex),
+            15 => Some(Self::ByteArray),
             _ => None,
         }
     }
@@ -659,6 +668,13 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
+            (Self::ByteArray, _) if attr.as_str(vm.interns) == "maketrans" => {
+                super::bytearray::maketrans(args, vm).map(CallResult::Value)
+            }
+            (Self::ByteArray, Some(StaticStrings::Fromhex)) => {
+                let value = bytes_fromhex(args, vm)?;
+                Ok(CallResult::Value(super::bytearray::convert_result(value, vm)))
+            }
             (Self::Complex, Some(StaticStrings::FromNumber)) => {
                 complex::class_from_number(vm, args).map(CallResult::Value)
             }
@@ -824,6 +840,7 @@ impl Type {
             Self::FrozenSet => FrozenSet::init(vm, args),
             Self::Str => Str::init(vm, args),
             Self::Bytes => Bytes::init(vm, args),
+            Self::ByteArray => ByteArray::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
             Self::Date => date::init(vm, args),

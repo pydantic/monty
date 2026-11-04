@@ -208,6 +208,10 @@ pub(crate) enum BuiltinType {
     DecimalSignalDict,
     #[strum(serialize = "decimal.ContextManager")]
     DecimalContextManager,
+    #[strum(serialize = "bytearray")]
+    ByteArray,
+    #[strum(serialize = "bytearray_iterator")]
+    ByteArrayIterator,
 }
 
 impl From<BuiltinType> for Type {
@@ -229,6 +233,8 @@ impl From<BuiltinType> for Type {
             BuiltinType::TimeZone => Self::TimeZone,
             BuiltinType::Str => Self::Str,
             BuiltinType::Bytes => Self::Bytes,
+            BuiltinType::ByteArray => Self::ByteArray,
+            BuiltinType::ByteArrayIterator => Self::ByteArrayIterator,
             BuiltinType::List => Self::List,
             BuiltinType::Tuple => Self::Tuple,
             BuiltinType::NamedTuple => Self::NamedTuple,
@@ -343,6 +349,8 @@ impl TryFrom<Type> for BuiltinType {
             Type::TimeZone => Self::TimeZone,
             Type::Str => Self::Str,
             Type::Bytes => Self::Bytes,
+            Type::ByteArray => Self::ByteArray,
+            Type::ByteArrayIterator => Self::ByteArrayIterator,
             Type::List => Self::List,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

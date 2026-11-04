@@ -221,6 +221,7 @@ impl Bytes {
             }
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
+                HeapData::ByteArray(b) => b.as_slice().to_vec(),
                 _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
             Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
@@ -256,7 +257,7 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
-fn repeat_bytes(value: &[u8], count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
+pub(crate) fn repeat_bytes(value: &[u8], count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
     let Some(count) = repeat_count(count, vm)? else {
         return Ok(None);
     };
@@ -274,15 +275,6 @@ pub(crate) enum PyBytes<'h> {
 }
 
 impl<'h> PyBytes<'h> {
-    /// Extracts bytes without copying their contents.
-    pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
-        match value {
-            Value::InternBytes(id) => Some(Self::Interned(*id)),
-            Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
-            _ => None,
-        }
-    }
-
     /// Borrows the buffer only for the duration of the heap borrow.
     pub(crate) fn as_slice<'a>(&'a self, vm: &'a VM<'h>) -> &'a [u8] {
         match self {
@@ -483,14 +475,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
 /// Concatenation shared by logical bytes views and concrete heap dispatch.
 fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    match PyBytes::from_value(other, vm) {
-        Some(other) => Ok(Some(concat_bytes(bytes, other.as_slice(vm), vm.heap)?)),
+    match super::bytearray::read_buffer(other, vm) {
+        Some(other) => Ok(Some(concat_bytes(bytes, other, vm.heap)?)),
         None => Ok(None),
     }
 }
 
 /// Indexes a protected buffer, allowing `__index__` to run before borrowing it.
-fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(crate) fn bytes_getitem<'h>(bytes: &impl HeapView<'h, [u8]>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
@@ -514,7 +506,7 @@ impl HeapItem for Bytes {
 /// This is the unified implementation for bytes method calls, used by both
 /// heap-allocated `Bytes` (via `py_call_attr`) and interned bytes literals
 /// (`Value::InternBytes`).
-fn call_bytes_method_impl<'h>(
+pub(crate) fn call_bytes_method_impl<'h>(
     bytes: &impl HeapView<'h, [u8]>,
     method: StaticStrings,
     args: ArgValues,
@@ -983,6 +975,7 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
         }
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(b) => Ok(b.as_slice()),
+            HeapData::ByteArray(b) => Ok(b.as_slice()),
             HeapData::Str(_) => Err(ExcType::type_error("a bytes-like object is required, not 'str'")),
             _ => Err(ExcType::type_error("a bytes-like object is required")),
         },
@@ -2315,14 +2308,15 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(hex_value, vm);
 
     let hex_value_py = hex_value.py_value(vm);
-    let hex_str = match &hex_value_py {
-        PyValue::Str(value) => value.as_str(vm),
-        PyValue::Bytes(_) => {
-            return Err(ExcType::type_error("fromhex() argument must be str, not bytes"));
-        }
+    let hex_chars: Box<dyn Iterator<Item = char> + '_> = match &hex_value_py {
+        PyValue::Str(value) => Box::new(value.as_str(vm).chars()),
+        PyValue::Bytes(value) => Box::new(value.as_slice(vm).iter().copied().map(char::from)),
+        PyValue::ByteArray(value) => Box::new(value.get(vm.heap).as_slice().iter().copied().map(char::from)),
         _ => {
             let t = hex_value.py_type_name(vm);
-            return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
+            return Err(ExcType::type_error(format!(
+                "fromhex() argument must be str or bytes-like, not {t}"
+            )));
         }
     };
 
@@ -2336,11 +2330,14 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     // - Odd number of valid hex digits: "must contain an even number of hexadecimal digits"
 
     let mut result = Vec::new();
-    let mut chars = hex_str.chars().enumerate().peekable();
+    let mut chars = hex_chars.enumerate().peekable();
 
     loop {
         // Skip whitespace BETWEEN byte pairs (before the high nibble)
-        while chars.peek().is_some_and(|(_, c)| c.is_whitespace()) {
+        while chars
+            .peek()
+            .is_some_and(|(_, c)| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+        {
             chars.next();
         }
 
@@ -2414,16 +2411,26 @@ enum BytesIteratorSource {
 pub(crate) struct BytesIterator {
     source: BytesIteratorSource,
     index: usize,
+    #[serde(default)]
+    bytearray: bool,
 }
 
 impl BytesIterator {
+    pub(crate) fn py_type(&self) -> Type {
+        if self.bytearray {
+            Type::ByteArrayIterator
+        } else {
+            Type::BytesIterator
+        }
+    }
+
     /// Allocates an iterator over interned bytes.
     pub(crate) fn from_intern(id: BytesId, vm: &mut VM<'_>) -> Value {
         Self::allocate(BytesIteratorSource::Intern(id), vm)
     }
 
     /// Allocates an iterator retaining heap bytes.
-    fn from_heap(id: HeapId, vm: &mut VM<'_>) -> Value {
+    pub(crate) fn from_heap(id: HeapId, vm: &mut VM<'_>) -> Value {
         Self::allocate(BytesIteratorSource::Heap(id), vm)
     }
 
@@ -2446,6 +2453,7 @@ impl BytesIterator {
             BytesIteratorSource::Intern(id) => vm.interns.get_bytes(id),
             BytesIteratorSource::Heap(id) => match vm.heap.get(id) {
                 HeapData::Bytes(bytes) => bytes.as_slice(),
+                HeapData::ByteArray(bytes) => bytes.as_slice(),
                 _ => unreachable!("bytes iterator must retain bytes"),
             },
         }
@@ -2457,7 +2465,12 @@ impl BytesIterator {
             BytesIteratorSource::Heap(id) => Some(id),
             BytesIteratorSource::Intern(_) => None,
         };
-        let id = vm.heap.allocate(HeapData::BytesIterator(Self { source, index: 0 }));
+        let bytearray = source_id.is_some_and(|id| matches!(vm.heap.get(id), HeapData::ByteArray(_)));
+        let id = vm.heap.allocate(HeapData::BytesIterator(Self {
+            source,
+            index: 0,
+            bytearray,
+        }));
         if let Some(source_id) = source_id {
             vm.heap.inc_ref(source_id);
         }
@@ -2478,8 +2491,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::BytesIterator
+    fn py_type(&self, vm: &VM<'h>) -> Type {
+        self.get(vm.heap).py_type()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -2503,6 +2516,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
             self.get_mut(vm.heap).index += 1;
             Ok(Some(Value::Int(i64::from(byte))))
         } else {
+            self.get_mut(vm.heap).index = usize::MAX;
             Ok(None)
         }
     }

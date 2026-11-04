@@ -247,6 +247,12 @@ pub(crate) fn seed_key_from_value(value: &Value, version: i64, vm: &VM<'_>) -> R
         PyValue::Float(value) => key_from_u64(cpython_float_hash(value)),
         PyValue::Str(value) => key_from_text(&SeedText::Str(value.as_str(vm)), version),
         PyValue::Bytes(value) => key_from_text(&SeedText::Bytes(value.as_slice(vm)), version),
+        PyValue::ByteArray(value) => {
+            if version != 2 {
+                return Err(ExcType::type_error_unhashable("bytearray"));
+            }
+            key_from_text(&SeedText::Bytes(value.get(vm.heap).as_slice()), version)
+        }
         _ => return Err(ExcType::random_seed_type()),
     };
     Ok(key)

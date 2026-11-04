@@ -51,6 +51,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             exceptions::PyAttributeError::new_err(msg)
         }
         ExcType::MemoryError => exceptions::PyMemoryError::new_err(msg),
+        ExcType::BufferError => exceptions::PyBufferError::new_err(msg),
         ExcType::NameError => exceptions::PyNameError::new_err(msg),
         ExcType::UnboundLocalError => exceptions::PyUnboundLocalError::new_err(msg),
         ExcType::StopIteration => exceptions::PyStopIteration::new_err(msg),
@@ -454,6 +455,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::ImportError
             }
         // other standalone exception types
+        } else if exceptions::PyBufferError::type_check(exc) {
+            ExcType::BufferError
         } else if exceptions::PyMemoryError::type_check(exc) {
             ExcType::MemoryError
         } else if exceptions::PyStopIteration::type_check(exc) {

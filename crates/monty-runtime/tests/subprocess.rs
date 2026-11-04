@@ -1296,6 +1296,20 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         child.shutdown();
     }
 
+    // A single byte can double a full buffer beyond the allocator's headroom.
+    for code in [
+        "a = bytearray(16 * 1024 * 1024)\na.append(0)",
+        "a = bytearray(16 * 1024 * 1024)\na.insert(0, 0)",
+        "import itertools\nbytearray(itertools.chain(itertools.repeat(0, 16 * 1024 * 1024 + 1)))",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        let (_, event) = child.feed(code);
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "MemoryError", "{code}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
     for code in [
         "a = [None] * 1_000_000\na *= 2",
         "a = [None] * 1_000_000\na += range(1_000_000)",
