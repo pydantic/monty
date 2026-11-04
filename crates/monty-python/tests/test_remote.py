@@ -89,11 +89,12 @@ async def relay_url_capturing_metadata() -> AsyncIterator[tuple[str, list[dict[s
             async for event in events:
                 yield event
 
-    server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
-    try:
-        yield url, captured
-    finally:
-        await server.stop(None)
+    async with _reaping_children(relay):
+        server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
+        try:
+            yield url, captured
+        finally:
+            await server.stop(None)
 
 
 @pytest.fixture
@@ -106,14 +107,38 @@ async def storing_url() -> AsyncIterator[str]:
     under the session's ID, and the request answered with `ShutdownDump` naming
     that ID. A later `Load` of the ID gives the child the stored state.
     """
-    relay = _load_relay_script()
-    server, url = await relay.start_server(
-        relay.SessionHandler(_StoringServer(find_monty_binary()).handle), '127.0.0.1', 0
-    )
+    storing = _StoringServer(find_monty_binary())
+    async with _reaping_children(storing.relay):
+        server, url = await storing.relay.start_server(storing.relay.SessionHandler(storing.handle), '127.0.0.1', 0)
+        try:
+            yield url
+        finally:
+            await server.stop(None)
+
+
+@asynccontextmanager
+async def _reaping_children(relay: ModuleType) -> AsyncGenerator[list[asyncio.subprocess.Process]]:
+    """Records every child `relay.spawn_child` starts, yielding the list, and reaps
+    any still running on exit.
+
+    `server.stop(None)` can return before an aborted stream's handler has run its
+    `finally`: grpc does not close a generator it was sending from. Its child would
+    then be reaped only when that generator is collected, warning in a later test.
+    """
+    spawned: list[asyncio.subprocess.Process] = []
+    spawn_child = relay.spawn_child
+
+    async def recording_spawn(monty_bin: str) -> asyncio.subprocess.Process:
+        child = await spawn_child(monty_bin)
+        spawned.append(child)
+        return child
+
+    setattr(relay, 'spawn_child', recording_spawn)
     try:
-        yield url
+        yield spawned
     finally:
-        await server.stop(None)
+        for child in spawned:
+            await relay.reap(child)
 
 
 _LENGTH_PREFIX = struct.Struct('<I')
@@ -145,9 +170,7 @@ class _StoringServer:
         await context.send_initial_metadata(())  # admit the stream; see `admit` in the relay script
         self.streams += 1
         drain_at = 3 if self.streams == 1 else None
-        child = await asyncio.create_subprocess_exec(
-            self.monty_bin, 'subprocess', stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE
-        )
+        child = await self.relay.spawn_child(self.monty_bin)
         assert child.stdin is not None and child.stdout is not None
         stdin, stdout = child.stdin, child.stdout
 
@@ -741,15 +764,6 @@ async def test_a_failed_admission_reaps_the_child():
     """An admission that fails or is cancelled before the bridge starts does
     not leave the child it spawned running."""
     relay = _load_relay_script()
-    spawned: list[asyncio.subprocess.Process] = []
-    spawn_child = relay.spawn_child
-
-    async def recording_spawn(monty_bin: str) -> asyncio.subprocess.Process:
-        child = await spawn_child(monty_bin)
-        spawned.append(child)
-        return child
-
-    relay.spawn_child = recording_spawn  # pyright: ignore[reportAttributeAccessIssue]
 
     class RefusingContext:
         async def send_initial_metadata(self, metadata: Any) -> None:
@@ -759,11 +773,13 @@ async def test_a_failed_admission_reaps_the_child():
         return
         yield b''
 
-    stream = relay.relay_behaviour(find_monty_binary())(no_requests(), RefusingContext())
-    with pytest.raises(RuntimeError, match='before admission'):
-        await stream.__anext__()
-    assert len(spawned) == 1
-    assert spawned[0].returncode is not None
+    async with _reaping_children(relay) as spawned:
+        stream = relay.relay_behaviour(find_monty_binary())(no_requests(), RefusingContext())
+        with pytest.raises(RuntimeError, match='before admission'):
+            await stream.__anext__()
+        # checked before the helper's own reap on exit
+        assert len(spawned) == 1
+        assert spawned[0].returncode is not None
 
 
 async def test_a_broken_child_pipe_ends_the_bridge():
