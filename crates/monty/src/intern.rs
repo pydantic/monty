@@ -21,8 +21,7 @@ mod compile;
 mod storage;
 
 use std::{
-    array,
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, RefCell},
     collections::BTreeMap,
     mem,
     slice::from_ref,
@@ -41,7 +40,7 @@ use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     prepare::SnippetNames,
-    types::str::AccessCache,
+    types::str::{AccessCache, AccessCacheStore},
 };
 
 /// Index into the string interner's storage.
@@ -2894,53 +2893,6 @@ fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<
     }
 }
 
-/// Lazily allocated outside the text table so ASCII-only sessions pay no per-entry cache cost.
-/// Append-only slots keep returned cache borrows valid when runtime compilation interns more strings.
-#[derive(Debug, Default)]
-struct StringAccessCaches(OnceCell<Box<SparseStringAccessCaches>>);
-
-const STRING_ACCESS_CACHE_PAGE_SIZE: usize = 256;
-type AccessCachePage = [OnceCell<Box<AccessCache>>; STRING_ACCESS_CACHE_PAGE_SIZE];
-
-/// Sparse pages avoid filling the gap before a late Unicode intern ID.
-#[derive(Debug, Default)]
-struct SparseStringAccessCaches {
-    /// Logical page number to dense storage slot; missing ID ranges reserve no pages.
-    slots: RefCell<AHashMap<usize, usize>>,
-    /// Append-only storage keeps page addresses stable across directory growth.
-    pages: Entries<Box<AccessCachePage>>,
-    // Last (logical page, storage slot), reused even when alternating IDs within one page.
-    last: Cell<Option<(usize, usize)>>,
-}
-
-impl Clone for StringAccessCaches {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
-impl StringAccessCaches {
-    fn get(&self, index: usize) -> &AccessCache {
-        let table = self.0.get_or_init(Box::default);
-        let page = index / STRING_ACCESS_CACHE_PAGE_SIZE;
-        let slot = if let Some((last_page, slot)) = table.last.get()
-            && last_page == page
-        {
-            slot
-        } else {
-            let slot = *table.slots.borrow_mut().entry(page).or_insert_with(|| {
-                let slot = table.pages.len();
-                table.pages.push(Box::new(array::from_fn(|_| OnceCell::new())));
-                slot
-            });
-            table.last.set(Some((page, slot)));
-            slot
-        };
-        // Returned borrows come from stable pages, not the directory's temporary RefCell borrow.
-        table.pages[slot][index % STRING_ACCESS_CACHE_PAGE_SIZE].get_or_init(Box::default)
-    }
-}
-
 /// Committed strings, literals, functions and snippet sources.
 /// Entries never move or disappear; existing sessions publish private compilation overlays on success.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -2948,7 +2900,7 @@ impl StringAccessCaches {
 pub(crate) struct Interns {
     strings: Entries<InternedString>,
     #[serde(skip)]
-    string_access_caches: StringAccessCaches,
+    string_access_caches: AccessCacheStore,
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
@@ -3012,7 +2964,7 @@ impl TryFrom<InternsWire> for Interns {
         }
         Ok(Self {
             strings: wire.strings,
-            string_access_caches: StringAccessCaches::default(),
+            string_access_caches: AccessCacheStore::default(),
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
@@ -3051,7 +3003,7 @@ impl Interns {
     fn placeholder() -> Self {
         Self {
             strings: Entries::default(),
-            string_access_caches: StringAccessCaches::default(),
+            string_access_caches: AccessCacheStore::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -3070,7 +3022,7 @@ impl Interns {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
             strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
-            string_access_caches: StringAccessCaches::default(),
+            string_access_caches: AccessCacheStore::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -3234,70 +3186,5 @@ impl Interns {
 }
 
 #[cfg(test)]
-mod cache_layout_tests {
-    use std::ptr;
-
-    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
-
-    use super::*;
-    use crate::MontyRepl;
-
-    #[test]
-    fn interned_endpoint_reads_do_not_allocate_cache() {
-        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
-        repl.feed_run(
-            "text = '中é🐍'\nclass First:\n    def __index__(self):\n        return 0\ntext[0]\ntext[-1]\ntext[First()]\ntext.startswith('中')\ntext.endswith('🐍')",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
-        assert!(repl.heap_and_interns().1.string_access_caches.0.get().is_none());
-
-        repl.feed_run("text[1]", vec![], PrintWriter::Disabled).unwrap();
-        assert!(repl.heap_and_interns().1.string_access_caches.0.get().is_some());
-    }
-
-    #[test]
-    fn ascii_entries_keep_the_pre_cache_footprint() {
-        assert_eq!(
-            size_of::<InternedString>(),
-            size_of::<(Option<StaticStrings>, WithHash<InternedText>)>()
-        );
-        let interns = Interns::new("");
-        for i in 0..interns.strings.len() {
-            assert!(interns.str_access_cache(next_string_id(i)).is_none());
-        }
-        assert!(interns.string_access_caches.0.get().is_none());
-    }
-
-    #[test]
-    fn late_unicode_cache_allocates_only_its_page() {
-        let indexes = StringAccessCaches::default();
-        indexes.get(1_000_000).char_len("é中");
-        let table = indexes.0.get().unwrap();
-        assert_eq!(table.pages.len(), 1);
-        assert_eq!(table.pages[0].iter().filter(|entry| entry.get().is_some()).count(), 1);
-        assert_eq!(table.slots.borrow().len(), 1);
-        assert_eq!(indexes.get(1_000_001).char_len("é中🐍"), 3);
-        assert_eq!(indexes.get(1_000_000).char_len("é中"), 2);
-        assert_eq!(table.pages.len(), 1);
-        assert!(!ptr::eq(indexes.get(1_000_000), indexes.get(1_000_001)));
-    }
-
-    #[test]
-    fn unicode_cache_survives_table_growth_and_resets_on_clone() {
-        let indexes = StringAccessCaches::default();
-        let text = "aé中🐍".repeat(4096);
-        let original = indexes.get(3);
-        for i in 0..1000 {
-            assert!(original.character(&text, (i * 7919) % 16384).is_some());
-        }
-        assert!(original.has_cursor());
-        for index in 1024..2048 {
-            indexes.get(index * STRING_ACCESS_CACHE_PAGE_SIZE).char_len("é中");
-        }
-        assert!(ptr::eq(original, indexes.get(3)));
-        assert!(original.has_cursor());
-        assert!(indexes.clone().0.get().is_none());
-    }
-}
+#[path = "../tests/unit/intern_access_cache.rs"]
+mod cache_layout_tests;

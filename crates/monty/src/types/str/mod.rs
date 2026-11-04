@@ -1,8 +1,10 @@
 mod access_cache;
+mod access_cache_store;
 
 use std::{cell::Cell, fmt::Write, ops, str};
 
 pub(crate) use access_cache::AccessCache;
+pub(crate) use access_cache_store::AccessCacheStore;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
