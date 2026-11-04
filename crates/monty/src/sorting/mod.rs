@@ -4,7 +4,7 @@
 //! `[0, 1, 2, ...]`, sort the indices by comparing the corresponding items (or key values), then rearrange the items
 //! according to the sorted indices. Short lists without a key are sorted in place.
 //!
-//! Lists of plain numbers or of strings skip the port: their `<` is a total order, so any stable sort leaves them
+//! Lists of plain numbers or of short strings skip the port: their `<` is a total order, so any stable sort leaves them
 //! in CPython's order, and Rust's is faster.
 //!
 //! This module provides [`sort_indices`] and [`sort_indices_by`] for the comparison step and
@@ -162,9 +162,13 @@ fn with_reversal<T>(items: &mut [T], reverse: bool, sort: impl FnOnce(&mut [T]) 
 enum TotalOrder {
     /// Every element is a [`Number`] other than `NaN`.
     Numbers,
-    /// Every element is a `str`.
+    /// Every element is a `str` of at most [`MAX_FAST_STR_LEN`] bytes.
     Strs,
 }
+
+/// Longer strings sort through [`timsort`], whose comparisons poll the clock: `sort_by` cannot stop early, and
+/// comparing many references to one long string would otherwise run unbounded work past the time limit.
+const MAX_FAST_STR_LEN: usize = 256;
 
 impl TotalOrder {
     /// The total order `values` share, if any: one pass over them before a sort.
@@ -174,7 +178,8 @@ impl TotalOrder {
             let is_ordered = |v: &Value| Number::of(v).is_some_and(|n| !n.is_nan());
             values.iter().all(is_ordered).then_some(Self::Numbers)
         } else {
-            values.iter().all(|v| str_of(v, vm).is_some()).then_some(Self::Strs)
+            let is_short = |v: &Value| str_of(v, vm).is_some_and(|s| s.len() <= MAX_FAST_STR_LEN);
+            values.iter().all(is_short).then_some(Self::Strs)
         }
     }
 
