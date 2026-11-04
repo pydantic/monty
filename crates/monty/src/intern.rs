@@ -3129,7 +3129,7 @@ impl Interns {
     }
 
     /// Returns a Unicode cache, allocating its directory/page and empty shell as needed.
-    /// Cursor state remains lazy; reserved and ASCII strings return `None`.
+    /// Cursor state and checkpoints remain lazy; reserved and ASCII strings return `None`.
     pub(crate) fn str_access_cache(&self, id: StringId) -> Option<&AccessCache> {
         let index = id.index().checked_sub(INTERN_STRING_ID_OFFSET)?;
         if self.strings[index].ascii {

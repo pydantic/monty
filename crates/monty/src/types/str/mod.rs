@@ -72,49 +72,49 @@ impl<'h> TextView<'_, 'h> {
     }
 
     /// Resolves Python's positive or negative character index; endpoints need no cursor.
-    fn character(&self, index: i64, vm: &VM<'h>) -> Option<char> {
+    fn character(&self, index: i64, vm: &VM<'h>) -> RunResult<Option<char>> {
         let text = self.get(vm.heap);
         let ascii = self.is_ascii(vm);
         if !ascii
             && !matches!(index, 0 | -1)
             && let Some(cache) = self.access_cache(vm)
         {
-            return cache.character(text, index);
+            return cache.character(text, index, &vm.heap.tracker);
         }
-        get_char_at_index(text, ascii, index)
+        Ok(get_char_at_index(text, ascii, index))
     }
 
     /// Clamps a character boundary to the text; `usize::MAX` denotes an omitted end.
-    fn byte_offset(&self, target: usize, vm: &VM<'h>) -> usize {
+    fn byte_offset(&self, target: usize, vm: &VM<'h>) -> RunResult<usize> {
         let text = self.get(vm.heap);
         if target == 0 {
-            return 0;
+            return Ok(0);
         }
         if target == usize::MAX {
-            return text.len();
+            return Ok(text.len());
         }
         if self.is_ascii(vm) {
-            return target.min(text.len());
+            return Ok(target.min(text.len()));
         }
         if let Some(cache) = self.access_cache(vm) {
-            return cache.byte_offset(text, target);
+            return cache.byte_offset(text, target, &vm.heap.tracker);
         }
-        text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte)
+        Ok(text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte))
     }
 
     /// Converts an in-bounds UTF-8 byte boundary into a character index.
-    fn char_offset(&self, byte: usize, vm: &VM<'h>) -> usize {
+    fn char_offset(&self, byte: usize, vm: &VM<'h>) -> RunResult<usize> {
         if byte == 0 {
-            return 0;
+            return Ok(0);
         }
         if self.is_ascii(vm) {
-            return byte;
+            return Ok(byte);
         }
         let text = self.get(vm.heap);
         if let Some(cache) = self.access_cache(vm) {
-            return cache.char_offset(text, byte);
+            return cache.char_offset(text, byte, &vm.heap.tracker);
         }
-        text[..byte].chars().count()
+        Ok(text[..byte].chars().count())
     }
 }
 
@@ -603,8 +603,8 @@ fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunRes
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
-            let start = s.byte_offset(start, vm);
-            let stop = s.byte_offset(stop, vm);
+            let start = s.byte_offset(start, vm)?;
+            let stop = s.byte_offset(stop, vm)?;
             // Large copies retain cooperative time checks; short slices still use inline storage directly.
             let result = &text[start..stop];
             if result.len() > STRING_COPY_CHUNK {
@@ -622,7 +622,7 @@ fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunRes
         Ok(allocate_string(result, vm.heap))
     } else {
         let index = key.as_index(vm, Type::Str)?;
-        let c = s.character(index, vm).ok_or_else(ExcType::str_index_error)?;
+        let c = s.character(index, vm)?.ok_or_else(ExcType::str_index_error)?;
         Ok(allocate_char(c))
     }
 }
@@ -1010,12 +1010,12 @@ fn str_find<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> RunRe
         return Ok(Value::Int(-1));
     };
     let text = s.get(vm.heap);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset(start, vm)?;
+    let end_byte = s.byte_offset(end, vm)?;
     let slice = &text[start_byte..end_byte];
     let result = match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_offset(start_byte + pos, vm)?;
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -1034,12 +1034,12 @@ fn str_rfind<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> RunR
         return Ok(Value::Int(-1));
     };
     let text = s.get(vm.heap);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset(start, vm)?;
+    let end_byte = s.byte_offset(end, vm)?;
     let slice = &text[start_byte..end_byte];
     let result = match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_offset(start_byte + pos, vm)?;
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -1057,12 +1057,12 @@ fn str_index<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> RunR
         return Err(ExcType::value_error_substring_not_found());
     };
     let text = s.get(vm.heap);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset(start, vm)?;
+    let end_byte = s.byte_offset(end, vm)?;
     let slice = &text[start_byte..end_byte];
     match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_offset(start_byte + pos, vm)?;
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -1080,12 +1080,12 @@ fn str_rindex<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> Run
         return Err(ExcType::value_error_substring_not_found());
     };
     let text = s.get(vm.heap);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset(start, vm)?;
+    let end_byte = s.byte_offset(end, vm)?;
     let slice = &text[start_byte..end_byte];
     match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_offset(start_byte + pos, vm)?;
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -1104,8 +1104,8 @@ fn str_count<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> RunR
         return Ok(Value::Int(0));
     };
     let text = s.get(vm.heap);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset(start, vm)?;
+    let end_byte = s.byte_offset(end, vm)?;
     let slice = &text[start_byte..end_byte];
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
@@ -1162,8 +1162,8 @@ fn str_starts_ends_with<'h>(
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
     let text = s.get(vm.heap);
-    let start = s.byte_offset(start, vm);
-    let end = s.byte_offset(end, vm);
+    let start = s.byte_offset(start, vm)?;
+    let end = s.byte_offset(end, vm)?;
     Ok(Value::Bool(affix_matches(
         affix,
         &text[start..end],
@@ -2234,20 +2234,21 @@ mod tests {
             bytes
         };
         let cold = encode(&text);
+        let tracker = ResourceTracker::default();
         text.char_len();
         text.1.set(Some(hash_python_str(text.as_str())));
         for i in 0..1000 {
             let position = i * 7919 % 16384;
             assert_eq!(
-                text.3.character(text.as_str(), position),
+                text.3.character(text.as_str(), position, &tracker).unwrap(),
                 "aé中🐍".chars().nth(usize::try_from(position % 4).unwrap())
             );
         }
-        assert!(text.3.has_cursor());
+        assert!(text.3.has_checkpoints());
         assert_eq!(encode(&text), cold);
 
         let reset = <Str as serde::Deserialize>::deserialize(&mut minicbor_serde::Deserializer::new(&cold)).unwrap();
-        assert!(!reset.3.has_cursor());
+        assert!(!reset.3.has_checkpoints());
         assert!(reset.1.get().is_none());
         assert!(reset.2.get().is_none());
         assert_eq!(reset.as_str(), text.as_str());
