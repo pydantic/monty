@@ -1817,14 +1817,16 @@ result
 
 /// Test that `re.sub` raises `re.PatternError` when the regex engine hits its backtracking limit.
 ///
-/// The pattern `(a+)+\1b` forces `fancy_regex` into its backtracking VM (due to the
-/// backreference `\1`). With enough `a`s followed by a non-matching character, the
-/// exponential blowup exceeds the engine's backtracking step limit (~1M steps).
+/// The pattern `(x+x+)+\1y` forces `fancy_regex` into its backtracking VM (due to the
+/// backreference `\1`). With enough `x`s followed by a non-matching character, the
+/// exponential blowup exceeds the engine's backtracking step limit (~1M steps). The doubled
+/// `x+` gets past fancy-regex 0.20's nested-repeat optimisation, which defuses `(a+)+`, and the
+/// subject contains the `y` the pattern requires, so the engine's prefilter cannot skip it.
 #[test]
 fn re_sub_backtracking_limit_raises_pattern_error() {
     let code = r"
 import re
-re.sub('(a+)+\\1b', 'X', 'a' * 30 + 'c')
+re.sub('(x+x+)+\\1y', 'X', 'x' * 30 + 'zy')
 ";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 

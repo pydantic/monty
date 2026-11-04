@@ -1336,9 +1336,9 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
-version = "0.17.0"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
+checksum = "20ed7f62ce0ae0da1a8b93c3c7104ab7e0760a74491e097c701fff966e945390"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -2682,7 +2682,7 @@ dependencies = [
  "ahash",
  "chrono",
  "cpu-time",
- "fancy-regex 0.17.0",
+ "fancy-regex 0.20.0",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",
  "indexmap",
