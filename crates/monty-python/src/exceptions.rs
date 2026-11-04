@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use ahash::AHashMap;
+use monty_pool::WebSocketDisconnect;
 use monty_proto::python::exc_monty_to_py;
 use monty_types::{ExcType, MontyException, SourceRange};
 use pyo3::{
@@ -336,7 +337,7 @@ impl MontyRuntimeError {
 }
 
 /// Raised when the sandbox is gone: the worker process died (segfault, abort,
-/// external kill), the pool killed it at the `request_timeout` deadline, or it
+/// external kill), the pool killed it at a parent-side time limit, or it
 /// announced a fatal error and exited — which a serving server also uses to
 /// report that it could not start a worker at all.
 ///
@@ -347,7 +348,7 @@ impl MontyRuntimeError {
 /// which happened.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyCrashedError {
-    /// `True` when the worker was killed at the `request_timeout` deadline.
+    /// `True` when a parent-side elapsed-time or CPU watchdog killed the worker.
     #[pyo3(get)]
     timed_out: bool,
     /// Exit code of the dead worker, when the OS reported one (signal deaths
@@ -388,16 +389,44 @@ impl MontyCrashedError {
 /// The sandbox may have died, or the server may have dropped the session by
 /// policy: an idle/session/turn timeout, or being over capacity. A client that
 /// only sees the connection go away cannot tell those apart, so this error
-/// deliberately claims no more than that. Retry on a fresh session.
+/// deliberately claims no more than that. The request may have run.
+/// Do not replay it automatically.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
-pub struct MontyDisconnectError {}
+pub struct MontyDisconnectError {
+    /// The operation that observed the transport failure.
+    #[pyo3(get)]
+    stage: Option<String>,
+    /// The peer's Close frame code.
+    #[pyo3(get)]
+    close_code: Option<u16>,
+    /// The peer's Close frame reason.
+    #[pyo3(get)]
+    close_reason: Option<String>,
+    /// The underlying transport or protocol error text.
+    #[pyo3(get)]
+    transport_error: Option<String>,
+}
 
 impl MontyDisconnectError {
     /// Creates a `MontyDisconnectError` with the given description.
     #[must_use]
-    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+    pub fn new_err(py: Python<'_>, message: String, details: Option<WebSocketDisconnect>) -> PyErr {
         let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
-        let init = PyClassInitializer::from(base).add_subclass(Self {});
+        let (stage, close_code, close_reason, transport_error) = match details {
+            Some(details) => (
+                Some(details.stage.to_owned()),
+                details.close_code,
+                details.close_reason,
+                details.transport_error,
+            ),
+            None => (None, None, None, None),
+        };
+        let init = PyClassInitializer::from(base).add_subclass(Self {
+            stage,
+            close_code,
+            close_reason,
+            transport_error,
+        });
         match Py::new(py, init) {
             Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
             Err(e) => e,

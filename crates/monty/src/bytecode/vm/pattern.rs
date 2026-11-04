@@ -15,10 +15,8 @@ use crate::{
     bytecode::op::{MATCH_SHAPE_MAPPING, MATCH_SHAPE_MIN_LEN},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapReadOutput},
-    types::{
-        Dict, PyTrait, Type, instance::class_name, set::set_element_hash, str::allocate_string, tuple::allocate_tuple,
-    },
+    heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
+    types::{Dict, PyTrait, Type, instance::class_name, set::set_element_hash, tuple::allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -309,7 +307,7 @@ fn class_pattern_names(
         match class_match_args(cls, nargs, vm)? {
             MatchArgs::SelfMatch => names.push(Value::None),
             MatchArgs::Names(positional) => {
-                names.extend(positional.iter().map(|name| either_str_value(name, vm.heap)));
+                names.extend(positional.iter().map(|name| name.as_value(vm.heap)));
             }
         }
     }
@@ -355,7 +353,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     };
     let Value::Ref(cls_id) = cls else {
         return match cls {
-            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => {
+            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(&(*t).into()) => {
                 check_count(1, vm).map(|()| MatchArgs::SelfMatch)
             }
             _ => check_count(0, vm).map(|()| MatchArgs::Names(Vec::new())),
@@ -405,14 +403,6 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     Ok(MatchArgs::Names(names))
 }
 
-/// An attribute name as a `str` value for the `MatchClass` names tuple.
-fn either_str_value(name: &EitherStr, heap: &Heap) -> Value {
-    match name {
-        EitherStr::Interned(id) => Value::InternString(*id),
-        EitherStr::Heap(text) => allocate_string(text.clone(), heap),
-    }
-}
-
 /// `TypeError: Foo.__match_args__ must be a tuple (got list)`.
 fn match_args_type_error(cls: &Value, match_args: &Value, vm: &VM<'_>) -> RunError {
     let class = class_pattern_name(cls, vm);
@@ -432,7 +422,7 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 /// The class's `__name__`, as CPython's class pattern errors spell it.
 fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
     match cls {
-        Value::Builtin(Builtins::Type(t)) => t.dunder_name(vm.heap, vm.interns).into_owned(),
+        Value::Builtin(Builtins::Type(t)) => Type::from(*t).dunder_name(vm.heap, vm.interns).into_owned(),
         Value::Builtin(Builtins::ExcType(exc_type)) => {
             let qualified = exc_type.to_string();
             qualified.rsplit('.').next().unwrap_or(&qualified).to_owned()

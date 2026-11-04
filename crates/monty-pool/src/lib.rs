@@ -1,6 +1,8 @@
 #![doc = include_str!("../README.md")]
 
 mod checkout;
+mod cpu;
+mod cpu_clock;
 mod pool;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
@@ -11,8 +13,9 @@ mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
+use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 pub use monty_proto::DEFAULT_PRINT_FLUSH_INTERVAL;
-use monty_types::MontyException;
+use monty_types::{ExecutionClock, MontyException};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::Metrics;
@@ -53,17 +56,26 @@ impl MontyTransport {
 /// itself before killing it.
 pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 
+/// Default [`PoolConfig::max_checkouts_per_worker`]: bounds how many sessions
+/// one worker serves while amortising its respawn over many checkouts.
+pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
-    /// the [`MontyTransport::Websocket`] transport (connections are made
+    /// Floor on live workers: spawned at pool creation, and replaced in the
+    /// background whenever one is recycled, crashes or is discarded. Forced to
+    /// 0 for the [`MontyTransport::Websocket`] transport (connections are made
     /// per-checkout, not pre-warmed).
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
     pub max_processes: usize,
     /// How workers are reached (spawned locally or connected to remotely).
     pub transport: MontyTransport,
+    /// Clock for local worker sessions (default wall time). CPU mode requires Linux
+    /// subprocess workers and a finite [`Self::request_timeout`].
+    /// WebSocket pools adopt the server's clock without local CPU supervision.
+    pub execution_clock: ExecutionClock,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
@@ -73,26 +85,23 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
-    /// Grace period for the automatic `ResourceLimits::max_feed_duration`
-    /// backstop.
-    ///
-    /// When a session has a feed budget, the worker reports the running feed's
-    /// execution time on every turn-ending event (the sandbox clock is the
-    /// single source of truth: it runs only while the interpreter executes,
-    /// never during suspensions waiting on the host or between feeds), and the
-    /// parent bounds each turn by what that budget has left plus this grace.
-    ///
-    /// The grace is the window in which the sandbox may raise `TimeoutError`
-    /// itself and keep the session alive; a worker that misses it is killed and
-    /// the call fails with [`PoolError::Timeout`], so too short a grace costs
-    /// workers that would have recovered.
+    /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
+    /// Excludes wire buffers and host-language conversion, and does not change
+    /// the sandbox's memory limit.
+    pub max_decode_bytes: usize,
+    /// Extra feed allowance in the pool's clock. CPU mode grants it once per feed.
+    /// Wall mode uses reported time; CPU mode uses OS CPU. Exhaustion kills with `Timeout` or `CpuLimit`, respectively.
+    /// `None` disables this backstop. `request_timeout` remains independent.
     pub feed_duration_limit_grace: Option<Duration>,
-    /// [`feed_duration_limit_grace`](Self::feed_duration_limit_grace) for the
-    /// `ResourceLimits::max_turn_duration` backstop: each turn is bounded by
-    /// that whole limit plus this, the turn clock starting at zero.
+    /// Extra allowance for `ResourceLimits::max_turn_duration`, in the pool's clock.
+    /// Each feed or resume starts a new turn allowance. `None` disables this backstop.
     pub turn_duration_limit_grace: Option<Duration>,
-    /// Recycle (kill and respawn) a worker after this many checkouts, to
-    /// bound the impact of any slow leak in a long-lived child.
+    /// Recycle (kill and respawn) a worker after this many checkouts, bounding
+    /// how long a slow leak or a compromised child survives. Defaults to
+    /// [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`]; `None` never recycles. With the
+    /// subprocess transport, `Some(1)` (or `Some(0)`) gives every session a fresh process — the
+    /// setting for mutually untrusted callers — usually spawned before it asked
+    /// when `min_processes > 0`.
     pub max_checkouts_per_worker: Option<u32>,
     /// Resume a session transparently when a relay that stores sessions answers
     /// a request with `Shutdown`: the checkout redials, reloads the state the
@@ -111,7 +120,8 @@ pub struct PoolConfig {
 impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
     /// `max_processes =` available parallelism, no timeouts, a 1s grace on
-    /// each of the two duration backstops, no recycling.
+    /// each of the two duration backstops, recycling after
+    /// [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`] checkouts.
     pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
         Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
@@ -130,12 +140,14 @@ impl PoolConfig {
             min_processes: 1,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
             transport,
+            execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
-            max_checkouts_per_worker: None,
+            max_checkouts_per_worker: Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
             auto_resume: true,
+            max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             #[cfg(feature = "telemetry")]
             metrics: None,
         }
@@ -155,11 +167,17 @@ pub enum PoolError {
         /// How the pool learned of the death, and what it can say about it.
         cause: CrashCause,
     },
-    /// The worker was killed after its turn outlived `request_timeout` (or
-    /// one of the feed/turn duration backstop deadlines).
+    /// The worker exceeded `request_timeout` or a wall-mode feed/turn backstop.
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,
+    },
+    /// The supervisor killed the worker after its OS-observed CPU allowance expired.
+    CpuLimit {
+        /// The remaining CPU allowance for this turn, including any configured CPU grace.
+        limit: Duration,
+        /// CPU consumed since the supervisor's fresh per-turn OS baseline.
+        consumed: Duration,
     },
     /// The worker violated the wire protocol, or the caller violated the
     /// checkout state machine. Worker-originated protocol failures discard the
@@ -191,6 +209,8 @@ pub enum PoolError {
     Disconnected {
         /// What the pool was doing when the disconnect was observed.
         context: String,
+        /// Transport evidence, absent when the connection task supplied no details.
+        websocket: Option<Box<WebSocketDisconnect>>,
     },
     /// The remote server is shutting down and did **not** run the request —
     /// re-running it on a fresh session is safe. `dump` restores the session
@@ -232,6 +252,19 @@ pub enum CrashCause {
     },
 }
 
+/// The first recorded WebSocket failure, without a claim about whether guest code ran.
+#[derive(Debug, Clone)]
+pub struct WebSocketDisconnect {
+    /// The I/O operation that observed the failure: `send` or `receive`.
+    pub stage: &'static str,
+    /// The peer's Close frame code, if a Close frame supplied one.
+    pub close_code: Option<u16>,
+    /// The peer's Close frame reason, if a Close frame supplied one.
+    pub close_reason: Option<String>,
+    /// The transport or protocol error for this failure; absent for a peer Close frame.
+    pub transport_error: Option<String>,
+}
+
 impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -254,13 +287,19 @@ impl fmt::Display for PoolError {
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
-            Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
+            Self::Disconnected { context, .. } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
                     f.write_str("monty server is shutting down; the request did not run (restorable state attached)")
                 }
                 None => f.write_str("monty server is shutting down; the request did not run"),
             },
+            Self::CpuLimit { limit, consumed } => {
+                write!(
+                    f,
+                    "monty worker exceeded CPU allowance {limit:?} (observed {consumed:?})"
+                )
+            }
         }
     }
 }

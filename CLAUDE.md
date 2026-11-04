@@ -62,7 +62,8 @@ Key rules:
 
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
-- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
+- Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms.
+    The one exception is the CPU execution clock, which is Linux-only so that it needs no `unsafe`.
 - Tests in `crates/*/tests/` should be cross-platform; use helper functions for
     OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
     `crates/monty-fs/tests/common/mod.rs`, shared via `mod common;` — each
@@ -177,10 +178,24 @@ subprocesses:
     `monty-proto` depends only on `monty-types` by default; its `worker` feature
     (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
     interpreter for the child-side `worker` state machine.
+    Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
+    `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
+    conversion there and host-only binding logic in `monty-python`.
+    `monty-private`'s crates (`monty-cpython`, `monty-relay`, `monty-server`, ...) also consume the wire
+    protocol: check them before changing `monty_proto::python`'s API or the `OsCall` arms, which
+    `monty-relay` scans by field number.
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
     streamed `Print` events out, then exactly one turn-ending event.
+- `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
+    A WebSocket server selects its own clock and reports it to clients; session limits cannot override it.
+    CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
+    the worker refuses it. WebSocket clients on any platform can adopt a Linux server's CPU clock.
+    Local subprocess pools supervise CPU with the child's OS process clock.
+    CPU mode requires a finite `PoolConfig::request_timeout`; WebSocket clients do not supervise CPU locally.
+    WebAssembly workers accept wall mode only.
+    Snapshots retain their clock; the worker rejects a load configured with another clock.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
     with crash detection/replacement and a hard per-turn timeout. Frame reads
     are cancel-safe (partial-frame state lives in the worker, no pump task),
@@ -413,6 +428,13 @@ iter.drop_with(self); // single path, no branching
 - The same value has `drop_with` called in multiple places (e.g. a loop with `continue` or `?` in the middle). This implies `defer_drop!` or `DropGuard` will be easier to read.
 - The explicit call to `drop_with` produces more lines of code than `defer_drop!` or `DropGuard` would. The latter often avoid rightward drift and make the cleanup logic easier.
 - The value is part of a container (e.g. `Vec<Value>`). Ideally the container itself implements `DropWithContext` and so `defer_drop` or `DropGuard` can be used on the whole container. Consider if a `DropWithContext` implementation for the container might be missing.
+
+### `#[strum(use_phf)]` only on large `EnumString` enums
+
+Add `use_phf` only to `EnumString` enums with more than ~100 variants, or ones that will clearly grow past that.
+Its SipHash costs ~11 ns per lookup however small the enum, while strum's default `match` costs 3–6 ns on enums of
+40–80 variants, and less still on misses whose length no variant shares.
+At ~970 variants (`StaticStrings`), `match` costs ~100 ns and PHF wins about 7×.
 
 ### Resource-tracked string construction (`StringBuilder`)
 
@@ -824,7 +846,8 @@ Unknown keys, wrong types and malformed blocks are errors, and every key default
 
 - `call-external = true` to support calling external functions
 - `run-async = true` to support running async code
-- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both
+- `mount-fs = true` to mount a fixture directory: `/mnt` for Monty, a real temp dir for CPython, `root` in both;
+    modules written there import on both sides (it is first on CPython's `sys.path`; write every file before the first import)
 - `skip-cpython-windows = true` to skip the CPython side on Windows (POSIX path semantics)
 - `cpython-main-module = true` to set `__name__ = '__main__'` on CPython only
 - `gc-interval = <N>` to override the GC interval
@@ -1050,6 +1073,9 @@ where they are. Change one and you must change all of them:
     `limitations/random.md`, `docs/security.md` (the clock / entropy / waiting), `docs/cli.md` and
     `crates/monty-runtime/README.md` (`--max-sleep`, `--max-total-sleep`), the `checkout()` docstrings in
     `_monty.pyi` and `crates/monty-js/ts/pool.ts`.
+- **The default `max_checkouts_per_worker`** (1000) — `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER` (authoritative;
+    compile- and test-time checks pin the JS constant and Python `text_signature`s to it), `_monty.pyi`, `crates/monty-js/ts/options.ts`,
+    `crates/monty-js/ts/pool.ts`, the `monty-pool` README, `docs/resource-limits.md`, `docs/security.md` and `docs/quickstart/`.
 - **Mount modes and their defaults** — `limitations/filesystem.md`, `docs/filesystem.md`,
     the `MountDir` docstrings in `_monty.pyi` and `crates/monty-js/ts/mount.ts`.
 

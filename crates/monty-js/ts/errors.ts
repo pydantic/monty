@@ -308,6 +308,20 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'binascii.Error',
   'binascii.Incomplete',
   '_csv.Error',
+  'decimal.DecimalException',
+  'decimal.Clamped',
+  'decimal.InvalidOperation',
+  'decimal.ConversionSyntax',
+  'decimal.DivisionByZero',
+  'decimal.DivisionImpossible',
+  'decimal.DivisionUndefined',
+  'decimal.Inexact',
+  'decimal.InvalidContext',
+  'decimal.Rounded',
+  'decimal.Subnormal',
+  'decimal.Overflow',
+  'decimal.Underflow',
+  'decimal.FloatOperation',
 ])
 
 /**

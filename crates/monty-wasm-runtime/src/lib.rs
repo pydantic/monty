@@ -368,6 +368,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
 fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
     pb::Configure {
         script_name: request.script_name,
+        execution_clock: Some(pb::ExecutionClock::Wall as i32),
         limits: request.limits.map(|limits| pb::ResourceLimits {
             max_feed_duration_micros: limits.max_feed_duration_micros,
             max_turn_duration_micros: limits.max_turn_duration_micros,
@@ -472,6 +473,10 @@ fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
+        CallResult::ModuleFile(file) => pb::ext_function_result::Kind::ModuleFile(pb::ModuleFile {
+            path: file.path,
+            source: file.source,
+        }),
     };
     pb::ExtFunctionResult { kind: Some(kind) }
 }

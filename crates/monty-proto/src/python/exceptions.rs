@@ -118,7 +118,69 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyException::new_err(msg)
             }
         }
+        ExcType::DecimalException
+        | ExcType::DecimalClamped
+        | ExcType::DecimalInvalidOperation
+        | ExcType::DecimalConversionSyntax
+        | ExcType::DecimalDivisionByZero
+        | ExcType::DecimalDivisionImpossible
+        | ExcType::DecimalDivisionUndefined
+        | ExcType::DecimalInexact
+        | ExcType::DecimalInvalidContext
+        | ExcType::DecimalRounded
+        | ExcType::DecimalSubnormal
+        | ExcType::DecimalOverflow
+        | ExcType::DecimalUnderflow
+        | ExcType::DecimalFloatOperation => decimal_error_to_py(py, exc_type, msg),
     }
+}
+
+/// Builds the `decimal` module's own exception class for a decimal signal, so
+/// `except decimal.InvalidOperation:` catches it on the host. Falls back to the
+/// signal's builtin base: `ZeroDivisionError`, `TypeError` or `ArithmeticError`.
+fn decimal_error_to_py(py: Python<'_>, exc_type: ExcType, msg: String) -> PyErr {
+    let full: &'static str = exc_type.into();
+    let name = full.strip_prefix("decimal.").unwrap_or(full);
+    if let Ok(decimal) = get_decimal_module(py)
+        && let Ok(exc_cls) = decimal.getattr(name)
+        && let Ok(exc_instance) = exc_cls.call1((PyString::new(py, &msg),))
+    {
+        PyErr::from_value(exc_instance)
+    } else {
+        match exc_type {
+            ExcType::DecimalDivisionByZero | ExcType::DecimalDivisionUndefined => {
+                exceptions::PyZeroDivisionError::new_err(msg)
+            }
+            ExcType::DecimalFloatOperation => exceptions::PyTypeError::new_err(msg),
+            _ => exceptions::PyArithmeticError::new_err(msg),
+        }
+    }
+}
+
+/// Returns the cached host `decimal` module.
+fn get_decimal_module(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    DECIMAL
+        .get_or_try_init(py, || py.import("decimal").map(|m| m.into_any().unbind()))
+        .map(|m| m.bind(py))
+}
+
+/// The `ExcType` of a host `decimal` exception: its nearest class in the MRO that
+/// is one of the `decimal` module's signal classes (by identity, not by name), so a
+/// subclass maps to the signal it extends.
+/// `None` for anything that is not a `decimal.DecimalException`.
+fn decimal_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<ExcType> {
+    let decimal = get_decimal_module(exc.py()).ok()?;
+    let base = decimal.getattr("DecimalException").ok()?;
+    if !exc.is_instance(&base).unwrap_or(false) {
+        return None;
+    }
+    let mro = exc.get_type().getattr("__mro__").ok()?.cast_into::<PyTuple>().ok()?;
+    mro.iter().find_map(|cls| {
+        let name: String = cls.getattr("__name__").ok()?.extract().ok()?;
+        let exc_type = format!("decimal.{name}").parse::<ExcType>().ok()?;
+        decimal.getattr(name.as_str()).ok()?.is(&cls).then_some(exc_type)
+    })
 }
 
 /// The host class for an exception type: the class its instances decode to,
@@ -291,8 +353,12 @@ pub fn exc_to_monty_node(exc: &Bound<'_, exceptions::PyBaseException>) -> MontyN
 fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
     // Exception hierarchy
     if exceptions::PyException::type_check(exc) {
+        // `decimal` signals first: `FloatOperation` is also a `TypeError` and
+        // `DivisionByZero` a `ZeroDivisionError`, so the builtin checks would claim them.
+        if let Some(exc_type) = decimal_exc_type(exc) {
+            exc_type
         // put the most commonly used exceptions first
-        if exceptions::PyTypeError::type_check(exc) {
+        } else if exceptions::PyTypeError::type_check(exc) {
             ExcType::TypeError
         // ValueError hierarchy (check UnicodeDecodeError/UnicodeEncodeError first as they're subclasses)
         } else if exceptions::PyValueError::type_check(exc) {

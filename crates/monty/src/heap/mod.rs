@@ -23,7 +23,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{ExtFunction, HostClassType, TimeZone, Tuple},
+    types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -978,6 +978,11 @@ pub(crate) struct Heap {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
+    /// Owned references to the session's `decimal` contexts, indexed by [`DecimalSlot`].
+    ///
+    /// Created lazily by `types::decimal::py_context`. Kept here rather than on the VM so the
+    /// current context outlives each VM, as the heap does across REPL feeds and dumps.
+    decimal_contexts: [Option<HeapId>; DecimalSlot::COUNT],
     /// Live external functions indexed by name without owning heap references.
     ///
     /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
@@ -995,12 +1000,13 @@ pub(crate) struct Heap {
 
 impl serde::Serialize for Heap {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Heap", 5)?;
+        let mut state = serializer.serialize_struct("Heap", 6)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("tracker", &self.tracker)?;
         state.serialize_field("purple_count", &self.purple_count)?;
         state.serialize_field("allocations_since_gc", &self.allocations_since_gc.get())?;
         state.serialize_field("timezone_utc", &self.timezone_utc)?;
+        state.serialize_field("decimal_contexts", &self.decimal_contexts)?;
         state.end()
     }
 }
@@ -1014,6 +1020,8 @@ impl<'de> serde::Deserialize<'de> for Heap {
             purple_count: usize,
             allocations_since_gc: u32,
             timezone_utc: Option<HeapId>,
+            #[serde(default)]
+            decimal_contexts: [Option<HeapId>; DecimalSlot::COUNT],
         }
         let fields = HeapFields::deserialize(deserializer)?;
         let mut entries = fields.entries;
@@ -1030,6 +1038,7 @@ impl<'de> serde::Deserialize<'de> for Heap {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
+            decimal_contexts: fields.decimal_contexts,
             ext_function_cache,
             boundary_index,
             host_type_index,
@@ -1122,6 +1131,7 @@ impl Heap {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
+            decimal_contexts: [None; DecimalSlot::COUNT],
             ext_function_cache: BTreeMap::new(),
             boundary_index: BTreeMap::new(),
             host_type_index: BTreeMap::new(),
@@ -1334,6 +1344,20 @@ impl Heap {
             self.timezone_utc = Some(id);
             Value::Ref(id)
         }
+    }
+
+    /// The heap-owned `decimal` context in `slot`, if it has been created.
+    ///
+    /// The id is borrowed: callers handing it out as a `Value` must `inc_ref` it.
+    pub(crate) fn decimal_context(&self, slot: DecimalSlot) -> Option<HeapId> {
+        self.decimal_contexts[slot as usize]
+    }
+
+    /// Stores an owned reference to a `decimal` context in `slot`, returning the owned
+    /// reference it replaces for the caller to release (callers may hold heap readers).
+    #[must_use]
+    pub(crate) fn replace_decimal_context(&mut self, slot: DecimalSlot, id: HeapId) -> Option<HeapId> {
+        self.decimal_contexts[slot as usize].replace(id)
     }
 
     /// Increments the reference count for an existing heap entry.
@@ -1773,7 +1797,9 @@ impl HeapReader<'_> {
     pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
         let mut seen: HashSet<HeapId> = HashSet::new();
         let mut work_stack: Vec<HeapId> = Vec::new();
-        for root in roots {
+        // The heap owns the session's decimal contexts, so they are live without a name.
+        let held = self.decimal_contexts.iter().flatten().copied();
+        for root in roots.into_iter().chain(held) {
             if seen.insert(root) {
                 work_stack.push(root);
             }
@@ -2066,21 +2092,10 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Partial(partial) => partial.for_each_child_id(on_child),
         HeapData::GenericAlias(alias) => alias.for_each_child_id(on_child),
         HeapData::Union(union) => union.for_each_child_id(on_child),
+        HeapData::ForwardRef(forward_ref) => forward_ref.for_each_child_id(on_child),
         HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
-        HeapData::Module(m) => {
-            // Module attrs can contain references to heap values
-            if !m.has_refs() {
-                return;
-            }
-            for (k, v) in m.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
-                }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
-                }
-            }
-        }
+        // Attrs and, for a file module, its namespace dict.
+        HeapData::Module(m) => m.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
@@ -2165,6 +2180,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        // Mirror `py_dec_ref_ids_for_data`: both own references to decimal contexts.
+        HeapData::DecimalSignalDict(dict) => on_child(dict.context_id()),
+        HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
+        // The owned `__cause__` / `__context__`; exceptions are still not GC-tracked.
+        HeapData::Exception(exc) => exc.owned_chain_ids().for_each(on_child),
         // Leaf types with no heap references
         _ => {}
     }
@@ -2227,6 +2247,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Partial(partial) => partial.py_dec_ref_ids(stack),
         HeapData::GenericAlias(alias) => alias.py_dec_ref_ids(stack),
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
+        HeapData::ForwardRef(forward_ref) => forward_ref.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
@@ -2295,6 +2316,11 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         }
         // Release the shared subject reference (mirrors `for_each_child_id`).
         HeapData::ReMatch(m) => m.py_dec_ref_ids(stack),
+        // Release the owned decimal context references (mirrors `for_each_child_id`).
+        HeapData::DecimalSignalDict(dict) => dict.py_dec_ref_ids(stack),
+        HeapData::DecimalContextManager(manager) => manager.py_dec_ref_ids(stack),
+        // Release the owned `__cause__` / `__context__` references (mirrors `for_each_child_id`).
+        HeapData::Exception(exc) => exc.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }

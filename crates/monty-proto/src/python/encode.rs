@@ -24,7 +24,7 @@ use super::{
         is_class_type_wrapper, wrapper_uuid,
     },
     convert::{
-        PyMontyFileHandle, get_datetime_timezone_type, get_docstring, get_name, get_pure_posix_path,
+        PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring, get_name, get_pure_posix_path,
         py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
@@ -221,6 +221,9 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
             Ok(self.leaf(MontyNode::TimeDelta(py_timedelta_to_monty(delta))))
         } else if obj.is_instance(get_datetime_timezone_type(py)?)? {
             Ok(self.leaf(MontyNode::TimeZone(py_timezone_to_monty(obj)?)))
+        } else if obj.is_instance(get_decimal_type(py)?)? {
+            // `str(d)` is exact; the sandbox parses it back as `Decimal(str(d))`.
+            Ok(self.leaf(MontyNode::Decimal(obj.str()?.extract()?)))
         } else if let Ok(exc) = obj.cast::<PyBaseException>() {
             Ok(self.leaf(exc_to_monty_node(exc)))
         } else if is_class_type_wrapper(obj)? {

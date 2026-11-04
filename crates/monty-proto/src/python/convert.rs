@@ -22,14 +22,14 @@ use strum::{IntoEnumIterator, VariantNames};
 
 use super::exceptions::exc_class_to_py;
 
-/// Inverse of [`host_type_object`]: maps a host class passed *into* the sandbox
+/// Inverse of `host_type_object`: maps a host class passed *into* the sandbox
 /// to the Monty [`MontyType`] it represents, so it round-trips instead of degrading to
 /// a callable. Matches by type-object **identity**, not `__module__`/`__name__` —
 /// the latter is spoofable and churns across Python versions (e.g. `pathlib` paths
 /// report `pathlib._local` on 3.13). Every `pathlib` path class collapses to
-/// [`MontyType::Path`]. Returns `None` for classes Monty does not model, which the
-/// caller then represents as a function node.
-pub(super) fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
+/// [`MontyType::Path`]. Returns `None` for classes Monty does not model: the encoder
+/// sends those as a function node, a type hint as the class's dotted name.
+pub fn py_type_object_to_monty(ty: &Bound<'_, PyType>) -> PyResult<Option<MontyType>> {
     let py = ty.py();
     for (obj, t) in round_trip_type_table(py)? {
         if ty.is(obj) {
@@ -112,6 +112,7 @@ pub(super) fn host_type_object(py: Python<'_>, t: MontyType) -> PyResult<Option<
         MontyType::Time => cached!("datetime", "time"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
+        MontyType::Decimal => cached!("decimal", "Decimal"),
         MontyType::Deque => cached!("collections", "deque"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
@@ -357,6 +358,13 @@ fn timezone_offset_seconds(delta: &MontyTimeDelta) -> PyResult<i32> {
         .and_then(|days| days.checked_add(i64::from(delta.seconds)))
         .ok_or_else(|| PyTypeError::new_err("datetime.timezone offset is out of range"))?;
     i32::try_from(total_seconds).map_err(|_| PyTypeError::new_err("datetime.timezone offset is out of range"))
+}
+
+/// Returns Python's `decimal.Decimal` class.
+pub(super) fn get_decimal_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DECIMAL.import(py, "decimal", "Decimal")
 }
 
 /// Returns the Python `datetime.timezone` type object.

@@ -163,6 +163,15 @@ impl MontyObject {
         Self::leaf(MontyNode::TimeZone(value))
     }
 
+    /// A `decimal.Decimal` from its string form, as `str(d)` prints it.
+    ///
+    /// The sandbox parses the text as `Decimal(text)` does, so any numeric string is
+    /// accepted (`"1.20"`, `"1e5"`, `"-NaN"`); feeding it anything else fails there.
+    #[must_use]
+    pub fn decimal(value: impl Into<String>) -> Self {
+        Self::leaf(MontyNode::Decimal(value.into()))
+    }
+
     /// An exception instance as a value (not raised), with its message.
     #[must_use]
     pub fn exception(exc_type: ExcType, arg: Option<String>) -> Self {
@@ -528,6 +537,15 @@ impl<'a> ObjectRef<'a> {
         }
     }
 
+    /// The string form of a `decimal.Decimal`, as `str(d)` prints it.
+    #[must_use]
+    pub fn as_decimal(&self) -> Option<&str> {
+        match self.node() {
+            MontyNode::Decimal(value) => Some(value),
+            _ => None,
+        }
+    }
+
     /// The value as a `complex`; an `int` or `float` converts as Python's
     /// `complex()` does, with a zero imaginary part (see [`as_float`](Self::as_float)
     /// for an `int` too large to convert).
@@ -570,6 +588,7 @@ impl<'a> ObjectRef<'a> {
             | MontyNode::NamedTuple { values: items, .. } => !items.is_empty(),
             MontyNode::Dict(pairs) => !pairs.is_empty(),
             MontyNode::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
+            MontyNode::Decimal(text) => !decimal_is_zero(text),
             _ => true,
         }
     }
@@ -753,6 +772,7 @@ impl<'a> ObjectRef<'a> {
                 }
                 f.write_char(')')
             }
+            MontyNode::Decimal(text) => write!(f, "Decimal('{text}')"),
             MontyNode::TimeZone(tz) => {
                 if tz.offset_seconds == 0 && tz.name.is_none() {
                     return f.write_str("datetime.timezone.utc");
@@ -1406,6 +1426,9 @@ pub enum MontyType {
     /// The wrapper `functools.lru_cache` / `functools.cache` returns.
     #[strum(serialize = "functools._lru_cache_wrapper")]
     LruCacheWrapper,
+    /// `decimal.Decimal`, qualified the way CPython's `tp_name` is.
+    #[strum(serialize = "decimal.Decimal")]
+    Decimal,
 }
 
 impl fmt::Display for MontyType {
@@ -1794,4 +1817,14 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
         datetime.microsecond,
     )?;
     Some(date.and_time(time))
+}
+
+/// Whether a `Decimal` string form is a (signed) zero: every mantissa digit is `0`.
+///
+/// NaNs and infinities contain letters before any exponent, so they are never zero.
+/// Surrounding whitespace and underscores are ignored, as `Decimal(text)` ignores them.
+fn decimal_is_zero(text: &str) -> bool {
+    let unsigned = text.trim().trim_start_matches(['+', '-']);
+    let mantissa = unsigned.split(['e', 'E']).next().unwrap_or_default();
+    mantissa.bytes().any(|b| b == b'0') && mantissa.bytes().all(|b| matches!(b, b'0' | b'.' | b'_'))
 }

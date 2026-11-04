@@ -66,7 +66,8 @@ pub(crate) fn from_ymd(year: i32, month: i32, day: i32) -> RunResult<Date> {
 
 /// `date`'s year-range error, raised both by construction and by the probe
 /// [`datetime.astimezone`](super::datetime) makes a day either side of a value.
-pub(crate) fn year_out_of_range(year: i32) -> RunError {
+pub(crate) fn year_out_of_range(year: impl Into<i64>) -> RunError {
+    let year = year.into();
     SimpleException::new_msg(ExcType::ValueError, format!("year must be in 1..9999, not {year}")).into()
 }
 
@@ -99,12 +100,17 @@ fn max_day_for_month(year: i32, month: i32) -> u32 {
 /// Creates a date from a proleptic Gregorian ordinal value.
 pub(crate) fn from_ordinal(ordinal: i32) -> RunResult<Date> {
     let Some(date) = NaiveDate::from_num_days_from_ce_opt(ordinal) else {
-        return Err(SimpleException::new_msg(ExcType::OverflowError, "date value out of range").into());
+        return Err(date_value_out_of_range());
     };
     if !(1..=9999).contains(&date.year()) {
-        return Err(SimpleException::new_msg(ExcType::OverflowError, "date value out of range").into());
+        return Err(date_value_out_of_range());
     }
     Ok(Date(date))
+}
+
+/// CPython's `OverflowError` for arithmetic that leaves years 1 to 9999.
+pub(crate) fn date_value_out_of_range() -> RunError {
+    ExcType::overflow_error("date value out of range")
 }
 
 /// Returns the proleptic Gregorian ordinal (`1 == 0001-01-01`) for a date.
@@ -154,6 +160,22 @@ pub(crate) fn class_today(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRes
     })
 }
 
+/// Classmethod `date.fromtimestamp(timestamp)`: the session-local date of a Unix
+/// timestamp, read in the session zone as CPython reads it in the host's.
+pub(crate) fn class_fromtimestamp(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let value = args
+        .reject_kwargs("date.fromtimestamp", vm.heap)?
+        .get_one_arg("date.fromtimestamp", vm.heap)?;
+    defer_drop!(value, vm);
+    // `date` floors to whole seconds and uses `__index__`-style wording, where
+    // `datetime` rounds to microseconds and names both numeric types.
+    let utc = datetime::timestamp_to_utc(value, datetime::TimestampRounding::Floor, vm)?
+        .ok_or_else(|| ExcType::type_error_not_integer(&value.py_type_name(vm)))?;
+    let offset = vm.env.os_policy.timezone.at(utc).offset_seconds;
+    let local = datetime::wall_clock_at(utc, offset)?;
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Date(Date(local.date())))))
+}
+
 /// Classmethod `date.fromisoformat(date_string)`.
 ///
 /// Parses ISO 8601 date strings in the formats `YYYY-MM-DD` and `YYYYMMDD`,
@@ -189,14 +211,10 @@ pub(crate) fn allocate_ymd(year: i32, month: i32, day: i32, heap: &Heap) -> Valu
 
 /// Extracts a string from a `Value` for use by classmethods.
 pub(crate) fn extract_str_arg(value: &Value, method_name: &str, heap: &Heap, interns: &Interns) -> RunResult<String> {
-    match value {
-        Value::InternString(string_id) => Ok(interns.get_str(*string_id).to_owned()),
-        Value::Ref(heap_id) => match heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(s.as_str().to_owned()),
-            _ => Err(ExcType::type_error(format!("{method_name}: argument must be str"))),
-        },
-        _ => Err(ExcType::type_error(format!("{method_name}: argument must be str"))),
-    }
+    value
+        .as_str_heap(heap, interns)
+        .map(str::to_owned)
+        .ok_or_else(|| ExcType::type_error(format!("{method_name}: argument must be str")))
 }
 
 impl HeapItem for Date {
@@ -250,14 +268,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
         let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        Ok(py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
+        py_add(*self.get(vm.heap), *other.get(vm.heap), vm.heap).map(Some)
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Date(other)) => Ok(py_sub_date(*self.get(vm.heap), *other.get(vm.heap), vm.heap)),
             Some(HeapReadOutput::TimeDelta(other)) => {
-                Ok(py_sub_timedelta(*self.get(vm.heap), *other.get(vm.heap), vm.heap))
+                py_sub_timedelta(*self.get(vm.heap), *other.get(vm.heap), vm.heap).map(Some)
             }
             _ => Ok(None),
         }
@@ -308,6 +326,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
+            // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
             _ => Err(ExcType::attribute_error_method(Type::Date, attr, args, vm)),
         }
     }
@@ -331,21 +351,23 @@ pub(crate) fn py_sub_date(a: Date, b: Date, heap: &mut Heap) -> Option<Value> {
 }
 
 /// `date + timedelta` helper.
-pub(crate) fn py_add(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_add(date: Date, delta: TimeDelta, heap: &mut Heap) -> RunResult<Value> {
     let (days, _, _) = timedelta::components(&delta);
-    let new_ordinal = i64::from(to_ordinal(date)).checked_add(i64::from(days))?;
-    let new_ordinal = i32::try_from(new_ordinal).ok()?;
-    let value = from_ordinal(new_ordinal).ok()?;
-    Some(Value::Ref(heap.allocate(HeapData::Date(value))))
+    let value = offset_days(date, days)?;
+    Ok(Value::Ref(heap.allocate(HeapData::Date(value))))
 }
 
 /// `date - timedelta` helper.
-pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) -> Option<Value> {
+pub(crate) fn py_sub_timedelta(date: Date, delta: TimeDelta, heap: &mut Heap) -> RunResult<Value> {
     let (days, _, _) = timedelta::components(&delta);
-    let new_ordinal = i64::from(to_ordinal(date)).checked_sub(i64::from(days))?;
-    let new_ordinal = i32::try_from(new_ordinal).ok()?;
-    let value = from_ordinal(new_ordinal).ok()?;
-    Some(Value::Ref(heap.allocate(HeapData::Date(value))))
+    let value = offset_days(date, -days)?;
+    Ok(Value::Ref(heap.allocate(HeapData::Date(value))))
+}
+
+/// The date `days` after `date`, or CPython's `OverflowError` outside years 1 to 9999.
+fn offset_days(date: Date, days: i32) -> RunResult<Date> {
+    // A timedelta has at most 999999999 days, so this cannot overflow `i32`
+    from_ordinal(to_ordinal(date) + days)
 }
 
 /// Formats a [`Date`] with a `strftime` directive string, shared by the

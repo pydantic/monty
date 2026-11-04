@@ -253,6 +253,8 @@ impl Serialize for JsonEncoded<'_> {
             // like logfire: `str(exc)`, which in Python is the message alone
             MontyNode::Exception { arg, .. } => s.serialize_str(arg.as_deref().unwrap_or_default()),
             MontyNode::Path(p) => s.serialize_str(p),
+            // like logfire: `str(d)`, which keeps every digit a JSON number would round
+            MontyNode::Decimal(d) => s.serialize_str(d),
             MontyNode::Cycle(_) => s.serialize_str("<circular reference>"),
             MontyNode::Repr(r) => s.serialize_str(r),
             MontyNode::Ellipsis => s.serialize_str("Ellipsis"),

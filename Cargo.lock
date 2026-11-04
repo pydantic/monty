@@ -834,6 +834,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpu-time"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e393a7668fe1fad3075085b86c781883000b4ede868f43627b34a87c8b7ded"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2503,10 +2513,11 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "ahash",
  "chrono",
+ "cpu-time",
  "fancy-regex 0.17.0",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",
@@ -2546,14 +2557,14 @@ dependencies = [
 
 [[package]]
 name = "monty-alloc"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "monty-types",
 ]
 
 [[package]]
 name = "monty-apidoc"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "insta",
  "rustdoc-types",
@@ -2562,7 +2573,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2582,7 +2593,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "ahash",
  "datatest-stable",
@@ -2600,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "monty-doctest"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2610,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fixture"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "insta",
  "serde",
@@ -2619,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "ahash",
  "cap-std",
@@ -2631,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2641,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "monty-pool",
  "monty-types",
@@ -2658,7 +2669,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2668,14 +2679,16 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
+ "cpu-time",
  "futures-util",
  "insta",
  "logfire",
  "monty-fs",
  "monty-proto",
  "monty-types",
+ "nix 0.31.3",
  "num-traits",
  "opentelemetry",
  "opentelemetry-proto",
@@ -2694,7 +2707,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "allocation-counter",
  "heck",
@@ -2714,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2733,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2755,12 +2768,14 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "chrono",
+ "cpu-time",
  "jiff",
  "minicbor-serde",
  "monty-macros",
+ "nix 0.31.3",
  "num-bigint",
  "num-traits",
  "ruff_python_stdlib",
@@ -2774,7 +2789,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2784,7 +2799,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "monty-alloc",
  "monty-proto",
@@ -3165,7 +3180,18 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.11.3",
+]
+
+[[package]]
+name = "phf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
+dependencies = [
+ "phf_macros",
+ "phf_shared 0.12.1",
+ "serde",
 ]
 
 [[package]]
@@ -3174,8 +3200,8 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aef8048c789fa5e851558d709946d6d79a8ff88c0440c587967f8e94bfb1216a"
 dependencies = [
- "phf_generator",
- "phf_shared",
+ "phf_generator 0.11.3",
+ "phf_shared 0.11.3",
 ]
 
 [[package]]
@@ -3184,8 +3210,31 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
- "phf_shared",
+ "phf_shared 0.11.3",
  "rand 0.8.8",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cbb1126afed61dd6368748dae63b1ee7dc480191c6262a3b4ff1e29d86a6c5b"
+dependencies = [
+ "fastrand",
+ "phf_shared 0.12.1",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d713258393a82f091ead52047ca779d37e5766226d009de21696c4e667044368"
+dependencies = [
+ "phf_generator 0.12.1",
+ "phf_shared 0.12.1",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3193,6 +3242,15 @@ name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
 dependencies = [
  "siphasher",
 ]
@@ -3454,7 +3512,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty-client"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "ahash",
  "chrono",
@@ -4684,6 +4742,7 @@ version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
 dependencies = [
+ "phf 0.12.1",
  "strum_macros 0.27.2",
 ]
 
@@ -5387,7 +5446,7 @@ version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1673eca9782c84de5f81b82e4109dcfb3611c8ba0d52930ec4a9478f547b2dd"
 dependencies = [
- "phf",
+ "phf 0.11.3",
  "unicode_names2_generator",
 ]
 

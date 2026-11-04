@@ -1,6 +1,8 @@
 import asyncio
 import bisect
 import datetime
+import decimal
+import fnmatch
 import functools
 import hashlib
 import itertools
@@ -12,8 +14,11 @@ import sys
 import tomllib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from io import BufferedReader, BufferedWriter, TextIOWrapper
 from pathlib import Path
-from typing import Any, LiteralString, assert_type
+from typing import Any, LiteralString, TextIO, assert_type, get_type_hints
+
+import annotationlib
 
 # === Type checking helper functions ===
 
@@ -636,6 +641,30 @@ try:
 except tomllib.TOMLDecodeError as toml_exc:
     check_str(str(toml_exc))
 
+# === decimal ===
+price = decimal.Decimal('19.99')
+assert_type(price * 3, decimal.Decimal)
+assert_type(price + 1, decimal.Decimal)
+assert_type(1 - price, decimal.Decimal)
+assert_type(price.quantize(decimal.Decimal('0.1'), rounding=decimal.ROUND_HALF_UP), decimal.Decimal)
+assert_type(round(price), int)
+assert_type(round(price, 1), decimal.Decimal)
+assert_type(int(price), int)
+check_float(float(price))
+assert_type(price < 20, bool)
+assert_type(price.as_tuple(), decimal.DecimalTuple)
+assert_type(price.sqrt(), decimal.Decimal)
+assert_type(decimal.getcontext().prec, int)
+assert_type(decimal.getcontext().flags[decimal.Inexact], bool)
+with decimal.localcontext(prec=50) as decimal_ctx:
+    assert_type(decimal_ctx, decimal.Context)
+# `traps` and `flags` take a list of signals as well as a signal dict
+assert_type(decimal.Context(traps=[decimal.InvalidOperation], flags=[]), decimal.Context)
+try:
+    decimal.Decimal('abc')
+except decimal.InvalidOperation as decimal_exc:
+    check_str(str(decimal_exc))
+
 # === iter() / next() ===
 # Element types must survive the `Iterator` protocol: `Iterator.__next__` is
 # decorated `@abstractmethod`, so a stub tree missing `abc` degrades every one
@@ -746,3 +775,59 @@ assert_type(bisect.bisect_left([(1, 'a')], 1, key=lambda row: row[0]), int)
 assert_type(bisect.insort_left([1, 2], 2), None)
 assert_type(bisect.insort_right([(1, 'a')], (2, 'b'), key=lambda row: row[0]), None)
 assert_type(bisect.insort([1, 2], 3), None)
+
+# === fnmatch ===
+
+assert_type(fnmatch.fnmatch('a.py', '*.py'), bool)
+assert_type(fnmatch.fnmatchcase(b'a.py', b'*.py'), bool)
+assert_type(fnmatch.filter(['a.py', 'b.txt'], '*.py'), list[str])
+assert_type(fnmatch.filter((b'a', b'b'), b'?'), list[bytes])
+assert_type(fnmatch.translate('*.py'), str)
+
+# === open ===
+# Upstream typeshed's signatures accept any argument value the runtime might accept.
+
+
+def write_line(stream: TextIO, line: str) -> None:
+    stream.write(line)
+
+
+def open_with(file: str, mode: str, encoding: str, buffering: int) -> None:
+    open(file, mode, buffering, encoding).write('hello')
+    Path(file).open(mode, buffering, encoding).write('hello')
+
+
+try:
+    with open('/work/example.txt', 'w') as text_output:
+        assert_type(text_output, TextIOWrapper)
+        text_output.write('hello')
+        write_line(text_output, 'world')
+    with open('/work/example.bin', 'rb') as binary_input:
+        assert_type(binary_input, BufferedReader)
+        assert_type(binary_input.read(), bytes)
+    with open('/work/example.bin', 'wb') as binary_output:
+        assert_type(binary_output, BufferedWriter)
+        binary_output.write(b'hello')
+    with open('/work/example.txt', encoding='UTF-8') as encoded_input:
+        assert_type(encoded_input.readlines(), list[str])
+    with Path('/work/example.txt').open('w') as path_output:
+        assert_type(path_output, TextIOWrapper)
+        path_output.write('hello')
+except FileNotFoundError:
+    pass
+except (FileExistsError, IsADirectoryError, NotADirectoryError, PermissionError):
+    pass
+
+
+# === annotationlib ===
+def annotated(x: int) -> str:
+    return str(x)
+
+
+forward = annotationlib.ForwardRef('Later', owner=annotated)
+assert_type(forward.__forward_arg__, str)
+assert_type(forward.__owner__, object)
+forward.evaluate(format=annotationlib.Format.STRING)
+annotationlib.get_annotations(annotated, format=annotationlib.Format.STRING)
+assert_type(annotationlib.get_annotations(annotated), dict[str, Any])
+assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), dict[str, Any])

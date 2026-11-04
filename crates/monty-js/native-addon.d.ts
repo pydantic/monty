@@ -6,6 +6,8 @@ export declare function _installTelemetry(
   metricsEnabled: boolean,
 ): void
 
+export declare function _defaultMaxCheckoutsPerWorker(): number
+
 export declare function _montyVersion(): string
 
 export declare function _setTelemetryMetricsEnabled(enabled: boolean): void
@@ -48,6 +50,8 @@ export declare class NativeSession {
   resumeNotFound(...args: unknown[]): Promise<object>
   resumeNotHandled(...args: unknown[]): Promise<object>
   resumeFromMounts(...args: unknown[]): Promise<object>
+  readFromMounts(...args: unknown[]): Promise<object>
+  resumeModuleFile(...args: unknown[]): Promise<object>
   resumeFuture(...args: unknown[]): Promise<object>
   resumeNameLookup(...args: unknown[]): Promise<object>
   resumeLazyAttr(...args: unknown[]): Promise<object>

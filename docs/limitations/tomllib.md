@@ -11,7 +11,7 @@ their `(at line N, column M)` / `(at end of document)` suffix, match CPython 3.1
     as in CPython.
 - `parse_float` is not accepted: passing it raises `TypeError: loads() got an unexpected keyword argument 'parse_float'`.
     Floats are always `float`, so a document whose values need `decimal.Decimal` precision cannot be
-    parsed losslessly (`decimal` is not available either).
+    parsed losslessly.
 - Passing `s` by keyword raises `loads() got an unexpected keyword argument 's'` where CPython reports
     `got some positional-only arguments passed as keyword arguments: 's'`.
 - Inline arrays and inline tables may nest 100 levels deep; deeper input raises

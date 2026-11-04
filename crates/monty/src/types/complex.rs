@@ -380,6 +380,8 @@ fn init_single(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     defer_drop!(value, vm);
     let parsed = match value.as_either_str(vm.heap) {
         Some(text) => Some(parse(text.as_str(vm.interns))?),
+        // `Decimal.__complex__`; Decimals take no part in complex arithmetic.
+        None if let PyValue::Decimal(d) = value.py_value(vm) => Some(Complex::new(d.get(vm.heap).to_f64()?, 0.0)),
         None => operand(value, vm)?.map(widen),
     };
     match parsed {
@@ -423,11 +425,16 @@ impl FromValue for Part {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("a real number");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
-        let result = match operand(&value, vm) {
-            Ok(Some(Operand::Real(r))) => Ok(Self::Real(r)),
-            Ok(Some(Operand::Complex(c))) => Ok(Self::Complex(c)),
-            Ok(None) => Err(FromValueFail::WrongType),
-            Err(err) => Err(FromValueFail::Raise(err)),
+        let result = if let PyValue::Decimal(d) = value.py_value(vm) {
+            // `Decimal.__float__`, as for `complex(Decimal)`.
+            d.get(vm.heap).to_f64().map(Self::Real).map_err(FromValueFail::Raise)
+        } else {
+            match operand(&value, vm) {
+                Ok(Some(Operand::Real(r))) => Ok(Self::Real(r)),
+                Ok(Some(Operand::Complex(c))) => Ok(Self::Complex(c)),
+                Ok(None) => Err(FromValueFail::WrongType),
+                Err(err) => Err(FromValueFail::Raise(err)),
+            }
         };
         value.drop_with(vm);
         result

@@ -110,6 +110,9 @@ extra-standard-library = ["tomllib"]
     "F506", # mixed positional and named placeholders - tests CPython's argument consumption order
     "F507", # placeholder/argument count mismatch - the point of the argument-count tests
 ]
+"crates/monty/test_cases/import__future_{late,nested}.py" = [
+    "F404", # late `__future__` import - the SyntaxError these cases expect
+]
 "crates/monty/test_cases/*.py" = [
     "E722", # bare except - needed for testing try/except with bare except clauses
     "E711", # Comparison to `None` should be `cond is None`
@@ -136,7 +139,7 @@ extra-standard-library = ["tomllib"]
     "I001", # Import block unsorted - needed for testing `import a, b` syntax
 ]
 
-"crates/monty/test_cases/class__annotations.py" = [
+"crates/monty/test_cases/class__annotations_future.py" = [
     # Scoped to this file so the single-quote convention stays enforced across
     # the other test cases: these tests exist to prove that double-quoted
     # annotations normalize to single quotes exactly as CPython's does.
@@ -158,6 +161,9 @@ extra-standard-library = ["tomllib"]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
+"crates/monty-type-checking/tests/bad_types.py" = [
+    "E402", # an import next to its cases keeps the earlier line numbers in the snapshot unchanged
+]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -177,7 +183,20 @@ exclude = [
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
-    "crates/monty/test_cases/class__annotations.py",
+    "crates/monty/test_cases/class__annotations_future.py",
+    # `__annotate__` and the argument errors of typing forms (`Annotated[int]`,
+    # `ClassVar[int, str]`, `Any[int]`) are the behaviour under test
+    "crates/monty/test_cases/function__annotations.py",
+    "crates/monty/test_cases/typing__special_forms.py",
+    # annotations that are not type expressions (`x: 1`, a string naming a
+    # variable, bare generics) are evaluated by `get_type_hints` under test
+    "crates/monty/test_cases/typing__get_type_hints.py",
+    "crates/monty/test_cases/typing__get_type_hints_classes.py",
+    "crates/monty/test_cases/typing__get_type_hints_dataclasses.py",
+    "crates/monty/test_cases/typing__get_type_hints_functions.py",
+    "crates/monty/test_cases/typing__get_type_hints_formats.py",
+    "crates/monty/test_cases/typing__get_type_hints_future.py",
+    "crates/monty/test_cases/annotationlib__forward_ref.py",
     # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
     # behavior under test; basedpyright rejects it unconditionally
     "crates/monty/test_cases/async__control_flow.py",

@@ -192,6 +192,7 @@ impl Error for ModuleStubError {}
 /// Imports of these modules never reach the host, so host modules cannot use these names.
 /// Keep in sync with the runtime's `StandardLib`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
+    "annotationlib",
     "asyncio",
     "base64",
     "binascii",
@@ -201,6 +202,8 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "csv",
     "dataclasses",
     "datetime",
+    "decimal",
+    "fnmatch",
     "functools",
     "gc",
     "hashlib",
@@ -226,11 +229,13 @@ pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__future__",
     "__main__",
     "_collections_abc",
+    "_io",
     "_typeshed",
     "abc",
     "builtins",
     "enum",
     "genericpath",
+    "io",
     "ty_extensions",
     "types",
     "typing_extensions",

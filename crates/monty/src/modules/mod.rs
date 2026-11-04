@@ -14,6 +14,7 @@ use crate::{
     intern::StaticStrings,
 };
 
+pub(crate) mod annotationlib;
 pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
@@ -23,6 +24,8 @@ pub(crate) mod copy;
 pub(crate) mod csv;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
+pub(crate) mod decimal;
+pub(crate) mod fnmatch;
 pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
@@ -98,6 +101,12 @@ pub(crate) enum StandardLib {
     Csv,
     /// The `tomllib` module: `loads()`, `load()` and `TOMLDecodeError`.
     Tomllib,
+    /// The `decimal` module: `Decimal`, `Context` and the signals.
+    Decimal,
+    /// The `fnmatch` module: shell-style pattern matching.
+    Fnmatch,
+    /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
+    Annotationlib,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -133,6 +142,9 @@ impl StandardLib {
             StaticStrings::Bisect => Some(Self::Bisect),
             StaticStrings::Csv => Some(Self::Csv),
             StaticStrings::Tomllib => Some(Self::Tomllib),
+            StaticStrings::DecimalMod => Some(Self::Decimal),
+            StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Annotationlib => Some(Self::Annotationlib),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -174,6 +186,9 @@ impl StandardLib {
             Self::Bisect => bisect::create_module(vm),
             Self::Csv => csv::create_module(vm),
             Self::Tomllib => tomllib::create_module(vm),
+            Self::Decimal => decimal::create_module(vm),
+            Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Annotationlib => annotationlib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -208,6 +223,10 @@ pub(crate) enum ModuleFunctions {
     Bisect(bisect::BisectFunctions),
     Csv(csv::CsvFunctions),
     Tomllib(tomllib::TomllibFunctions),
+    Decimal(decimal::DecimalFunctions),
+    Fnmatch(fnmatch::FnmatchFunctions),
+    Typing(typing::TypingFunctions),
+    Annotationlib(annotationlib::AnnotationlibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -245,6 +264,10 @@ impl fmt::Display for ModuleFunctions {
             Self::Bisect(func) => write!(f, "{func}"),
             Self::Csv(func) => write!(f, "{func}"),
             Self::Tomllib(func) => write!(f, "{func}"),
+            Self::Decimal(func) => write!(f, "{func}"),
+            Self::Fnmatch(func) => write!(f, "{func}"),
+            Self::Typing(func) => write!(f, "{func}"),
+            Self::Annotationlib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -281,6 +304,10 @@ impl ModuleFunctions {
             Self::Bisect(functions) => bisect::call(vm, functions, args).map(CallResult::Value),
             Self::Csv(functions) => csv::call(vm, functions, args),
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
+            Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
+            Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
+            Self::Typing(functions) => typing::call(vm, functions, args),
+            Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

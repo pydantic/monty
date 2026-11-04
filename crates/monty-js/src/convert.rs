@@ -28,6 +28,7 @@
 //! - `Module` ↔ `{ __monty_type__: 'Module', name, id, attrs }`
 //! - `FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
 //! - `Complex` ↔ `{ __monty_type__: 'Complex', real, imag }`
+//! - `Decimal` ↔ `{ __monty_type__: 'Decimal', value }`, `value` being `str(d)`
 //! - `Repr` → plain `string`
 //! - `Cycle` → placeholder `string`
 #![expect(unsafe_code, reason = "napi API is unsafe")]
@@ -106,6 +107,7 @@ fn decode_node<'e>(node: &MontyNode, graph: &MontyGraph, built: &[Unknown<'e>], 
         MontyNode::BigInt(bi) => create_js_bigint(bi, env),
         MontyNode::Float(f) => env.create_double(*f)?.into_unknown(env),
         MontyNode::Complex(c) => create_js_complex(c, env),
+        MontyNode::Decimal(d) => create_js_decimal(d, env),
         MontyNode::String(s) => env.create_string(s)?.into_unknown(env),
         MontyNode::Bytes(bytes) => create_js_buffer(bytes, env),
         MontyNode::List(items) => create_js_array(&children(items), env)?.into_unknown(env),
@@ -340,6 +342,14 @@ fn create_js_complex<'e>(c: &MontyComplex, env: &'e Env) -> Result<Unknown<'e>> 
     obj.set_named_property("__monty_type__", "Complex")?;
     obj.set_named_property("real", c.real)?;
     obj.set_named_property("imag", c.imag)?;
+    obj.into_unknown(env)
+}
+
+/// Creates a JS object representing a Python `decimal.Decimal` by its exact string form.
+fn create_js_decimal<'e>(value: &str, env: &'e Env) -> Result<Unknown<'e>> {
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("__monty_type__", "Decimal")?;
+    obj.set_named_property("value", value)?;
     obj.into_unknown(env)
 }
 
@@ -753,6 +763,7 @@ impl<'e> GraphEncoder<'e> {
                 real: obj.get_named_property::<f64>("real")?,
                 imag: obj.get_named_property::<f64>("imag")?,
             }),
+            "Decimal" => MontyNode::Decimal(obj.get_named_property::<String>("value")?),
             "TimeDelta" => MontyNode::TimeDelta(MontyTimeDelta {
                 days: obj.get_named_property::<i32>("days")?,
                 seconds: obj.get_named_property::<i32>("seconds")?,

@@ -104,7 +104,8 @@ without one is unlimited.
     with type checking. Use `max_processes` and an OS-level limit to bound a host.
 - **Per session, but against a fixed baseline.** A worker serves many checkouts
     and re-derives the cap for each session, always from the leanest the process
-    has been, plus the type checker once a session has needed it.
+    has been, plus process-wide typeshed and lint-registry initialization.
+    The session's type-checker database and caches are released on reset.
     Other memory retained between sessions therefore consumes the headroom
     rather than raising the cap, and a worker whose residue outgrows it is killed
     and replaced rather than allowed to grow indefinitely.
@@ -187,6 +188,8 @@ indistinguishable from a stack overflow.
     external function calls, host-object method calls, attribute lookups and
     construction, OS calls, name lookups, and each `ResolveFutures` round trip
     (a partial future resolution that re-suspends counts again).
+    Each import of a module the [file-module cache](modules.md#modules-from-files) lacks costs one `import` call,
+    whether or not the host finds its file and however many files it reads; a cached module costs nothing.
 - It defaults to 1000 and cannot be disabled (like `max_recursion_depth`):
     omitting it, or passing `None`, keeps the default; set a larger number
     for sessions that legitimately make more host calls.
@@ -272,8 +275,10 @@ indistinguishable from a stack overflow.
     Ascii85 digit and so reaches `ignorechars`. Each of those bytes is one
     `in` test against the container, so a large explicit `ignorechars`
     overshoots its duration budget in proportion to its length.
-- Both budgets cover **execution time**, not wall-clock time: the clock runs
-    only while the interpreter executes bytecode, and is paused while execution
+- Budgets use wall time by default. CPU mode, Linux only, uses thread CPU time, with elapsed-time fallback for unusable counters.
+    See [resource limits](../resource-limits.md#time) for sampling details.
+- Both budgets cover **execution time**: the clock runs
+    only while the interpreter executes bytecode or its native builtins. The clock pauses while execution
     is suspended waiting on the host (external function calls, OS callbacks)
     and between REPL feeds.
 - There is no in-sandbox way to observe either budget or the time left in it.

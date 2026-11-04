@@ -42,10 +42,13 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, MountSpec, OnPrint, Persistence, Pool, PoolConfig,
-    PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
+    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
-use monty_proto::python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value};
+use monty_proto::{
+    DEFAULT_MAX_DECODE_BYTES,
+    python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value},
+};
 use monty_types::{
     AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
     OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
@@ -67,17 +70,18 @@ use tokio::{
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_module_call,
+        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
         dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
     },
     build::{extract_connect_headers, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{
-        CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_module_call, resolve_object_attr,
+        CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_intercepted_os_call, resolve_object_attr,
         wire_call_arguments,
     },
     get_not_handled,
+    import_files::{find_import_file_async, find_import_file_sync, module_import_search},
     limits::extract_limits,
     mount::PyMountDir,
     os_policy::OsPolicyArg,
@@ -131,10 +135,11 @@ impl PyMonty {
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
-        max_checkouts_per_worker = None,
+        execution_clock = "wall",
+        max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ))]
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -143,6 +148,7 @@ impl PyMonty {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
+        execution_clock: &str,
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
@@ -155,6 +161,7 @@ impl PyMonty {
                 max_processes,
                 checkout_timeout,
                 request_timeout,
+                execution_clock,
                 max_checkouts_per_worker,
                 GraceArgs {
                     feed: feed_duration_limit_grace,
@@ -530,10 +537,11 @@ impl PyAsyncMonty {
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
-        max_checkouts_per_worker = None,
+        execution_clock = "wall",
+        max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ))]
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -542,6 +550,7 @@ impl PyAsyncMonty {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
+        execution_clock: &str,
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
@@ -554,6 +563,7 @@ impl PyAsyncMonty {
                 max_processes,
                 checkout_timeout,
                 request_timeout,
+                execution_clock,
                 max_checkouts_per_worker,
                 GraceArgs {
                     feed: feed_duration_limit_grace,
@@ -690,6 +700,7 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
         auto_resume = true,
+        max_decode_bytes = None,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -702,20 +713,30 @@ impl PyAsyncMontyWebsocket {
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
         auto_resume: bool,
+        max_decode_bytes: Option<usize>,
     ) -> PyResult<Self> {
         check_callable(py, connect_headers.as_ref())?;
+        let mut config = parse_websocket_config(
+            url,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+            auto_resume,
+        )?;
+        if let Some(bytes) = max_decode_bytes {
+            if bytes > DEFAULT_MAX_DECODE_BYTES {
+                return Err(PyValueError::new_err(format!(
+                    "max_decode_bytes must be at most {DEFAULT_MAX_DECODE_BYTES} bytes (1 GiB)"
+                )));
+            }
+            config.max_decode_bytes = bytes;
+        }
         Ok(Self {
-            config: parse_websocket_config(
-                url,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-                auto_resume,
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
             connect_headers,
         })
@@ -1134,6 +1155,7 @@ fn parse_pool_config(
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
+    execution_clock: &str,
     max_checkouts_per_worker: Option<u32>,
     graces: GraceArgs,
 ) -> PyResult<PoolConfig> {
@@ -1142,6 +1164,11 @@ fn parse_pool_config(
         None => binary_finder(py)?.call0(py)?.extract(py)?,
     };
     let mut config = PoolConfig::subprocess(binary_path);
+    config.execution_clock = match execution_clock {
+        "wall" => monty_types::ExecutionClock::Wall,
+        "cpu" => monty_types::ExecutionClock::Cpu,
+        _ => return Err(PyValueError::new_err("execution_clock must be 'wall' or 'cpu'")),
+    };
     config.min_processes = min_processes;
     if let Some(max) = max_processes {
         config.max_processes = max;
@@ -1290,6 +1317,13 @@ fn parse_websocket_config(
 const _: () = assert!(
     DEFAULT_DURATION_LIMIT_GRACE.as_secs() == 1 && DEFAULT_DURATION_LIMIT_GRACE.subsec_nanos() == 0,
     "the pool's default duration grace changed: update the `1.0` literals in the constructor signatures"
+);
+
+// pyo3 renders the `Some(..)` default of `max_checkouts_per_worker` as `...`,
+// so the constructors spell their signatures out; this pins its `1000`.
+const _: () = assert!(
+    DEFAULT_MAX_CHECKOUTS_PER_WORKER == 1000,
+    "the pool's default recycle count changed: update `max_checkouts_per_worker=1000` in the text signatures"
 );
 
 /// Both duration-backstop graces as a pool constructor takes them, in
@@ -1530,17 +1564,27 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             })
         })?;
         let callback_guard = callback_context.enter(py, &native)?;
-        // the host's modules answer their own OS calls, ahead of mounts and `os=`
-        let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
+        // intercepted OS calls are answered here, ahead of mounts and `os=`
+        let intercepted =
+            matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
+        let search = module_import_search(&event);
         let resume_with = match event {
-            TurnEvent::Complete(value) => return monty_to_py(py, &value, &instances),
-            TurnEvent::OsCall { .. } if module_call => match sync_turn_answer(py, event, &lookup, &instances) {
-                Ok(answer) => answer,
-                Err(err) => {
-                    discard_checkout_sync(py, &checkout);
-                    return Err(err);
+            TurnEvent::Complete(value) => return decode_result(py, &value, &instances),
+            TurnEvent::OsCall { .. } if intercepted => {
+                match sync_turn_answer(py, event, &lookup, &instances).and_then(|answer| match (answer, &search) {
+                    // no host module: the file search, `os=` then mounts
+                    (TurnAnswer::Call(ResumeValue::NotFound), Some(search)) => {
+                        find_import_file_sync(py, search, os.as_ref(), &instances, &checkout).map(TurnAnswer::Call)
+                    }
+                    (answer, _) => Ok(answer),
+                }) {
+                    Ok(answer) => answer,
+                    Err(err) => {
+                        discard_checkout_sync(py, &checkout);
+                        return Err(err);
+                    }
                 }
-            },
+            }
             // Immediate sleeps release the GIL; deferred async sleeps use tokio timers
             // so gathered sleeps overlap. Neither invokes the `os=` callback.
             TurnEvent::OsCall {
@@ -1681,8 +1725,8 @@ fn sync_turn_answer(
             function_name, args, ..
         } => {
             let result = lookup
-                .module_call(&function_name, &args)
-                .expect("only a module OS call reaches here");
+                .intercepted_os_call(&function_name, &args)
+                .expect("only an intercepted OS call reaches here");
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
@@ -1791,14 +1835,28 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             .as_ref()
             .map(monty_pool::Checkout::callback_context)
             .unwrap_or_default();
-        // the host's modules answer their own OS calls, ahead of mounts and `os=`
-        let module_call = matches!(&event, TurnEvent::OsCall { function_name, .. } if is_module_call(function_name));
+        // intercepted OS calls are answered here, ahead of mounts and `os=`
+        let intercepted =
+            matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
+        let search = module_import_search(&event);
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
-                return Python::attach(|py| monty_to_py(py, &value, &instances));
+                return Python::attach(|py| decode_result(py, &value, &instances));
             }
-            TurnEvent::OsCall { .. } if module_call => {
-                match async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await {
+            TurnEvent::OsCall { .. } if intercepted => {
+                let answer =
+                    async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await;
+                let answer = match (answer, &search) {
+                    // no host module: the file search, `os=` then mounts
+                    (Ok(TurnAnswer::Call(ResumeValue::NotFound)), Some(search)) => {
+                        let os = os.as_ref();
+                        find_import_file_async(search, os, &instances, &checkout, &callback_context, &native)
+                            .await
+                            .map(TurnAnswer::Call)
+                    }
+                    (answer, _) => answer,
+                };
+                match answer {
                     Ok(answer) => answer,
                     Err(err) => {
                         discard_checkout(&checkout).await;
@@ -1932,7 +1990,7 @@ async fn async_turn_answer(
             )
             .await
         }
-        // a module OS call, the only kind the drive loop sends here
+        // an intercepted OS call, the only kind the drive loop sends here
         TurnEvent::OsCall {
             function_name,
             args,
@@ -1940,7 +1998,7 @@ async fn async_turn_answer(
             allow_eager_await,
             ..
         } => {
-            let dispatch = || dispatch_module_call(&function_name, &args, names, instances);
+            let dispatch = || dispatch_intercepted_os_call(&function_name, &args, names, instances);
             answer_call(
                 dispatch,
                 call_id,
@@ -2179,6 +2237,7 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
         ExtFunctionResult::Return(value) => Ok(ResumeValue::Return(value)),
         ExtFunctionResult::Error(exc) => Ok(ResumeValue::Error(exc)),
         ExtFunctionResult::NotFound(_) => Ok(ResumeValue::NotFound),
+        ExtFunctionResult::ModuleFile(file) => Ok(ResumeValue::ModuleFile(file)),
         // futures are handled explicitly by the async loop before this point
         ExtFunctionResult::Future(_) => Err(PyRuntimeError::new_err("unexpected future result")),
     }
@@ -2254,6 +2313,21 @@ fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSp
     ))
 }
 
+/// Converts a feed's final value to Python, raising a decode failure as
+/// `MontyRuntimeError` so the host's own traceback (and its file paths) never
+/// reaches the caller. Such a value is one CPython cannot build, e.g. a
+/// namedtuple field starting with `_`, or a dict keyed by a class-instance proxy.
+pub(crate) fn decode_result(py: Python<'_>, value: &MontyObject, instances: &InstanceStore) -> PyResult<Py<PyAny>> {
+    monty_to_py(py, value, instances).map_err(|err| {
+        let exc = exc_py_to_monty(py, &err);
+        let message = format!(
+            "cannot convert the result to a Python value: {}",
+            exc.message().unwrap_or_default()
+        );
+        MontyError::new_err(py, MontyException::new(exc.exc_type(), Some(message)))
+    })
+}
+
 /// Maps a pool failure onto the Python exception hierarchy.
 pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
     let message = err.to_string();
@@ -2263,8 +2337,10 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
         PoolError::Crashed { status, .. } => {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
-        PoolError::Timeout { .. } => MontyCrashedError::new_err(py, message, true, None),
-        PoolError::Disconnected { .. } => MontyDisconnectError::new_err(py, message),
+        PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => MontyCrashedError::new_err(py, message, true, None),
+        PoolError::Disconnected { websocket, .. } => {
+            MontyDisconnectError::new_err(py, message, websocket.map(|details| *details))
+        }
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),

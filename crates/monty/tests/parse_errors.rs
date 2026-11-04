@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, MontyException};
+use monty_types::{CompileOptions, ExcType, MontyException, MontyObject};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
@@ -23,6 +23,32 @@ fn repeated_class_keyword_returns_syntax_error() {
     let err = get_parse_err("class C(metaclass=type, metaclass=type):\n    pass");
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_snapshot!(err.message().unwrap(), @"keyword argument repeated: metaclass");
+}
+
+#[test]
+fn missing_nonlocal_binding_in_nested_function_returns_syntax_error() {
+    let err =
+        get_parse_err("def outer():\n    def inner():\n        nonlocal absent\n        absent += 1\n    inner()");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"no binding for nonlocal 'absent' found");
+}
+
+#[test]
+fn default_assignment_before_global_declaration_returns_syntax_error() {
+    let err = get_parse_err(
+        "def outer():\n    def inner(value=(bound := 0)):\n        return value\n    global bound\nouter()",
+    );
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"name 'bound' is assigned to before global declaration");
+}
+
+#[test]
+fn default_assignment_before_nonlocal_declaration_returns_syntax_error() {
+    let err = get_parse_err(
+        "def outer():\n    bound = 10\n    def middle():\n        def inner(value=(bound := 0)):\n            return value\n        nonlocal bound\n    middle()\nouter()",
+    );
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"name 'bound' is assigned to before nonlocal declaration");
 }
 
 #[test]
@@ -120,14 +146,29 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
 
 #[test]
 fn explicit_class_annotations_assignment_returns_not_implemented_error() {
-    // The synthesized `__annotations__` is the last class-body statement, so an
-    // explicit assignment would be silently clobbered and its entries lost.
-    // CPython merges the two; Monty rejects rather than dropping them quietly.
-    let err = get_parse_err("class C:\n    __annotations__ = {'a': 'b'}\n    x: int");
+    // Under PEP 563 the synthesized `__annotations__` is the last class-body
+    // statement, so an explicit assignment would be silently clobbered and its
+    // entries lost. CPython merges the two; Monty rejects rather than dropping
+    // them quietly.
+    let err =
+        get_parse_err("from __future__ import annotations\nclass C:\n    __annotations__ = {'a': 'b'}\n    x: int");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
         @"The monty syntax parser does not yet support assigning `__annotations__` in a class body with annotated names"
+    );
+    // Without the import the annotations compile to `__annotate__`, so the
+    // binding is an ordinary member that wins, as in CPython.
+    let mut runner = MontyRun::new(
+        "class C:\n    __annotations__ = {'a': 'b'}\n    x: int\nC.__annotations__".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        runner.run_no_limits(vec![]).unwrap(),
+        MontyObject::dict([(MontyObject::string("a"), MontyObject::string("b"))]),
     );
 }
 

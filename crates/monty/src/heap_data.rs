@@ -10,6 +10,7 @@ use std::{
 use monty_types::ExcType;
 
 use crate::{
+    annotations,
     args::ArgValues,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     bytecode::{CallResult, VM},
@@ -166,6 +167,8 @@ macro_rules! heap_payloads {
             GenericAlias(inline $crate::types::GenericAlias),
             /// A `typing.Union` such as `int | None`.
             Union(inline $crate::types::Union),
+            /// An `annotationlib.ForwardRef`, also the stringifier a `FORWARDREF` evaluation composes.
+            ForwardRef(boxed $crate::types::ForwardRef),
             /// A `random.Random` generator instance.
             Random(boxed $crate::types::Random),
             /// A `functools.lru_cache` / `functools.cache` wrapper.
@@ -176,6 +179,14 @@ macro_rules! heap_payloads {
             DirScan(boxed $crate::types::DirScan),
             /// Any `csv` object: a reader, writer, `DictReader`, `DictWriter` or dialect.
             Csv(boxed $crate::types::CsvObject),
+            /// A `decimal.Decimal` value.
+            Decimal(inline $crate::types::decimal::Decimal),
+            /// A mutable `decimal.Context`.
+            DecimalContext(inline $crate::types::decimal::DecContext),
+            /// A context's `flags` or `traps` mapping.
+            DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
+            /// The manager `decimal.localcontext()` returns.
+            DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
         }
     };
 }
@@ -264,6 +275,7 @@ impl HeapData {
             | Self::Partial(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::ForwardRef(_)
             | Self::LruCache(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
@@ -290,7 +302,12 @@ impl HeapData {
             | Self::TimeDelta(_)
             | Self::TimeZone(_)
             | Self::Random(_)
-            | Self::HashObject(_) => false,
+            | Self::HashObject(_)
+            // A signal dict and a `localcontext()` manager only hold contexts, which are leaves.
+            | Self::Decimal(_)
+            | Self::DecimalContext(_)
+            | Self::DecimalSignalDict(_)
+            | Self::DecimalContextManager(_) => false,
         }
     }
 
@@ -337,6 +354,7 @@ impl HeapData {
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,
             Self::Union(_) => Type::Union,
+            Self::ForwardRef(_) => Type::ForwardRef,
             Self::LruCache(_) => Type::LruCacheWrapper,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
@@ -384,6 +402,10 @@ impl HeapData {
             Self::Itertools(i) => i.py_type(),
             Self::DirScan(scan) => scan.py_type(),
             Self::Csv(csv) => csv.py_type(),
+            Self::Decimal(_) => Type::Decimal,
+            Self::DecimalContext(_) => Type::DecimalContext,
+            Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
+            Self::DecimalContextManager(_) => Type::DecimalContextManager,
         }
     }
 }
@@ -537,6 +559,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
         let defaults = closure.defaults.iter().map(|v| v.clone_with_heap(vm)).collect();
         call_def(func_id, &cells, defaults, globals, args, vm)
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let closure = self.get(vm.heap);
+        let (func_id, globals) = (closure.func_id, closure.globals);
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let closure = self.get(vm.heap);
+        let (func_id, globals) = (closure.func_id, closure.globals);
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
@@ -578,6 +613,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
         let defaults = function.defaults.iter().map(|v| v.clone_with_heap(vm)).collect();
         call_def(func_id, &[], defaults, globals, args, vm)
     }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        let function = self.get(vm.heap);
+        let (func_id, globals) = (function.func_id, function.globals);
+        annotations::function_getattr(func_id, globals, attr.as_str(vm.interns), vm).transpose()
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        let function = self.get(vm.heap);
+        let (func_id, globals) = (function.func_id, function.globals);
+        annotations::function_call_attr(func_id, globals, attr.as_str(vm.interns), args, vm)
+            .unwrap_or_else(|| Err(ExcType::attribute_error("function", attr.as_str(vm.interns))))
+    }
 }
 
 /// Hashes a function identity, the hash both `def` representations report.
@@ -588,8 +636,10 @@ fn hash_func_id(func_id: FunctionId) -> HashValue {
 }
 
 impl HeapItem for SimpleException {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // Exceptions don't contain heap references
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Only the chain holds references; they are always exceptions, so an
+        // exception still cannot reach a container and stays a GC leaf.
+        stack.extend(self.owned_chain_ids());
     }
 }
 
@@ -696,6 +746,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,
             Self::Union($value) => $body,
+            Self::ForwardRef($value) => $body,
             Self::LruCache($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
@@ -729,6 +780,10 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Closure($value) => $body,
             Self::FunctionDefaults($value) => $body,
             Self::ExtFunction($value) => $body,
+            Self::Decimal($value) => $body,
+            Self::DecimalContext($value) => $body,
+            Self::DecimalSignalDict($value) => $body,
+            Self::DecimalContextManager($value) => $body,
             $($custom)*
         }
     };
@@ -901,6 +956,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Self::Module(module) = self {
+            return module.py_set_attr(name, value, vm);
+        }
         heap_read_output_py_trait_forward!(
             self,
             |item| item.py_set_attr(name, value, vm),
@@ -976,7 +1034,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Time(value) => value.py_iter(vm),
             Self::TimeDelta(value) => value.py_iter(vm),
             Self::TimeZone(value) => value.py_iter(vm),
-            Self::NamedTupleClass(_)
+            Self::DecimalSignalDict(value) => value.py_iter(vm),
+            Self::Decimal(_)
+            | Self::DecimalContext(_)
+            | Self::DecimalContextManager(_)
+            | Self::NamedTupleClass(_)
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
@@ -985,6 +1047,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::HashObject(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
+            | Self::ForwardRef(_)
             | Self::LruCache(_)
             | Self::Cell(_)
             | Self::Exception(_)

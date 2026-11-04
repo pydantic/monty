@@ -925,7 +925,9 @@ fn small_memory_limit_leaves_normal_work_alone() {
 fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    let (_, event) = child.feed("[str(i) for i in range(131_072)]");
+    // Strings exceed inline capacity so execution reaches the soft limit.
+    // Returning only the length avoids testing the separate export hard limit.
+    let (_, event) = child.feed("len([str(i) + 'abcdefghijklmnop' for i in range(131_072)])");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
@@ -1138,6 +1140,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
         ("'%*d' % (2_000_000, 1)", 2_042_087),
         ("'%.*f' % (1_000_000, 1.0)", 1_171_127),
+        // A `%` presentation copies its digits into a builder to add the suffix, refused there.
+        ("f'{0.5:.700000%}'", 1_442_609),
         ("'%.*d' % (2_000_000, 1)", 2_042_091),
         ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_547),
         ("b'%*d' % (2_000_000, 1)", 2_050_309),
@@ -1180,17 +1184,50 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_326_311,
+            1_327_351,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_326_311,
+            1_327_351,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_055_460,
+            1_103_055,
+        ),
+        // A `typing` alias copies its subscript into its `__args__`, and a class's
+        // `__annotations__` copies the namespace into the dict the annotations
+        // evaluate under; both are preflighted like any container copy.
+        ("from typing import Tuple\nTuple[(None,) * 40_000]", 1_323_877),
+        (
+            "class C:\n    x: int\nfor i in range(16_000):\n    setattr(C, str(i), i)\nC.__annotations__",
+            1_146_458,
+        ),
+        // `Literal` copies its values to deduplicate them, `Callable` its
+        // parameter list; both copies are preflighted.
+        ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_323_889),
+        ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_323_909),
+        // `__metadata__` copies an `Annotated` alias's metadata, preflighted too.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [None] * 30_000\na.__metadata__",
+            1_170_898,
+        ),
+        // Flattening a nested `Annotated` copies both aliases' arguments into
+        // one buffer, preflighted as a whole.
+        (
+            "from typing import Annotated\nmeta = (None,) * 12_000\ninner = Annotated[(int,) + meta]\nAnnotated[(inner,) + meta]",
+            1_407_153,
+        ),
+        // Comparing or hashing a `Literal` copies its values again, so an alias
+        // that fits is refused when the copy would not.
+        (
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nL == L",
+            1_106_815,
+        ),
+        (
+            "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nhash(L)",
+            1_106_816,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
@@ -1250,6 +1287,34 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
             1_079_568,
         ),
+        // A key can return an existing repr; copying repeated reprs into the error
+        // message must still respect the budget.
+        (
+            "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
+            1_254_593,
+        ),
+        // `decimal` preflights results whose size scales with an exponent or the
+        // precision: an integer conversion, `f` formatting, and division, `sqrt`,
+        // `quantize` and the largest finite value (`next_minus` from infinity) under
+        // a large `prec`.
+        ("import decimal\nint(decimal.Decimal('1e3000000'))", 3_046_935),
+        ("import decimal\nf'{decimal.Decimal(\"1e3000000\"):f}'", 3_047_203),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1) / 3",
+            3_047_228,
+        ),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(2).sqrt()",
+            6_047_262,
+        ),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1).quantize(decimal.Decimal('1e-2500000'))",
+            2_547_363,
+        ),
+        (
+            "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal('Infinity').next_minus()",
+            3_047_327,
+        ),
     ];
 
     for (code, expected) in cases {
@@ -1308,7 +1373,7 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError", "{code}");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 1_370_472, code);
+    assert_reported_usage(&message, 1_371_504, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
     child.shutdown();
 }
@@ -2554,14 +2619,51 @@ fn type_check_format_selects_the_rendering() {
     child.shutdown();
 }
 
-/// Security-critical: `Reset` must scrub every file a session wrote into the
-/// type checker — its script (wherever `script_name` placed it, including
-/// nested directories and `..`/absolute forms) and its stubs — so the next
-/// session served by the SAME process cannot resolve any of them. This runs
-/// against one child by construction, so unlike a pool test it cannot pass
-/// vacuously on a fresh worker.
 #[test]
-fn reset_scrubs_type_check_state_from_the_next_session() {
+fn reset_releases_type_checker_memory() {
+    let mut child = ChildProc::spawn();
+    let program = format!("def f(a: int, b: int) -> None:\n    pass\n{}", "f(1, 2)\n".repeat(900));
+
+    for _ in 0..3 {
+        child.create_repl_with(configure_with_max_memory(4_000_000));
+        assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
+
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+
+        child.create_repl_with(pb::Configure {
+            type_check: true,
+            ..configure()
+        });
+        assert_eq!(child.feed_complete(&program), MontyObject::none());
+
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+
+        child.create_repl_with(configure_with_max_memory(4_000_000));
+        assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
+
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+
+        // A small allocation budget must still reject Python allocations after each reset.
+        child.create_repl_with(configure_with_max_memory(1_000_000));
+        assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
+        let (_, event) = child.feed("'x' * 2_000_000");
+        assert_eq!(expect_error(event).exc_type, "MemoryError");
+
+        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+    }
+
+    child.shutdown();
+}
+
+/// Security-critical: after `Reset`, the next session must not resolve the previous
+/// session's script or stubs, including nested and normalized script paths.
+/// Both sessions use the same child so a fresh worker cannot hide retained state.
+#[test]
+fn reset_isolates_type_check_state_from_the_next_session() {
     // (script_name of session A, module path session B tries to import)
     let cases = [
         ("a.py", "a"),
@@ -2617,7 +2719,7 @@ fn reset_scrubs_type_check_state_from_the_next_session() {
             probe("from repl_type_stubs import STUB_SECRET".to_owned()),
             "b.py:1:6: error[unresolved-import] Cannot resolve imported module `repl_type_stubs`\n",
         );
-        // the scrub keeps SRC_ROOT itself intact — fresh checks still work
+        // The new session can still check and execute valid code.
         assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::int(1));
 
         // back to unconfigured for the next case

@@ -1,3 +1,4 @@
+mod builtin_type;
 /// Type definitions for Python runtime values.
 ///
 /// This module contains structured types that wrap heap-allocated data
@@ -12,16 +13,19 @@ pub mod complex;
 pub mod csv;
 pub mod date;
 pub mod datetime;
+pub mod decimal;
 pub mod deque;
 pub mod dict;
 pub mod dict_view;
 pub mod dir_scan;
 pub mod ext_function;
 pub mod file;
+pub mod forward_ref;
 pub mod generic_alias;
 pub mod hash_table;
 pub mod hashlib;
 pub mod host_class;
+pub(crate) mod inline_str;
 pub mod instance;
 pub mod iter;
 pub mod itertools;
@@ -51,6 +55,7 @@ mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
+pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;
@@ -61,6 +66,7 @@ pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};
 pub(crate) use dir_scan::DirScan;
 pub(crate) use ext_function::ExtFunction;
 pub(crate) use file::OpenFile;
+pub(crate) use forward_ref::ForwardRef;
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use hashlib::HashObject;
 pub(crate) use host_class::{HostClass, HostClassType, host_class_type};
@@ -75,7 +81,7 @@ pub(crate) use namedtuple::{NamedTuple, NamedTupleClass};
 pub(crate) use partial::Partial;
 pub(crate) use path::Path;
 pub(crate) use property::Property;
-pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait, attribute_name_value};
+pub(crate) use py_trait::{CmpOrder, LazyHeapSet, PyTrait};
 pub(crate) use random::{Random, SessionRandom};
 pub(crate) use range::{Range, RangeIterator};
 pub(crate) use re_match::ReMatch;

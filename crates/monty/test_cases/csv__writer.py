@@ -66,6 +66,110 @@ assert wr([['']], quoting=csv.QUOTE_ALL) == '""\r\n'
 assert wr([['a', 1, 2.5, None, True, '']], quoting=csv.QUOTE_NONNUMERIC) == '"a",1,2.5,"",True,""\r\n'
 assert wr([[1j, 10**30]], quoting=csv.QUOTE_NONNUMERIC) == '1j,1000000000000000000000000000000\r\n'
 assert wr([[None]], quoting=csv.QUOTE_NONNUMERIC) == '""\r\n'
+
+
+class NumberByInt:
+    def __int__(self):
+        raise AssertionError('numeric conversion must not run')
+
+    def __str__(self):
+        return '7'
+
+
+class NumberByFloat:
+    def __float__(self):
+        raise AssertionError('numeric conversion must not run')
+
+    def __str__(self):
+        return '7'
+
+
+class NumberByIndex:
+    def __index__(self):
+        raise AssertionError('numeric conversion must not run')
+
+    def __str__(self):
+        return '7'
+
+
+def quote_non_numeric(value):
+    return wr([[value]], quoting=csv.QUOTE_NONNUMERIC)
+
+
+for value in (NumberByInt(), NumberByFloat(), NumberByIndex()):
+    assert quote_non_numeric(value) == '7\r\n'
+
+for hook in ('__int__', '__float__', '__index__'):
+    for member in (None, 1):
+        namespace = {'__str__': lambda self: '7', hook: member}
+        number = type('Number', (), namespace)()
+        assert quote_non_numeric(number) == '7\r\n'
+
+
+for name in ('__complex__', '__add__', '__bool__', '__len__'):
+    namespace = {'__str__': lambda self: '7', name: lambda *args: None}
+    excluded = type('Excluded', (), namespace)()
+    assert quote_non_numeric(excluded) == '"7"\r\n'
+
+
+class InstanceOnly:
+    def __str__(self):
+        return '7'
+
+
+instance_only = InstanceOnly()
+instance_only.__int__ = lambda: 7
+assert quote_non_numeric(instance_only) == '"7"\r\n'
+
+
+class MutableNumber:
+    def __str__(self):
+        return '7'
+
+
+mutable = MutableNumber()
+sink = Sink()
+writer = csv.writer(sink, quoting=csv.QUOTE_NONNUMERIC)
+writer.writerow([mutable])
+MutableNumber.__int__ = None
+writer.writerow([mutable])
+MutableNumber.__int__ = 1
+writer.writerow([mutable])
+assert sink.lines == ['"7"\r\n', '7\r\n', '7\r\n']
+
+DynamicNumber = type('DynamicNumber', (), {'__int__': None, '__str__': lambda self: '7'})
+assert quote_non_numeric(DynamicNumber()) == '7\r\n'
+
+
+class AddHookDuringString:
+    def __str__(self):
+        AddHookDuringString.__int__ = None
+        return '7'
+
+
+mutating = AddHookDuringString()
+sink = Sink()
+csv.writer(sink, quoting=csv.QUOTE_NONNUMERIC).writerow([mutating, mutating])
+assert sink.lines == ['"7",7\r\n']
+
+
+class DelimitedNumber:
+    def __int__(self):
+        raise AssertionError('numeric conversion must not run')
+
+    def __str__(self):
+        return '7,8'
+
+
+assert quote_non_numeric(DelimitedNumber()) == '"7,8"\r\n'
+
+sink = Sink()
+csv.DictWriter(sink, ['number'], quoting=csv.QUOTE_NONNUMERIC).writerow({'number': NumberByInt()})
+assert sink.lines == ['7\r\n']
+
+assert quote_non_numeric(12) == '12\r\n'
+assert wr([[12]], quoting=csv.QUOTE_MINIMAL) == '12\r\n'
+assert wr([[NumberByInt()]], quoting=csv.QUOTE_MINIMAL) == '7\r\n'
 assert wr([['a', 1, None, '']], quoting=csv.QUOTE_NOTNULL) == '"a","1",,""\r\n'
 assert wr([['a', 1, None, '']], quoting=csv.QUOTE_STRINGS) == '"a",1,,""\r\n'
 for quoting, row in ((csv.QUOTE_NONE, ['']), (csv.QUOTE_STRINGS, [None]), (csv.QUOTE_NOTNULL, [None])):

@@ -86,6 +86,11 @@ pub enum MontyNode {
     TimeDelta(MontyTimeDelta),
     /// Python `datetime.timezone`.
     TimeZone(MontyTimeZone),
+    /// Python `decimal.Decimal`, as its canonical string (`str(d)`: `"1.20"`,
+    /// `"1E+5"`, `"-NaN12"`, `"Infinity"`), which round-trips exactly.
+    ///
+    /// The sandbox validates the text on import; a malformed one is rejected there.
+    Decimal(String),
     /// A Python exception value with type and optional message.
     Exception {
         /// The exception type.
@@ -255,7 +260,7 @@ impl MontyNode {
         let pairs = |pairs: &[(NodeId, NodeId)]| pairs.len().saturating_mul(2 * size_of::<NodeId>());
 
         let payload = match self {
-            Self::String(s) | Self::Path(s) | Self::Repr(s) | Self::Cycle(s) => s.len(),
+            Self::String(s) | Self::Path(s) | Self::Repr(s) | Self::Cycle(s) | Self::Decimal(s) => s.len(),
             Self::Bytes(b) => b.len(),
             // Saturate rather than truncate on a 32-bit `usize`: an over-large
             // estimate only trips a budget sooner, which is the safe direction.
@@ -320,7 +325,8 @@ impl PartialEq for MontyNode {
             (Self::String(a), Self::String(b))
             | (Self::Path(a), Self::Path(b))
             | (Self::Repr(a), Self::Repr(b))
-            | (Self::Cycle(a), Self::Cycle(b)) => a == b,
+            | (Self::Cycle(a), Self::Cycle(b))
+            | (Self::Decimal(a), Self::Decimal(b)) => a == b,
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
@@ -553,6 +559,7 @@ impl MontyGraph {
             MontyNode::Time(_) => "time",
             MontyNode::TimeDelta(_) => "timedelta",
             MontyNode::TimeZone(_) => "timezone",
+            MontyNode::Decimal(_) => "Decimal",
             MontyNode::Exception { .. } => "Exception",
             MontyNode::Path(_) => "PosixPath",
             MontyNode::FileHandle(handle) => handle.mode.type_name(),

@@ -103,6 +103,7 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | `int`               | `number` within ±2^53, otherwise `BigInt`       |
 | `float`             | `number`                                        |
 | `complex`           | `{ __monty_type__: 'Complex', real, imag }`     |
+| `decimal.Decimal`   | `{ __monty_type__: 'Decimal', value }`          |
 | `str`               | `string`                                        |
 | `bytes`             | `Buffer`                                        |
 | `list`              | `Array`                                         |
@@ -113,6 +114,9 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 | builtin types       | `{ __monty_type__: 'Type', value }`             |
 | builtin functions   | `{ __monty_type__: 'BuiltinFunction', value }`  |
 | file handles        | `MontyFileHandle`                               |
+
+A `Decimal` marker's `value` is its exact canonical string (`'1.20'`, `'1E+5'`, `'NaN'`), never a `number`.
+That is `str(d)` under the default context; the exponent is always an uppercase `E`, whatever the context's `capitals`.
 
 Builtin type and function markers carry the builtin's name, never a JavaScript callable.
 Passing a marker back resolves it to that builtin; unrecognized names are rejected with `unknown type name` or
@@ -339,7 +343,7 @@ import { Monty } from '@pydantic/monty'
 
 await using pool = await Monty.create({
   binaryPath: undefined, // explicit path to the `monty` worker binary
-  minProcesses: 1, // workers spawned up front
+  minProcesses: 1, // workers spawned up front, and replaced in the background as they leave
   maxProcesses: 8, // cap on live workers; defaults to the CPU count
   checkoutTimeout: 5, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline; kills the worker
@@ -352,7 +356,8 @@ await using pool = await Monty.create({
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
 Replacement workers get new IDs, even if the OS reuses a PID.
-`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295; 0 and 1 both retire a worker after each checkout.
+`maxCheckoutsPerWorker` accepts integers from 0 to 4294967295 and defaults to 1000; 0 and 1 both retire a worker after
+each checkout, and `null` never recycles.
 `workerPid` is a native-only OS diagnostic and may be unavailable during a turn.
 
 The worker binary is resolved from `binaryPath`, then the `MONTY_BIN` environment variable, then the installed platform
@@ -430,6 +435,9 @@ Differences from the native path:
 - **Workers are required.** There is no in-process fallback; see [isolation guarantees](../security.md#crash-isolation).
     Startup has a separate 30-second deadline; request deadlines start after the worker is ready.
 - **Browser `maxProcesses` defaults to `navigator.hardwareConcurrency`**, or 4 when unavailable; Node uses its CPU count.
+- **`minProcesses` only prewarms.** A worker that is recycled, crashes or is discarded is replaced only when a checkout
+    is already waiting for it, so the pool can fall below `minProcesses` and a checkout that finds no idle worker
+    spawns a cold one.
 - **`binaryPath` is ignored.** The bundled WASM asset is used instead.
 - **OS diagnostics are backend-specific.** Browser crashes have no OS exit status.
     A hard allocator limit traps WASM and raises `MontyCrashedError`, not the native worker's classified `MemoryError`;

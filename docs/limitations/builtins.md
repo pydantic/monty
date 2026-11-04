@@ -65,6 +65,10 @@ These raise `NameError`:
     Monty also stops a set walk once it has yielded the set's starting length,
     where CPython keeps going: replacing each element as it is visited yields
     every replacement in CPython but only the original elements in Monty.
+- **`is` and `id()` on short strings** — equal strings of 2–15 UTF-8 bytes stored
+    inline share identity by content. Separate runtime results such as `bin(4)` can therefore
+    compare identical and return the same `id()`, where CPython gives those
+    results distinct identities.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
@@ -145,6 +149,8 @@ These raise `NameError`:
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.
+- **`float(x)`** — string parsing accepts ASCII digits only; CPython also accepts Unicode decimal digits
+    (`float('١.٥')` == 1.5), which Monty rejects with `could not convert string to float`.
 - **`bytes(source)`** — an iterable of ints is not supported: CPython's
     `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert 'list' object to bytes`. The int /
     str-with-encoding / bytes source forms

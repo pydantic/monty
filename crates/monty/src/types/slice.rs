@@ -166,6 +166,38 @@ pub(crate) fn optional_sequence_bound(value: &Value, default: usize, len: usize,
     Ok(bound.map_or(default, |i| normalize_sequence_index(i, len)))
 }
 
+/// The `(start, end)` range of a `str` or `bytes` search, or `None` for a
+/// `start` past `end`, where nothing is found — see [`search_range`].
+pub(crate) type SearchRange = Option<(usize, usize)>;
+
+/// The optional `start` and `end` of a `str` or `bytes` search, adjusted as
+/// CPython's `ADJUST_INDICES` does: both are converted like
+/// [`optional_sequence_bound`] and clamped at zero, and `end` at `len`.
+///
+/// `start` is not clamped at `len`, so a `start` past `end` stays apart from an
+/// empty range at the end. That range is `None`: CPython finds nothing there,
+/// not even the empty string, where the empty slice `s[start:end]` would match
+/// it (`'abc'.find('', 4)` is `-1`, `'abc'.count('', 2, 1)` is `0`).
+pub(crate) fn search_range(
+    start: Option<&Value>,
+    end: Option<&Value>,
+    len: usize,
+    vm: &mut VM<'_>,
+) -> RunResult<SearchRange> {
+    let start = match start {
+        Some(value) => match value_to_option_i64(value, vm)?.unwrap_or(0) {
+            index if index < 0 => normalize_sequence_index(index, len),
+            index => usize::try_from(index).unwrap_or(usize::MAX),
+        },
+        None => 0,
+    };
+    let end = match end {
+        Some(value) => optional_sequence_bound(value, len, len, vm)?,
+        None => len,
+    };
+    Ok((start <= end).then_some((start, end)))
+}
+
 /// CPython's `_PyEval_SliceIndex`: an `int`, or the `__index__` of an object
 /// that has one, **saturated** to `i64` rather than raised on. `Ok(None)` means
 /// the value is not `__index__`-able, leaving the `TypeError` to the caller,

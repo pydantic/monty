@@ -348,6 +348,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     `checkout()` that restored it.
     The worker caps each restored resource limit at the restoring `checkout()` limit; stricter dump limits remain in
     effect.
+    The execution clock must match the snapshot; a mismatched load fails. Snapshots without a clock use wall time.
     Elapsed execution time is restored, not reset, and counts against the capped limits: a dump taken mid-feed that
     has already used more than the restoring `max_feed_duration` raises `TimeoutError` at its next time check.
     Module stubs are retained even when type checking is off, so a restored session requests stubs only for modules
@@ -372,8 +373,10 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     Any `'overlay'` writes made before the dump are gone — the restored overlay starts empty.
 - **A restored [`FutureSnapshot`][pydantic_monty.FutureSnapshot] cannot be driven with `resume_auto()`.** Its pending coroutines lived in the previous
     process.
-    In Python, this rejection leaves the snapshot available for manual resolution.
-    Resolve them by hand with `resume({call_id: ...})`.
+    In Python and JavaScript, rejecting automatic resolution when no host coroutines or promises are registered leaves
+    the snapshot and session available for manual resolution.
+    Resolve them by hand with `resume({call_id: ...})` in Python or `resume([{callId, value}])` in JavaScript.
+    The same applies to a JavaScript future created with `resumeFuture()` when no host promises were registered.
 - **A dump is your own session state, not untrusted input.** Loading checks the magic, the version, the size cap and the
     structural invariants the interpreter relies on (function metadata, for one), but it is not a security boundary:
     load only dumps this host produced.

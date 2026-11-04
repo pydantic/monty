@@ -45,6 +45,18 @@ export interface MontyTimeDelta {
   microseconds: number
 }
 
+/**
+ * Marker object representing a Python `decimal.Decimal`.
+ *
+ * `value` is the exact string form, `str(d)` in Python (`'1.20'`, `'1E+5'`, `'NaN'`);
+ * pass it to a JS decimal library to compute with it. Sending one into the
+ * sandbox parses `value` as `Decimal(value)` does.
+ */
+export interface MontyDecimal {
+  __monty_type__: 'Decimal'
+  value: string
+}
+
 /** Marker object representing a Python `datetime.timezone`. */
 export interface MontyTimeZone {
   __monty_type__: 'TimeZone'

@@ -433,6 +433,33 @@ test('complex input round-trips', async () => {
   t.is(Object.is(back.real, -0) && Object.is(back.imag, -0), true)
 })
 
+test('decimal output from sandbox', async () => {
+  t.deepEqual(await run("import decimal\ndecimal.Decimal('19.990')"), { __monty_type__: 'Decimal', value: '19.990' })
+  t.deepEqual(await run("import decimal\ndecimal.Decimal('-1e-30')"), { __monty_type__: 'Decimal', value: '-1E-30' })
+})
+
+test('decimal input round-trips', async () => {
+  const price = { __monty_type__: 'Decimal', value: '19.99' }
+  t.deepEqual(await run('x', { inputs: { x: price } }), price)
+  t.deepEqual(await run('(str(x), x > 1)', { inputs: { x: price } }), ['19.99', true])
+  // Any numeric string `Decimal()` accepts comes back in canonical form.
+  t.deepEqual(await run('x', { inputs: { x: { __monty_type__: 'Decimal', value: 'nan' } } }), {
+    __monty_type__: 'Decimal',
+    value: 'NaN',
+  })
+})
+
+test('malformed decimal marker is rejected by the wasm encoder', () => {
+  t.deepEqual(encodeValue({ __monty_type__: 'Decimal', value: '1.5' }), {
+    root: 0,
+    nodes: [{ tag: 'decimal', val: '1.5' }],
+  })
+  t.throws(() => encodeValue({ __monty_type__: 'Decimal', value: 1.5 }), {
+    instanceOf: TypeError,
+    message: 'Decimal marker requires a string value',
+  })
+})
+
 test('malformed complex marker is rejected by the wasm encoder', () => {
   t.deepEqual(encodeValue({ __monty_type__: 'Complex', real: 1.5, imag: -2 }), {
     root: 0,
