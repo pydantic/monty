@@ -54,7 +54,7 @@ Values above 1 GiB are rejected when the client is constructed.
 The budget excludes wire buffers and Python conversion, and does not change
 sandbox memory limits. Exhaustion ends the session with a protocol error;
 the client does not replay the request.
-The budget also caps each message's size (never below 64 KiB), so a larger message is refused before it is buffered.
+Separately, the transport refuses any message larger than the budget, clamped between 64 KiB and the 256 MiB frame limit, before buffering it.
 
 ## Usage with a local monty worker
 

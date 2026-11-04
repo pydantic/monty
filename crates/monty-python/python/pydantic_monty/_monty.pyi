@@ -1136,7 +1136,7 @@ class AsyncMontyRemote:
                 keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
-                Also caps each message's size (never below 64 KiB).
+                Also caps each message's size, clamped between 64 KiB and the 256 MiB frame limit.
             connect_headers: The former name of `metadata`, accepted for one
                 release with a `DeprecationWarning`; passing both raises
                 `TypeError`.

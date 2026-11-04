@@ -114,8 +114,8 @@ Invalid snapshots have no correctness or availability guarantees.
   `PoolConfig::max_decode_bytes` can lower the default 1 GiB per-frame decode
   budget. This excludes wire buffers and host-language conversion; it is not a
   process-memory limit. Exhaustion discards the worker without replaying the request.
-  On the remote transport it also caps each message (never below 64 KiB), so a larger
-  one is refused before it is buffered.
+  On the remote transport it also caps each message, clamped between 64 KiB and the
+  256 MiB frame limit, so a larger one is refused before it is buffered.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
   how long a slow leak or a compromised worker survives. It defaults to
   `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
@@ -289,7 +289,7 @@ input so adapters that do not support metrics continue to work.
   answered with a `Pong` request by the transport, even while the checkout sits idle, so a
   relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
   events read before the ping, so a server pings between turns, where a slow host callback
-  cannot delay it. A ping over 64 bytes, or more than ten in a second, ends the stream as
+  cannot delay it. A ping over 64 bytes, or more than ten in any one second, ends the stream as
   a transport failure. `PoolConfig::keep_alive` (five minutes by default, the fastest cadence a
   gRPC server's default policy permits; `None` for none) adds an HTTP/2 `PING` on the first
   hop while streams are open. `PoolConfig::request_timeout` (30 s when unset) also bounds

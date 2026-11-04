@@ -10,6 +10,7 @@
 //! turns, the liveness signal a relay behind a proxy relies on.
 
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt::Display,
     sync::{Arc, Once, OnceLock},
@@ -143,7 +144,8 @@ impl Remote {
         let mut grpc = Grpc::new(self.channel.clone())
             .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
-        let deadline = Instant::now() + self.dial_timeout;
+        // an unrepresentable timeout (`Duration::MAX`) leaves the dial unbounded
+        let deadline = Instant::now().checked_add(self.dial_timeout);
         let mut retries = 0;
         let (requests, response) = loop {
             let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
@@ -153,7 +155,11 @@ impl Remote {
                 grpc.streaming(request, PathAndQuery::from_static(SESSION_PATH), BytesCodec)
                     .await
             };
-            match timeout_at(deadline, open).await {
+            let opened = match deadline {
+                Some(deadline) => timeout_at(deadline, open).await,
+                None => Ok(open.await),
+            };
+            match opened {
                 Ok(Ok(response)) => break (requests, response),
                 // the server closed the connection under the stream before
                 // taking it (a GOAWAY as it drains, a refused stream): the
@@ -497,38 +503,41 @@ async fn read_events(
 }
 
 /// Bounds the pings a server may send: each at most [`MAX_PING_BYTES`], and
-/// at most [`MAX_PINGS_PER_WINDOW`] per [`PING_WINDOW`]. A keepalive pings
+/// at most [`MAX_PINGS_PER_WINDOW`] in any [`PING_WINDOW`]. A keepalive pings
 /// every few seconds; anything past these is a server burning the host's CPU.
 struct PingLimit {
-    window_start: Instant,
-    in_window: u32,
+    /// Arrival times of the latest pings, oldest first; never more than the cap.
+    recent: VecDeque<Instant>,
 }
 
 impl PingLimit {
     fn new() -> Self {
         Self {
-            window_start: Instant::now(),
-            in_window: 0,
+            recent: VecDeque::with_capacity(MAX_PINGS_PER_WINDOW),
         }
     }
 
     /// Counts one ping of `len` bytes, or says why the server broke the limit.
     fn admit(&mut self, len: usize) -> Result<(), String> {
         let now = Instant::now();
-        if now.duration_since(self.window_start) >= PING_WINDOW {
-            self.window_start = now;
-            self.in_window = 0;
+        // a sliding window: a burst straddling a boundary still counts as one
+        while self
+            .recent
+            .front()
+            .is_some_and(|&at| now.duration_since(at) >= PING_WINDOW)
+        {
+            self.recent.pop_front();
         }
-        self.in_window += 1;
         if len > MAX_PING_BYTES {
             Err(format!(
                 "server sent a {len}-byte ping, above the {MAX_PING_BYTES}-byte limit"
             ))
-        } else if self.in_window > MAX_PINGS_PER_WINDOW {
+        } else if self.recent.len() >= MAX_PINGS_PER_WINDOW {
             Err(format!(
                 "server sent more than {MAX_PINGS_PER_WINDOW} pings in {PING_WINDOW:?}"
             ))
         } else {
+            self.recent.push_back(now);
             Ok(())
         }
     }
@@ -538,7 +547,7 @@ impl PingLimit {
 const MAX_PING_BYTES: usize = 64;
 
 /// See [`PingLimit`].
-const MAX_PINGS_PER_WINDOW: u32 = 10;
+const MAX_PINGS_PER_WINDOW: usize = 10;
 const PING_WINDOW: Duration = Duration::from_secs(1);
 
 /// The frame error for tonic refusing a message above [`message_limit`],

@@ -103,12 +103,14 @@ pub struct PoolConfig {
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     /// On the remote transport it also bounds opening a stream, from a cold
-    /// dial through the server's admission (30 s when `None`).
+    /// dial through the server's admission (30 s when `None`); that expiry
+    /// fails with [`PoolError::Spawn`] instead, and there is no worker to kill.
     pub request_timeout: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
     /// the sandbox's memory limit. On the remote transport it also caps each
-    /// message's size (never below 64 KiB), refusing a larger one unbuffered.
+    /// message's size (between 64 KiB and the 256 MiB frame limit), refusing
+    /// a larger one unbuffered.
     pub max_decode_bytes: usize,
     /// Extra feed allowance in the pool's clock. CPU mode grants it once per feed.
     /// Wall mode uses reported time; CPU mode uses OS CPU. Exhaustion kills with `Timeout` or `CpuLimit`, respectively.
