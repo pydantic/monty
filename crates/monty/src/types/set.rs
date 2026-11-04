@@ -843,7 +843,8 @@ fn clone_storage_checked(storage: &SetStorage, vm: &VM<'_>) -> RunResult<SetStor
 }
 
 impl<'h> HeapObjectRead<'h, Set> {
-    /// In-place set operators accept sets/frozensets; dict views use reflected binary dispatch.
+    /// Mutates for sets/frozensets; dict views and other operands use binary/reflected fallback.
+    /// Snapshots distinct right operands and reuses cached hashes during mutation.
     fn inplace_algebra(&self, other: &Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(id) = other.ref_id() else {
             return Ok(false);
@@ -851,24 +852,31 @@ impl<'h> HeapObjectRead<'h, Set> {
         if !matches!(vm.heap.get(id), HeapData::Set(_) | HeapData::FrozenSet(_)) {
             return Ok(false);
         }
+
+        // CPython's self-operations bypass element equality; probing a copy could invoke it.
         if id == self.id() {
             if matches!(op, SetAlgebra::Difference | SetAlgebra::SymmetricDifference) {
                 self.clear(vm);
             }
             return Ok(true);
         }
+
         let storage = match vm.heap.get(id) {
             HeapData::Set(set) => clone_storage_checked(&set.0, vm)?,
             HeapData::FrozenSet(set) => clone_storage_checked(&set.storage, vm)?,
             _ => unreachable!(),
         };
         defer_drop!(storage, vm);
+        // Equality callbacks may clear the source and collect cycles; keep snapshot members rooted.
         let storage = vm.heap.protect(storage);
+
         if matches!(op, SetAlgebra::Intersection) {
+            // Intersection builds a separate table; swap storage so aliases keep the receiver.
             let result = self.storage().intersection(&storage, vm)?;
             let old = mem::replace(&mut self.get_mut(vm.heap).0, result);
             old.drop_with(vm);
         } else {
+            // These operators mutate incrementally, retaining earlier updates if a comparison raises.
             let iter = storage.iter(vm)?;
             defer_drop_mut!(iter, vm);
             while let Some((value, hash)) = iter.next_entry(vm)? {

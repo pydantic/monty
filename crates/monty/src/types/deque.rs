@@ -600,13 +600,18 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Deque(result)))))
     }
 
+    /// Repeats for integer or `__index__` counts, retaining identity and respecting `maxlen`.
     fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(count) = inplace_repeat_count(other, vm)? else {
             return Ok(false);
         };
+
+        // Repeating once or repeating an empty deque must leave existing iterators valid.
         if count == 1 || self.get(vm.heap).items.is_empty() {
             return Ok(true);
         }
+
+        // `__index__` may mutate the deque; capture its contents and bound afterward.
         let maxlen = self.get(vm.heap).maxlen;
         let len = self.get(vm.heap).items.len();
         vm.heap
@@ -620,7 +625,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
                 .map(|item| item.clone_with_heap(vm.heap))
                 .collect()
         };
+
+        // Build first so allocation/time failures preserve the original contents.
         let mut result = repeat_deque(source, maxlen, count, vm)?;
+        // Advance the old mutation counter so iterators detect replacement at unchanged length.
         result.state = self.get(vm.heap).state.wrapping_add(1);
         let old = mem::replace(self.get_mut(vm.heap), result);
         for item in old.items {

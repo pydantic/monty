@@ -666,11 +666,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         self.py_mul_impl(other, vm)
     }
 
+    /// Extends in place from a list or synchronous iterable, preserving aliases.
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let other_id = other
             .ref_id()
             .filter(|id| matches!(vm.heap.get(*id), HeapData::List(_)));
         let Some(other_id) = other_id else {
+            // Append as the source yields so an iterator error keeps earlier additions.
             let iterator = other.py_iter(vm)?.require_synchronous(vm)?;
             defer_drop!(iterator, vm);
             let mut iterator = iterator.read(vm);
@@ -722,26 +724,33 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         Ok(true)
     }
 
+    /// Repeats for integer or `__index__` counts, retaining aliases and shared elements.
     fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(count) = inplace_repeat_count(other, vm)? else {
             return Ok(false);
         };
+
+        // `__index__` can resize this list; read its length only after conversion.
         let len = self.get(vm.heap).items.len();
         if count == 1 || len == 0 {
             return Ok(true);
         }
+
         if count == 0 {
             let items = mem::take(&mut self.get_mut(vm.heap).items);
             self.get_mut(vm.heap).contains_refs = false;
             items.drop_with(vm);
             return Ok(true);
         }
+
         check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
         let total = len.checked_mul(count).ok_or_else(ExcType::allocation_too_large)?;
         self.get_mut(vm.heap)
             .items
             .try_reserve_exact(total - len)
             .map_err(|_| ExcType::allocation_too_large())?;
+
+        // Clone references from the original prefix so repeated elements stay shared.
         for index in len..total {
             let item = self.get(vm.heap).items[index % len].clone_with_heap(vm.heap);
             self.get_mut(vm.heap).items.push(item);

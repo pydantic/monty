@@ -491,7 +491,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        // Sequence mutation follows reflected numeric arithmetic, as in CPython.
+        // Try user `__radd__` before native list/deque extension.
         let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
         if sequence
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
@@ -501,6 +501,7 @@ impl<'h> PyTrait<'h> for Value {
             old.drop_with(vm);
             return Ok(true);
         }
+
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iadd_impl(other, vm)
         } else {
@@ -509,7 +510,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_imul_impl(&mut self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        // Sequence mutation follows reflected numeric arithmetic, as in CPython.
+        // Try user `__rmul__` before native list/deque repetition.
         let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
         if sequence
             && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
@@ -519,9 +520,11 @@ impl<'h> PyTrait<'h> for Value {
             old.drop_with(vm);
             return Ok(true);
         }
+
         if let Self::Ref(id) = self {
             let handled = vm.heap.read(*id).py_imul_impl(other, vm)?;
             if !handled && sequence && matches!(other.py_type_heap(vm.heap), Type::Instance(_)) {
+                // `__rmul__` already declined; binary dispatch would call it a second time.
                 return Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
             }
             Ok(handled)

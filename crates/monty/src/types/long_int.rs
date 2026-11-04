@@ -648,7 +648,8 @@ pub(crate) fn repeat_count(value: &Value, vm: &VM<'_>) -> RunResult<Option<usize
     }
 }
 
-/// Resolves an in-place sequence repeat count through `__index__`.
+/// Resolves integer or `__index__` counts, returning `None` for unsupported operands.
+/// Negative counts become zero; overflow uses Python's index-sized integer error.
 pub(crate) fn inplace_repeat_count(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<usize>> {
     let Some(count) = value.py_index_impl(vm)? else {
         return Ok(None);

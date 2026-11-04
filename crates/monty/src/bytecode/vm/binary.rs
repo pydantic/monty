@@ -41,7 +41,7 @@ impl VM<'_> {
         self.binary_op(|lhs, rhs, vm| lhs.py_mul(rhs, vm))
     }
 
-    /// Types with a `py_imul_impl` hook retain their identity through `*=`.
+    /// Tries in-place multiplication, then binary fallback; reflected results may replace the operand.
     pub(super) fn inplace_mult(&mut self) -> Result<(), RunError> {
         self.inplace_op(PyTrait::py_imul_impl, |lhs, rhs, vm| lhs.py_mul(rhs, vm))
     }
