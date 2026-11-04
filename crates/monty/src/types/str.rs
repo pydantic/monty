@@ -228,7 +228,10 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_str(self.as_str(vm), other, vm)
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        repeat_str(self.as_str(vm), count, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -344,11 +347,8 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
     Value::Ref(heap.allocate(HeapData::Str(Str::new(s.into()))))
 }
 
-/// Converts a native integer count and preflights the repeated string allocation.
-fn repeat_str(value: &str, count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    let Some(count) = repeat_count(count, vm)? else {
-        return Ok(None);
-    };
+/// Preflights the repeated string allocation.
+fn repeat_str(value: &str, count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
     check_repeat_size(value.len(), count, &vm.heap.tracker)?;
     Ok(Some(allocate_string(value.repeat(count), vm.heap)))
 }
@@ -482,7 +482,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_str(self.get(vm.heap).as_str(), other, vm)
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        repeat_str(self.get(vm.heap).as_str(), count, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

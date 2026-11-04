@@ -256,10 +256,7 @@ pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value,
 }
 
 /// Repeats bytes after validating the allocation against resource limits.
-fn repeat_bytes(value: &[u8], count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    let Some(count) = repeat_count(count, vm)? else {
-        return Ok(None);
-    };
+fn repeat_bytes(value: &[u8], count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
     check_repeat_size(value.len(), count, &vm.heap.tracker)?;
     Ok(Some(Value::Ref(
         vm.heap.allocate(HeapData::Bytes(value.repeat(count).into())),
@@ -330,7 +327,10 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_bytes(self.as_slice(vm), other, vm)
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        repeat_bytes(self.as_slice(vm), count, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -456,7 +456,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_bytes(self.get(vm.heap).as_slice(), other, vm)
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        repeat_bytes(self.get(vm.heap).as_slice(), count, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

@@ -17,7 +17,7 @@ use crate::{
     types::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
-        long_int::{inplace_repeat_count, repeat_count},
+        long_int::repeat_count,
         slice::{normalize_sequence_index, value_to_i64_bound},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -602,7 +602,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
 
     /// Repeats for integer or `__index__` counts, retaining identity and respecting `maxlen`.
     fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
-        let Some(count) = inplace_repeat_count(other, vm)? else {
+        let Some(count) = repeat_count(other, vm)? else {
             return Ok(false);
         };
 
