@@ -1509,19 +1509,11 @@ impl<'h> VM<'h> {
                 Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
                 Opcode::InplacePow => try_catch!(self, self.binary_pow()),
-                Opcode::InplaceAnd => {
-                    try_catch!(self, self.inplace_and());
-                }
+                Opcode::InplaceAnd => try_catch!(self, self.inplace_and()),
                 Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
-                Opcode::InplaceXor => {
-                    try_catch!(self, self.inplace_xor());
-                }
-                Opcode::InplaceLShift => {
-                    try_catch!(self, self.binary_lshift());
-                }
-                Opcode::InplaceRShift => {
-                    try_catch!(self, self.binary_rshift());
-                }
+                Opcode::InplaceXor => try_catch!(self, self.inplace_xor()),
+                Opcode::InplaceLShift => try_catch!(self, self.binary_lshift()),
+                Opcode::InplaceRShift => try_catch!(self, self.binary_rshift()),
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = self.current_frame.fetch_u16() as usize;

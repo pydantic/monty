@@ -159,15 +159,6 @@ answer is the call's result, and running without a host gives `{}`.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
 
-## Mutable container operators
-
-Lists and deques keep their identity during native `*=` repetition with integer or `__index__` counts.
-List `+=` accepts any synchronous iterable.
-Reflected user arithmetic takes precedence and can replace the value.
-Sets keep their identity through `|=`, `&=`, `-=`, and `^=` with set or frozenset operands.
-Aliases observe those mutations; dict-view operands use reflected set operators and produce a replacement value.
-See the [builtin limitations](https://github.com/pydantic/monty/blob/main/docs/limitations/builtins.md) for callback behavior.
-
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox. **this crate**
