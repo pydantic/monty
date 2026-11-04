@@ -849,9 +849,11 @@ impl<'h> HeapObjectRead<'h, Set> {
         let Some(id) = other.ref_id() else {
             return Ok(false);
         };
-        if !matches!(vm.heap.get(id), HeapData::Set(_) | HeapData::FrozenSet(_)) {
-            return Ok(false);
-        }
+        let other_storage = match vm.heap.get(id) {
+            HeapData::Set(set) => &set.0,
+            HeapData::FrozenSet(set) => &set.storage,
+            _ => return Ok(false),
+        };
 
         // CPython's self-operations bypass element equality; probing a copy could invoke it.
         if id == self.id() {
@@ -861,11 +863,7 @@ impl<'h> HeapObjectRead<'h, Set> {
             return Ok(true);
         }
 
-        let storage = match vm.heap.get(id) {
-            HeapData::Set(set) => clone_storage_checked(&set.0, vm)?,
-            HeapData::FrozenSet(set) => clone_storage_checked(&set.storage, vm)?,
-            _ => unreachable!(),
-        };
+        let storage = clone_storage_checked(other_storage, vm)?;
         defer_drop!(storage, vm);
         // Equality callbacks may clear the source and collect cycles; keep snapshot members rooted.
         let storage = vm.heap.protect(storage);

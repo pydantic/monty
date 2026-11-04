@@ -14,9 +14,19 @@ def apply(target, source, operation):
         target <<= source
     elif operation == 'rshift':
         target >>= source
-    else:
+    elif operation == 'xor':
         target ^= source
+    else:
+        raise AssertionError(f'unknown operation: {operation}')
     return target
+
+
+try:
+    apply(1, 2, 'xro')
+except AssertionError as exc:
+    assert str(exc) == 'unknown operation: xro'
+else:
+    assert False
 
 
 # Immutable operands replace the assigned value through binary fallback.

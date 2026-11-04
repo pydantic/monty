@@ -480,17 +480,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         str_add(self.get(vm.heap).as_str(), other, vm)
     }
 
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
-            return Ok(None);
-        };
-        repeat_str(self.get(vm.heap).as_str(), count, vm)
-    }
-
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.py_mul_impl(other, vm)
-    }
-
     /// `str % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
