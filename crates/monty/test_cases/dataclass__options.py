@@ -395,6 +395,12 @@ try:
     assert False, 'expected an unhashable field to raise'
 except TypeError as e:
     assert str(e) == "unhashable type: 'list'"
+# a tuple field names its unhashable element
+try:
+    hash(Boxed((1, [2])))
+    assert False, 'expected an unhashable field to raise'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'list'"
 
 
 # === Re-decorating replaces both the fields and the options ===

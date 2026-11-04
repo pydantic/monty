@@ -33,6 +33,7 @@ use crate::{
     types::{
         Type,
         hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
+        set::{qualified_type_name, unhashable_type_name},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -846,10 +847,14 @@ impl<'h> HeapRead<'h, Dict> {
     /// is a `TypeError` naming the dict — the only two things that distinguish
     /// this from [`TableProbe::find_index`], which does the probing.
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<Slot>, u64)> {
-        let hash = key
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
-            .raw();
+        let Some(hash) = key.py_hash(vm)? else {
+            let unhashable_type = unhashable_type_name(key, vm)?;
+            return Err(ExcType::type_error_unhashable_dict_key(
+                &qualified_type_name(key, vm),
+                &unhashable_type,
+            ));
+        };
+        let hash = hash.raw();
         Ok((self.find_index(key, hash, vm)?, hash))
     }
 

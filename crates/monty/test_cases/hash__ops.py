@@ -1,3 +1,5 @@
+from collections import Counter, namedtuple
+
 # === Hash returns int type ===
 assert isinstance(hash(42), int)
 assert isinstance(hash('hello'), int)
@@ -169,3 +171,62 @@ assert hash(True) == 1
 assert hash(False) == 0
 assert hash(2**61 - 2) == 2305843009213693950
 assert hash(-(2**61 - 2)) == -2305843009213693950
+
+# === Unhashable errors name the type that failed to hash ===
+# A tuple names its unhashable element, and a `Counter` key is named
+# `collections.Counter` in the `cannot use` clause, as in CPython.
+Pair = namedtuple('Pair', ['a', 'b'])
+for compute, expected in [
+    (lambda: {(1, [2]): 3}, "cannot use 'tuple' as a dict key (unhashable type: 'list')"),
+    (lambda: {}.get((1, {})), "cannot use 'tuple' as a dict key (unhashable type: 'dict')"),
+    (lambda: ((1, ([2],)),) in {}, "cannot use 'tuple' as a dict key (unhashable type: 'list')"),
+    (lambda: {Pair(1, [2]): 3}, "cannot use 'Pair' as a dict key (unhashable type: 'list')"),
+    (lambda: {Counter(): 1}, "cannot use 'collections.Counter' as a dict key (unhashable type: 'Counter')"),
+    (lambda: {Counter()}, "cannot use 'collections.Counter' as a set element (unhashable type: 'Counter')"),
+    (lambda: hash((1, [2])), "unhashable type: 'list'"),
+    (lambda: hash(((), ((), {}))), "unhashable type: 'dict'"),
+]:
+    try:
+        compute()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == expected
+
+
+# The walk that names the element runs no user `__hash__` a second time.
+hash_calls = []
+
+
+class CountedHash:
+    def __hash__(self):
+        hash_calls.append(1)
+        return 1
+
+
+for compute, expected, calls in [
+    (lambda: {(CountedHash(), [2]): 3}, "cannot use 'tuple' as a dict key (unhashable type: 'list')", 1),
+    (
+        lambda: {(CountedHash(), (CountedHash(), {}))},
+        "cannot use 'tuple' as a set element (unhashable type: 'dict')",
+        2,
+    ),
+    (lambda: hash((CountedHash(), [2])), "unhashable type: 'list'", 1),
+]:
+    hash_calls.clear()
+    try:
+        compute()
+        assert False, 'expected TypeError'
+    except TypeError as e:
+        assert str(e) == expected
+    assert len(hash_calls) == calls
+
+
+# The walk skips subtrees that already hashed, so it is as fast as the hash.
+shared = ()
+for _ in range(40):
+    shared = (shared, shared)
+try:
+    hash((Pair(shared, shared), shared, []))
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'list'"

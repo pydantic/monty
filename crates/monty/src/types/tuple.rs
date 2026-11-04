@@ -109,6 +109,12 @@ impl Tuple {
         &self.items
     }
 
+    /// Returns whether an earlier `py_hash` succeeded, so the tuple is hashable.
+    #[must_use]
+    pub(crate) fn has_cached_hash(&self) -> bool {
+        self.cached_hash.get().is_some()
+    }
+
     /// Returns whether the tuple contains any heap references.
     ///
     /// When false, `collect_child_ids` and `py_dec_ref_ids` can skip iteration.
