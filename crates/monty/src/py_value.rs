@@ -532,6 +532,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Builtin(Builtins::ExcType(exc_type)) => Type::Exception(*exc_type).call_class_method(attr, args, vm),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {

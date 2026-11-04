@@ -1231,6 +1231,15 @@ impl Value {
                     None => Err(Type::from(*t).attribute_error(attr, vm)),
                 };
             }
+            // An exception class answers as its `Type::Exception`, so
+            // `ValueError.__name__` works as `list.__name__` does.
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let t = Type::Exception(*exc_type);
+                return match t.class_getattr(attr, vm) {
+                    Some(value) => Ok(CallResult::Value(value)),
+                    None => Err(t.attribute_error(attr, vm)),
+                };
+            }
             // A plain `def` has its PEP 649 attributes and nothing else.
             Self::DefFunction(func_id) => {
                 if let Some(result) = annotations::function_getattr(*func_id, None, attr.as_str(vm.interns), vm) {
