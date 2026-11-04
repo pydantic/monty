@@ -220,6 +220,14 @@ impl PyObjectIdentity for PyInt<'_> {
     reason = "small-int fast paths must fold into `Value`'s operator dispatch to avoid a call per operation"
 )]
 impl<'h> PyTrait<'h> for PyInt<'h> {
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Small(value) => Value::Int(*value).py_hash(vm),
+            Self::Interned(id) => Ok(Some(vm.interns.long_int_hash(*id))),
+            Self::Heap(value) => value.py_hash(vm),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Int
     }

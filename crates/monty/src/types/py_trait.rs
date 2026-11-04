@@ -102,7 +102,7 @@ impl PyObjectIdentity for Value {
 ///
 /// [`PyValue`](crate::py_value::PyValue) unifies storage representations
 /// for migrated protocols; other operations still dispatch through [`Value`].
-/// [`HeapReadOutput`] retains exhaustive forwarding for unmigrated heap protocols.
+/// Raw heap reads are converted to logical views before protocol dispatch.
 pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///

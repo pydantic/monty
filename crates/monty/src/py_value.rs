@@ -1,7 +1,6 @@
 //! Scoped Python values with storage differences hidden from operation dispatch.
 //!
-//! Arithmetic, method calls, subscription, containment, length, truth and repr use
-//! this view. Unmigrated protocols still enter through `Value`; heap payloads are never copied.
+//! Protocol dispatch converts heap reads to this view without copying their payloads.
 
 use std::{
     borrow::Cow,
@@ -17,9 +16,11 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    expressions::CmpOperator,
     fstring::FormatFloat,
+    hash::{HashValue, identity_hash},
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
-    heap_data::{heap_payloads, heap_read_output_py_trait_forward},
+    heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
@@ -125,12 +126,71 @@ macro_rules! forward_py_value {
         forward_py_value!($self, |$value| $body, { _ => $fallback, })
     };
     ($self:expr, |$value:ident| $body:expr, {$($custom:tt)*}) => {
-        heap_read_output_py_trait_forward!(
-            $self, |$value| $body, {
-                Self::Int($value) => $body,
-                $($custom)*
-            }
-        )
+        match $self {
+            Self::Str($value) => $body,
+            Self::Bytes($value) => $body,
+            Self::List($value) => $body,
+            Self::Deque($value) => $body,
+            Self::ListIterator($value) => $body,
+            Self::DequeIterator($value) => $body,
+            Self::TupleIterator($value) => $body,
+            Self::StringIterator($value) => $body,
+            Self::BytesIterator($value) => $body,
+            Self::RangeIterator($value) => $body,
+            Self::DictKeyIterator($value) => $body,
+            Self::DictItemIterator($value) => $body,
+            Self::DictValueIterator($value) => $body,
+            Self::SetIterator($value) => $body,
+            Self::CallableIterator($value) => $body,
+            Self::Itertools($value) => $body,
+            Self::DirScan($value) => $body,
+            Self::Csv($value) => $body,
+            Self::Partial($value) => $body,
+            Self::Random($value) => $body,
+            Self::HashObject($value) => $body,
+            Self::GenericAlias($value) => $body,
+            Self::Union($value) => $body,
+            Self::ForwardRef($value) => $body,
+            Self::LruCache($value) => $body,
+            Self::Tuple($value) => $body,
+            Self::NamedTuple($value) => $body,
+            Self::NamedTupleClass($value) => $body,
+            Self::Dict($value) => $body,
+            Self::DictKeysView($value) => $body,
+            Self::DictItemsView($value) => $body,
+            Self::DictValuesView($value) => $body,
+            Self::Set($value) => $body,
+            Self::FrozenSet($value) => $body,
+            Self::Range($value) => $body,
+            Self::Slice($value) => $body,
+            Self::HostClass($value) => $body,
+            Self::HostClassType($value) => $body,
+            Self::Class($value) => $body,
+            Self::Instance($value) => $body,
+            Self::BoundMethod($value) => $body,
+            Self::DataclassField($value) => $body,
+            Self::DataclassMethod($value) => $body,
+            Self::DataclassParams($value) => $body,
+            Self::Complex($value) => $body,
+            Self::Path($value) => $body,
+            Self::OpenFile($value) => $body,
+            Self::RePattern($value) => $body,
+            Self::ReMatch($value) => $body,
+            Self::Date($value) => $body,
+            Self::DateTime($value) => $body,
+            Self::Time($value) => $body,
+            Self::TimeDelta($value) => $body,
+            Self::TimeZone($value) => $body,
+            Self::Closure($value) => $body,
+            Self::FunctionDefaults($value) => $body,
+            Self::ExtFunction($value) => $body,
+            Self::Decimal($value) => $body,
+            Self::DecimalContext($value) => $body,
+            Self::DecimalSignalDict($value) => $body,
+            Self::DecimalContextManager($value) => $body,
+            Self::Int($value) => $body,
+            $($custom)*
+        }
     };
 }
 
@@ -226,6 +286,163 @@ impl<'h> PyValue<'h> {
 }
 
 impl<'h> PyTrait<'h> for PyValue<'h> {
+    fn py_matmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        forward_py_value!(self, |value| value.py_matmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rmatmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        forward_py_value!(self, |value| value.py_rmatmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        forward_py_value!(
+            self,
+            |value| value.py_call(args, vm),
+            else {
+                args.drop_with(vm);
+                Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
+            }
+        )
+    }
+
+    fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
+        match self {
+            // A user-defined class is an iterator only if it defines `__next__`.
+            Self::Instance(inst) => inst.py_is_iterator(vm),
+            // Every built-in iterator is identified by its type, so there is no
+            // list to keep in step with new iterator types here.
+            other => other.py_type(vm).is_iterator(),
+        }
+    }
+
+    fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
+        forward_py_value!(self, |value| value.py_is_iterable(vm), else false)
+    }
+
+    fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
+        // A real __enter__ may raise AttributeError; check protocol support before calling it.
+        forward_py_value!(self, |value| value.py_is_context_manager(vm), else false)
+    }
+
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        forward_py_value!(
+            self,
+            |value| value.py_enter(vm),
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__enter__")) }
+        )
+    }
+
+    fn py_exit(&mut self, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
+        forward_py_value!(
+            self,
+            |value| value.py_exit(vm, exc),
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__")) }
+        )
+    }
+
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_iadd_impl(other, vm), else Ok(false))
+    }
+
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_imul_impl(other, vm), else Ok(false))
+    }
+
+    fn py_ixor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_ixor_impl(other, vm), else Ok(false))
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_isub_impl(other, vm), else Ok(false))
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_iand_impl(other, vm), else Ok(false))
+    }
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
+    }
+
+    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        forward_py_value!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
+    }
+
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        forward_py_value!(
+            self,
+            |item| item.py_setitem(key, value, vm),
+            else {
+                key.drop_with(vm);
+                value.drop_with(vm);
+                Err(ExcType::type_error_not_sub_assignment(
+                    &self.py_type_name(vm),
+                ))
+            }
+        )
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Self::Module(module) = self {
+            return module.py_set_attr(name, value, vm);
+        }
+        forward_py_value!(
+            self,
+            |item| item.py_set_attr(name, value, vm),
+            else {
+                value.drop_with(vm);
+                let type_name = self.py_type_name(vm);
+                Err(ExcType::attribute_error_no_setattr(
+                    &type_name,
+                    name.as_str(vm.interns),
+                ))
+            }
+        )
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        forward_py_value!(
+            self,
+            |value| value.py_getattr(attr, vm),
+            else {
+                match self {
+                    Self::Module(m) => Ok(m.py_getattr(attr, vm)),
+                    Self::Exception(e) => Ok(e.py_getattr(attr, vm)),
+                    _ => Ok(None),
+                }
+            }
+        )
+    }
+
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        forward_py_value!(self, |value| value.py_hash(vm), {
+            Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Module(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Undefined => Value::Undefined.py_hash(vm),
+            Self::Ellipsis => Value::Ellipsis.py_hash(vm),
+            Self::NotImplemented => Value::NotImplemented.py_hash(vm),
+            Self::None => Value::None.py_hash(vm),
+            Self::Bool(value) => Value::Bool(*value).py_hash(vm),
+            Self::Float(value) => Value::Float(*value).py_hash(vm),
+            Self::Builtin(value) => Value::Builtin(*value).py_hash(vm),
+            Self::ModuleFunction(value) => Value::ModuleFunction(*value).py_hash(vm),
+            Self::DefFunction(id) => Value::DefFunction(*id).py_hash(vm),
+            Self::Marker(value) => Value::Marker(*value).py_hash(vm),
+            Self::Property(value) => Value::Property(*value).py_hash(vm),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        forward_py_value!(self, |value| value.py_iter(vm),
+            else Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        forward_py_value!(self, |value| value.py_next(vm),
+            else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
+    }
+
     fn py_type(&self, vm: &VM<'h>) -> Type {
         forward_py_value!(self, |value| value.py_type(vm), {
             Self::Undefined => panic!("Cannot get type of undefined value"),
