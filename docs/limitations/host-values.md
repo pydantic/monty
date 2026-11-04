@@ -13,6 +13,11 @@ Separate feeds and calls make separate copies.
 [Host objects and sandbox instance proxies](classes.md#crossing-the-host-boundary-pydantic_monty-pydanticmonty)
 have their own identity rules.
 
+## Mutable byte buffers
+
+A sandbox `bytearray` crosses the host boundary as a copy of its contents in the `bytes` representation.
+Sending it back creates immutable bytes; mutable identity and type are not preserved across the boundary.
+
 ## Lossy outputs
 
 Sandbox values without a host representation become strings rather than raising a conversion error.

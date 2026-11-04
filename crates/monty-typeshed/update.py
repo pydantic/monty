@@ -59,6 +59,7 @@ ALLOWED_CLASSES = {
     # String/bytes types
     'str',
     'bytes',
+    'bytearray',
     # Container types
     'list',
     'tuple',
@@ -91,6 +92,7 @@ ALLOWED_CLASSES = {
     'AttributeError',
     'AssertionError',
     'MemoryError',
+    'BufferError',
     'NameError',
     'SyntaxError',
     'OSError',

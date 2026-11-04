@@ -574,6 +574,7 @@ fn buffer<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
         Value::InternBytes(id) => Ok(vm.interns.get_bytes(*id)),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(bytes) => Ok(bytes.as_slice()),
+            HeapData::ByteArray(bytes) => Ok(bytes.as_slice()),
             _ => Err(not_bytes_like(value, vm)),
         },
         _ => Err(not_bytes_like(value, vm)),

@@ -247,6 +247,7 @@ fn value_as_bytes<'a>(value: &'a Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
         Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::Bytes(bytes) => Some(bytes.as_slice()),
+            HeapData::ByteArray(bytes) => Some(bytes.as_slice()),
             _ => None,
         },
         _ => None,
