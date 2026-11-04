@@ -521,6 +521,38 @@ assert datetime.datetime(2024, 6, 15, 12, 0).weekday() == 5
 
 assert datetime.datetime(2024, 6, 15, 10, 30).date() == datetime.date(2024, 6, 15)
 
+# === toordinal / fromordinal ===
+
+assert datetime.date(1, 1, 1).toordinal() == 1
+assert datetime.date(2020, 2, 29).toordinal() == 737484
+assert datetime.date(9999, 12, 31).toordinal() == 3652059
+assert datetime.datetime(2020, 5, 17, 13, 45, tzinfo=datetime.timezone.utc).toordinal() == 737562
+assert datetime.date.fromordinal(1) == datetime.date(1, 1, 1)
+assert datetime.date.fromordinal(737484) == datetime.date(2020, 2, 29)
+assert datetime.date.fromordinal(3652059) == datetime.date(9999, 12, 31)
+assert datetime.date.fromordinal(True) == datetime.date(1, 1, 1)
+assert repr(datetime.datetime.fromordinal(737484)) == 'datetime.datetime(2020, 2, 29, 0, 0)'
+for call, error in [
+    (lambda: datetime.date.fromordinal(0), 'ValueError: ordinal must be >= 1'),
+    (lambda: datetime.datetime.fromordinal(-5), 'ValueError: ordinal must be >= 1'),
+    (lambda: datetime.date.fromordinal(3652060), 'ValueError: year must be in 1..9999, not 10000'),
+    (lambda: datetime.date.fromordinal(3652425), 'ValueError: year must be in 1..9999, not 10000'),
+    (lambda: datetime.date.fromordinal(3653886), 'ValueError: year must be in 1..9999, not 10004'),
+    (lambda: datetime.datetime.fromordinal(2**31 - 1), 'ValueError: year must be in 1..9999, not 5879611'),
+    (lambda: datetime.date.fromordinal(2**70), 'OverflowError: Python int too large to convert to C long'),
+    (lambda: datetime.date.fromordinal(1.5), "TypeError: 'float' object cannot be interpreted as an integer"),
+    (lambda: datetime.date.fromordinal(), 'TypeError: fromordinal() takes exactly 1 argument (0 given)'),
+    (lambda: datetime.datetime.fromordinal(1, 2), 'TypeError: fromordinal() takes exactly 1 argument (2 given)'),
+    (lambda: datetime.date.fromordinal(n=1), 'TypeError: fromordinal() takes no keyword arguments'),
+    (lambda: datetime.date(2020, 1, 1).toordinal(1), 'TypeError: date.toordinal() takes no arguments (1 given)'),
+    (lambda: datetime.datetime(2020, 1, 1).toordinal(1), 'TypeError: date.toordinal() takes no arguments (1 given)'),
+]:
+    try:
+        call()
+        assert False, 'expected an error'
+    except (ValueError, OverflowError, TypeError) as e:
+        assert f'{type(e).__name__}: {e}' == error
+
 # === datetime.timestamp() ===
 
 assert datetime.datetime(2024, 6, 15, 10, 30, 0, tzinfo=datetime.timezone.utc).timestamp() == 1718447400.0

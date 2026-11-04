@@ -676,6 +676,7 @@ impl Type {
             (Self::Date, Some(StaticStrings::Fromisoformat)) => {
                 date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
             }
+            (Self::Date, Some(StaticStrings::Fromordinal)) => date::class_fromordinal(vm, args).map(CallResult::Value),
             (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
                 date::class_fromtimestamp(vm, args).map(CallResult::Value)
             }
@@ -688,6 +689,9 @@ impl Type {
             }
             (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
                 datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+            }
+            (Self::DateTime, Some(StaticStrings::Fromordinal)) => {
+                datetime::class_fromordinal(vm, args).map(CallResult::Value)
             }
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
