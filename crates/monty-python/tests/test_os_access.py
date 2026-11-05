@@ -47,6 +47,9 @@ def test_create_exclusive_validation_precedes_mutation():
     for permissions in [-1, 0o1000]:
         with pytest.raises(ValueError, match='permissions must be between'):
             osa.path_create_exclusive(P('/new'), 'w', permissions=permissions)
+    for permissions in [0o001, 0o010, 0o100, 0o777]:
+        with pytest.raises(ValueError, match='execute permission bits'):
+            osa.path_create_exclusive(P('/new'), 'w', permissions=permissions)
     with pytest.raises(ValueError, match='update modes'):
         osa.path_create_exclusive(P('/new'), 'w+', permissions=0o600)
     with pytest.raises(FileNotFoundError):

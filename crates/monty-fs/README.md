@@ -33,9 +33,12 @@ Parent directories must already exist, and creation requires a writable mount ev
 The handle accepts the supported `r`, `rb`, `w`, `wb`, `a`, and `ab` modes; update modes are rejected.
 
 Native mounts use descriptor-relative exclusive creation, so checking and reserving the name are atomic.
-The `permissions` field accepts access bits from `0` through `0o777`, applied at creation on Unix subject to umask.
+The `permissions` field accepts read/write access bits (`0o666` mask), applied on Unix subject to umask.
+Execute bits and bits outside the access mask are rejected with `ValueError` before creation.
 Windows uses inherited filesystem permissions.
 Overlay mounts insert an empty overlay file and never create or replace a backing file.
+Their exclusive check and insertion hold a mutable borrow of the overlay state; the host must not concurrently modify
+backing entries during creation.
 Their permissions remain the mount's access policy and synthetic stat permissions, as with ordinary overlay writes.
 
 ## Monty crates

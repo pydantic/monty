@@ -640,16 +640,18 @@ pub struct OpenCallArgs {
 pub struct CreateExclusiveCallArgs {
     pub path: MontyPath,
     pub mode: FileMode,
-    /// Owner, group and other access bits, from `0` through `0o777`.
+    /// Owner, group and other read/write bits; execute bits are rejected.
     #[from_args(kw_only)]
     pub permissions: u32,
 }
 
 impl CreateExclusiveCallArgs {
-    /// Rejects reserved update modes and permission bits outside the access mask.
+    /// Rejects update modes, execute bits and permission bits outside the access mask.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.permissions > 0o777 {
             Err("permissions must be between 0 and 0o777")
+        } else if self.permissions & 0o111 != 0 {
+            Err("execute permission bits are not supported")
         } else if matches!(
             self.mode,
             FileMode::ReadUpdate(_) | FileMode::WriteUpdate(_) | FileMode::AppendUpdate(_)

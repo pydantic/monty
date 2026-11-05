@@ -1,9 +1,10 @@
 //! Exclusive creation must preserve occupied names and never write through an overlay.
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     fs,
+    path::Path,
     sync::{Arc, Barrier},
     thread,
 };
@@ -114,6 +115,11 @@ fn existing_and_dangling_symlinks_are_collisions() {
         }
         assert_eq!(fs::read(dir.path().join("target")).unwrap(), b"sentinel");
         assert!(!dir.path().join("absent").exists());
+        for (name, target) in [("link", "target"), ("dangling", "absent")] {
+            let path = dir.path().join(name);
+            assert!(fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+            assert_eq!(fs::read_link(path).unwrap(), Path::new(target));
+        }
     }
 }
 
@@ -217,18 +223,25 @@ fn malformed_arguments_do_not_create_files() {
     for backend in writable_modes() {
         let dir = TempDir::new().unwrap();
         let mut table = mount(&dir, backend);
-        for (mode, permissions) in [(FileMode::WriteUpdate(false), 0o600), (FileMode::Write(false), 0o1000)] {
-            assert!(
-                dispatch(
-                    &mut table,
-                    OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
-                        path: "/mnt/file".into(),
-                        mode,
-                        permissions,
-                    })
-                )
-                .is_err()
-            );
+        for (mode, permissions) in [
+            (FileMode::WriteUpdate(false), 0o600),
+            (FileMode::Write(false), 0o1000),
+            (FileMode::Write(false), 0o001),
+            (FileMode::Write(false), 0o010),
+            (FileMode::Write(false), 0o100),
+            (FileMode::Write(false), 0o777),
+        ] {
+            let error = dispatch(
+                &mut table,
+                OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
+                    path: "/mnt/file".into(),
+                    mode,
+                    permissions,
+                }),
+            )
+            .unwrap_err()
+            .into_exception();
+            assert_eq!(error.exc_type(), ExcType::ValueError);
         }
         assert_eq!(
             dispatch(&mut table, OsFunctionCall::Exists("/mnt/file".into())).unwrap(),
@@ -241,13 +254,27 @@ fn malformed_arguments_do_not_create_files() {
 #[cfg(unix)]
 #[test]
 fn permissions_are_applied_at_creation() {
-    let dir = TempDir::new().unwrap();
-    let mut table = mount(&dir, MountMode::ReadWrite);
-    dispatch(&mut table, create("/mnt/file", "w")).unwrap();
-    assert_eq!(
-        fs::metadata(dir.path().join("file")).unwrap().permissions().mode() & 0o177,
-        0
-    );
+    for permissions in [0o000, 0o400, 0o600, 0o640] {
+        let dir = TempDir::new().unwrap();
+        let mut table = mount(&dir, MountMode::ReadWrite);
+        let mut call = create("/mnt/file", "w");
+        let OsFunctionCall::CreateExclusive(args) = &mut call else {
+            unreachable!();
+        };
+        args.permissions = permissions;
+        dispatch(&mut table, call).unwrap();
+        // A control file applies the same process umask without changing that global setting.
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(permissions)
+            .open(dir.path().join("control"))
+            .unwrap();
+        let actual = fs::metadata(dir.path().join("file")).unwrap().permissions().mode() & 0o777;
+        let expected = fs::metadata(dir.path().join("control")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(actual, expected, "requested {permissions:o}");
+        assert_eq!(actual & !permissions, 0);
+    }
 }
 
 #[test]

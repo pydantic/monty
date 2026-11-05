@@ -1145,7 +1145,7 @@ fn os_call_open_round_trips_all_modes() {
 #[test]
 fn os_call_create_exclusive_round_trips_modes_and_permissions() {
     for mode in ["r", "rb", "w", "wb", "a", "ab"] {
-        for permissions in [0, 0o600, 0o777] {
+        for permissions in [0, 0o600, 0o666] {
             assert_os_call_round_trip(OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
                 path: "/mnt/new".into(),
                 mode: mode.parse().unwrap(),
@@ -1168,7 +1168,7 @@ fn os_call_create_exclusive_rejects_malformed_arguments() {
             Err(ProtoConvertError::InvalidFileMode(_))
         ));
     }
-    for permissions in [0o1000, 0o7777, u32::MAX] {
+    for permissions in [0o001, 0o010, 0o100, 0o777, 0o1000, 0o7777, u32::MAX] {
         let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
             path: "/mnt/new".to_owned(),
             mode: "w".to_owned(),

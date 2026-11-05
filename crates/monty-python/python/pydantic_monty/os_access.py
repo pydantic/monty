@@ -1224,6 +1224,8 @@ class OSAccess(AbstractOS):
         handle = MontyFileHandle(str(path), mode)
         if not 0 <= permissions <= 0o777:
             raise ValueError('permissions must be between 0 and 0o777')
+        if permissions & 0o111:
+            raise ValueError('execute permission bits are not supported')
         if self._get_entry(path) is not None:
             raise FileExistsError(f'[Errno 17] File exists: {str(path)!r}')
         self._write_file(path, b'' if handle.binary else '')

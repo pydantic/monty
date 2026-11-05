@@ -1193,19 +1193,23 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             if let Err(message) = args.validate() {
                 return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
             }
-            if get_virtual_file(&path).is_some() || is_virtual_dir(&path) {
-                return MontyException::new(ExcType::FileExistsError, Some(path)).into();
+            if path == "/" || get_virtual_file(&path).is_some() || is_virtual_dir(&path) {
+                return MontyException::new(
+                    ExcType::FileExistsError,
+                    Some(format!("[Errno 17] File exists: '{path}'")),
+                )
+                .into();
             }
-            if let Some((parent, _)) = path.rsplit_once('/')
-                && !parent.is_empty()
-                && !is_virtual_dir(parent)
-            {
-                let exc_type = if get_virtual_file(parent).is_some() {
-                    ExcType::NotADirectoryError
+            for (separator, _) in path.match_indices('/').filter(|(index, _)| *index > 0) {
+                let parent = &path[..separator];
+                let (exc_type, errno, message) = if get_virtual_file(parent).is_some() {
+                    (ExcType::NotADirectoryError, 20, "Not a directory")
+                } else if !is_virtual_dir(parent) {
+                    (ExcType::FileNotFoundError, 2, "No such file or directory")
                 } else {
-                    ExcType::FileNotFoundError
+                    continue;
                 };
-                return MontyException::new(exc_type, Some(path)).into();
+                return MontyException::new(exc_type, Some(format!("[Errno {errno}] {message}: '{path}'"))).into();
             }
             MUTABLE_VFS.with(|vfs| {
                 let mut vfs = vfs.borrow_mut();
@@ -3011,3 +3015,7 @@ datatest_stable::harness!(
     TEST_CASES_DIR,
     r"^.*\.py$",
 );
+
+#[cfg(test)]
+#[path = "../tests/units/create_exclusive.rs"]
+mod create_exclusive_tests;

@@ -367,7 +367,7 @@ impl Mount {
     fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
         if let OsFunctionCall::CreateExclusive(args) = &call {
             args.validate()
-                .map_err(|message| MountError::io_err(io::ErrorKind::InvalidInput, message, &args.path))?;
+                .map_err(|message| MountError::InvalidArgument(message.to_owned()))?;
         }
         let (mut ctx, mode) = self.backend();
         dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, mode)
