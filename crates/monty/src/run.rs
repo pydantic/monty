@@ -1,6 +1,7 @@
 //! Public interface for running Monty code.
 use std::{
     borrow::Cow,
+    collections::HashSet,
     mem,
     sync::{Arc, LazyLock},
 };
@@ -110,6 +111,17 @@ impl MontyRun {
     #[must_use]
     pub fn with_os_policy(mut self, os_policy: OsPolicy) -> Self {
         self.executor.program.os_policy = Arc::new(os_policy);
+        self
+    }
+
+    /// Names the host functions the host runs as coroutines: a direct call
+    /// `f(...)` to one of them streams as [`RunProgress::AsyncCall`] instead
+    /// of suspending, since a call site never asks the host for a name first.
+    /// A function reaching the sandbox as a value carries the flag itself
+    /// (`MontyObject::async_function`).
+    #[must_use]
+    pub fn with_async_functions(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.executor.program.async_functions = Arc::new(names.into_iter().collect());
         self
     }
 
@@ -270,6 +282,10 @@ pub(crate) struct Program {
     pub(crate) options: CompileOptions,
     /// OS-call policies shared with the REPL session; see [`MontyRun::with_os_policy`].
     pub(crate) os_policy: Arc<OsPolicy>,
+    /// Host functions the host runs as coroutines, shared with the REPL
+    /// session; see [`MontyRun::with_async_functions`].
+    #[serde(default)]
+    pub(crate) async_functions: Arc<HashSet<String>>,
     /// The user-facing script name (`main.py`), whose final component
     /// `__file__` is derived from. For REPL snippets this is the session's
     /// name (shared with it, not copied per feed), not the `<python-input-N>`
@@ -301,6 +317,9 @@ pub(crate) struct VmEnv<'h> {
     pub(crate) options: CompileOptions,
     /// Clock, sleep and random initialization policies.
     pub(crate) os_policy: &'h OsPolicy,
+    /// Host functions the host runs as coroutines, consulted when a call site
+    /// resolves an undefined name (`LoadGlobalCallable`).
+    pub(crate) async_functions: &'h HashSet<String>,
 }
 
 impl VmEnv<'_> {
@@ -332,12 +351,16 @@ impl Default for VmEnv<'static> {
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
             os_policy: &DEFAULT_OS_POLICY,
+            async_functions: &NO_ASYNC_FUNCTIONS,
         }
     }
 }
 
 /// Policies for VMs constructed without an executor.
 static DEFAULT_OS_POLICY: LazyLock<OsPolicy> = LazyLock::new(OsPolicy::default);
+
+/// No host function is a coroutine until the host names some.
+static NO_ASYNC_FUNCTIONS: LazyLock<HashSet<String>> = LazyLock::new(HashSet::new);
 
 /// The sandbox working directory used until a host sets one.
 pub(crate) const DEFAULT_CWD: &str = "/";
@@ -353,6 +376,8 @@ pub(crate) struct ReplSession<'a> {
     pub(crate) cwd: &'a Arc<str>,
     /// Clock, sleep and random initialization policies.
     pub(crate) os_policy: &'a Arc<OsPolicy>,
+    /// Host functions the host runs as coroutines; see `MontyRepl::set_async_functions`.
+    pub(crate) async_functions: &'a Arc<HashSet<String>>,
     /// Whether an earlier feed ran `from __future__ import annotations`, which
     /// persists for the rest of the session as in CPython's interactive mode.
     pub(crate) future_annotations: bool,
@@ -393,6 +418,7 @@ impl Executor {
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
                 os_policy: Arc::new(OsPolicy::default()),
+                async_functions: Arc::default(),
                 script_name: Arc::from(script_name),
                 cwd: Arc::from(DEFAULT_CWD),
             },
@@ -449,6 +475,7 @@ impl Executor {
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
                 os_policy: Arc::clone(session.os_policy),
+                async_functions: Arc::clone(session.async_functions),
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
             },
@@ -531,6 +558,7 @@ impl Executor {
                 assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
                 options,
                 os_policy: Arc::clone(session.os_policy),
+                async_functions: Arc::clone(session.async_functions),
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
             },
@@ -701,6 +729,7 @@ impl Program {
             assert_repr_max_bytes: self.assert_repr_max_bytes,
             options: self.options,
             os_policy: &self.os_policy,
+            async_functions: &self.async_functions,
         }
     }
 
@@ -714,6 +743,7 @@ impl Program {
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
             os_policy: Arc::new(OsPolicy::default()),
+            async_functions: Arc::default(),
             script_name: Arc::from(""),
             cwd: Arc::from(DEFAULT_CWD),
         }

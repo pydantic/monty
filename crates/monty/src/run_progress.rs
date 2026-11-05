@@ -9,8 +9,8 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
-    ResourceTracker, SourceRange,
+    AsyncCall, CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall,
+    PrintWriter, ResourceTracker, SourceRange,
 };
 
 use crate::{
@@ -39,6 +39,10 @@ pub enum RunProgress {
     /// Execution paused at an external function call, or a method call on a
     /// host object (`object_id` set).
     FunctionCall(FunctionCall),
+    /// The sandbox called a host coroutine function: stream the call to the
+    /// host and [`resume`](AsyncCallProgress::resume) at once with the future
+    /// the sandbox awaits.
+    AsyncCall(AsyncCallProgress),
     /// Execution paused for an OS-level operation (filesystem, network, etc.).
     OsCall(OsCall),
     /// All async tasks are blocked waiting for external futures to resolve.
@@ -55,6 +59,7 @@ impl RunProgress {
     pub(crate) fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
         match self {
             Self::FunctionCall(FunctionCall { snapshot, .. })
+            | Self::AsyncCall(AsyncCallProgress { snapshot, .. })
             | Self::OsCall(OsCall { snapshot, .. })
             | Self::NameLookup(NameLookup { snapshot, .. }) => {
                 Some((&mut snapshot.heap, &mut snapshot.executor.tables.interns))
@@ -70,6 +75,30 @@ impl RunProgress {
         match self {
             Self::FunctionCall(call) => Some(call),
             _ => None,
+        }
+    }
+
+    /// Consumes the progress and returns the [`AsyncCallProgress`] struct if
+    /// this is a streamed call to a host coroutine function.
+    #[must_use]
+    pub fn into_async_call(self) -> Option<AsyncCallProgress> {
+        match self {
+            Self::AsyncCall(call) => Some(call),
+            _ => None,
+        }
+    }
+
+    /// The streamed host calls the host has not resolved, for a restored run
+    /// to stream to its new host; empty once execution has completed.
+    #[must_use]
+    pub fn announced_calls(&self) -> Vec<AsyncCall> {
+        match self {
+            Self::FunctionCall(FunctionCall { snapshot, .. })
+            | Self::AsyncCall(AsyncCallProgress { snapshot, .. })
+            | Self::OsCall(OsCall { snapshot, .. })
+            | Self::NameLookup(NameLookup { snapshot, .. }) => snapshot.vm_state.announced_calls(),
+            Self::ResolveFutures(ResolveFutures { vm_state, .. }) => vm_state.announced_calls(),
+            Self::Complete(_) => Vec::new(),
         }
     }
 
@@ -224,6 +253,51 @@ impl FunctionCall {
             Some(self.call_id),
             print,
         )
+    }
+
+    /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        self.snapshot.abort(exc, print)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AsyncCallProgress
+// ---------------------------------------------------------------------------
+
+/// Execution paused at a call to a host coroutine function (one exported with
+/// `MontyObject::async_function`).
+///
+/// Unlike [`FunctionCall`] this takes no answer: the host streams
+/// [`call`](Self::call) to whoever runs the coroutine and calls
+/// [`resume`](Self::resume) at once, which answers the sandbox with a pending
+/// future for `call_id` and runs on. The host resolves the future through
+/// [`ResolveFutures::resume`] once every sandbox task is blocked. The sandbox
+/// thus never waits here, and `asyncio.gather` of host calls issues all of
+/// them before it blocks.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct AsyncCallProgress {
+    /// The call: name, arguments, id and position.
+    pub call: AsyncCall,
+    /// Internal execution snapshot.
+    snapshot: Snapshot,
+}
+
+impl AsyncCallProgress {
+    /// Returns the resource tracker while execution is suspended.
+    #[must_use]
+    pub fn tracker(&self) -> &ResourceTracker {
+        &self.snapshot.heap.tracker
+    }
+
+    /// Returns a mutable reference to the resource tracker, as [`FunctionCall::tracker_mut`].
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        &mut self.snapshot.heap.tracker
+    }
+
+    /// Answers the call with a pending future for its `call_id` and continues.
+    pub fn resume(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
+        self.snapshot.run(ExtFunctionResult::Future(self.call.call_id), print)
     }
 
     /// Aborts the feed with an uncatchable exception; see [`OsCall::abort`].
@@ -1048,6 +1122,8 @@ pub(crate) enum ConvertedExit {
         /// The call expression.
         position: SourceRange,
     },
+    /// A call to a host coroutine function, streamed rather than answered.
+    AsyncCall(AsyncCall),
     /// OS-level operation.
     OsCall {
         function_call: OsFunctionCall,
@@ -1103,11 +1179,23 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) 
             function_name,
             args,
             call_id,
+            is_async,
             ..
         }) => {
             let position = vm.suspension_position();
             let name = function_name.into_string(vm.interns);
             match vm.export_on_clock(|vm| args.into_call_args(vm)) {
+                Ok(args) if is_async => {
+                    let call = AsyncCall {
+                        function_name: name,
+                        args,
+                        call_id: call_id.raw(),
+                        position,
+                    };
+                    // kept until resolved, so a loaded dump can stream it again
+                    vm.announce_call(call_id, call.clone());
+                    ConvertedExit::AsyncCall(call)
+                }
                 Ok(args) => ConvertedExit::FunctionCall {
                     function_name: name,
                     args,
@@ -1252,6 +1340,10 @@ pub(crate) fn build_run_progress(
             position,
             new_snapshot!(),
         ))),
+        ConvertedExit::AsyncCall(call) => Ok(RunProgress::AsyncCall(AsyncCallProgress {
+            call,
+            snapshot: new_snapshot!(),
+        })),
         ConvertedExit::OsCall {
             function_call,
             call_id,

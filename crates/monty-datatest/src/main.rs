@@ -1894,6 +1894,9 @@ fn run_mount_fs_iter_loop(
                 // No external function calls expected in mount-fs tests.
                 panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
             }
+            RunProgress::AsyncCall(call) => {
+                panic!("unexpected AsyncCall in mount-fs test: {}", call.call.function_name);
+            }
             RunProgress::ResolveFutures(_) => {
                 panic!("unexpected ResolveFutures in mount-fs test");
             }
@@ -1934,6 +1937,8 @@ fn run_mount_fs_iter_loop(
 /// - Sync functions: result is passed immediately via `state.run()`
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, MontyException> {
+    // the host coroutine fixtures: a direct call streams rather than suspends
+    let exec = exec.with_async_functions(["async_call".to_owned(), "async_fail".to_owned()]);
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     // Host-side instance store: survives the dump/load round-trips below,
@@ -1987,6 +1992,17 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                     }
                 }
             }
+            RunProgress::AsyncCall(call) => {
+                // The streamed call: the harness "starts" the coroutine by
+                // storing its pre-built result, then answers with the future.
+                let result = match dispatch_external_call(&call.call.function_name, &call.call.args, &mut registry) {
+                    DispatchResult::Async(value) => ExtFunctionResult::Return(value),
+                    DispatchResult::AsyncFail(exception) => ExtFunctionResult::Error(exception),
+                    DispatchResult::Sync(_) => panic!("{} is declared async", call.call.function_name),
+                };
+                pending_results.push((call.call.call_id, result));
+                progress = call.resume(PrintWriter::Stdout)?;
+            }
             RunProgress::ResolveFutures(state) => {
                 // Hand back each pending result verbatim (Return or Error) so
                 // `ResolveFutures::resume` sees both success and failure cases.
@@ -2020,8 +2036,12 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                 let result = match lookup.name.as_str() {
                     // External functions — resolved as callable Function objects
                     "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
-                    | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
+                    | "make_mutable_point" | "make_user" | "make_empty" => {
                         NameLookupResult::from(MontyObject::function(lookup.name.clone(), None))
+                    }
+                    // Host coroutine functions — their calls stream
+                    "async_call" | "async_fail" => {
+                        NameLookupResult::from(MontyObject::async_function(lookup.name.clone(), None))
                     }
                     // Non-function constants — resolved as plain values
                     "CONST_INT" => NameLookupResult::from(MontyObject::int(42)),

@@ -180,6 +180,10 @@ fn drive_to_resolve_futures(mut progress: RunProgress) -> (ResolveFutures, Vec<u
                 collected_call_ids.push(call.call_id);
                 progress = call.resume_pending(PrintWriter::Stdout).unwrap();
             }
+            RunProgress::AsyncCall(call) => {
+                collected_call_ids.push(call.call.call_id);
+                progress = call.resume(PrintWriter::Stdout).unwrap();
+            }
             RunProgress::ResolveFutures(state) => {
                 return (state, collected_call_ids);
             }
@@ -1154,6 +1158,10 @@ fn drive_collecting_calls(mut progress: RunProgress) -> (ResolveFutures, Vec<(u3
                 collected.push((call.call_id, call.function_name.clone()));
                 progress = call.resume_pending(PrintWriter::Stdout).unwrap();
             }
+            RunProgress::AsyncCall(call) => {
+                collected.push((call.call.call_id, call.call.function_name.clone()));
+                progress = call.resume(PrintWriter::Stdout).unwrap();
+            }
             RunProgress::ResolveFutures(state) => {
                 return (state, collected);
             }
@@ -1923,4 +1931,203 @@ await main()
         MontyObject::list([MontyObject::string("doomed failed".to_string()), MontyObject::int(3)]),
         "only the awaited failure reached the main task"
     );
+}
+
+// === Host coroutine functions (`MontyObject::async_function`) ===
+
+/// Starts `code` with `fetch` declared a host coroutine function, and every
+/// other undefined name resolved to one.
+fn start_async_external(code: &str) -> RunProgress {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .unwrap()
+        .with_async_functions(["fetch".to_owned()]);
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    while let RunProgress::NameLookup(lookup) = progress {
+        let name = lookup.name.clone();
+        progress = lookup
+            .resume(
+                NameLookupResult::Value(MontyObject::async_function(name, None)),
+                PrintWriter::Stdout,
+            )
+            .unwrap();
+    }
+    progress
+}
+
+/// Takes the streamed call, checking its name and positional arguments, and resumes.
+fn expect_async_call(progress: RunProgress, name: &str, args: &[MontyObject]) -> (u32, RunProgress) {
+    let call = progress.into_async_call().expect("expected a streamed async call");
+    assert_eq!(call.call.function_name, name);
+    let actual: Vec<MontyObject> = call.call.args.args().map(|arg| arg.to_owned()).collect();
+    assert_eq!(actual, args);
+    let call_id = call.call.call_id;
+    (call_id, call.resume(PrintWriter::Stdout).unwrap())
+}
+
+/// A gather over a comprehension streams every call before anything blocks:
+/// one `ResolveFutures` lists them all, and they resolve in one step.
+#[test]
+fn async_function_calls_stream_before_the_sandbox_blocks() {
+    let mut progress =
+        start_async_external("import asyncio\nresults = await asyncio.gather(*[fetch(i) for i in range(3)])\nresults");
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let (call_id, next) = expect_async_call(progress, "fetch", &[MontyObject::int(i)]);
+        ids.push(call_id);
+        progress = next;
+    }
+    let state = progress.into_resolve_futures().expect("every task is blocked");
+    let mut pending = state.pending_call_ids().to_vec();
+    pending.sort_unstable();
+    assert_eq!(pending, ids);
+    let results = ids
+        .iter()
+        .map(|id| (*id, ExtFunctionResult::Return(MontyObject::int(i64::from(*id) * 10))))
+        .collect();
+    let progress = state.resume(results, PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list(ids.iter().map(|id| MontyObject::int(i64::from(*id) * 10)))
+    );
+}
+
+/// The call's result is a future the sandbox may hold and await later; the
+/// call itself streams at once, with the arguments as they were when made.
+#[test]
+fn async_function_result_is_awaited_later_with_arguments_captured_at_the_call() {
+    let progress = start_async_external("l = [1]\nx = fetch(l)\nl.append(2)\nawait x");
+    let (call_id, progress) = expect_async_call(progress, "fetch", &[MontyObject::list([MontyObject::int(1)])]);
+    let state = progress.into_resolve_futures().expect("blocked on the held future");
+    assert_eq!(state.pending_call_ids(), [call_id]);
+    let progress = state
+        .resume(
+            vec![(
+                call_id,
+                ExtFunctionResult::Return(MontyObject::string("done".to_owned())),
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::string("done".to_owned())
+    );
+}
+
+/// A call never awaited still reaches the host, and the snippet completes
+/// without blocking on it.
+#[test]
+fn unawaited_async_function_call_still_streams() {
+    let progress = start_async_external("fetch('fire and forget')\n42");
+    let (_, progress) = expect_async_call(progress, "fetch", &[MontyObject::string("fire and forget".to_owned())]);
+    assert_eq!(progress.into_complete().unwrap(), MontyObject::int(42));
+}
+
+/// A failed future raises at the `await`, catchable like any host exception.
+#[test]
+fn async_function_failure_raises_at_the_await() {
+    let progress =
+        start_async_external("try:\n    await fetch()\nexcept ValueError as e:\n    result = str(e)\nresult");
+    let (call_id, progress) = expect_async_call(progress, "fetch", &[]);
+    let state = progress.into_resolve_futures().unwrap();
+    let progress = state
+        .resume(
+            vec![(
+                call_id,
+                ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),
+            )],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::string("failed".to_owned())
+    );
+}
+
+/// A dump taken while calls are unresolved lists them for the loading host,
+/// and forgets each one as it resolves.
+#[test]
+fn loaded_dump_lists_unresolved_async_calls() {
+    let mut progress = start_async_external("import asyncio\nawait asyncio.gather(fetch('a'), fetch('b'))");
+    let (first, next) = expect_async_call(progress, "fetch", &[MontyObject::string("a".to_owned())]);
+    progress = next;
+    let (second, next) = expect_async_call(progress, "fetch", &[MontyObject::string("b".to_owned())]);
+    progress = next;
+    assert!(matches!(progress, RunProgress::ResolveFutures(_)));
+
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session");
+    };
+    let announced: Vec<(u32, String)> = loaded
+        .announced_calls()
+        .into_iter()
+        .map(|call| {
+            (
+                call.call_id,
+                String::try_from(&call.args.args().next().unwrap().to_owned()).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(announced, [(first, "a".to_owned()), (second, "b".to_owned())]);
+
+    let state = loaded.into_resolve_futures().unwrap();
+    let progress = state
+        .resume(
+            vec![(first, ExtFunctionResult::Return(MontyObject::int(1)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let remaining: Vec<u32> = progress.announced_calls().iter().map(|call| call.call_id).collect();
+    assert_eq!(remaining, [second]);
+    let state = progress.into_resolve_futures().unwrap();
+    let progress = state
+        .resume(
+            vec![(second, ExtFunctionResult::Return(MontyObject::int(2)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert!(progress.announced_calls().is_empty());
+    assert_eq!(
+        progress.into_complete().unwrap(),
+        MontyObject::list([MontyObject::int(1), MontyObject::int(2)])
+    );
+}
+
+/// A sync host function of the same name is a distinct object that still
+/// suspends on its call.
+#[test]
+fn sync_and_async_functions_of_one_name_are_distinct() {
+    let runner = MontyRun::new(
+        "a = fetch\nb = fetch_async\nassert a is not b\nawait b()".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let mut progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    while let RunProgress::NameLookup(lookup) = progress {
+        let value = if lookup.name == "fetch" {
+            MontyObject::function("fetch".to_owned(), None)
+        } else {
+            MontyObject::async_function("fetch".to_owned(), None)
+        };
+        progress = lookup
+            .resume(NameLookupResult::Value(value), PrintWriter::Stdout)
+            .unwrap();
+    }
+    let (call_id, progress) = expect_async_call(progress, "fetch", &[]);
+    let state = progress.into_resolve_futures().unwrap();
+    let progress = state
+        .resume(
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::none()))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(progress.into_complete().unwrap(), MontyObject::none());
 }

@@ -986,7 +986,7 @@ pub(crate) struct Heap {
     /// Live external functions indexed by name without owning heap references.
     ///
     /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
-    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    ext_function_cache: BTreeMap<(Arc<str>, bool), HeapId>,
     /// Live sandbox classes and instances by boundary uuid, so a value the host
     /// hands back resolves to the original object. Weak like
     /// `ext_function_cache`: cleared when the object is freed, rebuilt on restore.
@@ -1082,7 +1082,8 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
 
 /// A freed object's key in one of the heap's weak indexes.
 enum WeakIndexKey {
-    ExtFunction(Arc<str>),
+    /// The function's name and async flag; see [`WeakIndexes::ext_function_cache`].
+    ExtFunction((Arc<str>, bool)),
     Boundary(MontyUuid),
     HostType(MontyUuid),
 }
@@ -1090,7 +1091,9 @@ enum WeakIndexKey {
 /// The heap's weak (non-owning) indexes, rebuilt from the entries on restore.
 #[derive(Default)]
 struct WeakIndexes {
-    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
+    /// One live proxy per host function, keyed by name and async flag: the
+    /// same name exported both ways is two distinct objects.
+    ext_function_cache: BTreeMap<(Arc<str>, bool), HeapId>,
     boundary_index: BTreeMap<MontyUuid, HeapId>,
     host_type_index: BTreeMap<MontyUuid, HeapId>,
 }
@@ -1224,17 +1227,18 @@ impl Heap {
         Value::Ref(EMPTY_TUPLE_ID)
     }
 
-    /// Returns the external function for `name`, reusing a live object when possible.
+    /// Returns the external function for `name` (async when `is_async`),
+    /// reusing a live object when possible.
     ///
     /// The cache holds no reference count of its own. Its entry is removed when the
     /// last owning reference is dropped, before the heap slot can be reused.
-    pub fn get_ext_function(&mut self, name: &str) -> Value {
-        if let Some(id) = self.ext_function_cache.get(name).copied() {
+    pub fn get_ext_function(&mut self, name: &str, is_async: bool) -> Value {
+        let function = ExtFunction::new(name, is_async);
+        let cache_key = function.cache_key();
+        if let Some(id) = self.ext_function_cache.get(&cache_key).copied() {
             self.inc_ref(id);
             Value::Ref(id)
         } else {
-            let function = ExtFunction::new(name);
-            let cache_key = function.cache_key();
             let id = self.allocate(HeapData::ExtFunction(function));
             let previous = self.ext_function_cache.insert(cache_key, id);
             debug_assert!(previous.is_none());
@@ -1242,10 +1246,14 @@ impl Heap {
         }
     }
 
-    /// Removes `id` from the weak cache without disturbing a duplicate-name winner.
-    fn remove_ext_function_cache_entry(cache: &mut BTreeMap<Arc<str>, HeapId>, name: &str, id: HeapId) {
-        if cache.get(name) == Some(&id) {
-            cache.remove(name);
+    /// Removes `id` from the weak cache without disturbing a duplicate-key winner.
+    fn remove_ext_function_cache_entry(
+        cache: &mut BTreeMap<(Arc<str>, bool), HeapId>,
+        key: &(Arc<str>, bool),
+        id: HeapId,
+    ) {
+        if cache.get(key) == Some(&id) {
+            cache.remove(key);
         }
     }
 
@@ -1266,8 +1274,8 @@ impl Heap {
     /// restored dump may hold duplicates).
     fn remove_weak_index_entry(&mut self, key: Option<WeakIndexKey>, id: HeapId) {
         match key {
-            Some(WeakIndexKey::ExtFunction(name)) => {
-                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &name, id);
+            Some(WeakIndexKey::ExtFunction(key)) => {
+                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &key, id);
             }
             Some(WeakIndexKey::Boundary(uuid)) if self.boundary_index.get(&uuid) == Some(&id) => {
                 self.boundary_index.remove(&uuid);

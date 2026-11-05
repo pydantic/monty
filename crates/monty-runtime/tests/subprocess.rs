@@ -146,6 +146,7 @@ impl ChildProc {
             inputs,
             values: Some(values),
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         }));
         self.recv_turn()
@@ -191,6 +192,7 @@ impl ChildProc {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         }));
         self.expect_death();
@@ -3212,6 +3214,7 @@ fn killed_child_is_detected_as_eof() {
         inputs: vec![].into(),
         values: None,
         skip_type_check: false,
+        async_functions: vec![].into(),
         cwd: "/".to_owned(),
     }));
     thread::sleep(Duration::from_millis(200));

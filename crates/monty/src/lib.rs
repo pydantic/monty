@@ -60,10 +60,10 @@ pub use crate::{
     },
     parse::type_check_nesting_exception,
     repl::{
-        CheckedSource, MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,
-        ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,
+        CheckedSource, MontyRepl, ReplAsyncCall, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall,
+        ReplProgress, ReplResolveFutures, ReplStartError, detect_repl_continuation_mode,
     },
     run::MontyRun,
-    run_progress::{FunctionCall, NameLookup, OsCall, ResolveFutures, RunProgress},
+    run_progress::{AsyncCallProgress, FunctionCall, NameLookup, OsCall, ResolveFutures, RunProgress},
     source_nesting::source_within_nesting_bound,
 };

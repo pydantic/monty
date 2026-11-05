@@ -46,8 +46,14 @@ pub(crate) enum CallResult {
     /// Propagate or require synchronous completion; dropping this result does not pop the frame.
     FramePushed,
     /// External function call requested - VM should pause and return to caller.
-    /// The `EitherStr` is the name of the external function (interned or heap-owned).
-    External(EitherStr, ArgValues),
+    External {
+        /// The name of the external function (interned or heap-owned).
+        name: EitherStr,
+        args: ArgValues,
+        /// The host runs it as a coroutine: the VM answers the call with a
+        /// future itself and only streams it (see `FrameExit::ExternalCall`).
+        is_async: bool,
+    },
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.
     ///
     /// The host executes the OS operation and resumes the VM with the result.
@@ -165,7 +171,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
-            Self::External(_, args) | Self::MethodCall { args, .. } => {
+            Self::External { args, .. } | Self::MethodCall { args, .. } => {
                 args.drop_with(heap);
             }
             Self::OsCall(call) => call.drop_with(heap),
@@ -454,8 +460,8 @@ impl<'h> VM<'h> {
     #[cold]
     fn unsupported_call_result(&mut self, result: CallResult) -> RunError {
         let error = match &result {
-            CallResult::External(function_name, _) => {
-                ExcType::not_implemented_synchronous_call("external function", function_name.as_str(self.interns))
+            CallResult::External { name, .. } => {
+                ExcType::not_implemented_synchronous_call("external function", name.as_str(self.interns))
             }
             CallResult::OsCall(call) | CallResult::OsCallWithEffect { call, .. } => {
                 ExcType::not_implemented_synchronous_call("OS function", call.name())

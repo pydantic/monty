@@ -9,12 +9,12 @@
 //! cloned, so the cost of a feed depends on the snippet, not on how much the
 //! session has already run.
 
-use std::{mem, sync::Arc};
+use std::{collections::HashSet, mem, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
-    ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
+    AsyncCall, CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy,
+    PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
@@ -86,6 +86,10 @@ pub struct MontyRepl {
     /// [`set_cwd`](Self::set_cwd) chose, then whatever `os.chdir` left the
     /// last snippet in — the directory is session state, like the globals.
     cwd: Arc<str>,
+    /// Host functions the host runs as coroutines, by name; see
+    /// [`set_async_functions`](Self::set_async_functions).
+    #[serde(default)]
+    async_functions: Arc<HashSet<String>>,
     /// The session's `random` state, carried between snippets like the
     /// globals so a `random.seed()` in one feed governs the draws of the next.
     random: SessionRandom,
@@ -131,6 +135,7 @@ impl MontyRepl {
             options,
             os_policy: Arc::new(OsPolicy::default()),
             cwd: Arc::from(DEFAULT_CWD),
+            async_functions: Arc::default(),
             random: SessionRandom::default(),
             modules: ModuleCache::default(),
             future_annotations: false,
@@ -185,6 +190,14 @@ impl MontyRepl {
     /// again.
     pub fn set_cwd(&mut self, cwd: &str) {
         self.cwd = canonical_cwd(cwd);
+    }
+
+    /// Names the host functions the host runs as coroutines, replacing the
+    /// previous list: a direct call `f(...)` to one of them streams as a
+    /// [`ReplProgress::AsyncCall`] instead of suspending (a call site never
+    /// asks the host for a name first). Persists in a dump.
+    pub fn set_async_functions(&mut self, names: impl IntoIterator<Item = String>) {
+        self.async_functions = Arc::new(names.into_iter().collect());
     }
 
     /// Returns the resource tracker that will be used for the next snippet.
@@ -274,6 +287,7 @@ impl MontyRepl {
             script_name: &this.script_name,
             cwd: &this.cwd,
             os_policy: &this.os_policy,
+            async_functions: &this.async_functions,
             future_annotations: this.future_annotations,
         };
         let mut executor = match Executor::new_repl_snippet(
@@ -384,6 +398,7 @@ impl MontyRepl {
             script_name: &self.script_name,
             cwd: &self.cwd,
             os_policy: &self.os_policy,
+            async_functions: &self.async_functions,
             future_annotations: self.future_annotations,
         };
         let mut executor = Executor::new_repl_snippet(
@@ -502,6 +517,7 @@ impl MontyRepl {
                 script_name: &self.script_name,
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
+                async_functions: &self.async_functions,
                 future_annotations: self.future_annotations,
             },
         )?;
@@ -700,6 +716,9 @@ impl Drop for MontyRepl {
 pub enum ReplProgress {
     /// Execution paused at an external function call or dataclass method call.
     FunctionCall(ReplFunctionCall),
+    /// The sandbox called a host coroutine function: stream the call and
+    /// [`resume`](ReplAsyncCall::resume) at once; see `RunProgress::AsyncCall`.
+    AsyncCall(ReplAsyncCall),
     /// Execution paused for an OS-level operation.
     OsCall(ReplOsCall),
     /// All async tasks are blocked waiting for external futures to resolve.
@@ -735,6 +754,7 @@ impl ReplProgress {
     pub(crate) fn heap_and_interns(&mut self) -> (&mut Heap, &mut Interns) {
         match self {
             Self::FunctionCall(ReplFunctionCall { snapshot, .. })
+            | Self::AsyncCall(ReplAsyncCall { snapshot, .. })
             | Self::OsCall(ReplOsCall { snapshot, .. })
             | Self::NameLookup(ReplNameLookup { snapshot, .. }) => {
                 (&mut snapshot.repl.heap, &mut snapshot.executor.tables.interns)
@@ -752,6 +772,29 @@ impl ReplProgress {
         match self {
             Self::FunctionCall(call) => Some(call),
             _ => None,
+        }
+    }
+
+    /// Consumes the progress and returns the [`ReplAsyncCall`] struct.
+    #[must_use]
+    pub fn into_async_call(self) -> Option<ReplAsyncCall> {
+        match self {
+            Self::AsyncCall(call) => Some(call),
+            _ => None,
+        }
+    }
+
+    /// The streamed host calls the host has not resolved, for a `Load` to
+    /// stream to the restored session's host; empty between feeds.
+    #[must_use]
+    pub fn announced_calls(&self) -> Vec<AsyncCall> {
+        match self {
+            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
+            | Self::AsyncCall(ReplAsyncCall { snapshot, .. })
+            | Self::OsCall(ReplOsCall { snapshot, .. })
+            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => snapshot.vm_state.announced_calls(),
+            Self::ResolveFutures(ReplResolveFutures { vm_state, .. }) => vm_state.announced_calls(),
+            Self::Complete { .. } => Vec::new(),
         }
     }
 
@@ -793,6 +836,7 @@ impl ReplProgress {
     pub fn into_repl(self) -> MontyRepl {
         match self {
             Self::FunctionCall(call) => call.into_repl(),
+            Self::AsyncCall(call) => call.into_repl(),
             Self::OsCall(call) => call.into_repl(),
             Self::ResolveFutures(state) => state.into_repl(),
             Self::NameLookup(lookup) => lookup.into_repl(),
@@ -808,6 +852,7 @@ impl ReplProgress {
     pub fn tracker(&self) -> &ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),
+            Self::AsyncCall(call) => call.snapshot.repl.tracker(),
             Self::OsCall(call) => call.snapshot.repl.tracker(),
             Self::ResolveFutures(state) => state.repl.tracker(),
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker(),
@@ -819,6 +864,7 @@ impl ReplProgress {
     pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::AsyncCall(call) => call.snapshot.repl.tracker_mut(),
             Self::OsCall(call) => call.snapshot.repl.tracker_mut(),
             Self::ResolveFutures(state) => state.repl.tracker_mut(),
             Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
@@ -835,6 +881,7 @@ impl ReplProgress {
         let os_policy = Arc::new(os_policy);
         match self {
             Self::FunctionCall(call) => call.snapshot.set_os_policy(os_policy),
+            Self::AsyncCall(call) => call.snapshot.set_os_policy(os_policy),
             Self::OsCall(call) => call.snapshot.set_os_policy(os_policy),
             Self::ResolveFutures(state) => state.set_os_policy(os_policy),
             Self::NameLookup(lookup) => lookup.snapshot.set_os_policy(os_policy),
@@ -908,6 +955,42 @@ impl ReplFunctionCall {
             Some(self.call_id),
             print,
         )
+    }
+
+    /// Aborts the snippet with an uncatchable exception; see [`ReplOsCall::abort`].
+    pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.abort(exc, print)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReplAsyncCall
+// ---------------------------------------------------------------------------
+
+/// REPL execution paused at a call to a host coroutine function; the REPL-aware
+/// counterpart of [`AsyncCallProgress`](crate::AsyncCallProgress).
+///
+/// Takes no answer: stream [`call`](Self::call) to the host and
+/// [`resume`](Self::resume) at once, which answers the sandbox with a pending
+/// future for the call that [`ReplResolveFutures::resume`] later settles.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReplAsyncCall {
+    /// The call: name, arguments, id and position.
+    pub call: AsyncCall,
+    /// Internal REPL execution snapshot.
+    snapshot: ReplSnapshot,
+}
+
+impl ReplAsyncCall {
+    /// Extracts the REPL session, discarding the in-flight execution state.
+    #[must_use]
+    pub fn into_repl(self) -> MontyRepl {
+        self.snapshot.into_repl()
+    }
+
+    /// Answers the call with a pending future for its `call_id` and continues.
+    pub fn resume(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run(ExtFunctionResult::Future(self.call.call_id), print)
     }
 
     /// Aborts the snippet with an uncatchable exception; see [`ReplOsCall::abort`].
@@ -1579,6 +1662,10 @@ fn build_repl_progress(
             object_id,
             allow_eager_await,
             position,
+            snapshot: new_repl_snapshot!(),
+        })),
+        ConvertedExit::AsyncCall(call) => Ok(ReplProgress::AsyncCall(ReplAsyncCall {
+            call,
             snapshot: new_repl_snapshot!(),
         })),
         ConvertedExit::OsCall {

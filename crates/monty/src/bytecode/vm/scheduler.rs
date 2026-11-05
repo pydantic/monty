@@ -8,6 +8,7 @@
 use std::{collections::VecDeque, mem};
 
 use ahash::AHashMap;
+use monty_types::AsyncCall;
 use smallvec::{SmallVec, smallvec};
 
 use super::{FrameNamespace, exceptions::CaughtException};
@@ -143,6 +144,11 @@ pub(crate) struct Scheduler {
     /// the future entry alive between yield and resume even if no awaiter is
     /// holding a `Value::Ref` to it.
     pending_externals: AHashMap<CallId, HeapId>,
+    /// The calls to host coroutine functions answered with a future here and
+    /// streamed to the host (see `RunProgress::AsyncCall`), kept until the host
+    /// resolves them so a loaded dump can stream them to its new host again.
+    #[serde(default)]
+    announced: AHashMap<CallId, AsyncCall>,
     /// Index mapping a spawned coroutine's `HeapId` to the `TaskId` driving
     /// it. Populated in [`Scheduler::spawn`] and removed in
     /// [`Scheduler::cancel_task`]. Lets `GatherFuture` and other call sites
@@ -165,6 +171,7 @@ impl Scheduler {
             next_task_id: 1,
             next_call_id: 0,
             pending_externals: AHashMap::new(),
+            announced: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
         }
     }
@@ -221,8 +228,25 @@ impl Scheduler {
     ///
     /// The caller becomes responsible for the inc_ref previously held by the
     /// scheduler (typically dec_ref'd once the state transition is committed).
+    /// A streamed call resolved this way is forgotten with it.
     pub fn take_pending_external(&mut self, call_id: CallId) -> Option<HeapId> {
+        self.announced.remove(&call_id);
         self.pending_externals.remove(&call_id)
+    }
+
+    /// Records a streamed call to a host coroutine function, until its future
+    /// is resolved.
+    pub fn announce(&mut self, call_id: CallId, call: AsyncCall) {
+        let prev = self.announced.insert(call_id, call);
+        debug_assert!(prev.is_none(), "announce: CallId already announced");
+    }
+
+    /// The streamed calls whose futures the host has not resolved, in call
+    /// order; a loaded dump streams them to its new host.
+    pub fn announced_calls(&self) -> Vec<AsyncCall> {
+        let mut calls: Vec<AsyncCall> = self.announced.values().cloned().collect();
+        calls.sort_by_key(|call| call.call_id);
+        calls
     }
 
     /// Marks the current task as `Blocked` on the awaitable at `awaitable_id`.
@@ -420,6 +444,7 @@ impl Scheduler {
         for (_, future_id) in mem::take(&mut self.pending_externals) {
             heap.dec_ref(future_id);
         }
+        self.announced.clear();
         let task_ids: Vec<TaskId> = self.tasks.keys().copied().collect();
         for task_id in task_ids {
             self.cancel_task(task_id, heap);

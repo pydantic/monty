@@ -27,7 +27,7 @@ pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
+use monty_types::{AsyncCall, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
@@ -179,7 +179,10 @@ pub enum FrameExit {
     ///
     /// The caller should execute the external function and call `resume()`
     /// with the result. The `call_id` allows the host to use async resolution
-    /// by calling `run_pending()` instead of `run(result)`.
+    /// by calling `run_pending()` instead of `run(result)`. A call to a
+    /// function the host marked async (`is_async`) is answered with a future
+    /// at once rather than a result: the caller streams it to the host and
+    /// resumes as for `run_pending()` (see `RunProgress::AsyncCall`).
     ExternalCall {
         /// Name of the external function to call (interned or heap-owned).
         function_name: EitherStr,
@@ -187,6 +190,8 @@ pub enum FrameExit {
         args: ArgValues,
         /// Unique ID for this call, used for async correlation.
         call_id: CallId,
+        /// The host runs this function as a coroutine; see above.
+        is_async: bool,
         /// Optional bytecode IP of the load instruction that produced this `ExtFunction`.
         ///
         /// When a `LoadGlobalCallable` opcode auto-injects an `ExtFunction`
@@ -704,6 +709,12 @@ pub(crate) struct AbandonedState {
 }
 
 impl VMSnapshot {
+    /// The streamed host calls the host has not resolved; see
+    /// [`Scheduler::announced_calls`].
+    pub(crate) fn announced_calls(&self) -> Vec<AsyncCall> {
+        self.scheduler.announced_calls()
+    }
+
     /// Discards the in-flight execution state of a snapshot that will never be
     /// restored, releasing every heap reference it holds (operand and exception
     /// stacks, scheduler tasks, pending resume effects), and returns the
@@ -1119,6 +1130,12 @@ impl<'h> VM<'h> {
         self.scheduler.allocate_call_id()
     }
 
+    /// Records a streamed call to a host coroutine function until the host
+    /// resolves it; see [`Scheduler::announce`].
+    pub(crate) fn announce_call(&mut self, call_id: CallId, call: AsyncCall) {
+        self.scheduler.announce(call_id, call);
+    }
+
     /// Returns true if we're on the main task (or no async at all).
     ///
     /// This is used to determine whether a `ReturnValue` at the last frame means
@@ -1210,10 +1227,11 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
-            CallResult::External(name, args) => FrameExit::ExternalCall {
+            CallResult::External { name, args, is_async } => FrameExit::ExternalCall {
                 function_name: name,
                 args,
                 call_id: self.allocate_call_id(),
+                is_async,
                 name_load_ip: self.ext_function_load_ip.take(),
             },
             CallResult::OsCall(call) => return self.prepare_os_call(call, None),
@@ -2675,7 +2693,11 @@ impl<'h> VM<'h> {
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            let function = self.heap.get_ext_function(self.interns.get_str(name_id));
+            // the host names the functions it runs as coroutines ahead of the
+            // feed, since a call site never asks it before calling
+            let name = self.interns.get_str(name_id);
+            let is_async = self.env.async_functions.contains(name);
+            let function = self.heap.get_ext_function(name, is_async);
             self.push(function);
         } else {
             self.push(value);

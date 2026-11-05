@@ -477,6 +477,7 @@ fn execute_repl_with_mounts(
             let outcome = match progress {
                 ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
                 ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Stdout),
+                ReplProgress::AsyncCall(call) => call.abort(exc, PrintWriter::Stdout),
                 ReplProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Stdout),
                 ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Stdout),
                 ReplProgress::Complete { .. } => unreachable!("only suspensions are counted"),
@@ -500,6 +501,12 @@ fn execute_repl_with_mounts(
                 }
             }
             ReplProgress::FunctionCall(call) => {
+                return Err((
+                    call.into_repl(),
+                    "external function calls not supported in CLI".to_owned(),
+                ));
+            }
+            ReplProgress::AsyncCall(call) => {
                 return Err((
                     call.into_repl(),
                     "external function calls not supported in CLI".to_owned(),
@@ -538,6 +545,7 @@ fn run_until_complete(
             progress = match progress {
                 RunProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
                 RunProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Stdout),
+                RunProgress::AsyncCall(call) => call.abort(exc, PrintWriter::Stdout),
                 RunProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Stdout),
                 RunProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Stdout),
                 RunProgress::Complete(_) => unreachable!("only suspensions are counted"),
@@ -552,6 +560,12 @@ fn run_until_complete(
                 progress = call
                     .resume(return_value, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
+            }
+            RunProgress::AsyncCall(call) => {
+                return Err(format!(
+                    "async futures not supported in CLI: {}",
+                    call.call.function_name
+                ));
             }
             RunProgress::ResolveFutures(state) => {
                 return Err(format!(
@@ -629,6 +643,7 @@ impl SuspensionBudget {
     fn from_progress(progress: &RunProgress) -> Self {
         let limit = match progress {
             RunProgress::FunctionCall(call) => call.tracker().max_suspensions(),
+            RunProgress::AsyncCall(call) => call.tracker().max_suspensions(),
             RunProgress::OsCall(call) => call.tracker().max_suspensions(),
             RunProgress::NameLookup(lookup) => lookup.tracker().max_suspensions(),
             RunProgress::ResolveFutures(state) => state.tracker().max_suspensions(),

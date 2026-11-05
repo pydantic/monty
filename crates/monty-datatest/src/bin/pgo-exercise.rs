@@ -127,9 +127,8 @@ async fn run_code(
 fn name_lookup_value(name: String) -> Option<MontyObject> {
     match name.as_str() {
         "add_ints" | "concat_strings" | "return_value" | "get_list" | "raise_error" | "make_point"
-        | "make_mutable_point" | "make_user" | "make_empty" | "async_call" | "async_fail" => {
-            Some(MontyObject::function(name, None))
-        }
+        | "make_mutable_point" | "make_user" | "make_empty" => Some(MontyObject::function(name, None)),
+        "async_call" | "async_fail" => Some(MontyObject::async_function(name, None)),
         "CONST_INT" => Some(MontyObject::int(42)),
         "CONST_STR" => Some(MontyObject::string("hello".to_owned())),
         #[expect(clippy::approx_constant, reason = "3.14 is the test fixture value")]
