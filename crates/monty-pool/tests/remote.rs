@@ -3313,7 +3313,9 @@ async fn closing_a_pool_keeps_the_remote_close_bounded() {
     assert!(futures_util::poll!(Box::pin(pool.close()).as_mut()).is_ready());
     checkout.finish().await.unwrap();
     end_seen.await.unwrap();
-    timeout(Duration::from_secs(3), pool.close())
+    let mut close = Box::pin(pool.close());
+    assert!(futures_util::poll!(close.as_mut()).is_pending());
+    timeout(Duration::from_secs(3), close)
         .await
         .expect("the existing close grace bounds an unresponsive peer");
     release.send(()).unwrap();

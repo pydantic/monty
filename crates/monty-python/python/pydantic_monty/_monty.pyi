@@ -1071,9 +1071,12 @@ class AsyncMontyRemote:
     turns are network-bound. `checkout()` yields the same `AsyncMontySession`.
     `AsyncMontyWebsocket` is the same class under its former name.
 
-    Pool exit waits for departed streams to close, bounded by their existing
-    one-second close grace. Keep stream-scoped credentials valid until exit
-    completes. This does not prove that the server committed its final work.
+    Pool exit waits for retained graceful closes, each within its existing
+    one-second grace. At most `max_processes` closes are retained. Excess
+    closes reset their streams immediately. Finish sessions before pool exit
+    if you use its completion to end their credential lifetime. Keep those
+    credentials valid until exit completes. Live checkouts can outlive the pool.
+    Stream closure does not prove that the server committed its final work.
 
     A `monty-server` enforces its own policy on top of the pool's. On SIGTERM
     drain it answers the session's next request with `MontyShutdown`, whose

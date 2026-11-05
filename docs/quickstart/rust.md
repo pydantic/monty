@@ -185,9 +185,11 @@ Those workers are single-use, never prewarmed or returned to the pool, and isola
 responsibility.
 See [the security model](../security.md#remote-workers) before using it.
 
-Finish the sessions before calling `Pool::close` to wait for their remote streams to close.
-That wait ends when the server closes each stream or its existing one-second close grace expires.
-Keep stream-scoped credentials valid until pool close completes. Sessions still checked out remain usable.
+Finish sessions before calling `Pool::close` if you use its completion to end their credential lifetime.
+The call waits for retained graceful closes, up to `max_processes` streams.
+Each wait ends when the server closes its stream or its existing one-second grace expires.
+Excess closes reset their streams immediately. Keep credentials valid until pool close completes.
+Live checkouts can outlive the pool.
 Stream closure does not prove that the server committed its final work.
 
 ### Host decode budget
