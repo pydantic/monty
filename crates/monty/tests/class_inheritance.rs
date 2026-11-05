@@ -3265,5 +3265,3 @@ Base(*args)
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
-
-
