@@ -60,16 +60,18 @@ strip = false
 # is required so the crates can be published to crates.io (`cargo publish`
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
-# RELEASING.md.
-monty = { path = "crates/monty", version = "1.4.0" }
-monty-types = { path = "crates/monty-types", version = "1.4.0" }
-monty-alloc = { path = "crates/monty-alloc", version = "1.4.0" }
-monty-fs = { path = "crates/monty-fs", version = "1.4.0" }
-monty-macros = { path = "crates/monty-macros", version = "1.4.0" }
-monty-proto = { path = "crates/monty-proto", version = "1.4.0" }
-monty-pool = { path = "crates/monty-pool", version = "1.4.0" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "1.4.0" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "1.4.0" }
+# RELEASING.md. They are exact (`=`) because the crates' APIs change between
+# minor releases: a caret range lets a published `monty` resolve a newer,
+# incompatible `monty-types` (#981).
+monty = { path = "crates/monty", version = "=1.4.0" }
+monty-types = { path = "crates/monty-types", version = "=1.4.0" }
+monty-alloc = { path = "crates/monty-alloc", version = "=1.4.0" }
+monty-fs = { path = "crates/monty-fs", version = "=1.4.0" }
+monty-macros = { path = "crates/monty-macros", version = "=1.4.0" }
+monty-proto = { path = "crates/monty-proto", version = "=1.4.0" }
+monty-pool = { path = "crates/monty-pool", version = "=1.4.0" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "=1.4.0" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "=1.4.0" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.14"
 ruff_python_stdlib = "0.0.14"
