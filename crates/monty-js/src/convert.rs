@@ -707,7 +707,11 @@ impl<'e> GraphEncoder<'e> {
                 let name: String = func_obj
                     .get_named_property::<String>("name")
                     .unwrap_or_else(|_| "<anonymous>".to_string());
-                Ok(self.leaf(MontyNode::Function { name, docstring: None }))
+                Ok(self.leaf(MontyNode::Function {
+                    name,
+                    docstring: None,
+                    is_async: is_async_function(&func_obj),
+                }))
             }
             ValueType::Symbol | ValueType::External => {
                 // These JS types don't have Monty equivalents
@@ -1227,4 +1231,14 @@ fn get_string_property(obj: &Object, name: &str) -> Result<Option<String>> {
     } else {
         Ok(None)
     }
+}
+
+/// Whether a JS function was declared `async function`: its constructor is
+/// `AsyncFunction`. A plain function returning a promise is not detected, and
+/// its calls suspend as any sync function's do.
+pub(crate) fn is_async_function(function: &Object) -> bool {
+    function
+        .get_named_property::<Object>("constructor")
+        .and_then(|constructor| constructor.get_named_property::<String>("name"))
+        .is_ok_and(|name| name == "AsyncFunction")
 }

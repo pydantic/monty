@@ -5,7 +5,7 @@
 // binary, and wraps the native classes in the public API.
 
 import { availableParallelism } from 'node:os'
-import { NativePool } from '../native-addon.js'
+import { NativePool, decodeAsyncCall } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
 import {
   type AssertMessageAnnotations,
@@ -205,7 +205,7 @@ export class Monty {
     const native = this.native.checkout(nativeCheckoutOptions(options))
     const telemetryContext = captureTelemetryContext()
     await enterSession(native, telemetryContext)
-    return new MontySession(native, modules)
+    return new MontySession(native, modules, decodeAsyncCall)
   }
 
   /**

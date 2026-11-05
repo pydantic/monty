@@ -37,13 +37,13 @@ use monty_pool::{
 };
 use monty_types::{
     unstable::{self, NodeId},
-    AssertMessageAnnotations, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject, NameLookupResult,
-    NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, AsyncCall, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject,
+    NameLookupResult, NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
-        Array, BigInt, Buffer, ClassInstance, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
-        Unknown,
+        Array, BigInt, Buffer, ClassInstance, External, FnArgs, FromNapiValue, Function, JsObjectValue, Object,
+        PromiseRaw, Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Error, Result,
@@ -70,6 +70,10 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// The per-turn JS print callback, reached from the turn future through a
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
+
+/// The JS sink for streamed async calls: an opaque call handle (for
+/// `decodeAsyncCall`) and the call span's key.
+type AsyncCallCallback<'env> = Function<'env, FnArgs<(External<AsyncCall>, Option<String>)>, UnknownReturnValue>;
 
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
@@ -224,6 +228,9 @@ pub struct NativeFeedOptions {
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
     pub skip_type_check: bool,
+    /// The `externalLookup` names bound to `async function`s: a direct call to
+    /// one streams to the session's async-call sink instead of suspending.
+    pub async_functions: Option<Vec<String>>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -556,18 +563,63 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
-        let NativeFeedOptions { cwd, skip_type_check } = options;
+        let NativeFeedOptions {
+            cwd,
+            skip_type_check,
+            async_functions,
+        } = options;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     checkout
-                        .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
+                        .feed_with_cwd(
+                            code,
+                            inputs,
+                            mounts,
+                            cwd.as_deref(),
+                            skip_type_check,
+                            async_functions.unwrap_or_default(),
+                            on_print,
+                        )
                         .await
                 })
             }),
         )
+    }
+
+    /// Installs the session's sink for the calls the sandbox makes to
+    /// `async function`s: `on_async_call` receives each one, as an opaque
+    /// handle for `decodeAsyncCall` plus the call span's key, while the feed turn is in flight — the
+    /// sandbox already holds a future for it and runs on, so the callback
+    /// starts the host function and the TypeScript layer settles the future
+    /// at the next `resolveFutures`. Install before the first feed or load.
+    #[napi]
+    pub fn set_async_call_sink<'env>(
+        &self,
+        env: &'env Env,
+        on_async_call: AsyncCallCallback<'env>,
+    ) -> Result<PromiseRaw<'env, ()>> {
+        let tsfn = Arc::new(on_async_call.build_threadsafe_function().build()?);
+        let slot = Arc::clone(&self.checkout);
+        env.spawn_future(async move {
+            let mut guard = slot.lock().await;
+            let Some(checkout) = guard.as_mut() else {
+                return Err(invalid("the session is closed — check out a new one"));
+            };
+            checkout.set_async_call_sink(Some(Box::new(move |call| {
+                let tsfn = Arc::clone(&tsfn);
+                // the pool attached the call's span: its key lets JS run the
+                // host function under it, as `callbackSpanKey` does for a turn
+                let span_key = callback_span_key(&Context::current());
+                // awaited so streamed calls reach JS in sandbox order, as prints do
+                Box::pin(async move {
+                    let _ = tsfn.call_async(FnArgs::from((External::new(call), span_key))).await;
+                })
+            })));
+            Ok(())
+        })
     }
 
     /// Answers a `functionCall`/`osCall` suspension with a return value. A
@@ -736,11 +788,15 @@ impl NativeSession {
         &self,
         env: &'env Env,
         function_name: Option<String>,
+        function_is_async: Option<bool>,
         value: Option<Object<'env>>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let resolved = match value {
             Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
+            None if function_is_async == Some(true) => {
+                function_name.map(|name| MontyObject::async_function(name, None))
+            }
             None => function_name.map(|name| MontyObject::function(name, None)),
         };
         self.run_turn(
@@ -1344,6 +1400,23 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
 }
 
 /// Builds the `position` object of a suspension turn (`SourceRange` in `ts/errors.ts`).
+/// Converts a streamed call handed to the async-call sink (see
+/// `NativeSession.setAsyncCallSink`) into the `asyncCall` turn object the
+/// TypeScript layer runs: `{kind, functionName, args, kwargs, callId, position}`.
+#[napi]
+pub fn decode_async_call<'env>(env: &'env Env, call: &External<AsyncCall>) -> Result<Object<'env>> {
+    let mut obj = Object::new(env)?;
+    obj.set("kind", "asyncCall")?;
+    obj.set("functionName", call.function_name.as_str())?;
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&call.args);
+    let arena = DecodedArena::new(graph, env)?;
+    obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+    obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
+    obj.set("callId", call.call_id)?;
+    obj.set("position", source_range_to_js(env, &call.position)?)?;
+    Ok(obj)
+}
+
 fn source_range_to_js<'env>(env: &'env Env, range: &SourceRange) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
     obj.set("filename", range.filename.as_str())?;

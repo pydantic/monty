@@ -18,7 +18,7 @@ mod telemetry;
 
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException};
 pub use limits::JsResourceLimits;
-pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession};
+pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, decode_async_call};
 pub use telemetry::{flush_telemetry, install_telemetry, set_telemetry_metrics_enabled};
 
 /// `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER`, so a test can pin the

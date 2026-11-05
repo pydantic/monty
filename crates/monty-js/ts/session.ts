@@ -12,7 +12,12 @@
 import { context as ContextAPI, type Context } from '@opentelemetry/api'
 
 import type { NativeSession } from '../native-addon.js'
-import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
+import {
+  bindAsyncCallCallback,
+  bindPrintCallback,
+  getCallbackContext,
+  runWithCallbackContext,
+} from './callbackContext.js'
 import {
   AttrNotExposed,
   attributeErrorMessage,
@@ -39,6 +44,7 @@ import { checkModuleName, ExternalModule, kindOf } from './externalModule.js'
 import { mountsToNative } from './mount.js'
 import type { MountDir } from './mountDir.js'
 import {
+  type AsyncCallTurn,
   type CrashedTurn,
   type DisconnectedTurn,
   type DumpedTurn,
@@ -57,6 +63,7 @@ import {
   osCallAcceptsFuture,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
+import { isAsyncFunction } from './worker/value.js'
 
 /**
  * Sentinel an `os` callback returns to decline a call: the sandbox then
@@ -199,14 +206,39 @@ export class MontySession {
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
 
+  /**
+   * Delivers a streamed async call to the feed in flight: bound per feed to
+   * its caller's async context and answerer, invoked by the session's sink.
+   */
+  private onAsyncCall: ((raw: unknown, parent?: string | null) => Promise<void>) | undefined
+  private sinkInstalled = false
+
   /** @internal — sessions are created by `Monty.checkout`, which validates the modules first. */
   constructor(
     native: NativeSession,
     /** The checkout's `externalModules`, answering every feed's imports. */
     private readonly modules: HostModules = new HostModules(undefined),
+    /** Decodes what the native sink delivers (an opaque handle); the wasm transport delivers turns. */
+    private readonly decodeAsyncCall: ((raw: never) => object) | undefined = undefined,
   ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
+  }
+
+  /**
+   * Installs the session's async-call sink once, before its first turn: a
+   * call the sandbox makes to an `async function` is streamed here mid-turn
+   * and started by the feed's answerer, which settles it at the next
+   * `resolveFutures`.
+   */
+  private async ensureSink(answerer: TurnAnswerer): Promise<void> {
+    this.onAsyncCall = bindAsyncCallCallback(async (raw: unknown) => {
+      const call = (this.decodeAsyncCall === undefined ? raw : this.decodeAsyncCall(raw as never)) as AsyncCallTurn
+      await answerer.onAsyncCall(call)
+    })
+    if (this.sinkInstalled) return
+    this.sinkInstalled = true
+    await this.native.setAsyncCallSink((raw: unknown, parent?: string | null) => this.onAsyncCall?.(raw, parent))
   }
 
   /**
@@ -224,11 +256,16 @@ export class MontySession {
     const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // Discard pending futures between feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
+    await this.ensureSink(answerer)
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        asyncFunctions: asyncFunctionNames(options.externalLookup),
+      },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -295,11 +332,16 @@ export class MontySession {
     this.ensureUsable()
     this.driven = true
     const driver = this.newDriver(options)
+    await this.ensureSink(driver.answerer)
     const turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        asyncFunctions: asyncFunctionNames(options.externalLookup),
+      },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -360,6 +402,8 @@ export class MontySession {
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
     const driver = this.newDriver(options)
+    // a load streams the restored session's unresolved calls
+    await this.ensureSink(driver.answerer)
     const turn = (await this.native.restore(bytesForNative(state), mountsToNative(options.mount), driver.onPrint)) as
       | NativeTurn
       | LoadedTurn
@@ -525,6 +569,8 @@ export class MontySession {
 class TurnAnswerer {
   /** Pending async external calls, by call id. */
   readonly futures = new Map<number, PendingFuture>()
+  /** Streamed calls not yet listed by a `FutureSnapshot`. */
+  readonly streamed: AsyncCallTurn[] = []
   constructor(
     private readonly native: NativeSession,
     private readonly instances: InstanceStore,
@@ -567,13 +613,18 @@ class TurnAnswerer {
         // `None` instead of reading as "no value" through napi.
         const lookup = this.externalLookup
         if (lookup === undefined || !Object.prototype.hasOwnProperty.call(lookup, turn.name)) {
-          next = this.native.resumeNameLookup(null, null, onPrint)
+          next = this.native.resumeNameLookup(null, null, null, onPrint)
         } else {
           const v = lookup[turn.name]
           if (typeof v === 'function') {
-            next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
+            next = this.native.resumeNameLookup(
+              (v as ExternalFunction).name || '<anonymous>',
+              isAsyncFunction(v),
+              null,
+              onPrint,
+            )
           } else {
-            next = this.native.resumeNameLookup(null, { value: prepare(v, this.instances) }, onPrint)
+            next = this.native.resumeNameLookup(null, null, { value: prepare(v, this.instances) }, onPrint)
           }
         }
         break
@@ -583,6 +634,31 @@ class TurnAnswerer {
         break
     }
     return (await next) as NativeTurn
+  }
+
+  /**
+   * Starts the `async function` a streamed call names and tracks its promise
+   * as the call's future, settled at the next `resolveFutures`; a missing or
+   * throwing entry settles the future with the error instead.
+   */
+  async onAsyncCall(call: AsyncCallTurn): Promise<void> {
+    this.streamed.push(call)
+    let promise: Promise<unknown>
+    try {
+      const resolved = await this.hostEntry(call.functionName)
+      if (resolved === undefined) {
+        throw new ReferenceError(`${call.functionName} is not defined`)
+      }
+      const entry = resolved.value
+      if (typeof entry !== 'function') {
+        throw new TypeError(notCallableMessage(entry))
+      }
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      promise = Promise.resolve((entry as ExternalFunction)(...(buildCallArgs(args, kwargs) as never[])))
+    } catch (err) {
+      promise = Promise.reject(err)
+    }
+    this.registerFuture(call.callId, promise)
   }
 
   /** Calls the matching external function and resumes with its result. */
@@ -834,14 +910,14 @@ class TurnAnswerer {
   private answerObjectLookup(turn: NameLookupTurn, objectId: string, onPrint: PrintCallback): Promise<object> {
     const wrapper = this.instances.get(objectId)
     if (wrapper === undefined || turn.name.startsWith('_')) {
-      return this.native.resumeNameLookup(null, null, onPrint)
+      return this.native.resumeNameLookup(null, null, null, onPrint)
     }
     let outbound: unknown
     try {
       outbound = prepare(wrapper.lookupLazyAttr(turn.name), this.instances)
     } catch (err) {
       if (err instanceof AttrNotExposed) {
-        return this.native.resumeNameLookup(null, null, onPrint)
+        return this.native.resumeNameLookup(null, null, null, onPrint)
       }
       const { excType, message } = jsErrorParts(err)
       return this.native.resumeNameLookupError(excType, message, onPrint)
@@ -1017,6 +1093,17 @@ class TurnAnswerer {
   }
 }
 
+/**
+ * The `externalLookup` names bound to `async function`s, for the feed's
+ * `asyncFunctions`. Only data properties are inspected: a getter is not read
+ * here (the sandbox's reads are what observe it), so a function it returns
+ * suspends per call like a sync one.
+ */
+function asyncFunctionNames(lookup: Record<string, unknown> | undefined): string[] {
+  if (lookup === undefined) return []
+  return Object.keys(lookup).filter((name) => isAsyncFunction(Object.getOwnPropertyDescriptor(lookup, name)?.value))
+}
+
 /** A new `PrintTarget` per feed: routes prints, capturing callback failures. */
 class PrintTarget {
   private readonly callback: PrintCallback | undefined
@@ -1084,7 +1171,7 @@ class SnapshotDriver {
      *  wrappers sent by earlier feeds. Read by the snapshot classes. */
     readonly instances: InstanceStore,
     private readonly printTarget: PrintTarget,
-    private readonly answerer: TurnAnswerer,
+    readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
   ) {}
 
@@ -1192,12 +1279,17 @@ class SnapshotDriver {
   }
 
   async resumeNameLookup(functionName: string | null): Promise<Snapshot> {
-    return this.advance((await this.native.resumeNameLookup(functionName, null, this.onPrint)) as NativeTurn)
+    return this.advance((await this.native.resumeNameLookup(functionName, null, null, this.onPrint)) as NativeTurn)
   }
 
   async resumeNameLookupValue(value: unknown): Promise<Snapshot> {
     return this.advance(
-      (await this.native.resumeNameLookup(null, { value: prepare(value, this.instances) }, this.onPrint)) as NativeTurn,
+      (await this.native.resumeNameLookup(
+        null,
+        null,
+        { value: prepare(value, this.instances) },
+        this.onPrint,
+      )) as NativeTurn,
     )
   }
 
@@ -1400,6 +1492,12 @@ export class FutureSnapshot extends SingleUse {
   readonly pendingCallIds: number[]
   /** Where the main task's blocked `await` is in the source. */
   readonly position: SourceRange
+  /**
+   * The calls to `async function`s streamed since the previous snapshot. Their
+   * functions are already running, so `resumeAuto()` settles them; `resume()`
+   * delivers outcomes by `callId` instead.
+   */
+  readonly calls: AsyncCallTurn[]
 
   /** @internal */
   constructor(
@@ -1409,6 +1507,7 @@ export class FutureSnapshot extends SingleUse {
     super(turn.callbackSpanKey, driver.traceBaseContext)
     this.position = turn.position
     this.pendingCallIds = turn.pendingCallIds
+    this.calls = driver.answerer.streamed.splice(0)
   }
 
   /** Delivers settled outcomes for one or more pending futures, by call id. */
@@ -1432,10 +1531,11 @@ export class FutureSnapshot extends SingleUse {
   }
 
   /**
-   * Waits for registered host promises, delivers their outcomes, and returns
-   * the next snapshot. With no registered promises (e.g. after `loadSnapshot`),
-   * rejects without consuming the snapshot or invalidating the session;
-   * use `resume([...])` instead. Once automatic resolution starts, the snapshot
+   * Waits for registered host promises — the streamed `calls` included — delivers
+   * their outcomes, and returns the next snapshot. With no registered promises
+   * (after `loadSnapshot`, only the streamed `calls` are re-registered), rejects
+   * without consuming the snapshot or invalidating the session; use
+   * `resume([...])` instead. Once automatic resolution starts, the snapshot
    * is consumed even if it fails.
    */
   resumeAuto(): Promise<Snapshot> {

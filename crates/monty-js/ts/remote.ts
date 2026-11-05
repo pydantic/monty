@@ -5,7 +5,7 @@
 // (shared with pydantic_monty's AsyncMontyRemote); sessions are the same
 // `MontySession` a local pool hands out.
 
-import { NativePool } from '../native-addon.js'
+import { NativePool, decodeAsyncCall } from '../native-addon.js'
 import { type CheckoutOptions, graceMs, nativeCheckoutOptions } from './pool.js'
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
@@ -144,7 +144,7 @@ export class MontyRemote {
     const telemetryContext = captureTelemetryContext()
     const headers = this.metadata === undefined ? [] : headerList(await this.metadata())
     await enterSession(native, telemetryContext, headers)
-    return new MontySession(native, modules)
+    return new MontySession(native, modules, decodeAsyncCall)
   }
 
   /**

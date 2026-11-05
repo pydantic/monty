@@ -4,8 +4,12 @@ import { diag, trace, type Context, type Span } from '@opentelemetry/api'
 
 type NativePrintCallback = (stream: 'stdout' | 'stderr', text: string, parent?: string | null) => void
 
+/** The native async-call sink: an opaque call handle and the call span's key. */
+type NativeAsyncCallCallback = (raw: unknown, parent?: string | null) => Promise<void>
+
 interface CallbackContextHandlers {
   bindPrint(callback: NativePrintCallback): NativePrintCallback
+  bindAsyncCall(callback: (raw: unknown) => Promise<void>): NativeAsyncCallCallback
   run<T>(parent: string | undefined, callback: () => T): T
   span(parent: string | undefined): Span | undefined
 }
@@ -18,6 +22,15 @@ export function setCallbackContextHandlers(value: CallbackContextHandlers): void
 
 export function bindPrintCallback(callback: NativePrintCallback): NativePrintCallback {
   return handlers?.bindPrint(callback) ?? callback
+}
+
+/**
+ * Binds the sink for streamed async calls to the feed caller's async context
+ * and, under tracing, to each call's span: the host function then runs
+ * where a suspended call's would.
+ */
+export function bindAsyncCallCallback(callback: (raw: unknown) => Promise<void>): NativeAsyncCallCallback {
+  return handlers?.bindAsyncCall(callback) ?? ((raw) => callback(raw))
 }
 
 /** Returns the suspension's span in its captured context, preserving baggage and other entries. */

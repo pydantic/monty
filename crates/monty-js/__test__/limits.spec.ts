@@ -281,8 +281,8 @@ test.each([
       },
     )
     await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
-    await transport.resumeNameLookup(null, null, () => {})
-    await transport.resumeNameLookup(null, null, () => {})
+    await transport.resumeNameLookup(null, null, null, () => {})
+    await transport.resumeNameLookup(null, null, null, () => {})
     await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
     await transport.restore(new Uint8Array(), [], () => {})
     await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})

@@ -116,7 +116,7 @@ export class ArenaEncoder {
     } else if (value instanceof Uint8Array) {
       return this.leaf({ tag: 'bytes', val: value })
     } else if (typeof value === 'function') {
-      return this.leaf({ tag: 'function', val: { name: value.name ?? '' } })
+      return this.leaf({ tag: 'function', val: { name: value.name ?? '', isAsync: isAsyncFunction(value) } })
     } else if (typeof value === 'symbol') {
       throw new TypeError('Cannot convert JS Symbol to Monty value')
     } else if (typeof value !== 'object') {
@@ -638,4 +638,13 @@ function jsType(value: unknown): string {
   } else {
     return typeof value === 'object' ? 'Object' : typeof value
   }
+}
+
+/**
+ * Whether a function was declared `async function` (its constructor is
+ * `AsyncFunction`): the sandbox then streams its calls instead of suspending
+ * on them. A plain function returning a promise is not detected.
+ */
+export function isAsyncFunction(value: unknown): boolean {
+  return typeof value === 'function' && value.constructor?.name === 'AsyncFunction'
 }

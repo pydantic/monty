@@ -111,6 +111,23 @@ export interface ResolveFuturesTurn extends CallbackTurn {
   pendingCallIds: number[]
 }
 
+/**
+ * A call the sandbox made to an `async function` host function, streamed as
+ * it was made: the sandbox already holds a future for `callId` and runs on,
+ * so this is never a turn. The host starts the function now and the future
+ * settles through `resolveFutures`. Delivered to the session's async-call
+ * sink (`NativeSession.setAsyncCallSink`) during a turn, or listed by the
+ * `FutureSnapshot` that follows.
+ */
+export interface AsyncCallTurn {
+  kind: 'asyncCall'
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  position: NativeSourceRange
+}
+
 /** The sandbox raised; the worker and session stay usable. */
 export interface ErrorTurn {
   kind: 'error'

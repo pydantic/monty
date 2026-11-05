@@ -383,3 +383,77 @@ test('sleeping under call_host without an os callback is refused', async () => {
   })
   t.is(error.message, "RuntimeError: 'time.sleep' is not supported in this environment")
 })
+
+// =============================================================================
+// Streamed calls to `async function`s
+// =============================================================================
+//
+// A call to an `async function` does not suspend the sandbox: the worker
+// answers it with a future and streams the call, so the host function starts
+// while the sandbox runs on and a gather of any size is one round trip.
+
+test('an async function starts before the sandbox blocks', async () => {
+  let started = false
+  let release!: () => void
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const code = ['x = fetch()', 'started = await check_started()', '[started, await x]'].join('\n')
+  const result = await run(code, {
+    externalLookup: {
+      fetch: async () => {
+        started = true
+        await released
+        return 'fetched'
+      },
+      // runs after fetch, which the sandbox called first
+      check_started: async () => {
+        const wasStarted = started
+        release()
+        return wasStarted
+      },
+    },
+  })
+  t.deepEqual(result, [true, 'fetched'])
+})
+
+test('a gather over a comprehension of async function calls', async () => {
+  const calls: number[] = []
+  const result = await run('import asyncio\nawait asyncio.gather(*[fetch(i) for i in range(4)])', {
+    externalLookup: {
+      fetch: async (i: number) => {
+        calls.push(i)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        return i * 10
+      },
+    },
+  })
+  t.deepEqual(result, [0, 10, 20, 30])
+  t.deepEqual(calls, [0, 1, 2, 3])
+})
+
+test('an async function error raises at the await', async () => {
+  const code = ['x = fetch()', 'try:', '    await x', 'except ValueError as e:', '    result = str(e)', 'result'].join(
+    '\n',
+  )
+  class ValueError extends Error {
+    override name = 'ValueError'
+  }
+  const result = await run(code, {
+    externalLookup: {
+      fetch: async () => {
+        throw new ValueError('boom')
+      },
+    },
+  })
+  t.is(result, 'boom')
+})
+
+test('an async function passed as an input value streams its calls too', async () => {
+  const fetch = async (i: number) => i + 1
+  const result = await run('import asyncio\nawait asyncio.gather(fetch(1), fetch(2))', {
+    inputs: { fetch },
+    externalLookup: { fetch },
+  })
+  t.deepEqual(result, [2, 3])
+})

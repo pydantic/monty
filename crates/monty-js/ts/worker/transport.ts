@@ -6,7 +6,14 @@
 // arena; protobuf is now entirely internal to Rust.
 
 import { MontyCrashedError } from '../errors.js'
-import type { CrashedTurn, DumpedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
+import type {
+  AsyncCallTurn,
+  CrashedTurn,
+  DumpedTurn,
+  NativeFutureResult,
+  NativeTurn,
+  NotMountedTurn,
+} from '../native.js'
 import {
   type EncodedOsPolicy,
   type EncodedRandomSeed,
@@ -80,6 +87,8 @@ export class WorkerTransport {
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
   private finished = false
+  /** Receives streamed async calls (as decoded turns); see `setAsyncCallSink`. */
+  private onAsyncCall: ((call: unknown, parent?: string | null) => Promise<void> | void) | undefined
   private failure: CrashedTurn | null = null
   private exitStatus: string | undefined
   private feedBudgetMs: number | undefined
@@ -150,7 +159,7 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    options: { cwd?: string; skipTypeCheck: boolean },
+    options: { cwd?: string; skipTypeCheck: boolean; asyncFunctions?: string[] },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -173,10 +182,21 @@ export class WorkerTransport {
           values: encoder.finish(),
           skipTypeCheck: options.skipTypeCheck,
           cwd,
+          asyncFunctions: options.asyncFunctions ?? [],
         },
       },
       onPrint,
     )
+  }
+
+  /**
+   * Installs the sink for the calls the sandbox makes to `async function`s;
+   * see `NativeSession.setAsyncCallSink`. The component buffers them with the
+   * turn's prints, so the sink sees them, in order, once the turn returns.
+   */
+  setAsyncCallSink(onAsyncCall: (call: unknown, parent?: string | null) => Promise<void> | void): Promise<void> {
+    this.onAsyncCall = onAsyncCall
+    return Promise.resolve()
   }
 
   /** Resumes the current call with a host return value. */
@@ -223,6 +243,7 @@ export class WorkerTransport {
   /** Answers an undefined-name suspension with a function, value, or absence. */
   resumeNameLookup(
     functionName: string | null,
+    functionIsAsync: boolean | null,
     value: { value: unknown } | null,
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
@@ -230,7 +251,7 @@ export class WorkerTransport {
     if (functionName !== null) {
       request = {
         outcome: { tag: 'value', val: 0 },
-        values: { nodes: [{ tag: 'function', val: { name: functionName } }] },
+        values: { nodes: [{ tag: 'function', val: { name: functionName, isAsync: functionIsAsync ?? false } }] },
       }
     } else if (value !== null) {
       const encoder = new ArenaEncoder()
@@ -446,6 +467,17 @@ export class WorkerTransport {
     for (const event of events) {
       if (event.tag === 'print') {
         onPrint?.(event.val.stderr ? 'stderr' : 'stdout', event.val.text)
+      } else if (event.tag === 'async-call') {
+        const get = decodeArena(event.val.values)
+        const call: AsyncCallTurn = {
+          kind: 'asyncCall',
+          functionName: event.val.functionName,
+          args: Array.from(event.val.args, get),
+          kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
+          callId: event.val.callId,
+          position: event.val.position,
+        }
+        await this.onAsyncCall?.(call)
       } else {
         terminating = event
       }

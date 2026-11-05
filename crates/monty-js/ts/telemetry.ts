@@ -139,6 +139,9 @@ setCallbackContextHandlers({
       withCallbackContext(parent ?? undefined, () => callback(stream, text)),
     )
   },
+  bindAsyncCall(callback) {
+    return AsyncResource.bind((raw, parent) => withCallbackContext(parent ?? undefined, () => callback(raw)))
+  },
   run: withCallbackContext,
   span: callbackSpan,
 })

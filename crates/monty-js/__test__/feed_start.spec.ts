@@ -484,12 +484,16 @@ test('resumeAuto answers an OS call with the default unhandled error', async () 
   }
 })
 
-test('resumeAuto settles an immediately awaited promise without a FutureSnapshot', async () => {
+test('an async function call is streamed and listed by the FutureSnapshot that follows', async () => {
   const session = await pool().checkout()
   try {
     const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
-    const snap = (await session.feedStart(code, { externalLookup: { go: async () => 99 } })) as FunctionSnapshot
-    t.true(snap.allowEagerAwait)
+    const snap = (await session.feedStart(code, { externalLookup: { go: async () => 99 } })) as FutureSnapshot
+    t.deepEqual(
+      snap.calls.map((call) => [call.functionName, call.args]),
+      [['go', []]],
+    )
+    // the function is already running, so the automatic resolution settles it
     const done = (await snap.resumeAuto()) as MontyComplete
     t.is(done.output, 99)
   } finally {

@@ -368,12 +368,13 @@ test('snapshot resumes capture the resuming caller storage and retain the Monty 
     const pool = await Monty.create()
     const session = await pool.checkout()
     let snapshot = await storage.run('feed', () => session.feedStart("value = await callback(); print(value); value", {
+      // an async function's call is streamed and started during the feedStart turn
       externalLookup: { async callback() {
-        assert.equal(storage.getStore(), 'resume')
+        assert.equal(storage.getStore(), 'feed')
         return tracer.startActiveSpan('snapshot callback', async span => {
           try {
             await Promise.resolve()
-            assert.equal(storage.getStore(), 'resume')
+            assert.equal(storage.getStore(), 'feed')
             return 42
           } finally { span.end() }
         })

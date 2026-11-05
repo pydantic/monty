@@ -57,4 +57,7 @@ export declare class NativeSession {
   resumeLazyAttr(...args: unknown[]): Promise<object>
   resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
+  setAsyncCallSink(onAsyncCall: (raw: unknown, parent?: string | null) => unknown): Promise<void>
 }
+
+export declare function decodeAsyncCall(call: unknown): object
