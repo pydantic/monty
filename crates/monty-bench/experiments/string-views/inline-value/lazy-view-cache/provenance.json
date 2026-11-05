@@ -1,0 +1,129 @@
+{
+  "builds": {
+    "arc": "/private/tmp/monty-rss-owned_views",
+    "inline4": "/private/tmp/monty-rss-dual_adaptive",
+    "lazy3": "/private/tmp/monty-rss-lazy_views"
+  },
+  "executable_sha256": {
+    "arc": "222442d4c6a4a958c255afef3fad6bf0eaa03a82aa5aef03e090c2b592004c0e",
+    "inline4": "302c96908c6ea0a236add370d4af18b255ca0d48d4d2030a9a1abe5e7844c5f0",
+    "lazy3": "b4077ea42e28a238c2a60813c4863ffbd6c09915eab166a910afac92ff3bed15"
+  },
+  "cases": [
+    {
+      "name": "unicode_owners_unindexed",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 3,
+      "input_sha256": "4d214f0a32f98694c3360b22dc7c8a83b21f839fe7516c67b1ffffc629125e18"
+    },
+    {
+      "name": "unicode_owners_indexed",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 3,
+      "input_sha256": "4d214f0a32f98694c3360b22dc7c8a83b21f839fe7516c67b1ffffc629125e18"
+    },
+    {
+      "name": "ndjson_utf8_tail",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 10,
+      "input_sha256": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42"
+    },
+    {
+      "name": "prefix_remove_utf8",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 10,
+      "input_sha256": "96d954b3561b5ca424ea7ec0afb793da7fd5469627ac15643975891e41e4f819"
+    },
+    {
+      "name": "hash_1_views",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 5,
+      "input_sha256": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894"
+    },
+    {
+      "name": "hash_4_views",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 5,
+      "input_sha256": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894"
+    },
+    {
+      "name": "hash_8_views",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 5,
+      "input_sha256": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894"
+    },
+    {
+      "name": "hash_64_views",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 5,
+      "input_sha256": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894"
+    },
+    {
+      "name": "splitlines_bulk_utf8",
+      "original": "/private/tmp/monty-inline-benchmark/fixtures",
+      "hot": "/private/tmp/monty-inline-benchmark/hot",
+      "iterations": 10,
+      "input_sha256": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774"
+    },
+    {
+      "name": "remainder_2048kib",
+      "original": "/private/tmp/monty-agent-chunking/fixtures",
+      "hot": "/private/tmp/monty-agent-chunking/batch-optimized",
+      "iterations": 275,
+      "input_sha256": "a0914c8bd61fecaf87d1f9d66b5c048198a7c93fb6b62438bf19c55cd4a0664c"
+    },
+    {
+      "name": "offsets_2048kib",
+      "original": "/private/tmp/monty-agent-chunking/fixtures",
+      "hot": "/private/tmp/monty-agent-chunking/batch-optimized",
+      "iterations": 297,
+      "input_sha256": "a0914c8bd61fecaf87d1f9d66b5c048198a7c93fb6b62438bf19c55cd4a0664c"
+    }
+  ],
+  "trials": 5,
+  "profile": "profiling",
+  "revisions": {
+    "arc": "f29350439dc1a5d5f63e7c0d30555edcf170a57c",
+    "inline4": "61728c1c3d96c8094b72da76c043ab934372168e",
+    "lazy3": "uncommitted optional view-cache extension on 61728c1c"
+  },
+  "method": "macOS wait4 per-child user+system CPU / guest repetitions; randomized fresh processes; separate one-execution absolute RSS peaks",
+  "source_sha256": {
+    "crates/monty/src/types/str/access_cache.rs": "f872f35aa92e9c3cb467b00615363e0ec802625528415e20e5e92d0ad02ba1a6",
+    "crates/monty/src/types/str/mod.rs": "e987c4ee1d5e3e4ef60d4d49f349d3c10e6aa44c54c5a10609b9f6a49fe2d43d"
+  },
+  "layout_64bit": {
+    "Str": 56,
+    "AccessCache": 24,
+    "NavigationCache": 56,
+    "ViewCache": 80,
+    "combined": 136
+  },
+  "source_patch_sha256": "a3c8180d51f808466ac499126c56888b2a14cc10f06289eb5ba7ffb04c8dd715",
+  "source_patch_path": "/private/tmp/monty-lazy-view-cache/source.patch",
+  "hash_confirmation": {
+    "trials": 5,
+    "iterations": {
+      "hash_1_views": 1000,
+      "hash_4_views": 300
+    },
+    "purpose": "amortize startup for the short hash cases"
+  },
+  "archived_driver_sha256": {
+    "measure.py": "e5a50eab5c0483db561ddc536483998b1db6dd5d1031826846c39a91a8c81be9",
+    "confirm_hashes.py": "3d092eed38aaa7c90d24ee1a932b04ca7d4b39e96f85dcc8f731f2320b88d55f"
+  },
+  "validation": {
+    "full_monty_refcount_memory_tests_passed": 1079,
+    "string_fixtures_passed": 20,
+    "subprocess_tests_passed": 105
+  }
+}

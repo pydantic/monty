@@ -2551,6 +2551,8 @@ mod tests {
             );
         }
         assert!(text.3.has_checkpoints());
+        text.3.view_hash(text.as_str(), 10..1000, &tracker).unwrap();
+        text.3.view_start(text.as_str(), 10, &tracker).unwrap();
         assert_eq!(encode(&text), cold);
 
         let reset = <Str as serde::Deserialize>::deserialize(&mut minicbor_serde::Deserializer::new(&cold)).unwrap();

@@ -1,5 +1,7 @@
 # Inline string views: memory savings and cache regressions
 
+The [optional view-cache extension](lazy-view-cache/README.md) removes the per-owner navigation memory regression.
+
 The latest [dual-cursor/adaptive-hash experiment](dual-cursor-hashes/README.md) removes the NDJSON and hash-thrashing regressions.
 It also measures the added per-owner cache memory cost.
 

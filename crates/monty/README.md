@@ -36,12 +36,14 @@ Owned strings use `Box<str>`; converting an owned `String` adopts its buffer and
 Views remain valid after the source value is released, without Arc headers or separate heap objects per view.
 The heap's child walker and release paths count view backing references together with ordinary object references.
 
-Unicode views reuse the backing's sparse index and separate view-origin and navigation cursors.
-The lazy access state holds four view hashes inline, then promotes to a resource-checked table.
+Whole-string hashes, character counts and ASCII status remain cached in the string header.
+Ordinary Unicode navigation allocates a single-cursor cache and builds sparse checkpoints on demand.
+Views reuse that index; an optional extension adds a view-origin cursor and three inline substring hashes,
+then promotes hashes to a resource-checked table without evicting older ranges.
+Strings that never use view-specific caching do not allocate the extension.
 Cached ranges remain until backing release; clones and snapshots omit derived caches.
-The inline hash slots enlarge every activated access state, including strings whose views are never hashed.
-The [cache comparison](../monty-bench/experiments/string-views/inline-value/dual-cursor-hashes/README.md)
-measures that memory trade-off; the [document chunker](../monty-bench/experiments/string-views/agent-chunking/README.md)
+The [lazy view-cache comparison](../monty-bench/experiments/string-views/inline-value/lazy-view-cache/README.md)
+measures the allocation trade-off; the [document chunker](../monty-bench/experiments/string-views/agent-chunking/README.md)
 compares the final implementation with current main, #1236 and CPython.
 
 Dumps preserve view bounds and the backing heap string, so a short retained splitline can serialize the full backing.

@@ -51,8 +51,8 @@ const SCAN_BUDGET: usize = 32;
 pub(crate) struct AccessCache {
     /// The actual character count; `None` means it has not been counted yet.
     char_length: Cell<Option<NonZeroUsize>>,
-    /// Allocated only when an access needs to retain a cursor.
-    state: RefCell<Option<Box<State>>>,
+    /// Allocated on Unicode navigation or view hashing.
+    state: RefCell<Option<Box<NavigationCache>>>,
 }
 
 impl Default for AccessCache {
@@ -80,17 +80,22 @@ struct Cursor {
     byte_offset: usize,
 }
 
-/// Allocated only after a nontrivial Unicode access; local reads need no offset table.
+/// Ordinary Unicode navigation; view-only metadata is allocated independently.
 #[derive(Debug, Default)]
-struct State {
-    /// Search/index navigation must not be displaced by repeated view-origin lookups.
+struct NavigationCache {
     last: Cursor,
-    view_start: Cursor,
     /// UTF-8 bytes traversed by walks longer than eight characters, before checkpoints exist.
     scanned: usize,
     /// Sparse anchors built after repeated long traversals exhaust the scan budget.
     offsets: Offsets,
-    view_hashes: ViewHashes,
+    views: Option<Box<ViewCache>>,
+}
+
+/// Created only when a view needs an origin anchor or substring hashes.
+#[derive(Debug, Default)]
+struct ViewCache {
+    start: Cursor,
+    hashes: ViewHashes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -107,13 +112,13 @@ struct ViewHash {
 
 #[derive(Debug)]
 enum ViewHashes {
-    Inline([Option<ViewHash>; 4]),
+    Inline([Option<ViewHash>; 3]),
     Table(AHashMap<ViewRange, HashValue>),
 }
 
 impl Default for ViewHashes {
     fn default() -> Self {
-        Self::Inline([None; 4])
+        Self::Inline([None; 3])
     }
 }
 
@@ -218,15 +223,17 @@ impl Offsets {
     }
 }
 
-impl State {
+impl NavigationCache {
     fn locate_view_start(&mut self, text: &str, target: usize) -> (usize, usize, usize) {
-        if self.view_start.byte_offset == target {
-            return (self.view_start.character_index, 0, 0);
+        let start = self.views.get_or_insert_with(Box::default).start;
+        if start.byte_offset == target {
+            return (start.character_index, 0, 0);
         }
         let navigation = self.last;
         let result = self.locate_byte(text, target);
-        self.view_start = self.last;
+        let start = self.last;
         self.last = navigation;
+        self.views.get_or_insert_with(Box::default).start = start;
         result
     }
 
@@ -248,9 +255,12 @@ impl State {
             character_index: mut character,
             byte_offset: mut byte,
         } = self.offsets.anchor(target);
-        if self.view_start.byte_offset <= target && self.view_start.byte_offset >= byte {
-            character = self.view_start.character_index;
-            byte = self.view_start.byte_offset;
+        if let Some(views) = &self.views
+            && views.start.byte_offset <= target
+            && views.start.byte_offset >= byte
+        {
+            character = views.start.character_index;
+            byte = views.start.byte_offset;
         }
         if self.last.byte_offset <= target && self.last.byte_offset >= byte {
             character = self.last.character_index;
@@ -339,9 +349,12 @@ impl AccessCache {
         } else {
             (0, 0)
         };
-        if state.view_start.character_index <= target && state.view_start.character_index >= character {
-            character = state.view_start.character_index;
-            byte = state.view_start.byte_offset;
+        if let Some(views) = &state.views
+            && views.start.character_index <= target
+            && views.start.character_index >= character
+        {
+            character = views.start.character_index;
+            byte = views.start.byte_offset;
         }
         let Cursor {
             character_index: last_character,
@@ -407,7 +420,7 @@ impl AccessCache {
         Ok(result)
     }
 
-    /// Keeps four hashes in the lazy state, then promotes to a table without evicting older ranges.
+    /// Keeps three hashes in the view extension, then promotes without evicting older ranges.
     pub(super) fn view_hash(&self, text: &str, range: Range<usize>, tracker: &ResourceTracker) -> RunResult<HashValue> {
         // Inline views already check both bounds before narrowing them to u32.
         let key = ViewRange {
@@ -416,11 +429,12 @@ impl AccessCache {
         };
         let mut state = self.state.borrow_mut();
         let state = state.get_or_insert_with(Box::default);
-        if let Some(hash) = state.view_hashes.get(key) {
+        let views = state.views.get_or_insert_with(Box::default);
+        if let Some(hash) = views.hashes.get(key) {
             return Ok(hash);
         }
         let hash = hash_python_str(&text[range]);
-        state.view_hashes.insert(key, hash, tracker)?;
+        views.hashes.insert(key, hash, tracker)?;
         Ok(hash)
     }
 
@@ -474,7 +488,7 @@ impl AccessCache {
     fn charge(
         &self,
         text: &str,
-        state: &mut State,
+        state: &mut NavigationCache,
         characters: usize,
         bytes: usize,
         tracker: &ResourceTracker,
@@ -524,11 +538,57 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{hint::spin_loop, time::Duration};
+    use std::{hint::spin_loop, ptr, time::Duration};
 
     use monty_types::ResourceLimits;
 
     use super::*;
+    #[cfg(target_pointer_width = "64")]
+    use crate::types::str::Str;
+
+    #[test]
+    fn ordinary_navigation_keeps_view_storage_unallocated() {
+        let text = "aé中🐍".repeat(4096);
+        let cache = AccessCache::default();
+        let tracker = ResourceTracker::default();
+        assert_eq!(cache.char_len(&text), 16384);
+        assert!(cache.state.borrow().is_none());
+        for i in 0..4096 {
+            let target = i * 7919 % 16384;
+            let byte = cache.byte_offset(&text, target, &tracker).unwrap();
+            assert_eq!(cache.char_offset(&text, byte, &tracker).unwrap(), target);
+        }
+        assert!(cache.has_checkpoints());
+        assert!(cache.state.borrow().as_ref().unwrap().views.is_none());
+    }
+
+    #[test]
+    fn adding_view_storage_preserves_existing_navigation_and_length_caches() {
+        let text = "aé中🐍".repeat(4096);
+        let cache = AccessCache::default();
+        let tracker = ResourceTracker::default();
+        assert_eq!(cache.char_len(&text), 16384);
+        for i in 0..4096 {
+            cache.byte_offset(&text, i * 7919 % 16384, &tracker).unwrap();
+        }
+        let (address, checkpoint_count, cursor) = {
+            let state = cache.state.borrow();
+            let state = state.as_ref().unwrap();
+            assert!(state.views.is_none());
+            (ptr::from_ref(&**state), state.offsets.len(), state.last)
+        };
+        assert!(checkpoint_count > 0);
+        cache.view_hash(&text, 10..1000, &tracker).unwrap();
+        cache.view_start(&text, 10, &tracker).unwrap();
+        let state = cache.state.borrow();
+        let state = state.as_ref().unwrap();
+        assert_eq!(ptr::from_ref(&**state), address);
+        assert_eq!(state.offsets.len(), checkpoint_count);
+        assert_eq!(state.last.byte_offset, cursor.byte_offset);
+        assert_eq!(state.last.character_index, cursor.character_index);
+        assert_eq!(cache.char_length.get().unwrap().get(), 16384);
+        assert!(state.views.is_some());
+    }
 
     #[test]
     fn view_origins_do_not_displace_search_boundaries() {
@@ -557,6 +617,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn inline_view_hashes_fit_table_storage() {
+        assert_eq!(size_of::<ViewHashes>(), size_of::<AHashMap<ViewRange, HashValue>>());
+        assert_eq!(size_of::<NavigationCache>(), 56);
+        assert_eq!(size_of::<ViewCache>(), 80);
+        assert_eq!(size_of::<AccessCache>(), 24);
+        assert_eq!(size_of::<Str>(), 56);
+    }
+
+    #[test]
     fn view_hashes_promote_without_eviction_and_reset_on_clone() {
         let text = "aé中🐍".repeat(1024);
         let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
@@ -569,8 +639,8 @@ mod tests {
                 hash_python_str(&text[range])
             );
             let state = cache.state.borrow();
-            match &state.as_ref().unwrap().view_hashes {
-                ViewHashes::Inline(_) => assert!(i < 4),
+            match &state.as_ref().unwrap().views.as_ref().unwrap().hashes {
+                ViewHashes::Inline(_) => assert!(i < 3),
                 ViewHashes::Table(table) => assert_eq!(table.len(), i + 1),
             }
         }
@@ -582,7 +652,7 @@ mod tests {
                 len: u32::try_from(range.len()).unwrap(),
             };
             assert_eq!(
-                state.as_ref().unwrap().view_hashes.get(key),
+                state.as_ref().unwrap().views.as_ref().unwrap().hashes.get(key),
                 Some(hash_python_str(&text[range]))
             );
         }
@@ -599,23 +669,23 @@ mod tests {
             max_memory: Some(0),
             ..ResourceLimits::default()
         });
-        for i in 0..4 {
+        for i in 0..3 {
             cache
                 .view_hash(&text, boundaries[i]..boundaries[i + 100], &limited)
                 .unwrap();
         }
-        let fifth = boundaries[4]..boundaries[104];
-        assert!(cache.view_hash(&text, fifth.clone(), &limited).is_err());
+        let fourth = boundaries[3]..boundaries[103];
+        assert!(cache.view_hash(&text, fourth.clone(), &limited).is_err());
         assert!(matches!(
-            &cache.state.borrow().as_ref().unwrap().view_hashes,
+            &cache.state.borrow().as_ref().unwrap().views.as_ref().unwrap().hashes,
             ViewHashes::Inline(_)
         ));
-        cache.view_hash(&text, fifth, &tracker).unwrap();
-        let capacity = match &cache.state.borrow().as_ref().unwrap().view_hashes {
+        cache.view_hash(&text, fourth, &tracker).unwrap();
+        let capacity = match &cache.state.borrow().as_ref().unwrap().views.as_ref().unwrap().hashes {
             ViewHashes::Table(table) => table.capacity(),
-            ViewHashes::Inline(_) => panic!("fifth hash promotes to a table"),
+            ViewHashes::Inline(_) => panic!("fourth hash promotes to a table"),
         };
-        for i in 5..capacity {
+        for i in 4..capacity {
             cache
                 .view_hash(&text, boundaries[i]..boundaries[i + 100], &limited)
                 .unwrap();
@@ -637,12 +707,12 @@ mod tests {
     fn nearby_backward_byte_offsets_preserve_local_walks() {
         let text = "aé中🐍".repeat(1024);
         let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
-        let mut state = State {
+        let mut state = NavigationCache {
             last: Cursor {
                 character_index: 1500,
                 byte_offset: boundaries[1500],
             },
-            ..State::default()
+            ..NavigationCache::default()
         };
         for target in (1492..1500).rev() {
             let (character, walked, _) = state.locate_byte(&text, boundaries[target]);
@@ -696,9 +766,9 @@ mod tests {
             let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
             let tracker = ResourceTracker::default();
             let index = AccessCache::default();
-            let mut state = State {
+            let mut state = NavigationCache {
                 scanned: bytes * SCAN_BUDGET,
-                ..State::default()
+                ..NavigationCache::default()
             };
             index.charge(&text, &mut state, 9, 0, &tracker).unwrap();
 
@@ -735,9 +805,9 @@ mod tests {
                 max_memory: Some(0),
                 ..ResourceLimits::default()
             });
-            let mut denied = State {
+            let mut denied = NavigationCache {
                 scanned: bytes * SCAN_BUDGET,
-                ..State::default()
+                ..NavigationCache::default()
             };
             assert!(index.charge(&text, &mut denied, 9, 0, &limited).is_err());
         }
@@ -758,9 +828,9 @@ mod tests {
             for characters in [128, 1024, 65_536] {
                 let text = "é".repeat(characters);
                 let index = AccessCache::default();
-                let mut state = State {
+                let mut state = NavigationCache {
                     scanned: text.len() * SCAN_BUDGET,
-                    ..State::default()
+                    ..NavigationCache::default()
                 };
                 let tracker = ResourceTracker::new(limits.clone());
                 tracker.on_execution_start();

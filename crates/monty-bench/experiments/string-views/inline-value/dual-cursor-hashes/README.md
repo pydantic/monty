@@ -1,5 +1,11 @@
 # Separate view origins and adaptive hash caching
 
+These measurements used four inline hash slots.
+An intermediate three-slot layout reduced the lazy state from 136 to 128 bytes on the measured 64-bit build.
+The current [optional view extension](../lazy-view-cache/README.md) keeps ordinary navigation at 56 bytes and
+allocates another 80 bytes only for view caching, promoting the fourth distinct hash to a table.
+The measurements below describe the original four-slot combined state.
+
 A separate view-start cursor reduces UTF-8 NDJSON tail parsing from 5.85 ms to
 4.32 ms. Promoting the four-entry hash cache to a table reduces repeated hashing
 of 64 views from 319 ms to 18.4 ms. Both are close to the Arc control.

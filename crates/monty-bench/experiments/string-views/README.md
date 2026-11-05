@@ -1,7 +1,7 @@
 # String views on Unicode access caches
 
 The latest inline-view implementation is measured by the [agent document chunker](agent-chunking/README.md),
-[overlapping UTF-8 strides](utf8-strides/README.md), and [two-cursor/hash-cache comparison](inline-value/dual-cursor-hashes/README.md).
+[overlapping UTF-8 strides](utf8-strides/README.md), and [optional view-cache comparison](inline-value/lazy-view-cache/README.md).
 
 The report below describes the historical `Arc<str>` implementation at `f7be4e56`.
 The `Arc<String>` storage comparison is reported in [owned-string/](owned-string/).
