@@ -7,11 +7,8 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use std::io::ErrorKind;
-
 use monty_types::{
-    CreateExclusiveCallArgs, FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path,
-    scan::EntryInfo,
+    FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall, normalize_virtual_path, scan::EntryInfo,
 };
 
 use super::{
@@ -69,7 +66,11 @@ pub(super) enum FsRequest {
     /// `Path.absolute()`
     Absolute { path: MontyPath },
     /// Create an empty file only when the pathname is unoccupied.
-    CreateExclusive(CreateExclusiveCallArgs),
+    CreateExclusive {
+        path: MontyPath,
+        mode: FileMode,
+        permissions: u32,
+    },
     /// `open(path, mode)` returns a handle after the host performs its open-time effect.
     Open {
         /// Target path.
@@ -102,8 +103,8 @@ impl FsRequest {
             | Self::Resolve { path }
             | Self::Absolute { path }
             | Self::Open { path, .. }
+            | Self::CreateExclusive { path, .. }
             | Self::Rename { src: path, .. } => path,
-            Self::CreateExclusive(args) => &args.path,
         }
     }
 
@@ -120,7 +121,7 @@ impl FsRequest {
             | Self::AppendText { .. }
             | Self::AppendBytes { .. }
             | Self::Mkdir { .. }
-            | Self::CreateExclusive(_)
+            | Self::CreateExclusive { .. }
             | Self::Unlink { .. }
             | Self::Rmdir { .. }
             | Self::Rename { .. } => true,
@@ -162,7 +163,11 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
             path: a.path,
             data: a.data,
         },
-        OsFunctionCall::CreateExclusive(a) => FsRequest::CreateExclusive(a),
+        OsFunctionCall::CreateExclusive(a) => FsRequest::CreateExclusive {
+            path: a.path,
+            mode: a.mode,
+            permissions: a.permissions,
+        },
         OsFunctionCall::Mkdir(a) => FsRequest::Mkdir {
             path: a.path,
             parents: a.parents,
@@ -205,10 +210,6 @@ pub(super) fn execute(
     ctx: &mut MountContext<'_>,
     mode: &mut MountMode,
 ) -> Result<MontyObject, MountError> {
-    if let FsRequest::CreateExclusive(args) = &request {
-        args.validate()
-            .map_err(|message| MountError::io_err(ErrorKind::InvalidInput, message, &args.path))?;
-    }
     if request.is_write() && matches!(mode, MountMode::ReadOnly) {
         Err(MountError::ReadOnly(request.primary_path().to_owned()))
     } else {

@@ -365,6 +365,10 @@ impl Mount {
     /// Executes a filesystem call against this mount, consuming it so write
     /// payloads move into the backend.
     fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
+        if let OsFunctionCall::CreateExclusive(args) = &call {
+            args.validate()
+                .map_err(|message| MountError::io_err(io::ErrorKind::InvalidInput, message, &args.path))?;
+        }
         let (mut ctx, mode) = self.backend();
         dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, mode)
     }

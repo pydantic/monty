@@ -85,11 +85,15 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
-        FsRequest::CreateExclusive(args) => {
-            let target = resolve_virtual_path(&args.path, ctx.mount_virtual)?;
+        FsRequest::CreateExclusive {
+            path,
+            mode,
+            permissions,
+        } => {
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
             check_write_limit(0, ctx)?;
-            host_create_exclusive(ctx.mount_dir, target.for_dir_op(), args.permissions, &args.path)?;
-            Ok(file_handle_result(&args.path, args.mode))
+            host_create_exclusive(ctx.mount_dir, target.for_dir_op(), permissions, &path)?;
+            Ok(file_handle_result(&path, mode))
         }
         FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }

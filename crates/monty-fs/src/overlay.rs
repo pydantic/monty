@@ -169,7 +169,7 @@ pub(super) fn execute(
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
-        FsRequest::CreateExclusive(args) => create_exclusive(state, &args.path, args.mode, ctx),
+        FsRequest::CreateExclusive { path, mode, .. } => create_exclusive(state, &path, mode, ctx),
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }
 }
