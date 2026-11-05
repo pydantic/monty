@@ -6,7 +6,7 @@ use std::{
     borrow::Cow,
     fmt,
     future::{Future, ready},
-    mem,
+    io, mem,
     path::Path,
     pin::Pin,
     process::ExitStatus,
@@ -433,6 +433,9 @@ pub struct Checkout {
     /// refused `Load` cannot reset the suspension count, and an abort of the
     /// re-announced suspension does not discard the dump's limit.
     pending_load_budget: Option<SessionBudget>,
+    /// The child CPU sample [`Self::open_session`] takes before writing a
+    /// pipelined execution turn, so that turn's monitor charges from the send.
+    cpu_baseline: Option<cpu::Baseline>,
     /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when it fires.
     armed_deadline: Option<Duration>,
@@ -798,6 +801,7 @@ impl Checkout {
             abort_in_flight: false,
             budget,
             pending_load_budget: None,
+            cpu_baseline: None,
             armed_deadline: None,
             restored_script_name: None,
             session_id: None,
@@ -1389,12 +1393,11 @@ impl Checkout {
             .backstop_deadline(DurationGraces::from_config(&self.pool.config))
     }
 
-    /// Takes a fresh OS CPU baseline for this turn, independent of worker reports.
+    /// Supervises this turn's OS CPU, independent of worker reports, from the
+    /// baseline `open_session` took or a fresh sample.
     async fn cpu_monitor(&mut self, request: &pb::ParentRequest) -> Result<Option<cpu::Monitor>, PoolError> {
-        if self.budget.execution_clock != ExecutionClock::Cpu || self.pool.config.transport.is_remote() {
-            return Ok(None);
-        }
-        if !is_execution_turn(request) {
+        let baseline = self.cpu_baseline.take();
+        if !self.supervises_cpu(request) {
             return Ok(None);
         }
         let Some(limit) = cpu::allowance(
@@ -1406,11 +1409,27 @@ impl Checkout {
         ) else {
             return Ok(None);
         };
-        let clock = self.worker.as_ref().ok_or(PoolError::Finished)?.cpu_clock();
-        match clock.and_then(|clock| cpu::Monitor::new(clock, limit)) {
-            Ok(monitor) => Ok(Some(monitor)),
+        let baseline = match baseline {
+            Some(baseline) => Ok(baseline),
+            None => self.sample_cpu()?,
+        };
+        match baseline {
+            Ok(baseline) => Ok(Some(cpu::Monitor::new(baseline, limit))),
             Err(error) => Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
         }
+    }
+
+    /// Whether the parent measures `request`'s CPU: local CPU-clock execution turns only.
+    fn supervises_cpu(&self, request: &pb::ParentRequest) -> bool {
+        self.budget.execution_clock == ExecutionClock::Cpu
+            && !self.pool.config.transport.is_remote()
+            && is_execution_turn(request)
+    }
+
+    /// Samples the worker's CPU clock as a turn's baseline; the outer error is a finished checkout.
+    fn sample_cpu(&self) -> Result<io::Result<cpu::Baseline>, PoolError> {
+        let worker = self.worker.as_ref().ok_or(PoolError::Finished)?;
+        Ok(worker.cpu_clock().and_then(cpu::Baseline::sample))
     }
 
     /// Checks a final sample because a ready I/O future can run past the CPU budget.
@@ -1619,6 +1638,14 @@ impl Checkout {
         let Some(configure) = self.pending_configure.take() else {
             return Ok(false);
         };
+        // the child starts `request` as soon as it has answered `Configure`,
+        // so its CPU is charged from before either is written
+        if self.supervises_cpu(request) {
+            match self.sample_cpu()? {
+                Ok(baseline) => self.cpu_baseline = Some(baseline),
+                Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
+            }
+        }
         let timeout = self.pool.config.request_timeout;
         let wall_deadline = timeout.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.turn_in_flight = true;
@@ -1663,6 +1690,12 @@ impl Checkout {
                     self.adopt_execution_clock(&event)?;
                     // the reply echoes the session's limits, which can only tighten
                     self.budget.update_from(&event);
+                    // a `Load` behind it snapshotted the budget before this reply,
+                    // and a refused `Load` restores that snapshot
+                    if let Some(saved) = &mut self.pending_load_budget {
+                        saved.execution_clock = self.budget.execution_clock;
+                        saved.update_from(&event);
+                    }
                     return sent;
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
@@ -1855,14 +1888,17 @@ impl Checkout {
     /// turn-ender.
     ///
     /// **Bypasses this checkout's session bookkeeping** (`pending`,
-    /// `feed_mounts`, `restored_script_name`, `session_id`) — never interleave
+    /// `feed_mounts`, `restored_script_name`, and `session_id` beyond the ID
+    /// the opening `Configure` reply names) — never interleave
     /// with `feed`/`resume`/`restore`: the driver reads what a reply names from
     /// the frame it forwards. Worker lifecycle, poisoning and parent-side
     /// limits work as on the typed path; a raw `Load` re-adopts its budget like
     /// [`Checkout::restore`]. A `FatalError`
     /// (or remote `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
-    /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
+    /// [`PoolError::Finished`]; a raw driver is never auto-resumed. A relay
+    /// shutting down before the first request's `Configure` is answered is
+    /// [`PoolError::Shutdown`] instead: no session opened, so there is no frame to forward.
     /// An error from an older worker does not establish that a suspended feed ended.
     /// Complete its suspension or finish the checkout before starting another feed.
     ///

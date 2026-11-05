@@ -18,8 +18,9 @@
 // turns, so a parent can be implemented with a single blocking read loop in
 // any language. The one request a parent may write before reading is the
 // first after `Configure`: the child answers the two in order, so a session
-// opens and runs its first `Feed` or `Load` in one round trip, and a refused
-// `Configure` is followed by the error the unconfigured request earns.
+// opens and runs its first `Feed` or `Load` in one round trip. A refused
+// `Configure` ends the session: the parent discards the child without reading
+// the reply to the request behind it.
 // Outside that alternation sit the liveness messages: a server sends `Ping`
 // between turns and the parent answers `Pong`; neither is a turn.
 //

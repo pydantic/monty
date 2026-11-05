@@ -98,7 +98,7 @@ export class WorkerPool {
       await this.discard(slot)
       throw closedError()
     }
-    // posts the `Configure`; its reply is read by the session's first turn
+    // holds the `Configure` for the session's first turn to post ahead of itself
     const transport = WorkerTransport.configure(slot.worker.dispatch, configuration, this.options, slot.id)
     this.configuring.delete(slot)
     if (this.closed) {

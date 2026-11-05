@@ -1479,7 +1479,7 @@ class AsyncMontySession:
         Pass it to `load_session` / `load_snapshot` to start a new session from
         the state as of this one's last park, from any process. `None` for local
         workers, ephemeral sessions and servers that store nothing, and until the
-        session's first `feed_run` / `load_*` call, whose reply names it.
+        session's first request (`feed_run`, `feed_start`, `load_*`, ...) opens it.
         """
 
 @final

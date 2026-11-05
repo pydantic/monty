@@ -25,10 +25,24 @@ pub(crate) enum Failure {
     Clock(io::Error),
 }
 
-impl Monitor {
-    pub(crate) fn new(clock: Clock, limit: Duration) -> io::Result<Self> {
+/// A sample of the child's clock taken before a request goes out, so the turn's
+/// [`Monitor`] charges CPU the child spends before the parent sets the limit.
+pub(crate) struct Baseline {
+    clock: Clock,
+    started: Duration,
+}
+
+impl Baseline {
+    pub(crate) fn sample(clock: Clock) -> io::Result<Self> {
         let started = clock.sample().map_err(|error| confirmed_error(&clock, error))?;
-        Ok(Self { clock, started, limit })
+        Ok(Self { clock, started })
+    }
+}
+
+impl Monitor {
+    pub(crate) fn new(baseline: Baseline, limit: Duration) -> Self {
+        let Baseline { clock, started } = baseline;
+        Self { clock, started, limit }
     }
 
     /// Confirmed consumption since the baseline, for charging the turn to the feed budget.

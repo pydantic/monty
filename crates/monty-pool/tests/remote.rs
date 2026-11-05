@@ -3975,6 +3975,61 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
     }
 }
 
+/// A refused first `Load` restores the budget it snapshotted, which must keep
+/// the clock the `Configure` reply chose: a CPU-clock server's slow feed is not
+/// cut short by a wall-time backstop.
+#[tokio::test]
+async fn a_refused_first_load_keeps_the_server_clock() {
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        let mut configured = event_kind(ok_event());
+        configured.execution_clock = Some(pb::ExecutionClock::Cpu as i32);
+        send_event(&mut socket, &configured);
+        expect_load(&mut socket, b"bad-dump");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("unknown session".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+        );
+        expect_feed(&mut socket, "42");
+        // well past the 50ms feed limit a wall clock would enforce here
+        thread::sleep(Duration::from_millis(150));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        let _ = socket.read();
+    });
+    config.request_timeout = Some(Duration::from_secs(2));
+    config.feed_duration_limit_grace = Some(Duration::ZERO);
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(50))),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let refused = session.restore(b"bad-dump".to_vec(), vec![], &mut no_print).await;
+    assert!(matches!(refused, Err(PoolError::Runtime(_))), "{refused:?}");
+    let event = session.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
+    assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
+    drop(session);
+    pool.close().await;
+    join_server(server).await;
+}
+
 /// Checks that a remote dial failure is typed and returns its full message.
 fn connect_message(err: &PoolError) -> String {
     assert!(matches!(err, PoolError::Connect { .. }), "got {err:?}");

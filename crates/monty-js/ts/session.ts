@@ -473,8 +473,8 @@ export class MontySession {
   /**
    * The opaque ID a `MontyRemote` server that stores sessions gave this
    * session, or `undefined`: local workers, ephemeral sessions, servers that
-   * store nothing, and a session before its first `feedRun` / `load*` call,
-   * whose reply names it. Pass it to `loadSession` / `loadSnapshot` on a fresh
+   * store nothing, and a session before its first request (`feedRun`,
+   * `feedStart`, `load*`, ...) opens it. Pass it to `loadSession` / `loadSnapshot` on a fresh
    * session to start a new session from the state stored under it. Changes
    * when the pool resumes the session after a server shutdown.
    */
