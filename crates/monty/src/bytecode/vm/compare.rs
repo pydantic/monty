@@ -18,10 +18,16 @@ impl VM<'_> {
     pub(crate) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
             CmpOperator::Eq | CmpOperator::NotEq => {
-                let result = lhs.py_rich_eq(rhs, self)?;
-                let is_equal = result.py_bool(self);
-                result.drop_with(self);
-                let is_equal = is_equal?;
+                let is_equal = match (lhs, rhs) {
+                    (Value::Int(a), Value::Int(b)) => *a == *b,
+                    (Value::Bool(a), Value::Bool(b)) => *a == *b,
+                    _ => {
+                        let result = lhs.py_rich_eq(rhs, self)?;
+                        let is_equal = result.py_bool(self);
+                        result.drop_with(self);
+                        is_equal?
+                    }
+                };
                 Ok(if op == CmpOperator::NotEq { !is_equal } else { is_equal })
             }
             CmpOperator::Is => Ok(lhs.is(rhs)),
@@ -41,6 +47,15 @@ impl VM<'_> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        if let (Value::Int(a), Value::Int(b)) = (&lhs, &rhs) {
+            this.push(Value::Bool(a == b));
+            return Ok(());
+        }
+        if let (Value::Bool(a), Value::Bool(b)) = (&lhs, &rhs) {
+            this.push(Value::Bool(a == b));
+            return Ok(());
+        }
+
         let result = lhs.py_rich_eq(rhs, this)?;
         this.push(result);
         Ok(())
@@ -54,6 +69,15 @@ impl VM<'_> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        if let (Value::Int(a), Value::Int(b)) = (&lhs, &rhs) {
+            this.push(Value::Bool(a != b));
+            return Ok(());
+        }
+        if let (Value::Bool(a), Value::Bool(b)) = (&lhs, &rhs) {
+            this.push(Value::Bool(a != b));
+            return Ok(());
+        }
+
         let result = lhs.py_rich_eq(rhs, this)?;
         defer_drop!(result, this);
         let is_not_equal = !result.py_bool(this)?;
@@ -65,6 +89,16 @@ impl VM<'_> {
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
     fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs) {
+            return Ok(match op {
+                CmpOperator::Lt => a < b,
+                CmpOperator::LtE => a <= b,
+                CmpOperator::Gt => a > b,
+                CmpOperator::GtE => a >= b,
+                _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
+            });
+        }
+
         // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
         // a multiset) answers the operator itself. Hooked in here rather than at
         // the opcode so the fused-assert path, which calls `cmp_values` directly,
