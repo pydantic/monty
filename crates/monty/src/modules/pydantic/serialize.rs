@@ -145,6 +145,9 @@ struct Serializer<'a> {
     depth: usize,
     /// The containers being written, so one that holds itself is reported.
     in_progress: AHashSet<HeapId>,
+    /// Values written so far, keying the clock poll: a container shared
+    /// many times is written once per reference, far beyond the heap's size.
+    steps: usize,
 }
 
 impl<'a> Serializer<'a> {
@@ -155,11 +158,13 @@ impl<'a> Serializer<'a> {
             json_text,
             depth: 0,
             in_progress: AHashSet::new(),
+            steps: 0,
         }
     }
 
     /// Writes `value` by its validator when its type fits, else by inference.
     fn value<S: Sink>(&mut self, id: ValidatorId, value: &Value, sink: &mut S, vm: &VM<'_>) -> RunResult<()> {
+        self.step(vm)?;
         match self.arena.get(id) {
             Validator::Nullable(inner) => {
                 if matches!(value, Value::None) {
@@ -254,6 +259,7 @@ impl<'a> Serializer<'a> {
 
     /// Writes `value` by its runtime type, as pydantic's `Any` serializer does.
     fn infer<S: Sink>(&mut self, value: &Value, sink: &mut S, vm: &VM<'_>) -> RunResult<()> {
+        self.step(vm)?;
         if let Some(text) = value.as_str(vm) {
             return sink.str(value, text, vm);
         }
@@ -314,6 +320,12 @@ impl<'a> Serializer<'a> {
             "Unable to serialize unknown type: <class '{}'>",
             value.py_type_name(vm)
         ))
+    }
+
+    /// Counts one value written, polling the memory and time limits every so often.
+    fn step(&mut self, vm: &VM<'_>) -> RunResult<()> {
+        self.steps = self.steps.wrapping_add(1);
+        Ok(vm.heap.tracker.check_memory_time_every(self.steps)?)
     }
 
     /// Enters container `id`, failing on a reference back or past the depth limit.
