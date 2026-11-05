@@ -704,6 +704,10 @@ pub enum StaticStrings {
     Buffering,
     /// `sys.builtin_module_names` attribute.
     BuiltinModuleNames,
+    /// Kwarg name `by_alias` — `TypeAdapter` methods.
+    ByAlias,
+    /// Kwarg name `by_name` — `TypeAdapter` methods.
+    ByName,
     /// `sys.byteorder` attribute.
     Byteorder,
     /// `bytes_per_sep` parameter of `binascii.hexlify()`.
@@ -798,6 +802,8 @@ pub enum StaticStrings {
     Compile,
     /// `itertools.compress()` function.
     Compress,
+    /// Kwarg name `config` — `TypeAdapter()`.
+    Config,
     /// `complex.conjugate()` method.
     Conjugate,
     /// Kwarg name `context` — the `decimal` methods.
@@ -993,6 +999,10 @@ pub enum StaticStrings {
     DstDirFd,
     /// `json.dump()` function.
     Dump,
+    /// `dump_json()` method of `pydantic.TypeAdapter`.
+    DumpJson,
+    /// `dump_python()` method of `pydantic.TypeAdapter`.
+    DumpPython,
     /// `json.dumps()` function.
     Dumps,
     /// `__annotate__` — a function's PEP 649 annotate function, and the key a
@@ -1090,7 +1100,7 @@ pub enum StaticStrings {
     /// `__suppress_context__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__suppress_context__")]
     DunderSuppressContext,
-    /// `decimal.__version__` attribute.
+    /// `decimal.__version__` and `pydantic.__version__` attributes.
     #[strum(serialize = "__version__")]
     DunderVersion,
     /// The uncached callable.
@@ -1143,6 +1153,8 @@ pub enum StaticStrings {
     /// is the lowercase `re.error` alias.
     #[strum(serialize = "Error")]
     ErrorClass,
+    /// `error_count()` method of `pydantic.ValidationError`.
+    ErrorCount,
     /// Kwarg name `errors` — `open(errors=...)`.
     Errors,
     /// `re.escape()` function
@@ -1157,6 +1169,16 @@ pub enum StaticStrings {
     Excel,
     /// `csv.excel_tab` dialect.
     ExcelTab,
+    /// Kwarg name `exclude` — `TypeAdapter.dump_*`.
+    Exclude,
+    /// Kwarg name `exclude_computed_fields` — `TypeAdapter.dump_*`.
+    ExcludeComputedFields,
+    /// Kwarg name `exclude_defaults` — `TypeAdapter.dump_*`.
+    ExcludeDefaults,
+    /// Kwarg name `exclude_none` — `TypeAdapter.dump_*`.
+    ExcludeNone,
+    /// Kwarg name `exclude_unset` — `TypeAdapter.dump_*`.
+    ExcludeUnset,
     /// `sys.exec_prefix` attribute.
     ExecPrefix,
     /// `sys.executable` attribute.
@@ -1178,6 +1200,8 @@ pub enum StaticStrings {
     Expanduser,
     /// `os.path.expandvars()` function.
     Expandvars,
+    /// Kwarg name `experimental_allow_partial` — `TypeAdapter` methods.
+    ExperimentalAllowPartial,
     /// `math.expm1()` function.
     Expm1,
     /// `DecimalTuple.exponent` field.
@@ -1191,6 +1215,8 @@ pub enum StaticStrings {
     ExtendedContext,
     /// `deque.extendleft()` method.
     Extendleft,
+    /// Kwarg name `extra` — `TypeAdapter` methods.
+    Extra,
     /// `extrasaction` parameter and attribute of `csv.DictWriter`.
     Extrasaction,
     /// `os.extsep` constant name.
@@ -1203,6 +1229,8 @@ pub enum StaticStrings {
     Fabs,
     /// `math.factorial()` function.
     Factorial,
+    /// Kwarg name `fallback` — `TypeAdapter.dump_*`.
+    Fallback,
     /// `repr()`/`str()` text of `False`, interned so rendering allocates nothing.
     #[strum(serialize = "False")]
     FalseRepr,
@@ -1283,6 +1311,10 @@ pub enum StaticStrings {
     Fp,
     /// `math.frexp()` function.
     Frexp,
+    /// Kwarg name `from_attributes` — `TypeAdapter.validate_python()`.
+    FromAttributes,
+    /// `from_exception_data()` class method of `pydantic.ValidationError`.
+    FromExceptionData,
     /// `chain.from_iterable` — the one attribute an `itertools` type carries.
     #[strum(serialize = "from_iterable")]
     FromIterable,
@@ -1411,6 +1443,8 @@ pub enum StaticStrings {
     Hexversion,
     /// `hi` in the bisect module.
     Hi,
+    /// Kwarg name `hide_input` — `ValidationError.from_exception_data()`.
+    HideInput,
     /// `high` parameter of `random.triangular()`.
     High,
     /// `CacheInfo.hits` field.
@@ -1437,8 +1471,16 @@ pub enum StaticStrings {
     Ignorechars,
     /// `complex.imag` attribute.
     Imag,
+    /// Kwarg name `include` — `TypeAdapter.dump_*`.
+    Include,
+    /// Kwarg name `include_context` — `ValidationError.errors()`.
+    IncludeContext,
     /// `include_extras` parameter of `typing.get_type_hints()`.
     IncludeExtras,
+    /// Kwarg name `include_input` — `ValidationError.errors()`.
+    IncludeInput,
+    /// Kwarg name `include_url` — `ValidationError.errors()`.
+    IncludeUrl,
     /// `binascii.Incomplete` exception class.
     #[strum(serialize = "Incomplete")]
     IncompleteClass,
@@ -1456,6 +1498,10 @@ pub enum StaticStrings {
     Initial,
     /// `inner_size` parameter of `hashlib.blake2b()`.
     InnerSize,
+    /// `input` key of a `ValidationError.errors()` entry.
+    Input,
+    /// Kwarg name `input_type` — `ValidationError.from_exception_data()`.
+    InputType,
     /// `list.insert()` method.
     Insert,
     /// `insort` in the bisect module.
@@ -1466,6 +1512,8 @@ pub enum StaticStrings {
     InsortRight,
     /// `sys.flags.inspect` field.
     Inspect,
+    /// Positional name `instance` — `TypeAdapter.dump_*`.
+    Instance,
     /// `sys.flags.int_max_str_digits` field.
     IntMaxStrDigits,
     /// `sys.flags.interactive` field.
@@ -1590,6 +1638,8 @@ pub enum StaticStrings {
     /// `json.JSONDecodeError` exception.
     #[strum(serialize = "JSONDecodeError")]
     JsonDecodeError,
+    /// `json_schema()` method of `pydantic.TypeAdapter`.
+    JsonSchema,
     /// `kappa` parameter of `random.vonmisesvariate()`.
     Kappa,
     /// Kwarg name `keepends` — `str.splitlines(keepends=...)`.
@@ -1620,6 +1670,8 @@ pub enum StaticStrings {
     Lgamma,
     /// The value of `sys.platlibdir`.
     Lib,
+    /// Kwarg name `line_errors` — `ValidationError.from_exception_data()`.
+    LineErrors,
     /// `line_num` attribute of the `csv` readers.
     LineNum,
     /// `os.linesep` constant name.
@@ -1646,6 +1698,8 @@ pub enum StaticStrings {
     Load,
     /// `json.loads()` and `tomllib.loads()` functions.
     Loads,
+    /// `loc` key of a `ValidationError.errors()` entry.
+    Loc,
     /// `decimal.localcontext()` function.
     Localcontext,
     /// `localns` parameter of `typing.get_type_hints()`.
@@ -1811,6 +1865,8 @@ pub enum StaticStrings {
     /// `Counter.most_common()` method.
     #[strum(serialize = "most_common")]
     MostCommon,
+    /// `msg` key of a `ValidationError.errors()` entry.
+    Msg,
     /// `mu` parameter of `random.gauss()` and the other normal variates.
     Mu,
     /// `re.MULTILINE` flag
@@ -1926,6 +1982,9 @@ pub enum StaticStrings {
     Pardir,
     /// `Path.parent` property.
     Parent,
+    /// Kwarg name `_parent_depth` — `TypeAdapter()`.
+    #[strum(serialize = "_parent_depth")]
+    ParentDepth,
     /// Value of `os.pardir`.
     #[strum(serialize = "..")]
     ParentDirString,
@@ -1988,6 +2047,8 @@ pub enum StaticStrings {
     Platform,
     /// `sys.platlibdir` attribute.
     Platlibdir,
+    /// Kwarg name `polymorphic_serialization` — `TypeAdapter.dump_*`.
+    PolymorphicSerialization,
     /// `pop()` method, shared by `list`, `dict`, `set` and `deque`.
     Pop,
     /// `dict.popitem()` method.
@@ -2022,6 +2083,17 @@ pub enum StaticStrings {
     Protocol,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// The `pydantic` module.
+    Pydantic,
+    /// `pydantic.PydanticSchemaGenerationError` exception class.
+    #[strum(serialize = "PydanticSchemaGenerationError")]
+    PydanticSchemaGenerationError,
+    /// `pydantic.PydanticSerializationError` exception class.
+    #[strum(serialize = "PydanticSerializationError")]
+    PydanticSerializationError,
+    /// `pydantic.PydanticUserError` exception class.
+    #[strum(serialize = "PydanticUserError")]
+    PydanticUserError,
     /// `sys.flags.quiet` field.
     Quiet,
     /// `csv.QUOTE_ALL` constant.
@@ -2165,6 +2237,8 @@ pub enum StaticStrings {
     /// `decimal.ROUND_HALF_UP` rounding mode.
     #[strum(serialize = "ROUND_HALF_UP")]
     RoundHalfUp,
+    /// Kwarg name `round_trip` — `TypeAdapter.dump_*`.
+    RoundTrip,
     /// `decimal.ROUND_UP` rounding mode.
     #[strum(serialize = "ROUND_UP")]
     RoundUp,
@@ -2230,6 +2304,8 @@ pub enum StaticStrings {
     Sequence,
     /// `sys.version_info.serial` field.
     Serial,
+    /// Kwarg name `serialize_as_any` — `TypeAdapter.dump_*`.
+    SerializeAsAny,
     /// `typing.Set` marker.
     #[strum(serialize = "Set")]
     SetType,
@@ -2517,6 +2593,12 @@ pub enum StaticStrings {
     /// `typing.Type` marker.
     #[strum(serialize = "Type")]
     Type,
+    /// `pydantic.TypeAdapter` class.
+    #[strum(serialize = "TypeAdapter")]
+    TypeAdapter,
+    /// `type` key of a `ValidationError.errors()` entry.
+    #[strum(serialize = "type")]
+    TypeKey,
     /// `typing.TYPE_CHECKING` constant.
     #[strum(serialize = "TYPE_CHECKING")]
     TypeChecking,
@@ -2585,6 +2667,8 @@ pub enum StaticStrings {
     Upper,
     /// `os.urandom()` function.
     Urandom,
+    /// `url` key of a `ValidationError.errors()` entry.
+    Url,
     /// `base64.urlsafe_b64decode()` function.
     #[strum(serialize = "urlsafe_b64decode")]
     UrlsafeB64Decode,
@@ -2605,6 +2689,15 @@ pub enum StaticStrings {
     /// `validate` parameter of `base64.b64decode()`.
     #[strum(serialize = "validate")]
     Validate,
+    /// `validate_json()` method of `pydantic.TypeAdapter`.
+    ValidateJson,
+    /// `validate_python()` method of `pydantic.TypeAdapter`.
+    ValidatePython,
+    /// `validate_strings()` method of `pydantic.TypeAdapter`.
+    ValidateStrings,
+    /// `pydantic.ValidationError` exception class.
+    #[strum(serialize = "ValidationError")]
+    ValidationError,
     /// Kwarg name `value` — `decimal.Decimal()`.
     Value,
     /// `annotationlib.Format.VALUE` member.
@@ -2627,6 +2720,8 @@ pub enum StaticStrings {
     Walk,
     /// `sys.flags.warn_default_encoding` field.
     WarnDefaultEncoding,
+    /// Kwarg name `warnings` — `TypeAdapter.dump_*`.
+    Warnings,
     /// `@dataclass(weakref_slot=...)`.
     WeakrefSlot,
     /// `date.weekday()` / `datetime.weekday()` method.

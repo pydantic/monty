@@ -210,6 +210,8 @@ pub(crate) enum BuiltinType {
     DecimalContextManager,
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    #[strum(serialize = "pydantic.type_adapter.TypeAdapter")]
+    TypeAdapter,
 }
 
 impl From<BuiltinType> for Type {
@@ -297,6 +299,7 @@ impl From<BuiltinType> for Type {
             BuiltinType::ItertoolsZipLongest => Self::ItertoolsZipLongest,
             BuiltinType::GenericAlias => Self::GenericAlias,
             BuiltinType::Union => Self::Union,
+            BuiltinType::TypeAdapter => Self::TypeAdapter,
             BuiltinType::ItertoolsCombinations => Self::ItertoolsCombinations,
             BuiltinType::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
             BuiltinType::ItertoolsPermutations => Self::ItertoolsPermutations,
@@ -412,6 +415,7 @@ impl TryFrom<Type> for BuiltinType {
             Type::ItertoolsZipLongest => Self::ItertoolsZipLongest,
             Type::GenericAlias => Self::GenericAlias,
             Type::Union => Self::Union,
+            Type::TypeAdapter => Self::TypeAdapter,
             Type::ItertoolsCombinations => Self::ItertoolsCombinations,
             Type::ItertoolsCombinationsWithReplacement => Self::ItertoolsCombinationsWithReplacement,
             Type::ItertoolsPermutations => Self::ItertoolsPermutations,

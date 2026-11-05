@@ -14,6 +14,7 @@ use crate::{
     fstring::{FormatError, ascii_escape},
     heap::{DropWithContext, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
+    modules::pydantic,
     parse::CodeRange,
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
@@ -1827,13 +1828,16 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
     #[must_use]
     fn value_error_int_too_large_for_str() -> RunError {
-        SimpleException::new_msg(
-            ExcType::ValueError,
-            format!(
-                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit"
-            ),
+        SimpleException::new_msg(ExcType::ValueError, Self::int_too_large_for_str_message()).into()
+    }
+
+    /// The message of [`value_error_int_too_large_for_str`](Self::value_error_int_too_large_for_str),
+    /// for errors that quote it.
+    #[must_use]
+    fn int_too_large_for_str_message() -> String {
+        format!(
+            "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit"
         )
-        .into()
     }
 
     /// Creates a ValueError when a decimal string has too many digits for `int()` conversion.
@@ -2835,6 +2839,12 @@ impl SimpleException {
 
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
+        // pydantic's `ValidationError.__repr__` is its `__str__`: the error listing.
+        if self.exc_type == ExcType::ValidationError
+            && let Some(message) = &self.arg
+        {
+            return f.write_str(message);
+        }
         let type_str: &'static str = self.exc_type.into();
         write!(f, "{type_str}(")?;
 
@@ -2874,8 +2884,8 @@ impl<'h> HeapRead<'h, SimpleException> {
     }
 
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
-    /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
-    /// for all other attributes.
+    /// any), `__cause__`, `__context__`, `__suppress_context__` and a
+    /// `ValidationError`'s own attributes. Returns `None` for all other attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         // Interned names match by ID; only `args` can also arrive as a dynamic string.
         let name = attr.static_string(vm.interns);
@@ -2886,9 +2896,32 @@ impl<'h> HeapRead<'h, SimpleException> {
             Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
             Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
             None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
-            _ => return None,
+            _ => match &exc.data {
+                ExcData::Validation(data) => return pydantic::errors::getattr(data, attr, vm).map(CallResult::Value),
+                _ => return None,
+            },
         };
         Some(CallResult::Value(value))
+    }
+
+    /// Calls a method on this exception: only a `ValidationError` has any
+    /// (`errors()`, `error_count()`, `json()`); every other name is an
+    /// `AttributeError`.
+    pub fn py_call_attr(&self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        if let ExcData::Validation(data) = &self.get(vm.heap).data {
+            if attr.static_string(vm.interns) == Some(StaticStrings::ErrorCount) {
+                // A count needs no copy; the other methods allocate while
+                // reading the payload, so they take their own.
+                let count = pydantic::errors::error_count(data);
+                args.check_zero_args("error_count", vm.heap)?;
+                return Ok(CallResult::Value(count));
+            }
+            let data = data.clone();
+            pydantic::errors::call_method(&data, attr, args, vm)
+        } else {
+            let type_name: &'static str = self.get(vm.heap).exc_type.into();
+            Err(ExcType::attribute_error_method(type_name, attr, args, vm))
+        }
     }
 }
 
