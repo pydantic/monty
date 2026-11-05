@@ -35,7 +35,8 @@ The handle accepts the supported `r`, `rb`, `w`, `wb`, `a`, and `ab` modes; upda
 Native mounts use descriptor-relative exclusive creation, so checking and reserving the name are atomic.
 The `permissions` field accepts read/write access bits (`0o666` mask), applied on Unix subject to umask.
 Execute bits and bits outside the access mask are rejected with `ValueError` before creation.
-Windows uses inherited filesystem permissions.
+On Windows, Monty ignores the requested permission bits and uses the filesystem's default access rules,
+including inheritance from the parent directory.
 Overlay mounts insert an empty overlay file and never create or replace a backing file.
 Their exclusive check and insertion hold a mutable borrow of the overlay state; the host must not concurrently modify
 backing entries during creation.
