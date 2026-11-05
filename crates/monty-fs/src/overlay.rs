@@ -183,6 +183,8 @@ fn create_exclusive(
 ) -> Result<MontyObject, MountError> {
     let relative = relative_path(path, ctx)?;
     ensure_parent_exists(state, &relative, ctx, path)?;
+    // The mutable borrow prevents another overlay operation between checking and inserting.
+    // Concurrent changes to the host backing directory are unsupported.
     let occupied = match state.get(&relative) {
         Some(OverlayEntry::Deleted) => false,
         Some(_) => true,
