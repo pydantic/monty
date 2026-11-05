@@ -29,8 +29,9 @@ monty --help
 
 - `monty` — start an interactive REPL
 - `monty file.py` — run a Python file
+- `monty -` — run a program read from standard input (like `python -`)
 - `monty -c "<code>"` — run a program passed as a string (like `python -c`)
-- `-i` / `--interactive` — run the file or `-c` program in a REPL session
+- `-i` / `--interactive` — run the file, `-c` or stdin program in a REPL session
   (like `python -i`)
 - `-t` / `--type-check` — type check (powered by [ty](https://docs.astral.sh/ty/))
   before executing
