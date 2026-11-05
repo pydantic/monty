@@ -900,13 +900,11 @@ impl PyAsyncMontySession {
         let options = CheckoutOptions::default()
             .with_telemetry(capture_telemetry_context(py))
             .with_metadata(metadata);
-        let session_id = Arc::clone(&this.session_id);
         future_into_py(py, async move {
             let checkout = pool
                 .checkout_with(&repl_config, options)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
-            *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
             *slot.lock().await = Some(checkout);
             Ok(slf)
         })

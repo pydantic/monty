@@ -498,7 +498,6 @@ impl NativeSession {
         let pool_name = self.pool_name;
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
-        let session_id = Arc::clone(&self.session_id);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         let metadata = metadata
@@ -529,7 +528,6 @@ impl NativeSession {
                 };
                 let outcome = match checkout {
                     Ok(checkout) => {
-                        *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                         *slot.lock().await = Some(checkout);
                         TurnOutcome::Ok
                     }

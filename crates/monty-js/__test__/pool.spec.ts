@@ -54,21 +54,26 @@ test('wasm transport discards shutdown replies but preserves fatal diagnostics',
 })
 
 test('shutdown during Configure preserves the fatal diagnostic', async () => {
-  const error = await t.throwsAsync(
-    () =>
-      WorkerTransport.create(async () => ({
-        status: 'shutdown',
-        events: [{ tag: 'fatal-error', val: 'configuration failed' }],
-        feedExecutionMicros: 0n,
-        exitStatus: 'exit code: 7',
-      })),
-    { instanceOf: TransportCrashedError },
-  )
+  // the Configure reply is read by the first turn, which is where the refusal surfaces
+  const transport = await WorkerTransport.create(async () => ({
+    status: 'shutdown',
+    events: [{ tag: 'fatal-error', val: 'configuration failed' }],
+    feedExecutionMicros: 0n,
+    exitStatus: 'exit code: 7',
+  }))
+  const releases: boolean[] = []
+  transport.onFinish = (reusable) => {
+    releases.push(reusable)
+  }
+  const error = await t.throwsAsync(() => transport.feed('1', null, [], { skipTypeCheck: true }, () => {}), {
+    instanceOf: TransportCrashedError,
+  })
   t.is(error.message, 'RuntimeError: configuration failed')
   t.is(error.exitStatus, 'exit code: 7')
+  t.deepEqual(releases, [false])
 })
 
-test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during %s', async (phase) => {
+test.each(['acquire', 'startup'])('close cancels a checkout during %s', async (phase) => {
   let start!: () => void
   const started = new Promise<void>((resolve) => {
     start = resolve

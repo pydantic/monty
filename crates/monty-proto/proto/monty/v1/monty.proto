@@ -16,8 +16,12 @@
 // `ParentRequest`; the child replies with zero or more streamed `Print` events
 // followed by exactly one turn-ending event. A stream never interleaves two
 // turns, so a parent can be implemented with a single blocking read loop in
-// any language. Outside that alternation sit the liveness messages: a server
-// sends `Ping` between turns and the parent answers `Pong`; neither is a turn.
+// any language. The one request a parent may write before reading is the
+// first after `Configure`: the child answers the two in order, so a session
+// opens and runs its first `Feed` or `Load` in one round trip, and a refused
+// `Configure` is followed by the error the unconfigured request earns.
+// Outside that alternation sit the liveness messages: a server sends `Ping`
+// between turns and the parent answers `Pong`; neither is a turn.
 //
 // Evolution rules: the schema carries its own version, independent of the
 // monty package version. A parent declares it in `Configure.protocol_version`

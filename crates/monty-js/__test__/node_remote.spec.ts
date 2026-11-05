@@ -175,24 +175,30 @@ test('a refused connection rejects the checkout', async () => {
   t.regex(error.message, /^failed to spawn monty worker: http:\/\/127\.0\.0\.1:9/)
 })
 
-test('a session the server refuses rejects the checkout with MontyRuntimeError', async () => {
+// The session's configuration goes out with its first request, so a server
+// refusing the session fails that request rather than the checkout.
+
+test('a session the server refuses fails its first run with MontyRuntimeError', async () => {
   const { url } = await server(refusingServer("unknown profile 'gpu'"))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const error = await t.throwsAsync(() => pool.checkout({ profile: 'gpu' }), { instanceOf: MontyRuntimeError })
+  const session = await pool.checkout({ profile: 'gpu' })
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyRuntimeError })
   t.is(error.message, "RuntimeError: unknown profile 'gpu'")
 })
 
-test('a connection dropped during checkout rejects it with MontyDisconnectError', async () => {
+test('a connection dropped on the first request rejects it with MontyDisconnectError', async () => {
   const { url } = await server(droppingRelay(1))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyDisconnectError })
+  const session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
   t.regex(error.message, /^RuntimeError: monty worker connection closed while /)
 })
 
-test('a draining server rejects the checkout with MontyShutdown', async () => {
+test('a draining server fails the first run with MontyShutdown', async () => {
   const { url } = await server(drainingServer)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyShutdown })
+  const session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyShutdown })
   t.is(error.message, 'RuntimeError: monty server is shutting down; the request did not run')
   t.is(error.dump, null)
 })
@@ -253,8 +259,10 @@ test('a storing server names the session and a shutdown is resumed', async () =>
   const { url } = await server(new StoringServer().handle)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const session = await pool.checkout()
-  t.deepEqual(session.sessionId, Buffer.from('sess-1'))
+  // the first run carries the Configure out, and its reply names the session
+  t.is(session.sessionId, undefined)
   await session.feedRun('x = 20')
+  t.deepEqual(session.sessionId, Buffer.from('sess-1'))
   // the fake parks the session instead of running this feed; the pool
   // reloads the ID on a new connection and re-sends it
   t.is(await session.feedRun('x + 1'), 21)
@@ -351,9 +359,8 @@ test('a server ping is answered with a pong while the session is idle', async ()
   const { url } = await server(async (stream) => {
     admit(stream)
     const requests = messages(stream)
-    await requests.next() // Configure
-    stream.write(OK_EVENT)
-    // the client is now idle: nothing in flight, nothing awaited
+    // the client is idle from the moment the stream opens: nothing goes out
+    // until its first request
     stream.write(PING_EVENT)
     answered = requests.next().then(({ value }) => value !== undefined && protoFields(value).has(12))
     await answered

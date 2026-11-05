@@ -568,8 +568,10 @@ async def test_auto_resume_can_be_disabled(relay_url: str):
 async def test_storing_server_names_the_session_and_resumes_a_shutdown(storing_url: str):
     async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
         async with pool.checkout() as session:
-            assert session.session_id == snapshot(b'sess-1')
+            # the first request carries the Configure out, and its reply names the session
+            assert session.session_id is None
             await session.feed_run('x = 20')
+            assert session.session_id == snapshot(b'sess-1')
             # the fake parks the session instead of running this feed; the
             # client reloads the ID on a new stream and re-sends it
             assert await session.feed_run('x + 1') == snapshot(21)
@@ -751,9 +753,11 @@ async def test_child_exiting_with_a_status_ends_the_stream_with_internal(tmp_pat
     server, url = await relay.start_relay(str(script), '127.0.0.1', 0)
     try:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
-            with pytest.raises(MontyDisconnectError) as caught:
-                async with pool.checkout():
-                    pass
+            # the session's first request carries its configuration out, so
+            # that is where the child's death surfaces
+            async with pool.checkout() as session:
+                with pytest.raises(MontyDisconnectError) as caught:
+                    await session.feed_run('1 + 1')
         assert caught.value.status_code == 'INTERNAL'
         assert caught.value.status_message == 'monty subprocess exited with status 3'
     finally:

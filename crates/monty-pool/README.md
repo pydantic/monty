@@ -23,7 +23,10 @@ fails to spawn is retried with a doubling backoff. Remote pools never refill.
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
-state cannot be trusted back into the pool.
+state cannot be trusted back into the pool. The session's `Configure` goes out with its first
+request rather than in a turn of its own, so a worker refusing it (an invalid `os_policy`, a
+clock it cannot serve) fails that first `feed` / `restore`, which also ends the session; a
+checkout that is finished without a request never configures its worker.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
