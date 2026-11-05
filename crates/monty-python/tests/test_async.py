@@ -17,10 +17,13 @@ import pytest
 from inline_snapshot import snapshot
 
 from pydantic_monty import (
+    AsyncFutureSnapshot,
     AsyncMonty,
     AsyncMontySession,
+    ExternalSettledResult,
     MemoryFile,
     Monty,
+    MontyComplete,
     MontyRuntimeError,
     MontySyntaxError,
     OSAccess,
@@ -1258,3 +1261,138 @@ async def test_async_os_callback_for_time_sleep_is_awaited_in_place(asession_cal
         return 'ignored'
 
     assert await asession_call_host.feed_run('import time; time.sleep(0.001) is None', os=os_handler) == snapshot(True)
+
+
+# === Streamed calls to coroutine host functions ===
+#
+# A call to an `async def` in `external_lookup` does not suspend the sandbox:
+# the worker answers it with a future and streams the call, so the coroutine
+# starts while the sandbox runs on, and every call of a gather reaches the
+# host before anything blocks.
+
+
+async def test_coroutine_function_starts_before_the_sandbox_blocks(asession: AsyncMontySession):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fetch() -> str:
+        started.set()
+        await release.wait()
+        return 'fetched'
+
+    async def check_started() -> bool:
+        # scheduled on the loop after fetch, which the sandbox called first
+        was_started = started.is_set()
+        release.set()
+        return was_started
+
+    code = """
+x = fetch()
+started = await check_started()
+[started, await x]
+"""
+    result = await asession.feed_run(code, external_lookup={'fetch': fetch, 'check_started': check_started})
+    assert result == snapshot([True, 'fetched'])
+
+
+async def test_gather_over_a_comprehension_of_coroutine_calls(asession: AsyncMontySession):
+    calls: list[int] = []
+
+    async def fetch(i: int) -> int:
+        calls.append(i)
+        await asyncio.sleep(0.01)
+        return i * 10
+
+    code = """
+import asyncio
+
+await asyncio.gather(*[fetch(i) for i in range(4)])
+"""
+    result = await asession.feed_run(code, external_lookup={'fetch': fetch})
+    assert result == snapshot([0, 10, 20, 30])
+    assert calls == snapshot([0, 1, 2, 3])
+
+
+async def test_coroutine_function_errors_raise_at_the_await(asession: AsyncMontySession):
+    async def fetch() -> None:
+        raise ValueError('boom')
+
+    code = """
+x = fetch()
+try:
+    await x
+except ValueError as e:
+    result = str(e)
+result
+"""
+    assert await asession.feed_run(code, external_lookup={'fetch': fetch}) == snapshot('boom')
+
+
+async def test_coroutine_function_passed_as_input_value(asession: AsyncMontySession):
+    async def fetch(i: int) -> int:
+        return i + 1
+
+    code = """
+import asyncio
+
+await asyncio.gather(fetch(1), fetch(2))
+"""
+    assert await asession.feed_run(code, inputs={'fetch': fetch}, external_lookup={'fetch': fetch}) == snapshot([2, 3])
+
+
+async def test_future_snapshot_lists_streamed_calls(asession: AsyncMontySession):
+    async def fetch(i: int, *, scale: int = 1) -> int:
+        return i * scale
+
+    code = """
+import asyncio
+
+await asyncio.gather(fetch(1, scale=2), fetch(2))
+"""
+    snap = await asession.feed_start(code, external_lookup={'fetch': fetch})
+    assert isinstance(snap, AsyncFutureSnapshot)
+    assert [(c.function_name, c.call_id, c.args, c.kwargs) for c in snap.calls] == snapshot(
+        [('fetch', 0, (1,), {'scale': 2}), ('fetch', 1, (2,), {})]
+    )
+    assert sorted(snap.pending_call_ids) == [c.call_id for c in snap.calls]
+    # their coroutines are already running, so the automatic resolution settles them
+    done = await snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot([2, 2])
+
+
+async def test_loaded_snapshot_lists_unresolved_streamed_calls(apool: AsyncMonty):
+    async def fetch(i: int) -> int:
+        return i
+
+    code = """
+import asyncio
+
+await asyncio.gather(fetch(1), fetch(2))
+"""
+    async with apool.checkout() as session:
+        snap = await session.feed_start(code, external_lookup={'fetch': fetch})
+        assert isinstance(snap, AsyncFutureSnapshot)
+        state = snap.dump()
+    async with apool.checkout() as session:
+        restored = await session.load_snapshot(state, external_lookup={'fetch': fetch})
+        assert isinstance(restored, AsyncFutureSnapshot)
+        assert [(c.function_name, c.args) for c in restored.calls] == snapshot([('fetch', (1,)), ('fetch', (2,))])
+        # resolved by hand, under the ids the restored session re-announced
+        results: dict[int, ExternalSettledResult] = {
+            c.call_id: {'return_value': c.args[0] * 100} for c in restored.calls
+        }
+        done = await restored.resume(results)
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot([100, 200])
+
+
+def test_sync_session_refuses_a_coroutine_function_value():
+    async def fetch() -> int:
+        return 1
+
+    with Monty() as pool:
+        with pool.checkout() as session:
+            with pytest.raises(RuntimeError) as exc_info:
+                session.feed_run('await fetch()', inputs={'fetch': fetch})
+    assert exc_info.value.args[0] == snapshot('async external functions require AsyncMonty')

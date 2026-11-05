@@ -313,8 +313,9 @@ def test_standard_meter_receives_metrics():
 
 
 @pytest.mark.parametrize('fail', [False, True])
-async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
-    """An eager value or exception closes the call span without a future-results record."""
+async def test_streamed_coroutine_result_is_recorded_on_the_call_span(fail: bool):
+    """A coroutine function's call is streamed: its span stays open until the
+    result closes it, and the wait that follows is its own span."""
     install_telemetry()
 
     async def fetch() -> int:
@@ -330,8 +331,13 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
             assert await session.feed_run(code, external_lookup={'fetch': fetch}) == (0 if fail else 42)
 
     spans = _span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == ['call {function_name}', 'run code', 'session {script_name}']
-    call, run, _session = spans
+    assert [span.name for span in spans] == [
+        'call {function_name}',
+        'resolve futures',
+        'run code',
+        'session {script_name}',
+    ]
+    call, _waiting, run, _session = spans
     assert call.attributes is not None
     assert call.attributes['function_name'] == 'fetch'
     assert call.attributes['return_value'] == ('raise ValueError: failed' if fail else 42)
@@ -344,11 +350,12 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
     )
     assert call.parent is not None and run.context is not None
     assert call.parent.span_id == run.context.span_id
-    assert _log_exporter.get_finished_logs() == ()
+    [log] = _log_exporter.get_finished_logs()
+    assert log.log_record.body == 'future results'
 
 
 async def test_deferred_coroutine_keeps_future_resolution_telemetry():
-    """A stored awaitable still has a separate wait span and future-results record."""
+    """A stored awaitable's call span is closed by its result, under the wait that delivered it."""
     install_telemetry()
 
     async def fetch() -> int:
@@ -367,7 +374,7 @@ async def test_deferred_coroutine_keeps_future_resolution_telemetry():
     ]
     call, waiting, _run, _session = spans
     assert call.attributes is not None
-    assert call.attributes['return_value'] == f'future {call.attributes["call_id"]}'
+    assert call.attributes['return_value'] == 42
     [log] = _log_exporter.get_finished_logs()
     assert log.log_record.body == 'future results'
     assert waiting.context is not None

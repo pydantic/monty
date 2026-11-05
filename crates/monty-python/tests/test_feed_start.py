@@ -767,6 +767,9 @@ async def test_async_resume_auto_sync_external():
 
 
 async def test_async_resume_auto_coroutine_external():
+    """A coroutine function's call is streamed and started as it is made: the
+    first snapshot is the wait for it, listing the call."""
+
     async def go() -> int:
         return 99
 
@@ -774,8 +777,8 @@ async def test_async_resume_auto_coroutine_external():
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             snap = await session.feed_start(code, external_lookup={'go': go})
-            assert isinstance(snap, AsyncFunctionSnapshot)
-            assert snap.allow_eager_await
+            assert isinstance(snap, AsyncFutureSnapshot)
+            assert [(call.function_name, call.args) for call in snap.calls] == snapshot([('go', ())])
             done = await snap.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == snapshot(99)
@@ -858,8 +861,9 @@ async def test_async_resume_auto_gathered_asyncio_sleeps_are_futures():
             assert kinds[:3] == snapshot(['AsyncFunctionSnapshot', 'AsyncFunctionSnapshot', 'AsyncFutureSnapshot'])
 
 
-async def test_async_allow_eager_await_survives_snapshot_restore():
-    """A restored call retains eager eligibility and finishes without a future suspension."""
+async def test_async_streamed_call_survives_snapshot_restore():
+    """A restored wait streams its unresolved calls again, so `resume_auto`
+    starts their coroutines in the new session."""
 
     async def go() -> list[int]:
         return [42]
@@ -867,12 +871,12 @@ async def test_async_allow_eager_await_survives_snapshot_restore():
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             snap = await session.feed_start('await go()', external_lookup={'go': go})
-            assert isinstance(snap, AsyncFunctionSnapshot)
+            assert isinstance(snap, AsyncFutureSnapshot)
             blob = snap.dump()
         async with pool.checkout() as session:
             restored = await session.load_snapshot(blob, external_lookup={'go': go})
-            assert isinstance(restored, AsyncFunctionSnapshot)
-            assert restored.allow_eager_await
+            assert isinstance(restored, AsyncFutureSnapshot)
+            assert [call.function_name for call in restored.calls] == snapshot(['go'])
             done = await restored.resume_auto()
             assert isinstance(done, MontyComplete)
             assert done.output == [42]

@@ -45,6 +45,11 @@ pub(crate) fn call<T>(py: Python<'_>, callback: impl FnOnce() -> PyResult<T>) ->
 pub(crate) struct CallbackContext(Py<PyAny>);
 
 impl CallbackContext {
+    /// A second owner of the captured context, for a sink that outlives the drive loop's borrow.
+    pub(crate) fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self(self.0.clone_ref(py))
+    }
+
     pub(crate) fn capture(py: Python<'_>) -> PyResult<Self> {
         // SAFETY: Python is attached; the API returns a new owned context reference.
         unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyContext_CopyCurrent()) }.map(|context| Self(context.unbind()))

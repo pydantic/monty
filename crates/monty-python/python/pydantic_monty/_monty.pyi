@@ -1549,6 +1549,31 @@ class NameLookupSnapshot:
     def __repr__(self) -> str: ...
 
 @final
+class AsyncCall:
+    """A call the sandbox made to a coroutine host function (an `async def` in
+    `external_lookup`), listed by the `FutureSnapshot` that follows it.
+
+    The sandbox did not wait for it: it holds a future for `call_id` and runs
+    on, so the call is streamed as it is made. Run the function with `args` /
+    `kwargs` and deliver its outcome through `FutureSnapshot.resume` under
+    `call_id`; an `AsyncFutureSnapshot` has already started the coroutine for
+    `resume_auto`.
+    """
+
+    @property
+    def function_name(self) -> str: ...
+    @property
+    def call_id(self) -> int: ...
+    @property
+    def position(self) -> SourceRange:
+        """The call expression."""
+    @property
+    def args(self) -> tuple[Any, ...]: ...
+    @property
+    def kwargs(self) -> dict[str, Any]: ...
+    def __repr__(self) -> str: ...
+
+@final
 class FutureSnapshot:
     """A paused execution where every sandbox task is blocked on external futures."""
 
@@ -1559,6 +1584,10 @@ class FutureSnapshot:
         """The `await` the main task is blocked on."""
     @property
     def pending_call_ids(self) -> list[int]: ...
+    @property
+    def calls(self) -> list[AsyncCall]:
+        """The calls to coroutine host functions streamed since the previous
+        snapshot, to run and resolve by `call_id` through `resume`."""
     def trace_context(self) -> Context:
         """As `FunctionSnapshot.trace_context`, for this future-resolution suspension."""
 
@@ -1651,16 +1680,20 @@ class AsyncFutureSnapshot:
         """As `FutureSnapshot.position`: the main task's `await`."""
     @property
     def pending_call_ids(self) -> list[int]: ...
+    @property
+    def calls(self) -> list[AsyncCall]:
+        """As `FutureSnapshot.calls`; their coroutines are already running for `resume_auto`."""
     def trace_context(self) -> Context:
         """As `FunctionSnapshot.trace_context`; returns a context, not an awaitable."""
 
     async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
-        """Wait for one or more coroutine externals spawned by earlier
-        `resume_auto` calls to settle, deliver them, and return the next
-        snapshot. Raises if there are no pending coroutines to await (e.g. a
-        snapshot restored via `load_snapshot`) without consuming the snapshot;
-        resolve it manually with `resume({call_id: ...})`."""
+        """Wait for one or more coroutine externals — those of the streamed
+        `calls`, or spawned by earlier `resume_auto` calls — to settle, deliver
+        them, and return the next snapshot. Raises if there are no pending
+        coroutines to await (a snapshot restored via `load_snapshot` keeps only
+        the streamed `calls`) without consuming the snapshot; resolve it
+        manually with `resume({call_id: ...})`."""
 
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...

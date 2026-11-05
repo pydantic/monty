@@ -7,22 +7,29 @@
 use std::{
     future::{Future, ready},
     pin::Pin,
+    sync::Arc,
     time::Duration,
 };
 
 use futures_util::future::try_join_all;
-use monty_pool::ResumeValue;
+use monty_pool::{AsyncCallSink, ResumeValue};
 use monty_proto::python::InstanceStore;
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
+use monty_types::{
+    AsyncCall, CallArgs, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, OsFunctionCall,
+};
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::{
+    sync::Mutex,
     task::{JoinError, JoinSet},
     time::sleep,
 };
 
-use crate::external::{
-    AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
+use crate::{
+    callback_context::CallbackContext,
+    external::{
+        AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
+    },
 };
 
 /// Answers an intercepted OS call (see
@@ -276,4 +283,53 @@ pub(crate) async fn wait_for_futures(
 #[expect(clippy::needless_pass_by_value)]
 pub(crate) fn join_error_to_py(err: JoinError) -> PyErr {
     PyRuntimeError::new_err(format!("Async task failed: {err}"))
+}
+
+/// Builds the sink `Checkout::set_async_call_sink` takes for a drive loop:
+/// each call the sandbox streams to a host coroutine function is dispatched
+/// under `callback_context` and its coroutine (or plain result) spawned onto
+/// `join_set`, where [`wait_for_futures`] settles it at the next
+/// `ResolveFutures`. `on_call` sees every call first, for a stepping driver to
+/// list; `dispatch` false records without running (a sync session, which
+/// cannot await the coroutine).
+pub(crate) fn async_call_sink(
+    names: HostNames,
+    instances: InstanceStore,
+    callback_context: CallbackContext,
+    join_set: Arc<Mutex<JoinSet<(u32, ExtFunctionResult)>>>,
+    mut on_call: impl FnMut(&AsyncCall) + Send + 'static,
+    dispatch: bool,
+) -> AsyncCallSink {
+    Box::new(move |call| {
+        on_call(&call);
+        if !dispatch {
+            return Box::pin(ready(()));
+        }
+        // the pool attaches the turn's span before invoking the sink
+        let native = opentelemetry::Context::current();
+        let future = Python::attach(|py| -> AnswerFuture {
+            let result = (|| -> PyResult<AnswerFuture> {
+                let _guard = callback_context.enter(py, &native)?;
+                match dispatch_function_call(&call.function_name, None, &call.args, &names, &instances) {
+                    CallResult::Coroutine(coro) => Ok(Box::pin(coroutine_future(coro, &instances)?)),
+                    CallResult::Sync(result) => Ok(Box::pin(ready(result))),
+                    CallResult::ModuleCoroutine { .. } => {
+                        Ok(Box::pin(ready(ExtFunctionResult::Error(MontyException::new(
+                            ExcType::RuntimeError,
+                            Some(
+                                "a module whose factory is awaitable cannot be called as a coroutine function"
+                                    .to_owned(),
+                            ),
+                        )))))
+                    }
+                }
+            })();
+            result.unwrap_or_else(|err| Box::pin(ready(py_err_to_ext_result(py, &err))))
+        });
+        let join_set = Arc::clone(&join_set);
+        let call_id = call.call_id;
+        Box::pin(async move {
+            join_set.lock().await.spawn(async move { (call_id, future.await) });
+        })
+    })
 }

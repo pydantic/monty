@@ -8,6 +8,7 @@ from typing_extensions import NotRequired, TypeAlias, TypedDict
 
 from ._monty import (
     NOT_HANDLED,
+    AsyncCall,
     AsyncFunctionSnapshot,
     AsyncFutureSnapshot,
     AsyncMonty,
@@ -110,6 +111,7 @@ __all__ = (
     'FunctionSnapshot',
     'NameLookupSnapshot',
     'FutureSnapshot',
+    'AsyncCall',
     'AsyncFunctionSnapshot',
     'AsyncNameLookupSnapshot',
     'AsyncFutureSnapshot',

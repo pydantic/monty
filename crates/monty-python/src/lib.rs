@@ -42,8 +42,8 @@ pub use pool::{PyAsyncMonty, PyAsyncMontyRemote, PyAsyncMontySession, PyMonty, P
 pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
 pub use snapshot::{
-    MontyComplete, PyAsyncFunctionSnapshot, PyAsyncFutureSnapshot, PyAsyncNameLookupSnapshot, PyFunctionSnapshot,
-    PyFutureSnapshot, PyNameLookupSnapshot,
+    MontyComplete, PyAsyncCall, PyAsyncFunctionSnapshot, PyAsyncFutureSnapshot, PyAsyncNameLookupSnapshot,
+    PyFunctionSnapshot, PyFutureSnapshot, PyNameLookupSnapshot,
 };
 use version::cargo_version_to_pep440;
 
@@ -126,6 +126,8 @@ mod _monty {
     use super::MontySyntaxError;
     #[pymodule_export]
     use super::MontyTypingError;
+    #[pymodule_export]
+    use super::PyAsyncCall as AsyncCall;
     #[pymodule_export]
     use super::PyAsyncFunctionSnapshot as AsyncFunctionSnapshot;
     #[pymodule_export]

@@ -4,7 +4,7 @@ use monty_proto::python::InstanceStore;
 use pyo3::{exceptions::PyMemoryError, prelude::*};
 use tokio::sync::Mutex;
 
-use super::{DriveContext, SnapshotState};
+use super::{DriveContext, SnapshotState, StreamedCalls};
 use crate::{external::HostNames, print_target::PrintTarget};
 
 fn snapshot(py: Python<'_>) -> SnapshotState {
@@ -17,6 +17,7 @@ fn snapshot(py: Python<'_>) -> SnapshotState {
         HostNames::default(),
         None,
         None,
+        StreamedCalls::new(),
     ))
 }
 

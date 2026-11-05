@@ -4,7 +4,8 @@
 //! lazy attributes resolve through the session's [`InstanceStore`].
 
 use monty_proto::python::{
-    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
+    DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, is_coroutine_function, py_to_monty,
+    py_to_monty_value,
 };
 use monty_types::{
     CallArgs, ExtFunctionResult, GET_TYPE_HINTS_CALL, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject,
@@ -799,6 +800,22 @@ fn close_coroutine(awaitable: &Bound<'_, PyAny>) {
 /// Checks whether a Python object is a coroutine via `inspect.iscoroutine()`.
 pub(crate) fn is_coroutine(py: Python<'_>, obj: &Bound<'_, PyAny>) -> bool {
     inspect_predicate(py, "iscoroutine", obj)
+}
+
+/// The names in `external_lookup` bound to coroutine functions, for
+/// `Checkout::feed_with_cwd`'s `async_functions`: a direct call to one streams
+/// to the session's async-call sink instead of suspending.
+pub(crate) fn async_function_names(py: Python<'_>, names: &HostNames) -> PyResult<Vec<String>> {
+    let Some(lookup) = &names.lookup else {
+        return Ok(Vec::new());
+    };
+    let mut async_names = Vec::new();
+    for (name, value) in lookup.bind(py).iter() {
+        if is_coroutine_function(&value) {
+            async_names.push(name.extract::<String>()?);
+        }
+    }
+    Ok(async_names)
 }
 
 /// Checks whether a Python object can be awaited via `inspect.isawaitable()`:

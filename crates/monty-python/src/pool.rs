@@ -42,8 +42,8 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    AsyncCallSink, Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER,
+    MountSpec, OnPrint, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -70,8 +70,8 @@ use tokio::{
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
-        dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
+        CoroutineMode, Dispatched, async_call_sink, dispatch_coroutine, dispatch_function_call,
+        dispatch_intercepted_os_call, dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
     },
     build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
@@ -79,8 +79,8 @@ use crate::{
         MontyCrashedError, MontyDisconnectError, MontyError, MontyRefusedError, MontyShutdown, MontyTypingError,
     },
     external::{
-        CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_intercepted_os_call, resolve_object_attr,
-        wire_call_arguments,
+        CallResult, ExternalLookup, HostModules, HostNames, async_function_names, is_coroutine, is_intercepted_os_call,
+        resolve_object_attr, wire_call_arguments,
     },
     get_not_handled,
     import_files::{find_import_file_async, find_import_file_sync, module_import_search},
@@ -88,7 +88,7 @@ use crate::{
     mount::PyMountDir,
     os_policy::OsPolicyArg,
     print_target::PrintTarget,
-    snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
+    snapshot::{DriveContext, StreamedCalls, build_snapshot, feed_start_async, feed_start_sync},
     telemetry::{capture_otel_context, capture_telemetry_context, pool_metrics},
 };
 
@@ -393,7 +393,7 @@ impl PyMontySession {
     /// snapshot.
     fn load_session(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
         // an idle session has no snapshot, so the restored script name is unused
-        if self.restore_turn(py, state, Vec::new())?.0.is_some() {
+        if self.restore_turn(py, state, Vec::new(), None)?.0.is_some() {
             discard_checkout_sync(py, &self.checkout);
             return Err(PyRuntimeError::new_err(
                 "this dump is a suspended snapshot — use load_snapshot() to resume it",
@@ -437,7 +437,11 @@ impl PyMontySession {
         let print_target = PrintTarget::from_py(print_callback)?;
         let names = HostNames::capture(py, external_lookup, self.modules.as_ref());
         let trace_context = capture_otel_context(py);
-        let (event, script_name) = self.restore_turn(py, state, mounts)?;
+        // the load streams the restored session's unresolved calls: the sink
+        // must be in place before it
+        let streamed = StreamedCalls::new();
+        let sink = streamed.sink(py, &names, &self.instances, &CallbackContext::capture(py)?, false);
+        let (event, script_name) = self.restore_turn(py, state, mounts, Some(sink))?;
         let Some(event) = event else {
             discard_checkout_sync(py, &self.checkout);
             return Err(PyRuntimeError::new_err(
@@ -454,6 +458,7 @@ impl PyMontySession {
             names,
             os,
             trace_context,
+            streamed,
         );
         build_snapshot(py, ctx, event, false)
     }
@@ -506,13 +511,14 @@ impl PyMontySession {
         py: Python<'_>,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
+        sink: Option<AsyncCallSink>,
     ) -> PyResult<(Option<TurnEvent>, Option<String>)> {
         if self.used.swap(true, Ordering::Relaxed) {
             // non-destructive: an already-running session keeps its worker
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
+        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts, sink)))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -1016,7 +1022,7 @@ impl PyAsyncMontySession {
         let session_id = Arc::clone(&self.session_id);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            let restored = restore_turn(&checkout, state, Vec::new()).await;
+            let restored = restore_turn(&checkout, state, Vec::new(), None).await;
             refresh_session_id(&checkout, &session_id).await;
             let restored = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             if restored.0.is_some() {
@@ -1059,8 +1065,12 @@ impl PyAsyncMontySession {
         let config_script_name = self.repl_config.script_name.clone();
         let trace_context = capture_otel_context(py);
         let session_id = Arc::clone(&self.session_id);
+        // the load streams the restored session's unresolved calls: the sink
+        // must be in place before it
+        let streamed = StreamedCalls::new();
+        let sink = streamed.sink(py, &names, &instances, &CallbackContext::capture(py)?, true);
         future_into_py(py, async move {
-            let restored = restore_turn(&checkout, state, mounts).await;
+            let restored = restore_turn(&checkout, state, mounts, Some(sink)).await;
             refresh_session_id(&checkout, &session_id).await;
             let (event, restored_script_name) = restored.map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
@@ -1073,7 +1083,16 @@ impl PyAsyncMontySession {
             // only if the worker did not report one (e.g. an older child)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
-                let ctx = DriveContext::new(checkout, instances, print_target, script_name, names, os, trace_context);
+                let ctx = DriveContext::new(
+                    checkout,
+                    instances,
+                    print_target,
+                    script_name,
+                    names,
+                    os,
+                    trace_context,
+                    streamed,
+                );
                 build_snapshot(py, ctx, event, true)
             })
         })
@@ -1240,11 +1259,13 @@ async fn restore_turn(
     checkout: &SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
+    sink: Option<AsyncCallSink>,
 ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
     let result = {
         let mut guard = checkout.lock().await;
         match guard.as_mut() {
             Some(checkout) => {
+                checkout.set_async_call_sink(sink);
                 checkout
                     .restore(state, mounts, &mut monty_pool::on_print_sync(|_, _| {}))
                     .await
@@ -1564,8 +1585,12 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         &checkout,
         &print_target,
         turn_fn(move |c, p| {
+            // a sync session declares no coroutine functions and cannot run
+            // one: a call streamed for a value-flagged function is dropped
+            // here and reported when the sandbox blocks on it
+            c.set_async_call_sink(Some(Box::new(|_| Box::pin(ready(())))));
             Box::pin(async move {
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, Vec::new(), p)
                     .await
             })
         }),
@@ -1637,11 +1662,9 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
             },
             // Unknown future IDs cannot be resolved by this loop.
             TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
-                if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
+                if pending_call_ids.iter().any(|id| !sleep_ids.contains(id)) {
                     discard_checkout_sync(py, &checkout);
-                    return Err(PyRuntimeError::new_err(format!(
-                        "internal error: pending future {id} is not one of the pool's own sleeps"
-                    )));
+                    return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
                 let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
                 TurnAnswer::Futures(
@@ -1827,7 +1850,19 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         checkout,
         instances,
     } = args;
-    let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
+    // shared with the async-call sink, which spawns onto it mid-turn
+    let join_set: Arc<AsyncMutex<JoinSet<(u32, ExtFunctionResult)>>> = Arc::new(AsyncMutex::new(JoinSet::new()));
+    let (async_functions, sink) = Python::attach(|py| -> PyResult<_> {
+        let sink = async_call_sink(
+            names.clone_ref(py),
+            instances.clone_ref(py),
+            callback_context.clone_ref(py),
+            Arc::clone(&join_set),
+            |_| {},
+            true,
+        );
+        Ok((async_function_names(py, &names)?, sink))
+    })?;
 
     let mut event = run_turn_async(
         &checkout,
@@ -1837,9 +1872,18 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             // from here a cancelled drive must poison the session (see
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
+            c.set_async_call_sink(Some(sink));
             Box::pin(async move {
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
-                    .await
+                c.feed_with_cwd(
+                    code,
+                    inputs,
+                    mounts,
+                    cwd.as_deref(),
+                    skip_type_check,
+                    async_functions,
+                    p,
+                )
+                .await
             })
         }),
     )
@@ -1862,11 +1906,21 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         let search = module_import_search(&event);
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
+                if let Some(checkout) = checkout.lock().await.as_mut() {
+                    checkout.set_async_call_sink(None);
+                }
                 return Python::attach(|py| decode_result(py, &value, &instances));
             }
             TurnEvent::OsCall { .. } if intercepted => {
-                let answer =
-                    async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await;
+                let answer = async_turn_answer(
+                    event,
+                    &names,
+                    &instances,
+                    &mut *join_set.lock().await,
+                    &callback_context,
+                    &native,
+                )
+                .await;
                 let answer = match (answer, &search) {
                     // no host module: the file search, `os=` then mounts
                     (Ok(TurnAnswer::Call(ResumeValue::NotFound)), Some(search)) => {
@@ -1886,7 +1940,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 }
             }
             TurnEvent::ResolveFutures { .. } => {
-                let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
+                let resolved = wait_for_futures(&mut *join_set.lock().await).await.and_then(|results| {
                     results
                         .into_iter()
                         .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
@@ -1915,7 +1969,8 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 ..
             } => {
                 let mode = CoroutineMode::for_os_call(&function_name, allow_eager_await);
-                dispatched_answer(dispatch_system_sleep(delay, call_id, mode, &mut join_set), call_id).await?
+                let dispatched = dispatch_system_sleep(delay, call_id, mode, &mut *join_set.lock().await);
+                dispatched_answer(dispatched, call_id).await?
             }
             // Mounts get first refusal, as in `drive_sync`.
             TurnEvent::OsCall {
@@ -1935,6 +1990,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     event = next;
                     continue;
                 }
+                let mut join_set = join_set.lock().await;
                 let dispatched = Python::attach(|py| {
                     let _guard = callback_context.enter(py, &native)?;
                     match dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances, true) {
@@ -1945,10 +2001,20 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                         }
                     }
                 })?;
+                drop(join_set);
                 dispatched_answer(dispatched, call_id).await?
             }
             event => {
-                match async_turn_answer(event, &names, &instances, &mut join_set, &callback_context, &native).await {
+                match async_turn_answer(
+                    event,
+                    &names,
+                    &instances,
+                    &mut *join_set.lock().await,
+                    &callback_context,
+                    &native,
+                )
+                .await
+                {
                     Ok(answer) => answer,
                     Err(err) => {
                         discard_checkout(&checkout).await;

@@ -58,9 +58,10 @@ Separately, the transport refuses any message larger than the budget, clamped be
 
 ## Usage with a local monty worker
 
-`AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await,
-including after `load_snapshot()`.
-Resolve the pending calls manually with `await snapshot.resume({call_id: {'return_value': value}})` instead.
+`AsyncFutureSnapshot.resume_auto()` raises without consuming the snapshot when no host coroutines remain to await.
+A snapshot restored with `load_snapshot()` has lost the coroutines of the previous process, except those of calls to
+coroutine host functions, which the restored wait lists in `calls` and starts again from the new `external_lookup`.
+Resolve any other pending call manually with `await snapshot.resume({call_id: {'return_value': value}})` instead.
 
 Host objects and classes cross the boundary through the `ClassInstance` / `ClassType` wrappers; see the
 `pydantic-monty` README.

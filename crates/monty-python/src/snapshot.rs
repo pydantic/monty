@@ -28,15 +28,18 @@
 
 use std::{
     convert::Infallible,
+    mem,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
+use monty_pool::{AsyncCallSink, Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{InstanceStore, exc_py_to_monty, py_to_monty_value, uuid_to_py};
-use monty_types::{CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange};
+use monty_types::{
+    AsyncCall, CallArgs, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, SourceRange,
+};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -53,13 +56,13 @@ mod tests;
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
-        dispatch_module_coroutine, wait_for_futures,
+        CoroutineMode, Dispatched, async_call_sink, dispatch_coroutine, dispatch_function_call,
+        dispatch_intercepted_os_call, dispatch_module_coroutine, wait_for_futures,
     },
     callback_context::CallbackContext,
     exceptions::{MontyError, PySourceRange},
     external::{
-        CallResult, ExternalLookup, HostNames, is_intercepted_os_call, resolve_object_attr,
+        CallResult, ExternalLookup, HostNames, async_function_names, is_intercepted_os_call, resolve_object_attr,
         sync_module_coroutines_error, wire_call_arguments,
     },
     import_files::{find_import_file_async, find_import_file_sync, import_search},
@@ -98,15 +101,65 @@ pub(crate) struct DriveContext {
     /// `os=` captured at `feed_start` / `load_snapshot`; consulted only by
     /// `resume_auto`, and only for OS calls this feed's mounts don't cover.
     os: Option<Py<PyAny>>,
-    /// Pending coroutine externals spawned by async `resume_auto`, keyed by
-    /// `call_id`. `Arc` so every `clone_ref`'d snapshot of one session shares a
-    /// single `JoinSet`; the `tokio` `Mutex` because `wait_for_futures` holds it
-    /// across `.await`. Unused (but harmlessly present) on sync sessions, where
-    /// a coroutine external is a hard error.
+    /// Pending coroutine externals and the streamed calls the session's
+    /// async-call sink delivered; shared with that sink.
+    streamed: StreamedCalls,
+}
+
+/// What a drive context shares with the session's async-call sink (see
+/// [`async_call_sink`]): the coroutine externals spawned by async
+/// `resume_auto` and by the sink, and the calls the sink recorded for the
+/// next `FutureSnapshot` to list. `Arc` so every `clone_ref`'d snapshot of
+/// one session shares them; the `tokio` `Mutex` because `wait_for_futures`
+/// holds it across `.await`.
+#[derive(Clone)]
+pub(crate) struct StreamedCalls {
+    /// Keyed by `call_id`. Unused (but harmlessly present) on sync sessions,
+    /// where a coroutine external is a hard error.
     pending_futures: Arc<Mutex<JoinSet<(u32, ExtFunctionResult)>>>,
+    /// Streamed calls not yet listed by a `FutureSnapshot`.
+    calls: Arc<StdMutex<Vec<AsyncCall>>>,
+}
+
+impl StreamedCalls {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_futures: Arc::new(Mutex::new(JoinSet::new())),
+            calls: Arc::new(StdMutex::new(Vec::new())),
+        }
+    }
+
+    /// The sink to install on the checkout before its feed or load: records
+    /// every streamed call, and on an async session (`dispatch`) starts its
+    /// coroutine so `resume_auto` can settle it; a sync session lists it for
+    /// the host to resolve by hand.
+    pub(crate) fn sink(
+        &self,
+        py: Python<'_>,
+        names: &HostNames,
+        instances: &InstanceStore,
+        callback_context: &CallbackContext,
+        dispatch: bool,
+    ) -> AsyncCallSink {
+        let calls = Arc::clone(&self.calls);
+        async_call_sink(
+            names.clone_ref(py),
+            instances.clone_ref(py),
+            callback_context.clone_ref(py),
+            Arc::clone(&self.pending_futures),
+            move |call| calls.lock().expect("no panic holds the calls").push(call.clone()),
+            dispatch,
+        )
+    }
+
+    /// Takes the calls streamed since the last snapshot listed them.
+    fn take_calls(&self) -> Vec<AsyncCall> {
+        mem::take(&mut *self.calls.lock().expect("no panic holds the calls"))
+    }
 }
 
 impl DriveContext {
+    #[expect(clippy::too_many_arguments, reason = "one parameter per captured feed setting")]
     pub(crate) fn new(
         checkout: SharedCheckout,
         instances: InstanceStore,
@@ -115,6 +168,7 @@ impl DriveContext {
         names: HostNames,
         os: Option<Py<PyAny>>,
         trace_context: Option<Py<PyAny>>,
+        streamed: StreamedCalls,
     ) -> Self {
         Self {
             checkout,
@@ -124,7 +178,7 @@ impl DriveContext {
             trace_context,
             names,
             os,
-            pending_futures: Arc::new(Mutex::new(JoinSet::new())),
+            streamed,
         }
     }
 
@@ -137,7 +191,7 @@ impl DriveContext {
             trace_context: self.trace_context.as_ref().map(|ctx| ctx.clone_ref(py)),
             names: self.names.clone_ref(py),
             os: self.os.as_ref().map(|o| o.clone_ref(py)),
-            pending_futures: Arc::clone(&self.pending_futures),
+            streamed: self.streamed.clone(),
         }
     }
 }
@@ -166,8 +220,12 @@ pub(crate) fn feed_start_sync(
         print_target,
         checkout,
         instances,
-        callback_context: _,
+        callback_context,
     } = args;
+    // a sync session lists streamed calls for the host to resolve by hand,
+    // and declares no coroutine functions of its own
+    let streamed = StreamedCalls::new();
+    let sink = streamed.sink(py, &names, &instances, &callback_context, false);
     let ctx = DriveContext::new(
         checkout,
         instances,
@@ -176,13 +234,15 @@ pub(crate) fn feed_start_sync(
         names,
         os,
         capture_otel_context(py),
+        streamed,
     );
     drive_sync(
         py,
         ctx,
         turn_fn(move |c, p| {
+            c.set_async_call_sink(Some(sink));
             Box::pin(async move {
-                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
+                c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, Vec::new(), p)
                     .await
             })
         }),
@@ -208,8 +268,11 @@ pub(crate) fn feed_start_async(
         print_target,
         checkout,
         instances,
-        callback_context: _,
+        callback_context,
     } = args;
+    let streamed = StreamedCalls::new();
+    let sink = streamed.sink(py, &names, &instances, &callback_context, true);
+    let async_functions = async_function_names(py, &names)?;
     let ctx = DriveContext::new(
         checkout,
         instances,
@@ -218,14 +281,24 @@ pub(crate) fn feed_start_async(
         names,
         os,
         capture_otel_context(py),
+        streamed,
     );
     future_into_py(py, async move {
         drive_async(
             ctx,
             turn_fn(move |c, p| {
+                c.set_async_call_sink(Some(sink));
                 Box::pin(async move {
-                    c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
-                        .await
+                    c.feed_with_cwd(
+                        code,
+                        inputs,
+                        mounts,
+                        cwd.as_deref(),
+                        skip_type_check,
+                        async_functions,
+                        p,
+                    )
+                    .await
                 })
             }),
         )
@@ -350,11 +423,17 @@ pub(crate) fn build_snapshot(
             pending_call_ids,
             position,
         } => {
+            let calls = ctx.streamed.take_calls();
+            let instances = ctx.instances.clone_ref(py);
             let snapshot = SnapshotState::new(ctx);
             let futures = FutureSnapshot {
                 snapshot,
                 pending_call_ids,
                 position,
+                calls: calls
+                    .into_iter()
+                    .map(|call| PyAsyncCall::new(call, instances.clone_ref(py)))
+                    .collect(),
             };
             if is_async {
                 Py::new(py, PyAsyncFutureSnapshot(futures)).map(Py::into_any)
@@ -937,7 +1016,7 @@ impl PyAsyncFunctionSnapshot {
                 if let Some(event) = mounted {
                     return Python::attach(|py| build_snapshot(py, ctx, event, true));
                 }
-                let mut join_set = ctx.pending_futures.lock().await;
+                let mut join_set = ctx.streamed.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
                     match dispatch_os_parts(
@@ -956,7 +1035,7 @@ impl PyAsyncFunctionSnapshot {
                     }
                 })
             } else {
-                let mut join_set = ctx.pending_futures.lock().await;
+                let mut join_set = ctx.streamed.pending_futures.lock().await;
                 Python::attach(|py| {
                     let _guard = context.enter(py, &native)?;
                     let result = if intercepted {
@@ -987,7 +1066,7 @@ impl PyAsyncFunctionSnapshot {
             let dispatched = match dispatched {
                 Ok(Dispatched::Module(pending)) => {
                     let settled = pending.settle().await;
-                    let mut join_set = ctx.pending_futures.lock().await;
+                    let mut join_set = ctx.streamed.pending_futures.lock().await;
                     Python::attach(|py| {
                         let _guard = context.enter(py, &native)?;
                         let mode = CoroutineMode::for_function_call(call.allow_eager_await);
@@ -1277,6 +1356,76 @@ struct FutureSnapshot {
     pending_call_ids: Vec<u32>,
     /// Where the main task's blocked `await` is in the source.
     position: SourceRange,
+    /// The calls to host coroutine functions streamed since the last snapshot
+    /// listed them, for the host to run and resolve by `call_id`.
+    calls: Vec<PyAsyncCall>,
+}
+
+/// A call the sandbox made to a host coroutine function, streamed as it was
+/// made and answered with a future the host resolves through
+/// `FutureSnapshot.resume`. Listed by the `FutureSnapshot` that follows it.
+#[pyclass(name = "AsyncCall", module = "pydantic_monty", frozen)]
+pub struct PyAsyncCall {
+    call: AsyncCall,
+    instances: InstanceStore,
+    /// Decoded on first read; one decode serves `args` and `kwargs`.
+    py_arguments: PyOnceLock<(Py<PyTuple>, Py<PyDict>)>,
+}
+
+impl PyAsyncCall {
+    fn new(call: AsyncCall, instances: InstanceStore) -> Self {
+        Self {
+            call,
+            instances,
+            py_arguments: PyOnceLock::new(),
+        }
+    }
+
+    fn py_arguments(&self, py: Python<'_>) -> PyResult<&(Py<PyTuple>, Py<PyDict>)> {
+        self.py_arguments.get_or_try_init(py, || {
+            let (args, kwargs) = wire_call_arguments(py, &self.call.args, &self.instances)?;
+            Ok((args.unbind(), kwargs.unbind()))
+        })
+    }
+
+    fn clone_ref(&self, py: Python<'_>) -> Self {
+        Self::new(self.call.clone(), self.instances.clone_ref(py))
+    }
+}
+
+#[pymethods]
+impl PyAsyncCall {
+    #[getter]
+    fn function_name(&self) -> &str {
+        &self.call.function_name
+    }
+
+    #[getter]
+    fn call_id(&self) -> u32 {
+        self.call.call_id
+    }
+
+    #[getter]
+    fn position(&self) -> PySourceRange {
+        PySourceRange::from(&self.call.position)
+    }
+
+    #[getter]
+    fn args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        Ok(self.py_arguments(py)?.0.bind(py).clone())
+    }
+
+    #[getter]
+    fn kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        Ok(self.py_arguments(py)?.1.bind(py).clone())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AsyncCall(function_name={:?}, call_id={})",
+            self.call.function_name, self.call.call_id
+        )
+    }
 }
 
 impl FutureSnapshot {
@@ -1334,6 +1483,13 @@ impl PyFutureSnapshot {
         self.0.pending_call_ids.clone()
     }
 
+    /// The calls to host coroutine functions streamed since the previous
+    /// snapshot, to run and resolve by `call_id` through `resume`.
+    #[getter]
+    fn calls(&self, py: Python<'_>) -> Vec<PyAsyncCall> {
+        self.0.calls.iter().map(|call| call.clone_ref(py)).collect()
+    }
+
     fn resume(&self, py: Python<'_>, results: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
@@ -1384,6 +1540,13 @@ impl PyAsyncFutureSnapshot {
         self.0.pending_call_ids.clone()
     }
 
+    /// The calls to host coroutine functions streamed since the previous
+    /// snapshot, to run and resolve by `call_id` through `resume`.
+    #[getter]
+    fn calls(&self, py: Python<'_>) -> Vec<PyAsyncCall> {
+        self.0.calls.iter().map(|call| call.clone_ref(py)).collect()
+    }
+
     fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
@@ -1399,7 +1562,7 @@ impl PyAsyncFutureSnapshot {
     /// the previous process — without consuming it; resolve those manually.
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let (ctx, mut join_set) = self.0.snapshot.claim_with(py, |ctx| {
-            let join_set = Arc::clone(&ctx.pending_futures)
+            let join_set = Arc::clone(&ctx.streamed.pending_futures)
                 .try_lock_owned()
                 .map_err(|_| PyRuntimeError::new_err("snapshot session is busy"))?;
             if join_set.is_empty() {

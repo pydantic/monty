@@ -271,10 +271,11 @@ request = ContextVar('request', default='outside')
 
 async def main():
     async def callback():
-        assert request.get() == 'resume'
+        # a coroutine function's call is streamed and started during the feed_start turn
+        assert request.get() == 'feed'
         with tracer.start_as_current_span('async callback'):
             await asyncio.sleep(0)
-            assert request.get() == 'resume'
+            assert request.get() == 'feed'
         return 42
     def printed(stream, text):
         assert request.get() == 'resume'
