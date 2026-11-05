@@ -185,6 +185,11 @@ Those workers are single-use, never prewarmed or returned to the pool, and isola
 responsibility.
 See [the security model](../security.md#remote-workers) before using it.
 
+Finish the sessions before calling `Pool::close` to wait for their remote streams to close.
+That wait ends when the server closes each stream or its existing one-second close grace expires.
+Keep stream-scoped credentials valid until pool close completes. Sessions still checked out remain usable.
+Stream closure does not prove that the server committed its final work.
+
 ### Host decode budget
 
 `PoolConfig::max_decode_bytes` can lower the default 1 GiB allocation budget for

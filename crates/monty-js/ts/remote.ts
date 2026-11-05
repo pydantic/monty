@@ -149,6 +149,8 @@ export class MontyRemote {
   /**
    * Shuts the pool down: pending and new checkouts reject. Sessions already
    * checked out keep their streams until closed.
+   * Waits for departed streams within their existing one-second close grace.
+   * Keep stream-scoped credentials valid until this promise resolves.
    */
   async close(): Promise<void> {
     if (this.closed) {

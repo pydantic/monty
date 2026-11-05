@@ -277,7 +277,9 @@ input so adapters that do not support metrics continue to work.
   a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
   the stream and returns at once, but its `max_processes` slot is freed only when the server
   ends the stream (or after a second), so a full pool does not open its next stream while the
-  server still counts the last one. At most `max_processes` closed streams wait like this;
+  server still counts the last one. `Pool::close` waits for these departed streams to finish
+  their bounded close. Keep stream-scoped credentials valid until that wait ends.
+  This does not prove the server committed its final work. At most `max_processes` closed streams wait like this;
   a close past that resets its stream and frees its slot at once, as does discarding a
   worker after a timeout or limit. Isolation is the remote host's responsibility — a remote crash is observed as the stream ending.
   `Pool::checkout_with` takes `CheckoutOptions::metadata`, extra request metadata

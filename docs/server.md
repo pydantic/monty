@@ -12,6 +12,10 @@ Additionally, Full Monty can act as a reverse proxy, forwarding requests to a fu
 
 The server is closed-source and distributed as a container image.
 
+Client pool exit waits for already-departed streams to close, bounded by their existing one-second close grace.
+Keep stream-scoped credentials valid until pool exit completes. The wait does not end active sessions or prove
+that the server committed its final work.
+
 !!! tip "Design partners"
 
     If you're interested in being an early design partner for Full Monty, please

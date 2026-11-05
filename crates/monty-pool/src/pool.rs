@@ -180,6 +180,7 @@ impl Pool {
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per
     /// worker. Sessions still checked out keep their workers until they finish,
     /// and are not replaced once they leave.
+    /// Departed remote streams finish their bounded close before this returns.
     ///
     /// Optional: dropping the pool kills idle workers instead, which is just
     /// as safe — this only trades a SIGKILL for a clean protocol goodbye.
@@ -215,6 +216,9 @@ impl Pool {
             worker.reap_or_kill(SHUTDOWN_EXIT_GRACE).await;
         }))
         .await;
+        if let Some(remote) = &self.inner.remote {
+            remote.wait_closed(self.inner.config.max_processes).await;
+        }
     }
 
     /// Number of idle workers right now (diagnostics/tests only — the value

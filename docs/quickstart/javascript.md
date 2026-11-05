@@ -357,6 +357,9 @@ await using pool = await Monty.create({
 ```
 
 Closing a pool rejects pending/new checkouts and reaps idle workers; checked-out sessions remain usable until closed.
+For a remote pool, `close()` waits for departed streams within their existing one-second close grace.
+Keep stream-scoped credentials valid until its promise resolves. Stream closure does not prove that the server
+committed its final work.
 `session.workerId` identifies the worker within its pool, including during turns and after the session closes.
 Replacement workers get new IDs, even if the OS reuses a PID.
 `maxCheckoutsPerWorker` accepts integers from 0 to 4294967295 and defaults to 1000; 0 and 1 both retire a worker after

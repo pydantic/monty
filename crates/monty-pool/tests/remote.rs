@@ -37,9 +37,7 @@ use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, Resourc
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
-#[cfg(not(windows))]
-use tokio::time::timeout;
-use tokio::{net::TcpListener, runtime::Builder, task::spawn_blocking};
+use tokio::{net::TcpListener, runtime::Builder, sync::oneshot, task::spawn_blocking, time::timeout};
 use tonic::Status;
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
@@ -3262,6 +3260,63 @@ async fn finishing_a_checkout_does_not_wait_for_the_server_to_end_the_stream() {
         "finish waited {:?} for the server",
         start.elapsed()
     );
+    join_server(server).await;
+}
+
+/// Pool teardown keeps connection credentials alive until a departed stream finishes closing.
+#[tokio::test]
+async fn closing_a_pool_waits_for_departed_streams() {
+    for abandon in [false, true] {
+        let mock = MockServer::start().await;
+        let url = mock.url();
+        let (ended, end_seen) = oneshot::channel();
+        let (release, wait_for_release) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let mut socket = mock.accept();
+            expect_configure(&mut socket);
+            expect_end(&mut socket);
+            ended.send(()).unwrap();
+            wait_for_release.recv().unwrap();
+        });
+        let (pool, checkout) = remote_checkout(&url).await;
+        if abandon {
+            drop(checkout);
+        } else {
+            checkout.finish().await.unwrap();
+        }
+        end_seen.await.unwrap();
+        let mut first_close = Box::pin(pool.close());
+        let mut second_close = Box::pin(pool.close());
+        assert!(futures_util::poll!(first_close.as_mut()).is_pending());
+        assert!(futures_util::poll!(second_close.as_mut()).is_pending());
+        release.send(()).unwrap();
+        tokio::join!(first_close, second_close);
+        join_server(server).await;
+    }
+}
+
+/// A peer that never ends its response cannot hold pool teardown beyond the close grace.
+#[tokio::test]
+async fn closing_a_pool_keeps_the_remote_close_bounded() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let (ended, end_seen) = oneshot::channel();
+    let (release, wait_for_release) = mpsc::channel::<()>();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_end(&mut socket);
+        ended.send(()).unwrap();
+        wait_for_release.recv().unwrap();
+    });
+    let (pool, checkout) = remote_checkout(&url).await;
+    assert!(futures_util::poll!(Box::pin(pool.close()).as_mut()).is_ready());
+    checkout.finish().await.unwrap();
+    end_seen.await.unwrap();
+    timeout(Duration::from_secs(3), pool.close())
+        .await
+        .expect("the existing close grace bounds an unresponsive peer");
+    release.send(()).unwrap();
     join_server(server).await;
 }
 
