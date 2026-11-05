@@ -2345,5 +2345,79 @@ except E1 as e:
     assert e is _e1
     assert _e1.__context__ is _e2
     assert _e2.__context__ is None
+
+# Bare user exception class in raise ... from ...
+class CustomErr(Exception):
+    pass
+
+try:
+    raise CustomErr from ValueError("cause_msg")
+except CustomErr as err:
+    assert isinstance(err, CustomErr)
+    assert repr(err.__cause__) == "ValueError('cause_msg')"
+    assert err.__suppress_context__ is True
+
+try:
+    raise ValueError("outer") from CustomErr
+except ValueError as err:
+    assert repr(err) == "ValueError('outer')"
+    assert isinstance(err.__cause__, CustomErr)
+    assert err.__suppress_context__ is True
+
+# Both bare user exception classes
+class CustomCause(Exception):
+    pass
+
+try:
+    raise CustomErr from CustomCause
+except CustomErr as err:
+    assert isinstance(err, CustomErr)
+    assert isinstance(err.__cause__, CustomCause)
+    assert err.__suppress_context__ is True
+
+# Bare user exception class with required args fails
+class RequiredArgsErr(Exception):
+    def __init__(self, x):
+        pass
+
+try:
+    raise RequiredArgsErr from None
+except TypeError:
+    pass
+else:
+    assert False, "expected TypeError for bare exception class requiring args"
+
+try:
+    raise ValueError from RequiredArgsErr
+except TypeError:
+    pass
+else:
+    assert False, "expected TypeError for bare cause class requiring args"
+
+# Invalid cause with custom exception
+try:
+    raise CustomErr from 42
+except TypeError as err:
+    assert "exception causes must derive from BaseException" in str(err)
+else:
+    assert False, "expected TypeError for non-exception cause"
+"#);
+}
+
+#[test]
+fn custom_exception_repr_large_args_streaming() {
+    run(r#"
+class BigErr(Exception):
+    pass
+
+e = BigErr()
+e.args = ("a", "b", "c")
+assert repr(e) == "BigErr('a', 'b', 'c')"
+
+# Large args formatting works safely and does not blow up memory
+e.args = ("item",) * 1000
+r = repr(e)
+assert r.startswith("BigErr('item', 'item',")
+assert r.endswith("'item')")
 "#);
 }
