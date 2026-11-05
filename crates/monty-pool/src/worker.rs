@@ -245,15 +245,16 @@ impl Worker {
     }
 
     /// Attaches the host's trace context, if it captured one, before this
-    /// worker starts a checkout.
+    /// worker starts a checkout. Replaces any recorder a previous checkout left:
+    /// one finished before its first request never sent the `Reset` that clears it.
     #[cfg(feature = "telemetry")]
     pub(crate) fn with_adapter_context(mut self, context: Option<TelemetryContext>) -> Self {
-        if let Some(context) = context {
-            let worker_pid = self.pid();
-            self.recorder
-                .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
-                .set_adapter_context(context);
-        }
+        let worker_pid = self.pid();
+        self.recorder = context.map(|context| {
+            let mut recorder = Box::new(Recorder::new(worker_pid));
+            recorder.set_adapter_context(context);
+            recorder
+        });
         self
     }
 

@@ -405,8 +405,8 @@ plain `Error`.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
-request, so a server refusing it fails that first `feedRun` / `load*` call.
-Against a server that stores sessions, `session.sessionId` names the session once that first call has been answered,
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call.
+Against a server that stores sessions, `session.sessionId` names the session once the server accepts that configuration,
 `session.dump()` returns the ID of a stored record, and both load into a fresh session with `loadSession` /
 `loadSnapshot`.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,

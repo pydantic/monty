@@ -20,15 +20,15 @@ use std::{
 
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-    telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
+    CheckoutOptions, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
 use monty_proto::pb;
 use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
-    trace::{SpanId, TraceId},
+    trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState},
 };
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_sdk::{
@@ -37,7 +37,7 @@ use opentelemetry_sdk::{
         InMemoryMetricExporter, PeriodicReader,
         data::{AggregatedMetrics, MetricData},
     },
-    trace::SpanData,
+    trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use prost::Message;
 use tokio::time::{Instant, sleep};
@@ -323,6 +323,48 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     );
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+}
+
+/// A checkout finished before its first request never configures its worker,
+/// so the worker's next, untraced checkout must not open a span under its trace.
+#[tokio::test]
+async fn an_unconfigured_checkout_leaves_no_trace_parent_behind() {
+    let spans = InMemorySpanExporter::default();
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .finish()
+        .expect("logfire");
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    let pool = Pool::new(config).await.expect("pool");
+
+    let parent = SpanContext::new(
+        TraceId::from(7_u128),
+        SpanId::from(7_u64),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    let traced = CheckoutOptions::default()
+        .with_telemetry(Some(TelemetryContext::for_logfire(logfire.clone()).with_parent(parent)));
+    let checkout = pool
+        .checkout_with(&ReplConfig::default(), traced)
+        .await
+        .expect("checkout");
+    checkout.finish().await.expect("finish");
+
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    // read while `logfire` lives: its provider's shutdown clears the exporter
+    assert_eq!(spans.get_finished_spans().unwrap().len(), 0);
 }
 
 /// A checkout that cannot be served, and a session abandoned rather than

@@ -181,7 +181,7 @@ test('a refused connection rejects the checkout', async () => {
 test('a session the server refuses fails its first run with MontyRuntimeError', async () => {
   const { url } = await server(refusingServer("unknown profile 'gpu'"))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const session = await pool.checkout({ profile: 'gpu' })
+  await using session = await pool.checkout({ profile: 'gpu' })
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyRuntimeError })
   t.is(error.message, "RuntimeError: unknown profile 'gpu'")
 })
@@ -189,7 +189,7 @@ test('a session the server refuses fails its first run with MontyRuntimeError', 
 test('a connection dropped on the first request rejects it with MontyDisconnectError', async () => {
   const { url } = await server(droppingRelay(1))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const session = await pool.checkout()
+  await using session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
   t.regex(error.message, /^RuntimeError: monty worker connection closed while /)
 })
@@ -197,7 +197,7 @@ test('a connection dropped on the first request rejects it with MontyDisconnectE
 test('a draining server fails the first run with MontyShutdown', async () => {
   const { url } = await server(drainingServer)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
-  const session = await pool.checkout()
+  await using session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyShutdown })
   t.is(error.message, 'RuntimeError: monty server is shutting down; the request did not run')
   t.is(error.dump, null)

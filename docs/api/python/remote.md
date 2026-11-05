@@ -46,8 +46,8 @@ Neither exception occurs on the local subprocess transport.
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
-[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it once the session's first request has been answered
-(that request carries the session's configuration out); it is `None` against a server that stores nothing.
+[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it once the server accepts the configuration the
+session's first request carries out, even if that request itself fails; it is `None` against a server that stores nothing.
 `monty-server` run without a store also refuses `dump()`, `load_session()` and `load_snapshot()` with
 `MontyRuntimeError`, and the session carries on; the development relay in `scripts/grpc_relay.py` instead passes
 them to its worker, which dumps and loads bytes as a local session does.
