@@ -5,8 +5,7 @@ Named tuples can be constructed with `collections.namedtuple` (see
 `sys.version_info`, as the `time` module's `struct_time` (see [time.md](time.md#struct_time)) and as
 values passed in from the host via the `MontyObject`
 API. `typing.NamedTuple` is a marker only; subscripting it or inheriting from
-it does not produce a type, since there is no class inheritance (see
-[classes.md](classes.md)).
+it does not produce a type (see [classes.md](classes.md)).
 
 Instances behave as CPython named tuples: integer indexing, attribute access,
 `len`/iteration/`bool`, equality and hashing against equivalent plain tuples,

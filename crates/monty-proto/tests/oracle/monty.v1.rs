@@ -371,6 +371,9 @@ pub struct RaisedException {
     /// absent for most exceptions. Mirrors monty's `ExcData`.
     #[prost(message, optional, tag = "4")]
     pub data: ::core::option::Option<ExcData>,
+    /// Custom type name for user-defined exception subclasses.
+    #[prost(string, optional, tag = "5")]
+    pub custom_type_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Structured exception payload, mirroring monty's `ExcData` enum. Future
 /// exception types that carry more than a message (e.g. OSError's errno)

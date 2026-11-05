@@ -394,6 +394,9 @@ with Monty() as pool:
 
 `display()` also takes `'traceback'` (the default, a full CPython-style traceback) and `'msg'`.
 `exc.exception()` returns the inner exception as a native Python exception object.
+For user-defined exception subclasses raised in the sandbox, `exc.exception()` reconstructs the built-in base exception
+(such as `ValueError`) while `exc.custom_type_name` holds the subclass name.
+`exc.display('type-msg')` and `str(exc)` format the error using `custom_type_name`.
 
 After `MontyCrashedError`, use a fresh checkout; the pool replaces the worker.
 The error includes the worker's fatal message and exit status when available.

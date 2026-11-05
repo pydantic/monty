@@ -34,6 +34,7 @@ export interface NativeException {
    *  Display). Used verbatim; never re-rendered in TypeScript. */
   traceback: string
   frames: NativeFrame[]
+  customTypeName?: string
 }
 
 /** The fed snippet completed with this (already converted) value. */

@@ -13,7 +13,11 @@ use num_bigint::BigInt;
 use crate::{
     annotations,
     args::ArgValues,
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::{
+        Builtins, BuiltinsFunctions, object_init::builtin_exception_init,
+        object_init_subclass::builtin_object_init_subclass, object_new::builtin_exception_new,
+        type_mro::builtin_type_mro,
+    },
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
@@ -553,6 +557,43 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let method = attr.as_str(vm.interns);
+                if method == "mro" {
+                    builtin_type_mro(vm, args.prepend(Value::Builtin(Builtins::ExcType(*exc_type))))
+                        .map(CallResult::Value)
+                } else if method == "__init_subclass__" {
+                    builtin_object_init_subclass(
+                        vm,
+                        args.prepend(Value::Builtin(Builtins::ExcType(*exc_type))),
+                    )
+                    .map(CallResult::Value)
+                } else if method == "__init__" {
+                    builtin_exception_init(vm, args).map(CallResult::Value)
+                } else if method == "__new__" {
+                    builtin_exception_new(vm, args.prepend(Value::Builtin(Builtins::ExcType(*exc_type))))
+                        .map(CallResult::Value)
+                } else {
+                    let type_name: &'static str = (*exc_type).into();
+                    args.drop_with(vm);
+                    Err(ExcType::attribute_error_type(type_name, method))
+                }
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let method = attr.as_str(vm.interns);
+                if method == "mro" {
+                    builtin_type_mro(vm, args).map(CallResult::Value)
+                } else if method == "__init_subclass__" {
+                    builtin_object_init_subclass(
+                        vm,
+                        args.prepend(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))),
+                    )
+                    .map(CallResult::Value)
+                } else {
+                    args.drop_with(vm);
+                    Err(ExcType::attribute_error_type("type", method))
+                }
+            }
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
                     Some(result) => result,

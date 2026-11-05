@@ -22,7 +22,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 - `def`, `async def`, nested functions, closures, `lambda`
 - Decorators on functions and classes
-- Simple classes: instance methods, `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
+- Classes: single and multiple inheritance (`class Foo(Bar, Baz):`), C3 method resolution order, instance methods,
+    `__init__`, `__repr__`/`__str__`, `__eq__`/`__hash__`, `__iter__`/`__next__`,
     `__contains__`, `__index__`, `__int__`/`__float__`, `__abs__`, `__round__`, `__floor__`/`__ceil__`/`__trunc__`,
     `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`/`~`, binary arithmetic and reflected operators, class variables
 - `@dataclass`, with the `eq=` and `frozen=` options only (every other option raises `NotImplementedError`),
@@ -44,7 +45,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
-- Class inheritance and metaclasses (`class Foo(Bar):`)
+- Metaclasses (`class Foo(metaclass=...):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
@@ -57,12 +58,10 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Missing in other ways:**
 
-- User-defined exception classes.
-    The built-in exception types are a fixed set, and without inheritance you cannot add to it.
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.
-- `compile`, `globals`, `__import__` and `super` — all raise `NameError`.
+- `compile`, `globals`, and `__import__` — raise `NameError`.
     `eval` and `exec` exist (source text only), and so does `locals()`; see [eval_exec.md](eval_exec.md).
 - Third-party packages.
     There is no `sys.path` and no site-packages.

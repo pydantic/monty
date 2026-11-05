@@ -130,3 +130,15 @@ try:
     assert False, 'expected bad bases error'
 except TypeError as exc:
     assert str(exc) == 'type.__new__() argument 2 must be tuple, not list'
+
+try:
+    type('A', 1, {})
+    assert False, 'expected bad bases error'
+except TypeError as exc:
+    assert str(exc) == 'type.__new__() argument 2 must be tuple, not int'
+
+try:
+    type('A', (), 1)
+    assert False, 'expected bad dict error'
+except TypeError as exc:
+    assert str(exc) == 'type.__new__() argument 3 must be dict, not int'

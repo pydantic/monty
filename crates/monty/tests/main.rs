@@ -621,19 +621,57 @@ fn external_function_as_itertools_callable_raises_not_implemented() {
     "#);
 }
 
-/// The 3-arg `type()` form rejects non-empty bases because Monty classes
-/// cannot inherit (documented in `limitations/classes.md`). Kept as a
-/// Rust-side test because CPython accepts bases, so the comparative
-/// test-case suite cannot cover the divergence.
+/// The 3-arg `type()` form rejects non-exception built-in bases (like `int`)
+/// because Monty user classes cannot inherit from standard builtins (documented in `limitations/classes.md`).
 #[test]
-fn dynamic_type_with_bases_raises_type_error() {
+fn dynamic_type_with_builtin_base_raises_type_error() {
     let code = "type('A', (int,), {})";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (int,), {})\n    ~~~~~~~~~~~~~~~~~~~~~\nTypeError: type() bases are not supported"
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (int,), {})\n    ~~~~~~~~~~~~~~~~~~~~~\nTypeError: type 'int' is not an acceptable base type"
     );
+}
+
+#[test]
+fn class_with_builtin_exception_base_succeeds() {
+    let code = "class MyError(Exception):\n    pass\nerr = MyError('test')\nassert err.args == ('test',)\nassert isinstance(err, Exception)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    ex.run_no_limits(vec![]).unwrap();
+}
+
+#[test]
+fn dynamic_type_with_builtin_exception_base_succeeds() {
+    let code = "E = type('E', (ValueError,), {})\nerr = E('test')\nassert isinstance(err, ValueError)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    ex.run_no_limits(vec![]).unwrap();
+}
+
+#[test]
+fn dynamic_type_with_non_type_base_raises_type_error() {
+    let code = "type('A', (1,), {})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (1,), {})\n    ~~~~~~~~~~~~~~~~~~~\nTypeError: type.__new__(X): int is not a type object"
+    );
+
+    let code = "type('A', ([],), {})";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', ([],), {})\n    ~~~~~~~~~~~~~~~~~~~~\nTypeError: type.__new__(X): list is not a type object"
+    );
+}
+
+#[test]
+fn dynamic_type_with_user_class_base_succeeds() {
+    let code = "A = type('A', (), {'x': 1})\nB = type('B', (A,), {'y': 2})\nb = B()\nassert b.x == 1\nassert b.y == 2";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert!(ex.run_no_limits(vec![]).is_ok());
 }
 
 /// The 3-arg `type()` form rejects non-string namespace keys with a

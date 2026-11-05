@@ -13,7 +13,7 @@ use smallvec::smallvec;
 
 use crate::{
     annotations,
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -25,11 +25,12 @@ use crate::{
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
+        BuiltinType, BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
         bytes::PyBytes,
+        class::{rhs_is_proper_subclass_instance, rhs_overrides_subclass_dunder},
         decimal, host_class_type,
         inline_str::InlineStr,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
+        instance::{BoundMethod, class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -509,6 +510,12 @@ impl<'h> PyTrait<'h> for Value {
         }
 
         if let Self::Ref(id) = self {
+            if matches!(
+                vm.heap.get(*id),
+                HeapData::Str(_) | HeapData::Tuple(_) | HeapData::Bytes(_) | HeapData::LongInt(_)
+            ) {
+                return Ok(false);
+            }
             vm.heap.read(*id).py_iadd_impl(other, vm)
         } else {
             Ok(false)
@@ -1011,7 +1018,7 @@ impl Value {
             Self::InternString(_) => Type::Str,
             Self::InlineString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
-            Self::Builtin(_) => Type::BuiltinFunction,
+            Self::Builtin(b) => b.py_type(),
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -1086,8 +1093,23 @@ impl Value {
     /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
     ///
     /// Tries the left operand, then reflected equality when it returns
-    /// `NotImplemented`; identity is only the final fallback after both decline.
+    /// `NotImplemented` (or reflected first when the right operand's class is a
+    /// strict subclass of the left's); identity is the final fallback.
     pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if rhs_is_proper_subclass_instance(self, other, vm) {
+            let rhs_result = other.py_rich_eq_impl(self, vm)?;
+            if !rhs_result.is_not_implemented() {
+                return Ok(rhs_result);
+            }
+
+            let lhs_result = self.py_rich_eq_impl(other, vm)?;
+            if !lhs_result.is_not_implemented() {
+                return Ok(lhs_result);
+            }
+
+            return Ok(Self::Bool(self.is(other)));
+        }
+
         let lhs_result = self.py_rich_eq_impl(other, vm)?;
         if !lhs_result.is_not_implemented() {
             return Ok(lhs_result);
@@ -1260,17 +1282,18 @@ impl Value {
             // Instances resolve attributes (instance dict → class methods/vars,
             // binding methods) in a dedicated path that has the heap id needed to
             // build bound methods.
-            Self::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
-                return instance_getattr(*heap_id, attr, vm);
-            }
             Self::Ref(heap_id) => {
-                if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
+                if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) {
+                    return instance_getattr(*heap_id, attr, vm);
+                }
+                let output = vm.heap.read(*heap_id);
+                if let Some(call_result) = output.py_getattr(attr, vm)? {
                     return Ok(call_result);
                 }
                 // CPython names the module, not its type, for a missing module attribute.
-                if let HeapData::Module(module) = vm.heap.get(*heap_id) {
+                if let HeapReadOutput::Module(module) = output {
                     return Err(ExcType::attribute_error_module(
-                        module.name_str(vm.interns),
+                        module.get(vm.heap).name_str(vm.interns),
                         attr.as_str(vm.interns),
                     ));
                 }
@@ -1282,6 +1305,104 @@ impl Value {
                 return match Type::from(*t).class_getattr(attr, vm) {
                     Some(value) => Ok(CallResult::Value(value)),
                     None => Err(Type::from(*t).attribute_error(attr, vm)),
+                };
+            }
+            Self::Builtin(Builtins::ExcType(exc_type)) => {
+                let attr_str = attr.as_str(vm.interns);
+                return match attr_str {
+                    "__name__" => {
+                        let name: &'static str = (*exc_type).into();
+                        let bare_name = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
+                        Ok(CallResult::Value(allocate_string(bare_name, vm.heap)))
+                    }
+                    "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::Type,
+                    )))),
+                    "__bases__" => {
+                        let bases = exc_type.direct_bases();
+                        let items: Vec<Self> = if bases.is_empty() {
+                            vec![Self::Builtin(Builtins::Type(BuiltinType::Object))]
+                        } else {
+                            bases.iter().map(|&b| Self::Builtin(Builtins::ExcType(b))).collect()
+                        };
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__mro__" => {
+                        let mut items: Vec<Self> = exc_type
+                            .mro()
+                            .into_iter()
+                            .map(|b| Self::Builtin(Builtins::ExcType(b)))
+                            .collect();
+                        items.push(Self::Builtin(Builtins::Type(BuiltinType::Object)));
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__new__" => {
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::ExcType(*exc_type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
+                    }
+                    "__init__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::ExceptionInit,
+                    )))),
+                    "mro" => {
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::ExcType(*exc_type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
+                    }
+                    "__init_subclass__" => {
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::ExcType(*exc_type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
+                    }
+                    _ => Err(ExcType::attribute_error_type(
+                        (*exc_type).into(),
+                        attr.as_str(vm.interns),
+                    )),
+                };
+            }
+            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
+                let attr_str = attr.as_str(vm.interns);
+                return match attr_str {
+                    "__name__" => Ok(CallResult::Value(allocate_string("type", vm.heap))),
+                    "__class__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::Type,
+                    )))),
+                    "__bases__" => {
+                        let items = vec![Self::Builtin(Builtins::Type(BuiltinType::Object))];
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "__mro__" => {
+                        let items = vec![
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            Self::Builtin(Builtins::Type(BuiltinType::Object)),
+                        ];
+                        let tuple_val = allocate_tuple(items.into(), vm.heap);
+                        Ok(CallResult::Value(tuple_val))
+                    }
+                    "mro" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::TypeMro,
+                    )))),
+                    "__init_subclass__" => {
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
+                    }
+                    _ => Err(ExcType::attribute_error_type("type", attr.as_str(vm.interns))),
                 };
             }
             // A plain `def` has its PEP 649 attributes and nothing else.
@@ -1510,6 +1631,7 @@ impl Value {
             vm,
             |vm| self.py_add_impl(other, vm),
             |vm| other.py_radd_impl(self, vm),
+            "__radd__",
         )
     }
 
@@ -1520,6 +1642,7 @@ impl Value {
             vm,
             |vm| self.py_sub_impl(other, vm),
             |vm| other.py_rsub_impl(self, vm),
+            "__rsub__",
             "-",
         )
     }
@@ -1547,6 +1670,7 @@ impl Value {
             vm,
             |vm| self.py_mul_impl(other, vm),
             |vm| other.py_rmul_impl(self, vm),
+            "__rmul__",
             "*",
         )
     }
@@ -1558,6 +1682,7 @@ impl Value {
             vm,
             |vm| self.py_matmul_impl(other, vm),
             |vm| other.py_rmatmul_impl(self, vm),
+            "__rmatmul__",
             "@",
         )
     }
@@ -1569,6 +1694,7 @@ impl Value {
             vm,
             |vm| self.py_truediv_impl(other, vm),
             |vm| other.py_rtruediv_impl(self, vm),
+            "__rtruediv__",
             "/",
         )
     }
@@ -1580,6 +1706,7 @@ impl Value {
             vm,
             |vm| self.py_floordiv_impl(other, vm),
             |vm| other.py_rfloordiv_impl(self, vm),
+            "__rfloordiv__",
             "//",
         )
     }
@@ -1591,6 +1718,7 @@ impl Value {
             vm,
             |vm| self.py_mod_impl(other, vm),
             |vm| other.py_rmod_impl(self, vm),
+            "__rmod__",
             "%",
         )
     }
@@ -1605,6 +1733,7 @@ impl Value {
             vm,
             |vm| self.py_divmod_impl(other, vm),
             |vm| other.py_rdivmod_impl(self, vm),
+            "__rdivmod__",
             "divmod()",
         )
     }
@@ -1617,6 +1746,7 @@ impl Value {
             vm,
             |vm| self.py_pow_impl(other, modulus, vm),
             |vm| other.py_rpow_impl(self, modulus, vm),
+            "__rpow__",
         )?;
         if let Some(result) = result {
             Ok(result)
@@ -1655,6 +1785,7 @@ impl Value {
             vm,
             |vm| self.py_and_impl(other, vm),
             |vm| other.py_rand_impl(self, vm),
+            "__rand__",
             "&",
         )
     }
@@ -1666,6 +1797,7 @@ impl Value {
             vm,
             |vm| self.py_or_impl(other, vm),
             |vm| other.py_ror_impl(self, vm),
+            "__ror__",
             "|",
         )
     }
@@ -1677,6 +1809,7 @@ impl Value {
             vm,
             |vm| self.py_xor_impl(other, vm),
             |vm| other.py_rxor_impl(self, vm),
+            "__rxor__",
             "^",
         )
     }
@@ -1688,6 +1821,7 @@ impl Value {
             vm,
             |vm| self.py_lshift_impl(other, vm),
             |vm| other.py_rlshift_impl(self, vm),
+            "__rlshift__",
             "<<",
         )
     }
@@ -1699,6 +1833,7 @@ impl Value {
             vm,
             |vm| self.py_rshift_impl(other, vm),
             |vm| other.py_rrshift_impl(self, vm),
+            "__rrshift__",
             ">>",
         )
     }
@@ -1710,9 +1845,10 @@ impl Value {
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
         operator: &'static str,
     ) -> RunResult<Self> {
-        if let Some(result) = self.binary_op_result(other, vm, direct, reflected)? {
+        if let Some(result) = self.binary_op_result(other, vm, direct, reflected, reflected_dunder)? {
             Ok(result)
         } else {
             let lhs_type = self.py_type(vm);
@@ -1732,16 +1868,22 @@ impl Value {
         }
     }
 
-    /// Tries numeric slots, suppressing reflected dispatch between instances of the same class.
-    /// Builtin representations still need both sides: an immediate `int` can
-    /// delegate to a heap `LongInt` even though both have Python type `int`.
+    /// Tries numeric slots, running reflected first when a strict subclass overrides the
+    /// reflected dunder, and suppressing reflected dispatch between instances of the same class.
     fn binary_op_result(
         &self,
         other: &Self,
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
     ) -> RunResult<Option<Self>> {
+        if rhs_overrides_subclass_dunder(self, other, reflected_dunder, vm) {
+            if let Some(result) = reflected(vm)? {
+                return Ok(Some(result));
+            }
+            return direct(vm);
+        }
         if let Some(result) = direct(vm)? {
             Ok(Some(result))
         } else if matches!(self.py_type(vm), Type::Instance(_)) && self.py_type(vm) == other.py_type(vm) {

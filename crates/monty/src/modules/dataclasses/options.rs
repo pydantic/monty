@@ -58,7 +58,7 @@ impl DataclassParams {
     /// The options the class was decorated with, which `legacy` rebuilds the
     /// generated methods from.
     #[must_use]
-    pub(super) fn options(&self) -> DataclassOptions {
+    pub(crate) fn options(&self) -> DataclassOptions {
         self.options
     }
 }

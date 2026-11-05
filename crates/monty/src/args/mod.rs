@@ -2,7 +2,11 @@ mod bind_native;
 mod bind_python;
 mod from_value;
 
-use std::{mem, slice, vec::IntoIter};
+use std::{
+    mem::{self, size_of},
+    slice,
+    vec::IntoIter,
+};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
@@ -21,8 +25,9 @@ use crate::{
     intern::{Interns, StringId},
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
-    types::{Dict, dict::DictIntoIter},
-    value::{EitherStr, Value},
+    resource_checks::check_estimated_size,
+    types::{Dict, allocate_tuple, dict::DictIntoIter},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Type for method call arguments.
@@ -67,6 +72,44 @@ impl ArgValues {
         match self {
             Self::Empty | Self::One(_) | Self::Two(_, _) => false,
             Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
+        }
+    }
+
+    /// Collects positional arguments cloned with the heap into an allocated tuple `Value`,
+    /// preflighting memory for larger buffers.
+    pub(crate) fn positional_tuple(&self, heap: &Heap) -> RunResult<Value> {
+        let pos_items: Vec<Value> = match self {
+            Self::Empty | Self::Kwargs(_) => vec![],
+            Self::One(v) => vec![v.clone_with_heap(heap)],
+            Self::Two(a, b) => vec![a.clone_with_heap(heap), b.clone_with_heap(heap)],
+            Self::ArgsKargs { args, .. } => {
+                check_estimated_size(args.len().saturating_mul(VALUE_SIZE), &heap.tracker)?;
+                let mut items = Vec::with_capacity(args.len());
+                items.extend(args.iter().map(|v| v.clone_with_heap(heap)));
+                items
+            }
+        };
+        Ok(allocate_tuple(pos_items.into(), heap))
+    }
+
+    /// Clones arguments with a reserved spare slot for `prepend(self/class)`, preflighting memory.
+    pub(crate) fn clone_for_prepend(&self, heap: &mut Heap) -> RunResult<Self> {
+        match self {
+            Self::Empty => Ok(Self::Empty),
+            Self::One(v) => Ok(Self::One(v.clone_with_heap(heap))),
+            Self::Two(a, b) => Ok(Self::Two(a.clone_with_heap(heap), b.clone_with_heap(heap))),
+            Self::Kwargs(kw) => Ok(Self::Kwargs(kw.clone_with_preflight(heap)?)),
+            Self::ArgsKargs { args, kwargs } => {
+                let slots = args.len().saturating_add(1);
+                check_estimated_size(slots.saturating_mul(VALUE_SIZE), &heap.tracker)?;
+                let new_kwargs = kwargs.clone_with_preflight(heap)?;
+                let mut new_args = Vec::with_capacity(slots);
+                new_args.extend(args.iter().map(|v| v.clone_with_heap(heap)));
+                Ok(Self::ArgsKargs {
+                    args: new_args,
+                    kwargs: new_kwargs,
+                })
+            }
         }
     }
 
@@ -409,6 +452,39 @@ impl KwargsValues {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Creates an independent clone of the keyword arguments with memory preflight.
+    pub(crate) fn clone_with_preflight(&self, heap: &mut Heap) -> RunResult<Self> {
+        match self {
+            Self::Empty => Ok(Self::Empty),
+            Self::Inline(items) => {
+                check_estimated_size(
+                    items.len().saturating_mul(size_of::<(StringId, Value)>()),
+                    &heap.tracker,
+                )?;
+                Ok(Self::Inline(
+                    items.iter().map(|(k, v)| (*k, v.clone_with_heap(heap))).collect(),
+                ))
+            }
+            Self::Pairs(items) => {
+                check_estimated_size(items.len().saturating_mul(size_of::<(Value, Value)>()), &heap.tracker)?;
+                Ok(Self::Pairs(
+                    items
+                        .iter()
+                        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                        .collect(),
+                ))
+            }
+            Self::Dict(dict) => {
+                check_estimated_size(dict.len().saturating_mul(size_of::<(Value, Value)>()), &heap.tracker)?;
+                Ok(Self::Pairs(
+                    dict.iter()
+                        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                        .collect(),
+                ))
+            }
+        }
     }
 
     /// The value passed under `name`, if any; a non-string key (only possible via `**`

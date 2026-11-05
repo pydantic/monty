@@ -48,6 +48,7 @@ impl JsMontyException {
         ExceptionInfo {
             type_name: self.0.exc_type().to_string(),
             message: self.0.message().unwrap_or_default().to_string(),
+            custom_type_name: self.0.custom_type_name().map(ToString::to_string),
         }
     }
 
@@ -112,15 +113,7 @@ impl JsMontyException {
         let format = format.as_deref().unwrap_or("traceback");
         match format {
             "traceback" => Ok(self.0.to_string()),
-            "type-msg" => {
-                let type_name = self.0.exc_type().to_string();
-                let message = self.0.message().unwrap_or_default();
-                if message.is_empty() {
-                    Ok(type_name)
-                } else {
-                    Ok(format!("{type_name}: {message}"))
-                }
-            }
+            "type-msg" => Ok(self.0.summary()),
             "msg" => Ok(self.0.message().unwrap_or_default().to_string()),
             _ => Err(Error::from_reason(format!(
                 "Invalid display format: '{format}'. Expected 'traceback', 'type-msg', or 'msg'"
@@ -159,6 +152,8 @@ pub struct ExceptionInfo {
     pub type_name: String,
     /// The exception message.
     pub message: String,
+    /// The custom type name for user-defined exception subclasses, if any.
+    pub custom_type_name: Option<String>,
 }
 
 /// A single frame in a Monty traceback.
