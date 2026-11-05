@@ -49,7 +49,7 @@ import {
   type ModuleReadTurn,
   type NameLookupTurn,
   type NativeFutureResult,
-  type NativeStartedCall,
+  type NativeStreamedCall,
   type NativeTurn,
   type OkTurn,
   type NotMountedTurn,
@@ -57,7 +57,7 @@ import {
   type ResolveFuturesTurn,
   type ShutdownTurn,
   osCallAcceptsFuture,
-  startedCallsOf,
+  streamedCallsOf,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -675,7 +675,7 @@ class TurnAnswerer {
    * the error, which the sandbox raises at the `await`.
    */
   async startCalls(turn: object): Promise<void> {
-    const started = startedCallsOf(turn)
+    const started = streamedCallsOf(turn)
     if (started.length === 0) {
       return
     }
@@ -688,7 +688,7 @@ class TurnAnswerer {
   }
 
   /** Resolves and calls one started call's function; the promise settles with its outcome. */
-  private async startCall(call: NativeStartedCall): Promise<{ promise: Promise<unknown> }> {
+  private async startCall(call: NativeStreamedCall): Promise<{ promise: Promise<unknown> }> {
     let resolved: { value: unknown } | undefined
     try {
       resolved = await this.hostEntry(call.functionName)
@@ -1160,7 +1160,7 @@ class SnapshotDriver {
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
-    if (startedCallsOf(turn).length > 0) {
+    if (streamedCallsOf(turn).length > 0) {
       // `feedStart` never asks the worker to start calls, and a snapshot cannot
       // hand over calls that started without a suspension.
       throw this.poison(new Error('worker started host calls during feedStart()'))

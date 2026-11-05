@@ -312,7 +312,7 @@ impl Recorder {
             }
             // One record per call: the worker kept running, so there is no
             // round-trip for a span to cover; its future settles in `ResumeFutures`.
-            Some(pb::child_event::Kind::StartedCalls(started)) => {
+            Some(pb::child_event::Kind::StreamedCalls(started)) => {
                 for c in &started.calls {
                     let (args, kwargs, args_cut) = render_call_arguments(c);
                     let (function_name, name_cut) = truncate_str(&c.function_name);
@@ -1264,7 +1264,7 @@ mod tests {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
-            start_calls: false,
+            stream_async_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "double".to_owned(),
@@ -1453,7 +1453,7 @@ mod tests {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
-            start_calls: false,
+            stream_async_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
             MontyObject::int(1),

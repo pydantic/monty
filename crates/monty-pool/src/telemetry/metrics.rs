@@ -603,7 +603,7 @@ impl TurnMetrics {
                 }
             }
             // no round-trip to time: the worker kept running
-            Some(pb::child_event::Kind::StartedCalls(started)) => self.metrics.record(
+            Some(pb::child_event::Kind::StreamedCalls(started)) => self.metrics.record(
                 &SUSPENSIONS,
                 MetricValue::I64(i64::try_from(started.calls.len()).unwrap_or(i64::MAX)),
                 &[KeyValue::new("kind", "started")],
@@ -1134,7 +1134,7 @@ mod tests {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
-            start_calls: false,
+            stream_async_calls: false,
         }))
     }
 

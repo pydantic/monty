@@ -7,7 +7,7 @@
 //! difference between transports is the sink and how requests are read.
 //!
 //! The child is strictly turn-based: one request in, zero or more streamed
-//! `Print` and `StartedCalls` events out, then exactly one turn-ending event
+//! `Print` and `StreamedCalls` events out, then exactly one turn-ending event
 //! (see `monty-proto` for the schema and protocol rules).
 //!
 //! Crash isolation is the entire point: a host must treat a child that exits
@@ -214,7 +214,7 @@ struct PendingFeed {
 ///
 /// Drive it by reading framed [`pb::ParentRequest`]s from the host transport
 /// and passing each to [`Self::handle`] along with an [`EventSink`]; the child
-/// streams `Print` and `StartedCalls` events and one turn-ending event per request.
+/// streams `Print` and `StreamedCalls` events and one turn-ending event per request.
 pub struct Child {
     state: SessionState,
     /// Script name of the current session (used for error and type-check
@@ -232,17 +232,17 @@ pub struct Child {
     os_policy: OsPolicy,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
-    /// The parent set `Configure.started_calls`, so calls to async host
-    /// functions stream as `StartedCalls` instead of suspending.
-    started_calls: bool,
-    /// The current feed's `Feed.start_calls`; started calls also need `started_calls`.
-    feed_starts_calls: bool,
+    /// The parent set `Configure.accepts_streamed_calls`, so calls to async host
+    /// functions stream as `StreamedCalls` instead of suspending.
+    accepts_streamed_calls: bool,
+    /// The current feed's `Feed.stream_async_calls`; started calls also need `accepts_streamed_calls`.
+    feed_streams_async_calls: bool,
     /// The current feed's `Feed.async_functions`: calls to these names start
     /// like calls to an async host function value. Replaced by every `Feed`.
     feed_async_functions: HashSet<String>,
     /// Calls this session has started without suspending, held under
     /// `max_suspensions` as the parent holds its suspension count.
-    calls_started: usize,
+    calls_streamed: usize,
 }
 
 impl Default for Child {
@@ -255,10 +255,10 @@ impl Default for Child {
             print_flush_interval: DEFAULT_PRINT_FLUSH_INTERVAL,
             os_policy: OsPolicy::default(),
             module_stubs: Vec::new(),
-            started_calls: false,
-            feed_starts_calls: false,
+            accepts_streamed_calls: false,
+            feed_streams_async_calls: false,
             feed_async_functions: HashSet::new(),
-            calls_started: 0,
+            calls_streamed: 0,
         }
     }
 }
@@ -490,7 +490,7 @@ impl Child {
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
             // Also a delivery setting: a `Load` after this `Configure` gets it too.
-            self.started_calls = configure.started_calls;
+            self.accepts_streamed_calls = configure.accepts_streamed_calls;
             if let Some(clock) = configure.execution_clock {
                 let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
                     return protocol_violation("invalid execution_clock");
@@ -561,7 +561,7 @@ impl Child {
             // a relay's concern; the child has no profiles
             profile: _,
             // applied when the `Configure` arrived, so a `Load` honors it too
-            started_calls: _,
+            accepts_streamed_calls: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -611,7 +611,7 @@ impl Child {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
-        self.feed_starts_calls = feed.start_calls;
+        self.feed_streams_async_calls = feed.stream_async_calls;
         self.feed_async_functions = feed.async_functions.into_inner().into_iter().collect();
         // Check nesting before the import scan, ty or the compiler parses the snippet.
         let code = feed.code;
@@ -1091,7 +1091,7 @@ impl Child {
             let Ok(ReplProgress::FunctionCall(call)) = result else {
                 unreachable!("checked above")
             };
-            self.calls_started += 1;
+            self.calls_streamed += 1;
             result = start_call(call, print);
         };
         match result {
@@ -1166,10 +1166,10 @@ impl Child {
     /// Past the limit the call suspends instead, so the parent's suspension
     /// budget aborts the feed: a loop of started calls never suspends otherwise.
     fn starts_without_waiting(&self, call: &monty::ReplFunctionCall, tracker: &ResourceTracker) -> bool {
-        self.started_calls
-            && self.feed_starts_calls
+        self.accepts_streamed_calls
+            && self.feed_streams_async_calls
             && !call.allow_eager_await
-            && self.calls_started < tracker.max_suspensions()
+            && self.calls_streamed < tracker.max_suspensions()
             && (call.is_async || (call.object_id.is_none() && self.feed_async_functions.contains(&call.function_name)))
     }
 
@@ -1217,10 +1217,10 @@ impl Child {
         self.print_flush_interval = DEFAULT_PRINT_FLUSH_INTERVAL;
         self.os_policy = OsPolicy::default();
         self.module_stubs = Vec::new();
-        self.started_calls = false;
-        self.feed_starts_calls = false;
+        self.accepts_streamed_calls = false;
+        self.feed_streams_async_calls = false;
         self.feed_async_functions.clear();
-        self.calls_started = 0;
+        self.calls_streamed = 0;
     }
 }
 
@@ -1331,7 +1331,7 @@ fn suspension_event_function_call(call: &mut monty::ReplFunctionCall) -> pb::Chi
     )))
 }
 
-/// Streams a call to an async host function as `StartedCalls` and resumes it
+/// Streams a call to an async host function as `StreamedCalls` and resumes it
 /// with a pending future, without waiting for the parent.
 ///
 /// A call that cannot be sent (its frame is oversize, or the sink failed)
@@ -1349,7 +1349,7 @@ fn start_call(
         false,
         call.position.clone(),
     );
-    let event = event(pb::child_event::Kind::StartedCalls(pb::StartedCalls {
+    let event = event(pb::child_event::Kind::StreamedCalls(pb::StreamedCalls {
         calls: vec![wire].into(),
     }));
     let sent = match oversize_suspension_error_message(&event) {
@@ -1426,7 +1426,7 @@ fn eager_result(
 }
 
 /// Streams sandbox `print()` output as `Print` events through an
-/// [`EventSink`], along with the other mid-turn events (`StartedCalls`),
+/// [`EventSink`], along with the other mid-turn events (`StreamedCalls`),
 /// which flush the buffer first so output and calls keep their order.
 ///
 /// Debounced: a frame is written once the buffer reaches

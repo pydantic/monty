@@ -880,7 +880,7 @@ fn deep_values_cross_the_wire() {
             skip_type_check: false,
             cwd: "/work".to_owned(),
             async_functions: Vec::new().into(),
-            start_calls: false,
+            stream_async_calls: false,
         })),
         trace_parent: None,
     };

@@ -95,11 +95,11 @@ fn every_schema_repeated_field_is_budgeted() {
         |message: &WireFunctionCall| &message.kwargs,
     );
     check_repeated(
-        "monty.v1.StartedCalls.calls",
+        "monty.v1.StreamedCalls.calls",
         1,
         WireType::LengthDelimited,
         &[],
-        |message: &pb::StartedCalls| &message.calls,
+        |message: &pb::StreamedCalls| &message.calls,
     );
     check_repeated(
         "monty.v1.OsCall.Scan.pattern",

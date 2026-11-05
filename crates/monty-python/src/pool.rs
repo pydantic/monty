@@ -43,7 +43,7 @@ use std::{
 
 use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StartedCall, TurnEvent,
+    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -1578,7 +1578,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         // answer discards the checkout (see `sync_turn_answer`).
         // no calls are started in this API; a worker that starts some anyway
         // leaves futures the `ResolveFutures` check below rejects
-        let (native, _) = py.detach(|| block_on_sync(callback_context_and_started_calls(&checkout)))?;
+        let (native, _) = py.detach(|| block_on_sync(callback_context_and_streamed_calls(&checkout)))?;
         let callback_guard = callback_context.enter(py, &native)?;
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
@@ -1847,7 +1847,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let (native, started) = callback_context_and_started_calls(&checkout).await;
+        let (native, started) = callback_context_and_streamed_calls(&checkout).await;
         // started before the turn's own event is answered: `ResolveFutures` may name them
         for call in started {
             if let Err(err) =
@@ -2100,15 +2100,15 @@ async fn answer_call(
 
 /// Reads the checkout's telemetry context and takes the calls to async host
 /// functions its last turn started, under one lock.
-pub(crate) async fn callback_context_and_started_calls(
+pub(crate) async fn callback_context_and_streamed_calls(
     checkout: &SharedCheckout,
-) -> (opentelemetry::Context, Vec<StartedCall>) {
+) -> (opentelemetry::Context, Vec<StreamedCall>) {
     checkout
         .lock()
         .await
         .as_mut()
         .map_or_else(Default::default, |checkout| {
-            (checkout.callback_context(), checkout.take_started_calls())
+            (checkout.callback_context(), checkout.take_streamed_calls())
         })
 }
 
@@ -2116,14 +2116,14 @@ pub(crate) async fn callback_context_and_started_calls(
 /// a coroutine is spawned into `join_set`, and a plain return value settles a
 /// ready future, so either answers the call's pending future at `ResolveFutures`.
 async fn start_call_async(
-    call: StartedCall,
+    call: StreamedCall,
     names: &HostNames,
     instances: &InstanceStore,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     callback_context: &CallbackContext,
     native: &opentelemetry::Context,
 ) -> PyResult<()> {
-    let StartedCall {
+    let StreamedCall {
         function_name,
         args,
         call_id,

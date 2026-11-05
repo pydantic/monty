@@ -333,13 +333,13 @@ pub enum TurnEvent {
 }
 
 /// A call to an async host function the sandbox started without waiting
-/// for the host, collected during a turn (see [`Checkout::take_started_calls`]).
+/// for the host, collected during a turn (see [`Checkout::take_streamed_calls`]).
 ///
 /// The sandbox already holds a pending future for `call_id`: start the call,
 /// then settle it with [`Checkout::resume_futures`] once a
 /// [`TurnEvent::ResolveFutures`] names it. Each counts against `max_suspensions`.
 #[derive(Debug)]
-pub struct StartedCall {
+pub struct StreamedCall {
     pub function_name: String,
     /// One arena holding every positional and keyword argument.
     pub args: CallArgs,
@@ -460,7 +460,7 @@ pub struct Checkout {
     async_functions: Option<Vec<String>>,
     /// Calls to async host functions started since the caller last took them.
     /// Cleared as a `Feed`, `Load` or `Reset` goes out, so a feed never sees another's.
-    started_calls: Vec<StartedCall>,
+    streamed_calls: Vec<StreamedCall>,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
@@ -574,7 +574,7 @@ impl SessionBudget {
         if is_suspension(event) {
             self.suspensions_seen += 1;
             self.cpu_feed_suspended = true;
-        } else if let Some(pb::child_event::Kind::StartedCalls(started)) = &event.kind {
+        } else if let Some(pb::child_event::Kind::StreamedCalls(started)) = &event.kind {
             // a started call replaces the suspension it would have been
             self.suspensions_seen = self.suspensions_seen.saturating_add(started.calls.len() as u64);
         } else if matches!(
@@ -697,11 +697,11 @@ fn is_execution_turn(request: &pb::ParentRequest) -> bool {
 }
 
 /// Recognizes the events a worker streams before a turn-ender: `Print`, and
-/// `StartedCalls` (which `Configure.started_calls` asks for).
+/// `StreamedCalls` (which `Configure.accepts_streamed_calls` asks for).
 fn is_mid_turn(event: &pb::ChildEvent) -> bool {
     matches!(
         event.kind,
-        Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::StartedCalls(_))
+        Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::StreamedCalls(_))
     )
 }
 
@@ -833,7 +833,7 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             async_functions: Some(Vec::new()),
-            started_calls: Vec::new(),
+            streamed_calls: Vec::new(),
             session_id: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
@@ -996,7 +996,7 @@ impl Checkout {
             skip_type_check,
             cwd,
             async_functions: self.async_functions.clone().unwrap_or_default().into(),
-            start_calls: self.async_functions.is_some(),
+            stream_async_calls: self.async_functions.is_some(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1405,12 +1405,12 @@ impl Checkout {
     /// Sets how the feeds that follow treat calls to async host functions,
     /// replacing any earlier choice. With `Some(names)` (the default, with no
     /// names) calls to a [`MontyObject::async_function`] value or to one of
-    /// `names` start without waiting and arrive through [`Self::take_started_calls`];
+    /// `names` start without waiting and arrive through [`Self::take_streamed_calls`];
     /// `None` makes them suspend like any call, for a host answering each call itself.
     ///
     /// `names` covers names the sandbox calls without ever reading as a value,
     /// which reach the host only as a call by name. A worker that predates
-    /// `StartedCalls` ignores all of this and suspends on each call as before.
+    /// `StreamedCalls` ignores all of this and suspends on each call as before.
     pub fn set_async_functions(&mut self, names: Option<Vec<String>>) {
         self.async_functions = names;
     }
@@ -1422,8 +1422,8 @@ impl Checkout {
     /// [`TurnEvent::ResolveFutures`] can name a call that only arrived this way.
     /// Calls past `max_suspensions` are dropped; the feed is aborted at its
     /// next suspension.
-    pub fn take_started_calls(&mut self) -> Vec<StartedCall> {
-        mem::take(&mut self.started_calls)
+    pub fn take_streamed_calls(&mut self) -> Vec<StreamedCall> {
+        mem::take(&mut self.streamed_calls)
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -2055,7 +2055,7 @@ impl Checkout {
                         future.await;
                     }
                 }
-                Some(pb::child_event::Kind::StartedCalls(started)) => {
+                Some(pb::child_event::Kind::StreamedCalls(started)) => {
                     // `update_from` already counted these. Keep only the calls the
                     // budget had room for: the suspension after an overrun is
                     // aborted, so more would only let a worker grow this buffer.
@@ -2073,7 +2073,7 @@ impl Checkout {
                                 return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                             }
                         };
-                        self.started_calls.push(StartedCall {
+                        self.streamed_calls.push(StreamedCall {
                             function_name,
                             args,
                             call_id,
@@ -2274,7 +2274,7 @@ impl Checkout {
                     | pb::parent_request::Kind::Reset(_)
             )
         ) {
-            self.started_calls.clear();
+            self.streamed_calls.clear();
         }
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
@@ -2547,8 +2547,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
-        // the checkout collects them (`take_started_calls`)
-        started_calls: true,
+        // the checkout collects them (`take_streamed_calls`)
+        accepts_streamed_calls: true,
     }))
 }
 

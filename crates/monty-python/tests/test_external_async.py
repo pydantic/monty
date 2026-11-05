@@ -176,7 +176,7 @@ async def test_coroutine_function_in_an_external_module():
             assert await session.feed_run(code) == snapshot([2, 3])
 
 
-async def test_started_calls_count_against_max_suspensions():
+async def test_streamed_calls_count_against_max_suspensions():
     """Each started call spends one suspension, as the call it replaces did."""
 
     async def fetch(x: int) -> int:

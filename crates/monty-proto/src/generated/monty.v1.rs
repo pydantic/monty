@@ -331,8 +331,8 @@ pub struct Function {
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
     /// Calls to this function return an awaitable without waiting for the
-    /// parent. Under `Configure.started_calls` the child registers the future
-    /// itself and streams the call in `StartedCalls`; otherwise, or on a child
+    /// parent. Under `Configure.accepts_streamed_calls` the child registers the future
+    /// itself and streams the call in `StreamedCalls`; otherwise, or on a child
     /// that predates the field, it suspends with `FunctionCall` as for any other
     /// function, which the parent may still answer with a future.
     #[prost(bool, tag = "3")]
@@ -864,14 +864,14 @@ pub struct Configure {
     /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
-    /// The parent accepts `StartedCalls`, so calls to async host functions
+    /// The parent accepts `StreamedCalls`, so calls to async host functions
     /// (`Function.is_async`, `Feed.async_functions`) may start without
-    /// suspending in a feed that sets `Feed.start_calls`. Absent or false, the
+    /// suspending in a feed that sets `Feed.stream_async_calls`. Absent or false, the
     /// child suspends with `FunctionCall` for them as for any call. A child that predates the field ignores it, so no
     /// protocol version change is needed. A forwarder that cannot pass
-    /// `StartedCalls` on must clear it before forwarding.
+    /// `StreamedCalls` on must clear it before forwarding.
     #[prost(bool, tag = "15")]
-    pub started_calls: bool,
+    pub accepts_streamed_calls: bool,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -897,16 +897,16 @@ pub struct Feed {
     /// Names of host functions whose calls in this feed start without waiting,
     /// as for `Function.is_async`. Covers a call of a bare name the parent never
     /// supplied a value for, which reaches the parent only as a `FunctionCall`
-    /// by name. Ignored unless `start_calls` is set.
+    /// by name. Ignored unless `stream_async_calls` is set.
     #[prost(string, repeated, tag = "6")]
     pub async_functions: crate::budgeted_prost::alloc::vec::Vec<
         crate::budgeted_prost::alloc::string::String,
     >,
     /// Calls to async host functions in this feed start without suspending
-    /// (see `Configure.started_calls`, which must also be set). False makes them
+    /// (see `Configure.accepts_streamed_calls`, which must also be set). False makes them
     /// suspend like any call, for a parent that answers every call itself.
     #[prost(bool, tag = "7")]
-    pub start_calls: bool,
+    pub stream_async_calls: bool,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -1124,7 +1124,7 @@ pub mod child_event {
         #[prost(message, tag = "13")]
         Ping(super::Ping),
         #[prost(message, tag = "14")]
-        StartedCalls(super::StartedCalls),
+        StreamedCalls(super::StreamedCalls),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1151,7 +1151,7 @@ pub struct Print {
 /// the sandbox has started without waiting. Each call already has an external
 /// future registered under its `call_id`; the parent starts it and settles it
 /// through `ResumeFutures` when a later `ResolveFutures` names it. Sent only
-/// to a parent that set `Configure.started_calls`. The child sends every started
+/// to a parent that set `Configure.accepts_streamed_calls`. The child sends every started
 /// call before the turn-ending event that follows it, so a `ResolveFutures`
 /// never names a call the parent has not received. An event may carry any
 /// number of calls; `allow_eager_await` is always false on them. A session
@@ -1159,7 +1159,7 @@ pub struct Print {
 /// `FunctionCall`, so the parent's suspension budget still ends a runaway loop.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
-pub struct StartedCalls {
+pub struct StreamedCalls {
     #[prost(message, repeated, tag = "1")]
     pub calls: crate::budgeted_prost::alloc::vec::Vec<crate::WireFunctionCall>,
 }

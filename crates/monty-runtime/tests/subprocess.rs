@@ -148,7 +148,7 @@ impl ChildProc {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
-            start_calls: false,
+            stream_async_calls: false,
         }));
         self.recv_turn()
     }
@@ -195,7 +195,7 @@ impl ChildProc {
             skip_type_check: false,
             cwd: "/".to_owned(),
             async_functions: Vec::new().into(),
-            start_calls: false,
+            stream_async_calls: false,
         }));
         self.expect_death();
     }
@@ -3196,7 +3196,7 @@ fn killed_child_is_detected_as_eof() {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
-        start_calls: false,
+        stream_async_calls: false,
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");

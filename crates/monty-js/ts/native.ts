@@ -241,7 +241,7 @@ export type NativeTurn =
  * The sandbox already holds a pending future for `callId`, settled through
  * `resolveFutures` once a `resolveFutures` turn names it.
  */
-export interface NativeStartedCall {
+export interface NativeStreamedCall {
   functionName: string
   args: unknown[]
   kwargs: [unknown, unknown][]
@@ -251,11 +251,11 @@ export interface NativeStartedCall {
 
 /**
  * The calls to async host functions a turn started, which the native session
- * attaches to any turn object as `startedCalls`. The WebAssembly worker never
+ * attaches to any turn object as `streamedCalls`. The WebAssembly worker never
  * starts calls, so its turns have none.
  */
-export function startedCallsOf(turn: object): NativeStartedCall[] {
-  return (turn as { startedCalls?: NativeStartedCall[] }).startedCalls ?? []
+export function streamedCallsOf(turn: object): NativeStreamedCall[] {
+  return (turn as { streamedCalls?: NativeStreamedCall[] }).streamedCalls ?? []
 }
 
 /** One settled promise outcome delivered to `resolveFutures`. */

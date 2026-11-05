@@ -132,18 +132,18 @@ The worker creates a settled awaitable and continues, avoiding a separate `Resol
 Synchronous returns still use `ResumeCall`; parents may also ignore the hint and register a pending future as before.
 Older workers omit the flag, which defaults to false, so newer parents retain the existing reply sequence.
 
-Calls to async host functions start without suspending when the parent sets `Configure.started_calls` and the feed
-sets `Feed.start_calls`; a parent answering every call itself, as `feed_start` does, leaves the feed's flag unset.
+Calls to async host functions start without suspending when the parent sets `Configure.accepts_streamed_calls` and the feed
+sets `Feed.stream_async_calls`; a parent answering every call itself, as `feed_start` does, leaves the feed's flag unset.
 A call is eligible when its callee's `Function` value has `is_async` set, or when the call has no receiver and the
 feed lists its name in `Feed.async_functions` (the case of a bare name the parent never supplied a value for).
 A call the sandbox awaits at once with no other task to run still suspends, so the parent can answer it eagerly.
-The worker registers the call's future itself, sends the call in a `StartedCalls` event and keeps running.
-`StartedCalls`, like `Print`, does not end the turn, and every started call is sent before the turn-ending event that
+The worker registers the call's future itself, sends the call in a `StreamedCalls` event and keeps running.
+`StreamedCalls`, like `Print`, does not end the turn, and every started call is sent before the turn-ending event that
 follows it, so a `ResolveFutures` only names calls the parent has received.
 The parent settles them through the usual `ResolveFutures` / `ResumeFutures` exchange.
 Without the flag the worker suspends with `FunctionCall` as before, which keeps an older parent, or a relay forwarding
 for one, from seeing an event tag it does not know.
-Older workers ignore the flag, so it needs no protocol version change; a relay that cannot forward `StartedCalls`
+Older workers ignore the flag, so it needs no protocol version change; a relay that cannot forward `StreamedCalls`
 must clear it.
 
 ## Monty crates

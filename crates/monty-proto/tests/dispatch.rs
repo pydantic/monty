@@ -28,7 +28,7 @@ fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
-        start_calls: false,
+        stream_async_calls: false,
     }));
     let (bytes, _) = dispatch_frame(child, &request);
     let (_, event) = split_turn(&bytes);
@@ -255,7 +255,7 @@ fn create_repl_with_flush_interval(child: &mut Child, print_flush_interval_ms: O
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
         print_flush_interval_ms,
-        started_calls: true,
+        accepts_streamed_calls: true,
         ..Default::default()
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -279,7 +279,7 @@ fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, p
         skip_type_check: false,
         cwd: cwd.to_owned(),
         async_functions: Vec::new().into(),
-        start_calls: false,
+        stream_async_calls: false,
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -424,7 +424,7 @@ fn inputs_are_injected() {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
-        start_calls: false,
+        stream_async_calls: false,
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -674,7 +674,7 @@ fn turn_events_carry_the_suspension_budget() {
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
-        start_calls: false,
+        stream_async_calls: false,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     let events = decode_full_events(&bytes);
@@ -847,7 +847,7 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
         skip_type_check: true,
         cwd: String::new(),
         async_functions: Vec::new().into(),
-        start_calls: false,
+        stream_async_calls: false,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_import(split_turn(&bytes).1), "tools");
@@ -1173,13 +1173,13 @@ fn cpu_clock_availability_matches_the_platform() {
     assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(target_os = "linux"));
 }
 
-/// Configures `child` for a parent that does or does not accept `StartedCalls`.
-fn create_repl_accepting(child: &mut Child, started_calls: bool) {
+/// Configures `child` for a parent that does or does not accept `StreamedCalls`.
+fn create_repl_accepting(child: &mut Child, accepts_streamed_calls: bool) {
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
-        started_calls,
+        accepts_streamed_calls,
         ..Default::default()
     }));
     let (bytes, _) = dispatch_frame(child, &request);
@@ -1205,17 +1205,17 @@ fn feed_inputs(child: &mut Child, code: &str, inputs: Vec<(&str, MontyObject)>) 
         skip_type_check: false,
         cwd: "/".to_owned(),
         async_functions: Vec::new().into(),
-        start_calls: true,
+        stream_async_calls: true,
     }));
     decode_events(&dispatch_frame(child, &request).0)
 }
 
-/// `(name, positional args)` of every call a turn's `StartedCalls` carried.
-fn started_calls(events: &[pb::child_event::Kind]) -> Vec<(String, Vec<MontyObject>)> {
+/// `(name, positional args)` of every call a turn's `StreamedCalls` carried.
+fn streamed_calls(events: &[pb::child_event::Kind]) -> Vec<(String, Vec<MontyObject>)> {
     events
         .iter()
         .filter_map(|event| match event {
-            pb::child_event::Kind::StartedCalls(started) => Some(started.calls.iter()),
+            pb::child_event::Kind::StreamedCalls(started) => Some(started.calls.iter()),
             _ => None,
         })
         .flatten()
@@ -1238,7 +1238,7 @@ fn gathered_async_calls_take_one_round_trip() {
         "import asyncio\nawait asyncio.gather(*[f(i) for i in range(20)])",
         vec![("f", MontyObject::async_function("f", None))],
     );
-    let calls = started_calls(&events);
+    let calls = streamed_calls(&events);
     assert_eq!(calls.len(), 20);
     assert_eq!(calls[3], ("f".to_owned(), vec![MontyObject::int(3)]));
     let Some(pb::child_event::Kind::ResolveFutures(resolve)) = events.last() else {
@@ -1259,9 +1259,9 @@ fn gathered_async_calls_take_one_round_trip() {
     assert_eq!(expect_complete(event), MontyObject::list(vec![MontyObject::int(7); 20]));
 }
 
-/// A parent that did not ask for `StartedCalls` gets the suspension it understands.
+/// A parent that did not ask for `StreamedCalls` gets the suspension it understands.
 #[test]
-fn async_calls_suspend_without_started_calls() {
+fn async_calls_suspend_without_accepting_streamed_calls() {
     let mut child = Child::default();
     create_repl_accepting(&mut child, false);
     let events = feed_inputs(
@@ -1277,7 +1277,7 @@ fn async_calls_suspend_without_started_calls() {
 
 /// Started calls keep their order against output and the suspensions around them.
 #[test]
-fn started_calls_stream_in_program_order() {
+fn streamed_calls_stream_in_program_order() {
     let mut child = Child::default();
     create_repl(&mut child);
     let events = feed_inputs(
@@ -1290,7 +1290,7 @@ fn started_calls_stream_in_program_order() {
     );
     let [
         pb::child_event::Kind::Print(print),
-        pb::child_event::Kind::StartedCalls(_),
+        pb::child_event::Kind::StreamedCalls(_),
         pb::child_event::Kind::FunctionCall(call),
     ] = events.as_slice()
     else {
@@ -1326,7 +1326,7 @@ fn started_call_errors_surface_at_the_await() {
 /// A dump taken while blocked on started calls restores to the same pending
 /// futures: every call was sent before the turn ended, so nothing extra is stored.
 #[test]
-fn dump_after_started_calls_restores_the_pending_futures() {
+fn dump_after_streamed_calls_restores_the_pending_futures() {
     let mut child = Child::default();
     create_repl(&mut child);
     let events = feed_inputs(
@@ -1363,12 +1363,12 @@ fn feed_async_functions_cover_bare_calls() {
         code: "a = fetch(1)\nb = fetch(2)\nsync_call()".to_owned(),
         cwd: "/".to_owned(),
         async_functions: vec!["fetch".to_owned()].into(),
-        start_calls: true,
+        stream_async_calls: true,
         ..pb::Feed::default()
     }));
     let events = decode_events(&dispatch_frame(&mut child, &request).0);
     assert_eq!(
-        started_calls(&events),
+        streamed_calls(&events),
         vec![
             ("fetch".to_owned(), vec![MontyObject::int(1)]),
             ("fetch".to_owned(), vec![MontyObject::int(2)]),
@@ -1391,7 +1391,7 @@ fn immediately_awaited_async_calls_suspend() {
         "await f(1)",
         vec![("f", MontyObject::async_function("f", None))],
     );
-    assert_eq!(started_calls(&events), vec![]);
+    assert_eq!(streamed_calls(&events), vec![]);
     let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
         panic!("expected the awaited call to suspend, got {events:?}")
     };
@@ -1399,21 +1399,21 @@ fn immediately_awaited_async_calls_suspend() {
     assert!(call.allow_eager_await);
 }
 
-/// A feed without `start_calls`, as `feed_start` sends, suspends at every call
+/// A feed without `stream_async_calls`, as `feed_start` sends, suspends at every call
 /// to an async host function so each one reaches the parent's snapshot.
 #[test]
-fn feeds_without_start_calls_suspend_async_calls() {
+fn feeds_without_stream_async_calls_suspend_async_calls() {
     let mut child = Child::default();
     create_repl(&mut child);
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "a = fetch(1)\nawait a".to_owned(),
         cwd: "/".to_owned(),
         async_functions: vec!["fetch".to_owned()].into(),
-        start_calls: false,
+        stream_async_calls: false,
         ..pb::Feed::default()
     }));
     let events = decode_events(&dispatch_frame(&mut child, &request).0);
-    assert_eq!(started_calls(&events), vec![]);
+    assert_eq!(streamed_calls(&events), vec![]);
     let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
         panic!("expected the call to suspend, got {events:?}")
     };
@@ -1424,7 +1424,7 @@ fn feeds_without_start_calls_suspend_async_calls() {
 /// child starts at most `max_suspensions` calls and then suspends, leaving the
 /// parent's suspension budget to abort the feed.
 #[test]
-fn started_calls_stop_at_max_suspensions() {
+fn streamed_calls_stop_at_max_suspensions() {
     let mut child = Child::default();
     let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
@@ -1434,7 +1434,7 @@ fn started_calls_stop_at_max_suspensions() {
         }),
         monty_version: MONTY_VERSION.to_owned(),
         protocol_version: PROTOCOL_VERSION,
-        started_calls: true,
+        accepts_streamed_calls: true,
         ..Default::default()
     }));
     dispatch_frame(&mut child, &request);
@@ -1442,11 +1442,11 @@ fn started_calls_stop_at_max_suspensions() {
         code: "while True:\n    fetch()".to_owned(),
         cwd: "/".to_owned(),
         async_functions: vec!["fetch".to_owned()].into(),
-        start_calls: true,
+        stream_async_calls: true,
         ..pb::Feed::default()
     }));
     let events = decode_events(&dispatch_frame(&mut child, &request).0);
-    assert_eq!(started_calls(&events).len(), 3);
+    assert_eq!(streamed_calls(&events).len(), 3);
     let Some(pb::child_event::Kind::FunctionCall(call)) = events.last() else {
         panic!("expected the fourth call to suspend, got {events:?}")
     };

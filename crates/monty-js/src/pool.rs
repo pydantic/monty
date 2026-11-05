@@ -33,7 +33,7 @@ use std::{
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StartedCall, TurnEvent,
+    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -1035,13 +1035,13 @@ impl NativeSession {
                 // a load or an auto-resume can each move the session to a new ID
                 *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                 // taken every turn: a `resolveFutures` can name a call that only arrived this way
-                let started = checkout.take_started_calls();
+                let started = checkout.take_streamed_calls();
                 Ok((outcome, callback_span_key(&checkout.callback_context()), started))
             },
             |env, (outcome, context, started)| {
                 let mut obj = turn_to_js(env, (outcome, context))?;
                 if !started.is_empty() {
-                    obj.set("startedCalls", started_calls_to_js(env, started)?)?;
+                    obj.set("streamedCalls", streamed_calls_to_js(env, started)?)?;
                 }
                 Ok(obj)
             },
@@ -1321,11 +1321,11 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
 }
 
 /// Converts the calls to async host functions a turn started into the
-/// `startedCalls` array of its turn object, shaped like a `functionCall` turn's
+/// `streamedCalls` array of its turn object, shaped like a `functionCall` turn's
 /// fields; `ts/session.ts` runs each and registers its promise as a future.
-fn started_calls_to_js(env: &Env, started: Vec<StartedCall>) -> Result<Array<'_>> {
+fn streamed_calls_to_js(env: &Env, started: Vec<StreamedCall>) -> Result<Array<'_>> {
     let mut calls = env.create_array(0)?;
-    for StartedCall {
+    for StreamedCall {
         function_name,
         args,
         call_id,
