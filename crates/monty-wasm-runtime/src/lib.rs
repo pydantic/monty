@@ -9,8 +9,8 @@
 use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 
 use monty_proto::{
-    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
-    os_call_from_proto, pb,
+    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, WireFunctionCall,
+    exceeds_max_frame_len, os_call_from_proto, pb,
     worker::{Child, EventSink, HandleOutcome, protocol_violation},
 };
 use monty_types::{
@@ -218,8 +218,27 @@ fn event_values_decoded_size(event: &pb::ChildEvent) -> usize {
         Some(pb::child_event::Kind::Complete(complete)) => {
             complete.values.as_ref().map_or(0, |arena| nodes_decoded_size(&arena.0))
         }
-        Some(pb::child_event::Kind::FunctionCall(call)) => nodes_decoded_size(&call.values.0),
+        Some(pb::child_event::Kind::FunctionCall(call) | pb::child_event::Kind::AsyncCall(call)) => {
+            nodes_decoded_size(&call.values.0)
+        }
         _ => 0,
+    }
+}
+
+/// Lifts a `FunctionCall` payload (a suspension's or a streamed async call's)
+/// into the component record.
+fn function_call_event(call: WireFunctionCall) -> FunctionCallEvent {
+    let object_id = call.object_id.map(|uuid| uuid.to_string());
+    let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
+    FunctionCallEvent {
+        function_name: call.function_name,
+        values: value::into_component(call.values.0.into_inner()),
+        args: value::raw_ids(call.args.into_inner()),
+        kwargs: value::raw_pairs(call.kwargs.into_inner()),
+        call_id: call.call_id,
+        object_id,
+        allow_eager_await: call.allow_eager_await,
+        position,
     }
 }
 
@@ -321,6 +340,7 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
             skip_type_check: request.skip_type_check,
             cwd: request.cwd,
+            async_functions: request.async_functions.into(),
         }),
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
@@ -498,20 +518,8 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         // a serving relay's liveness probe; a child never sends one
         Some(pb::child_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a child's"),
-        Some(pb::child_event::Kind::FunctionCall(call)) => {
-            let object_id = call.object_id.map(|uuid| uuid.to_string());
-            let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
-            Event::FunctionCall(FunctionCallEvent {
-                function_name: call.function_name,
-                values: value::into_component(call.values.0.into_inner()),
-                args: value::raw_ids(call.args.into_inner()),
-                kwargs: value::raw_pairs(call.kwargs.into_inner()),
-                call_id: call.call_id,
-                object_id,
-                allow_eager_await: call.allow_eager_await,
-                position,
-            })
-        }
+        Some(pb::child_event::Kind::FunctionCall(call)) => Event::FunctionCall(function_call_event(call)),
+        Some(pb::child_event::Kind::AsyncCall(call)) => Event::AsyncCall(function_call_event(call)),
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
         Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
             name: lookup.name,

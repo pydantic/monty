@@ -86,6 +86,7 @@ export interface ModuleNode {
 export interface FunctionNode {
   name: string
   docstring?: string
+  isAsync: boolean
 }
 export type ValueNode =
   | ValueNodeEllipsis
@@ -398,6 +399,7 @@ export interface FeedRequest {
   values: Arena
   skipTypeCheck: boolean
   cwd: string
+  asyncFunctions: Array<string>
 }
 export interface RaisedError {
   excType: string
@@ -572,6 +574,7 @@ export interface CompleteEvent {
 export type Event =
   | EventPrint
   | EventFunctionCall
+  | EventAsyncCall
   | EventOsCall
   | EventNameLookup
   | EventResolveFutures
@@ -588,6 +591,10 @@ export interface EventPrint {
 }
 export interface EventFunctionCall {
   tag: 'function-call'
+  val: FunctionCallEvent
+}
+export interface EventAsyncCall {
+  tag: 'async-call'
   val: FunctionCallEvent
 }
 export interface EventOsCall {

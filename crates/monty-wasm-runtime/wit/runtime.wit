@@ -127,6 +127,9 @@ interface worker {
     record function-node {
         name: string,
         docstring: option<string>,
+        /// The host runs it as a coroutine: a call streams as an `async-call`
+        /// event and is answered with a future, rather than suspending.
+        is-async: bool,
     }
 
     /// One node of an arena: a leaf, or a container holding the indexes of
@@ -319,6 +322,9 @@ interface worker {
         /// Absolute virtual working directory to switch the session to; empty
         /// keeps its current one (`/` until a feed or `os.chdir` changes it).
         cwd: string,
+        /// The host functions the host runs as coroutines, by name: a direct
+        /// call to one streams as an `async-call` event instead of suspending.
+        async-functions: list<string>,
     }
 
     /// A host-raised exception used to resume a call.
@@ -500,6 +506,11 @@ interface worker {
     variant event {
         print(print-event),
         function-call(function-call-event),
+        /// Streamed like `print`, never a turn end and never answered: a call
+        /// to a host coroutine function the child answered with a future; the
+        /// host starts the coroutine and resolves `call-id` through a later
+        /// `resolve-futures`. `object-id` and `allow-eager-await` are unset.
+        async-call(function-call-event),
         os-call(os-call-event),
         name-lookup(name-lookup-event),
         resolve-futures(resolve-futures-event),

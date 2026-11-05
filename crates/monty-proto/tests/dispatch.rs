@@ -26,6 +26,7 @@ fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
         inputs,
         values: Some(values),
         skip_type_check: false,
+        async_functions: vec![].into(),
         cwd: "/".to_owned(),
     }));
     let (bytes, _) = dispatch_frame(child, &request);
@@ -274,6 +275,7 @@ fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, p
         inputs: vec![].into(),
         values: None,
         skip_type_check: false,
+        async_functions: vec![].into(),
         cwd: cwd.to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -417,6 +419,7 @@ fn inputs_are_injected() {
         inputs,
         values: Some(values),
         skip_type_check: false,
+        async_functions: vec![].into(),
         cwd: "/".to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
@@ -665,6 +668,7 @@ fn turn_events_carry_the_suspension_budget() {
         inputs: vec![].into(),
         values: None,
         skip_type_check: false,
+        async_functions: vec![].into(),
         cwd: "/".to_owned(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
@@ -836,6 +840,7 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
         inputs: vec![].into(),
         values: None,
         skip_type_check: true,
+        async_functions: vec![].into(),
         cwd: String::new(),
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
@@ -1160,4 +1165,118 @@ fn configuration_acknowledges_the_selected_execution_clock() {
 #[test]
 fn cpu_clock_availability_matches_the_platform() {
     assert_eq!(ExecutionClock::Cpu.is_available(), cfg!(target_os = "linux"));
+}
+
+// === Streamed calls to host coroutine functions ===
+
+/// Feeds `code` with `f` declared a host coroutine function, returning every
+/// event of the turn in order.
+fn feed_async(child: &mut Child, code: &str) -> Vec<pb::child_event::Kind> {
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs: vec![].into(),
+        values: None,
+        skip_type_check: false,
+        async_functions: vec!["f".to_owned()].into(),
+        cwd: "/".to_owned(),
+    }));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    decode_events(&bytes)
+}
+
+/// The streamed call's id and first positional argument.
+fn async_call(event: &pb::child_event::Kind) -> (u32, MontyObject) {
+    let pb::child_event::Kind::AsyncCall(call) = event else {
+        panic!("expected a streamed async call, got {event:?}");
+    };
+    assert_eq!(call.function_name, "f");
+    assert!(!call.allow_eager_await);
+    assert!(call.object_id.is_none());
+    let args = call.clone().into_call_args().unwrap();
+    (call.call_id, args.args().next().unwrap().to_owned())
+}
+
+/// A direct call to a declared coroutine function streams behind the prints
+/// before it and is answered with a future, so a gather of two is one turn
+/// ending in `ResolveFutures`; the host resolves both in one reply.
+#[test]
+fn async_calls_stream_in_order_and_resolve_in_one_turn() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let events = feed_async(
+        &mut child,
+        "import asyncio\nprint('before')\nx = f(1)\nprint('between')\nawait asyncio.gather(x, f(2))",
+    );
+    let [first, call_1, second, call_2, blocked] = events.as_slice() else {
+        panic!("expected five events, got {events:?}");
+    };
+    assert!(matches!(first, pb::child_event::Kind::Print(p) if p.segments[0].text == "before\n"));
+    assert!(matches!(second, pb::child_event::Kind::Print(p) if p.segments[0].text == "between\n"));
+    let (id_1, arg_1) = async_call(call_1);
+    let (id_2, arg_2) = async_call(call_2);
+    assert_eq!((arg_1, arg_2), (MontyObject::int(1), MontyObject::int(2)));
+    let pb::child_event::Kind::ResolveFutures(futures) = blocked else {
+        panic!("expected ResolveFutures, got {blocked:?}");
+    };
+    let mut pending = futures.pending_call_ids.clone().into_inner();
+    pending.sort_unstable();
+    assert_eq!(pending, [id_1, id_2]);
+
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![
+            future_reply(id_1, pb::ext_function_result::Kind::ReturnValue(0)),
+            future_reply(id_2, pb::ext_function_result::Kind::ReturnValue(0)),
+        ],
+        MontyObject::int(7),
+    )));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(
+        expect_complete(split_turn(&bytes).1),
+        MontyObject::list([MontyObject::int(7), MontyObject::int(7)])
+    );
+}
+
+/// A dump taken while streamed calls are unresolved streams them again on
+/// `Load`, ahead of the re-announced suspension, since the loading host has
+/// seen none of them.
+#[test]
+fn load_streams_unresolved_async_calls_again() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let events = feed_async(&mut child, "import asyncio\nawait asyncio.gather(f('a'), f('b'))");
+    assert_eq!(events.len(), 3);
+    let request = frame_request(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let pb::child_event::Kind::DumpResult(result) = split_turn(&bytes).1 else {
+        panic!("expected DumpResult");
+    };
+
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state: result.state }));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let restored = decode_events(&bytes);
+    let [call_a, call_b, blocked] = restored.as_slice() else {
+        panic!("expected two streamed calls and the suspension, got {restored:?}");
+    };
+    let (id_a, arg_a) = async_call(call_a);
+    let (id_b, arg_b) = async_call(call_b);
+    assert_eq!(arg_a, MontyObject::string("a".to_owned()));
+    assert_eq!(arg_b, MontyObject::string("b".to_owned()));
+    assert!(matches!(blocked, pb::child_event::Kind::ResolveFutures(_)));
+
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![
+            future_reply(id_a, pb::ext_function_result::Kind::ReturnValue(0)),
+            future_reply(id_b, pb::ext_function_result::Kind::ReturnValue(0)),
+        ],
+        MontyObject::none(),
+    )));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(
+        expect_complete(split_turn(&bytes).1),
+        MontyObject::list([MontyObject::none(), MontyObject::none()])
+    );
 }

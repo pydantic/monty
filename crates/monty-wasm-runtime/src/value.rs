@@ -244,6 +244,7 @@ fn node_from_component(node: ValueNode) -> Result<MontyNode, String> {
         ValueNode::Function(value) => MontyNode::Function {
             name: value.name,
             docstring: value.docstring,
+            is_async: value.is_async,
         },
         ValueNode::Repr(value) => MontyNode::Repr(value),
         ValueNode::Cycle(value) => MontyNode::Cycle(value),
@@ -348,7 +349,15 @@ fn node_into_component(node: MontyNode) -> ValueNode {
             instance_id: instance_id.to_string(),
             attrs: raw_pairs(attrs),
         }),
-        MontyNode::Function { name, docstring } => ValueNode::Function(FunctionNode { name, docstring }),
+        MontyNode::Function {
+            name,
+            docstring,
+            is_async,
+        } => ValueNode::Function(FunctionNode {
+            name,
+            docstring,
+            is_async,
+        }),
         MontyNode::Repr(value) => ValueNode::Repr(value),
         MontyNode::Cycle(placeholder) => ValueNode::Cycle(placeholder),
         MontyNode::Module { name, id, attrs } => ValueNode::Module(ModuleNode {

@@ -28,10 +28,10 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
-    IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
-    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
-    SourceRange, TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, AsyncCall, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock,
+    ExtFunctionResult, IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall,
+    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES,
+    SOURCE_SCAN_THRESHOLD, SourceRange, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -286,7 +286,7 @@ impl Child {
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume, sink),
             pb::parent_request::Kind::AbortFeed(abort) => self.handle_abort_feed(abort, sink),
             pb::parent_request::Kind::Dump(_) => self.handle_dump(),
-            pb::parent_request::Kind::Load(load) => self.handle_load(&load),
+            pb::parent_request::Kind::Load(load) => self.handle_load(&load, sink),
             pb::parent_request::Kind::Reset(_) => {
                 self.reset();
                 ok_event()
@@ -605,6 +605,8 @@ impl Child {
         if !feed.cwd.is_empty() {
             repl.set_cwd(&feed.cwd);
         }
+        // the host's coroutine functions for this feed and every later one
+        repl.set_async_functions(feed.async_functions.into_inner());
         // snippets fed with skip_type_check never become type-check context:
         // the caller explicitly excluded them from checking, so later snippets
         // must not be checked against their (unchecked) bindings either
@@ -667,7 +669,7 @@ impl Child {
         }
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let result = repl.feed_start_checked(checked, inputs, PrintWriter::Callback(&mut print));
-        let event = self.drive(result);
+        let event = self.drive(result, &mut print);
         print.drain();
         event
     }
@@ -813,7 +815,7 @@ impl Child {
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             _ => unreachable!("checked above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -839,7 +841,7 @@ impl Child {
         };
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -869,12 +871,13 @@ impl Child {
         let mut print = ProtoPrint::new(sink, self.print_flush_interval);
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
+            ReplProgress::AsyncCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::NameLookup(lookup) => lookup.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::ResolveFutures(state) => state.abort(exc, PrintWriter::Callback(&mut print)),
             ReplProgress::Complete { .. } => unreachable!("checked above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -918,7 +921,7 @@ impl Child {
             }
             _ => unreachable!("reply shaped by the suspension above"),
         };
-        let event = self.drive(outcome);
+        let event = self.drive(outcome, &mut print);
         print.drain();
         event
     }
@@ -960,7 +963,7 @@ impl Child {
     /// instead of feeding. Once a feed has run (or a prior `Load` restored a
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
-    fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
+    fn handle_load(&mut self, load: &pb::Load, sink: &mut dyn EventSink) -> pb::ChildEvent {
         let (limits, clock) = match &self.state {
             SessionState::Configured(config) => {
                 let configured = config.as_ref();
@@ -1028,6 +1031,16 @@ impl Child {
                     if let Some(message) = oversize_suspension_error_message(&event) {
                         protocol_violation(&message)
                     } else {
+                        // the restored session's parent has seen none of the
+                        // calls streamed to the dumping one: stream them again
+                        // ahead of the suspension
+                        for call in progress.announced_calls() {
+                            let mut announced = announced_call_event(call);
+                            stamp_budget(&mut announced, progress.tracker());
+                            if let Err(err) = sink.send(&announced) {
+                                return protocol_violation(&format!("failed to stream an announced call: {err}"));
+                            }
+                        }
                         self.state = SessionState::Suspended(Box::new(progress));
                         event
                     }
@@ -1050,8 +1063,40 @@ impl Child {
 
     /// Runs until a turn-ending event. OS calls not answered by `OsPolicy`
     /// go to the parent, including all filesystem I/O.
-    fn drive(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
+    fn drive(
+        &mut self,
+        mut result: Result<ReplProgress, Box<ReplStartError>>,
+        print: &mut ProtoPrint<'_>,
+    ) -> pb::ChildEvent {
+        loop {
+            match result {
+                // streamed, never answered: the call goes out behind any
+                // buffered prints and execution runs on with a future for it
+                Ok(ReplProgress::AsyncCall(mut call)) => {
+                    let mut event = async_call_event(&mut call);
+                    let progress = ReplProgress::AsyncCall(call);
+                    stamp_budget(&mut event, progress.tracker());
+                    if let Some(message) = oversize_suspension_error_message(&event) {
+                        return self.abort_feed_with_runtime_error(progress.into_repl(), &message);
+                    }
+                    if let Err(exc) = print.send_event(&event) {
+                        return self.abort_feed_with_runtime_error(progress.into_repl(), &exc.to_string());
+                    }
+                    let ReplProgress::AsyncCall(call) = progress else {
+                        unreachable!("rewrapped above");
+                    };
+                    result = call.resume(PrintWriter::Callback(&mut *print));
+                }
+                other => return self.drive_turn_end(other),
+            }
+        }
+    }
+
+    /// Settles a turn-ending progress: stores a suspension (or the ready
+    /// REPL) and builds the event that announces it.
+    fn drive_turn_end(&mut self, result: Result<ReplProgress, Box<ReplStartError>>) -> pb::ChildEvent {
         match result {
+            Ok(ReplProgress::AsyncCall(_)) => unreachable!("streamed by drive"),
             Ok(ReplProgress::Complete { repl, value }) => {
                 self.state = SessionState::Ready(Box::new(repl));
                 if let Some(state) = &mut self.type_check
@@ -1282,6 +1327,31 @@ fn suspension_event_os_call(call: &mut monty::ReplOsCall) -> pb::ChildEvent {
     )))
 }
 
+/// Builds the streamed event for a call to a host coroutine function,
+/// **moving** its arguments out: the call is resumed right after, and the
+/// scheduler keeps its own copy for a `Load` to stream again.
+fn async_call_event(call: &mut monty::ReplAsyncCall) -> pb::ChildEvent {
+    announced_call_event(AsyncCall {
+        function_name: call.call.function_name.clone(),
+        args: mem::take(&mut call.call.args),
+        call_id: call.call.call_id,
+        position: call.call.position.clone(),
+    })
+}
+
+/// The `AsyncCall` event for `call`; `object_id` and `allow_eager_await` are
+/// never set on a streamed call.
+fn announced_call_event(call: AsyncCall) -> pb::ChildEvent {
+    event(pb::child_event::Kind::AsyncCall(WireFunctionCall::new(
+        call.function_name,
+        call.args,
+        call.call_id,
+        None,
+        false,
+        call.position,
+    )))
+}
+
 fn complete_event(value: MontyObject) -> pb::ChildEvent {
     event(pb::child_event::Kind::Complete(value.into()))
 }
@@ -1293,6 +1363,8 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
 fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
     match progress {
         ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
+        // streamed and resumed by `drive` in one step, never stored
+        ReplProgress::AsyncCall(_) => unreachable!("an async call is never a stored suspension"),
         ReplProgress::OsCall(call) => suspension_event_os_call(call),
         ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
@@ -1426,6 +1498,18 @@ impl<'a> ProtoPrint<'a> {
             MontyException::new(
                 ExcType::RuntimeError,
                 Some(format!("failed to stream print output: {err}")),
+            )
+        })
+    }
+
+    /// Streams another mid-turn event (an `AsyncCall`) behind everything
+    /// buffered, so the parent sees output and calls in sandbox order.
+    fn send_event(&mut self, event: &pb::ChildEvent) -> Result<(), MontyException> {
+        self.flush()?;
+        self.sink.send(event).map_err(|err| {
+            MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!("failed to stream a host call: {err}")),
             )
         })
     }
