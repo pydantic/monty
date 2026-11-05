@@ -112,7 +112,7 @@ impl<'h> PyStr<'h> {
         match self {
             PyStr::Heap(heap_string) => heap_string.get(vm.heap).is_ascii(),
             PyStr::Interned(id) => vm.interns.str_is_ascii(*id),
-            PyStr::Inline(text) => text.as_str().is_ascii(),
+            PyStr::Inline(text) => text.is_ascii(),
         }
     }
 
@@ -120,15 +120,8 @@ impl<'h> PyStr<'h> {
     fn char_len(&self, vm: &VM<'h>) -> usize {
         match self {
             PyStr::Heap(heap_string) => heap_string.get(vm.heap).char_len(),
-            PyStr::Interned(id) => {
-                let text = vm.interns.get_str(*id);
-                if vm.interns.str_is_ascii(*id) {
-                    text.len()
-                } else {
-                    text.chars().count()
-                }
-            }
-            PyStr::Inline(text) => text.as_str().chars().count(),
+            PyStr::Interned(id) => vm.interns.str_char_len(*id),
+            PyStr::Inline(text) => text.char_len(),
         }
     }
 
@@ -169,7 +162,7 @@ impl<'h> PyStr<'h> {
             return byte_offset;
         }
         let text = self.as_str(vm);
-        text[..byte_offset].chars().count()
+        bytecount::num_chars(text[..byte_offset].as_bytes())
     }
 
     /// Borrows the text only for the duration of the heap borrow.
@@ -253,7 +246,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        repeat_str(self.as_str(vm), count, vm)
+        repeat_str(self, count, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -261,7 +254,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        str_add(self.as_str(vm), other, vm)
+        str_add(self.as_str(vm), self.is_ascii(vm), other, vm)
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -330,12 +323,27 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
 /// Creates a string value, reusing reserved IDs for empty strings and ASCII characters.
 /// Moves owned text into storage when possible.
 pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
+    allocate_string_with_ascii(s, None, heap)
+}
+
+/// `Some` supplies exact ASCII status; `None` derives it from the resulting text.
+fn allocate_string_with_ascii(s: impl AsRef<str> + Into<Box<str>>, ascii: Option<bool>, heap: &Heap) -> Value {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
         0 => Value::InternString(StringId::EMPTY),
         1 => Value::InternString(StringId::from_ascii(bytes[0])),
-        2..=15 => Value::InlineString(InlineStr::new(s.as_ref()).expect("length checked above")),
-        _ => allocate_string_on_heap(s, heap),
+        2..=15 => {
+            let text = s.as_ref();
+            let inline = match ascii {
+                Some(ascii) => InlineStr::with_ascii(text, ascii),
+                None => InlineStr::new(text),
+            };
+            Value::InlineString(inline.expect("length checked above"))
+        }
+        _ => match ascii {
+            Some(ascii) => Value::Ref(heap.allocate(HeapData::Str(HeapStr::with_ascii(ascii, s.into())))),
+            None => allocate_string_on_heap(s, heap),
+        },
     }
 }
 
@@ -357,21 +365,23 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
 ///
 /// Raises CPython's `OverflowError` past `isize::MAX` bytes and `MemoryError` when the
 /// allocator refuses, where `str::repeat` would panic or abort with no memory limit set.
-fn repeat_str(value: &str, count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    let total = repeated_len(value.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
-    check_repeat_size(value.len(), count, &vm.heap.tracker)?;
+fn repeat_str<'h>(value: &PyStr<'h>, count: usize, vm: &VM<'h>) -> RunResult<Option<Value>> {
+    let text = value.as_str(vm);
+    let total = repeated_len(text.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
+    check_repeat_size(text.len(), count, &vm.heap.tracker)?;
     let mut repeated = String::new();
     repeated
         .try_reserve_exact(total)
         .map_err(|_| ExcType::allocation_too_large())?;
     if total > 0 {
         // Doubling copies: each pass appends a whole number of copies, so every cut is a char boundary.
-        repeated.push_str(value);
+        repeated.push_str(text);
         while repeated.len() < total {
             repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
         }
     }
-    Ok(Some(allocate_string(repeated, vm.heap)))
+    let ascii = total == 0 || value.is_ascii(vm);
+    Ok(Some(allocate_string_with_ascii(repeated, Some(ascii), vm.heap)))
 }
 
 /// Creates a single-character string without allocating.
@@ -381,7 +391,7 @@ pub fn allocate_char(c: char) -> Value {
     } else {
         let mut bytes = [0; 4];
         let text = c.encode_utf8(&mut bytes);
-        Value::InlineString(InlineStr::new(text).expect("a UTF-8 character fits inline"))
+        Value::InlineString(InlineStr::with_ascii(text, false).expect("a UTF-8 character fits inline"))
     }
 }
 
@@ -391,13 +401,13 @@ pub fn allocate_char(c: char) -> Value {
 /// via `push_str`, instead of `format!`'s runtime formatting machinery. The
 /// result size is bounded by two already-tracked inputs, so a plain `String`
 /// is fine per the `StringBuilder` rule.
-pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value, ResourceError> {
+fn concat_allocate_str(a: &str, b: &str, ascii: bool, heap: &Heap) -> Result<Value, ResourceError> {
     let result_len = a.len().saturating_add(b.len());
     check_repeat_size(result_len, 1, &heap.tracker)?;
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
-    Ok(allocate_string(concat, heap))
+    Ok(allocate_string_with_ascii(concat, Some(ascii), heap))
 }
 
 /// Gets the character at a given index in a string, handling negative indices.
@@ -418,7 +428,7 @@ pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
         s.chars().next_back()
     } else if index < 0 {
         // Forward skipping is faster than reverse traversal for distant offsets.
-        let length = s.chars().count();
+        let length = bytecount::num_chars(s.as_bytes());
         let offset = usize::try_from(index.unsigned_abs()).ok()?;
         s.chars().nth(length.checked_sub(offset)?)
     } else {
@@ -427,9 +437,13 @@ pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
 }
 
 /// Concatenation shared by logical string views and concrete heap dispatch.
-fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
+fn str_add(s: &str, ascii: bool, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
     match PyStr::from_value(other, vm) {
-        Some(other) => Ok(Some(concat_allocate_str(s, other.as_str(vm), vm.heap)?)),
+        Some(other) => {
+            let text = other.as_str(vm);
+            let ascii = ascii && other.is_ascii(vm);
+            Ok(Some(concat_allocate_str(s, text, ascii, vm.heap)?))
+        }
         None => Ok(None),
     }
 }
@@ -454,7 +468,8 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
             let stop = s.byte_offset_of(stop, vm);
             let result = &text[start..stop];
             // Contiguous slices copy UTF-8 directly, without collecting characters.
-            return Ok(allocate_string(result, vm.heap));
+            let result_ascii = (ascii || result.len() == text.len()).then_some(ascii);
+            return Ok(allocate_string_with_ascii(result, result_ascii, vm.heap));
         }
         let result: Box<str> = if ascii {
             // Byte iterators count and skip in O(1), unlike `chars()`.
@@ -462,7 +477,8 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
         } else {
             slice_collect_iterator(vm, slice, text.chars(), |c| c)?
         };
-        Ok(allocate_string(result, vm.heap))
+        let result_ascii = (ascii || result.len() == text.len()).then_some(ascii);
+        Ok(allocate_string_with_ascii(result, result_ascii, vm.heap))
     } else {
         let index = key.as_index(vm, Type::Str)?;
         let c = s.character_at(index, vm).ok_or_else(ExcType::str_index_error)?;
@@ -639,16 +655,21 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
     // Build result string, tracking index for error messages
     let mut result = String::new();
     let mut index = 0usize;
+    let mut ascii = true;
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
         if index > 0 {
             result.push_str(separator.as_str(vm));
+            ascii &= separator.is_ascii(vm);
         }
 
-        // `as_str` borrows interned, inline, and heap-backed strings without copying.
         if let Some(text) = item.as_str(vm) {
             result.push_str(text);
+            if ascii {
+                let text = PyStr::from_value(item, vm).expect("string checked above");
+                ascii = text.is_ascii(vm);
+            }
         } else {
             let t = item.py_type_name(vm);
             return Err(ExcType::type_error_join_item(index, &t));
@@ -657,7 +678,7 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
     }
 
     // Allocate result (uses interned empty string if result is empty)
-    Ok(allocate_string(result, vm.heap))
+    Ok(allocate_string_with_ascii(result, Some(ascii), vm.heap))
 }
 
 // =============================================================================
@@ -1648,7 +1669,7 @@ struct ReplaceArgs {
 fn str_center<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.center", args, vm)?;
     let s = s.as_str(vm);
-    let len = s.chars().count();
+    let len = bytecount::num_chars(s.as_bytes());
 
     if width <= len {
         Ok(allocate_string(s, vm.heap))
@@ -1679,7 +1700,7 @@ fn str_center<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
 fn str_ljust<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.ljust", args, vm)?;
     let s = s.as_str(vm);
-    let len = s.chars().count();
+    let len = bytecount::num_chars(s.as_bytes());
 
     if width <= len {
         Ok(allocate_string(s, vm.heap))
@@ -1701,7 +1722,7 @@ fn str_ljust<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
 fn str_rjust<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (width, fillchar) = parse_justify_args("str.rjust", args, vm)?;
     let s = s.as_str(vm);
-    let len = s.chars().count();
+    let len = bytecount::num_chars(s.as_bytes());
 
     if width <= len {
         Ok(allocate_string(s, vm.heap))
@@ -1740,7 +1761,7 @@ fn parse_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResu
                 usize::try_from(w).unwrap_or(usize::MAX)
             };
             let fill_str = extract_string_arg(fillchar_value, vm)?;
-            if fill_str.chars().count() != 1 {
+            if bytecount::num_chars(fill_str.as_bytes()) != 1 {
                 return Err(ExcType::type_error_fillchar_must_be_single_char());
             }
             Ok((width, fill_str.chars().next().unwrap()))
@@ -1766,7 +1787,7 @@ fn str_zfill<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         usize::try_from(width_i64).unwrap_or(usize::MAX)
     };
     let s = s.as_str(vm);
-    let len = s.chars().count();
+    let len = bytecount::num_chars(s.as_bytes());
 
     if width <= len {
         Ok(allocate_string(s, vm.heap))
@@ -2035,6 +2056,65 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn heap_addition_preserves_metadata_across_storage_kinds() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            for (left, right, expected) in [
+                ("ab", "cd", "abcd"),
+                ("é", "ab", "éab"),
+                ("abcdefghijklmnop", "q", "abcdefghijklmnopq"),
+                ("abcdefghijklmnop", "é", "abcdefghijklmnopé"),
+                ("é", "abcdefghijklmnop", "éabcdefghijklmnop"),
+            ] {
+                let left = allocate_string_on_heap(left, vm.heap);
+                defer_drop!(left, vm);
+                let right = allocate_string(right, vm.heap);
+                defer_drop!(right, vm);
+                let left = PyStr::from_value(left, vm).unwrap();
+                let result = left.py_add_impl(right, vm).unwrap().unwrap();
+                defer_drop!(result, vm);
+                assert_eq!(result.as_str(vm), Some(expected));
+                let text = PyStr::from_value(result, vm).unwrap();
+                assert_eq!(text.py_len(vm), Some(expected.chars().count()));
+                assert_eq!(text.is_ascii(vm), expected.is_ascii());
+                assert_eq!(matches!(result, Value::InlineString(_)), expected.len() <= 15);
+
+                let unsupported = left.py_add_impl(&Value::Int(1), vm).unwrap();
+                defer_drop!(unsupported, vm);
+                assert!(unsupported.is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn heap_string_metadata_is_eager_and_rebuilt_from_text() {
+        assert_eq!(
+            size_of::<HeapStr>(),
+            size_of::<(
+                Box<str>,
+                std::cell::Cell<Option<HashValue>>,
+                std::cell::Cell<Option<bool>>
+            )>()
+        );
+        for text in ["", "abcdefghijklmnop", "aé🐍e\u{301}", "éééééééééééééééé"] {
+            let value = HeapStr::new(text.into());
+            assert_eq!(value.char_len(), text.chars().count());
+            let encoded = minicbor_serde::to_vec(&value).unwrap();
+            assert_eq!(encoded, minicbor_serde::to_vec(text).unwrap());
+            let restored: HeapStr = minicbor_serde::from_slice(&encoded).unwrap();
+            for value in [value.clone(), restored] {
+                assert_eq!(value.char_len(), text.chars().count());
+                assert_eq!(value.is_ascii(), text.is_ascii());
+            }
+        }
+        assert_eq!(HeapStr::default().char_len(), 0);
+        assert!(HeapStr::default().is_ascii());
     }
 
     #[test]
