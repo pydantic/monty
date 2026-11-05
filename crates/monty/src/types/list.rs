@@ -1124,6 +1124,27 @@ fn do_list_sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'
 /// * `f` - The formatter to write to
 /// * `vm` - The VM for resolving value references and looking up interned strings
 /// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
+pub(crate) fn repr_stream_items_fmt<'h>(
+    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
+    f: &mut impl Write,
+    vm: &mut VM<'h>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
+    for i in 0.. {
+        let Some(item) = get_item(vm.heap, i) else { break };
+        defer_drop!(item, vm);
+        if i > 0 {
+            if repr_should_truncate(i, vm)? {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
+            f.write_str(", ")?;
+        }
+        item.py_repr_fmt(f, vm, heap_ids)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn repr_sequence_fmt<'h>(
     start: char,
     end: char,
@@ -1139,21 +1160,7 @@ pub(crate) fn repr_sequence_fmt<'h>(
     let vm = &mut *guard;
 
     f.write_char(start)?;
-    // The item is fetched before the separator is written so nothing is emitted
-    // for an index that turned out to be out of range. `repr_should_truncate` bounds
-    // reprs that keep growing the sequence from inside a user `__repr__`.
-    for i in 0.. {
-        let Some(item) = get_item(vm.heap, i) else { break };
-        defer_drop!(item, vm);
-        if i > 0 {
-            if repr_should_truncate(i, vm)? {
-                f.write_str(", ...[timeout]")?;
-                break;
-            }
-            f.write_str(", ")?;
-        }
-        item.py_repr_fmt(f, vm, heap_ids)?;
-    }
+    repr_stream_items_fmt(get_item, f, vm, heap_ids)?;
     f.write_char(end)?;
 
     Ok(())

@@ -2968,3 +2968,155 @@ except handlers:
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
+
+#[test]
+fn large_class_name_round_trips_through_type() {
+    run(r"
+name = 'X' * 1_000_000
+C = type(name, (), {})
+assert C.__name__ == name
+assert type(C()) is C
+");
+}
+
+#[test]
+fn custom_exception_chaining_and_context_helpers() {
+    run(r#"
+class E(Exception):
+    pass
+
+# Default exception attributes on custom exception instance
+e = E()
+assert e.__context__ is None
+assert e.__cause__ is None
+assert e.__suppress_context__ is False
+
+# Implicit chaining inside except handler
+try:
+    raise ValueError("orig")
+except ValueError:
+    try:
+        raise E("custom")
+    except E as caught:
+        assert repr(caught.__context__) == "ValueError('orig')"
+        assert caught.__cause__ is None
+        assert caught.__suppress_context__ is False
+
+# Explicit chaining via raise ... from ...
+try:
+    raise E("custom2") from KeyError("cause")
+except E as caught:
+    assert repr(caught.__cause__) == "KeyError('cause')"
+    assert caught.__suppress_context__ is True
+
+# Custom exception chaining to another custom exception
+class E1(Exception): pass
+class E2(Exception): pass
+
+try:
+    raise E1("first")
+except E1:
+    try:
+        raise E2("second")
+    except E2 as caught:
+        assert repr(caught.__context__) == "E1('first')"
+
+# Chaining cycle break
+_e1 = E1("1")
+_e2 = E2("2")
+try:
+    try:
+        raise _e1
+    except E1:
+        try:
+            raise _e2
+        except E2:
+            pass
+except E1:
+    pass
+assert _e2.__context__ is _e1
+try:
+    try:
+        raise _e2
+    except E2:
+        raise _e1
+except E1 as e:
+    assert e is _e1
+    assert _e1.__context__ is _e2
+    assert _e2.__context__ is None
+
+# Bare user exception class in raise ... from ...
+class CustomErr(Exception):
+    pass
+
+try:
+    raise CustomErr from ValueError("cause_msg")
+except CustomErr as err:
+    assert isinstance(err, CustomErr)
+    assert repr(err.__cause__) == "ValueError('cause_msg')"
+    assert err.__suppress_context__ is True
+
+try:
+    raise ValueError("outer") from CustomErr
+except ValueError as err:
+    assert repr(err) == "ValueError('outer')"
+    assert isinstance(err.__cause__, CustomErr)
+    assert err.__suppress_context__ is True
+
+# Both bare user exception classes
+class CustomCause(Exception):
+    pass
+
+try:
+    raise CustomErr from CustomCause
+except CustomErr as err:
+    assert isinstance(err, CustomErr)
+    assert isinstance(err.__cause__, CustomCause)
+    assert err.__suppress_context__ is True
+
+# Bare user exception class with required args fails
+class RequiredArgsErr(Exception):
+    def __init__(self, x):
+        pass
+
+try:
+    raise RequiredArgsErr from None
+except TypeError:
+    pass
+else:
+    assert False, "expected TypeError for bare exception class requiring args"
+
+try:
+    raise ValueError from RequiredArgsErr
+except TypeError:
+    pass
+else:
+    assert False, "expected TypeError for bare cause class requiring args"
+
+# Invalid cause with custom exception
+try:
+    raise CustomErr from 42
+except TypeError as err:
+    assert "exception causes must derive from BaseException" in str(err)
+else:
+    assert False, "expected TypeError for non-exception cause"
+"#);
+}
+
+#[test]
+fn custom_exception_repr_large_args_streaming() {
+    run(r#"
+class BigErr(Exception):
+    pass
+
+e = BigErr()
+e.args = ("a", "b", "c")
+assert repr(e) == "BigErr('a', 'b', 'c')"
+
+# Large args formatting works safely and does not blow up memory
+e.args = ("item",) * 1000
+r = repr(e)
+assert r.startswith("BigErr('item', 'item',")
+assert r.endswith("'item')")
+"#);
+}

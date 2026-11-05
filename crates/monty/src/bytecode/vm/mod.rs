@@ -41,7 +41,7 @@ use crate::{
         code::{Code, LocationEntry},
         op::{MATCH_KEYS_REST, Opcode, decode_assert_flags},
     },
-    defer_drop, defer_drop_mut,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
@@ -1902,29 +1902,12 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
-                    let saved_ip = self.instruction_ip;
-                    let exc = if let Value::Ref(id) = &exc
-                        && let HeapData::Class(cls) = self.heap.get(*id)
-                        && cls.base_exception().is_some()
-                    {
-                        let result = {
-                            let this = &mut *self;
-                            defer_drop!(exc, this);
-                            this.evaluate_function(exc, ArgValues::Empty)
-                        };
-                        match result {
-                            Ok(v) => {
-                                self.instruction_ip = saved_ip;
-                                v
-                            }
-                            Err(error) => {
-                                self.instruction_ip = saved_ip;
-                                catch!(self, error);
-                                continue;
-                            }
+                    let exc = match self.instantiate_if_user_class(exc) {
+                        Ok(v) => v,
+                        Err(error) => {
+                            catch!(self, error);
+                            continue;
                         }
-                    } else {
-                        exc
                     };
                     let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s

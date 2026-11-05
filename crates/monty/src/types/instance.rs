@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, class::ClassBase};
+use super::{Dict, LazyHeapSet, PyTrait, Type, class::ClassBase, list};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -459,26 +459,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             let vm = &mut *guard;
             let args = instance_attr(self_id, "args", vm).unwrap_or(Value::None);
             defer_drop!(args, vm);
-            let Some(HeapReadOutput::Tuple(tuple)) = args.read_heap(vm) else {
-                heap_ids.remove(&self_id);
-                return Err(ExcType::type_error("exception args must be a tuple"));
-            };
-            let items: Vec<_> = tuple
-                .get(vm.heap)
-                .as_slice()
-                .iter()
-                .map(|v| v.clone_with_heap(vm.heap))
-                .collect();
-            defer_drop!(items, vm);
-            write!(f, "{}(", class_name(class_id, vm.heap, vm.interns))?;
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    f.write_str(", ")?;
+            let tuple_id = match args {
+                Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Tuple(_)) => *id,
+                _ => {
+                    heap_ids.remove(&self_id);
+                    return Err(ExcType::type_error("exception args must be a tuple"));
                 }
-                item.py_repr_fmt(f, vm, heap_ids)?;
-            }
-            f.write_char(')')?;
+            };
+            write!(f, "{}(", class_name(class_id, vm.heap, vm.interns))?;
+            let res = list::repr_stream_items_fmt(
+                |heap, i| match heap.get(tuple_id) {
+                    HeapData::Tuple(t) => t.as_slice().get(i).map(|v| v.clone_with_heap(heap)),
+                    _ => None,
+                },
+                f,
+                vm,
+                heap_ids,
+            );
             heap_ids.remove(&self_id);
+            res?;
+            f.write_char(')')?;
             Ok(())
         } else {
             self.py_default_repr_fmt(f, vm)
@@ -844,6 +844,14 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                     func: Value::Builtin(Builtins::Function(func)),
                 };
                 Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            } else if let HeapData::Class(cls) = vm.heap.get(class_id)
+                && cls.base_exception().is_some()
+            {
+                match attr {
+                    "__context__" | "__cause__" => Some(Value::None),
+                    "__suppress_context__" => Some(Value::Bool(false)),
+                    _ => None,
+                }
             } else {
                 None
             }

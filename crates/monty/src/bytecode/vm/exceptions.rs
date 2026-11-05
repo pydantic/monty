@@ -2,10 +2,9 @@
 
 use std::fmt::{self, Write};
 
-use monty_types::ResourceError;
-
 use super::VM;
 use crate::{
+    args::ArgValues,
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
@@ -170,6 +169,13 @@ impl VM<'_> {
     /// raised object records the cause and suppresses its context; a bare class
     /// is instantiated here so there is an object to record it on.
     pub(super) fn raise_with_cause(&mut self, exc: Value, cause: Value) -> Option<RunError> {
+        let exc = match self.instantiate_if_user_class(exc) {
+            Ok(v) => v,
+            Err(error) => {
+                cause.drop_with(self);
+                return self.handle_exception_with_value(error, None);
+            }
+        };
         let error = self.make_exception(&exc, true);
         let raised = match self.exception_object(exc) {
             Ok(raised) => raised,
@@ -182,21 +188,53 @@ impl VM<'_> {
         };
         let cause = match cause {
             Value::None => None,
-            other => match self.exception_object(other) {
-                Ok(cause) => cause.into_ref_id(),
-                Err(other) => {
-                    other.drop_with(self);
-                    raised.drop_with(self);
-                    let error = ExcType::type_error("exception causes must derive from BaseException");
-                    return self.handle_exception_with_value(error, None);
+            other => {
+                let cause_obj = match self.instantiate_if_user_class(other) {
+                    Ok(v) => v,
+                    Err(error) => {
+                        raised.drop_with(self);
+                        return self.handle_exception_with_value(error, None);
+                    }
+                };
+                match self.exception_object(cause_obj) {
+                    Ok(cause) => cause.into_ref_id(),
+                    Err(other) => {
+                        other.drop_with(self);
+                        raised.drop_with(self);
+                        let error = ExcType::type_error("exception causes must derive from BaseException");
+                        return self.handle_exception_with_value(error, None);
+                    }
                 }
-            },
+            }
         };
         let Value::Ref(raised_id) = &raised else {
             unreachable!("exceptions are heap values")
         };
-        self.set_exception_cause(*raised_id, cause);
+        if let Err(err) = self.set_exception_cause(*raised_id, cause) {
+            raised.drop_with(self);
+            return self.handle_exception_with_value(err, None);
+        }
         self.handle_exception_with_value(error, Some(raised))
+    }
+
+    /// Returns the instantiated exception if `value` is a user-defined exception class,
+    /// or `value` unchanged.
+    pub(crate) fn instantiate_if_user_class(&mut self, value: Value) -> RunResult<Value> {
+        if let Value::Ref(id) = &value
+            && let HeapData::Class(cls) = self.heap.get(*id)
+            && cls.base_exception().is_some()
+        {
+            let saved_ip = self.instruction_ip;
+            let result = {
+                let this = &mut *self;
+                defer_drop!(value, this);
+                this.evaluate_function(value, ArgValues::Empty)
+            };
+            self.instruction_ip = saved_ip;
+            result
+        } else {
+            Ok(value)
+        }
     }
 
     /// The exception object `value` denotes: itself for an exception, a fresh
@@ -205,6 +243,12 @@ impl VM<'_> {
     fn exception_object(&mut self, value: Value) -> Result<Value, Value> {
         match value {
             Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Ok(value),
+            Value::Ref(id)
+                if matches!(self.heap.get(id), HeapData::Instance(inst)
+                    if matches!(self.heap.get(inst.class()), HeapData::Class(cls) if cls.base_exception().is_some())) =>
+            {
+                Ok(value)
+            }
             Value::Builtin(Builtins::ExcType(exc_type)) => Ok(self.allocate_exception(exc_type)),
             other => Err(other),
         }
@@ -220,12 +264,33 @@ impl VM<'_> {
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
     /// releasing any previous cause, and sets `__suppress_context__`.
-    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) {
-        let previous = match self.heap.read(id) {
-            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_cause(cause),
+    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) -> RunResult<()> {
+        match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => {
+                let previous = exc.get_mut(self.heap).set_cause(cause);
+                previous.map(Value::Ref).drop_with(self);
+                Ok(())
+            }
+            HeapReadOutput::Instance(inst) => {
+                let key = Value::InternString(self.interns.intern_static(StaticStrings::DunderCause));
+                let value = match cause {
+                    Some(cause_id) => Value::Ref(cause_id),
+                    None => Value::None,
+                };
+                let previous = inst.set_attr_unchecked(key, value, self)?;
+                if let Some(prev) = previous {
+                    prev.drop_with(self);
+                }
+                let suppress_key =
+                    Value::InternString(self.interns.intern_static(StaticStrings::DunderSuppressContext));
+                let previous_suppress = inst.set_attr_unchecked(suppress_key, Value::Bool(true), self)?;
+                if let Some(prev) = previous_suppress {
+                    prev.drop_with(self);
+                }
+                Ok(())
+            }
             _ => unreachable!("set_exception_cause is only called on exceptions"),
-        };
-        previous.map(Value::Ref).drop_with(self);
+        }
     }
 
     /// Records the exception being handled as `__context__` of the newly raised
@@ -233,7 +298,7 @@ impl VM<'_> {
     /// exception itself gets none, and a link that would make the chain circular is
     /// cut first. An internal (frozen) handler's exception is skipped, since the
     /// equivalent CPython code is C and leaves the user's handled exception in place.
-    fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
+    fn attach_context(&mut self, raised: &Value) -> RunResult<()> {
         let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
             CaughtException::Value(Value::Ref(id)) => Some(*id),
             _ => None,
@@ -255,14 +320,17 @@ impl VM<'_> {
                 break;
             };
             if next == *raised_id {
-                self.set_exception_context(cursor, None);
+                self.set_exception_context(cursor, None)?;
                 break;
             }
             self.heap.tracker.check_time_every(step)?;
             cursor = next;
         }
         self.heap.inc_ref(handled_id);
-        self.set_exception_context(*raised_id, Some(handled_id));
+        if let Err(err) = self.set_exception_context(*raised_id, Some(handled_id)) {
+            self.heap.dec_ref(handled_id);
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -270,18 +338,37 @@ impl VM<'_> {
     fn exception_context(&self, id: HeapId) -> Option<HeapId> {
         match self.heap.get(id) {
             HeapData::Exception(exc) => exc.context(),
+            HeapData::Instance(inst) => match inst.attrs().get_by_str("__context__", self.heap, self.interns) {
+                Some(Value::Ref(ctx_id)) => Some(*ctx_id),
+                _ => None,
+            },
             _ => None,
         }
     }
 
     /// Stores `context` (an owned reference) as `__context__` of the exception
     /// `id`, releasing any previous context.
-    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) {
-        let previous = match self.heap.read(id) {
-            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_context(context),
+    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) -> RunResult<()> {
+        match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => {
+                let previous = exc.get_mut(self.heap).set_context(context);
+                previous.map(Value::Ref).drop_with(self);
+                Ok(())
+            }
+            HeapReadOutput::Instance(inst) => {
+                let key = Value::InternString(self.interns.intern_static(StaticStrings::DunderContext));
+                let value = match context {
+                    Some(ctx_id) => Value::Ref(ctx_id),
+                    None => Value::None,
+                };
+                let previous = inst.set_attr_unchecked(key, value, self)?;
+                if let Some(prev) = previous {
+                    prev.drop_with(self);
+                }
+                Ok(())
+            }
             _ => unreachable!("set_exception_context is only called on exceptions"),
-        };
-        previous.map(Value::Ref).drop_with(self);
+        }
     }
 
     /// Re-raises the active exception without replacing a user traceback with an internal handler.
@@ -513,7 +600,7 @@ impl VM<'_> {
         };
         if let Err(error) = self.attach_context(&exc_value) {
             exc_value.drop_with(self);
-            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error.into()));
+            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error));
         }
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
@@ -704,21 +791,14 @@ impl VM<'_> {
     /// `CHECK_EXC_MATCH` opcode), only one level of tuple is accepted: a nested
     /// tuple element — or any non-exception value — raises
     /// `TypeError: catching classes that do not inherit from BaseException is not
-    /// allowed`. Removing the recursion both keeps parity with CPython and
-    /// eliminates the unbounded-recursion footgun entirely, so no recursion-depth
-    /// or time bound is needed here.
-    ///
-    /// Like CPython, the *whole* tuple is validated rather than short-circuiting
-    /// on the first match: an invalid element raises the `TypeError` even when an
-    /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
-    /// raising `TypeError` still raises the `TypeError` about catching classes).
-    /// Checks if `exception` matches `exc_type` for a `try...except` handler.
+    /// allowed`.
     ///
     /// If `exc_type` is a tuple, each element is checked with amortized deadline
-    /// checks. Like CPython, the entire tuple is validated rather than short-circuiting
-    /// on the first match (so non-exception types still raise `TypeError`), but once
-    /// matched, expensive subclass ancestry scans are skipped in favor of O(1) handler
-    /// validation. Repeated consecutive handlers are also cached to avoid redundant
+    /// checks. Mirroring CPython, the entire tuple is validated rather than
+    /// short-circuiting on the first match (so non-exception types still raise
+    /// `TypeError`), but once matched, expensive subclass ancestry scans are
+    /// skipped in favor of O(1) handler validation using cached class exception
+    /// ancestry. Repeated consecutive handlers are also cached to avoid redundant
     /// ancestry traversal.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
         if let Value::Ref(id) = exc_type
