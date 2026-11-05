@@ -200,6 +200,18 @@ impl Class {
     pub fn namespace(&self) -> &Dict {
         &self.namespace
     }
+
+    /// Returns whether this class or any class in its MRO overrides `__new__`.
+    #[must_use]
+    pub(crate) fn overrides_new(&self, heap: &Heap, interns: &Interns) -> bool {
+        self.mro_getattr_ref("__new__", heap, interns).is_some()
+    }
+
+    /// Returns whether this class or any class in its MRO overrides `__init__`.
+    #[must_use]
+    pub(crate) fn overrides_init(&self, heap: &Heap, interns: &Interns) -> bool {
+        self.mro_getattr_ref("__init__", heap, interns).is_some()
+    }
 }
 
 impl<'h> HeapReadMut<'h, Class> {
@@ -400,6 +412,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             return annotations::class_annotations(self.id(), vm).map(Some);
         }
 
+        // PEP 649: `__annotate_func__` is class-local and does not walk MRO.
+        if attr_str == "__annotate_func__" {
+            let val = self
+                .get(vm.heap)
+                .namespace()
+                .get_by_str("__annotate_func__", vm.heap, vm.interns)
+                .map_or(Value::None, |v| v.clone_with_heap(vm.heap));
+            return Ok(Some(CallResult::Value(val)));
+        }
+
         if attr_str == "__bases__" {
             let all_bases = self.get(vm.heap).all_bases().to_vec();
             let items = class_bases_values(&all_bases, vm.heap);
@@ -415,49 +437,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             return Ok(Some(CallResult::Value(tuple_val)));
         }
 
-        if attr_str == "__annotations__" {
-            if let Some(val) = self
-                .get(vm.heap)
-                .namespace()
-                .get_by_str("__annotations__", vm.heap, vm.interns)
-            {
-                return Ok(Some(CallResult::Value(val.clone_with_heap(vm.heap))));
-            }
-            let dict_id = vm.heap.allocate(HeapData::Dict(Dict::new()));
-            let mut dict_guard = DropGuard::new(Value::Ref(dict_id), vm);
-            let key = attr.as_value(dict_guard.ctx().heap);
-            dict_guard.ctx().heap.inc_ref(dict_id);
-            let stored = Value::Ref(dict_id);
-            let old = self.namespace_mut().set(key, stored, dict_guard.ctx())?;
-            if let Some(old) = old {
-                old.drop_with(dict_guard.ctx());
-            }
-            let (dict_val, _) = dict_guard.into_parts();
-            return Ok(Some(CallResult::Value(dict_val)));
-        }
-
         if attr_str == "__init_subclass__" {
             if let Some(member) = self.get(vm.heap).mro_getattr("__init_subclass__", vm.heap, vm.interns) {
                 if is_method_value(&member, vm) {
                     let self_id = self.id();
                     vm.heap.inc_ref(self_id);
-                    let bound = BoundMethod {
-                        instance: Value::Ref(self_id),
-                        func: member,
-                    };
-                    let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                    return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+                    let bound_val = BoundMethod::allocate(Value::Ref(self_id), member, vm.heap);
+                    return Ok(Some(CallResult::Value(bound_val)));
                 }
                 return Ok(Some(CallResult::Value(member)));
             }
             let self_id = self.id();
             vm.heap.inc_ref(self_id);
-            let bound = BoundMethod {
-                instance: Value::Ref(self_id),
-                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
-            };
-            let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-            return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+            let bound_val = BoundMethod::allocate(
+                Value::Ref(self_id),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                vm.heap,
+            );
+            return Ok(Some(CallResult::Value(bound_val)));
         }
 
         // Look up a member in the class namespace or its base classes (MRO).
@@ -468,22 +465,22 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         if attr_str == "mro" {
             let self_id = self.id();
             vm.heap.inc_ref(self_id);
-            let bound = BoundMethod {
-                instance: Value::Ref(self_id),
-                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
-            };
-            let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-            return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+            let bound_val = BoundMethod::allocate(
+                Value::Ref(self_id),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                vm.heap,
+            );
+            return Ok(Some(CallResult::Value(bound_val)));
         }
 
         if attr_str == "__new__" {
             if let Some(exc_type) = self.get(vm.heap).base_exception() {
-                let bound = BoundMethod {
-                    instance: Value::Builtin(Builtins::ExcType(exc_type)),
-                    func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
-                };
-                let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                return Ok(Some(CallResult::Value(Value::Ref(bound_id))));
+                let bound_val = BoundMethod::allocate(
+                    Value::Builtin(Builtins::ExcType(exc_type)),
+                    Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                    vm.heap,
+                );
+                return Ok(Some(CallResult::Value(bound_val)));
             }
             return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(
                 BuiltinsFunctions::ObjectNew,
@@ -512,18 +509,17 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         // `TypeError` (or calls it if user-replaced) instead of walking `mro_getattr`.
         if matches!(
             attr_str,
-            "__name__" | "__class__" | "__bases__" | "__mro__" | "__annotations__"
+            "__name__" | "__class__" | "__bases__" | "__mro__" | "__annotations__" | "__annotate_func__"
         ) {
-            let val = match self.py_getattr(attr, vm) {
-                Ok(Some(CallResult::Value(val))) => val,
-                Ok(_) => unreachable!("Class::py_getattr returns Some(Value)"),
-                Err(err) => {
-                    args.drop_with(vm);
-                    return Err(err);
-                }
+            let mut args_guard = DropGuard::new(args, vm);
+            let (_, vm) = args_guard.as_parts_mut();
+            let callee = match self.py_getattr(attr, vm)? {
+                Some(call_result) => call_result.require_synchronous(vm)?,
+                None => unreachable!("matched attributes always return Some"),
             };
-            defer_drop!(val, vm);
-            return vm.call_function(val, args);
+            let (args, vm) = args_guard.into_parts();
+            defer_drop!(callee, vm);
+            return vm.call_function(callee, args);
         }
 
         // `Foo.method(args)` calls the member with the given args.

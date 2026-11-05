@@ -344,7 +344,7 @@ class StarBaseB:
 star_bases = (StarBaseA, StarBaseB)
 
 
-class StarChild(*star_bases):  # type: ignore[reportUntypedBaseClass]
+class StarChild(*star_bases):
     pass
 
 
@@ -1455,5 +1455,86 @@ assert os_inst_args.args == (10, 20)
 plain_inst_args = EqBase()
 object.__setattr__(plain_inst_args, 'args', [10, 20])
 assert plain_inst_args.args == [10, 20]
+
+
+# Foo.__annotations__() on an annotated class raises TypeError, not panic
+class AnnFoo:
+    x: int
+
+
+try:
+    AnnFoo.__annotations__([1, 2])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'dict' object is not callable"
+
+# @dataclass(frozen=True) exception subclass calling super().__init__(...)
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class HttpFrozenError(Exception):
+    status: int
+
+    def __post_init__(self):
+        super().__init__(f'HTTP {self.status}')
+
+
+err = HttpFrozenError(500)
+assert err.status == 500
+assert err.args == ('HTTP 500',)
+assert str(err) == 'HTTP 500'
+
+
+# instance_attr and py_call_attr agreement on __annotations__ and custom __class__
+class FreshAnn:
+    a: int
+
+
+inst_fresh = FreshAnn()
+try:
+    _ = inst_fresh.__annotations__
+    assert False, 'expected AttributeError'
+except AttributeError:
+    pass
+
+try:
+    inst_fresh.__annotations__()
+    assert False, 'expected AttributeError'
+except AttributeError:
+    pass
+
+
+class CustomClassAttr:
+    __class__ = lambda self: 'custom'
+
+
+cca = CustomClassAttr()
+assert cca.__class__() == 'custom'
+assert (cca.__class__)() == 'custom'
+assert type(cca) is CustomClassAttr
+
+# object.__init__ on immutable built-ins ignores excess args, while types overriding tp_init raise
+assert object.__init__(1, 2) is None
+assert object.__init__('hello', k=1) is None
+assert object.__init__((1, 2), 'extra') is None
+
+for _builtin_inst in [ValueError('orig'), [1, 2], {'a': 1}, {1, 2}]:
+    try:
+        object.__init__(_builtin_inst, 1)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == 'object.__init__() takes exactly one argument (the instance to initialize)'
+
+
+# super().__setattr__ fallback
+class SuperSetAttr(object):
+    def set_val(self, k, v):
+        super().__setattr__(k, v)
+
+
+ssa = SuperSetAttr()
+ssa.set_val('my_attr', 42)
+assert ssa.my_attr == 42
 
 print('success')

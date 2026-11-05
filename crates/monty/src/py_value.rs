@@ -582,15 +582,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {
                 let method = attr.as_str(vm.interns);
                 if method == "mro" {
-                    if matches!(args, ArgValues::Empty) {
-                        builtin_type_mro(
-                            vm,
-                            ArgValues::One(Value::Builtin(Builtins::Function(BuiltinsFunctions::Type))),
-                        )
-                        .map(CallResult::Value)
-                    } else {
-                        builtin_type_mro(vm, args).map(CallResult::Value)
-                    }
+                    builtin_type_mro(vm, args).map(CallResult::Value)
                 } else if method == "__init_subclass__" {
                     builtin_object_init_subclass(
                         vm,

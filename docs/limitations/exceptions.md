@@ -95,7 +95,9 @@ class AppError(Exception):
         self.code = code
 ```
 
-- Custom exception instances are user `Instance` objects rather than native `Exception` heap objects, and lack native exception attributes and methods such as `__cause__`, `__context__`, `add_note()`, `with_traceback()`, `.errno`, and `.value`.
+- Custom exception instances are user `Instance` objects rather than native `Exception` heap objects, and lack native
+    exception attributes and methods such as `add_note()`, `with_traceback()`, `.errno`, and `.value`.
+    `__cause__`, `__context__`, and `__suppress_context__` are supported and read-only, as on built-in exceptions.
 - Returning (rather than raising) a user-defined exception instance exports it across the host boundary as a `MontyClassProxy` (`ClassInstance`) rather than an `Exception`.
 
 ## Control flow in `finally`

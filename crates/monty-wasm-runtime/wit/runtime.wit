@@ -427,6 +427,7 @@ interface worker {
         message: string,
         traceback: string,
         frames: list<stack-frame>,
+        custom-type-name: option<string>,
     }
 
     /// A buffered print emitted during a turn.

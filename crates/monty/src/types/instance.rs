@@ -99,6 +99,13 @@ pub(crate) struct BoundMethod {
     pub func: Value,
 }
 
+impl BoundMethod {
+    /// Allocates a new bound method on the heap and returns its `Value::Ref`.
+    pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
+        Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
+    }
+}
+
 impl<'h> HeapObjectRead<'h, Instance> {
     /// Dispatches class-only `__iter__` for the frozen wrapper to validate after any suspension.
     pub(crate) fn call_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -501,7 +508,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
 
         // 2. A class member: bind `self` for methods, call data attributes as-is.
         let class_id = self.get(vm.heap).class;
-        if let Some(member) = class_member(class_id, attr_str, vm) {
+        if attr_str != "__annotations__"
+            && let Some(member) = class_member(class_id, attr_str, vm)
+        {
             defer_drop!(member, vm);
             if attr_str == "__new__" {
                 return vm.call_function(member, args);
@@ -683,7 +692,7 @@ impl<'h> HeapRead<'h, BoundMethod> {
     /// never a copy of the function, which is shared as all functions are.
     pub(crate) fn allocate_like(&self, instance: Value, vm: &mut VM<'h>) -> Value {
         let func = self.get(vm.heap).func.clone_with_heap(vm.heap);
-        Value::Ref(vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })))
+        BoundMethod::allocate(instance, func, vm.heap)
     }
 }
 
@@ -780,10 +789,6 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// [`BoundMethod`].
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<Value> {
     let class_id = instance_class(self_id, vm);
-    if attr == "__class__" {
-        vm.heap.inc_ref(class_id);
-        return Some(Value::Ref(class_id));
-    }
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
             .get(vm.heap)
@@ -806,11 +811,7 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                 vm.heap.inc_ref(self_id);
                 Value::Ref(self_id)
             };
-            let bound = BoundMethod {
-                instance: receiver,
-                func: member,
-            };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            Some(BoundMethod::allocate(receiver, member, vm.heap))
         }
         Some(member) => Some(member),
         None => {
@@ -818,20 +819,20 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                 if let HeapData::Class(cls) = vm.heap.get(class_id)
                     && let Some(exc_type) = cls.base_exception()
                 {
-                    let bound = BoundMethod {
-                        instance: Value::Builtin(Builtins::ExcType(exc_type)),
-                        func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
-                    };
-                    return Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))));
+                    return Some(BoundMethod::allocate(
+                        Value::Builtin(Builtins::ExcType(exc_type)),
+                        Value::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                        vm.heap,
+                    ));
                 }
                 Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectNew)))
             } else if attr == "__init_subclass__" {
                 vm.heap.inc_ref(class_id);
-                let bound = BoundMethod {
-                    instance: Value::Ref(class_id),
-                    func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
-                };
-                Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+                Some(BoundMethod::allocate(
+                    Value::Ref(class_id),
+                    Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                    vm.heap,
+                ))
             } else if attr == "__init__" {
                 let func = if matches!(vm.heap.get(class_id), HeapData::Class(cls) if cls.is_exception_class()) {
                     BuiltinsFunctions::ExceptionInit
@@ -839,11 +840,11 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                     BuiltinsFunctions::ObjectInit
                 };
                 vm.heap.inc_ref(self_id);
-                let bound = BoundMethod {
-                    instance: Value::Ref(self_id),
-                    func: Value::Builtin(Builtins::Function(func)),
-                };
-                Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+                Some(BoundMethod::allocate(
+                    Value::Ref(self_id),
+                    Value::Builtin(Builtins::Function(func)),
+                    vm.heap,
+                ))
             } else if let HeapData::Class(cls) = vm.heap.get(class_id)
                 && cls.base_exception().is_some()
             {
@@ -852,6 +853,9 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                     "__suppress_context__" => Some(Value::Bool(false)),
                     _ => None,
                 }
+            } else if attr == "__class__" {
+                vm.heap.inc_ref(class_id);
+                Some(Value::Ref(class_id))
             } else {
                 None
             }

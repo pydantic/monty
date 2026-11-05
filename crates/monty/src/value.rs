@@ -1339,31 +1339,31 @@ impl Value {
                         Ok(CallResult::Value(tuple_val))
                     }
                     "__new__" => {
-                        let bound = BoundMethod {
-                            instance: Self::Builtin(Builtins::ExcType(*exc_type)),
-                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
-                        };
-                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::ExcType(*exc_type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::ExceptionNew)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
                     }
                     "__init__" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
                         BuiltinsFunctions::ExceptionInit,
                     )))),
                     "mro" => {
-                        let bound = BoundMethod {
-                            instance: Self::Builtin(Builtins::ExcType(*exc_type)),
-                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
-                        };
-                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::ExcType(*exc_type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
                     }
                     "__init_subclass__" => {
-                        let bound = BoundMethod {
-                            instance: Self::Builtin(Builtins::ExcType(*exc_type)),
-                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
-                        };
-                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::ExcType(*exc_type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
                     }
                     _ => Err(ExcType::attribute_error_type(
                         (*exc_type).into(),
@@ -1391,21 +1391,16 @@ impl Value {
                         let tuple_val = allocate_tuple(items.into(), vm.heap);
                         Ok(CallResult::Value(tuple_val))
                     }
-                    "mro" => {
-                        let bound = BoundMethod {
-                            instance: Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
-                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
-                        };
-                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                        Ok(CallResult::Value(Self::Ref(bound_id)))
-                    }
+                    "mro" => Ok(CallResult::Value(Self::Builtin(Builtins::Function(
+                        BuiltinsFunctions::TypeMro,
+                    )))),
                     "__init_subclass__" => {
-                        let bound = BoundMethod {
-                            instance: Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
-                            func: Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
-                        };
-                        let bound_id = vm.heap.allocate(HeapData::BoundMethod(bound));
-                        Ok(CallResult::Value(Self::Ref(bound_id)))
+                        let bound = BoundMethod::allocate(
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)),
+                            Self::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                            vm.heap,
+                        );
+                        Ok(CallResult::Value(bound))
                     }
                     _ => Err(ExcType::attribute_error_type("type", attr.as_str(vm.interns))),
                 };

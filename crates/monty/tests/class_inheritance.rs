@@ -979,7 +979,12 @@ assert D.mro() == [D, B, C, A, object]
 assert bool.mro() == [bool, int, object]
 assert object.mro() == [object]
 assert int.mro() == [int, object]
-assert type.mro() == [type, object]
+assert type.mro(type) == [type, object]
+try:
+    type.mro()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'unbound method type.mro() needs an argument' in str(e)
 
 # Calling mro with arguments raises TypeError
 try:
@@ -1932,7 +1937,12 @@ assert type.__name__ == 'type'
 assert type.__class__ == type
 assert type.__bases__ == (object,)
 assert type.__mro__ == (type, object)
-assert type.mro() == [type, object]
+assert type.mro(type) == [type, object]
+try:
+    type.mro()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'unbound method type.mro() needs an argument' in str(e)
 
 assert type(type) == type
 assert type(ValueError) == type
@@ -3119,4 +3129,121 @@ r = repr(e)
 assert r.startswith("BigErr('item', 'item',")
 assert r.endswith("'item')")
 "#);
+}
+
+#[test]
+fn class_annotations_call_syntax_no_panic() {
+    run_err(
+        r"
+class Foo:
+    x: int
+
+Foo.__annotations__([1, 2])
+",
+        "'dict' object is not callable",
+    );
+}
+
+#[test]
+fn type_mro_unbound_descriptor() {
+    run(r"
+class A:
+    pass
+
+assert type.mro(type) == [type, object]
+assert type.mro(A) == [A, object]
+
+m = type.mro
+assert m(A) == [A, object]
+assert m(int) == [int, object]
+");
+    run_err("type.mro()", "unbound method type.mro() needs an argument");
+    run_err("getattr(type, 'mro')()", "unbound method type.mro() needs an argument");
+}
+
+#[test]
+fn frozen_dataclass_exception_super_init() {
+    run(r"
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class HttpError(Exception):
+    status: int
+
+    def __post_init__(self):
+        super().__init__(f'HTTP {self.status}')
+
+err = HttpError(500)
+assert err.status == 500
+assert err.args == ('HTTP 500',)
+assert str(err) == 'HTTP 500'
+");
+}
+
+#[test]
+fn annotate_func_subclass_is_none() {
+    run(r"
+class AnnBase:
+    x: int
+
+class AnnSub(AnnBase):
+    pass
+
+assert AnnBase.__annotate_func__ is not None
+assert AnnSub.__annotate_func__ is None
+");
+}
+
+#[test]
+fn instance_annotations_and_custom_class_lookup() {
+    run(r"
+AnnExplicit = type('AnnExplicit', (), {'__annotations__': {'a': int}})
+inst = AnnExplicit()
+
+# Instance lookup does not find class annotations
+try:
+    _ = inst.__annotations__
+    assert False, 'expected AttributeError'
+except AttributeError:
+    pass
+
+try:
+    inst.__annotations__()
+    assert False, 'expected AttributeError'
+except AttributeError:
+    pass
+
+class C:
+    __class__ = lambda self: 'custom'
+
+c = C()
+assert c.__class__() == 'custom'
+assert (c.__class__)() == 'custom'
+assert type(c) is C
+");
+}
+
+#[test]
+fn object_init_excess_args_and_super_setattr() {
+    run(r"
+assert object.__init__(1, 2) is None
+assert object.__init__('hello', k=1) is None
+assert object.__init__((1, 2), 'extra') is None
+
+class SuperSet(object):
+    def set_val(self, k, v):
+        super().__setattr__(k, v)
+
+s = SuperSet()
+s.set_val('x', 99)
+assert s.x == 99
+");
+    run_err(
+        "object.__init__(ValueError('orig'), 1)",
+        "object.__init__() takes exactly one argument (the instance to initialize)",
+    );
+    run_err(
+        "object.__init__([1, 2], 'extra')",
+        "object.__init__() takes exactly one argument (the instance to initialize)",
+    );
 }

@@ -10,7 +10,7 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapReadOutput},
     intern::StaticStrings,
     types::{py_trait::PyTrait, tuple::allocate_tuple},
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// `object.__init__(self, /, *args, **kwargs)` — default constructor.
@@ -27,27 +27,40 @@ pub fn builtin_object_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     let has_extra = pos.len() > 0 || has_kwargs;
     pos.drop_with(vm.heap);
     if has_extra {
-        if let Value::Ref(id) = &self_val
-            && let HeapData::Instance(inst) = vm.heap.get(*id)
-            && let HeapData::Class(cls) = vm.heap.get(inst.class())
-        {
-            let overrides_new = cls.mro_getattr_ref("__new__", vm.heap, vm.interns).is_some();
-            let overrides_init = cls.mro_getattr_ref("__init__", vm.heap, vm.interns).is_some();
-            if overrides_new && !overrides_init {
-                return Ok(Value::None);
-            }
-            let type_name = if cls.is_exception_class() || overrides_init {
-                "object"
-            } else {
-                cls.name().as_str(vm.interns)
-            };
-            return Err(ExcType::type_error(format!(
-                "{type_name}.__init__() takes exactly one argument (the instance to initialize)"
-            )));
+        match &self_val {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Instance(inst) if let HeapData::Class(cls) = vm.heap.get(inst.class()) => {
+                    let overrides_new = cls.overrides_new(vm.heap, vm.interns);
+                    let overrides_init = cls.overrides_init(vm.heap, vm.interns);
+                    if overrides_new && !overrides_init {
+                        return Ok(Value::None);
+                    }
+                    let type_name = if cls.is_exception_class() || overrides_init {
+                        "object"
+                    } else {
+                        cls.name().as_str(vm.interns)
+                    };
+                    return Err(ExcType::type_error(format!(
+                        "{type_name}.__init__() takes exactly one argument (the instance to initialize)"
+                    )));
+                }
+                HeapData::Exception(_)
+                | HeapData::List(_)
+                | HeapData::Dict(_)
+                | HeapData::Set(_)
+                | HeapData::Deque(_)
+                | HeapData::Super(_)
+                | HeapData::Path(_)
+                | HeapData::Random(_)
+                | HeapData::Module(_) => {
+                    return Err(ExcType::type_error(
+                        "object.__init__() takes exactly one argument (the instance to initialize)",
+                    ));
+                }
+                _ => return Ok(Value::None),
+            },
+            _ => return Ok(Value::None),
         }
-        return Err(ExcType::type_error(
-            "object.__init__() takes exactly one argument (the instance to initialize)",
-        ));
     }
     Ok(Value::None)
 }
@@ -77,11 +90,14 @@ pub fn builtin_exception_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
                 kwargs.drop_with(vm.heap);
                 let pos_vec: Vec<Value> = pos.collect();
                 let args_tuple = allocate_tuple(pos_vec.into(), vm.heap);
-                self_val.py_set_attr(
-                    &EitherStr::Interned(vm.interns.intern_static(StaticStrings::Args)),
-                    args_tuple,
-                    vm,
-                )?;
+                let key = Value::InternString(vm.interns.intern_static(StaticStrings::Args));
+                let HeapReadOutput::Instance(inst_read) = vm.heap.read(*id) else {
+                    unreachable!("inst_id is an Instance");
+                };
+                let replaced = inst_read.set_attr_unchecked(key, args_tuple, vm)?;
+                if let Some(replaced) = replaced {
+                    replaced.drop_with(vm);
+                }
                 return Ok(Value::None);
             }
             HeapData::Exception(_) => {

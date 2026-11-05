@@ -120,12 +120,19 @@ order and error wording, but with these divergences:
     `__init__` does support suspension and snapshotting).
 - **Protocol dunders on `super()` do not fall back to `object`.** When attribute
     lookup on a `super()` object misses in all user-defined base classes, only
-    `__init__`, `__new__`, and `__init_subclass__` dispatch to `object`. Built-in
+    `__init__`, `__new__`, `__init_subclass__`, and `__setattr__` dispatch to `object`. Built-in
     protocol methods (`__repr__`, `__str__`, `__eq__`, `__hash__`) raise
     `AttributeError` rather than falling back to `object`'s implementations.
 - **Dataclass inheritance does not inherit fields**: subclassing a `@dataclass`
     only discovers fields declared directly on the subclass body; ancestor fields
     are not included in the synthesized `__init__` or `__dataclass_fields__`.
+- **Base-class annotations are not merged by `typing.get_type_hints`**:
+    `get_type_hints(Sub)` evaluates only `Sub`'s own annotations rather than walking
+    `Sub.__mro__`, so annotations declared on base classes are omitted.
+- **Instances never inherit class `__annotations__`**: `inst.__annotations__` raises
+    `AttributeError` unless assigned on the instance itself, even when `__annotations__`
+    is stored directly in the class namespace (such as via `type()` or
+    `from __future__ import annotations`).
 - **Ordering dunders are still not dispatched**; see the entry above.
     Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access
@@ -485,7 +492,12 @@ every construction request. Divergences:
     `AttributeError: '<type>' object has no attribute '<name>' and no __dict__ for setting new attributes` — including
     a class object, where CPython instead raises `TypeError: can't apply this __setattr__ to type object`.
 - **It reprs as `<built-in function object.__setattr__>`**, where CPython says
-    `<slot wrapper '__setattr__' of 'object' objects>`.
+    `<slot wrapper '__setattr__' of 'object' objects>`. Similarly, `object.__new__`, `object.__init__`,
+    and `object.__init_subclass__` repr as `<built-in function object.__new__>` (etc.) rather than CPython's
+    `<built-in method __new__ of type object>` / `<slot wrapper '__init__' of 'object' objects>`.
+- **Built-in non-instance values** (`(1).__init__()`, `ValueError('x').__init__('y')`) raise `AttributeError` on instance
+    attribute lookup rather than resolving `object` / `BaseException` descriptors (only type-level `int.__init__(1)`
+    and `ValueError.__init__(e, 'y')` resolve).
 
 ## `FrozenInstanceError`
 

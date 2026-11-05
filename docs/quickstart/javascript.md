@@ -238,7 +238,9 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 | `ProtocolError`        | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
-`err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
+`err.exception` carries `{ typeName, message, customTypeName? }`, and `err.display(format)` renders the error.
+`err.customTypeName` holds the subclass name when sandbox code raised a user-defined exception, or `null` for built-in
+exceptions.
 Which formats a class accepts differs; passing one a class does not accept throws, except `MontyTypingError.display()`,
 which ignores any argument:
 

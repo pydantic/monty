@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, Heap, HeapData, HeapId},
+    heap::{DropWithContext, Heap, HeapId},
     intern::{Interns, StaticStrings},
     modules::{
         ModuleFunctions, collections, csv,
@@ -819,18 +819,18 @@ impl Type {
             Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInit)))
         } else if attr.as_str(vm.interns) == "mro" {
             let self_builtin: BuiltinType = self.try_into().ok()?;
-            let bound = BoundMethod {
-                instance: Value::Builtin(Builtins::Type(self_builtin)),
-                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
-            };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            Some(BoundMethod::allocate(
+                Value::Builtin(Builtins::Type(self_builtin)),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                vm.heap,
+            ))
         } else if attr.as_str(vm.interns) == "__init_subclass__" {
             let self_builtin: BuiltinType = self.try_into().ok()?;
-            let bound = BoundMethod {
-                instance: Value::Builtin(Builtins::Type(self_builtin)),
-                func: Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
-            };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
+            Some(BoundMethod::allocate(
+                Value::Builtin(Builtins::Type(self_builtin)),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass)),
+                vm.heap,
+            ))
         } else {
             None
         }

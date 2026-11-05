@@ -87,8 +87,8 @@ pub fn builtin_object_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 
             let has_excess = !extra_args.is_empty() || has_kwargs;
             if has_excess {
-                let overrides_new = cls.mro_getattr_ref("__new__", vm.heap, vm.interns).is_some();
-                let overrides_init = cls.mro_getattr_ref("__init__", vm.heap, vm.interns).is_some();
+                let overrides_new = cls.overrides_new(vm.heap, vm.interns);
+                let overrides_init = cls.overrides_init(vm.heap, vm.interns);
                 if overrides_new {
                     extra_args.drop_with(vm.heap);
                     return Err(ExcType::type_error(

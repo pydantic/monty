@@ -97,6 +97,23 @@ import decimal
 Point = namedtuple('Point', ['x', 'y'])
 assert type.mro(type) == [type, object]
 assert type.mro(A) == [A, object]
+
+try:
+    type.mro()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'unbound method type.mro() needs an argument'
+
+try:
+    getattr(type, 'mro')()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'unbound method type.mro() needs an argument'
+
+m = type.mro
+assert m(A) == [A, object]
+assert m(int) == [int, object]
+
 assert type.__name__ == 'type'
 assert type.__mro__ == (type, object)
 

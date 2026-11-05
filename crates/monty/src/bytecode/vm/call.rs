@@ -27,7 +27,7 @@ use crate::{
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
     resource_checks::check_estimated_size,
-    types::{Dict, Instance, PyTrait, Type, allocate_tuple, instance::class_name},
+    types::{Dict, Instance, PyTrait, Type, instance::class_name},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -1204,17 +1204,8 @@ impl<'h> VM<'h> {
                         Value::Ref(instance_id).drop_with(this);
                         return Err(ExcType::type_error(format!("{name}() takes no keyword arguments")));
                     }
-                    let pos_items: Vec<Value> = match &args_for_init {
-                        ArgValues::Empty => vec![],
-                        ArgValues::One(v) => vec![v.clone_with_heap(this.heap)],
-                        ArgValues::Two(a, b) => vec![a.clone_with_heap(this.heap), b.clone_with_heap(this.heap)],
-                        ArgValues::ArgsKargs { args, .. } => {
-                            args.iter().map(|v| v.clone_with_heap(this.heap)).collect()
-                        }
-                        ArgValues::Kwargs(_) => vec![],
-                    };
+                    let args_tuple = args_for_init.positional_tuple(this.heap);
                     args_for_init.drop_with(this);
-                    let args_tuple = allocate_tuple(pos_items.into(), this.heap);
                     let key = Value::InternString(this.interns.intern_static(StaticStrings::Args));
                     let HeapReadOutput::Instance(inst) = this.heap.read(instance_id) else {
                         unreachable!("instance_id is an Instance");
@@ -1243,14 +1234,7 @@ impl<'h> VM<'h> {
         let mut args_guard = DropGuard::new(args, self);
         let attrs = if base_exc.is_some() {
             let (args, this) = args_guard.as_parts();
-            let pos_items: Vec<Value> = match args {
-                ArgValues::Empty => vec![],
-                ArgValues::One(v) => vec![v.clone_with_heap(this.heap)],
-                ArgValues::Two(a, b) => vec![a.clone_with_heap(this.heap), b.clone_with_heap(this.heap)],
-                ArgValues::ArgsKargs { args, .. } => args.iter().map(|v| v.clone_with_heap(this.heap)).collect(),
-                ArgValues::Kwargs(_) => vec![],
-            };
-            let args_tuple = allocate_tuple(pos_items.into(), this.heap);
+            let args_tuple = args.positional_tuple(this.heap);
             let key = Value::InternString(this.interns.intern_static(StaticStrings::Args));
             Dict::from_pairs(vec![(key, args_tuple)], this)?
         } else {
