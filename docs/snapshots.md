@@ -248,6 +248,7 @@ along the way:
 ## Storing and restoring
 
 `snapshot.dump()` serializes the paused worker.
+String views serialize their visible text and restore as independent strings; dumps do not preserve shared backing storage.
 If the serialized state exceeds the 256 MiB message cap, `dump()` raises `RuntimeError` without changing the session;
 a suspended session remains resumable.
 A fresh session's `load_snapshot` restores it and returns the snapshot to resume:

@@ -20,6 +20,19 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 
 See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
+## String slices
+
+Contiguous slices of heap strings share `Arc<str>` storage when the result contains at least 16 UTF-8 bytes and
+at least one quarter of the original backing allocation.
+Chained slices compose byte offsets directly; smaller results copy or use the existing inline representation.
+Full slices reuse the source value, and stepped slices materialize their result.
+
+Views remain valid after the source string is released.
+Interned strings still materialize slices, and dumps serialize visible text without preserving shared storage.
+Unicode positions use the existing character-navigation caches.
+Views retain their known character count and start with fresh navigation cursors.
+Owned construction buffers copy once into the final `Arc<str>` allocation.
+
 ## Basic usage
 
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:

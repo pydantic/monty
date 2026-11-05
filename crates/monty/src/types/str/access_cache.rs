@@ -151,6 +151,14 @@ impl Offsets {
 }
 
 impl AccessCache {
+    /// A contiguous slice already knows its character count from normalized bounds.
+    pub(super) fn with_char_len(length: usize) -> Self {
+        Self {
+            char_length: Cell::new(NonZeroUsize::new(length)),
+            state: RefCell::new(None),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn has_checkpoints(&self) -> bool {
         self.state

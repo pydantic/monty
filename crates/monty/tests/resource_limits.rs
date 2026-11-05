@@ -1303,9 +1303,11 @@ fn timeout_during_contiguous_string_copy() {
     repl.feed_run("text = 'x' * 64_000_000\nlen(text)", vec![], PrintWriter::Disabled)
         .unwrap();
 
+    // Below one quarter of the backing, this slice must copy even with string views.
     let full_copy = fastest_of_attempts(|| {
         let start = ThreadTime::now();
-        repl.feed_run("copy = text[:]", vec![], PrintWriter::Disabled).unwrap();
+        repl.feed_run("copy = text[:15_000_000]", vec![], PrintWriter::Disabled)
+            .unwrap();
         start.elapsed()
     });
 
@@ -1313,7 +1315,7 @@ fn timeout_during_contiguous_string_copy() {
         repl.tracker_mut().set_max_feed_duration(full_copy / 10);
         let start = ThreadTime::now();
         let error = repl
-            .feed_run("copy = text[:]", vec![], PrintWriter::Disabled)
+            .feed_run("copy = text[:15_000_000]", vec![], PrintWriter::Disabled)
             .unwrap_err();
         assert_eq!(error.exc_type(), ExcType::TimeoutError);
         start.elapsed()

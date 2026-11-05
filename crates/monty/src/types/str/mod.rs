@@ -1,12 +1,19 @@
 mod access_cache;
 mod access_cache_store;
 
-use std::{cell::Cell, fmt::Write, ops, str};
+use std::{
+    borrow::Cow,
+    cell::Cell,
+    fmt::{self, Write},
+    ops, str,
+    sync::Arc,
+};
 
 pub(crate) use access_cache::AccessCache;
 pub(crate) use access_cache_store::AccessCacheStore;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
+use serde::de::{Error as DeserializeError, Visitor};
 use smallvec::smallvec;
 
 use super::{
@@ -133,27 +140,156 @@ impl<'h> HeapView<'h, str> for TextView<'_, 'h> {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub(crate) struct Str(
-    Box<str>,
+    StringStorage,
     #[serde(skip)] Cell<Option<HashValue>>,
     #[serde(skip)] Cell<Option<bool>>,
     #[serde(skip)] AccessCache,
 );
 
+const MIN_VIEW_LEN: usize = 16;
+const MIN_VIEW_RATIO: usize = 4;
+
+/// Views share UTF-8 storage directly; materialized strings use one Arc allocation.
+#[derive(Debug, Clone)]
+struct StringStorage {
+    backing: Arc<str>,
+    start: usize,
+    len: usize,
+}
+
+impl StringStorage {
+    fn new<'a>(text: impl Into<Cow<'a, str>>) -> Self {
+        let text = text.into();
+        let storage = Self {
+            len: text.len(),
+            backing: Arc::from(text.as_ref()),
+            start: 0,
+        };
+        #[cfg(test)]
+        {
+            view_bench::allocated(&storage);
+            if let Cow::Owned(text) = &text {
+                view_bench::owned_finalized(text.len(), text.capacity());
+            }
+        }
+        storage
+    }
+
+    fn should_view(&self, len: usize) -> bool {
+        let (minimum, ratio) = view_policy();
+        len >= minimum && len >= self.backing.len().div_ceil(ratio)
+    }
+
+    fn slice(&self, range: ops::Range<usize>) -> Self {
+        let len = range.len();
+        if self.should_view(len) {
+            Self {
+                backing: Arc::clone(&self.backing),
+                start: self.start + range.start,
+                len,
+            }
+        } else {
+            #[cfg(test)]
+            view_bench::copied(len);
+            Self::new(&self[range])
+        }
+    }
+
+    #[cfg(test)]
+    fn shares_backing(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.backing, &other.backing)
+    }
+
+    #[cfg(test)]
+    fn backing_len(&self) -> usize {
+        self.backing.len()
+    }
+}
+
+#[inline]
+fn view_policy() -> (usize, usize) {
+    #[cfg(test)]
+    {
+        view_bench::policy()
+    }
+    #[cfg(not(test))]
+    {
+        (MIN_VIEW_LEN, MIN_VIEW_RATIO)
+    }
+}
+
+#[cfg(test)]
+impl Drop for StringStorage {
+    fn drop(&mut self) {
+        view_bench::released(self);
+    }
+}
+
+impl Default for StringStorage {
+    fn default() -> Self {
+        Self::new("")
+    }
+}
+
+impl ops::Deref for StringStorage {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.backing[self.start..self.start + self.len]
+    }
+}
+
+// Dumps keep the existing text-only representation; restored strings own their bytes.
+impl serde::Serialize for StringStorage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for StringStorage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_str(StorageVisitor)
+    }
+}
+
+struct StorageVisitor;
+
+impl Visitor<'_> for StorageVisitor {
+    type Value = StringStorage;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a string")
+    }
+
+    fn visit_str<E: DeserializeError>(self, text: &str) -> Result<Self::Value, E> {
+        Ok(StringStorage::new(text))
+    }
+
+    fn visit_string<E: DeserializeError>(self, text: String) -> Result<Self::Value, E> {
+        Ok(StringStorage::new(text))
+    }
+}
+
 impl PartialEq for Str {
     /// Compares only the string content — the cached fields are pure
     /// optimisations and must not affect equality.
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.as_str() == other.as_str()
     }
 }
 
 impl Str {
-    /// Creates a new Str from anything convertible into a `Box<str>`.
+    /// Copies text directly into shared UTF-8 storage.
     ///
     /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
-    fn new(s: impl Into<Box<str>>) -> Self {
-        Self(s.into(), Cell::new(None), Cell::new(None), AccessCache::default())
+    fn new<'a>(s: impl Into<Cow<'a, str>>) -> Self {
+        Self(
+            StringStorage::new(s),
+            Cell::new(None),
+            Cell::new(None),
+            AccessCache::default(),
+        )
     }
 
     /// Returns a reference to the inner string.
@@ -246,6 +382,14 @@ impl<'a> HeapView<'a, str> for InlineStr {
 }
 
 impl<'h> PyStr<'h> {
+    fn clone_value(&self, vm: &VM<'h>) -> Value {
+        match self {
+            Self::Interned(id) => Value::InternString(*id),
+            Self::Inline(text) => Value::InlineString(*text),
+            Self::Heap(value) => value.clone_value(vm.heap),
+        }
+    }
+
     /// Extracts a string without copying its contents.
     pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
         match value {
@@ -400,9 +544,10 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
 }
 
 /// Creates a string value, reusing reserved IDs for empty strings and ASCII characters.
-/// Moves owned text into storage when possible.
-pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
-    let bytes = s.as_ref().as_bytes();
+/// Borrowed text copies directly into the final allocation; owned builders copy when finalized.
+pub fn allocate_string<'a>(s: impl Into<Cow<'a, str>>, heap: &Heap) -> Value {
+    let s = s.into();
+    let bytes = s.as_bytes();
     match bytes.len() {
         0 => Value::InternString(StringId::EMPTY),
         1 => Value::InternString(StringId::from_ascii(bytes[0])),
@@ -413,7 +558,8 @@ pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Valu
 
 /// Creates a string value without checking for reserved string IDs.
 /// The caller must know the text is longer than one byte; otherwise use [`allocate_string`].
-pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Value {
+pub fn allocate_string_no_interning<'a>(s: impl Into<Cow<'a, str>>, heap: &Heap) -> Value {
+    let s = s.into();
     if (2..=15).contains(&s.as_ref().len()) {
         return Value::InlineString(InlineStr::new(s.as_ref()).expect("length checked above"));
     }
@@ -421,14 +567,19 @@ pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &
 }
 
 /// Forces heap storage even for short strings.
-pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
-    Value::Ref(heap.allocate(HeapData::Str(Str::new(s.into()))))
+pub fn allocate_string_on_heap<'a>(s: impl Into<Cow<'a, str>>, heap: &Heap) -> Value {
+    Value::Ref(heap.allocate(HeapData::Str(Str::new(s))))
 }
 
 /// Preflights the repeated string allocation.
 fn repeat_str(value: &str, count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
     check_repeat_size(value.len(), count, &vm.heap.tracker)?;
-    Ok(Some(allocate_string(value.repeat(count), vm.heap)))
+    let repeated = value.repeat(count);
+    if repeated.len() > 15 {
+        // The growable buffer and final Arc allocation coexist during conversion.
+        vm.heap.tracker.check_allocation(repeated.len())?;
+    }
+    Ok(Some(allocate_string(repeated, vm.heap)))
 }
 
 /// Creates a single-character string without allocating.
@@ -454,6 +605,9 @@ pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
+    if result_len > 15 {
+        heap.tracker.check_allocation(result_len)?;
+    }
     Ok(allocate_string(concat, heap))
 }
 
@@ -588,8 +742,8 @@ fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
 
 /// Indexes protected text, allowing `__index__` to execute before borrowing it.
 ///
-/// Contiguous Unicode slices reuse character/byte offsets and copy UTF-8 without a
-/// temporary character collection; stepped slices retain the iterator fallback.
+/// Contiguous slices reuse character/byte offsets and share eligible heap storage.
+/// Stepped slices materialize their characters.
 fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
     if let Value::Ref(id) = key
         && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -603,22 +757,50 @@ fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunRes
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
+            let char_len = stop - start;
             let start = s.byte_offset(start, vm)?;
             let stop = s.byte_offset(stop, vm)?;
-            // Large copies retain cooperative time checks; short slices still use inline storage directly.
+            if start == 0 && stop == text.len() {
+                return Ok(s.string.clone_value(vm));
+            }
+            if stop - start > 15
+                && let PyStr::Heap(source) = s.string
+            {
+                let original = &source.get(vm.heap).0;
+                if stop - start > STRING_COPY_CHUNK && !original.should_view(stop - start) {
+                    #[cfg(test)]
+                    view_bench::copied(stop - start);
+                    let copied = copy_with_time_checks(&text[start..stop], &vm.heap.tracker)?;
+                    vm.heap.tracker.check_allocation(copied.len())?;
+                    return Ok(allocate_string(copied, vm.heap));
+                }
+                let storage = original.slice(start..stop);
+                let ascii = s.is_ascii(vm).then_some(true);
+                return Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str(
+                    storage,
+                    Cell::new(None),
+                    Cell::new(ascii),
+                    AccessCache::with_char_len(char_len),
+                )))));
+            }
+            #[cfg(test)]
+            view_bench::copied(stop - start);
             let result = &text[start..stop];
             if result.len() > STRING_COPY_CHUNK {
                 let copied = copy_with_time_checks(result, &vm.heap.tracker)?;
+                vm.heap.tracker.check_allocation(copied.len())?;
                 return Ok(allocate_string(copied, vm.heap));
             }
             return Ok(allocate_string(result, vm.heap));
         }
-        let result: Box<str> = if s.is_ascii(vm) {
+        let result: String = if s.is_ascii(vm) {
             // Byte iterators count and skip in O(1), unlike `chars()`.
             slice_collect_iterator(vm, slice, text.bytes(), char::from)?
         } else {
             slice_collect_iterator(vm, slice, text.chars(), |c| c)?
         };
+        #[cfg(test)]
+        view_bench::copied(result.len());
         Ok(allocate_string(result, vm.heap))
     } else {
         let index = key.as_index(vm, Type::Str)?;
@@ -2368,3 +2550,63 @@ mod tests {
 #[cfg(test)]
 #[path = "../../../tests/unit/format_template.rs"]
 mod format_template_tests;
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    #[test]
+    fn chained_views_use_original_backing_and_release_it_after_copy() {
+        let source = StringStorage::new("x".repeat(1000));
+        let backing = Arc::downgrade(&source.backing);
+        let half = source.slice(100..600);
+        let third = half.slice(50..350);
+        let fifth = third.slice(0..200);
+        assert!(source.shares_backing(&half));
+        assert!(source.shares_backing(&third));
+        assert_eq!(third.start, 150);
+        assert!(!source.shares_backing(&fifth));
+        drop(source);
+        drop(half);
+        assert_eq!(&*third, "x".repeat(300));
+        assert!(backing.upgrade().is_some());
+        drop(third);
+        assert!(backing.upgrade().is_none());
+        assert_eq!(&*fifth, "x".repeat(200));
+    }
+
+    #[test]
+    fn view_thresholds_use_byte_lengths_and_round_up() {
+        let source = StringStorage::new("é".repeat(257));
+        for (bytes, shares) in [(126, false), (128, false), (130, true)] {
+            let part = source.slice(0..bytes);
+            assert_eq!(source.shares_backing(&part), shares);
+            assert_eq!(part.chars().count(), bytes / 2);
+        }
+        let source = StringStorage::new("x".repeat(64));
+        assert!(!source.shares_backing(&source.slice(0..15)));
+        assert!(source.shares_backing(&source.slice(0..16)));
+    }
+
+    #[test]
+    fn view_serialization_keeps_the_existing_text_format() {
+        let source = Str::new("abcd".repeat(100));
+        let view = Str(
+            source.0.slice(128..384),
+            Cell::new(None),
+            Cell::new(None),
+            AccessCache::default(),
+        );
+        let encoded = serde_json::to_string(&view).unwrap();
+        assert_eq!(encoded, serde_json::to_string(view.as_str()).unwrap());
+        let restored: Str = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(view, restored);
+        assert_eq!(restored.0.start, 0);
+        assert_eq!(restored.0.backing_len(), 256);
+    }
+}
+
+#[cfg(test)]
+mod str_view_bench;
+#[cfg(test)]
+use str_view_bench as view_bench;

@@ -266,7 +266,7 @@ fn parse_json_value_from_peek(
 }
 
 /// Caches strings of 16–64 UTF-8 bytes and allocates other strings directly.
-fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
+fn allocate_cached_string(s: &str, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> Value {
     if s.len() <= 15 {
         // Empty and single-char strings are interned; 2–15 byte strings are inline.
         allocate_string(s, heap.heap())
@@ -374,8 +374,8 @@ fn parse_json_array(
 ///
 /// `Jiter` may reuse its internal tape for the next decoded string, so callers
 /// must not hold onto the borrowed `&str` beyond the current parser step.
-fn parse_json_string(jiter: &mut Jiter<'_>) -> ParseResult<String> {
-    Ok(jiter.known_str().map(ToOwned::to_owned)?)
+fn parse_json_string<'a>(jiter: &'a mut Jiter<'_>) -> ParseResult<&'a str> {
+    Ok(jiter.known_str()?)
 }
 
 /// Parses a JSON object and allocates the resulting Monty dict directly.
@@ -419,18 +419,18 @@ fn parse_json_object(
     Ok(Value::Ref(dict_id))
 }
 
-/// Parses the first key of a JSON object and copies it into owned storage.
+/// Borrows the first key until the next parser step.
 ///
 /// Returning `None` indicates an empty object.
-fn parse_first_object_key(jiter: &mut Jiter<'_>) -> ParseResult<Option<String>> {
-    Ok(jiter.known_object().map(|key| key.map(ToOwned::to_owned))?)
+fn parse_first_object_key<'a>(jiter: &'a mut Jiter<'_>) -> ParseResult<Option<&'a str>> {
+    Ok(jiter.known_object()?)
 }
 
-/// Parses the next key of a JSON object and copies it into owned storage.
+/// Borrows the next key until the next parser step.
 ///
 /// Returning `None` indicates that the object has no more items.
-fn parse_next_object_key(jiter: &mut Jiter<'_>) -> ParseResult<Option<String>> {
-    Ok(jiter.next_key().map(|key| key.map(ToOwned::to_owned))?)
+fn parse_next_object_key<'a>(jiter: &'a mut Jiter<'_>) -> ParseResult<Option<&'a str>> {
+    Ok(jiter.next_key()?)
 }
 
 /// Rejects JSON that nests arrays/objects more deeply than Monty supports.

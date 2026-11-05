@@ -1,0 +1,27 @@
+{
+  "base_revision": "5c9dddf39c92981b8ef023be059e8c3aeabf7e91",
+  "profile": "profiling",
+  "timing_processes_per_build": 2,
+  "rounds_per_process": 9,
+  "policy_selection": "Explicit thread-local overrides; production uses the measured 16-byte / 25-percent policy.",
+  "machine": "arm64",
+  "system": "Darwin",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "input_sha256": {
+    "template_styled": "cd2d310b04fdbb0d8a9f62be8313ec9fea8c5d0e20708e11cdef8fc25ab6f065",
+    "template_fragments": "86ffe1d7b0c44e8fc5444bea5ebb612636d34593a40be92bd3112c4cf8c3be7c",
+    "docx_text": "56a2c80602adefa164619ffd070277141d02a7af1088992c39241e3313300f7a",
+    "docx_selected": "56a2c80602adefa164619ffd070277141d02a7af1088992c39241e3313300f7a",
+    "json_request": "a848b541f4d1f779ff58ab68835f9759d4b4c69530cdb9a084ac2b926a902ec8",
+    "json_uri_normalize": "9f5a5bb2cda764d74135660f2f24ec1154faeb589304b56cec3ad7e1531c4011",
+    "ndjson_ascii_tail": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "ndjson_ascii_splitlines": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "ndjson_utf8_tail": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "ndjson_utf8_splitlines": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "json_preview_retained": "2c62e50080721b3020667b4cc15ad486440d1e11340e5c8f75a9af748e62a014"
+  },
+  "executables": {
+    "base": "4d52cb700a90fef068471659ddf0d5c3371ebf115b8f52410373ce106897e252",
+    "candidate": "d6e659ce1c17d81ae2a3cd6ad70ed5e3155d2747ae3031ae6cf1e88115221049"
+  }
+}

@@ -78,7 +78,7 @@ impl JsonStringCache {
     /// cache entirely and are allocated directly.
     ///
     /// The backing array is allocated lazily on the first eligible string.
-    pub fn get_or_allocate(&mut self, s: String, heap: &HeapReader<'_>) -> Value {
+    pub fn get_or_allocate(&mut self, s: &str, heap: &HeapReader<'_>) -> Value {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
             return allocate_string(s, heap.heap());
@@ -121,8 +121,8 @@ impl CacheInner {
 
     /// Looks up `s` in the cache. On hit, returns a cloned `Value`. On miss,
     /// allocates on the heap and inserts into the cache.
-    fn get_or_allocate(&mut self, s: String, heap: &HeapReader<'_>) -> Value {
-        let hash = self.hash_builder.hash_one(s.as_str());
+    fn get_or_allocate(&mut self, s: &str, heap: &HeapReader<'_>) -> Value {
+        let hash = self.hash_builder.hash_one(s);
         // Truncation is intentional — we only need the low bits for indexing.
         #[expect(clippy::cast_possible_truncation)]
         let primary = hash as usize & (CAPACITY - 1);
@@ -150,8 +150,8 @@ impl CacheInner {
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
     /// returns the original `Value`.
-    fn insert_at(&mut self, index: usize, hash: u64, s: String, heap: &HeapReader<'_>) -> Value {
-        let key = s.clone().into_boxed_str();
+    fn insert_at(&mut self, index: usize, hash: u64, s: &str, heap: &HeapReader<'_>) -> Value {
+        let key: Box<str> = s.into();
         // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
         let value = allocate_string_no_interning(s, heap.heap());
         let cached = value.clone_with_heap(heap);
@@ -173,7 +173,7 @@ mod tests {
         let mut heap = Heap::new(16, ResourceTracker::default());
 
         HeapReader::with(&mut heap, &mut (), |reader, ()| {
-            let value = cache.get_or_allocate("123456789012345".to_owned(), reader);
+            let value = cache.get_or_allocate("123456789012345", reader);
             assert!(matches!(value, Value::InlineString(_)));
         });
 
@@ -186,8 +186,8 @@ mod tests {
         let mut heap = Heap::new(16, ResourceTracker::default());
 
         HeapReader::with(&mut heap, &mut (), |reader, ()| {
-            let first = cache.get_or_allocate("1234567890123456".to_owned(), reader);
-            let second = cache.get_or_allocate("1234567890123456".to_owned(), reader);
+            let first = cache.get_or_allocate("1234567890123456", reader);
+            let second = cache.get_or_allocate("1234567890123456", reader);
             assert!(matches!((&first, &second), (Value::Ref(a), Value::Ref(b)) if a == b));
             first.drop_with(reader);
             second.drop_with(reader);
