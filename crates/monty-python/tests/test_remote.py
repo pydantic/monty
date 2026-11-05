@@ -102,10 +102,11 @@ async def storing_url() -> AsyncIterator[str]:
     """Serves a fake of a server that stores sessions, bridging each stream to a
     real `monty subprocess` child.
 
-    It names the session on the reply to `Configure` and to `Load`, and the third
-    request of the first stream is not run: the child is dumped, its state kept
-    under the session's ID, and the request answered with `ShutdownDump` naming
-    that ID. A later `Load` of the ID gives the child the stored state.
+    It names the session on the reply to the request opening a stream (a feed
+    carrying `Configure`, or a `Load`), and the second request of the first
+    stream is not run: the child is dumped, its state kept under the session's
+    ID, and the request answered with `ShutdownDump` naming that ID. A later
+    `Load` of the ID gives the child the stored state.
     """
     storing = _StoringServer(find_monty_binary())
     async with _reaping_children(storing.relay):
@@ -169,7 +170,7 @@ class _StoringServer:
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())  # admit the stream; see `admit` in the relay script
         self.streams += 1
-        drain_at = 3 if self.streams == 1 else None
+        drain_at = 2 if self.streams == 1 else None
         child = await self.relay.spawn_child(self.monty_bin)
         assert child.stdin is not None and child.stdout is not None
         stdin, stdout = child.stdin, child.stdout
@@ -568,14 +569,16 @@ async def test_auto_resume_can_be_disabled(relay_url: str):
 async def test_storing_server_names_the_session_and_resumes_a_shutdown(storing_url: str):
     async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
         async with pool.checkout() as session:
-            assert session.session_id == snapshot(b'sess-1')
+            # the session opens with the first feed, so it has no ID before then
+            assert session.session_id is None
             await session.feed_run('x = 20')
+            assert session.session_id == snapshot(b'sess-1')
             # the fake parks the session instead of running this feed; the
             # client reloads the ID on a new stream and re-sends it
             assert await session.feed_run('x + 1') == snapshot(21)
         # the ID the resume adopted outlives the checkout, even when nothing
         # read it while the checkout was live
-        assert session.session_id == snapshot(b'sess-3')
+        assert session.session_id == snapshot(b'sess-2')
 
 
 async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_url: str):
@@ -587,7 +590,7 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_u
             assert exc_info.value.dump == snapshot(b'sess-1')
         async with pool.checkout() as session:
             await session.load_session(b'sess-1')
-            assert session.session_id == snapshot(b'sess-3')
+            assert session.session_id == snapshot(b'sess-2')
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -670,13 +673,13 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # the feed opening the session
         if status is not None:
             assert message is not None
             trailers = () if cause is None else (('monty-cause', cause),)
             await context.abort(status, message, trailing_metadata=trailers)
+        return  # a plain stream end
+        yield b''  # pragma: no cover - makes this an async generator
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
@@ -751,9 +754,11 @@ async def test_child_exiting_with_a_status_ends_the_stream_with_internal(tmp_pat
     server, url = await relay.start_relay(str(script), '127.0.0.1', 0)
     try:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
-            with pytest.raises(MontyDisconnectError) as caught:
-                async with pool.checkout():
-                    pass
+            # nothing reaches the child before the first feed, which is what
+            # meets the ended stream
+            async with pool.checkout() as session:
+                with pytest.raises(MontyDisconnectError) as caught:
+                    await session.feed_run('1 + 1')
         assert caught.value.status_code == 'INTERNAL'
         assert caught.value.status_message == 'monty subprocess exited with status 3'
     finally:
@@ -835,14 +840,13 @@ async def test_out_of_memory_status_raises_memory_error():
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # the feed opening the session
         await context.abort(
             grpc.StatusCode.RESOURCE_EXHAUSTED,
             'worker exceeded its memory limit',
             trailing_metadata=(('monty-cause', 'out_of_memory'),),
         )
+        yield b''  # pragma: no cover - makes this an async generator
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url) as pool:

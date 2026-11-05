@@ -105,10 +105,20 @@ export interface NameLookupTurn extends CallbackTurn {
   objectId?: string | null
 }
 
-/** Every sandbox task is blocked on external futures. */
+/**
+ * Every sandbox task is blocked on external futures. An awaited host call
+ * (`await f()`, `gather(f(), g())`) never suspends on its own: the sandbox
+ * holds a future for it and runs on, so the calls made since the last wait
+ * arrive here in `calls`, each settled by `callId` through `resolveFutures`
+ * (a value returned without a promise as `plain`, so the sandbox's `await`
+ * raises `TypeError` as CPython's would).
+ */
 export interface ResolveFuturesTurn extends CallbackTurn {
   kind: 'resolveFutures'
+  /** Every unresolved id, `calls` included. */
   pendingCallIds: number[]
+  /** The awaited calls this wait announces, in call order, each new to this session. */
+  calls: Array<FunctionCallTurn | OsCallTurn>
 }
 
 /** The sandbox raised; the worker and session stay usable. */
@@ -241,6 +251,8 @@ export interface NativeFutureResult {
   callId: number
   ok: boolean
   value?: unknown
+  /** The host function returned `value` without a promise: the sandbox's `await` of it raises. */
+  plain?: boolean
   excType?: string
   message?: string
 }

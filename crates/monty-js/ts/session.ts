@@ -169,6 +169,9 @@ export type Snapshot = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | 
 export type FutureResolution = { callId: number; value: unknown } | { callId: number; error: unknown }
 
 /** A promise-returning external call registered as a sandbox future. */
+/** What calling a host function for an awaited call produced: its value, or what the sandbox raises instead. */
+type HostOutcome = { returned: unknown } | { error: { excType: string; message: string } }
+
 interface PendingFuture {
   readonly callId: number
   done: boolean
@@ -228,7 +231,7 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false, suspendAwaitedCalls: false },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -299,7 +302,8 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      // the stepping API answers one suspension at a time, so every awaited call suspends
+      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false, suspendAwaitedCalls: true },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -470,10 +474,12 @@ export class MontySession {
 
   /**
    * The opaque ID a `MontyRemote` server that stores sessions gave this
-   * session, or `undefined`: local workers, ephemeral sessions and servers that
-   * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
-   * to start a new session from the state stored under it. Changes when the
-   * pool resumes the session after a server shutdown.
+   * session, known once its first feed or load has completed (that call opens
+   * the session), or `undefined`: before then, local workers, ephemeral
+   * sessions and servers that store nothing. Pass it to `loadSession` /
+   * `loadSnapshot` on a fresh session to start a new session from the state
+   * stored under it. Changes when the pool resumes the session after a server
+   * shutdown.
    */
   get sessionId(): Buffer | undefined {
     const id = this.native.sessionId
@@ -958,6 +964,130 @@ class TurnAnswerer {
     return await this.native.resolveFutures([result], onPrint)
   }
 
+  /**
+   * Runs the host function an awaited call names: a promise becomes the
+   * call's future, anything else settles it at once as a `plain` value, and
+   * what a suspended call would raise in the sandbox fails the future instead.
+   */
+  private async dispatchAwaitedCall(call: FunctionCallTurn): Promise<NativeFutureResult | undefined> {
+    const outcome = await this.invokeHost(call)
+    if ('error' in outcome) {
+      return { callId: call.callId, ok: false, ...outcome.error }
+    }
+    if (isThenable(outcome.returned)) {
+      this.registerFuture(call.callId, Promise.resolve(outcome.returned))
+      return undefined
+    }
+    return this.settledResult(call.callId, outcome.returned, true)
+  }
+
+  /**
+   * Starts the wait an awaited OS call asks for (a sleep): a system sleep is
+   * timed here, a host-serviced one goes to `os`, and either becomes the
+   * call's future; a value the handler returns at once settles it instead.
+   */
+  private async dispatchAwaitedOsCall(call: OsCallTurn): Promise<NativeFutureResult | undefined> {
+    const wait = this.systemSleepFor(call)
+    if (wait !== null) {
+      this.registerFuture(call.callId, wait)
+      return undefined
+    }
+    // the sandbox's own no-handler default for a sleep
+    const unsupported: NativeFutureResult = {
+      callId: call.callId,
+      ok: false,
+      excType: 'RuntimeError',
+      message: `'${call.functionName}' is not supported in this environment`,
+    }
+    if (this.os === undefined) {
+      return unsupported
+    }
+    let returned: unknown
+    try {
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      returned = this.os(call.functionName, args, kwargsToRecord(kwargs))
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return { callId: call.callId, ok: false, excType, message }
+    }
+    if (returned === NOT_HANDLED) {
+      return unsupported
+    }
+    if (isThenable(returned)) {
+      this.registerFuture(call.callId, Promise.resolve(returned))
+      return undefined
+    }
+    return this.settledResult(call.callId, returned, false)
+  }
+
+  /**
+   * Resolves and calls the host function `call` names, as `answerFunctionCall`
+   * / `answerMethodCall` do for a suspended call, but returning what the
+   * sandbox would raise for a missing or uncallable entry, so an awaited
+   * call's future fails the same way a suspended call would.
+   */
+  private async invokeHost(call: FunctionCallTurn): Promise<HostOutcome> {
+    const fail = (excType: string, message: string): HostOutcome => ({ error: { excType, message } })
+    let args: unknown[]
+    let kwargs: [unknown, unknown][]
+    try {
+      ;[args, kwargs] = restoreCallArgs(call, this.instances)
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return fail(excType, message)
+    }
+    if (call.objectId !== undefined && call.objectId !== null) {
+      const wrapper = this.instances.get(call.objectId)
+      if (call.functionName.startsWith('_') && call.functionName !== '__call__') {
+        return fail('AttributeError', attributeErrorMessage(wrapper?.getName() ?? 'object', call.functionName))
+      }
+      if (wrapper === undefined) {
+        return fail(
+          'RuntimeError',
+          `no host object registered for method call '${call.functionName}' (id ${call.objectId}) — ` +
+            'the instance store is empty after loading a dump into a fresh session',
+        )
+      }
+      try {
+        return { returned: wrapper.callMethod(call.functionName, args, kwargsToRecord(kwargs)) }
+      } catch (err) {
+        if (err instanceof AttrNotExposed) return fail('AttributeError', err.message)
+        const { excType, message } = jsErrorParts(err)
+        return fail(excType, message)
+      }
+    }
+    let resolved: { value: unknown } | undefined
+    try {
+      resolved = await this.hostEntry(call.functionName)
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return fail(excType, message)
+    }
+    if (resolved === undefined) {
+      return fail('NameError', `name '${call.functionName}' is not defined`)
+    }
+    const entry = resolved.value
+    if (typeof entry !== 'function') {
+      return fail('TypeError', notCallableMessage(entry))
+    }
+    try {
+      return { returned: (entry as ExternalFunction)(...(buildCallArgs(args, kwargs) as never[])) }
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return fail(excType, message)
+    }
+  }
+
+  /** A value settling an awaited call, with a conversion failure delivered as the future's error. */
+  private settledResult(callId: number, value: unknown, plain: boolean): NativeFutureResult {
+    try {
+      return { callId, ok: true, value: prepare(value, this.instances), plain }
+    } catch (err) {
+      const { excType, message } = jsErrorParts(err)
+      return { callId, ok: false, excType, message }
+    }
+  }
+
   /** Tracks a promise so `resolveFutures` can later deliver its outcome. */
   private registerFuture(callId: number, promise: Promise<unknown>): void {
     const future: { -readonly [K in keyof PendingFuture]: PendingFuture[K] } = {
@@ -980,10 +1110,23 @@ class TurnAnswerer {
   }
 
   /**
-   * Every sandbox task is blocked: wait until at least one pending future
-   * settles, then deliver everything that is ready.
+   * Every sandbox task is blocked: dispatch the awaited calls the wait
+   * announces, then wait until at least one pending future settles and
+   * deliver everything that is ready. A call settled without a promise is
+   * delivered at once instead.
    */
   private async answerResolveFutures(event: ResolveFuturesTurn, onPrint: PrintCallback): Promise<object> {
+    const immediate: NativeFutureResult[] = []
+    for (const call of event.calls) {
+      // the host function runs under its own call's span
+      const result = await runWithCallbackContext(call.callbackSpanKey, () =>
+        call.kind === 'functionCall' ? this.dispatchAwaitedCall(call) : this.dispatchAwaitedOsCall(call),
+      )
+      if (result !== undefined) immediate.push(result)
+    }
+    if (immediate.length > 0) {
+      return await this.native.resolveFutures(immediate, onPrint)
+    }
     const pending = event.pendingCallIds.map((id) => {
       const future = this.futures.get(id)
       if (future === undefined) {

@@ -6,7 +6,15 @@
 // arena; protobuf is now entirely internal to Rust.
 
 import { MontyCrashedError } from '../errors.js'
-import type { CrashedTurn, DumpedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
+import type {
+  CrashedTurn,
+  DumpedTurn,
+  FunctionCallTurn,
+  NativeFutureResult,
+  NativeTurn,
+  NotMountedTurn,
+  OsCallTurn,
+} from '../native.js'
 import {
   type EncodedOsPolicy,
   type EncodedRandomSeed,
@@ -23,6 +31,8 @@ import type {
   OsPolicy as ComponentOsPolicy,
   CallResult,
   Event as ComponentEvent,
+  FunctionCallEvent,
+  OsCallEvent,
   NameLookupRequest,
   RandomSeed as ComponentRandomSeed,
   Request as ComponentRequest,
@@ -141,8 +151,28 @@ export class WorkerTransport {
           ? Infinity
           : Number(sleep.val) / 1_000_000
         : systemSleepCapOf({})
-    await transport.control({ tag: 'configure', val: config }, 'ok', 'Configure')
+    // nothing is dispatched yet: the first feed or load opens the session
+    // itself, one dispatch instead of two
+    transport.openSession = config
     return transport
+  }
+
+  /** The session's `Configure`, carried by the request that opens it; cleared once sent. */
+  private openSession: ConfigureRequest | undefined
+
+  /** Hands the pending `Configure` to the request opening the session. */
+  private takeOpenSession(): ConfigureRequest | undefined {
+    const config = this.openSession
+    this.openSession = undefined
+    return config
+  }
+
+  /** Opens the session with a bare `Configure` ahead of a request that cannot carry it. */
+  private async ensureConfigured(): Promise<void> {
+    const config = this.takeOpenSession()
+    if (config !== undefined) {
+      await this.control({ tag: 'configure', val: config }, 'ok', 'Configure')
+    }
   }
 
   /** Feeds one snippet and eagerly converts its named inputs. */
@@ -150,7 +180,7 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    options: { cwd?: string; skipTypeCheck: boolean },
+    options: { cwd?: string; skipTypeCheck: boolean; suspendAwaitedCalls?: boolean },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -173,6 +203,8 @@ export class WorkerTransport {
           values: encoder.finish(),
           skipTypeCheck: options.skipTypeCheck,
           cwd,
+          suspendAwaitedCalls: options.suspendAwaitedCalls ?? false,
+          openSession: this.takeOpenSession(),
         },
       },
       onPrint,
@@ -275,7 +307,7 @@ export class WorkerTransport {
     const settled = results.map((result) => ({
       callId: result.callId,
       outcome: result.ok
-        ? ({ tag: 'return-value', val: encoder.push(result.value) } as CallResult)
+        ? ({ tag: result.plain ? 'plain' : 'return-value', val: encoder.push(result.value) } as CallResult)
         : errorResult(result.excType ?? 'RuntimeError', result.message ?? ''),
     }))
     return this.turn({ tag: 'resume-futures', val: { results: settled, values: encoder.finish() } }, onPrint)
@@ -284,6 +316,7 @@ export class WorkerTransport {
   /** Dumps the current session into opaque bytes, or resolves to the failure
    *  turn; takes `onPrint` to match `NativeSession.dump`, never invoking it. */
   async dump(_onPrint?: OnPrint): Promise<DumpedTurn | NativeTurn> {
+    await this.ensureConfigured()
     const event = await this.run({ tag: 'dump' }, undefined)
     if (!event) return this.crash()
     switch (event.tag) {
@@ -306,7 +339,7 @@ export class WorkerTransport {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
     }
-    const event = await this.run({ tag: 'load', val: state }, onPrint)
+    const event = await this.run({ tag: 'load', val: { state, openSession: this.takeOpenSession() } }, onPrint)
     if (!event) return this.crash()
     return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint)
   }
@@ -422,7 +455,9 @@ export class WorkerTransport {
       }
       // the component reports the limit in force (the configured one, else
       // the 1000 default; a dump's on load), so it is adopted from the reply
-      if (request.tag === 'configure' || request.tag === 'load') {
+      // to whichever request configured it
+      const opened = (request.tag === 'feed' || request.tag === 'load') && request.val.openSession !== undefined
+      if (request.tag === 'configure' || request.tag === 'load' || opened) {
         this.suspensionLimit = tighter(this.suspensionLimit, result.maxSuspensions)
         this.suspensionsSeen = 0n
         this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
@@ -486,40 +521,12 @@ export class WorkerTransport {
       case 'function-call': {
         this.pendingCallId = event.val.callId
         this.pendingFunctionName = event.val.functionName
-        // one decode per call, so an object passed twice is one host object
-        const get = decodeArena(event.val.values)
-        return {
-          kind: 'functionCall',
-          functionName: event.val.functionName,
-          args: Array.from(event.val.args, get),
-          kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
-          callId: event.val.callId,
-          // null (not undefined) for plain calls, matching the napi turn shape
-          objectId: event.val.objectId ?? null,
-          allowEagerAwait: event.val.allowEagerAwait,
-          position: event.val.position,
-        }
+        return this.functionCallTurn(event.val)
       }
       case 'os-call': {
         this.pendingCallId = event.val.callId
         this.pendingFunctionName = event.val.functionName
-        const get = decodeArena(event.val.values)
-        // the component's number is cut to this host's ceiling, never trusted
-        const asked = event.val.systemSleepSecs
-        const systemSleepSecs =
-          asked === undefined
-            ? undefined
-            : Math.min(Number.isFinite(asked) && asked > 0 ? asked : 0, this.systemSleepMaxSecs)
-        return {
-          kind: 'osCall',
-          functionName: event.val.functionName,
-          args: Array.from(event.val.args, get),
-          kwargs: event.val.kwargs.map(({ key, value }) => [get(key), get(value)]),
-          callId: event.val.callId,
-          allowEagerAwait: event.val.allowEagerAwait,
-          position: event.val.position,
-          ...(systemSleepSecs === undefined ? {} : { systemSleepSecs }),
-        }
+        return this.osCallTurn(event.val)
       }
       case 'name-lookup':
         return {
@@ -528,16 +535,60 @@ export class WorkerTransport {
           objectId: event.val.objectId ?? null,
           position: event.val.position,
         }
-      case 'resolve-futures':
+      case 'resolve-futures': {
+        // ids are allocated in call order; the component keeps the two kinds apart
+        const calls = [
+          ...event.val.calls.map((call) => this.functionCallTurn(call)),
+          ...event.val.osCalls.map((call) => this.osCallTurn(call)),
+        ].sort((a, b) => a.callId - b.callId)
         return {
           kind: 'resolveFutures',
           pendingCallIds: [...event.val.pendingCallIds],
+          calls,
           position: event.val.position,
         }
+      }
       case 'fatal-error':
         return { kind: 'crashed', message: event.val, timedOut: false, exitStatus: this.exitStatus }
       default:
         return { kind: 'protocol', message: `unexpected event kind ${event.tag}` }
+    }
+  }
+
+  /** Lifts a call announcement; one decode per call, so an object passed twice is one host object. */
+  private functionCallTurn(call: FunctionCallEvent): FunctionCallTurn {
+    const get = decodeArena(call.values)
+    return {
+      kind: 'functionCall',
+      functionName: call.functionName,
+      args: Array.from(call.args, get),
+      kwargs: call.kwargs.map(({ key, value }) => [get(key), get(value)]),
+      callId: call.callId,
+      // null (not undefined) for plain calls, matching the napi turn shape
+      objectId: call.objectId ?? null,
+      allowEagerAwait: call.allowEagerAwait,
+      position: call.position,
+    }
+  }
+
+  /** Lifts an OS call announcement, cutting its sleep to this host's ceiling. */
+  private osCallTurn(call: OsCallEvent): OsCallTurn {
+    const get = decodeArena(call.values)
+    // the component's number is cut to this host's ceiling, never trusted
+    const asked = call.systemSleepSecs
+    const systemSleepSecs =
+      asked === undefined
+        ? undefined
+        : Math.min(Number.isFinite(asked) && asked > 0 ? asked : 0, this.systemSleepMaxSecs)
+    return {
+      kind: 'osCall',
+      functionName: call.functionName,
+      args: Array.from(call.args, get),
+      kwargs: call.kwargs.map(({ key, value }) => [get(key), get(value)]),
+      callId: call.callId,
+      allowEagerAwait: call.allowEagerAwait,
+      position: call.position,
+      ...(systemSleepSecs === undefined ? {} : { systemSleepSecs }),
     }
   }
 }

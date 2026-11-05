@@ -116,7 +116,9 @@ fn read_text_args(path: &str) -> CallArgs {
 /// Classifies the `os=` handler's answer to reading a candidate.
 fn read_from_answer(answer: ResumeValue) -> ModuleRead {
     match answer {
-        ResumeValue::Return(value) => ModuleRead::from_result(ExtFunctionResult::Return(value)),
+        ResumeValue::Return(value) | ResumeValue::Plain(value) => {
+            ModuleRead::from_result(ExtFunctionResult::Return(value))
+        }
         ResumeValue::Error(exc) => ModuleRead::from_exception(exc),
         ResumeValue::NotHandled | ResumeValue::NotFound => ModuleRead::NotHandled,
         ResumeValue::Future | ResumeValue::ModuleFile(_) => {

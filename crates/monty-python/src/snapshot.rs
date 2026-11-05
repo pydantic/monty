@@ -182,6 +182,8 @@ pub(crate) fn feed_start_sync(
         ctx,
         turn_fn(move |c, p| {
             Box::pin(async move {
+                // the stepping API answers one suspension at a time, so every awaited call suspends
+                c.set_suspend_awaited_calls(true);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -224,6 +226,8 @@ pub(crate) fn feed_start_async(
             ctx,
             turn_fn(move |c, p| {
                 Box::pin(async move {
+                    // the stepping API answers one suspension at a time, so every awaited call suspends
+                    c.set_suspend_awaited_calls(true);
                     c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                         .await
                 })
@@ -346,9 +350,13 @@ pub(crate) fn build_snapshot(
                 Py::new(py, PyNameLookupSnapshot(lookup)).map(Py::into_any)
             }
         }
+        // `feed_start` suspends at every awaited call, so a wait never
+        // announces any; a restored dump taken by another driver might, and
+        // those calls are answered through the pending ids like any future
         TurnEvent::ResolveFutures {
             pending_call_ids,
             position,
+            calls: _,
         } => {
             let snapshot = SnapshotState::new(ctx);
             let futures = FutureSnapshot {
@@ -479,6 +487,7 @@ impl SnapshotState {
 fn ext_result_to_resume(result: ExtFunctionResult) -> ResumeValue {
     match result {
         ExtFunctionResult::Return(value) => ResumeValue::Return(value),
+        ExtFunctionResult::Plain(value) => ResumeValue::Plain(value),
         ExtFunctionResult::Error(exc) => ResumeValue::Error(exc),
         ExtFunctionResult::Future(_) => ResumeValue::Future,
         ExtFunctionResult::NotFound(name) => {

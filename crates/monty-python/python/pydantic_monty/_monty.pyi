@@ -864,7 +864,8 @@ class MontySession:
             snapshot = snapshot.resume_auto()
         ```
 
-        External calls, imports and name lookups return snapshots.
+        External calls, imports and name lookups return snapshots, and unlike
+        `feed_run`, every awaited host call is a snapshot of its own.
         `external_lookup` is captured for `resume_auto()`, which also answers
         imports from the session's `external_modules`.
 
@@ -1078,7 +1079,9 @@ class AsyncMontyRemote:
     `dump` restores the session onto another server; every other server-side
     drop (idle, session or turn timeout, capacity) ends the stream with a
     status and raises `MontyDisconnectError` naming its `cause`; a stream it
-    refuses to open raises `MontyRefusedError` the same way.
+    refuses to open raises `MontyRefusedError` from `checkout()` the same way.
+    The session opens with the first feed or load, so a server refusing it
+    raises `MontyRuntimeError` from that call.
 
     A server that stores sessions gives each one an ID (`session.session_id`)
     instead of handing state back: `dump()` writes the current state to a
@@ -1190,7 +1193,7 @@ class AsyncMontyRemote:
 
         Identical to `AsyncMonty.checkout`, except for `ephemeral` and
         `profile`; the stream is opened by `async with` on the returned
-        session.
+        session, and the session itself by its first feed or load.
 
         Arguments:
             ephemeral: Whether a server that stores sessions may store this one.
@@ -1239,6 +1242,9 @@ class AsyncMontySession:
 
         Worker I/O runs off the event loop; external functions (the callable
         entries in `external_lookup`) may be coroutines, awaited concurrently.
+        A call the sandbox awaits as it is made (`await f()`, each argument of
+        an `asyncio.gather`) costs no worker round trip of its own: the worker
+        hands over every such call made since the last wait at once.
         See `MontySession.feed_run` for the shared error types.
 
         Host callbacks run in copies of the caller's Python context. With tracing
@@ -1301,7 +1307,8 @@ class AsyncMontySession:
 
         As in the sync version, `external_lookup` and `os` are captured for
         `await snapshot.resume_auto()` rather than consulted during this
-        initial drive. A coroutine external answered by `resume_auto()` is awaited
+        initial drive. Unlike `feed_run`, every awaited host call is a snapshot
+        of its own. A coroutine external answered by `resume_auto()` is awaited
         directly when the snapshot's `allow_eager_await` is true; otherwise it
         is awaited concurrently and yields an `AsyncFutureSnapshot` whose
         `resume_auto()` settles the pending coroutines.
@@ -1418,8 +1425,11 @@ class AsyncMontySession:
         """The opaque ID a server that stores sessions gave this session.
 
         Pass it to `load_session` / `load_snapshot` to start a new session from
-        the state as of this one's last park, from any process. `None` for local
-        workers, ephemeral sessions and servers that store nothing.
+        the state as of this one's last park, from any process. Known once the
+        first feed or load has completed, which is what opens the session;
+        `None` before then, and for local workers, ephemeral sessions and
+        servers that store nothing. Changes when the pool resumes the session
+        after a server shutdown.
         """
 
 @final

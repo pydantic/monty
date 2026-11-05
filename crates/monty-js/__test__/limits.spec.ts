@@ -73,14 +73,14 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 83_812 : 67_550, maxMemory)
+  assertMemoryError(error, isWasm ? 83_812 : 66_335, maxMemory)
 })
 
 test('an allocation refused at an interpreter checkpoint leaves the session usable', async () => {
   const maxMemory = 1024 * 1024
   await using session = await pool().checkout({ limits: { maxMemory } })
   const error = await t.throwsAsync(() => session.feedRun('[str(i) for i in range(131_072)]'), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_081_440 : 1_091_521, maxMemory)
+  assertMemoryError(error, isWasm ? 1_081_440 : 1_092_931, maxMemory)
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
@@ -102,12 +102,12 @@ test('limits with inputs', async () => {
 
 test('pow memory limit', async () => {
   const error = await t.throwsAsync(() => run('2 ** 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 10_032_301 : 10_042_127, 1_000_000)
+  assertMemoryError(error, isWasm ? 10_032_301 : 10_043_864, 1_000_000)
 })
 
 test('lshift memory limit', async () => {
   const error = await t.throwsAsync(() => run('1 << 10000000', { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 1_282_302 : 1_292_128, 1_000_000)
+  assertMemoryError(error, isWasm ? 1_282_302 : 1_293_865, 1_000_000)
 })
 
 test('mult memory limit', async () => {
@@ -116,7 +116,7 @@ big = 2 ** 4000000
 result = big * big
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 1_000_000 } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 4_032_933 : 4_042_767, 1_000_000)
+  assertMemoryError(error, isWasm ? 4_032_933 : 4_044_484, 1_000_000)
 })
 
 test('small operations within limit', async () => {
@@ -228,9 +228,8 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   const requests: string[] = []
   const transport = await WorkerTransport.create(async (request) => {
     requests.push(request.tag)
-    return request.tag === 'configure'
-      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n, feedExecutionMicros: 0n }
-      : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n }
+    // the limit is adopted from the reply to the feed opening the session
+    return { status: 'continue', events: [call(requests.length)], maxSuspensions: 1n, feedExecutionMicros: 0n }
   })
   let reusable: boolean | undefined
   transport.onFinish = (value) => {
@@ -240,7 +239,7 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   t.is(first.kind, 'functionCall')
   const turn = await transport.resumeReturn(null, () => {})
   t.deepEqual(turn, { kind: 'protocol', message: 'worker answered abort-feed with functionCall' })
-  t.deepEqual(requests, ['configure', 'feed', 'resume-call', 'abort-feed'])
+  t.deepEqual(requests, ['feed', 'resume-call', 'abort-feed'])
   await transport.finish()
   t.is(reusable, false)
 })
@@ -260,7 +259,7 @@ test.each([
         return {
           status: 'continue',
           events:
-            request.tag === 'configure' || request.tag === 'load'
+            request.tag === 'load'
               ? [{ tag: 'ok' }]
               : [
                   {
@@ -286,7 +285,7 @@ test.each([
     await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
     await transport.restore(new Uint8Array(), [], () => {})
     await transport.feed('fetch', null, [], { skipTypeCheck: true }, () => {})
-    t.deepEqual(deadlines, [initial, initial, resumed, resumed, initial, undefined, loaded])
+    t.deepEqual(deadlines, [initial, resumed, resumed, initial, undefined, loaded])
   },
 )
 

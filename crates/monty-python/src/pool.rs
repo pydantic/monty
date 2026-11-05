@@ -42,8 +42,8 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, FutureCall, MountSpec,
+    OnPrint, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -1565,6 +1565,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         &print_target,
         turn_fn(move |c, p| {
             Box::pin(async move {
+                c.set_suspend_awaited_calls(false);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -1574,14 +1575,12 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
         // answer discards the checkout (see `sync_turn_answer`).
-        let native = py.detach(|| {
+        let (native, call_contexts) = py.detach(|| {
             block_on_sync(async {
-                checkout
-                    .lock()
-                    .await
-                    .as_ref()
-                    .map(monty_pool::Checkout::callback_context)
-                    .unwrap_or_default()
+                let guard = checkout.lock().await;
+                let checkout = guard.as_ref();
+                let native = checkout.map(Checkout::callback_context).unwrap_or_default();
+                (native, call_contexts(checkout, &event))
             })
         })?;
         let callback_guard = callback_context.enter(py, &native)?;
@@ -1635,24 +1634,98 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
                     TurnAnswer::Call(ResumeValue::Return(MontyObject::none()))
                 }
             },
-            // Unknown future IDs cannot be resolved by this loop.
-            TurnEvent::ResolveFutures { pending_call_ids, .. } if !sleeps.is_empty() => {
-                if let Some(id) = pending_call_ids.iter().find(|id| !sleep_ids.contains(id)) {
+            // The awaited calls a wait announces are answered at once (a host
+            // function's value as `Plain`, so the sandbox's `await` raises as
+            // CPython's would); only system sleeps become futures, which the
+            // wait after them collects. Unknown ids cannot be resolved here.
+            TurnEvent::ResolveFutures {
+                pending_call_ids,
+                calls,
+                ..
+            } => {
+                let mut immediate = Vec::new();
+                for (call, native) in calls.into_iter().zip(call_contexts) {
+                    // the host function runs under its own call's span
+                    let _call_guard = callback_context.enter(py, &native)?;
+                    match call {
+                        FutureCall::Function {
+                            function_name,
+                            args,
+                            call_id,
+                            object_id,
+                            ..
+                        } => {
+                            let result = match object_id {
+                                Some(object_id) => lookup.call_object(&function_name, &object_id, &args),
+                                None => lookup.call(&function_name, &args),
+                            };
+                            let answer = match ext_to_resume(result) {
+                                Ok(answer) => answer,
+                                Err(err) => {
+                                    discard_checkout_sync(py, &checkout);
+                                    return Err(err);
+                                }
+                            };
+                            immediate.push((call_id, plain_answer(answer)));
+                        }
+                        FutureCall::Os {
+                            call_id,
+                            system_sleep: Some(delay),
+                            ..
+                        } => {
+                            sleep_ids.insert(call_id);
+                            sleeps.spawn_on(
+                                async move {
+                                    tokio_sleep(delay).await;
+                                    (call_id, ExtFunctionResult::Return(MontyObject::none()))
+                                },
+                                get_runtime().handle(),
+                            );
+                        }
+                        FutureCall::Os {
+                            function_name,
+                            args,
+                            call_id,
+                            system_sleep: None,
+                            ..
+                        } => match dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances, false) {
+                            OsDispatch::Answer(value) => immediate.push((call_id, value)),
+                            OsDispatch::Coroutine(coro) => {
+                                // Closed so CPython does not warn that it was never awaited.
+                                coro.bind(py).call_method0("close")?;
+                                discard_checkout_sync(py, &checkout);
+                                return Err(PyRuntimeError::new_err("async os callbacks require AsyncMonty"));
+                            }
+                        },
+                    }
+                }
+                if let Some(id) = pending_call_ids
+                    .iter()
+                    .find(|id| !sleep_ids.contains(id) && !immediate.iter().any(|(answered, _)| answered == *id))
+                {
                     discard_checkout_sync(py, &checkout);
                     return Err(PyRuntimeError::new_err(format!(
                         "internal error: pending future {id} is not one of the pool's own sleeps"
                     )));
                 }
-                let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
-                TurnAnswer::Futures(
-                    results
-                        .into_iter()
-                        .map(|(id, r)| {
-                            sleep_ids.remove(&id);
-                            ext_to_resume(r).map(|r| (id, r))
-                        })
-                        .collect::<PyResult<_>>()?,
-                )
+                if immediate.is_empty() {
+                    if sleeps.is_empty() {
+                        discard_checkout_sync(py, &checkout);
+                        return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
+                    }
+                    let results = py.detach(|| block_on_sync(wait_for_futures(&mut sleeps)))??;
+                    TurnAnswer::Futures(
+                        results
+                            .into_iter()
+                            .map(|(id, r)| {
+                                sleep_ids.remove(&id);
+                                ext_to_resume(r).map(|r| (id, r))
+                            })
+                            .collect::<PyResult<_>>()?,
+                    )
+                } else {
+                    TurnAnswer::Futures(immediate)
+                }
             }
             // This feed's mounts get first refusal on every OS call; only what
             // they don't cover reaches the `os=` callback.
@@ -1838,6 +1911,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             // `AbandonGuard`)
             started.store(true, Ordering::Release);
             Box::pin(async move {
+                c.set_suspend_awaited_calls(false);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -1850,12 +1924,12 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let native = checkout
-            .lock()
-            .await
-            .as_ref()
-            .map(monty_pool::Checkout::callback_context)
-            .unwrap_or_default();
+        let (native, call_contexts) = {
+            let guard = checkout.lock().await;
+            let checkout = guard.as_ref();
+            let native = checkout.map(Checkout::callback_context).unwrap_or_default();
+            (native, call_contexts(checkout, &event))
+        };
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
             matches!(&event, TurnEvent::OsCall { function_name, .. } if is_intercepted_os_call(function_name));
@@ -1885,13 +1959,41 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     }
                 }
             }
-            TurnEvent::ResolveFutures { .. } => {
-                let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
-                    results
-                        .into_iter()
-                        .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
-                        .collect::<PyResult<Vec<_>>>()
-                });
+            TurnEvent::ResolveFutures { calls, .. } => {
+                // the awaited calls the wait announces: coroutines join the
+                // pending tasks, anything settled at once answers now
+                let mut immediate = Vec::new();
+                for (call, native) in calls.into_iter().zip(call_contexts) {
+                    // the host function runs under its own call's span
+                    let answered = answer_future_call(
+                        call,
+                        &names,
+                        &instances,
+                        &mut join_set,
+                        &callback_context,
+                        &native,
+                        os.as_ref(),
+                    )
+                    .await;
+                    match answered {
+                        Ok(Some(result)) => immediate.push(result),
+                        Ok(None) => {}
+                        Err(err) => {
+                            discard_checkout(&checkout).await;
+                            return Err(err);
+                        }
+                    }
+                }
+                let resolved = if immediate.is_empty() {
+                    wait_for_futures(&mut join_set).await.and_then(|results| {
+                        results
+                            .into_iter()
+                            .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
+                            .collect::<PyResult<Vec<_>>>()
+                    })
+                } else {
+                    Ok(immediate)
+                };
                 let results = match resolved {
                     Ok(results) => results,
                     Err(err) => {
@@ -2111,6 +2213,103 @@ async fn dispatched_answer(
     })
 }
 
+/// The telemetry context of each awaited call a wait announces, in `calls`
+/// order: the call's own span, so the host function's spans nest under it.
+fn call_contexts(checkout: Option<&Checkout>, event: &TurnEvent) -> Vec<opentelemetry::Context> {
+    match (checkout, event) {
+        (Some(checkout), TurnEvent::ResolveFutures { calls, .. }) => calls
+            .iter()
+            .map(|call| checkout.callback_context_for(call.call_id()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Dispatches one awaited call a `ResolveFutures` announces: a coroutine (or
+/// system sleep) joins `join_set` and settles the call later, while a value
+/// returned without one answers at once, as [`ResumeValue::Plain`] for a host
+/// function so the sandbox's `await` raises as CPython's would.
+async fn answer_future_call(
+    call: FutureCall,
+    names: &HostNames,
+    instances: &InstanceStore,
+    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
+    callback_context: &CallbackContext,
+    native: &opentelemetry::Context,
+    os: Option<&Py<PyAny>>,
+) -> PyResult<Option<(u32, ResumeValue)>> {
+    match call {
+        FutureCall::Function {
+            function_name,
+            args,
+            call_id,
+            object_id,
+            ..
+        } => {
+            let dispatch = || dispatch_function_call(&function_name, object_id, &args, names, instances);
+            let answer = answer_call(
+                dispatch,
+                call_id,
+                false,
+                names,
+                instances,
+                join_set,
+                callback_context,
+                native,
+            )
+            .await?;
+            Ok(match answer {
+                TurnAnswer::Call(ResumeValue::Future) => None,
+                TurnAnswer::Call(value) => Some((call_id, plain_answer(value))),
+                TurnAnswer::Eager(..) | TurnAnswer::Futures(..) | TurnAnswer::Name(..) => {
+                    unreachable!("a call dispatched without the eager hint answers with a value or a future")
+                }
+            })
+        }
+        FutureCall::Os {
+            call_id,
+            system_sleep: Some(delay),
+            ..
+        } => {
+            let _spawned = dispatch_system_sleep(delay, call_id, CoroutineMode::Future, join_set);
+            Ok(None)
+        }
+        FutureCall::Os {
+            function_name,
+            args,
+            call_id,
+            system_sleep: None,
+            ..
+        } => {
+            let dispatched = Python::attach(|py| {
+                let _guard = callback_context.enter(py, native)?;
+                match dispatch_os_parts(py, &function_name, &args, os, instances, true) {
+                    OsDispatch::Answer(value) => Ok(Dispatched::Done(value)),
+                    OsDispatch::Coroutine(coro) => {
+                        dispatch_coroutine(coro, call_id, CoroutineMode::Future, join_set, instances)
+                    }
+                }
+            })?;
+            Ok(match dispatched_answer(dispatched, call_id).await? {
+                TurnAnswer::Call(ResumeValue::Future) => None,
+                TurnAnswer::Call(value) => Some((call_id, value)),
+                TurnAnswer::Eager(..) | TurnAnswer::Futures(..) | TurnAnswer::Name(..) => {
+                    unreachable!("a sleep dispatched as a future answers with a value or a future")
+                }
+            })
+        }
+    }
+}
+
+/// A host function's value answering a call the sandbox awaits: the await
+/// must raise, as it does in CPython for a non-awaitable.
+fn plain_answer(value: ResumeValue) -> ResumeValue {
+    match value {
+        ResumeValue::Return(value) => ResumeValue::Plain(value),
+        other => other,
+    }
+}
+
 /// The caller's answer to a suspension, paired with which resume call
 /// delivers it. A lazy-attribute host error travels inside
 /// [`NameLookupResult::Error`] and is raised in the sandbox, so it never
@@ -2256,6 +2455,7 @@ pub(crate) fn finalize_turn<T>(
 pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> {
     match result {
         ExtFunctionResult::Return(value) => Ok(ResumeValue::Return(value)),
+        ExtFunctionResult::Plain(value) => Ok(ResumeValue::Plain(value)),
         ExtFunctionResult::Error(exc) => Ok(ResumeValue::Error(exc)),
         ExtFunctionResult::NotFound(_) => Ok(ResumeValue::NotFound),
         ExtFunctionResult::ModuleFile(file) => Ok(ResumeValue::ModuleFile(file)),

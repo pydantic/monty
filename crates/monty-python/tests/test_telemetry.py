@@ -313,8 +313,8 @@ def test_standard_meter_receives_metrics():
 
 
 @pytest.mark.parametrize('fail', [False, True])
-async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
-    """An eager value or exception closes the call span without a future-results record."""
+async def test_awaited_call_result_is_recorded_on_the_call_span(fail: bool):
+    """An awaited call's value or exception closes its own span; the wait records no future results."""
     install_telemetry()
 
     async def fetch() -> int:
@@ -330,8 +330,13 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
             assert await session.feed_run(code, external_lookup={'fetch': fetch}) == (0 if fail else 42)
 
     spans = _span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == ['call {function_name}', 'run code', 'session {script_name}']
-    call, run, _session = spans
+    assert [span.name for span in spans] == [
+        'call {function_name}',
+        'resolve futures',
+        'run code',
+        'session {script_name}',
+    ]
+    call, _wait, run, _session = spans
     assert call.attributes is not None
     assert call.attributes['function_name'] == 'fetch'
     assert call.attributes['return_value'] == ('raise ValueError: failed' if fail else 42)

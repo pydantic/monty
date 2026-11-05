@@ -152,7 +152,6 @@ const REQUEST_LOAD = 8
 const EVENT_PRINT = 1
 const EVENT_ERROR = 7
 const EVENT_DUMP_RESULT = 9
-const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
 const EVENT_PING = 13
 // `ChildEvent`'s message-level fields:
@@ -179,18 +178,16 @@ const VARINT_PAYLOAD_BITS = 7
 const VARINT_PAYLOAD_MASK = 0x7f
 const VARINT_CONTINUES = 0x80
 
-/** The `Ok` acknowledgement event. */
-export const OK_EVENT = bytesField(EVENT_OK, Buffer.alloc(0))
-
 /** The liveness probe a serving relay sends between turns. */
 export const PING_EVENT = bytesField(EVENT_PING, Buffer.alloc(0))
 
 /**
- * A server that answers the session's `Configure` with a `RuntimeError`
- * naming `message`, as a server refusing a profile does, then ends the stream.
+ * A server that answers the request opening the session (the first feed,
+ * carrying its `Configure`) with a `RuntimeError` naming `message`, as a
+ * server refusing a profile does, then ends the stream.
  */
 export function refusingServer(message: string): (stream: Stream) => Promise<void> {
-  return answerConfigure(
+  return answerOpening(
     bytesField(
       EVENT_ERROR,
       bytesField(
@@ -204,13 +201,13 @@ export function refusingServer(message: string): (stream: Stream) => Promise<voi
   )
 }
 
-/** A draining server: answers `Configure` with a shutdown naming no stored session. */
+/** A draining server: answers the opening request with a shutdown naming no stored session. */
 export function drainingServer(stream: Stream): Promise<void> {
-  return answerConfigure(bytesField(EVENT_SHUTDOWN, Buffer.alloc(0)))(stream)
+  return answerOpening(bytesField(EVENT_SHUTDOWN, Buffer.alloc(0)))(stream)
 }
 
 /** Answers the first request with `reply` instead of running it, then ends the stream. */
-function answerConfigure(reply: Buffer): (stream: Stream) => Promise<void> {
+function answerOpening(reply: Buffer): (stream: Stream) => Promise<void> {
   return async (stream) => {
     admit(stream)
     for await (const _ of messages(stream)) {
@@ -223,10 +220,11 @@ function answerConfigure(reply: Buffer): (stream: Stream) => Promise<void> {
 
 /**
  * A fake of a server that stores sessions, as `_StoringServer` in the Python
- * tests. It names the session on the reply to `Configure` and to `Load`, and
- * does not run the third request of the first stream: the child is dumped,
- * its state kept under the session's ID, and the request answered with
- * `ShutdownDump` naming that ID. A later `Load` of the ID gets the stored state.
+ * tests. It names the session on the reply to the request opening a stream (a
+ * feed carrying `Configure`, or a `Load`), and does not run the second request
+ * of the first stream: the child is dumped, its state kept under the session's
+ * ID, and the request answered with `ShutdownDump` naming that ID. A later
+ * `Load` of the ID gets the stored state.
  */
 export class StoringServer {
   private readonly records = new Map<string, Buffer>()
@@ -236,8 +234,8 @@ export class StoringServer {
   readonly handle = async (stream: Stream): Promise<void> => {
     admit(stream)
     this.streams += 1
-    // request 1 is `Configure`, 2 the first feed; the first stream parks the next
-    const drainAt = this.streams === 1 ? 3 : null
+    // request 1 opens the session with the first feed; the first stream parks the next
+    const drainAt = this.streams === 1 ? 2 : null
     const child = new ChildFrames()
     let sessionId: Buffer | null = null
     let requests = 0

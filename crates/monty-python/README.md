@@ -46,6 +46,8 @@ The client does not automatically replay a disconnected request.
 `MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
 nothing ran, so retrying is safe.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+The session itself opens with the first feed or load, which is where a server refusing the session, draining or
+dropping the stream raises.
 
 ## Host decode budget
 

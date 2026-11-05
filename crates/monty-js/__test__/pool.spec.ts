@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import { t } from './assertions.js'
 import { skipIfWasm } from './env.js'
 import { WorkerTransport } from '../ts/worker/transport.js'
-import { MontyCrashedError as TransportCrashedError } from '../ts/errors.js'
 import { WorkerPool } from '../ts/worker/pool.js'
 import { WorkerChannel, type WorkerMessage } from '../ts/worker/channel.js'
 import type { Event as ComponentEvent } from '../ts/worker/component/monty.component.js'
@@ -33,9 +32,7 @@ test('wasm transport discards shutdown replies but preserves fatal diagnostics',
     const requests: string[] = []
     const transport = await WorkerTransport.create(async (request) => {
       requests.push(request.tag)
-      return request.tag === 'configure'
-        ? { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
-        : { status: 'shutdown', events, feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
+      return { status: 'shutdown', events, feedExecutionMicros: 0n, exitStatus: 'exit code: 7' }
     })
     const releases: boolean[] = []
     transport.onFinish = (reusable) => {
@@ -49,26 +46,12 @@ test('wasm transport discards shutdown replies but preserves fatal diagnostics',
     })
     await transport.finish()
     t.deepEqual(releases, [false])
-    t.deepEqual(requests, ['configure', 'feed'])
+    // the feed carries the session's `Configure`: one dispatch opens and runs it
+    t.deepEqual(requests, ['feed'])
   }
 })
 
-test('shutdown during Configure preserves the fatal diagnostic', async () => {
-  const error = await t.throwsAsync(
-    () =>
-      WorkerTransport.create(async () => ({
-        status: 'shutdown',
-        events: [{ tag: 'fatal-error', val: 'configuration failed' }],
-        feedExecutionMicros: 0n,
-        exitStatus: 'exit code: 7',
-      })),
-    { instanceOf: TransportCrashedError },
-  )
-  t.is(error.message, 'RuntimeError: configuration failed')
-  t.is(error.exitStatus, 'exit code: 7')
-})
-
-test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during %s', async (phase) => {
+test.each(['acquire', 'startup'])('close cancels a checkout during %s', async (phase) => {
   let start!: () => void
   const started = new Promise<void>((resolve) => {
     start = resolve
@@ -79,9 +62,7 @@ test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during 
     (signal) =>
       WorkerChannel.create(
         {
-          post: () => {
-            start()
-          },
+          post: () => {},
           onMessage: (handler) => {
             message = handler
             if (phase === 'startup') start()

@@ -32,13 +32,13 @@ use std::{
 
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
+    Checkout, CheckoutOptions, FutureCall, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
     PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
-    AssertMessageAnnotations, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject, NameLookupResult,
-    NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CallArgs, ExcType, ModuleFile, ModuleRead, MontyException, MontyObject, MontyUuid,
+    NameLookupResult, NamedValues, PrintStream, SourceRange, StackFrame, TypeCheckingConfig, TypeCheckingFormat,
 };
 use napi::{
     bindgen_prelude::{
@@ -224,6 +224,9 @@ pub struct NativeFeedOptions {
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
     pub skip_type_check: bool,
+    /// Suspend at every awaited host call (`feedStart`) instead of batching
+    /// them into the next `resolveFutures` turn (`feedRun`).
+    pub suspend_awaited_calls: bool,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -536,7 +539,7 @@ impl NativeSession {
                     Err(err @ PoolError::Exhausted) => TurnOutcome::Exhausted(err.to_string()),
                     Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
                 };
-                Ok((outcome, None))
+                Ok(TurnResult::bare(outcome))
             },
             turn_to_js,
         )
@@ -556,12 +559,17 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
         let mounts = mount_specs(&mounts)?;
-        let NativeFeedOptions { cwd, skip_type_check } = options;
+        let NativeFeedOptions {
+            cwd,
+            skip_type_check,
+            suspend_awaited_calls,
+        } = options;
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
+                    checkout.set_suspend_awaited_calls(suspend_awaited_calls);
                     checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
                         .await
@@ -809,10 +817,17 @@ impl NativeSession {
             .map(|result| {
                 let call_id: u32 = require(&result, "callId")?;
                 let ok: bool = require(&result, "ok")?;
+                // `plain`: the host function returned the value without a
+                // promise, so the sandbox's await of it must raise
+                let plain = result.get::<bool>("plain")?.unwrap_or(false);
                 let value = if ok {
-                    match result.get::<Unknown>("value")? {
+                    let value = match result.get::<Unknown>("value")? {
                         Some(value) => sendable_resume(env, value),
                         None => ResumeValue::Return(MontyObject::none()),
+                    };
+                    match value {
+                        ResumeValue::Return(value) if plain => ResumeValue::Plain(value),
+                        other => other,
                     }
                 } else {
                     let exc_type: String = require(&result, "excType")?;
@@ -995,10 +1010,9 @@ impl NativeSession {
             async move {
                 let mut guard = slot.lock().await;
                 let Some(checkout) = guard.as_mut() else {
-                    return Ok((
-                        TurnOutcome::Protocol("the session is closed — check out a new one".to_owned()),
-                        None,
-                    ));
+                    return Ok(TurnResult::bare(TurnOutcome::Protocol(
+                        "the session is closed — check out a new one".to_owned(),
+                    )));
                 };
                 // Forward each print to JS and *await the callback having
                 // run* (not merely queued), preserving print ordering
@@ -1024,15 +1038,47 @@ impl NativeSession {
                 let outcome = compute(checkout, &mut on_print).await;
                 // a load or an auto-resume can each move the session to a new ID
                 *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
-                Ok((outcome, callback_span_key(&checkout.callback_context())))
+                // each awaited call a wait announces runs under its own span
+                let call_contexts = match &outcome {
+                    TurnOutcome::Event(TurnEvent::ResolveFutures { calls, .. }) => calls
+                        .iter()
+                        .map(|call| callback_span_key(&checkout.callback_context_for(call.call_id())))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                Ok(TurnResult {
+                    outcome,
+                    context: callback_span_key(&checkout.callback_context()),
+                    call_contexts,
+                })
             },
             turn_to_js,
         )
     }
 }
 
-/// One turn's result, computed off the event loop and converted to a JS
-/// object once back on it.
+/// One turn's result with the span keys its host callbacks run under,
+/// computed off the event loop and converted to a JS object once back on it.
+struct TurnResult {
+    outcome: TurnOutcome,
+    /// The innermost open span's key, for the suspension's callbacks.
+    context: Option<String>,
+    /// One key per awaited call a `ResolveFutures` announces, in call order.
+    call_contexts: Vec<Option<String>>,
+}
+
+impl TurnResult {
+    /// An outcome with no host callbacks to run, so no span keys.
+    const fn bare(outcome: TurnOutcome) -> Self {
+        Self {
+            outcome,
+            context: None,
+            call_contexts: Vec::new(),
+        }
+    }
+}
+
+/// One turn's outcome, as the sandbox or the pool reported it.
 enum TurnOutcome {
     /// The turn ended in a suspension or completion.
     Event(TurnEvent),
@@ -1156,7 +1202,12 @@ fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()>
 /// ever appears in *values* (kwargs cross as `[key, value]` pairs so the
 /// TypeScript layer can build a null-prototype record safely). A call's
 /// arena is decoded once, so an object passed twice arrives as one JS object.
-fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> Result<Object<'_>> {
+fn turn_to_js(env: &Env, result: TurnResult) -> Result<Object<'_>> {
+    let TurnResult {
+        outcome,
+        context,
+        call_contexts,
+    } = result;
     let mut obj = Object::new(env)?;
     if let Some(context) = context {
         obj.set("callbackSpanKey", context)?;
@@ -1174,17 +1225,8 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             allow_eager_await,
             position,
         }) => {
-            obj.set("kind", "functionCall")?;
-            obj.set("position", source_range_to_js(env, &position)?)?;
+            set_function_call_fields(env, &mut obj, function_name, &args, call_id, object_id, &position)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
-            obj.set("functionName", function_name)?;
-            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
-            let arena = DecodedArena::new(graph, env)?;
-            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
-            obj.set("callId", call_id)?;
-            // the routed receiver uuid as a canonical string
-            obj.set("objectId", object_id.map(|uuid| uuid.to_string()))?;
         }
         TurnOutcome::Event(TurnEvent::OsCall {
             function_name,
@@ -1194,17 +1236,7 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
             system_sleep,
             position,
         }) => {
-            obj.set("kind", "osCall")?;
-            obj.set("position", source_range_to_js(env, &position)?)?;
-            obj.set("functionName", function_name)?;
-            if let Some(delay) = system_sleep {
-                obj.set("systemSleepSecs", delay.as_secs_f64())?;
-            }
-            let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(&args);
-            let arena = DecodedArena::new(graph, env)?;
-            obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
-            obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
-            obj.set("callId", call_id)?;
+            set_os_call_fields(env, &mut obj, function_name, &args, call_id, system_sleep, &position)?;
             obj.set("allowEagerAwait", allow_eager_await)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup {
@@ -1220,11 +1252,55 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
         TurnOutcome::Event(TurnEvent::ResolveFutures {
             pending_call_ids,
+            calls,
             position,
         }) => {
             obj.set("kind", "resolveFutures")?;
             obj.set("pendingCallIds", pending_call_ids)?;
             obj.set("position", source_range_to_js(env, &position)?)?;
+            // the awaited calls this wait announces, shaped like the turns
+            // they would have been, settled through `resolveFutures`
+            let mut announced = env.create_array(0)?;
+            for (call, context) in calls.into_iter().zip(call_contexts) {
+                let mut call_obj = Object::new(env)?;
+                if let Some(context) = context {
+                    call_obj.set("callbackSpanKey", context)?;
+                }
+                match call {
+                    FutureCall::Function {
+                        function_name,
+                        args,
+                        call_id,
+                        object_id,
+                        position,
+                    } => set_function_call_fields(
+                        env,
+                        &mut call_obj,
+                        function_name,
+                        &args,
+                        call_id,
+                        object_id,
+                        &position,
+                    )?,
+                    FutureCall::Os {
+                        function_name,
+                        args,
+                        call_id,
+                        system_sleep,
+                        position,
+                    } => set_os_call_fields(
+                        env,
+                        &mut call_obj,
+                        function_name,
+                        &args,
+                        call_id,
+                        system_sleep,
+                        &position,
+                    )?,
+                }
+                announced.insert(call_obj)?;
+            }
+            obj.set("calls", announced)?;
         }
         TurnOutcome::Runtime(exc) => {
             obj.set("kind", "error")?;
@@ -1300,6 +1376,52 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
     }
     Ok(obj)
+}
+
+/// Fills the fields of a `functionCall` turn object: a call's arena is
+/// decoded once, so an object passed twice arrives as one JS object.
+fn set_function_call_fields(
+    env: &Env,
+    obj: &mut Object<'_>,
+    function_name: String,
+    args: &CallArgs,
+    call_id: u32,
+    object_id: Option<MontyUuid>,
+    position: &SourceRange,
+) -> Result<()> {
+    obj.set("kind", "functionCall")?;
+    obj.set("position", source_range_to_js(env, position)?)?;
+    obj.set("functionName", function_name)?;
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(args);
+    let arena = DecodedArena::new(graph, env)?;
+    obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+    obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
+    obj.set("callId", call_id)?;
+    // the routed receiver uuid as a canonical string
+    obj.set("objectId", object_id.map(|uuid| uuid.to_string()))
+}
+
+/// Fills the fields of an `osCall` turn object.
+fn set_os_call_fields(
+    env: &Env,
+    obj: &mut Object<'_>,
+    function_name: String,
+    args: &CallArgs,
+    call_id: u32,
+    system_sleep: Option<Duration>,
+    position: &SourceRange,
+) -> Result<()> {
+    obj.set("kind", "osCall")?;
+    obj.set("position", source_range_to_js(env, position)?)?;
+    obj.set("functionName", function_name)?;
+    if let Some(delay) = system_sleep {
+        obj.set("systemSleepSecs", delay.as_secs_f64())?;
+    }
+    let (graph, arg_ids, kwarg_ids) = unstable::call_args_parts(args);
+    let arena = DecodedArena::new(graph, env)?;
+    obj.set("args", values_to_js(env, &arena, arg_ids)?)?;
+    obj.set("kwargs", pairs_to_js(env, &arena, kwarg_ids)?)?;
+    obj.set("callId", call_id)
 }
 
 /// Converts positional call arguments for a turn object.
