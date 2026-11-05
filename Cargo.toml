@@ -19,7 +19,7 @@ members = [
     "crates/monty-type-checking",
     "crates/monty-typeshed",
     "crates/monty-macros",
-    "crates/fuzz",
+    "crates/fuzz"
 ]
 default-members = ["crates/monty-runtime"]
 
@@ -114,10 +114,7 @@ pyo3-build-config = { version = "0.29.2", features = ["resolve-config"] }
 # others
 chrono = { version = "0.4", features = ["serde"] }
 # The zone rules for `SandboxTimeZone::Named`; database features are enabled per binary.
-jiff = { version = "0.2", default-features = false, features = [
-    "std",
-    "serde",
-] }
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
 # `phf` backs `#[strum(use_phf)]`, used only on large `EnumString` enums (see CLAUDE.md).
 strum = { version = "0.27", features = ["derive", "phf"] }
 itoa = "1"
@@ -129,9 +126,7 @@ serde_json = "1.0"
 toml = "1"
 postcard = { version = "1.1", features = ["alloc"] }
 # session dump codec: self-describing, so struct fields and enum variants evolve without a `DUMP_VERSION` bump
-minicbor-serde = { version = "0.7", default-features = false, features = [
-    "alloc",
-] }
+minicbor-serde = { version = "0.7", default-features = false, features = ["alloc"] }
 # CBOR byte strings for persisted `Vec<u8>` / `[u8; N]` fields instead of one integer per byte
 serde_bytes = "0.11"
 # exact pin: prost-build output must be byte-stable across contributors and CI
@@ -178,10 +173,7 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 # the distro CA bundle through webpki, with no revocation checking.
 rustls-platform-verifier = "0.7"
 # Self-signed certificates for the pool's TLS test server.
-rcgen = { version = "0.14", default-features = false, features = [
-    "aws_lc_rs",
-    "pem",
-] }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }
@@ -189,42 +181,12 @@ tokio = { version = "1" }
 logfire = { version = "0.12", default-features = false }
 # Canonical OTLP batches cross the Python and Node extension boundaries after
 # Rust's metrics SDK has aggregated them.
-opentelemetry-proto = { version = "0.32", default-features = false, features = [
-    "gen-tonic-messages",
-    "metrics",
-] }
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(codspeed)',
-    'cfg(heap_reader_compile_fail_tests)',
-    'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)',
-    'cfg(heap_reader_compile_fail_test_smuggle_heap_read)',
-    'cfg(heap_reader_compile_fail_test_double_get_mut)',
-    'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)',
-    'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)',
-    'cfg(heap_reader_compile_fail_test_smuggle_vm)',
-    'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)',
-    'cfg(heap_reader_compile_fail_test_protected_get_escape)',
-    'cfg(heap_reader_compile_fail_test_protected_mut_get_escape)',
-    'cfg(heap_reader_compile_fail_test_protected_get_mut_escape)',
-    'cfg(heap_reader_compile_fail_test_protected_get_alias)',
-    'cfg(heap_reader_compile_fail_test_protected_mut_get_alias)',
-    'cfg(heap_reader_compile_fail_test_protected_get_mut_alias)',
-    'cfg(heap_reader_compile_fail_test_projected_get_escape)',
-    'cfg(heap_reader_compile_fail_test_slice_get_escape)',
-    'cfg(heap_reader_compile_fail_test_box_get_escape)',
-    'cfg(heap_reader_compile_fail_test_mutable_inner_swap)',
-    'cfg(heap_reader_compile_fail_test_shared_inner_swap)',
-    'cfg(heap_reader_compile_fail_test_counted_inner_swap)',
-    'cfg(heap_reader_compile_fail_test_readonly_mutation)',
-    'cfg(heap_reader_compile_fail_test_readonly_mutable_projection)',
-    'cfg(heap_reader_compile_fail_test_aliased_payload_borrows)',
-    'cfg(heap_reader_compile_fail_test_projected_get_mut_escape)',
-    'cfg(heap_reader_compile_fail_test_projection_live_borrow)',
-] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)', 'cfg(heap_reader_compile_fail_test_protected_get_escape)', 'cfg(heap_reader_compile_fail_test_protected_mut_get_escape)', 'cfg(heap_reader_compile_fail_test_protected_get_mut_escape)', 'cfg(heap_reader_compile_fail_test_protected_get_alias)', 'cfg(heap_reader_compile_fail_test_protected_mut_get_alias)', 'cfg(heap_reader_compile_fail_test_protected_get_mut_alias)', 'cfg(heap_reader_compile_fail_test_projected_get_escape)', 'cfg(heap_reader_compile_fail_test_slice_get_escape)', 'cfg(heap_reader_compile_fail_test_box_get_escape)', 'cfg(heap_reader_compile_fail_test_mutable_inner_swap)', 'cfg(heap_reader_compile_fail_test_shared_inner_swap)', 'cfg(heap_reader_compile_fail_test_counted_inner_swap)', 'cfg(heap_reader_compile_fail_test_readonly_mutation)', 'cfg(heap_reader_compile_fail_test_readonly_mutable_projection)', 'cfg(heap_reader_compile_fail_test_aliased_payload_borrows)', 'cfg(heap_reader_compile_fail_test_projected_get_mut_escape)', 'cfg(heap_reader_compile_fail_test_projection_live_borrow)'] }
 
 [workspace.lints.rustdoc]
 invalid_codeblock_attributes = "allow"
