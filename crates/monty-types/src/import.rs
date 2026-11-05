@@ -14,6 +14,12 @@ use crate::{
     type_checking::is_identifier,
 };
 
+/// The most search-path directories an import searches; later ones are ignored.
+///
+/// The sandbox sets `__path__`, and each directory costs the host two reads in
+/// one suspension, so without a cap a long `__path__` amplifies host work.
+pub const MAX_SEARCH_DIRS: usize = 32;
+
 /// The arguments of an `import` call: the module and where its file may be.
 ///
 /// Deserializes from a bare module name too, the form dumps written before
@@ -62,7 +68,8 @@ impl ImportArgs {
     ///
     /// The call comes from an untrusted sandbox, so a name with a component
     /// that is not an identifier has no candidates, and a directory that is not
-    /// absolute or holds a NUL byte is skipped. Paths are built one directory at
+    /// absolute or holds a NUL byte is skipped, and only the first
+    /// [`MAX_SEARCH_DIRS`] remaining directories are searched. Paths are built one directory at
     /// a time: a long name times many directories never sits in memory at once.
     /// They are not normalized: mounts check them as sent, as for `open()`, and
     /// an `os` handler receives them normalized through [`OsFunctionCall::to_args`](crate::OsFunctionCall::to_args).
@@ -72,6 +79,7 @@ impl ImportArgs {
         self.search_path
             .iter()
             .filter(move |dir| valid && dir.starts_with('/') && !dir.contains('\0'))
+            .take(MAX_SEARCH_DIRS)
             .flat_map(move |dir| {
                 let dir = dir.strip_suffix('/').unwrap_or(dir);
                 [format!("{dir}/{leaf}/__init__.py"), format!("{dir}/{leaf}.py")]
