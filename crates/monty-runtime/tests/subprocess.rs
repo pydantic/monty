@@ -3176,6 +3176,17 @@ fn legacy_binary_update_is_rejected_before_open() {
             Some("binary update mode requires positional filesystem writes")
         );
     }
+    for options in ["", "mode='w+b', ", "mode='wb+', "] {
+        let (_, event) = child.feed(&format!(
+            "import tempfile\ntempfile.NamedTemporaryFile({options}delete=False)"
+        ));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "NotImplementedError");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("binary update mode requires positional filesystem writes")
+        );
+    }
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }

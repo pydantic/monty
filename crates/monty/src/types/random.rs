@@ -42,11 +42,14 @@ const LOWER_MASK: u32 = 0x7fff_ffff;
 /// Entropy bytes per state vector, matching CPython's `random_seed_urandom`.
 pub(crate) const SEED_BYTES: usize = N * 4;
 
-/// Module generator and initialization stream, preserved across REPL feeds and dumps.
+/// Session random streams, preserved across REPL feeds and dumps.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct SessionRandom {
     /// The generator behind `random.random()` and friends.
     pub(crate) module: Random,
+    /// Independent temporary-name generator, initialized on its first draw.
+    #[serde(default)]
+    temporary: Random,
     /// Lazily derived from [`RandomStart::Seed`] for unseeded instances and `seed()`.
     /// Produces deterministic states distinct from the module generator's.
     derived: Option<Mt19937>,
@@ -57,6 +60,17 @@ impl SessionRandom {
     /// other targets use [`Self::fresh_state`]. `None` requests host entropy.
     /// Errors only if OS entropy fails.
     pub(crate) fn first_state(&mut self, target: RandomTarget, start: &RandomStart) -> RunResult<Option<Mt19937>> {
+        if target == RandomTarget::Temporary {
+            return match start {
+                RandomStart::Seed(seed) => {
+                    let mut key = seed_key_from_seed(seed);
+                    key.push(0x7465_6d70); // "temp"
+                    Ok(Some(Mt19937::from_key(&key)))
+                }
+                RandomStart::System => Mt19937::from_os_entropy().map(Some),
+                RandomStart::CallHost => Ok(None),
+            };
+        }
         match (start, target) {
             (RandomStart::Seed(seed), RandomTarget::Global) => Ok(Some(Mt19937::from_key(&seed_key_from_seed(seed)))),
             _ => self.fresh_state(start),
@@ -163,8 +177,7 @@ struct RandomInitArgs {
 /// The `version` `seed()` uses when none is given.
 pub(crate) const SEED_VERSION_DEFAULT: i64 = 2;
 
-/// Which generator a `random` operation acts on: the module-level one on the
-/// VM, or a `random.Random` instance on the heap.
+/// Generator for a draw: the module, private temporary names, or a heap `Random` instance.
 ///
 /// Carried by the entropy suspension (`PostConversionEffect::SeedRandom`) so
 /// the resume can seed the right generator; the instance form holds no
@@ -173,6 +186,8 @@ pub(crate) const SEED_VERSION_DEFAULT: i64 = 2;
 pub(crate) enum RandomTarget {
     /// The module-level generator behind `random.random()` and friends.
     Global,
+    /// Private generator for temporary names.
+    Temporary,
     /// A `random.Random` instance.
     Instance(HeapId),
 }
@@ -181,6 +196,7 @@ impl RandomTarget {
     pub(crate) fn is_seeded(self, vm: &VM<'_>) -> bool {
         match self {
             Self::Global => vm.random.module.is_seeded(),
+            Self::Temporary => vm.random.temporary.is_seeded(),
             Self::Instance(id) => match vm.heap.get(id) {
                 HeapData::Random(random) => random.is_seeded(),
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
@@ -210,6 +226,7 @@ impl RandomTarget {
     fn restore(self, vm: &mut VM<'_>, random: Random) {
         match self {
             Self::Global => vm.random.module = random,
+            Self::Temporary => vm.random.temporary = random,
             Self::Instance(id) => match vm.heap.read(id) {
                 HeapReadOutput::Random(handle) => *handle.get_mut(vm.heap) = random,
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),
@@ -221,6 +238,7 @@ impl RandomTarget {
     fn take(self, vm: &mut VM<'_>) -> Random {
         match self {
             Self::Global => mem::take(&mut vm.random.module),
+            Self::Temporary => mem::take(&mut vm.random.temporary),
             Self::Instance(id) => match vm.heap.read(id) {
                 HeapReadOutput::Random(handle) => mem::take(handle.get_mut(vm.heap)),
                 _ => unreachable!("RandomTarget::Instance points at a non-Random heap entry"),

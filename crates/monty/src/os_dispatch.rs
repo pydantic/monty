@@ -370,12 +370,13 @@ pub(crate) enum PostConversionEffect {
         callable: Value,
         args: ArgValues,
     },
-    /// Preserve `open()`'s filename while the returned handle supplies the I/O target,
-    /// and apply the `newline` argument, whose value CPython validates after the open.
+    /// Attach the filename, newline policy and optional context-exit cleanup to a returned file handle.
     OpenName {
         name: FileName,
         #[serde(default)]
         newline: Option<String>,
+        #[serde(default)]
+        delete_on_exit: bool,
     },
     /// Seed a `random` generator from the host's `os.urandom` reply, then
     /// answer `None` (`seed()`) or re-run the draw that found it unseeded

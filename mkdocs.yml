@@ -34,6 +34,7 @@ nav:
       - Host Objects: 'host-objects.md'
       - Resource Limits: 'resource-limits.md'
       - Filesystem Access: 'filesystem.md'
+      - Temporary Storage: 'temporary-storage.md'
       - Snapshots: 'snapshots.md'
       - Type Checking: 'type-checking.md'
   - Reference:
@@ -71,6 +72,7 @@ nav:
       - datetime: 'limitations/datetime.md'
       - decimal: 'limitations/decimal.md'
       - fnmatch: 'limitations/fnmatch.md'
+      - tempfile: 'limitations/tempfile.md'
       - functools: 'limitations/functools.md'
       - hashlib: 'limitations/hashlib.md'
       - itertools: 'limitations/itertools.md'
