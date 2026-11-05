@@ -146,7 +146,7 @@ impl VM<'_> {
             defer_drop_mut!(copied_items, this);
 
             // Check if any copied items are refs (for updating contains_refs)
-            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
+            let has_refs = copied_items.iter().any(|v| v.heap_reference().is_some());
 
             // Extend the list
             if let Value::Ref(id) = list_ref {

@@ -166,6 +166,7 @@ fn parse_json_input(value: &Value, hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> 
     let (bytes, is_str): (Cow<'_, [u8]>, bool) = match value {
         Value::InternString(string_id) => (Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()), true),
         Value::InlineString(text) => (Cow::Borrowed(text.as_str().as_bytes()), true),
+        Value::StrView(view) => (Cow::Owned(view.as_str(vm.heap).as_bytes().to_vec()), true),
         Value::InternBytes(bytes_id) => (Cow::Borrowed(vm.interns.get_bytes(*bytes_id)), false),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => (Cow::Owned(s.as_str().as_bytes().to_vec()), true),

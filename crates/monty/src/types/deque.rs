@@ -109,7 +109,7 @@ impl Deque {
                 }
             }
         }
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| v.heap_reference().is_some());
         (
             Self {
                 items,
@@ -271,7 +271,7 @@ impl<'h> HeapReadMut<'h, Deque> {
     /// ring past the memory limit fails with `MemoryError`, dropping `item`.
     pub fn append(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
-        if matches!(item, Value::Ref(_)) {
+        if item.heap_reference().is_some() {
             self.get_mut(vm.heap).contains_refs = true;
         }
         let this = self.get_mut(vm.heap);
@@ -287,7 +287,7 @@ impl<'h> HeapReadMut<'h, Deque> {
     /// Appends to the left, evicting from the right if `maxlen` is reached.
     pub fn appendleft(&self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         let item = self.check_push(vm, item)?;
-        if matches!(item, Value::Ref(_)) {
+        if item.heap_reference().is_some() {
             self.get_mut(vm.heap).contains_refs = true;
         }
         let this = self.get_mut(vm.heap);
@@ -442,7 +442,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         defer_drop_mut!(value, vm);
 
         let idx = self.resolve_index(key, vm)?;
-        if matches!(*value, Value::Ref(_)) {
+        if value.heap_reference().is_some() {
             self.get_mut(vm.heap).contains_refs = true;
         }
         // The guard drops whatever `value` holds after the swap — i.e. the old item.
@@ -671,11 +671,7 @@ impl HeapItem for Deque {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                obj.dec_ref_forget();
-            }
+            obj.py_dec_ref_ids(stack);
         }
     }
 }
@@ -942,7 +938,7 @@ fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) 
     let idx = usize::try_from(normalized).expect("index clamped non-negative");
 
     let (item, vm) = item_guard.into_parts();
-    if matches!(item, Value::Ref(_)) {
+    if item.heap_reference().is_some() {
         deque.get_mut(vm.heap).contains_refs = true;
     }
     let this = deque.get_mut(vm.heap);

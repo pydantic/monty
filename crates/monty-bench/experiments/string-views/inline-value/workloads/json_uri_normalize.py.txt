@@ -1,0 +1,14 @@
+
+import json
+request = json.loads(data)
+data = None
+total = 0
+errors = []
+for event in request['events']:
+    path = event['object_uri'][5:]
+    assert path.startswith('warehouse-eu/')
+    total += event['amount'] + len(path)
+    if not event['ok']:
+        errors.append({'id': event['id'], 'preview': event['message'][:160], 'path': path})
+response = json.dumps(errors, ensure_ascii=False, separators=(',', ':'))
+total + len(response)

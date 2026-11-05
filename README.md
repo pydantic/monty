@@ -29,6 +29,9 @@ functions and mounts you pass in.
 
 **Documentation: [pydantic.dev/docs/monty](https://pydantic.dev/docs/monty/)**
 
+Large contiguous string slices can share storage; see the [string-slice implementation](crates/monty/README.md#string-slices),
+[snapshot storage behavior](docs/snapshots.md#storing-and-restoring), and [string identity caveat](docs/limitations/builtins.md).
+
 ## Install
 
 ```bash

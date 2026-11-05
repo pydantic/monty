@@ -1,5 +1,5 @@
 //! Test-only policy switching and backing-payload accounting for the runtime matrix.
-use std::{cell::Cell, hint::black_box, sync::Arc, time::Instant};
+use std::{cell::Cell, hint::black_box, time::Instant};
 
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
@@ -38,8 +38,7 @@ fn update(f: impl FnOnce(&mut Stats)) {
 pub(super) fn allocated(storage: &StringStorage) {
     update(|stats| {
         let length = storage.backing_len();
-        // The byte buffer and Arc header occupy separate allocations.
-        stats.allocations += 2;
+        stats.allocations += 1;
         stats.created += length;
         stats.live += length;
         stats.peak = stats.peak.max(stats.live);
@@ -56,15 +55,12 @@ pub(super) fn released(storage: &StringStorage) {
         return;
     }
 
-    let last = Arc::strong_count(storage.backing()) == 1;
-    if last {
-        update(|stats| {
-            stats.live = stats
-                .live
-                .checked_sub(storage.backing_len())
-                .expect("untracked string payload dropped");
-        });
-    }
+    update(|stats| {
+        stats.live = stats
+            .live
+            .checked_sub(storage.backing_len())
+            .expect("tracked backing released");
+    });
 }
 
 #[derive(Clone, Copy)]

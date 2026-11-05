@@ -1104,7 +1104,7 @@ fn install_buffer<'h>(file: &HeapReadMut<'h, OpenFile>, result: Value, vm: &mut 
     };
 
     let replacement = match &*result {
-        Value::InternString(_) | Value::InlineString(_) => {
+        Value::InternString(_) | Value::InlineString(_) | Value::StrView(_) => {
             let text = result.as_str(vm).expect("string result checked above");
             let text = if translate {
                 translate_newlines(text)

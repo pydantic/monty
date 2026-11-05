@@ -22,19 +22,33 @@ See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, la
 
 ## String slices
 
-Contiguous slices of heap strings share `Arc<String>` storage when the result contains at least 16 UTF-8 bytes and
-at least one quarter of the original backing buffer capacity.
-Chained slices compose byte offsets directly; smaller results copy or use the existing inline representation.
-Full slices reuse the source value, and stepped slices materialize their result.
+Contiguous slices of heap strings share storage when the result contains at least 16 UTF-8 bytes and
+at least one quarter of the original backing's byte length.
+An inline `Value::StrView` stores a backing heap ID, byte start and byte length as three `u32` fields;
+`Value` remains 16 bytes, and each view owns one ordinary heap reference to the backing string.
+Chained slices compose byte offsets directly, without retaining intermediate views.
+Smaller results copy or use the existing inline representation; oversized IDs or bounds also fall back to copying.
+Full slices reuse the source value, and stepped or interned-string slices materialize their result.
 `splitlines()` shares every non-inline heap-backed line regardless of retained fraction.
 Keeping one such line can retain the entire backing allocation.
 
-Views remain valid after the source string is released.
-Interned strings still materialize slices, and dumps serialize visible text without preserving shared storage.
-Unicode positions use the existing character-navigation caches.
-Views retain their known character count and start with fresh navigation cursors.
-Owned construction buffers are shrunk with `shrink_to_fit()` and adopted without an unconditional byte copy.
-The byte buffer and shared header remain separate allocations.
+Owned strings use `Box<str>`; converting an owned `String` adopts its buffer and removes spare capacity.
+Views remain valid after the source value is released, without Arc headers or separate heap objects per view.
+The heap's child walker and release paths count view backing references together with ordinary object references.
+
+Unicode views reuse the backing's sparse index and separate view-origin and navigation cursors.
+The lazy access state holds four view hashes inline, then promotes to a resource-checked table.
+Cached ranges remain until backing release; clones and snapshots omit derived caches.
+The inline hash slots enlarge every activated access state, including strings whose views are never hashed.
+The [cache comparison](../monty-bench/experiments/string-views/inline-value/dual-cursor-hashes/README.md)
+measures that memory trade-off; the [document chunker](../monty-bench/experiments/string-views/agent-chunking/README.md)
+compares the final implementation with current main, #1236 and CPython.
+
+Dumps preserve view bounds and the backing heap string, so a short retained splitline can serialize the full backing.
+String values and sharing survive restoration, while navigation/hash caches rebuild lazily.
+Existing compatible dumps remain readable; older readers cannot load the new view variant.
+See [snapshot storage](../../docs/snapshots.md#storing-and-restoring) and the
+[string identity caveat](../../docs/limitations/builtins.md).
 
 ## Basic usage
 

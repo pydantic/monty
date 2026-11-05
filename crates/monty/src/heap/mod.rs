@@ -1842,8 +1842,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in list.as_slice() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1854,8 +1854,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in deque.iter() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1865,8 +1865,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in tuple.as_slice() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1884,8 +1884,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in nt.as_vec() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1896,8 +1896,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 return;
             }
             for value in class.defaults().iter().chain(once(class.module())) {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1906,19 +1906,19 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // e.g. a lambda) before the `has_refs` early-out. MUST report exactly
             // the same ids as `Dict::py_dec_ref_ids`: reporting fewer leaks,
             // reporting more is a use-after-free.
-            if let Some(Value::Ref(id)) = dict.default_factory() {
-                on_child(*id);
+            if let Some(id) = dict.default_factory().and_then(Value::heap_reference) {
+                on_child(id);
             }
             // Skip iteration if no refs - major GC optimization for dicts of primitives
             if !dict.has_refs() {
                 return;
             }
             for (k, v) in dict {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
+                if let Some(id) = k.heap_reference() {
+                    on_child(id);
                 }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
+                if let Some(id) = v.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1933,15 +1933,15 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::Set(set) => {
             for value in set.storage().iter() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
         HeapData::FrozenSet(frozenset) => {
             for value in frozenset.storage().iter() {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1952,8 +1952,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
             // Add default values that are heap references
             for default in &closure.defaults {
-                if let Value::Ref(id) = default {
-                    on_child(*id);
+                if let Some(id) = default.heap_reference() {
+                    on_child(id);
                 }
             }
             if let Some(globals) = closure.globals {
@@ -1963,8 +1963,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::FunctionDefaults(fd) => {
             // Add default values that are heap references
             for default in &fd.defaults {
-                if let Value::Ref(id) = default {
-                    on_child(*id);
+                if let Some(id) = default.heap_reference() {
+                    on_child(id);
                 }
             }
             if let Some(globals) = fd.globals {
@@ -1973,8 +1973,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         }
         HeapData::Cell(cell) => {
             // Cell can contain a reference to another heap value
-            if let Value::Ref(id) = &cell.0 {
-                on_child(*id);
+            if let Some(id) = cell.0.heap_reference() {
+                on_child(id);
             }
         }
         HeapData::HostClass(dc) => {
@@ -1982,11 +1982,11 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // the same ids as `HostClass::py_dec_ref_ids`.
             on_child(dc.class_id());
             for (k, v) in dc.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
+                if let Some(id) = k.heap_reference() {
+                    on_child(id);
                 }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
+                if let Some(id) = v.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -1995,22 +1995,22 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // (`Klass.data`) and mutate to close a cycle back to this type
             // object, so they must be traced like `HostClass` attrs.
             for (k, v) in t.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
+                if let Some(id) = k.heap_reference() {
+                    on_child(id);
                 }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
+                if let Some(id) = v.heap_reference() {
+                    on_child(id);
                 }
             }
         }
         HeapData::Class(class) => {
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
+                if let Some(id) = k.heap_reference() {
+                    on_child(id);
                 }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
+                if let Some(id) = v.heap_reference() {
+                    on_child(id);
                 }
             }
         }
@@ -2018,20 +2018,20 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // An instance references its class plus its attribute dict's entries.
             on_child(instance.class());
             for (k, v) in instance.attrs() {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
+                if let Some(id) = k.heap_reference() {
+                    on_child(id);
                 }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
+                if let Some(id) = v.heap_reference() {
+                    on_child(id);
                 }
             }
         }
         HeapData::BoundMethod(bm) => {
-            if let Value::Ref(id) = &bm.instance {
-                on_child(*id);
+            if let Some(id) = bm.instance.heap_reference() {
+                on_child(id);
             }
-            if let Value::Ref(id) = &bm.func {
-                on_child(*id);
+            if let Some(id) = bm.func.heap_reference() {
+                on_child(id);
             }
         }
         HeapData::DataclassField(field) => {
@@ -2081,8 +2081,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Coroutine(coro) => {
             // Add namespace values that are heap references
             for value in &coro.namespace {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
+                if let Some(id) = value.heap_reference() {
+                    on_child(id);
                 }
             }
             if let Some(globals) = coro.globals {
@@ -2106,13 +2106,17 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                         on_child(*gather);
                     }
                     for result in awaited.results.iter().flatten() {
-                        if let Value::Ref(id) = result {
-                            on_child(*id);
+                        if let Some(id) = result.heap_reference() {
+                            on_child(id);
                         }
                     }
                 }
-                GatherState::Completed(Value::Ref(id)) => on_child(*id),
-                GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+                GatherState::Completed(value) => {
+                    if let Some(id) = value.heap_reference() {
+                        on_child(id);
+                    }
+                }
+                GatherState::Pending | GatherState::Failed(_) => {}
             }
         }
         HeapData::ExternalFuture(fut) => {
@@ -2120,11 +2124,15 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             // inc_ref on `gather`. `Awaiter::Task` / `None` and the `Failed`
             // state carry no heap refs. `Resolved` owns the cached value, and
             // a pending sleep owns the `result` it will resolve with.
-            if let Some(Value::Ref(id)) = &fut.sleep_result {
-                on_child(*id);
+            if let Some(id) = fut.sleep_result.as_ref().and_then(Value::heap_reference) {
+                on_child(id);
             }
             match &fut.state {
-                ExternalFutureState::Resolved(Value::Ref(id)) => on_child(*id),
+                ExternalFutureState::Resolved(value) => {
+                    if let Some(id) = value.heap_reference() {
+                        on_child(id);
+                    }
+                }
                 ExternalFutureState::Pending {
                     awaiter: Some(Awaiter::GatherSlot { gather, .. }),
                 } => on_child(*gather),
@@ -2158,8 +2166,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::ReMatch(m) => {
             // Mirror `py_dec_ref_ids_for_data`: a match holds one ref on its
             // shared subject string (`None` for an interned subject).
-            if let Value::Ref(id) = m.subject_ref() {
-                on_child(*id);
+            if let Some(id) = m.subject_ref().heap_reference() {
+                on_child(id);
             }
         }
         // Mirror `py_dec_ref_ids_for_data`: both own references to decimal contexts.

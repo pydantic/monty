@@ -1,0 +1,18 @@
+
+context = {'customer': 'Zoë & Partners', 'reference': 'INV-2026-0042', 'total': '1234.50 EUR'}
+parts = []
+position = 0
+while True:
+    start = data.find('{{', position)
+    if start < 0:
+        parts.append(data[position:])
+        break
+    parts.append(data[position:start])
+    end = data.find('}}', start + 2)
+    key = data[start + 2:end].strip()
+    value = context[key].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    parts.append(value)
+    position = end + 2
+result = ''.join(parts)
+data = None
+len(result)

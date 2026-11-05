@@ -1,0 +1,2 @@
+lines = [str(i) + data for i in range(100000)]
+len(lines)

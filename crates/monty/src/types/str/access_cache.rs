@@ -27,11 +27,16 @@ use std::{
     cell::{Cell, RefCell},
     fmt::Debug,
     num::NonZeroUsize,
+    ops::Range,
 };
 
+use ahash::AHashMap;
 use monty_types::ResourceTracker;
 
-use crate::exception_private::RunResult;
+use crate::{
+    exception_private::RunResult,
+    hash::{HashValue, hash_python_str},
+};
 
 // Power-of-two strides let lookups use shifts even when the offset width varies.
 const STRIDE: usize = 32;
@@ -78,12 +83,75 @@ struct Cursor {
 /// Allocated only after a nontrivial Unicode access; local reads need no offset table.
 #[derive(Debug, Default)]
 struct State {
-    /// The same character/byte boundary serves both conversion directions.
+    /// Search/index navigation must not be displaced by repeated view-origin lookups.
     last: Cursor,
+    view_start: Cursor,
     /// UTF-8 bytes traversed by walks longer than eight characters, before checkpoints exist.
     scanned: usize,
     /// Sparse anchors built after repeated long traversals exhaust the scan budget.
     offsets: Offsets,
+    view_hashes: ViewHashes,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ViewRange {
+    start: u32,
+    len: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ViewHash {
+    range: ViewRange,
+    hash: HashValue,
+}
+
+#[derive(Debug)]
+enum ViewHashes {
+    Inline([Option<ViewHash>; 4]),
+    Table(AHashMap<ViewRange, HashValue>),
+}
+
+impl Default for ViewHashes {
+    fn default() -> Self {
+        Self::Inline([None; 4])
+    }
+}
+
+impl ViewHashes {
+    fn get(&self, range: ViewRange) -> Option<HashValue> {
+        match self {
+            Self::Inline(entries) => entries
+                .iter()
+                .flatten()
+                .find(|entry| entry.range == range)
+                .map(|entry| entry.hash),
+            Self::Table(table) => table.get(&range).copied(),
+        }
+    }
+
+    fn insert(&mut self, range: ViewRange, hash: HashValue, tracker: &ResourceTracker) -> RunResult<()> {
+        match self {
+            Self::Inline(entries) => {
+                if let Some(slot) = entries.iter_mut().find(|entry| entry.is_none()) {
+                    *slot = Some(ViewHash { range, hash });
+                    return Ok(());
+                }
+                tracker.check_allocation(8 * size_of::<(ViewRange, HashValue)>() * 2)?;
+                let mut table = AHashMap::with_capacity(8);
+                for entry in entries.iter().flatten() {
+                    table.insert(entry.range, entry.hash);
+                }
+                table.insert(range, hash);
+                *self = Self::Table(table);
+            }
+            Self::Table(table) => {
+                // Hash-table buckets also contain control bytes and unused load-factor capacity.
+                tracker.check_growth(table.len(), table.capacity(), size_of::<(ViewRange, HashValue)>() * 2)?;
+                table.insert(range, hash);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Entry `i` stores the UTF-8 byte offset of character `i * stride`.
@@ -150,15 +218,55 @@ impl Offsets {
     }
 }
 
-impl AccessCache {
-    /// A contiguous slice already knows its character count from normalized bounds.
-    pub(super) fn with_char_len(length: usize) -> Self {
-        Self {
-            char_length: Cell::new(NonZeroUsize::new(length)),
-            state: RefCell::new(None),
+impl State {
+    fn locate_view_start(&mut self, text: &str, target: usize) -> (usize, usize, usize) {
+        if self.view_start.byte_offset == target {
+            return (self.view_start.character_index, 0, 0);
         }
+        let navigation = self.last;
+        let result = self.locate_byte(text, target);
+        self.view_start = self.last;
+        self.last = navigation;
+        result
     }
 
+    fn locate_byte(&mut self, text: &str, target: usize) -> (usize, usize, usize) {
+        // A nearby backward byte boundary should not restart at a checkpoint.
+        if self.last.byte_offset > target && self.last.byte_offset - target <= 8 * 4 {
+            let distance = text[target..self.last.byte_offset].chars().count();
+            if distance <= 8 {
+                let result = self.last.character_index - distance;
+                let bytes = self.last.byte_offset - target;
+                self.last = Cursor {
+                    character_index: result,
+                    byte_offset: target,
+                };
+                return (result, distance, bytes);
+            }
+        }
+        let Cursor {
+            character_index: mut character,
+            byte_offset: mut byte,
+        } = self.offsets.anchor(target);
+        if self.view_start.byte_offset <= target && self.view_start.byte_offset >= byte {
+            character = self.view_start.character_index;
+            byte = self.view_start.byte_offset;
+        }
+        if self.last.byte_offset <= target && self.last.byte_offset >= byte {
+            character = self.last.character_index;
+            byte = self.last.byte_offset;
+        }
+        let traversed = text[byte..target].chars().count();
+        let result = character + traversed;
+        self.last = Cursor {
+            character_index: result,
+            byte_offset: target,
+        };
+        (result, traversed, target - byte)
+    }
+}
+
+impl AccessCache {
     #[cfg(test)]
     pub(crate) fn has_checkpoints(&self) -> bool {
         self.state
@@ -214,6 +322,7 @@ impl AccessCache {
     /// Maps a character index to its UTF-8 byte boundary, clamping beyond the end.
     /// `usize::MAX` denotes an omitted slice end and avoids counting characters.
     pub fn byte_offset(&self, text: &str, target: usize, tracker: &ResourceTracker) -> RunResult<usize> {
+        self.prepare_index(text, tracker)?;
         if target == 0 {
             return Ok(0);
         }
@@ -230,6 +339,10 @@ impl AccessCache {
         } else {
             (0, 0)
         };
+        if state.view_start.character_index <= target && state.view_start.character_index >= character {
+            character = state.view_start.character_index;
+            byte = state.view_start.byte_offset;
+        }
         let Cursor {
             character_index: last_character,
             byte_offset: last_byte,
@@ -270,6 +383,7 @@ impl AccessCache {
     /// Converts a byte boundary returned by substring search to a Python character index.
     /// The byte position must be in bounds and at a character boundary; this does not round arbitrary bytes.
     pub fn char_offset(&self, text: &str, target: usize, tracker: &ResourceTracker) -> RunResult<usize> {
+        self.prepare_index(text, tracker)?;
         if target == 0 {
             return Ok(0);
         }
@@ -278,23 +392,81 @@ impl AccessCache {
         }
         let mut state = self.state.borrow_mut();
         let state = state.get_or_insert_with(Box::default);
-        let Cursor {
-            character_index: mut character,
-            byte_offset: mut byte,
-        } = state.offsets.anchor(target);
-        // Search results often advance from the previous match, beyond the nearest checkpoint.
-        if state.last.byte_offset <= target && state.last.byte_offset >= byte {
-            character = state.last.character_index;
-            byte = state.last.byte_offset;
-        }
-        let traversed = text[byte..target].chars().count();
-        let result = character + traversed;
-        state.last = Cursor {
-            character_index: result,
-            byte_offset: target,
-        };
-        self.charge(text, state, traversed, target - byte, tracker)?;
+        let (result, traversed, bytes) = state.locate_byte(text, target);
+        self.charge(text, state, traversed, bytes, tracker)?;
         Ok(result)
+    }
+
+    /// Keeps a view's origin separate from the most recent search/index boundary.
+    pub(super) fn view_start(&self, text: &str, target: usize, tracker: &ResourceTracker) -> RunResult<usize> {
+        self.prepare_index(text, tracker)?;
+        let mut state = self.state.borrow_mut();
+        let state = state.get_or_insert_with(Box::default);
+        let (result, characters, bytes) = state.locate_view_start(text, target);
+        self.charge(text, state, characters, bytes, tracker)?;
+        Ok(result)
+    }
+
+    /// Keeps four hashes in the lazy state, then promotes to a table without evicting older ranges.
+    pub(super) fn view_hash(&self, text: &str, range: Range<usize>, tracker: &ResourceTracker) -> RunResult<HashValue> {
+        // Inline views already check both bounds before narrowing them to u32.
+        let key = ViewRange {
+            start: u32::try_from(range.start).expect("view start fits u32"),
+            len: u32::try_from(range.len()).expect("view length fits u32"),
+        };
+        let mut state = self.state.borrow_mut();
+        let state = state.get_or_insert_with(Box::default);
+        if let Some(hash) = state.view_hashes.get(key) {
+            return Ok(hash);
+        }
+        let hash = hash_python_str(&text[range]);
+        state.view_hashes.insert(key, hash, tracker)?;
+        Ok(hash)
+    }
+
+    /// Counts a view from backing coordinates without allocating a sparse index.
+    /// Existing checkpoints and the backing's cursor are shared by all views.
+    pub(super) fn char_len_range(&self, text: &str, range: Range<usize>) -> usize {
+        let start = {
+            let mut state = self.state.borrow_mut();
+            let state = state.get_or_insert_with(Box::default);
+            let (result, characters, bytes) = state.locate_view_start(text, range.start);
+            if state.offsets.len() == 0 && characters > 8 {
+                state.scanned = state.scanned.saturating_add(bytes);
+            }
+            result
+        };
+        let end = self.char_offset_for_length(text, range.end);
+        end - start
+    }
+
+    fn char_offset_for_length(&self, text: &str, target: usize) -> usize {
+        if target == 0 {
+            return 0;
+        }
+        if target == text.len() {
+            return self.char_len(text);
+        }
+        let mut state = self.state.borrow_mut();
+        let state = state.get_or_insert_with(Box::default);
+        let (result, characters, bytes) = state.locate_byte(text, target);
+        // len() is infallible; defer any sparse-index allocation to a fallible lookup.
+        if state.offsets.len() == 0 && characters > 8 {
+            state.scanned = state.scanned.saturating_add(bytes);
+        }
+        result
+    }
+
+    /// Range lengths cannot fail; fallible offset lookups build any index they made worthwhile.
+    pub(super) fn prepare_index(&self, text: &str, tracker: &ResourceTracker) -> RunResult<()> {
+        let mut state = self.state.borrow_mut();
+        if let Some(state) = state.as_mut()
+            && state.offsets.len() == 0
+            && state.scanned >= text.len().saturating_mul(SCAN_BUDGET)
+        {
+            self.charge(text, state, 0, 0, tracker)?;
+        }
+        Ok(())
     }
 
     /// Counts only costly traversals so local reads do not pay for checkpoint construction.
@@ -307,10 +479,12 @@ impl AccessCache {
         bytes: usize,
         tracker: &ResourceTracker,
     ) -> RunResult<()> {
-        if state.offsets.len() != 0 || characters <= 8 {
+        if state.offsets.len() != 0 {
             return Ok(());
         }
-        state.scanned = state.scanned.saturating_add(bytes);
+        if characters > 8 {
+            state.scanned = state.scanned.saturating_add(bytes);
+        }
         if state.scanned < text.len().saturating_mul(SCAN_BUDGET) {
             return Ok(());
         }
@@ -355,6 +529,155 @@ mod tests {
     use monty_types::ResourceLimits;
 
     use super::*;
+
+    #[test]
+    fn view_origins_do_not_displace_search_boundaries() {
+        let text = "aé中🐍".repeat(1024);
+        let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
+        let cache = AccessCache::default();
+        let tracker = ResourceTracker::default();
+        assert_eq!(cache.view_start(&text, boundaries[100], &tracker).unwrap(), 100);
+        assert_eq!(cache.char_offset(&text, boundaries[250], &tracker).unwrap(), 250);
+        for _ in 0..100 {
+            assert_eq!(cache.char_len_range(&text, boundaries[100]..text.len()), 3996);
+            assert_eq!(cache.view_start(&text, boundaries[100], &tracker).unwrap(), 100);
+            assert_eq!(cache.state.borrow().as_ref().unwrap().last.byte_offset, boundaries[250]);
+            assert_eq!(cache.byte_offset(&text, 250, &tracker).unwrap(), boundaries[250]);
+        }
+        assert_eq!(cache.view_start(&text, boundaries[500], &tracker).unwrap(), 500);
+        assert_eq!(cache.state.borrow().as_ref().unwrap().last.byte_offset, boundaries[250]);
+        assert_eq!(cache.byte_offset(&text, 501, &tracker).unwrap(), boundaries[501]);
+        for start in [3000, 0, 250, 1] {
+            assert_eq!(cache.view_start(&text, boundaries[start], &tracker).unwrap(), start);
+            assert_eq!(
+                cache.char_len_range(&text, boundaries[start]..boundaries[3500]),
+                3500 - start
+            );
+        }
+    }
+
+    #[test]
+    fn view_hashes_promote_without_eviction_and_reset_on_clone() {
+        let text = "aé中🐍".repeat(1024);
+        let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
+        let cache = AccessCache::default();
+        let tracker = ResourceTracker::default();
+        for i in 0..128 {
+            let range = boundaries[i]..boundaries[i + 1000];
+            assert_eq!(
+                cache.view_hash(&text, range.clone(), &tracker).unwrap(),
+                hash_python_str(&text[range])
+            );
+            let state = cache.state.borrow();
+            match &state.as_ref().unwrap().view_hashes {
+                ViewHashes::Inline(_) => assert!(i < 4),
+                ViewHashes::Table(table) => assert_eq!(table.len(), i + 1),
+            }
+        }
+        let state = cache.state.borrow();
+        for i in 0..128 {
+            let range = boundaries[i]..boundaries[i + 1000];
+            let key = ViewRange {
+                start: u32::try_from(range.start).unwrap(),
+                len: u32::try_from(range.len()).unwrap(),
+            };
+            assert_eq!(
+                state.as_ref().unwrap().view_hashes.get(key),
+                Some(hash_python_str(&text[range]))
+            );
+        }
+        assert!(cache.clone().state.borrow().is_none());
+    }
+
+    #[test]
+    fn view_hash_promotion_and_growth_fail_without_losing_cached_entries() {
+        let text = "aé中🐍".repeat(1024);
+        let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
+        let cache = AccessCache::default();
+        let tracker = ResourceTracker::default();
+        let limited = ResourceTracker::new(ResourceLimits {
+            max_memory: Some(0),
+            ..ResourceLimits::default()
+        });
+        for i in 0..4 {
+            cache
+                .view_hash(&text, boundaries[i]..boundaries[i + 100], &limited)
+                .unwrap();
+        }
+        let fifth = boundaries[4]..boundaries[104];
+        assert!(cache.view_hash(&text, fifth.clone(), &limited).is_err());
+        assert!(matches!(
+            &cache.state.borrow().as_ref().unwrap().view_hashes,
+            ViewHashes::Inline(_)
+        ));
+        cache.view_hash(&text, fifth, &tracker).unwrap();
+        let capacity = match &cache.state.borrow().as_ref().unwrap().view_hashes {
+            ViewHashes::Table(table) => table.capacity(),
+            ViewHashes::Inline(_) => panic!("fifth hash promotes to a table"),
+        };
+        for i in 5..capacity {
+            cache
+                .view_hash(&text, boundaries[i]..boundaries[i + 100], &limited)
+                .unwrap();
+        }
+        let next = boundaries[capacity]..boundaries[capacity + 100];
+        assert!(cache.view_hash(&text, next.clone(), &limited).is_err());
+        for i in 0..capacity {
+            assert_eq!(
+                cache
+                    .view_hash(&text, boundaries[i]..boundaries[i + 100], &limited)
+                    .unwrap(),
+                hash_python_str(&text[boundaries[i]..boundaries[i + 100]])
+            );
+        }
+        cache.view_hash(&text, next, &tracker).unwrap();
+    }
+
+    #[test]
+    fn nearby_backward_byte_offsets_preserve_local_walks() {
+        let text = "aé中🐍".repeat(1024);
+        let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
+        let mut state = State {
+            last: Cursor {
+                character_index: 1500,
+                byte_offset: boundaries[1500],
+            },
+            ..State::default()
+        };
+        for target in (1492..1500).rev() {
+            let (character, walked, _) = state.locate_byte(&text, boundaries[target]);
+            assert_eq!(character, target);
+            assert_eq!(walked, 1);
+        }
+        assert_eq!(state.offsets.len(), 0);
+    }
+
+    #[test]
+    fn range_lengths_trigger_resource_checked_indexes_on_the_next_lookup() {
+        let text = "aé中🐍".repeat(1024);
+        let boundaries: Vec<_> = text.char_indices().map(|(byte, _)| byte).collect();
+        let cache = AccessCache::default();
+        for n in 0..512 {
+            let end = if n % 2 == 0 { 3000 } else { 1 };
+            assert_eq!(cache.char_len_range(&text, 0..boundaries[end]), end);
+        }
+        assert!(!cache.has_checkpoints());
+        let limited = ResourceTracker::new(ResourceLimits {
+            max_memory: Some(0),
+            ..ResourceLimits::default()
+        });
+        // Even an endpoint lookup must honor the pending build and its allocation failure.
+        assert!(cache.byte_offset(&text, 0, &limited).is_err());
+        assert!(!cache.has_checkpoints());
+        assert_eq!(cache.byte_offset(&text, 0, &ResourceTracker::default()).unwrap(), 0);
+        assert!(cache.has_checkpoints());
+        for start in [1, 41, 257, 1500] {
+            assert_eq!(
+                cache.char_len_range(&text, boundaries[start]..boundaries[3000]),
+                3000 - start
+            );
+        }
+    }
 
     #[test]
     fn offset_width_and_stride_follow_utf8_byte_length() {

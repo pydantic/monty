@@ -1,0 +1,12 @@
+
+import json
+lines = data.splitlines()
+data = None
+total = 0
+errors = 0
+for line in lines:
+    event = json.loads(line)
+    total += event['amount']
+    if not event['ok']:
+        errors += 1
+total + errors

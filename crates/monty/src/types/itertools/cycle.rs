@@ -39,8 +39,8 @@ impl Cycle {
             on_child(*id);
         }
         for item in &self.saved {
-            if let Value::Ref(id) = item {
-                on_child(*id);
+            if let Some(id) = item.heap_reference() {
+                on_child(id);
             }
         }
     }

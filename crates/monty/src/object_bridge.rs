@@ -33,7 +33,7 @@ use crate::{
         instance::class_name,
         list::List,
         set::{FrozenSet, Set},
-        str::allocate_string,
+        str::{StringView, allocate_string},
         time as time_type, timedelta as timedelta_type,
     },
     value::{EitherStr, Value},
@@ -119,6 +119,7 @@ pub(crate) struct GraphExporter {
     graph: MontyGraph,
     /// The node of every finished heap object, reused on a second reference.
     memo: AHashMap<HeapId, NodeId>,
+    view_memo: AHashMap<StringView, NodeId>,
     /// Objects on the current descent; a reference back to one becomes a
     /// [`MontyNode::Cycle`] leaf rather than infinite recursion.
     in_progress: AHashSet<HeapId>,
@@ -136,6 +137,7 @@ impl GraphExporter {
         Self {
             graph: MontyGraph::new(),
             memo: AHashMap::new(),
+            view_memo: AHashMap::new(),
             in_progress: AHashSet::new(),
             pinned: Vec::new(),
             error: None,
@@ -197,6 +199,17 @@ impl GraphExporter {
             Value::Float(f) => MontyNode::Float(*f),
             Value::InternString(string_id) => MontyNode::String(interns.get_str(*string_id).to_owned()),
             Value::InlineString(text) => MontyNode::String(text.as_str().to_owned()),
+            Value::StrView(view) => {
+                if let Some(id) = self.view_memo.get(view) {
+                    return *id;
+                }
+                let text = view.as_str(vm.heap).to_owned();
+                let node = self.push_node(MontyNode::String(text));
+                // Pin the backing: Python repr callbacks can otherwise recycle its heap ID.
+                self.pinned.push(value.clone_with_heap(vm.heap));
+                self.view_memo.insert(*view, node);
+                return node;
+            }
             Value::InternBytes(bytes_id) => MontyNode::Bytes(interns.get_bytes(*bytes_id).to_owned()),
             Value::InternLongInt(li_id) => MontyNode::BigInt(interns.get_long_int(*li_id).clone()),
             Value::Ref(id) => return self.push_ref(*id, value, vm),

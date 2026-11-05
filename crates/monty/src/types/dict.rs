@@ -226,7 +226,7 @@ impl Dict {
     /// `None`), taking ownership of the factory reference. Called once at
     /// construction; the factory joins the dict's `contains_refs` accounting.
     pub fn make_defaultdict(&mut self, factory: Option<Value>) {
-        if matches!(factory, Some(Value::Ref(_))) {
+        if factory.as_ref().and_then(Value::heap_reference).is_some() {
             self.contains_refs = true;
         }
         self.kind = DictKind::defaultdict(factory);
@@ -270,7 +270,7 @@ impl Dict {
     /// Adopts a kind produced by [`cloned_kind`], taking ownership of any
     /// factory reference it carries.
     pub fn set_kind(&mut self, kind: DictKind) {
-        if matches!(kind.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(_))))) {
+        if matches!(kind.0.as_deref(), Some(DictSpecial::Default(Some(value))) if value.heap_reference().is_some()) {
             self.contains_refs = true;
         }
         self.kind = kind;
@@ -301,7 +301,7 @@ impl Dict {
     /// returning the previous factory for the caller to drop. Only valid on a
     /// defaultdict.
     pub fn replace_default_factory(&mut self, factory: Option<Value>) -> Option<Value> {
-        if matches!(factory, Some(Value::Ref(_))) {
+        if factory.as_ref().and_then(Value::heap_reference).is_some() {
             self.contains_refs = true;
         }
         // The `default_factory =` setter only calls this on an existing
@@ -363,7 +363,7 @@ impl Dict {
     pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
 
-        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+        if key.heap_reference().is_some() || value.heap_reference().is_some() {
             self.contains_refs = true;
         }
 
@@ -617,7 +617,7 @@ impl<'h> HeapReadMut<'h, Dict> {
             .table
             .find(hash, |entry| json_key_equals_str(&entry.key, key_str, heap, interns));
         let dict = self.get_mut(heap);
-        dict.contains_refs |= matches!(value, Value::Ref(_));
+        dict.contains_refs |= value.heap_reference().is_some();
         let entry = DictEntry {
             key: Value::InternString(key),
             value,
@@ -635,7 +635,7 @@ impl<'h> HeapReadMut<'h, Dict> {
 
     fn set_with(&self, key: Value, value: Value, vm: &mut VM<'h>, growth: GrowthCheck) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
-        if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
+        if key.heap_reference().is_some() || value.heap_reference().is_some() {
             self.get_mut(vm.heap).contains_refs = true;
         }
 
@@ -801,6 +801,7 @@ pub(crate) fn probe_native_eq(candidate: &Value, key: &Value, vm: &VM<'_>) -> Op
             Value::InternLongInt(id) => eq_bigint(vm.interns.get_long_int(*id), key, vm),
             Value::InternString(id) => eq_str(vm.interns.get_str(*id), key, vm),
             Value::InlineString(text) => eq_str(text.as_str(), key, vm),
+            Value::StrView(view) => eq_str(view.as_str(vm.heap), key, vm),
             Value::InternBytes(id) => eq_bytes(vm.interns.get_bytes(*id), key, vm),
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Str(s) => eq_str(s.as_str(), key, vm),
@@ -1642,12 +1643,8 @@ impl HeapItem for Dict {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Release the default_factory (a defaultdict with a heap-ref factory, e.g.
         // a lambda). MUST be reported here and in `for_each_child_id` identically.
-        if let Some(DictSpecial::Default(Some(factory))) = self.kind.0.as_deref_mut()
-            && let Value::Ref(id) = factory
-        {
-            stack.push(*id);
-            #[cfg(feature = "memory-model-checks")]
-            factory.dec_ref_forget();
+        if let Some(DictSpecial::Default(Some(factory))) = self.kind.0.as_deref_mut() {
+            factory.py_dec_ref_ids(stack);
         }
         // Skip iteration if no refs - major GC optimization for dicts of primitives
         if !self.contains_refs {
@@ -1655,16 +1652,8 @@ impl HeapItem for Dict {
         }
         // Only called on a dict being freed, so its entries can be taken.
         for entry in &mut self.table.take_entries() {
-            if let Value::Ref(id) = &entry.key {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                entry.key.dec_ref_forget();
-            }
-            if let Value::Ref(id) = &entry.value {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                entry.value.dec_ref_forget();
-            }
+            entry.key.py_dec_ref_ids(stack);
+            entry.value.py_dec_ref_ids(stack);
         }
     }
 }

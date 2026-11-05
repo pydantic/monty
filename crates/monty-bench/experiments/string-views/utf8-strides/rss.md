@@ -1,0 +1,26 @@
+| Workload                  | Main MiB | Index PR MiB | Optimized MiB |
+| ------------------------- | -------: | -----------: | ------------: |
+| latin_windows_stride_1    |     9.48 |         9.36 |          9.16 |
+| latin_windows_stride_8    |     9.47 |         9.34 |          9.16 |
+| latin_windows_stride_64   |     9.47 |         9.36 |          9.16 |
+| latin_windows_stride_1024 |     9.48 |         9.34 |          9.16 |
+| latin_small_windows       |     8.98 |         9.11 |          9.17 |
+| latin_stepped_windows     |     9.30 |         9.36 |          9.44 |
+| latin_retained_windows    |    41.31 |        41.44 |          9.33 |
+| latin_index_only          |     8.92 |         9.05 |          9.11 |
+| cjk_windows_stride_1      |     9.94 |         9.69 |          9.39 |
+| cjk_windows_stride_8      |     9.95 |         9.73 |          9.38 |
+| cjk_windows_stride_64     |     9.97 |         9.70 |          9.38 |
+| cjk_windows_stride_1024   |     9.95 |         9.70 |          9.38 |
+| cjk_small_windows         |     9.20 |         9.34 |          9.44 |
+| cjk_stepped_windows       |     9.95 |         9.78 |          9.81 |
+| cjk_retained_windows      |    57.61 |        57.72 |          9.55 |
+| cjk_index_only            |     9.14 |         9.25 |          9.30 |
+| mixed_windows_stride_1    |     9.70 |         9.50 |          9.27 |
+| mixed_windows_stride_8    |     9.72 |         9.52 |          9.27 |
+| mixed_windows_stride_64   |     9.70 |         9.48 |          9.27 |
+| mixed_windows_stride_1024 |     9.70 |         9.53 |          9.25 |
+| mixed_small_windows       |     9.08 |         9.20 |          9.28 |
+| mixed_stepped_windows     |     9.48 |         9.56 |          9.62 |
+| mixed_retained_windows    |    49.45 |        49.58 |          9.42 |
+| mixed_index_only          |     9.02 |         9.11 |          9.17 |

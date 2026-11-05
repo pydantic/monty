@@ -94,7 +94,7 @@ impl Tuple {
     /// ensure refcounts are properly managed.
     #[must_use]
     fn new(items: TupleVec) -> Self {
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| v.heap_reference().is_some());
         Self {
             items,
             contains_refs,
@@ -523,11 +523,7 @@ impl HeapItem for Tuple {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                obj.dec_ref_forget();
-            }
+            obj.py_dec_ref_ids(stack);
         }
     }
 }

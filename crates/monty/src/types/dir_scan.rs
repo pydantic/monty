@@ -77,8 +77,8 @@ impl DirScan {
     /// Invokes `on_child` for each heap id this object owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         if let Self::Walk(walk) = self {
-            if let Value::Ref(id) = &walk.onerror {
-                on_child(*id);
+            if let Some(id) = walk.onerror.heap_reference() {
+                on_child(id);
             }
             if let Some(pending) = &walk.pending {
                 on_child(pending.dirnames);

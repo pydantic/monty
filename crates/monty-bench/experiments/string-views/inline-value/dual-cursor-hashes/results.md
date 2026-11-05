@@ -1,0 +1,20 @@
+| Workload                 | Arc ms | Previous inline ms | Dual/adaptive ms | New vs Arc |
+| ------------------------ | -----: | -----------------: | ---------------: | ---------: |
+| ndjson_ascii_tail        |  5.093 |              4.987 |            4.969 |      -2.4% |
+| ndjson_utf8_tail         |  4.446 |              5.851 |            4.319 |      -2.9% |
+| ndjson_utf8_splitlines   |  2.705 |              2.633 |            2.631 |      -2.8% |
+| prefix_remove_ascii      |  4.002 |              3.741 |            3.814 |      -4.7% |
+| prefix_remove_utf8       |  4.693 |              4.158 |            4.017 |     -14.4% |
+| suffix_remove_utf8       | 17.407 |              4.397 |            4.292 |     -75.3% |
+| splitlines_bulk_ascii    |  9.239 |              8.451 |            8.470 |      -8.3% |
+| splitlines_bulk_utf8     | 10.139 |              9.979 |            9.905 |      -2.3% |
+| splitlines_inline        |  1.356 |              1.599 |            1.613 |     +18.9% |
+| json_request             |  2.042 |              1.987 |            1.966 |      -3.7% |
+| template_fragments       |  1.439 |              1.437 |            1.438 |      -0.1% |
+| docx_text                |  1.402 |              1.389 |            1.410 |      +0.6% |
+| hash_1_views             |  1.473 |              1.425 |            1.445 |      -1.9% |
+| hash_4_views             |  2.302 |              2.468 |            2.503 |      +8.7% |
+| hash_8_views             |  3.365 |             41.563 |            3.464 |      +3.0% |
+| hash_64_views            | 17.771 |            319.298 |           18.421 |      +3.7% |
+| unicode_owners_unindexed | 25.233 |             23.223 |           23.682 |      -6.1% |
+| unicode_owners_indexed   | 50.850 |             47.819 |           50.398 |      -0.9% |

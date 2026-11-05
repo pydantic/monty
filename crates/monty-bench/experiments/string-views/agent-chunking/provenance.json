@@ -1,0 +1,321 @@
+{
+  "builds": {
+    "main": [
+      "/private/tmp/monty-rss-strides_main",
+      "measure_peak_rss",
+      "--ignored",
+      "--test-threads=1"
+    ],
+    "index_pr": [
+      "/private/tmp/monty-rss-base",
+      "measure_peak_rss",
+      "--ignored",
+      "--test-threads=1"
+    ],
+    "optimized": [
+      "/private/tmp/monty-rss-dual_adaptive",
+      "measure_peak_rss",
+      "--ignored",
+      "--test-threads=1"
+    ],
+    "cpython": [
+      "/Users/jaheba/p/monty/.venv/bin/python",
+      "/private/tmp/monty-inline-string-views/crates/monty-bench/experiments/string-views/agent-chunking/cpython_runner.py"
+    ]
+  },
+  "executable_sha256": {
+    "main": "6dce96db614c14e9945b14ca8c9bb97b6ef6545f76a520c0d44acf076df739fe",
+    "index_pr": "a72b427025eec3d1f858b6c9ac4e698f510f2d3b7dd6aa5983a5bf3c9ece14af",
+    "optimized": "302c96908c6ea0a236add370d4af18b255ca0d48d4d2030a9a1abe5e7844c5f0",
+    "cpython": "7af94281dcb14ba81b98e587d6e9b237ebf51986f0424bb4988d8568e914e9da"
+  },
+  "cpython_version": "Python 3.14.2",
+  "machine": "macOS-27.0-arm64-arm-64bit-Mach-O",
+  "trials": 5,
+  "target_batch_ms": 500,
+  "calibration": [
+    [
+      "main",
+      "remainder_256kib",
+      27,
+      502718999.99999994,
+      31069000.0,
+      11452416
+    ],
+    [
+      "main",
+      "offsets_256kib",
+      13,
+      403880999.99999994,
+      36529000.0,
+      10158080
+    ],
+    [
+      "main",
+      "remainder_1024kib",
+      2,
+      543314000.0,
+      276456000.0,
+      17285120
+    ],
+    [
+      "main",
+      "offsets_1024kib",
+      1,
+      493700999.99999994,
+      501154999.9999999,
+      12828672
+    ],
+    [
+      "main",
+      "remainder_2048kib",
+      1,
+      1051581000.0000001,
+      1065398000.0000001,
+      25001984
+    ],
+    [
+      "main",
+      "offsets_2048kib",
+      1,
+      1899487000.0000002,
+      1912697000.0,
+      16334848
+    ],
+    [
+      "index_pr",
+      "remainder_256kib",
+      420,
+      483459000.0,
+      10520000.0,
+      10928128
+    ],
+    [
+      "index_pr",
+      "offsets_256kib",
+      2048,
+      369605999.99999994,
+      5926000.0,
+      10158080
+    ],
+    [
+      "index_pr",
+      "remainder_1024kib",
+      33,
+      495650000.0,
+      21081000.0,
+      17154048
+    ],
+    [
+      "index_pr",
+      "offsets_1024kib",
+      589,
+      425959999.99999994,
+      8538000.0,
+      12894208
+    ],
+    [
+      "index_pr",
+      "remainder_2048kib",
+      7,
+      407498000.0,
+      63490000.00000001,
+      20791296
+    ],
+    [
+      "index_pr",
+      "offsets_2048kib",
+      294,
+      434150000.0,
+      11595999.999999998,
+      16498688
+    ],
+    [
+      "optimized",
+      "remainder_256kib",
+      2048,
+      392597000.0,
+      9314000.0,
+      10256384
+    ],
+    [
+      "optimized",
+      "offsets_256kib",
+      2048,
+      368798000.0,
+      5639000.0,
+      10240000
+    ],
+    [
+      "optimized",
+      "remainder_1024kib",
+      555,
+      462676000.0,
+      6437999.999999999,
+      13189120
+    ],
+    [
+      "optimized",
+      "offsets_1024kib",
+      594,
+      429074000.0,
+      8232000.0,
+      12943360
+    ],
+    [
+      "optimized",
+      "remainder_2048kib",
+      275,
+      465742000.0,
+      8133000.0,
+      17022976
+    ],
+    [
+      "optimized",
+      "offsets_2048kib",
+      297,
+      440999000.0,
+      12031000.0,
+      16547840
+    ],
+    [
+      "cpython",
+      "remainder_256kib",
+      449,
+      212677999.99999997,
+      26979999.999999996,
+      23314432
+    ],
+    [
+      "cpython",
+      "offsets_256kib",
+      2048,
+      48259000.0,
+      27611000.0,
+      21889024
+    ],
+    [
+      "cpython",
+      "remainder_1024kib",
+      22,
+      455009000.0,
+      46278000.0,
+      40239104
+    ],
+    [
+      "cpython",
+      "offsets_1024kib",
+      1390,
+      106459000.0,
+      26482000.0,
+      27738112
+    ],
+    [
+      "cpython",
+      "remainder_2048kib",
+      5,
+      469500000.0,
+      115887999.99999999,
+      61702144
+    ],
+    [
+      "cpython",
+      "offsets_2048kib",
+      734,
+      164845000.0,
+      27865000.0,
+      35782656
+    ]
+  ],
+  "cases": [
+    {
+      "name": "remainder_256kib",
+      "expected": 128546405,
+      "input_bytes": 262142,
+      "characters": 194002,
+      "chunks": 117,
+      "variant": "remainder",
+      "iterations": 3,
+      "retain": false,
+      "input_sha256": "719b581fd795eab9401140bead22d0af4d11a043ad7248a3a488764c473ecf55"
+    },
+    {
+      "name": "offsets_256kib",
+      "expected": 128546405,
+      "input_bytes": 262142,
+      "characters": 194002,
+      "chunks": 117,
+      "variant": "offsets",
+      "iterations": 3,
+      "retain": false,
+      "input_sha256": "719b581fd795eab9401140bead22d0af4d11a043ad7248a3a488764c473ecf55"
+    },
+    {
+      "name": "remainder_1024kib",
+      "expected": 647367817,
+      "input_bytes": 1048576,
+      "characters": 776052,
+      "chunks": 466,
+      "variant": "remainder",
+      "iterations": 2,
+      "retain": false,
+      "input_sha256": "f267b59df24e7b13c3b1ba7f34a774f73dc16e650cde59e7d07f4bc59fd411f7"
+    },
+    {
+      "name": "offsets_1024kib",
+      "expected": 647367817,
+      "input_bytes": 1048576,
+      "characters": 776052,
+      "chunks": 466,
+      "variant": "offsets",
+      "iterations": 2,
+      "retain": false,
+      "input_sha256": "f267b59df24e7b13c3b1ba7f34a774f73dc16e650cde59e7d07f4bc59fd411f7"
+    },
+    {
+      "name": "remainder_2048kib",
+      "expected": 1656723590,
+      "input_bytes": 2097152,
+      "characters": 1552325,
+      "chunks": 932,
+      "variant": "remainder",
+      "iterations": 1,
+      "retain": false,
+      "input_sha256": "a0914c8bd61fecaf87d1f9d66b5c048198a7c93fb6b62438bf19c55cd4a0664c"
+    },
+    {
+      "name": "offsets_2048kib",
+      "expected": 1656723590,
+      "input_bytes": 2097152,
+      "characters": 1552325,
+      "chunks": 932,
+      "variant": "offsets",
+      "iterations": 1,
+      "retain": false,
+      "input_sha256": "a0914c8bd61fecaf87d1f9d66b5c048198a7c93fb6b62438bf19c55cd4a0664c"
+    }
+  ],
+  "revisions": {
+    "main": "2a3269043e544d0e7bd99e3e5cf0c306a8246076",
+    "index_pr": "5c9dddf39c92981b8ef023be059e8c3aeabf7e91",
+    "optimized": "uncommitted dual-cursor/adaptive-hash inline views on f29350439dc1a5d5f63e7c0d30555edcf170a57c"
+  },
+  "method": "randomized fresh processes; wait4 user+system CPU divided by calibrated guest iterations; startup/compile/input/teardown amortized but included; RSS separate original single execution",
+  "source_sha256": {
+    "measure.py": "761e858f8a79f6751c95f9aab87acac8c8f3984d269803c7c885272735e4b8e3",
+    "remainder.py": "9084f973410ddd367128d17d37e024d8a8415168118b6bda52843756e0d67b56",
+    "cpython_runner.py": "a0be4a88c687b68fc7e7fd29fcabe15fcbfb65bdd4354a00e7851c84c2e635be",
+    "offsets.py": "1833006fd1c01767db34152e7aa5818b50735efea70c9c02e4727c7a6bf6bdd1",
+    "prepare.py": "da8924c30e954b3cb74813659cd80a1ba1bc48609427644537ff6b788ef1ab12"
+  },
+  "optimized_library_source_sha256": {
+    "crates/monty/src/types/str/access_cache.rs": "c1db2228a0e610269e384a4836db6d778a1f4b166cbdfb5d824990308b7651ad",
+    "crates/monty/src/types/str/mod.rs": "c1bd85cc27c7d3ad48575c97de4cfbec942a3da691cbe204e47fcc5b68f5e8a9",
+    "crates/monty/src/types/str/view.rs": "25403e11fe560c9b183b58a68ebc51e7d7e79f43bab32244c0e18c9783c89502",
+    "crates/monty/src/value.rs": "0c38557d538de42a6b640b0439486077a1adf0686ceb76dd17b7a1e56cb9ab16"
+  },
+  "optimized_source_patch_sha256": "cf6d47e22d06d48b91c2fdb3a5f52057b6c383fb3ca3102d40f3ff384bd06e3d",
+  "full_output_validation": "optimized Monty memory-model-checks integration test: all six complete chunk text/start-offset lists equal CPython output",
+  "archived_measure_sha256": "256b4dec2a085d5bf5ed91be77972484458eccee645fd82214189a45790106a6",
+  "archive_note": "CSV line endings normalized to LF; archived driver sets the CSV line terminator explicitly. Measured kernel source and numeric samples are unchanged."
+}

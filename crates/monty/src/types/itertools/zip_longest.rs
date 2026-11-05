@@ -43,12 +43,12 @@ impl ZipLongest {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for source in self.sources.iter().flatten() {
-            if let Value::Ref(id) = source {
-                on_child(*id);
+            if let Some(id) = source.heap_reference() {
+                on_child(id);
             }
         }
-        if let Value::Ref(id) = &self.fillvalue {
-            on_child(*id);
+        if let Some(id) = self.fillvalue.heap_reference() {
+            on_child(id);
         }
     }
 

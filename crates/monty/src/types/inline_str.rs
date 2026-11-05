@@ -26,6 +26,7 @@ impl InlineStr {
     pub(crate) fn eq_value(&self, other: &Value, vm: &VM<'_>) -> Option<bool> {
         match other {
             Value::InlineString(other) => Some(self == other),
+            Value::StrView(view) => Some(self.as_str() == view.as_str(vm.heap)),
             Value::InternString(id) => Some(self.as_bytes() == vm.interns.get_str(*id).as_bytes()),
             Value::Ref(id) if let HeapData::Str(other) = vm.heap.get(*id) => {
                 Some(self.as_bytes() == other.as_str().as_bytes())

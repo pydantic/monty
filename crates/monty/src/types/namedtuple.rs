@@ -137,7 +137,7 @@ impl NamedTuple {
             items.len(),
             "NamedTuple field_names and items must have same length"
         );
-        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = items.iter().any(|v| v.heap_reference().is_some());
         Self {
             name: name.into(),
             field_names,
@@ -639,11 +639,7 @@ impl HeapItem for NamedTuple {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                obj.dec_ref_forget();
-            }
+            obj.py_dec_ref_ids(stack);
         }
     }
 }
@@ -842,7 +838,7 @@ impl NamedTupleClass {
     /// `module` is taken by value: the class owns that reference from here on.
     #[must_use]
     pub fn new(name: impl Into<EitherStr>, field_names: Vec<EitherStr>, defaults: Vec<Value>, module: Value) -> Self {
-        let contains_refs = defaults.iter().any(|v| matches!(v, Value::Ref(_))) || matches!(module, Value::Ref(_));
+        let contains_refs = defaults.iter().any(|v| v.heap_reference().is_some()) || module.heap_reference().is_some();
         Self {
             name: name.into(),
             field_names,
@@ -994,11 +990,7 @@ impl HeapItem for NamedTupleClass {
         // MUST report exactly the same ids as the `NamedTupleClass` arm of
         // `for_each_child_id` — `module` is owned just like the defaults are.
         for obj in self.defaults.iter_mut().chain(once(&mut self.module)) {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                obj.dec_ref_forget();
-            }
+            obj.py_dec_ref_ids(stack);
         }
     }
 }

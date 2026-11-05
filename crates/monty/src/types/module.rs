@@ -148,11 +148,11 @@ impl Module {
         }
         if self.attrs.has_refs() {
             for (k, v) in &self.attrs {
-                if let Value::Ref(id) = k {
-                    on_child(*id);
+                if let Some(id) = k.heap_reference() {
+                    on_child(id);
                 }
-                if let Value::Ref(id) = v {
-                    on_child(*id);
+                if let Some(id) = v.heap_reference() {
+                    on_child(id);
                 }
             }
         }

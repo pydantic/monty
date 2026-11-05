@@ -83,7 +83,7 @@ impl List {
     /// ensure refcounts are properly managed.
     #[must_use]
     pub fn new(vec: Vec<Value>) -> Self {
-        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+        let contains_refs = vec.iter().any(|v| v.heap_reference().is_some());
         Self {
             items: vec,
             contains_refs,
@@ -181,7 +181,7 @@ impl<'h> HeapReadMut<'h, List> {
 
         if items.len() == count {
             let list = self.get_mut(vm.heap);
-            list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
+            list.contains_refs |= items.iter().any(|item| item.heap_reference().is_some());
             if step == 1 {
                 let start = usize::try_from(start).expect("positive slice start is non-negative");
                 list.items[start..start + count].swap_with_slice(items);
@@ -202,7 +202,7 @@ impl<'h> HeapReadMut<'h, List> {
                 .check_allocation(growth.saturating_add(count).saturating_mul(VALUE_SIZE))?;
 
             let list = self.get_mut(vm.heap);
-            list.contains_refs |= items.iter().any(|item| matches!(item, Value::Ref(_)));
+            list.contains_refs |= items.iter().any(|item| item.heap_reference().is_some());
             let start = usize::try_from(start).expect("positive slice start is non-negative");
             let removed: Vec<Value> = list.items.splice(start..start + count, items.drain(..)).collect();
             removed.drop_with(vm);
@@ -223,7 +223,7 @@ impl<'h> HeapReadMut<'h, List> {
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`,
         // not at mutation time.
-        let is_ref = matches!(item, Value::Ref(_));
+        let is_ref = item.heap_reference().is_some();
         let this = self.get_mut(vm.heap);
         if is_ref {
             this.contains_refs = true;
@@ -262,7 +262,7 @@ impl<'h> HeapReadMut<'h, List> {
         };
         // Track whether the list now contains heap refs so child-walk fast paths
         // can short-circuit; cycle-collector seeding is handled by `dec_ref`.
-        if matches!(item, Value::Ref(_)) {
+        if item.heap_reference().is_some() {
             self.get_mut(vm.heap).contains_refs = true;
         }
         // Ownership transfer - refcount was already handled by caller
@@ -587,7 +587,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
 
         // Update contains_refs if storing a Ref (must check before swap,
         // since after swap `value` holds the old item)
-        if matches!(*value, Value::Ref(_)) {
+        if value.heap_reference().is_some() {
             self.get_mut(vm.heap).contains_refs = true;
         }
 
@@ -718,7 +718,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
                 .map_err(|_| ExcType::allocation_too_large())?;
             let source_items = source_list.clone_all_items(vm)?;
             // GC skips lists without heap references; newly appended references must enable scanning.
-            let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
+            let has_new_refs = source_items.iter().any(|v| v.heap_reference().is_some());
             self.get_mut(vm.heap).items.extend(source_items);
             if has_new_refs {
                 self.get_mut(vm.heap).contains_refs = true;
@@ -798,11 +798,7 @@ impl HeapItem for List {
             return;
         }
         for obj in &mut self.items {
-            if let Value::Ref(id) = obj {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                obj.dec_ref_forget();
-            }
+            obj.py_dec_ref_ids(stack);
         }
     }
 }
@@ -981,7 +977,7 @@ fn list_extend<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
     let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
 
-    let has_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+    let has_refs = items.iter().any(|v| v.heap_reference().is_some());
     if has_refs {
         list.get_mut(vm.heap).set_contains_refs();
     }

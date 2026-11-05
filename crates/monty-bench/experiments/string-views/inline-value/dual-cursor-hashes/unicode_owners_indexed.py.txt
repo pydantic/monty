@@ -1,0 +1,5 @@
+lines = [str(i) + data for i in range(100000)]
+total = 0
+for line in lines:
+    total += ord(line[20])
+total

@@ -1,0 +1,194 @@
+{
+  "executables": {
+    "copy": "/private/tmp/monty-rss-base",
+    "arc_views": "/private/tmp/monty-rss-owned_views",
+    "inline_views": "/private/tmp/monty-rss-inline_views"
+  },
+  "sha256": {
+    "copy": "a72b427025eec3d1f858b6c9ac4e698f510f2d3b7dd6aa5983a5bf3c9ece14af",
+    "arc_views": "222442d4c6a4a958c255afef3fad6bf0eaa03a82aa5aef03e090c2b592004c0e",
+    "inline_views": "7bea8b4d0d49fc404effac435b2d8927c59829338c50cbbf6646263b200f94f8"
+  },
+  "cases": [
+    {
+      "expected": 93059,
+      "input_bytes": 92459,
+      "name": "template_styled",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 31569,
+      "input_bytes": 30969,
+      "name": "template_fragments",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 70600,
+      "input_bytes": 114553,
+      "name": "docx_text",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1102,
+      "input_bytes": 114553,
+      "name": "docx_selected",
+      "retain": true,
+      "iterations": 40
+    },
+    {
+      "expected": 1224843,
+      "input_bytes": 995024,
+      "name": "json_request",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1393345,
+      "input_bytes": 1195024,
+      "name": "json_uri_normalize",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 1060987,
+      "name": "ndjson_ascii_tail",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 1060987,
+      "name": "ndjson_ascii_splitlines",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_tail",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_splitlines",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 100318,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_ascii",
+      "retain": true,
+      "iterations": 10
+    },
+    {
+      "expected": 100160,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_utf8",
+      "retain": true,
+      "iterations": 10
+    },
+    {
+      "expected": 80,
+      "input_bytes": 16000000,
+      "name": "splitlines_keep_one",
+      "retain": true,
+      "iterations": 10
+    },
+    {
+      "expected": 100005,
+      "input_bytes": 600000,
+      "name": "splitlines_inline",
+      "retain": true,
+      "iterations": 40
+    },
+    {
+      "expected": 256,
+      "input_bytes": 760044,
+      "name": "json_preview_retained",
+      "retain": true,
+      "iterations": 40
+    },
+    {
+      "name": "hash_1_views",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "hash_4_views",
+      "expected": 4,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "hash_8_views",
+      "expected": 8,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "hash_64_views",
+      "expected": 64,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "prefix_remove_ascii",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 20000,
+      "iterations": 10
+    },
+    {
+      "name": "prefix_remove_utf8",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 60000,
+      "iterations": 10
+    }
+  ],
+  "method": "5 randomized fresh processes; wait4 user+system CPU / guest repetitions; separate single-execution absolute peak RSS in bytes",
+  "base_revision": "5c9dddf39c92981b8ef023be059e8c3aeabf7e91",
+  "arc_revision": "f29350439dc1a5d5f63e7c0d30555edcf170a57c",
+  "inline_revision": "uncommitted changes on f29350439dc1a5d5f63e7c0d30555edcf170a57c",
+  "profile": "profiling",
+  "machine": "arm64 macOS",
+  "trials": 5,
+  "confirmation_trials": 7,
+  "input_sha256": {
+    "json_preview_retained": "2c62e50080721b3020667b4cc15ad486440d1e11340e5c8f75a9af748e62a014",
+    "splitlines_inline": "7c56cd3f9b5d316ba32191b523cdf17787b550abc5b97a02fdf8b1230fabcc08",
+    "hash_4_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "json_request": "a848b541f4d1f779ff58ab68835f9759d4b4c69530cdb9a084ac2b926a902ec8",
+    "hash_1_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "hash_8_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "docx_text": "56a2c80602adefa164619ffd070277141d02a7af1088992c39241e3313300f7a",
+    "json_uri_normalize": "9f5a5bb2cda764d74135660f2f24ec1154faeb589304b56cec3ad7e1531c4011",
+    "docx_selected": "56a2c80602adefa164619ffd070277141d02a7af1088992c39241e3313300f7a",
+    "ndjson_utf8_tail": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "ndjson_ascii_splitlines": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "prefix_remove_ascii": "42e8bc96b8eec8c4e5d503483ba0cb843ce95243c8ca8575ffc69cd25d12c61c",
+    "ndjson_utf8_splitlines": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "prefix_remove_utf8": "96d954b3561b5ca424ea7ec0afb793da7fd5469627ac15643975891e41e4f819",
+    "template_styled": "cd2d310b04fdbb0d8a9f62be8313ec9fea8c5d0e20708e11cdef8fc25ab6f065",
+    "ndjson_ascii_tail": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "hash_64_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "template_fragments": "86ffe1d7b0c44e8fc5444bea5ebb612636d34593a40be92bd3112c4cf8c3be7c",
+    "splitlines_keep_one": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774",
+    "splitlines_bulk_ascii": "38f023c9a0e11ebf4bc70741d642634df4a58584fa369e2b702cd6ca0cfdf6b1",
+    "splitlines_bulk_utf8": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774"
+  },
+  "source_patch_sha256": "3823be8310d455e3b2d275da5c99632005d05a406ac7f4d35b7381c6bc7cf063",
+  "view_source_sha256": "4b6a80a85efbeccbc9f93c943a4a3c08b53996c060fe9da9aec4984f8d639795"
+}

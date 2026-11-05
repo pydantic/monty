@@ -1,0 +1,6 @@
+views = [data[i:i + 8192] for i in range(8)]
+expected = [hash(v) for v in views]
+for repeat in range(2000):
+    for i in range(8):
+        assert hash(views[i]) == expected[i]
+8

@@ -10,7 +10,7 @@ use crate::{
     builtins::Builtins,
     heap::{Heap, HeapId},
     modules::ModuleFunctions,
-    types::{LongInt, Property, inline_str::InlineStr},
+    types::{LongInt, Property, inline_str::InlineStr, str::StringView},
     value::{Marker, Value},
 };
 
@@ -44,6 +44,11 @@ pub(crate) enum Identity {
     InternString(usize),
     /// Content identity of a short string stored inline.
     InlineString(InlineStr),
+    StringView {
+        backing: u32,
+        start: u32,
+        len: u32,
+    },
     /// Identity of an interned bytes value.
     InternBytes(usize),
     /// Identity of an interned long integer literal.
@@ -75,6 +80,7 @@ impl Identity {
             Value::Float(value) => Self::Float(value.to_bits()),
             Value::InternString(id) => Self::InternString(id.index()),
             Value::InlineString(text) => Self::InlineString(*text),
+            Value::StrView(view) => Self::from_string_view(*view),
             Value::InternBytes(id) => Self::InternBytes(id.index()),
             Value::InternLongInt(id) => Self::InternLongInt(id.index()),
             Value::Builtin(builtin) => Self::Builtin(*builtin),
@@ -85,6 +91,14 @@ impl Identity {
             Value::Ref(id) => Self::Heap(id.index()),
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Cannot get identity of Dereferenced object"),
+        }
+    }
+
+    pub(crate) fn from_string_view(view: StringView) -> Self {
+        Self::StringView {
+            backing: u32::try_from(view.backing().index()).expect("compact backing ID"),
+            start: u32::try_from(view.start()).expect("compact offset"),
+            len: u32::try_from(view.byte_len()).expect("compact length"),
         }
     }
 
@@ -106,6 +120,9 @@ impl Identity {
             | Self::DefFunction(index)
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
             Self::InlineString(text) => bytes_payload(text.as_str().as_bytes()),
+            Self::StringView { backing, start, len } => {
+                (u128::from(*backing) << 64) | (u128::from(*start) << 32) | u128::from(*len)
+            }
             Self::Builtin(value) => fixed_serde_payload(value),
             Self::ModuleFunction(value) => fixed_serde_payload(value),
             Self::Marker(value) => fixed_serde_payload(value),
@@ -133,6 +150,7 @@ impl Identity {
             Self::Float(_) => 6,
             Self::InternString(_) => 7,
             Self::InlineString(_) => 17,
+            Self::StringView { .. } => 18,
             Self::InternBytes(_) => 8,
             Self::InternLongInt(_) => 9,
             Self::Builtin(_) => 10,

@@ -1,0 +1,7 @@
+hash_4_views: Arc 2.365 ms; inline 2.505 ms; 1.06x
+hash_8_views: Arc 3.369 ms; inline 41.713 ms; 12.38x
+hash_64_views: Arc 17.848 ms; inline 320.251 ms; 17.94x
+prefix_remove_utf8: Arc 4.738 ms; inline 19.531 ms; 4.12x
+ndjson_utf8_tail: Arc 4.534 ms; inline 6.216 ms; 1.37x
+splitlines_inline: Arc 1.356 ms; inline 1.607 ms; 1.19x
+splitlines_bulk_ascii: Arc 9.216 ms; inline 8.353 ms; 0.91x

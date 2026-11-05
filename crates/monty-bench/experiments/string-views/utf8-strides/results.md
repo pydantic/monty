@@ -1,0 +1,26 @@
+| Workload                  | Main ms | Index PR ms | Optimized ms | Speedup vs main | Speedup vs index PR |
+| ------------------------- | ------: | ----------: | -----------: | --------------: | ------------------: |
+| latin_windows_stride_1    | 412.073 |      21.455 |        2.940 |         140.18x |               7.30x |
+| latin_windows_stride_8    | 452.058 |      21.455 |        2.936 |         153.98x |               7.31x |
+| latin_windows_stride_64   | 589.868 |      21.514 |        3.040 |         194.01x |               7.08x |
+| latin_windows_stride_1024 | 592.679 |      21.515 |        3.069 |         193.12x |               7.01x |
+| latin_small_windows       | 391.562 |       3.951 |        3.900 |         100.41x |               1.01x |
+| latin_stepped_windows     |  36.529 |      36.238 |       36.072 |           1.01x |               1.00x |
+| latin_retained_windows    |  77.886 |       6.564 |        2.886 |          26.98x |               2.27x |
+| latin_index_only          |  17.055 |       2.594 |        2.586 |           6.59x |               1.00x |
+| cjk_windows_stride_1      | 429.987 |      29.554 |        3.013 |         142.72x |               9.81x |
+| cjk_windows_stride_8      | 470.322 |      29.084 |        2.974 |         158.16x |               9.78x |
+| cjk_windows_stride_64     | 607.677 |      29.257 |        3.152 |         192.82x |               9.28x |
+| cjk_windows_stride_1024   | 610.071 |      29.224 |        3.128 |         195.04x |               9.34x |
+| cjk_small_windows         | 401.269 |       4.440 |        4.418 |          90.82x |               1.00x |
+| cjk_stepped_windows       |  40.839 |      39.186 |       39.585 |           1.03x |               0.99x |
+| cjk_retained_windows      |  80.513 |       8.464 |        3.000 |          26.83x |               2.82x |
+| cjk_index_only            |  23.722 |       2.718 |        2.642 |           8.98x |               1.03x |
+| mixed_windows_stride_1    | 348.119 |      25.514 |        3.045 |         114.31x |               8.38x |
+| mixed_windows_stride_8    | 381.467 |      25.470 |        2.978 |         128.08x |               8.55x |
+| mixed_windows_stride_64   | 493.017 |      25.535 |        3.118 |         158.14x |               8.19x |
+| mixed_windows_stride_1024 | 493.390 |      25.492 |        3.180 |         155.14x |               8.02x |
+| mixed_small_windows       | 324.684 |       4.218 |        4.269 |          76.06x |               0.99x |
+| mixed_stepped_windows     |  38.495 |      38.140 |       38.100 |           1.01x |               1.00x |
+| mixed_retained_windows    |  65.853 |       7.717 |        3.154 |          20.88x |               2.45x |
+| mixed_index_only          |  20.452 |       2.643 |        2.646 |           7.73x |               1.00x |

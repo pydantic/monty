@@ -677,8 +677,8 @@ impl HeapItem for GatherFuture {
                     result.py_dec_ref_ids(stack);
                 }
             }
-            GatherState::Completed(Value::Ref(id)) => stack.push(*id),
-            GatherState::Pending | GatherState::Failed(_) | GatherState::Completed(_) => {}
+            GatherState::Completed(value) => value.py_dec_ref_ids(stack),
+            GatherState::Pending | GatherState::Failed(_) => {}
         }
     }
 }

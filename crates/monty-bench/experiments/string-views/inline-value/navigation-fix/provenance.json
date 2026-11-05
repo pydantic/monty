@@ -1,0 +1,130 @@
+{
+  "executables": {
+    "arc_views": "/private/tmp/monty-rss-owned_views",
+    "inline_before": "/private/tmp/monty-rss-inline_views",
+    "inline_fixed": "/private/tmp/monty-rss-inline_fixed"
+  },
+  "sha256": {
+    "arc_views": "222442d4c6a4a958c255afef3fad6bf0eaa03a82aa5aef03e090c2b592004c0e",
+    "inline_before": "7bea8b4d0d49fc404effac435b2d8927c59829338c50cbbf6646263b200f94f8",
+    "inline_fixed": "6afcb8cc13a519714ef70e55b1d0a8aa18337e0699866bd1b198d37e1cde9378"
+  },
+  "cases": [
+    {
+      "expected": 31569,
+      "input_bytes": 30969,
+      "name": "template_fragments",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 70600,
+      "input_bytes": 114553,
+      "name": "docx_text",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1224843,
+      "input_bytes": 995024,
+      "name": "json_request",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 1060987,
+      "name": "ndjson_ascii_tail",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_tail",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_splitlines",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 100318,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_ascii",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 100160,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_utf8",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 100005,
+      "input_bytes": 600000,
+      "name": "splitlines_inline",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "name": "prefix_remove_ascii",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 20000,
+      "iterations": 10
+    },
+    {
+      "name": "prefix_remove_utf8",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 60000,
+      "iterations": 10
+    },
+    {
+      "name": "suffix_remove_ascii",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 20000,
+      "iterations": 10
+    },
+    {
+      "name": "suffix_remove_utf8",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 60000,
+      "iterations": 10
+    }
+  ],
+  "trials": 7,
+  "rss_trials": 5,
+  "method": "randomized fresh processes; wait4 CPU / guest repetitions, separate original single-execution peak RSS",
+  "base_revision": "f29350439dc1a5d5f63e7c0d30555edcf170a57c",
+  "fixed_revision": "uncommitted inline view navigation fix",
+  "profile": "profiling",
+  "machine": "arm64 macOS",
+  "rss_method": "absolute process peak, bytes; separate original single-execution fixture",
+  "input_sha256": {
+    "template_fragments": "86ffe1d7b0c44e8fc5444bea5ebb612636d34593a40be92bd3112c4cf8c3be7c",
+    "docx_text": "56a2c80602adefa164619ffd070277141d02a7af1088992c39241e3313300f7a",
+    "json_request": "a848b541f4d1f779ff58ab68835f9759d4b4c69530cdb9a084ac2b926a902ec8",
+    "ndjson_ascii_tail": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "ndjson_utf8_tail": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "ndjson_utf8_splitlines": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "splitlines_bulk_ascii": "38f023c9a0e11ebf4bc70741d642634df4a58584fa369e2b702cd6ca0cfdf6b1",
+    "splitlines_bulk_utf8": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774",
+    "splitlines_inline": "7c56cd3f9b5d316ba32191b523cdf17787b550abc5b97a02fdf8b1230fabcc08",
+    "prefix_remove_ascii": "42e8bc96b8eec8c4e5d503483ba0cb843ce95243c8ca8575ffc69cd25d12c61c",
+    "prefix_remove_utf8": "96d954b3561b5ca424ea7ec0afb793da7fd5469627ac15643975891e41e4f819",
+    "suffix_remove_ascii": "42e8bc96b8eec8c4e5d503483ba0cb843ce95243c8ca8575ffc69cd25d12c61c",
+    "suffix_remove_utf8": "96d954b3561b5ca424ea7ec0afb793da7fd5469627ac15643975891e41e4f819"
+  },
+  "current_source_patch_sha256": "7ca9541904aa238d6cde66e038f82596e5a722c11e11402b916dbb7c790afdaf",
+  "note": "The measured build preceded import-only clippy fixes and rustfmt; navigation behavior is unchanged."
+}

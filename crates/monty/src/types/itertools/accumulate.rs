@@ -44,11 +44,11 @@ impl Accumulate {
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.source {
-            on_child(*id);
+        if let Some(id) = self.source.heap_reference() {
+            on_child(id);
         }
-        if let Value::Ref(id) = &self.func {
-            on_child(*id);
+        if let Some(id) = self.func.heap_reference() {
+            on_child(id);
         }
         if let Some(Value::Ref(id)) = &self.total {
             on_child(*id);

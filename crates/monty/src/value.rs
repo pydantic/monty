@@ -34,7 +34,7 @@ use crate::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
         namedtuple::cmp_item_seqs,
-        str::{PyStr, allocate_string},
+        str::{PyStr, StringView, allocate_string},
         tuple::allocate_tuple,
     },
 };
@@ -71,6 +71,9 @@ pub(crate) enum Value {
     /// A short UTF-8 string stored directly in the value slot.
     #[serde(rename = "S")]
     InlineString(InlineStr),
+    /// Owns a backing-string reference while storing UTF-8 bounds inline.
+    #[serde(rename = "V")]
+    StrView(StringView),
     /// An interned bytes literal. The BytesId references the bytes in the Interns table.
     /// To get the actual bytes content, use `interns.get_bytes(bytes_id)`.
     #[serde(rename = "R")]
@@ -229,8 +232,8 @@ macro_rules! dispatch_py_value {
 #[cfg(feature = "memory-model-checks")]
 impl Drop for Value {
     fn drop(&mut self) {
-        if let Self::Ref(id) = self {
-            panic!("Value::Ref({id:?}) dropped without calling drop_with() - this is a reference counting bug");
+        if let Some(id) = self.heap_reference() {
+            panic!("heap reference {id:?} dropped without calling drop_with()");
         }
     }
 }
@@ -258,7 +261,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
-            Self::InlineString(_) => Type::Str,
+            Self::InlineString(_) | Self::StrView(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
             Self::ModuleFunction(_) => Type::BuiltinFunction,
@@ -293,6 +296,7 @@ impl<'h> PyTrait<'h> for Value {
                 _ => eq_str(vm.interns.get_str(*id), other, vm),
             }),
             Self::InlineString(text) => Ok(text.eq_value(other, vm)),
+            Self::StrView(view) => Ok(eq_str(view.as_str(vm.heap), other, vm)),
             Self::InternBytes(id) => Ok(match other {
                 // Fast path for the same interned bytes; otherwise compare content
                 // (interned bytes are not deduplicated, unlike strings).
@@ -326,6 +330,12 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<CmpOrder> {
+        if matches!(self, Self::StrView(_)) || matches!(other, Self::StrView(_)) {
+            return Ok(match (self.as_str(vm), other.as_str(vm)) {
+                (Some(left), Some(right)) => CmpOrder::Ordered(left.cmp(right)),
+                _ => CmpOrder::Incomparable,
+            });
+        }
         let interns = vm.interns;
         // py_cmp handles numbers, strings, bytes, tuples, and lists.
         // Recursion depth tracking for tuples/lists is handled by their iterators.
@@ -483,6 +493,7 @@ impl<'h> PyTrait<'h> for Value {
             // the bytes into a fresh allocation.
             Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
             Self::InlineString(text) => Ok(Self::InlineString(*text)),
+            Self::StrView(_) => Ok(self.clone_with_heap(vm.heap)),
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
@@ -803,7 +814,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             // Interned string and bytes literals iterate without ever reaching
             // the heap, so they answer here rather than in `HeapReadOutput`.
-            Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
+            Self::InternString(_) | Self::InlineString(_) | Self::StrView(_) | Self::InternBytes(_) => true,
             Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
             _ => false,
         }
@@ -816,6 +827,7 @@ impl<'h> PyTrait<'h> for Value {
             match self {
                 Self::InternString(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
                 Self::InlineString(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
+                Self::StrView(view) => PyStr::from_view(*view, vm).py_iter(vm),
                 Self::InternBytes(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
                 _ => Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))),
             }
@@ -904,6 +916,7 @@ impl Value {
         match self {
             Self::InternString(id) => PyValue::Str(PyStr::Interned(*id)),
             Self::InlineString(text) => PyValue::Str(PyStr::Inline(*text)),
+            Self::StrView(view) => PyValue::Str(PyStr::from_view(*view, vm)),
             Self::InternBytes(id) => PyValue::Bytes(PyBytes::Interned(*id)),
             Self::Int(value) => PyValue::Int(PyInt::Small(*value)),
             Self::InternLongInt(id) => PyValue::Int(PyInt::Interned(*id)),
@@ -1009,7 +1022,7 @@ impl Value {
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
             Self::InternString(_) => Type::Str,
-            Self::InlineString(_) => Type::Str,
+            Self::InlineString(_) | Self::StrView(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
             Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
@@ -1027,6 +1040,16 @@ impl Value {
     /// use their arena index.
     pub(crate) fn id(&self) -> Identity {
         Identity::new(self)
+    }
+
+    /// The owned heap edge, including the backing of an inline string view.
+    /// This is not the Python identity or the object to use for value dispatch.
+    pub(crate) fn heap_reference(&self) -> Option<HeapId> {
+        match self {
+            Self::Ref(id) => Some(*id),
+            Self::StrView(view) => Some(view.backing()),
+            _ => None,
+        }
     }
 
     /// Returns the Ref ID if this value is a reference, otherwise returns None.
@@ -1179,6 +1202,7 @@ impl Value {
         match self {
             Self::InternString(string_id) => Ok(Some(vm.interns.str_hash(*string_id))),
             Self::InlineString(text) => Ok(Some(hash_python_str(text.as_str()))),
+            Self::StrView(view) => Ok(Some(view.hash(vm.heap)?)),
             Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
             Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
@@ -1768,11 +1792,16 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
-        if let Self::Ref(id) = self {
-            heap.heap().inc_ref(*id);
-            Self::Ref(*id)
-        } else {
-            self.copy_immediate()
+        match self {
+            Self::Ref(id) => {
+                heap.heap().inc_ref(*id);
+                Self::Ref(*id)
+            }
+            Self::StrView(view) => {
+                heap.heap().inc_ref(view.backing());
+                Self::StrView(*view)
+            }
+            _ => self.copy_immediate(),
         }
     }
 
@@ -1804,7 +1833,7 @@ impl Value {
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
             Self::Marker(m) => Self::Marker(*m),
             Self::Property(p) => Self::Property(*p),
-            Self::Ref(_) => panic!("heap reference copied without refcounting"),
+            Self::Ref(_) | Self::StrView(_) => panic!("heap reference copied without refcounting"),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
@@ -1829,7 +1858,7 @@ impl Value {
     #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
     pub fn drop_with(self, heap: &mut impl ContainsHeap) {
-        if let Self::Ref(id) = self {
+        if let Some(id) = self.heap_reference() {
             heap.heap_mut().dec_ref(id);
         }
     }
@@ -1839,8 +1868,8 @@ impl Value {
     #[cfg(feature = "memory-model-checks")]
     pub fn drop_with(mut self, heap: &mut impl ContainsHeap) {
         let old = mem::replace(&mut self, Self::Dereferenced);
-        if let Self::Ref(id) = &old {
-            heap.heap_mut().dec_ref(*id);
+        if let Some(id) = old.heap_reference() {
+            heap.heap_mut().dec_ref(id);
             mem::forget(old);
         }
     }
@@ -1860,8 +1889,8 @@ impl Value {
     /// refcount can be decremented. When `memory-model-checks` is enabled, also marks
     /// this value as `Dereferenced` to prevent Drop panics.
     pub fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        if let Self::Ref(id) = self {
-            stack.push(*id);
+        if let Some(id) = self.heap_reference() {
+            stack.push(id);
             #[cfg(feature = "memory-model-checks")]
             self.dec_ref_forget();
         }
@@ -1873,6 +1902,7 @@ impl Value {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
             Self::InlineString(text) => Some(EitherStr::Inline(*text)),
+            Self::StrView(view) => Some(EitherStr::Heap(view.as_str(heap).to_owned())),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
                 HeapData::Str(s) => Some(EitherStr::Heap(s.as_str().to_owned())),
                 _ => None,
@@ -1891,6 +1921,7 @@ impl Value {
         match self {
             Self::InternString(string_id) => Some(interns.get_str(*string_id)),
             Self::InlineString(text) => Some(text.as_str()),
+            Self::StrView(view) => Some(view.as_str(heap)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
                 HeapData::Str(s) => Some(s.as_str()),
                 _ => None,
@@ -1920,7 +1951,7 @@ impl Value {
     /// check if the value is a string.
     pub fn is_str(&self, heap: &Heap) -> bool {
         match self {
-            Self::InternString(_) | Self::InlineString(_) => true,
+            Self::InternString(_) | Self::InlineString(_) | Self::StrView(_) => true,
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
             _ => false,
         }
@@ -1996,6 +2027,7 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_>) -> Option<bool> 
 /// `s == other`, returning `None` for non-string operands.
 pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
+        Value::StrView(view) => Some(s == view.as_str(vm.heap)),
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
         Value::InlineString(text) => Some(s.as_bytes() == text.as_bytes()),
         Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),

@@ -53,8 +53,8 @@ impl Reader {
 
     /// Invokes `on_child` for each heap id this reader owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.source {
-            on_child(*id);
+        if let Some(id) = self.source.heap_reference() {
+            on_child(id);
         }
     }
 

@@ -62,8 +62,8 @@ impl GroupBy {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [&self.source, &self.keyfunc] {
-            if let Value::Ref(id) = value {
-                on_child(*id);
+            if let Some(id) = value.heap_reference() {
+                on_child(id);
             }
         }
         for value in [&self.target_key, &self.current_key, &self.current_value] {
@@ -100,8 +100,8 @@ impl Grouper {
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
         for value in [&self.parent, &self.target_key] {
-            if let Value::Ref(id) = value {
-                on_child(*id);
+            if let Some(id) = value.heap_reference() {
+                on_child(id);
             }
         }
     }

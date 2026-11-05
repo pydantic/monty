@@ -299,11 +299,7 @@ impl SetStorage {
     /// Only called on a set being freed, so its entries can be taken.
     fn collect_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         for entry in &mut self.table.take_entries() {
-            if let Value::Ref(id) = &entry.value {
-                stack.push(*id);
-                #[cfg(feature = "memory-model-checks")]
-                entry.value.dec_ref_forget();
-            }
+            entry.value.py_dec_ref_ids(stack);
         }
     }
 }

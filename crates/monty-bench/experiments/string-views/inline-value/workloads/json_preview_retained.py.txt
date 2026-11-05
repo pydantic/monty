@@ -1,0 +1,6 @@
+import json
+request = json.loads(data)
+data = None
+preview = request['document'][:256]
+request = None
+len(preview)

@@ -1,12 +1,12 @@
 mod access_cache;
 mod access_cache_store;
+mod view;
 
 use std::{
     borrow::Cow,
     cell::Cell,
     fmt::{self, Write},
     ops, str,
-    sync::Arc,
 };
 
 pub(crate) use access_cache::AccessCache;
@@ -15,6 +15,7 @@ use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use serde::de::{Error as DeserializeError, Visitor};
 use smallvec::smallvec;
+pub(crate) use view::StringView;
 
 use super::{
     Bytes, CmpOrder, PyTrait,
@@ -54,7 +55,7 @@ struct TextView<'s, 'h> {
 impl<'h> TextView<'_, 'h> {
     fn access_cache<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s AccessCache> {
         match self.string {
-            PyStr::Heap(string) => Some(&string.get(vm.heap).3),
+            PyStr::Heap(string) | PyStr::View { source: string, .. } => Some(&string.get(vm.heap).3),
             PyStr::Interned(id) => self.interns.str_access_cache(*id),
             PyStr::Inline(_) => None,
         }
@@ -63,7 +64,7 @@ impl<'h> TextView<'_, 'h> {
     /// ASCII strings use byte coordinates directly.
     fn is_ascii(&self, vm: &VM<'h>) -> bool {
         match self.string {
-            PyStr::Heap(string) => string.get(vm.heap).is_ascii(),
+            PyStr::Heap(string) | PyStr::View { source: string, .. } => string.get(vm.heap).is_ascii(),
             PyStr::Interned(id) => self.interns.str_is_ascii(*id),
             PyStr::Inline(text) => text.as_str().is_ascii(),
         }
@@ -73,6 +74,14 @@ impl<'h> TextView<'_, 'h> {
     fn char_len(&self, vm: &VM<'h>) -> usize {
         match self.string {
             PyStr::Heap(string) => string.get(vm.heap).char_len(),
+            PyStr::View { value, source } => {
+                let source = source.get(vm.heap);
+                if source.is_ascii() {
+                    value.byte_len()
+                } else {
+                    source.3.char_len_range(source.as_str(), value.range())
+                }
+            }
             PyStr::Interned(id) => self.interns.str_len(*id),
             PyStr::Inline(text) => text.as_str().chars().count(),
         }
@@ -80,6 +89,35 @@ impl<'h> TextView<'_, 'h> {
 
     /// Resolves Python's positive or negative character index; endpoints need no cursor.
     fn character(&self, index: i64, vm: &VM<'h>) -> RunResult<Option<char>> {
+        if let PyStr::View { value, source } = self.string {
+            let text = self.get(vm.heap);
+            if index == 0 {
+                return Ok(text.chars().next());
+            }
+            if index == -1 {
+                return Ok(text.chars().next_back());
+            }
+            let length = self.char_len(vm);
+            let target = if index < 0 {
+                usize::try_from(index.unsigned_abs())
+                    .ok()
+                    .and_then(|distance| length.checked_sub(distance))
+            } else {
+                usize::try_from(index).ok().filter(|target| *target < length)
+            };
+            let Some(target) = target else {
+                return Ok(None);
+            };
+            if target >= length {
+                return Ok(None);
+            }
+            let source = source.get(vm.heap);
+            let begin = source.3.view_start(source.as_str(), value.start(), &vm.heap.tracker)?;
+            let byte = source
+                .3
+                .byte_offset(source.as_str(), begin + target, &vm.heap.tracker)?;
+            return Ok(source.as_str()[byte..].chars().next());
+        }
         let text = self.get(vm.heap);
         let ascii = self.is_ascii(vm);
         if !ascii
@@ -100,6 +138,20 @@ impl<'h> TextView<'_, 'h> {
         if target == usize::MAX {
             return Ok(text.len());
         }
+        if let PyStr::View { value, source } = self.string {
+            if target >= self.char_len(vm) {
+                return Ok(value.byte_len());
+            }
+            let source = source.get(vm.heap);
+            if source.is_ascii() {
+                return Ok(target);
+            }
+            let begin = source.3.view_start(source.as_str(), value.start(), &vm.heap.tracker)?;
+            let absolute = source
+                .3
+                .byte_offset(source.as_str(), begin + target, &vm.heap.tracker)?;
+            return Ok(absolute - value.start());
+        }
         if self.is_ascii(vm) {
             return Ok(target.min(text.len()));
         }
@@ -109,10 +161,55 @@ impl<'h> TextView<'_, 'h> {
         Ok(text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte))
     }
 
+    /// Slice normalization already supplies the length and guarantees in-bounds character positions.
+    fn slice_byte_offset(&self, target: usize, length: usize, vm: &VM<'h>) -> RunResult<usize> {
+        let text = self.get(vm.heap);
+        if target == 0 {
+            return Ok(0);
+        }
+        if target == length {
+            return Ok(text.len());
+        }
+        if let PyStr::View { value, source } = self.string {
+            let source = source.get(vm.heap);
+            if source.is_ascii() {
+                return Ok(target);
+            }
+            // Small trims can read the visible boundary without converting through backing coordinates.
+            if target <= 8 {
+                return Ok(text.char_indices().nth(target).expect("normalized slice boundary").0);
+            }
+            if length - target <= 8 {
+                return Ok(text
+                    .char_indices()
+                    .nth_back(length - target - 1)
+                    .expect("normalized slice boundary")
+                    .0);
+            }
+            let begin = source.3.view_start(source.as_str(), value.start(), &vm.heap.tracker)?;
+            let absolute = source
+                .3
+                .byte_offset(source.as_str(), begin + target, &vm.heap.tracker)?;
+            return Ok(absolute - value.start());
+        }
+        self.byte_offset(target, vm)
+    }
+
     /// Converts an in-bounds UTF-8 byte boundary into a character index.
     fn char_offset(&self, byte: usize, vm: &VM<'h>) -> RunResult<usize> {
         if byte == 0 {
             return Ok(0);
+        }
+        if let PyStr::View { value, source } = self.string {
+            let source = source.get(vm.heap);
+            if source.is_ascii() {
+                return Ok(byte);
+            }
+            let begin = source.3.view_start(source.as_str(), value.start(), &vm.heap.tracker)?;
+            let end = source
+                .3
+                .char_offset(source.as_str(), value.start() + byte, &vm.heap.tracker)?;
+            return Ok(end - begin);
         }
         if self.is_ascii(vm) {
             return Ok(byte);
@@ -129,6 +226,7 @@ impl<'h> HeapView<'h, str> for TextView<'_, 'h> {
     fn get<'r>(&'r self, reader: &'r HeapReader<'h>) -> &'r str {
         match self.string {
             PyStr::Heap(string) => string.get(reader).as_str(),
+            PyStr::View { value, source } => &source.get(reader).as_str()[value.range()],
             PyStr::Interned(id) => self.interns.get_str(*id),
             PyStr::Inline(text) => text.as_str(),
         }
@@ -149,74 +247,27 @@ pub(crate) struct Str(
 const MIN_VIEW_LEN: usize = 16;
 const MIN_VIEW_RATIO: usize = 4;
 
-/// Whole strings own a shared buffer; slices add a flattened byte range.
-#[derive(Debug, Clone)]
-enum StringStorage {
-    Owned(Arc<String>),
-    View {
-        backing: Arc<String>,
-        start: usize,
-        len: usize,
-    },
-}
+/// Owned UTF-8 storage; inline views retain this string's heap entry.
+#[derive(Debug)]
+struct StringStorage(Box<str>);
 
 impl StringStorage {
     fn new<'a>(text: impl Into<Cow<'a, str>>) -> Self {
-        let mut text = text.into().into_owned();
-        text.shrink_to_fit();
-        let storage = Self::Owned(Arc::new(text));
+        let storage = Self(text.into().into_owned().into_boxed_str());
         #[cfg(test)]
         view_bench::allocated(&storage);
         storage
     }
 
-    fn backing(&self) -> &Arc<String> {
-        match self {
-            Self::Owned(backing) | Self::View { backing, .. } => backing,
-        }
-    }
-
-    fn start(&self) -> usize {
-        match self {
-            Self::Owned(_) => 0,
-            Self::View { start, .. } => *start,
-        }
-    }
-
-    fn should_view(&self, len: usize) -> bool {
-        let (minimum, ratio) = view_policy();
-        // shrink_to_fit may leave spare capacity, which views also retain.
-        len >= minimum && len >= self.backing().capacity().div_ceil(ratio)
-    }
-
-    fn slice(&self, range: ops::Range<usize>) -> Self {
-        let len = range.len();
-        if self.should_view(len) {
-            self.view(range)
-        } else {
-            #[cfg(test)]
-            view_bench::copied(len);
-            Self::new(&self[range])
-        }
-    }
-
-    /// splitlines deliberately allows short views to retain the whole backing.
-    fn view(&self, range: ops::Range<usize>) -> Self {
-        Self::View {
-            backing: Arc::clone(self.backing()),
-            start: self.start() + range.start,
-            len: range.len(),
-        }
-    }
-
-    #[cfg(test)]
-    fn shares_backing(&self, other: &Self) -> bool {
-        Arc::ptr_eq(self.backing(), other.backing())
-    }
-
     #[cfg(test)]
     fn backing_len(&self) -> usize {
-        self.backing().capacity()
+        self.0.len()
+    }
+}
+
+impl Clone for StringStorage {
+    fn clone(&self) -> Self {
+        Self::new(&**self)
     }
 }
 
@@ -249,10 +300,7 @@ impl ops::Deref for StringStorage {
     type Target = str;
 
     fn deref(&self) -> &str {
-        match self {
-            Self::Owned(backing) => backing.as_str(),
-            Self::View { backing, start, len } => &backing[*start..*start + *len],
-        }
+        &self.0
     }
 }
 
@@ -390,6 +438,10 @@ pub(crate) enum PyStr<'h> {
     Interned(StringId),
     Inline(InlineStr),
     Heap(HeapObjectRead<'h, Str>),
+    View {
+        value: StringView,
+        source: HeapObjectRead<'h, Str>,
+    },
 }
 
 impl<'a> HeapView<'a, str> for InlineStr {
@@ -399,11 +451,22 @@ impl<'a> HeapView<'a, str> for InlineStr {
 }
 
 impl<'h> PyStr<'h> {
+    pub(crate) fn from_view(value: StringView, vm: &VM<'h>) -> Self {
+        Self::View {
+            value,
+            source: vm.heap.read_as(value.backing()).expect("string view backing"),
+        }
+    }
+
     fn clone_value(&self, vm: &VM<'h>) -> Value {
         match self {
             Self::Interned(id) => Value::InternString(*id),
             Self::Inline(text) => Value::InlineString(*text),
             Self::Heap(value) => value.clone_value(vm.heap),
+            Self::View { value, .. } => {
+                vm.heap.inc_ref(value.backing());
+                Value::StrView(*value)
+            }
         }
     }
 
@@ -412,6 +475,7 @@ impl<'h> PyStr<'h> {
         match value {
             Value::InternString(id) => Some(Self::Interned(*id)),
             Value::InlineString(text) => Some(Self::Inline(*text)),
+            Value::StrView(value) => Some(Self::from_view(*value, vm)),
             Value::Ref(id) => vm.heap.read_as(*id).map(Self::Heap),
             _ => None,
         }
@@ -431,6 +495,7 @@ impl<'h> PyStr<'h> {
             Self::Interned(id) => vm.interns.get_str(*id),
             Self::Inline(text) => text.as_str(),
             Self::Heap(value) => value.get(vm.heap).as_str(),
+            Self::View { value, source } => &source.get(vm.heap).as_str()[value.range()],
         }
     }
 }
@@ -441,11 +506,29 @@ impl PyObjectIdentity for PyStr<'_> {
             Self::Interned(id) => Identity::InternString(id.index()),
             Self::Inline(text) => Identity::InlineString(*text),
             Self::Heap(value) => value.py_identity(),
+            Self::View { value, .. } => Identity::from_string_view(*value),
         }
     }
 }
 
 impl<'h> PyTrait<'h> for PyStr<'h> {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+            Self::Inline(value) => Ok(CallResult::Value(StringIterator::from_inline(*value, vm))),
+            Self::Heap(value) => value.py_iter(vm),
+            Self::View { value, .. } => Ok(CallResult::Value(StringIterator::from_view(
+                *value,
+                self.as_str(vm).is_ascii(),
+                vm,
+            ))),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Str
     }
@@ -455,6 +538,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
             Self::Interned(id) => Value::InternString(*id).py_eq_impl(other, vm),
             Self::Inline(text) => Ok(text.eq_value(other, vm)),
             Self::Heap(value) => value.py_eq_impl(other, vm),
+            Self::View { .. } => Ok(eq_str(self.as_str(vm), other, vm)),
         }
     }
 
@@ -463,6 +547,10 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
             Self::Interned(id) => Value::InternString(*id),
             Self::Inline(text) => Value::InlineString(*text),
             Self::Heap(value) => value.clone_value(vm.heap),
+            Self::View { value, .. } => {
+                vm.heap.inc_ref(value.backing());
+                Value::StrView(*value)
+            }
         })
     }
 
@@ -471,6 +559,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
             Self::Interned(id) => Some(vm.interns.str_len(*id)),
             Self::Inline(text) => Some(text.as_str().chars().count()),
             Self::Heap(value) => value.py_len(vm),
+            Self::View { .. } => Some(self.as_text_view(vm).char_len(vm)),
         }
     }
 
@@ -750,6 +839,48 @@ fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
     }
 }
 
+/// Builds a flat inline view; oversized IDs/bounds retain the materialized fallback.
+fn allocate_substring<'h>(
+    source: &PyStr<'h>,
+    range: ops::Range<usize>,
+    force_view: bool,
+    vm: &VM<'h>,
+) -> RunResult<Value> {
+    let text = source.as_str(vm);
+    if range.start == 0 && range.end == text.len() {
+        return Ok(source.clone_value(vm));
+    }
+    let (backing, offset) = match source {
+        PyStr::Heap(value) => (Some(value.id()), 0),
+        PyStr::View { value, .. } => (Some(value.backing()), value.start()),
+        PyStr::Interned(_) | PyStr::Inline(_) => (None, 0),
+    };
+    let len = range.len();
+    if let Some(backing) = backing {
+        let backing_len = match vm.heap.get(backing) {
+            HeapData::Str(s) => s.len(),
+            _ => unreachable!(),
+        };
+        let (minimum, ratio) = view_policy();
+        if len > 15
+            && len >= minimum
+            && (force_view || len >= backing_len.div_ceil(ratio))
+            && let Some(view) = StringView::new(backing, offset + range.start, len)
+        {
+            vm.heap.inc_ref(backing);
+            return Ok(Value::StrView(view));
+        }
+    }
+    #[cfg(test)]
+    view_bench::copied(len);
+    let text = &text[range];
+    if len > STRING_COPY_CHUNK {
+        Ok(allocate_string(copy_with_time_checks(text, &vm.heap.tracker)?, vm.heap))
+    } else {
+        Ok(allocate_string(text, vm.heap))
+    }
+}
+
 /// Indexes protected text, allowing `__index__` to execute before borrowing it.
 ///
 /// Contiguous slices reuse character/byte offsets and share eligible heap storage.
@@ -767,39 +898,13 @@ fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunRes
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
-            let char_len = stop - start;
-            let start = s.byte_offset(start, vm)?;
-            let stop = s.byte_offset(stop, vm)?;
-            if start == 0 && stop == text.len() {
-                return Ok(s.string.clone_value(vm));
+            if let PyStr::View { source, .. } = s.string {
+                let source = source.get(vm.heap);
+                source.3.prepare_index(source.as_str(), &vm.heap.tracker)?;
             }
-            if stop - start > 15
-                && let PyStr::Heap(source) = s.string
-            {
-                let original = &source.get(vm.heap).0;
-                if stop - start > STRING_COPY_CHUNK && !original.should_view(stop - start) {
-                    #[cfg(test)]
-                    view_bench::copied(stop - start);
-                    let copied = copy_with_time_checks(&text[start..stop], &vm.heap.tracker)?;
-                    return Ok(allocate_string(copied, vm.heap));
-                }
-                let storage = original.slice(start..stop);
-                let ascii = s.is_ascii(vm).then_some(true);
-                return Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str(
-                    storage,
-                    Cell::new(None),
-                    Cell::new(ascii),
-                    AccessCache::with_char_len(char_len),
-                )))));
-            }
-            #[cfg(test)]
-            view_bench::copied(stop - start);
-            let result = &text[start..stop];
-            if result.len() > STRING_COPY_CHUNK {
-                let copied = copy_with_time_checks(result, &vm.heap.tracker)?;
-                return Ok(allocate_string(copied, vm.heap));
-            }
-            return Ok(allocate_string(result, vm.heap));
+            let start = s.slice_byte_offset(start, length, vm)?;
+            let stop = s.slice_byte_offset(stop, length, vm)?;
+            return allocate_substring(s.string, start..stop, false, vm);
         }
         let result: String = if s.is_ascii(vm) {
             // Byte iterators count and skip in O(1), unlike `chars()`.
@@ -1762,10 +1867,7 @@ fn str_splitlines<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) ->
     };
 
     let keepends = parse_splitlines_args(args, vm)?;
-    let source = match s.string {
-        PyStr::Heap(source) => Some(source),
-        PyStr::Interned(_) | PyStr::Inline(_) => None,
-    };
+    let source = s.string;
     let mut guard = DropGuard::new(Vec::new(), vm);
     let (lines, vm) = guard.as_parts_mut();
     let s = s.get(vm.heap);
@@ -1808,25 +1910,7 @@ fn str_splitlines<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) ->
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        let value = if line.len() >= view_policy().0
-            && line.len() > 15
-            && let Some(source) = source
-        {
-            if start == 0 && line.len() == len {
-                source.clone_value(vm.heap)
-            } else {
-                let storage = source.get(vm.heap).0.view(start..start + line.len());
-                let ascii = source.get(vm.heap).2.get().filter(|value| *value);
-                Value::Ref(vm.heap.allocate(HeapData::Str(Str(
-                    storage,
-                    Cell::new(None),
-                    Cell::new(ascii),
-                    AccessCache::default(),
-                ))))
-            }
-        } else {
-            allocate_string(line, vm.heap)
-        };
+        let value = allocate_substring(source, start..start + line.len(), true, vm)?;
         lines.push(value);
 
         start = end;
@@ -2293,6 +2377,7 @@ fn str_istitle(s: &str) -> bool {
 enum StringIteratorSource {
     Intern(StringId),
     Inline(InlineStr),
+    View(StringView),
     Heap(HeapId),
 }
 
@@ -2321,6 +2406,10 @@ impl StringIterator {
         Self::allocate(StringIteratorSource::Heap(id), ascii, vm)
     }
 
+    fn from_view(view: StringView, ascii: bool, vm: &mut VM<'_>) -> Value {
+        Self::allocate(StringIteratorSource::View(view), ascii, vm)
+    }
+
     /// Returns the Python-visible iterator type for this string representation.
     pub(crate) fn py_type(&self) -> Type {
         if self.ascii {
@@ -2336,6 +2425,7 @@ impl StringIterator {
             StringIteratorSource::Intern(_) => None,
             StringIteratorSource::Inline(_) => None,
             StringIteratorSource::Heap(id) => Some(id),
+            StringIteratorSource::View(view) => Some(view.backing()),
         }
     }
 
@@ -2349,6 +2439,7 @@ impl StringIterator {
         let string = match &self.source {
             StringIteratorSource::Intern(id) => vm.interns.get_str(*id),
             StringIteratorSource::Inline(text) => text.as_str(),
+            StringIteratorSource::View(view) => view.as_str(vm.heap),
             StringIteratorSource::Heap(id) => match vm.heap.get(*id) {
                 HeapData::Str(string) => string.as_str(),
                 _ => unreachable!("string iterator must retain a string"),
@@ -2361,6 +2452,7 @@ impl StringIterator {
     fn allocate(source: StringIteratorSource, ascii: bool, vm: &mut VM<'_>) -> Value {
         let source_id = match source {
             StringIteratorSource::Heap(id) => Some(id),
+            StringIteratorSource::View(view) => Some(view.backing()),
             StringIteratorSource::Intern(_) => None,
             StringIteratorSource::Inline(_) => None,
         };
@@ -2588,74 +2680,22 @@ mod view_tests {
     use super::*;
 
     #[test]
-    fn owned_storage_adopts_an_exact_capacity_buffer() {
-        let text = "x".repeat(1000);
-        assert_eq!(text.len(), text.capacity());
-        let buffer = text.as_ptr();
-        let storage = StringStorage::new(text);
-        assert!(matches!(storage, StringStorage::Owned(_)));
-        assert_eq!(buffer, storage.as_ptr());
+    fn view_payload_and_value_stay_inline() {
+        assert_eq!(size_of::<StringView>(), 12);
+        assert_eq!(size_of::<Value>(), 16);
+        let view = StringView::new(HeapId::from_index(123), 7, 42).unwrap();
+        assert_eq!(view.backing().index(), 123);
+        assert_eq!(view.range(), 7..49);
     }
 
     #[test]
-    fn retention_counts_spare_backing_capacity() {
-        let mut text = String::with_capacity(1024);
-        text.push_str(&"x".repeat(256));
-        // Model an allocator that could not shrink the buffer to its visible length.
-        let storage = StringStorage::Owned(Arc::new(text));
-        let part = storage.slice(0..128);
-        assert!(!storage.shares_backing(&part));
-        assert_eq!(&*part, "x".repeat(128));
-    }
-
-    #[test]
-    fn chained_views_use_original_backing_and_release_it_after_copy() {
-        let source = StringStorage::new("x".repeat(1000));
-        let backing = Arc::downgrade(source.backing());
-        let half = source.slice(100..600);
-        let third = half.slice(50..350);
-        let fifth = third.slice(0..200);
-        assert!(source.shares_backing(&half));
-        assert!(source.shares_backing(&third));
-        assert_eq!(third.start(), 150);
-        assert!(!source.shares_backing(&fifth));
-        drop(source);
-        drop(half);
-        assert_eq!(&*third, "x".repeat(300));
-        assert!(backing.upgrade().is_some());
-        drop(third);
-        assert!(backing.upgrade().is_none());
-        assert_eq!(&*fifth, "x".repeat(200));
-    }
-
-    #[test]
-    fn view_thresholds_use_byte_lengths_and_round_up() {
-        let source = StringStorage::new("é".repeat(257));
-        for (bytes, shares) in [(126, false), (128, false), (130, true)] {
-            let part = source.slice(0..bytes);
-            assert_eq!(source.shares_backing(&part), shares);
-            assert_eq!(part.chars().count(), bytes / 2);
+    fn compact_bounds_never_truncate() {
+        if usize::BITS > 32 {
+            let wide = usize::try_from(u64::from(u32::MAX) + 1).unwrap();
+            assert!(StringView::new(HeapId::from_index(wide), 0, 16).is_none());
+            assert!(StringView::new(HeapId::from_index(1), wide, 16).is_none());
+            assert!(StringView::new(HeapId::from_index(1), 0, wide).is_none());
         }
-        let source = StringStorage::new("x".repeat(64));
-        assert!(!source.shares_backing(&source.slice(0..15)));
-        assert!(source.shares_backing(&source.slice(0..16)));
-    }
-
-    #[test]
-    fn view_serialization_keeps_the_existing_text_format() {
-        let source = Str::new("abcd".repeat(100));
-        let view = Str(
-            source.0.slice(128..384),
-            Cell::new(None),
-            Cell::new(None),
-            AccessCache::default(),
-        );
-        let encoded = serde_json::to_string(&view).unwrap();
-        assert_eq!(encoded, serde_json::to_string(view.as_str()).unwrap());
-        let restored: Str = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(view, restored);
-        assert_eq!(restored.0.start(), 0);
-        assert_eq!(restored.0.backing_len(), 256);
     }
 }
 

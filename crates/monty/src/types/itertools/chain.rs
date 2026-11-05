@@ -78,8 +78,8 @@ impl ChainSources {
         match self {
             Self::Args { iterables, .. } => {
                 for source in iterables {
-                    if let Value::Ref(id) = source {
-                        on_child(*id);
+                    if let Some(id) = source.heap_reference() {
+                        on_child(id);
                     }
                 }
             }

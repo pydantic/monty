@@ -1,0 +1,20 @@
+
+parts = []
+position = 0
+while True:
+    start = data.find('<w:t', position)
+    if start < 0:
+        break
+    start = data.find('>', start) + 1
+    end = data.find('</w:t>', start)
+    text = data[start:end]
+    if '&' in text:
+        text = text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+    parts.append(text)
+    position = end + 6
+
+selected = parts[::64]
+parts = None
+text = None
+data = None
+sum(len(text) for text in selected)

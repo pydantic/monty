@@ -1,0 +1,3 @@
+line = data.splitlines()[123]
+data = None
+len(line)

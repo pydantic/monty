@@ -46,11 +46,11 @@ impl CallableIterator {
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.callable {
-            on_child(*id);
+        if let Some(id) = self.callable.heap_reference() {
+            on_child(id);
         }
-        if let Value::Ref(id) = &self.sentinel {
-            on_child(*id);
+        if let Some(id) = self.sentinel.heap_reference() {
+            on_child(id);
         }
     }
 }

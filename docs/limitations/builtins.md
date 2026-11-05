@@ -65,10 +65,12 @@ These raise `NameError`:
     Monty also stops a set walk once it has yielded the set's starting length,
     where CPython keeps going: replacing each element as it is visited yields
     every replacement in CPython but only the original elements in Monty.
-- **`is` and `id()` on short strings** — equal strings of 2–15 UTF-8 bytes stored
+- **`is` and `id()` on strings** — equal strings of 2–15 UTF-8 bytes stored
     inline share identity by content. Separate runtime results such as `bin(4)` can therefore
     compare identical and return the same `id()`, where CPython gives those
     results distinct identities.
+    Separately created views of the same byte range in the same backing string also share identity.
+    Equal views with different backings or byte ranges need not share identity.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.

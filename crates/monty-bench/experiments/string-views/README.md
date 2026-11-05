@@ -1,8 +1,11 @@
 # String views on Unicode access caches
 
-This report describes the published `Arc<str>` implementation at `f7be4e56`.
+The latest inline-view implementation is measured by the [agent document chunker](agent-chunking/README.md),
+[overlapping UTF-8 strides](utf8-strides/README.md), and [two-cursor/hash-cache comparison](inline-value/dual-cursor-hashes/README.md).
+
+The report below describes the historical `Arc<str>` implementation at `f7be4e56`.
 The `Arc<String>` storage comparison is reported in [owned-string/](owned-string/).
-The current splitlines exception and four-way comparison are in [splitlines/](splitlines/).
+The earlier splitlines exception and four-way comparison are in [splitlines/](splitlines/).
 
 The candidate is based on PR #1236 at `5c9dddf39c92981b8ef023be059e8c3aeabf7e91`.
 Heap strings use `Arc<str>` with a flattened byte range.

@@ -1,4 +1,6 @@
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
+#[cfg(feature = "ref-count-return")]
+use monty_types::ResourceLimits;
 use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 #[test]
@@ -108,4 +110,97 @@ True
 ";
     let mut runner = MontyRun::new(code.to_owned(), "splitline-views.py", vec![], CompileOptions::default()).unwrap();
     assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
+}
+
+#[test]
+fn repeated_unicode_trims_keep_character_boundaries() {
+    let code = r"
+source = 'aé中🐍' * 500
+for left in range(9):
+    for right in range(9):
+        view = source[100:1900]
+        expected = list(source)[100:1900]
+        for iteration in range(12):
+            end = len(view) - right
+            view = view[left:end]
+            expected = expected[left:len(expected) - right]
+            assert view == ''.join(expected)
+            assert len(view) == len(expected)
+        assert view[:] is view
+source = None
+assert view == ''.join(expected)
+True
+";
+    let mut runner = MontyRun::new(code.to_owned(), "unicode-trims.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
+}
+
+#[test]
+fn many_view_hashes_survive_source_release_and_snapshot() {
+    let mut repl = MontyRepl::new("hashes.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "source = 'aé中🐍' * 4096\nviews = [source[i:i + 8192] for i in range(64)]\nhashes = [hash(v) for v in views]\nlookup = {v: len(v) for v in views}\nsource = None\nfor repeat in range(3):\n    assert [hash(v) for v in views] == hashes",
+        vec![], PrintWriter::Disabled,
+    ).unwrap();
+    let bytes = dump("hashes.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected idle session");
+    };
+    assert_eq!(
+        restored
+            .feed_run(
+                "assert [hash(v) for v in views] == hashes\nassert all(lookup[v] == len(v) for v in views)\nTrue",
+                vec![],
+                PrintWriter::Disabled,
+            )
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn inline_views_share_one_heap_entry_and_remain_reachable() {
+    for count in [1, 1000] {
+        let code = format!(
+            "source = 'é中🐍a' * 10000\nviews = [source[i:i + 20000] for i in range({count})]\nsource = None\nviews"
+        );
+        let mut runner = MontyRun::new(code, "view-refs.py", vec![], CompileOptions::default()).unwrap();
+        let output = runner.run_ref_counts(vec![]).unwrap();
+        assert_eq!(
+            output.heap_count, 2,
+            "only the result list and original backing need heap entries"
+        );
+        assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+    }
+}
+
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn cycles_containing_views_release_their_backings() {
+    let code = r"
+for i in range(200):
+    source = ('é中🐍a' + str(i)) * 1000
+    view = source[10:2000]
+    holder = [view]
+    cycle = {'view': view, 'holder': holder}
+    holder.append(cycle)
+source = None
+view = None
+holder = None
+cycle = None
+for i in range(20):
+    garbage = [i]
+True
+";
+    let tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(1));
+    let mut runner = MontyRun::new(code.to_owned(), "view-cycles.py", vec![], CompileOptions::default()).unwrap();
+    let output = runner.run_ref_counts_with_tracker(vec![], tracker).unwrap();
+    assert_eq!(output.value, MontyObject::bool(true));
+    assert!(output.unreachable.is_empty(), "{:?}", output.unreachable);
+    assert!(
+        output.heap_count <= 2,
+        "backings retained by collected cycles: {}",
+        output.heap_count
+    );
 }

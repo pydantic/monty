@@ -1,0 +1,175 @@
+{
+  "executables": {
+    "arc": "/private/tmp/monty-rss-owned_views",
+    "previous_inline": "/private/tmp/monty-rss-inline_fixed",
+    "dual_adaptive": "/private/tmp/monty-rss-dual_adaptive"
+  },
+  "sha256": {
+    "arc": "222442d4c6a4a958c255afef3fad6bf0eaa03a82aa5aef03e090c2b592004c0e",
+    "previous_inline": "6afcb8cc13a519714ef70e55b1d0a8aa18337e0699866bd1b198d37e1cde9378",
+    "dual_adaptive": "302c96908c6ea0a236add370d4af18b255ca0d48d4d2030a9a1abe5e7844c5f0"
+  },
+  "cases": [
+    {
+      "expected": 1199118,
+      "input_bytes": 1060987,
+      "name": "ndjson_ascii_tail",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_tail",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_splitlines",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "name": "prefix_remove_ascii",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 20000,
+      "iterations": 10
+    },
+    {
+      "name": "prefix_remove_utf8",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 60000,
+      "iterations": 10
+    },
+    {
+      "name": "suffix_remove_utf8",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 60000,
+      "iterations": 10
+    },
+    {
+      "expected": 100318,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_ascii",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 100160,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_utf8",
+      "retain": false,
+      "iterations": 10
+    },
+    {
+      "expected": 100005,
+      "input_bytes": 600000,
+      "name": "splitlines_inline",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 1224843,
+      "input_bytes": 995024,
+      "name": "json_request",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 31569,
+      "input_bytes": 30969,
+      "name": "template_fragments",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "expected": 70600,
+      "input_bytes": 114553,
+      "name": "docx_text",
+      "retain": false,
+      "iterations": 40
+    },
+    {
+      "name": "hash_1_views",
+      "expected": 1,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "hash_4_views",
+      "expected": 4,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "hash_8_views",
+      "expected": 8,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "hash_64_views",
+      "expected": 64,
+      "retain": false,
+      "input_bytes": 16384,
+      "iterations": 5
+    },
+    {
+      "name": "unicode_owners_unindexed",
+      "expected": 100000,
+      "retain": true,
+      "input_bytes": 160,
+      "iterations": 3
+    },
+    {
+      "name": "unicode_owners_indexed",
+      "expected": 23300000,
+      "retain": true,
+      "input_bytes": 160,
+      "iterations": 3
+    }
+  ],
+  "input_sha256": {
+    "ndjson_ascii_tail": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "ndjson_utf8_tail": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "ndjson_utf8_splitlines": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "prefix_remove_ascii": "42e8bc96b8eec8c4e5d503483ba0cb843ce95243c8ca8575ffc69cd25d12c61c",
+    "prefix_remove_utf8": "96d954b3561b5ca424ea7ec0afb793da7fd5469627ac15643975891e41e4f819",
+    "suffix_remove_utf8": "96d954b3561b5ca424ea7ec0afb793da7fd5469627ac15643975891e41e4f819",
+    "splitlines_bulk_ascii": "38f023c9a0e11ebf4bc70741d642634df4a58584fa369e2b702cd6ca0cfdf6b1",
+    "splitlines_bulk_utf8": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774",
+    "splitlines_inline": "7c56cd3f9b5d316ba32191b523cdf17787b550abc5b97a02fdf8b1230fabcc08",
+    "json_request": "a848b541f4d1f779ff58ab68835f9759d4b4c69530cdb9a084ac2b926a902ec8",
+    "template_fragments": "86ffe1d7b0c44e8fc5444bea5ebb612636d34593a40be92bd3112c4cf8c3be7c",
+    "docx_text": "56a2c80602adefa164619ffd070277141d02a7af1088992c39241e3313300f7a",
+    "hash_1_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "hash_4_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "hash_8_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "hash_64_views": "2e600e0c6431f914136c6a1885dde510028766429f6f201cb068de58b0a50894",
+    "unicode_owners_unindexed": "4d214f0a32f98694c3360b22dc7c8a83b21f839fe7516c67b1ffffc629125e18",
+    "unicode_owners_indexed": "4d214f0a32f98694c3360b22dc7c8a83b21f839fe7516c67b1ffffc629125e18"
+  },
+  "trials": 5,
+  "rss_trials": 5,
+  "method": "randomized fresh processes; macOS wait4 CPU / guest repetitions; separate original single-execution peak RSS",
+  "base_revision": "f29350439dc1a5d5f63e7c0d30555edcf170a57c",
+  "dual_revision": "uncommitted dual-cursor/adaptive-hash prototype",
+  "profile": "profiling",
+  "machine": "arm64 macOS",
+  "source_patch_sha256": "cf6d47e22d06d48b91c2fdb3a5f52057b6c383fb3ca3102d40f3ff384bd06e3d",
+  "source_patch_path": "/private/tmp/monty-dual-benchmark/source.patch",
+  "source_sha256": {
+    "crates/monty/src/types/str/access_cache.rs": "c1db2228a0e610269e384a4836db6d778a1f4b166cbdfb5d824990308b7651ad",
+    "crates/monty/src/types/str/mod.rs": "c1bd85cc27c7d3ad48575c97de4cfbec942a3da691cbe204e47fcc5b68f5e8a9",
+    "crates/monty/src/types/str/view.rs": "25403e11fe560c9b183b58a68ebc51e7d7e79f43bab32244c0e18c9783c89502",
+    "crates/monty/src/value.rs": "0c38557d538de42a6b640b0439486077a1adf0686ceb76dd17b7a1e56cb9ab16"
+  }
+}

@@ -1,0 +1,3 @@
+lines = data.splitlines()
+data = None
+len(lines) + len(lines[0]) + len(lines[-1])
