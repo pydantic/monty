@@ -1657,6 +1657,9 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
 /** The OS call an import's candidate file is read with, as `open()`'s handler sees it. */
 const READ_TEXT_CALL = 'Path.read_text'
 
+/** The most search-path directories an import searches, as `MAX_SEARCH_DIRS` in monty-types. */
+const MAX_SEARCH_DIRS = 32
+
 /** Errors reading a candidate that mean its file is not there, so the search moves on. */
 const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 'IsADirectoryError', 'PermissionError'])
 
@@ -1664,7 +1667,8 @@ const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 
  * An import's candidate files, mirroring `ImportArgs::candidates` in
  * monty-types: per directory, the package `name/__init__.py` before the module
  * `name.py`. The call comes from an untrusted worker, so a name that is not
- * dotted identifiers, or a directory that is not absolute, yields nothing. The
+ * dotted identifiers, or a directory that is not absolute, yields nothing, and
+ * only the first `MAX_SEARCH_DIRS` remaining directories are searched. The
  * paths are built one at a time, so a long name times many directories never
  * sits in memory, and kept as sent, so mounts check them before collapsing `..`.
  */
@@ -1673,8 +1677,13 @@ function* importCandidates(name: string, searchPath: unknown): Generator<string>
     return
   }
   const leaf = name.slice(name.lastIndexOf('.') + 1)
+  let searched = 0
   for (const dir of searchPath) {
+    if (searched === MAX_SEARCH_DIRS) {
+      return
+    }
     if (typeof dir === 'string' && dir.startsWith('/') && !dir.includes('\0')) {
+      searched++
       const base = dir.endsWith('/') ? dir.slice(0, -1) : dir
       yield `${base}/${leaf}/__init__.py`
       yield `${base}/${leaf}.py`

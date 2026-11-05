@@ -9,8 +9,8 @@
 
 use monty::{Dump, MontyRepl, MontyRun, ReplOsCall, ReplProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, IMPORT_CALL, ImportArgs, ModuleFile, ModuleRead, MontyException,
-    MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, find_module_file,
+    CompileOptions, ExcType, ExtFunctionResult, IMPORT_CALL, ImportArgs, MAX_SEARCH_DIRS, ModuleFile, ModuleRead,
+    MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, ResourceTracker, find_module_file,
 };
 
 /// The files a test's host serves, by virtual path.
@@ -243,6 +243,18 @@ fn a_submodule_is_asked_with_the_package_path() {
             ("far.mod", vec!["/proj/elsewhere"]),
         ]
     );
+}
+
+/// A sandbox-set `__path__` sends only the directories the host would search.
+#[test]
+fn a_long_package_path_is_capped() {
+    let files = &[("/proj/pkg/__init__.py", "__path__ = [f'/d{i}' for i in range(40)]\n")];
+    let mut imports = Vec::new();
+    let (_, result) = feed_logged(repl(), "import pkg.sub", files, &mut imports);
+    assert_eq!(result.unwrap_err(), "ModuleNotFoundError: No module named 'pkg.sub'");
+    let search_path = &imports.last().unwrap().search_path;
+    assert_eq!(search_path.len(), MAX_SEARCH_DIRS);
+    assert_eq!(search_path.last().unwrap(), &format!("/d{}", MAX_SEARCH_DIRS - 1));
 }
 
 #[test]

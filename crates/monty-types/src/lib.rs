@@ -30,7 +30,7 @@ pub use crate::{
     },
     file_mode::FileMode,
     format::{FormatComplex, FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
-    import::{ImportArgs, ModuleFile, ModuleRead, find_module_file},
+    import::{ImportArgs, MAX_SEARCH_DIRS, ModuleFile, ModuleRead, find_module_file},
     io::{
         COLLECT_STREAMS_ENTRY_OVERHEAD, CollectedStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter,
         PrintWriterCallback, check_print_collect_limit,
