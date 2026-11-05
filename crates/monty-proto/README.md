@@ -49,7 +49,7 @@ for the schema and the protocol rules documented alongside it.
   `FatalError` for the parent to downgrade to, then exits non-zero.
   Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
   Snapshot compatibility is checked separately using the dump-format version.
-  `OsCall.create_exclusive` (field 35) returns the existing file-handle value.
+  `OsCall.create_exclusive` (field 35) returns a file-handle value.
   A host must reject an unsupported operation rather than fall back to ordinary, potentially truncating `open`.
 - `grpc` (cargo feature, off by default) — the `grpc` module: the remote
   transport's vocabulary. `SESSION_PATH` names the `MontySession.Session`
