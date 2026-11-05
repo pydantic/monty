@@ -1,0 +1,78 @@
+{
+  "production_builds": {
+    "arcstr_copy": "/private/tmp/monty-rss-candidate",
+    "arcstr_views": "/private/tmp/monty-rss-arcstr_views",
+    "owned_copy": "/private/tmp/monty-rss-owned",
+    "owned_views": "/private/tmp/monty-rss-owned_views"
+  },
+  "executable_sha256": {
+    "arcstr_copy": "e5b895b5df9ff1c7124da54bb8117e06893007e78ed524baf5730d371e59907c",
+    "arcstr_views": "31ed5853348b00717f296c4ea6b74330800dbbd1ae1b0bd6b55974556dbdff6f",
+    "owned_copy": "d66c74319ce463bb290d01b59f2444182fb8001e99334980ebdd86124b1367a3",
+    "owned_views": "222442d4c6a4a958c255afef3fad6bf0eaa03a82aa5aef03e090c2b592004c0e"
+  },
+  "trials_per_workload_per_build": 5,
+  "timing_method": "Per-child macOS wait4 user+system CPU divided by guest loop count; includes amortized startup/compile/teardown. Repeated calls share VM JSON caches.",
+  "rss_method": "One fresh process executing the original fixture once; macOS wait4 ru_maxrss bytes; absolute peak.",
+  "input_sha256": {
+    "ndjson_ascii_splitlines": "35c41c5c25648e9f37722c4e8cddb9f7c1815bcb2b798e13995b19a4d34d3214",
+    "ndjson_utf8_splitlines": "aa9c86e6370466e1ae9f8c015d98274bf08c50df6c7a3a665a97b3d34b3aaa42",
+    "splitlines_bulk_ascii": "38f023c9a0e11ebf4bc70741d642634df4a58584fa369e2b702cd6ca0cfdf6b1",
+    "splitlines_bulk_utf8": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774",
+    "splitlines_keep_one": "2b77f455eb0d0e93505d223795eb83ab3edb5366add4f7b17c9468a3fd0aa774",
+    "splitlines_inline": "7c56cd3f9b5d316ba32191b523cdf17787b550abc5b97a02fdf8b1230fabcc08"
+  },
+  "cases": [
+    {
+      "expected": 1199118,
+      "input_bytes": 1060987,
+      "name": "ndjson_ascii_splitlines",
+      "retain": false,
+      "iterations": 100
+    },
+    {
+      "expected": 1199118,
+      "input_bytes": 994987,
+      "name": "ndjson_utf8_splitlines",
+      "retain": false,
+      "iterations": 100
+    },
+    {
+      "expected": 100318,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_ascii",
+      "retain": true,
+      "iterations": 10
+    },
+    {
+      "expected": 100160,
+      "input_bytes": 16000000,
+      "name": "splitlines_bulk_utf8",
+      "retain": true,
+      "iterations": 10
+    },
+    {
+      "expected": 80,
+      "input_bytes": 16000000,
+      "name": "splitlines_keep_one",
+      "retain": true,
+      "iterations": 10
+    },
+    {
+      "expected": 100005,
+      "input_bytes": 600000,
+      "name": "splitlines_inline",
+      "retain": true,
+      "iterations": 100
+    }
+  ],
+  "base_revision": "f7be4e56439039296812a6160638be9fd0d5a58e",
+  "trial_worktrees": {
+    "arcstr_views": "/private/tmp/monty-splitlines-views",
+    "owned_views": "/private/tmp/monty-splitlines-owned-views"
+  },
+  "source_sha256": {
+    "arcstr_views": "a2612add4ab82e523e97a3854efcc5fbac6a1018da397281161d2753b7c75ae8",
+    "owned_views": "10d7a06502da20285a740a5dfae21e242284faa18217b8c4972079eb6d86401b"
+  }
+}

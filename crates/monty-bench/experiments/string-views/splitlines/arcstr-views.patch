@@ -1,0 +1,127 @@
+diff --git a/crates/monty/src/types/str/mod.rs b/crates/monty/src/types/str/mod.rs
+index 3f95fa88..87645aac 100644
+--- a/crates/monty/src/types/str/mod.rs
++++ b/crates/monty/src/types/str/mod.rs
+@@ -32 +32 @@ use crate::{
+-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView},
++    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView},
+@@ -186,5 +186 @@ impl StringStorage {
+-            Self {
+-                backing: Arc::clone(&self.backing),
+-                start: self.start + range.start,
+-                len,
+-            }
++            self.view(range)
+@@ -197,0 +194,9 @@ impl StringStorage {
++    /// splitlines deliberately allows short views to retain the whole backing.
++    fn view(&self, range: ops::Range<usize>) -> Self {
++        Self {
++            backing: Arc::clone(&self.backing),
++            start: self.start + range.start,
++            len: range.len(),
++        }
++    }
++
+@@ -1743 +1748 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
+-fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
++fn str_splitlines<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+@@ -1756,0 +1762,6 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
++    let source = match s.string {
++        PyStr::Heap(source) => Some(source),
++        PyStr::Interned(_) | PyStr::Inline(_) => None,
++    };
++    let mut guard = DropGuard::new(Vec::new(), vm);
++    let (lines, vm) = guard.as_parts_mut();
+@@ -1758,2 +1768,0 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
+-
+-    let mut lines = Vec::new();
+@@ -1799 +1808,20 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
+-        lines.push(allocate_string(line, vm.heap));
++        let value = if line.len() >= view_policy().0
++            && line.len() > 15
++            && let Some(source) = source
++        {
++            if start == 0 && line.len() == len {
++                source.clone_value(vm.heap)
++            } else {
++                let storage = source.get(vm.heap).0.view(start..start + line.len());
++                let ascii = source.get(vm.heap).2.get().filter(|value| *value);
++                Value::Ref(vm.heap.allocate(HeapData::Str(Str(
++                    storage,
++                    Cell::new(None),
++                    Cell::new(ascii),
++                    AccessCache::default(),
++                ))))
++            }
++        } else {
++            allocate_string(line, vm.heap)
++        };
++        lines.push(value);
+@@ -1803,0 +1832 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
++    let (lines, vm) = guard.into_parts();
+diff --git a/crates/monty/src/types/str/str_realistic_bench.rs b/crates/monty/src/types/str/str_realistic_bench.rs
+index f57bda24..7a4ad170 100644
+--- a/crates/monty/src/types/str/str_realistic_bench.rs
++++ b/crates/monty/src/types/str/str_realistic_bench.rs
+@@ -241,0 +242,31 @@ fn cases() -> Vec<Case> {
++    let bulk_ascii = ("x".repeat(159) + "\n").repeat(100_000);
++    let bulk_utf8 = ("é".repeat(79) + "x\n").repeat(100_000);
++    let bulk_source = "lines = data.splitlines()\ndata = None\nlen(lines) + len(lines[0]) + len(lines[-1])";
++    cases.push(Case::input(
++        "splitlines_bulk_ascii",
++        bulk_source,
++        bulk_ascii,
++        100_318,
++        true,
++    ));
++    cases.push(Case::input(
++        "splitlines_bulk_utf8",
++        bulk_source,
++        bulk_utf8.clone(),
++        100_160,
++        true,
++    ));
++    cases.push(Case::input(
++        "splitlines_keep_one",
++        "line = data.splitlines()[123]\ndata = None\nlen(line)",
++        bulk_utf8,
++        80,
++        true,
++    ));
++    cases.push(Case::input(
++        "splitlines_inline",
++        "lines = data.splitlines()\ndata = None\nlen(lines) + len(lines[-1])",
++        "short\n".repeat(100_000),
++        100_005,
++        true,
++    ));
+diff --git a/crates/monty/tests/string_views.rs b/crates/monty/tests/string_views.rs
+index 61c09066..0394a702 100644
+--- a/crates/monty/tests/string_views.rs
++++ b/crates/monty/tests/string_views.rs
+@@ -86,0 +87,25 @@ True
++
++#[test]
++fn splitline_views_preserve_boundaries_and_outlive_source_views() {
++    let code = r"
++payload = 'é🌍' + 'x' * 28
++for ending in ['\n', '\r', '\r\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029']:
++    body = ending.join([payload] * 100) + ending
++    source = 'head' * 100 + body + 'tail' * 100
++    window = source[400:-400]
++    assert window.splitlines() == [payload] * 100
++    assert window.splitlines(True) == [payload + ending] * 100
++    line = window.splitlines()[57]
++    source = None
++    window = None
++    body = None
++    assert line == payload
++    assert line[0] == 'é'
++    assert line[1] == '🌍'
++    assert hash(line) == hash(payload)
++assert ('x' * 20 + '\n\nshort\n').splitlines() == ['x' * 20, '', 'short']
++True
++";
++    let mut runner = MontyRun::new(code.to_owned(), "splitline-views.py", vec![], CompileOptions::default()).unwrap();
++    assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
++}

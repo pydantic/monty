@@ -1,6 +1,6 @@
 # Owned/view storage using Arc<String>
 
-This local trial is based on PR #1246 at `f7be4e56439039296812a6160638be9fd0d5a58e`, itself based on #1236.
+This storage experiment is based on PR #1246 at `f7be4e56439039296812a6160638be9fd0d5a58e`, itself based on #1236.
 Whole strings store `Owned(Arc<String>)`; slices store the same backing plus a byte offset and length.
 The storage enum measures 24 bytes on this arm64 build, versus 32 bytes for the published Arc<str> representation.
 The enum still reserves room for its largest variant; an individual Owned value does not make the heap entry smaller than that.

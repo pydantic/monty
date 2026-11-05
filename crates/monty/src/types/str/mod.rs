@@ -29,7 +29,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
@@ -192,15 +192,20 @@ impl StringStorage {
     fn slice(&self, range: ops::Range<usize>) -> Self {
         let len = range.len();
         if self.should_view(len) {
-            Self::View {
-                backing: Arc::clone(self.backing()),
-                start: self.start() + range.start,
-                len,
-            }
+            self.view(range)
         } else {
             #[cfg(test)]
             view_bench::copied(len);
             Self::new(&self[range])
+        }
+    }
+
+    /// splitlines deliberately allows short views to retain the whole backing.
+    fn view(&self, range: ops::Range<usize>) -> Self {
+        Self::View {
+            backing: Arc::clone(self.backing()),
+            start: self.start() + range.start,
+            len: range.len(),
         }
     }
 
@@ -1743,7 +1748,7 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
 ///
 /// Returns a list of the lines in the string, breaking at line boundaries.
 /// Accepts keepends as either positional or keyword argument.
-fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+fn str_splitlines<'h>(s: &TextView<'_, 'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     // Skip ordinary bytes with one lookup; Unicode boundaries start with 0xc2 or 0xe2.
     const LINE_BOUNDARY_START: [bool; 256] = {
         let mut table = [false; 256];
@@ -1757,9 +1762,13 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
     };
 
     let keepends = parse_splitlines_args(args, vm)?;
+    let source = match s.string {
+        PyStr::Heap(source) => Some(source),
+        PyStr::Interned(_) | PyStr::Inline(_) => None,
+    };
+    let mut guard = DropGuard::new(Vec::new(), vm);
+    let (lines, vm) = guard.as_parts_mut();
     let s = s.get(vm.heap);
-
-    let mut lines = Vec::new();
     let mut start = 0;
     let bytes = s.as_bytes();
     let len = bytes.len();
@@ -1799,11 +1808,31 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
-        lines.push(allocate_string(line, vm.heap));
+        let value = if line.len() >= view_policy().0
+            && line.len() > 15
+            && let Some(source) = source
+        {
+            if start == 0 && line.len() == len {
+                source.clone_value(vm.heap)
+            } else {
+                let storage = source.get(vm.heap).0.view(start..start + line.len());
+                let ascii = source.get(vm.heap).2.get().filter(|value| *value);
+                Value::Ref(vm.heap.allocate(HeapData::Str(Str(
+                    storage,
+                    Cell::new(None),
+                    Cell::new(ascii),
+                    AccessCache::default(),
+                ))))
+            }
+        } else {
+            allocate_string(line, vm.heap)
+        };
+        lines.push(value);
 
         start = end;
     }
 
+    let (lines, vm) = guard.into_parts();
     let list = super::List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))

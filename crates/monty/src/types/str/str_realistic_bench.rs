@@ -239,6 +239,37 @@ fn cases() -> Vec<Case> {
             ));
         }
     }
+    let bulk_ascii = ("x".repeat(159) + "\n").repeat(100_000);
+    let bulk_utf8 = ("é".repeat(79) + "x\n").repeat(100_000);
+    let bulk_source = "lines = data.splitlines()\ndata = None\nlen(lines) + len(lines[0]) + len(lines[-1])";
+    cases.push(Case::input(
+        "splitlines_bulk_ascii",
+        bulk_source,
+        bulk_ascii,
+        100_318,
+        true,
+    ));
+    cases.push(Case::input(
+        "splitlines_bulk_utf8",
+        bulk_source,
+        bulk_utf8.clone(),
+        100_160,
+        true,
+    ));
+    cases.push(Case::input(
+        "splitlines_keep_one",
+        "line = data.splitlines()[123]\ndata = None\nlen(line)",
+        bulk_utf8,
+        80,
+        true,
+    ));
+    cases.push(Case::input(
+        "splitlines_inline",
+        "lines = data.splitlines()\ndata = None\nlen(lines) + len(lines[-1])",
+        "short\n".repeat(100_000),
+        100_005,
+        true,
+    ));
     let document = "Quarterly review: München & Zürich. ".repeat(20_000);
     let preview_body = serde_json::to_string(&json!({"document":document,"request_id":"INV-2026-0042"})).unwrap();
     let code = "import json\nrequest = json.loads(data)\ndata = None\npreview = request['document'][:256]\nrequest = None\nlen(preview)";

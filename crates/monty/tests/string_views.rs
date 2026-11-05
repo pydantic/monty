@@ -84,3 +84,28 @@ True
     let mut runner = MontyRun::new(code.to_owned(), "json-scratch.py", vec![], CompileOptions::default()).unwrap();
     assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
 }
+
+#[test]
+fn splitline_views_preserve_boundaries_and_outlive_source_views() {
+    let code = r"
+payload = 'é🌍' + 'x' * 28
+for ending in ['\n', '\r', '\r\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029']:
+    body = ending.join([payload] * 100) + ending
+    source = 'head' * 100 + body + 'tail' * 100
+    window = source[400:-400]
+    assert window.splitlines() == [payload] * 100
+    assert window.splitlines(True) == [payload + ending] * 100
+    line = window.splitlines()[57]
+    source = None
+    window = None
+    body = None
+    assert line == payload
+    assert line[0] == 'é'
+    assert line[1] == '🌍'
+    assert hash(line) == hash(payload)
+assert ('x' * 20 + '\n\nshort\n').splitlines() == ['x' * 20, '', 'short']
+True
+";
+    let mut runner = MontyRun::new(code.to_owned(), "splitline-views.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(runner.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
+}

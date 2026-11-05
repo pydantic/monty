@@ -249,6 +249,7 @@ along the way:
 
 `snapshot.dump()` serializes the paused worker.
 String views serialize their visible text and restore as independent strings; dumps do not preserve shared backing storage.
+This also applies to lines returned by `splitlines()`, so a short retained line does not serialize its entire backing.
 If the serialized state exceeds the 256 MiB message cap, `dump()` raises `RuntimeError` without changing the session;
 a suspended session remains resumable.
 A fresh session's `load_snapshot` restores it and returns the snapshot to resume:

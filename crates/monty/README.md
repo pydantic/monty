@@ -26,6 +26,8 @@ Contiguous slices of heap strings share `Arc<String>` storage when the result co
 at least one quarter of the original backing buffer capacity.
 Chained slices compose byte offsets directly; smaller results copy or use the existing inline representation.
 Full slices reuse the source value, and stepped slices materialize their result.
+`splitlines()` shares every non-inline heap-backed line regardless of retained fraction.
+Keeping one such line can retain the entire backing allocation.
 
 Views remain valid after the source string is released.
 Interned strings still materialize slices, and dumps serialize visible text without preserving shared storage.
