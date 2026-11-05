@@ -2,7 +2,11 @@ mod bind_native;
 mod bind_python;
 mod from_value;
 
-use std::{mem, slice, vec::IntoIter};
+use std::{
+    mem::{self, size_of},
+    slice,
+    vec::IntoIter,
+};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
@@ -21,8 +25,9 @@ use crate::{
     intern::{Interns, StringId},
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
+    resource_checks::check_estimated_size,
     types::{Dict, allocate_tuple, dict::DictIntoIter},
-    value::{EitherStr, Value},
+    value::{EitherStr, VALUE_SIZE, Value},
 };
 
 /// Type for method call arguments.
@@ -70,15 +75,42 @@ impl ArgValues {
         }
     }
 
-    /// Collects positional arguments cloned with the heap into an allocated tuple `Value`.
-    pub(crate) fn positional_tuple(&self, heap: &Heap) -> Value {
+    /// Collects positional arguments cloned with the heap into an allocated tuple `Value`,
+    /// preflighting memory for larger buffers.
+    pub(crate) fn positional_tuple(&self, heap: &Heap) -> RunResult<Value> {
         let pos_items: Vec<Value> = match self {
             Self::Empty | Self::Kwargs(_) => vec![],
             Self::One(v) => vec![v.clone_with_heap(heap)],
             Self::Two(a, b) => vec![a.clone_with_heap(heap), b.clone_with_heap(heap)],
-            Self::ArgsKargs { args, .. } => args.iter().map(|v| v.clone_with_heap(heap)).collect(),
+            Self::ArgsKargs { args, .. } => {
+                check_estimated_size(args.len().saturating_mul(VALUE_SIZE), &heap.tracker)?;
+                let mut items = Vec::with_capacity(args.len());
+                items.extend(args.iter().map(|v| v.clone_with_heap(heap)));
+                items
+            }
         };
-        allocate_tuple(pos_items.into(), heap)
+        Ok(allocate_tuple(pos_items.into(), heap))
+    }
+
+    /// Clones arguments with a reserved spare slot for `prepend(self/class)`, preflighting memory.
+    pub(crate) fn clone_for_prepend(&self, heap: &mut Heap) -> RunResult<Self> {
+        match self {
+            Self::Empty => Ok(Self::Empty),
+            Self::One(v) => Ok(Self::One(v.clone_with_heap(heap))),
+            Self::Two(a, b) => Ok(Self::Two(a.clone_with_heap(heap), b.clone_with_heap(heap))),
+            Self::Kwargs(kw) => Ok(Self::Kwargs(kw.clone_with_preflight(heap)?)),
+            Self::ArgsKargs { args, kwargs } => {
+                let slots = args.len().saturating_add(1);
+                check_estimated_size(slots.saturating_mul(VALUE_SIZE), &heap.tracker)?;
+                let new_kwargs = kwargs.clone_with_preflight(heap)?;
+                let mut new_args = Vec::with_capacity(slots);
+                new_args.extend(args.iter().map(|v| v.clone_with_heap(heap)));
+                Ok(Self::ArgsKargs {
+                    args: new_args,
+                    kwargs: new_kwargs,
+                })
+            }
+        }
     }
 
     /// Rejects keywords before a positional-only function's arity or conversion checks.
@@ -235,20 +267,6 @@ impl ArgValues {
     fn unexpected_kwargs_error(kwargs: KwargsValues, method_name: &str, heap: &mut Heap) -> RunError {
         kwargs.drop_with(heap);
         ExcType::type_error_no_kwargs(method_name)
-    }
-
-    /// Creates an independent clone of the arguments, bumping heap reference counts.
-    pub(crate) fn clone_with_heap(&self, heap: &mut Heap) -> Self {
-        match self {
-            Self::Empty => Self::Empty,
-            Self::One(v) => Self::One(v.clone_with_heap(heap)),
-            Self::Two(a, b) => Self::Two(a.clone_with_heap(heap), b.clone_with_heap(heap)),
-            Self::Kwargs(kw) => Self::Kwargs(kw.clone_with_heap(heap)),
-            Self::ArgsKargs { args, kwargs } => Self::ArgsKargs {
-                args: args.iter().map(|v| v.clone_with_heap(heap)).collect(),
-                kwargs: kwargs.clone_with_heap(heap),
-            },
-        }
     }
 
     /// Exports the arguments into one arena for delivery to an external
@@ -436,22 +454,36 @@ impl KwargsValues {
         self.len() == 0
     }
 
-    /// Creates an independent clone of the keyword arguments, bumping heap reference counts.
-    pub(crate) fn clone_with_heap(&self, heap: &mut Heap) -> Self {
+    /// Creates an independent clone of the keyword arguments with memory preflight.
+    pub(crate) fn clone_with_preflight(&self, heap: &mut Heap) -> RunResult<Self> {
         match self {
-            Self::Empty => Self::Empty,
-            Self::Inline(items) => Self::Inline(items.iter().map(|(k, v)| (*k, v.clone_with_heap(heap))).collect()),
-            Self::Pairs(items) => Self::Pairs(
-                items
-                    .iter()
-                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
-                    .collect(),
-            ),
-            Self::Dict(dict) => Self::Pairs(
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
-                    .collect(),
-            ),
+            Self::Empty => Ok(Self::Empty),
+            Self::Inline(items) => {
+                check_estimated_size(
+                    items.len().saturating_mul(size_of::<(StringId, Value)>()),
+                    &heap.tracker,
+                )?;
+                Ok(Self::Inline(
+                    items.iter().map(|(k, v)| (*k, v.clone_with_heap(heap))).collect(),
+                ))
+            }
+            Self::Pairs(items) => {
+                check_estimated_size(items.len().saturating_mul(size_of::<(Value, Value)>()), &heap.tracker)?;
+                Ok(Self::Pairs(
+                    items
+                        .iter()
+                        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                        .collect(),
+                ))
+            }
+            Self::Dict(dict) => {
+                check_estimated_size(dict.len().saturating_mul(size_of::<(Value, Value)>()), &heap.tracker)?;
+                Ok(Self::Pairs(
+                    dict.iter()
+                        .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                        .collect(),
+                ))
+            }
         }
     }
 

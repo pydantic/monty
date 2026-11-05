@@ -327,11 +327,7 @@ impl VM<'_> {
             cursor = next;
         }
         self.heap.inc_ref(handled_id);
-        if let Err(err) = self.set_exception_context(*raised_id, Some(handled_id)) {
-            self.heap.dec_ref(handled_id);
-            return Err(err);
-        }
-        Ok(())
+        self.set_exception_context(*raised_id, Some(handled_id))
     }
 
     /// The `__context__` of the exception `id`, borrowed.
