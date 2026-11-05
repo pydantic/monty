@@ -40,7 +40,8 @@ including inheritance from the parent directory.
 Overlay mounts insert an empty overlay file and never create or replace a backing file.
 Their exclusive check and insertion hold a mutable borrow of the overlay state; the host must not concurrently modify
 backing entries during creation.
-Their permissions remain the mount's access policy and synthetic stat permissions, as with ordinary overlay writes.
+Overlay mounts ignore requested permission bits and report fixed stat modes.
+Python `OSAccess` reports the requested bits through `stat()`, but does not enforce them for access.
 
 ## Monty crates
 
