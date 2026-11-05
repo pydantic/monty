@@ -20,7 +20,7 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExecutionClock, ExtFunctionResult,
+    AssertMessageAnnotations, AsyncCall, CallArgs, DEFAULT_MAX_SUSPENSIONS, ExcType, ExecutionClock, ExtFunctionResult,
     IMPORT_STUBS_CALL_ID, MONTY_VERSION, ModuleFile, ModuleRead, MontyException, MontyObject, MontyUuid,
     NameLookupResult, NamedValues, OsFunctionCall, OsPolicy, PrintStream, ResourceLimits, SleepMode, SourceRange,
     TypeCheckingConfig, validate_cwd,
@@ -369,9 +369,20 @@ pub type PrintFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Send);
 
 /// Callback for the events a [`Checkout::turn_raw`] streams before the
-/// turn-ender — `Print`s today. Returns a future for the same reason
+/// turn-ender — `Print` and `AsyncCall`. Returns a future for the same reason
 /// [`OnPrint`] does: a slow sink backpressures the worker.
 pub type OnRawEvent<'a> = &'a mut (dyn FnMut(&pb::ChildEvent) -> PrintFuture + Send);
+
+/// The future an [`AsyncCallSink`] returns; see [`Checkout::set_async_call_sink`].
+pub type AsyncCallFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Receives each call the sandbox makes to a host coroutine function, as the
+/// worker streams it mid-turn (see [`TurnEvent::ResolveFutures`]). The sink
+/// starts the coroutine and later resolves the call by `call_id` through
+/// [`Checkout::resume_futures`]; the worker is not waiting on it, so the
+/// future it returns only paces the stream. Owned by the checkout, since the
+/// calls arrive on whichever turn the feed is on.
+pub type AsyncCallSink = Box<dyn FnMut(AsyncCall) -> AsyncCallFuture + Send>;
 
 /// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
 ///
@@ -414,6 +425,8 @@ pub struct Checkout {
     pool: Arc<PoolInner>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
+    /// Where streamed `AsyncCall` events go; see [`Checkout::set_async_call_sink`].
+    async_call_sink: Option<AsyncCallSink>,
     /// Set while a turn's I/O is in flight; still set on the next call only
     /// if the previous turn future was cancelled mid-I/O (see the type docs).
     turn_in_flight: bool,
@@ -487,6 +500,9 @@ struct SessionBudget {
     suspension_limit: u64,
     /// Suspensions this checkout has received from the worker.
     suspensions_seen: u64,
+    /// A streamed async call was counted since the last `ResolveFutures`,
+    /// which then goes uncounted: the round trip is the calls' own.
+    streamed_calls_pending: bool,
     /// Configured `max_total_sleep`, tightened by worker replies.
     sleep_limit: Option<Duration>,
     /// Parent-enforced ceiling on each system sleep, even from a compromised worker.
@@ -509,6 +525,7 @@ impl SessionBudget {
             cpu_feed_suspended: false,
             suspension_limit: limits.map_or(DEFAULT_MAX_SUSPENSIONS as u64, |limits| limits.max_suspensions as u64),
             suspensions_seen: 0,
+            streamed_calls_pending: false,
             sleep_limit: limits.and_then(|limits| limits.max_total_sleep),
             sleep_used: Duration::ZERO,
             system_sleep_max: match repl.os_policy.sleep {
@@ -530,6 +547,7 @@ impl SessionBudget {
             cpu_feed_suspended: false,
             suspension_limit: self.suspension_limit,
             suspensions_seen: 0,
+            streamed_calls_pending: false,
             sleep_limit: self.sleep_limit,
             sleep_used: Duration::ZERO,
             system_sleep_max: self.system_sleep_max,
@@ -550,7 +568,13 @@ impl SessionBudget {
             self.suspension_limit = self.suspension_limit.min(reported);
         }
         if is_suspension(event) {
-            self.suspensions_seen += 1;
+            // a `ResolveFutures` settling streamed calls is their round trip,
+            // already counted call by call
+            let settles_streamed = matches!(event.kind, Some(pb::child_event::Kind::ResolveFutures(_)))
+                && mem::take(&mut self.streamed_calls_pending);
+            if !settles_streamed {
+                self.suspensions_seen += 1;
+            }
             self.cpu_feed_suspended = true;
         } else if matches!(
             event.kind,
@@ -574,6 +598,17 @@ impl SessionBudget {
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
+    }
+
+    /// Counts a streamed async call against `max_suspensions` — it is host
+    /// work like any suspension, and the `ResolveFutures` that settles it is
+    /// then free, so `await f()` costs one either way — and reports whether
+    /// the limit is now exceeded. The abort itself waits for the next
+    /// suspension: a request cannot be written mid-turn.
+    fn count_async_call(&mut self) -> bool {
+        self.suspensions_seen += 1;
+        self.streamed_calls_pending = true;
+        self.suspensions_seen > self.suspension_limit
     }
 
     /// Charges a capped system sleep; other events, including `CallHost` sleeps, are free.
@@ -792,6 +827,7 @@ impl Checkout {
             worker: Some(worker),
             pool,
             pending: None,
+            async_call_sink: None,
             turn_in_flight: false,
             abort_in_flight: false,
             budget,
@@ -910,7 +946,7 @@ impl Checkout {
         skip_type_check: bool,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
-        self.feed_with_cwd(code, inputs, mounts, None, skip_type_check, on_print)
+        self.feed_with_cwd(code, inputs, mounts, None, skip_type_check, Vec::new(), on_print)
             .await
     }
 
@@ -923,6 +959,7 @@ impl Checkout {
     /// # Errors
     /// A relative or NUL-containing `cwd` is a session-preserving
     /// [`PoolError::Runtime`] (`ValueError`), raised before any frame is sent.
+    #[expect(clippy::too_many_arguments, reason = "one parameter per feed setting")]
     pub async fn feed_with_cwd(
         &mut self,
         code: impl Into<String>,
@@ -930,6 +967,7 @@ impl Checkout {
         mounts: Vec<MountSpec>,
         cwd: Option<&str>,
         skip_type_check: bool,
+        async_functions: Vec<String>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         self.ensure_ready()?;
@@ -959,6 +997,7 @@ impl Checkout {
             values: Some(values),
             skip_type_check,
             cwd,
+            async_functions: async_functions.into(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1362,6 +1401,18 @@ impl Checkout {
     #[must_use]
     pub fn session_id(&self) -> Option<&[u8]> {
         self.session_id.as_deref()
+    }
+
+    /// Installs (or with `None` removes) the sink for the calls the sandbox
+    /// makes to host coroutine functions — those named in `feed_with_cwd`'s
+    /// `async_functions`, or exported with `MontyObject::async_function`.
+    /// Required before such a call can arrive: a streamed call with no sink
+    /// is a protocol violation that ends the session. The sink is invoked
+    /// mid-turn, under the turn's telemetry context, with every call in
+    /// sandbox order; a `Load` streams a restored session's unresolved calls
+    /// the same way.
+    pub fn set_async_call_sink(&mut self, sink: Option<AsyncCallSink>) {
+        self.async_call_sink = sink;
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -1840,9 +1891,13 @@ impl Checkout {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
             }
-            // strict alternation: zero or more `Print`s, then exactly one
-            // turn-ender — so anything that is not a print ends the turn
-            if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+            // strict alternation: zero or more streamed `Print`s and
+            // `AsyncCall`s, then exactly one turn-ender — so anything else
+            // ends the turn
+            if matches!(
+                event.kind,
+                Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::AsyncCall(_))
+            ) {
                 on_event(&event).await;
             } else if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) {
                 // the far end is gone (see `fatal_error`): discard the worker
@@ -1992,6 +2047,49 @@ impl Checkout {
                         #[cfg(not(feature = "telemetry"))]
                         future.await;
                     }
+                }
+                // streamed like a print: the sandbox already holds a future
+                // for the call and runs on, so nothing is answered here
+                Some(pb::child_event::Kind::AsyncCall(mut call)) => {
+                    // over the suspension limit the call is dropped unrun; the
+                    // suspension that follows aborts the feed as it would have
+                    if self.budget.count_async_call() {
+                        continue;
+                    }
+                    let position = suspension_position(call.position.take());
+                    let call = AsyncCall {
+                        function_name: call.function_name.clone(),
+                        call_id: call.call_id,
+                        position,
+                        args: match call.into_call_args() {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                            }
+                        },
+                    };
+                    let Some(sink) = self.async_call_sink.as_mut() else {
+                        return Err(self.protocol_violation(
+                            "worker streamed an async call but no sink is installed (see Checkout::set_async_call_sink)",
+                        ));
+                    };
+                    #[cfg(feature = "telemetry")]
+                    let context = self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
+                        worker.async_call_context(call.call_id)
+                    });
+                    let future = {
+                        #[cfg(feature = "telemetry")]
+                        let _context = context.has_active_span().then(|| context.clone().attach());
+                        sink(call)
+                    };
+                    #[cfg(feature = "telemetry")]
+                    if context.has_active_span() {
+                        future.with_context(context).await;
+                    } else {
+                        future.await;
+                    }
+                    #[cfg(not(feature = "telemetry"))]
+                    future.await;
                 }
                 Some(pb::child_event::Kind::FunctionCall(mut call)) => {
                     let position = suspension_position(call.position.take());

@@ -23,7 +23,11 @@ fails to spawn is retried with a doubling backoff. Remote pools never refill.
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
-state cannot be trusted back into the pool.
+state cannot be trusted back into the pool. A host function named in `feed_with_cwd`'s
+`async_functions` (or exported with `MontyObject::async_function`) is a coroutine on the host:
+the sandbox answers its calls with futures itself and the worker streams each call mid-turn to
+the sink installed with `Checkout::set_async_call_sink`, which starts the coroutine and resolves
+it through `resume_futures` at the `ResolveFutures` that follows.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.

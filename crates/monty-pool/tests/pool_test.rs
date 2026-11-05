@@ -18,6 +18,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -442,14 +443,22 @@ os.chdir('sub')
 
     // An explicit cwd switches it, and the switch persists too.
     let result = session
-        .feed_with_cwd("os.getcwd()", vec![], mount(), Some("/mnt/"), false, &mut no_print)
+        .feed_with_cwd(
+            "os.getcwd()",
+            vec![],
+            mount(),
+            Some("/mnt/"),
+            false,
+            vec![],
+            &mut no_print,
+        )
         .await;
     let event = feed_with_mounts(&mut session, result).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::string("/mnt".to_owned()));
 
     // A relative cwd is refused before anything is sent; the session survives unchanged.
     let err = session
-        .feed_with_cwd("1", vec![], vec![], Some("data"), false, &mut no_print)
+        .feed_with_cwd("1", vec![], vec![], Some("data"), false, vec![], &mut no_print)
         .await
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -1679,6 +1688,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
@@ -1723,6 +1733,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
@@ -1771,6 +1782,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
@@ -3094,6 +3106,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
@@ -3200,6 +3213,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         })),
         ..pb::ParentRequest::default()
@@ -3573,4 +3587,175 @@ async fn a_host_decode_budget_rejects_a_subprocess_result() {
     let result = next.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
     assert_eq!(expect_complete(result), MontyObject::int(42));
     next.finish().await.unwrap();
+}
+
+// === Streamed calls to host coroutine functions ===
+
+/// Installs a sink that records every streamed call and returns the record.
+fn record_async_calls(session: &mut monty_pool::Checkout) -> Arc<Mutex<Vec<monty_types::AsyncCall>>> {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&calls);
+    session.set_async_call_sink(Some(Box::new(move |call| {
+        seen.lock().unwrap().push(call);
+        Box::pin(ready(()))
+    })));
+    calls
+}
+
+/// A gather over declared coroutine functions streams every call to the sink
+/// during the feed turn, which ends in one `ResolveFutures` the host answers
+/// in one reply.
+#[tokio::test]
+async fn async_function_calls_stream_to_the_sink_within_one_turn() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let calls = record_async_calls(&mut session);
+    let event = session
+        .feed_with_cwd(
+            "import asyncio\nawait asyncio.gather(*[f(i) for i in range(3)])",
+            vec![],
+            vec![],
+            None,
+            false,
+            vec!["f".to_owned()],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    let TurnEvent::ResolveFutures { pending_call_ids, .. } = event else {
+        panic!("expected ResolveFutures, got {event:?}")
+    };
+    let streamed: Vec<(String, u32, MontyObject)> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| {
+            (
+                call.function_name.clone(),
+                call.call_id,
+                call.args.args().next().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let ids: Vec<u32> = streamed.iter().map(|(_, id, _)| *id).collect();
+    let mut pending = pending_call_ids;
+    pending.sort_unstable();
+    assert_eq!(pending, ids);
+    assert_eq!(
+        streamed
+            .iter()
+            .map(|(name, _, arg)| (name.as_str(), arg.clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("f", MontyObject::int(0)),
+            ("f", MontyObject::int(1)),
+            ("f", MontyObject::int(2))
+        ]
+    );
+    let results = ids
+        .iter()
+        .map(|id| (*id, ResumeValue::Return(MontyObject::int(i64::from(*id)))))
+        .collect();
+    let done = session.resume_futures(results, &mut no_print).await.unwrap();
+    assert!(
+        matches!(done, TurnEvent::Complete(ref value) if *value == MontyObject::list(ids.iter().map(|id| MontyObject::int(i64::from(*id)))))
+    );
+    session.finish().await.unwrap();
+}
+
+/// A streamed call with no sink to receive it is a protocol violation: the
+/// host declared the function async, so it must be ready to run it.
+#[tokio::test]
+async fn async_function_call_without_a_sink_ends_the_session() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let err = session
+        .feed_with_cwd(
+            "await f()",
+            vec![],
+            vec![],
+            None,
+            false,
+            vec!["f".to_owned()],
+            &mut no_print,
+        )
+        .await
+        .expect_err("no sink is installed");
+    assert!(
+        matches!(err, PoolError::Protocol(ref message) if message.contains("no sink is installed")),
+        "got {err:?}"
+    );
+    assert!(matches!(
+        session.feed("1", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Finished)
+    ));
+}
+
+/// Streamed calls count towards `max_suspensions`: past the limit they are
+/// dropped unrun and the suspension that follows aborts the feed.
+#[tokio::test]
+async fn async_function_calls_count_against_the_suspension_limit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_suspensions(2)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let calls = record_async_calls(&mut session);
+    let err = session
+        .feed_with_cwd(
+            "import asyncio\nawait asyncio.gather(*[f(i) for i in range(4)])",
+            vec![],
+            vec![],
+            None,
+            false,
+            vec!["f".to_owned()],
+            &mut no_print,
+        )
+        .await
+        .expect_err("the feed is aborted at the suspension");
+    assert!(
+        matches!(err, PoolError::Runtime(ref exc) if exc.exc_type() == ExcType::RuntimeError),
+        "got {err:?}"
+    );
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    session.finish().await.unwrap();
+}
+
+/// `await f()` costs one suspension whether the call streams or not: the
+/// `ResolveFutures` settling a streamed call is its round trip, not another.
+#[tokio::test]
+async fn a_streamed_call_and_its_wait_count_as_one_suspension() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_suspensions(2)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl).await.unwrap();
+    let calls = record_async_calls(&mut session);
+    let mut event = session
+        .feed_with_cwd(
+            "a = await f()\nb = await f()\na + b",
+            vec![],
+            vec![],
+            None,
+            false,
+            vec!["f".to_owned()],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        let TurnEvent::ResolveFutures { pending_call_ids, .. } = event else {
+            panic!("expected ResolveFutures, got {event:?}")
+        };
+        let results = pending_call_ids
+            .into_iter()
+            .map(|id| (id, ResumeValue::Return(MontyObject::int(21))))
+            .collect();
+        event = session.resume_futures(results, &mut no_print).await.unwrap();
+    }
+    assert!(matches!(event, TurnEvent::Complete(ref value) if *value == MontyObject::int(42)));
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    session.finish().await.unwrap();
 }

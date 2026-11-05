@@ -605,6 +605,15 @@ impl TurnMetrics {
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 self.suspend(SuspensionKind::FunctionCall(c.allow_eager_await.then_some(c.call_id)));
             }
+            // host work like a suspension, but the worker does not wait on it:
+            // counted, with no round-trip to time
+            Some(pb::child_event::Kind::AsyncCall(_)) => {
+                self.metrics.record(
+                    &SUSPENSIONS,
+                    MetricValue::I64(1),
+                    &[KeyValue::new("kind", "async_call")],
+                );
+            }
             Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
             Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
             Some(pb::child_event::Kind::ResolveFutures(_)) => self.suspend(SuspensionKind::ResolveFutures),
@@ -1126,6 +1135,7 @@ mod tests {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         }))
     }

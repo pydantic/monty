@@ -553,6 +553,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: vec![].into(),
         })),
         ..pb::ParentRequest::default()
     };
