@@ -259,7 +259,18 @@ pub(super) fn host_create_exclusive(dir: &Dir, rel: &str, permissions: u32, vpat
     options.mode(permissions);
     #[cfg(not(unix))]
     let _ = permissions;
-    let file = dir.open_with(rel, &options).map_err(|error| map_io(error, vpath))?;
+    let file = dir.open_with(rel, &options).map_err(|err| {
+        // Windows can report access denied when the name is an existing directory.
+        #[cfg(windows)]
+        if err.kind() == ErrorKind::PermissionDenied
+            && err.raw_os_error().is_some()
+            && dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_dir())
+        {
+            return MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath);
+        }
+
+        map_io(err, vpath)
+    })?;
     drop(file);
     Ok(())
 }
