@@ -2109,11 +2109,90 @@ async fn shutdown_without_a_session_carries_no_dump() {
         send_kind(&mut socket, shutdown(None));
     });
 
-    let pool = remote_pool(&url).await;
-    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("checkout against a draining server must fail");
-    };
+    // the session opens with its first request, so that is where a draining
+    // server's refusal surfaces
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the first feed against a draining server must fail");
     assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
+    join_server(server).await;
+}
+
+/// The first request goes out behind the `Configure` in the same write: a
+/// server sees both before it has answered either, so opening a session and
+/// running its first feed is one round trip.
+#[tokio::test]
+async fn the_first_request_is_pipelined_behind_configure() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        socket.set_read_timeout(Duration::from_secs(5));
+        let request = try_read_request(&mut socket).expect("configure");
+        assert!(matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))));
+        // nothing has been answered yet, and the feed is already here
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, ok_event());
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    assert!(matches!(event, TurnEvent::Complete(ref value) if *value == MontyObject::int(42)));
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// A refused `Configure` is the first request's error, and ends the session:
+/// the feed pipelined behind it never ran, and the worker is gone.
+#[tokio::test]
+async fn a_refused_configure_fails_the_first_request_and_ends_the_session() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        socket.set_read_timeout(Duration::from_secs(5));
+        let request = try_read_request(&mut socket).expect("configure");
+        assert!(matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))));
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("protocol violation: invalid os_policy".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+        );
+        // the client ends the stream without answering the feed's reply
+        assert!(socket.read().is_none(), "a refused session must not continue");
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the refusal is the feed's error");
+    let PoolError::Runtime(exc) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("protocol violation: invalid os_policy"));
+    let err = checkout
+        .feed("2 + 2", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the session is over");
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
     join_server(server).await;
 }
 
@@ -2152,6 +2231,12 @@ async fn configure_carries_persistence() {
             };
             assert_eq!(configure.persistence(), expected);
             send_kind(&mut socket, ok_event());
+            // the feed that carried the Configure out
+            expect_feed(&mut socket, "1");
+            send_kind(
+                &mut socket,
+                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+            );
             while try_read_request(&mut socket).is_some() {}
         }
     });
@@ -2162,7 +2247,11 @@ async fn configure_carries_persistence() {
             persistence,
             ..ReplConfig::default()
         };
-        let checkout = pool.checkout(&repl).await.expect("checkout");
+        let mut checkout = pool.checkout(&repl).await.expect("checkout");
+        checkout
+            .feed("1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
         checkout.finish().await.expect("finish");
     }
     join_server(server).await;
@@ -2183,6 +2272,12 @@ async fn configure_carries_profile() {
             };
             assert_eq!(configure.profile, expected);
             send_kind(&mut socket, ok_event());
+            // the feed that carried the Configure out
+            expect_feed(&mut socket, "1");
+            send_kind(
+                &mut socket,
+                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+            );
             while try_read_request(&mut socket).is_some() {}
         }
     });
@@ -2193,7 +2288,11 @@ async fn configure_carries_profile() {
             profile,
             ..ReplConfig::default()
         };
-        let checkout = pool.checkout(&repl).await.expect("checkout");
+        let mut checkout = pool.checkout(&repl).await.expect("checkout");
+        checkout
+            .feed("1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
         checkout.finish().await.expect("finish");
     }
     join_server(server).await;
@@ -2216,8 +2315,9 @@ async fn session_id_is_read_from_the_configure_reply() {
     });
 
     let (_pool, mut checkout) = remote_checkout(&url).await;
-    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    // the first request carries the Configure out, so the ID arrives with it;
     // later replies carry no ID, and the session keeps the one it has
+    assert_eq!(checkout.session_id(), None);
     checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -2271,7 +2371,8 @@ async fn restore_clears_a_stale_session_id() {
     });
 
     let (_pool, mut checkout) = remote_checkout(&url).await;
-    assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
+    // the Configure reply names `sess-1` on the way in, and the Load reply
+    // behind it, naming nothing, replaces it
     checkout
         .restore(b"dump-bytes".to_vec(), vec![], &mut no_print)
         .await
@@ -3056,8 +3157,7 @@ async fn status_ending_an_idle_stream_is_reported_by_the_next_request() {
     let mock = MockServer::start().await;
     let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = mock.accept();
-        expect_configure(&mut socket);
+        let socket = mock.accept();
         socket.close(Some(Cause::IdleTimeout.status("no request within the idle timeout")));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
@@ -3167,8 +3267,8 @@ async fn pings_are_answered_while_idle() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        // the client is now idle: nothing in flight, nothing awaited
+        // the client is idle from the moment the stream opens: nothing goes
+        // out until its first request
         send_kind(&mut socket, pb::child_event::Kind::Ping(pb::Ping {}));
         // bound the wait so a missing pong fails the test rather than hanging it
         socket.set_read_timeout(Duration::from_secs(5));
@@ -3342,7 +3442,6 @@ async fn an_abandoned_checkout_sends_a_close_frame() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
     });
 
@@ -3388,7 +3487,6 @@ async fn finishing_a_checkout_does_not_wait_for_the_server_to_end_the_stream() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
         // the half-close has landed; take a while to end the stream in turn
         thread::sleep(Duration::from_millis(500));
@@ -3530,7 +3628,6 @@ async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut first = mock.accept();
-        expect_configure(&mut first);
         expect_end(&mut first);
         let early = mock.try_accept(Duration::from_millis(300));
         assert!(
@@ -3539,7 +3636,6 @@ async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
         );
         drop(first);
         let mut second = mock.accept();
-        expect_configure(&mut second);
         expect_end(&mut second);
     });
 
@@ -3560,7 +3656,6 @@ fn a_checkout_dropped_outside_its_runtime_still_half_closes() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
         assert!(stays_open(&socket), "the stream was reset");
     });
@@ -3580,10 +3675,8 @@ async fn closes_past_the_pool_size_reset_their_streams() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut first = mock.accept();
-        expect_configure(&mut first);
         expect_end(&mut first);
         let mut second = mock.accept();
-        expect_configure(&mut second);
         expect_end(&mut second);
         // neither is ended here: the first holds the pool's one closing slot
         let (first_open, second_open) = (stays_open(&first), stays_open(&second));
@@ -3848,6 +3941,9 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
                 ..Default::default()
             };
             send_event(&mut socket, &event);
+            // the feed was pipelined behind the Configure, so it is already
+            // here; the client must end the stream rather than answer it
+            assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
             assert!(
                 socket.read().is_none(),
                 "invalid clock metadata must not execute requests"
@@ -3855,12 +3951,14 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
         });
         config.request_timeout = deadline;
         let pool = Pool::new(config).await.unwrap();
-        let result = pool
+        let mut checkout = pool
             .checkout(&ReplConfig {
                 limits: Some(ResourceLimits::default()),
                 ..ReplConfig::default()
             })
-            .await;
+            .await
+            .expect("checkout");
+        let result = checkout.feed("1 + 1", vec![], vec![], false, &mut no_print).await;
         let err = result.err().expect("invalid configuration must fail");
         if clock == Some(42) {
             assert!(matches!(err, PoolError::Protocol(_)));
@@ -3871,6 +3969,7 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
                 insta::assert_snapshot!(err.to_string(), @"CPU execution clock requires a finite client request_timeout");
             }
         }
+        drop(checkout);
         pool.close().await;
         join_server(server).await;
     }

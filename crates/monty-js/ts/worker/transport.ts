@@ -80,6 +80,8 @@ export class WorkerTransport {
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
   private finished = false
+  /** The `Configure` reply the first turn awaits before its own; `null` once read. */
+  private opening: Promise<ComponentEvent> | null = null
   private failure: CrashedTurn | null = null
   private exitStatus: string | undefined
   private feedBudgetMs: number | undefined
@@ -120,13 +122,20 @@ export class WorkerTransport {
     return WorkerTransport.configure(dispatcher, prepareSession(config), graces, workerId)
   }
 
-  /** Configures a worker with options captured before waiting for pool capacity. */
-  static async configure(
+  /**
+   * Configures a worker with options captured before waiting for pool capacity.
+   *
+   * The `Configure` is posted here but its reply is awaited by the first turn,
+   * which is posted behind it: the worker answers in order, so opening the
+   * session costs that turn no round trip. A refused configuration is that
+   * turn's error.
+   */
+  static configure(
     dispatcher: Dispatcher,
     config: ConfigureRequest,
     graces: DurationGraces,
     workerId: number,
-  ): Promise<WorkerTransport> {
+  ): WorkerTransport {
     const limits = config.limits ?? {}
     const transport = new WorkerTransport(dispatcher, limits.maxTotalSleepMicros, graces, workerId)
     transport.suspensionLimit = limits.maxSuspensions ?? 1000n
@@ -141,7 +150,10 @@ export class WorkerTransport {
           ? Infinity
           : Number(sleep.val) / 1_000_000
         : systemSleepCapOf({})
-    await transport.control({ tag: 'configure', val: config }, 'ok', 'Configure')
+    const opening = transport.control({ tag: 'configure', val: config }, 'ok', 'Configure')
+    // the first turn reads the outcome; until then a refusal must not be an unhandled rejection
+    opening.catch(() => {})
+    transport.opening = opening
     return transport
   }
 
@@ -401,7 +413,9 @@ export class WorkerTransport {
 
   /** Runs one turn, forwarding buffered prints and retaining its terminator. */
   private async run(request: ComponentRequest, onPrint: OnPrint | undefined): Promise<ComponentEvent | null> {
-    if (this.dead) return null
+    const opening = this.opening
+    this.opening = null
+    if (this.dead && !opening) return null
     if (request.tag === 'feed') this.feedExecutionMs = 0
     if (request.tag === 'load') {
       this.feedBudgetMs = undefined
@@ -409,8 +423,25 @@ export class WorkerTransport {
       this.feedExecutionMs = 0
     }
     let events: ComponentEvent[]
+    // posted before the session's `Configure` is answered, so the two are in
+    // flight together; the worker answers them in order
+    const reply = this.dead ? null : this.dispatcher(request, this.backstopMs())
+    if (opening) {
+      try {
+        await opening
+      } catch (error) {
+        // the session never opened: the worker is not returned to the pool,
+        // and the reply to this request (an error for the missing session)
+        // goes unread
+        reply?.catch(() => {})
+        this.dead = true
+        if (this.onFinish) await this.finish()
+        throw error
+      }
+    }
+    if (!reply) return null
     try {
-      const result = await this.dispatcher(request, this.backstopMs())
+      const result = await reply
       this.feedExecutionMs = Math.max(this.feedExecutionMs, Number(result.feedExecutionMicros) / 1000)
       this.feedBudgetMs ??=
         result.maxFeedDurationMicros === undefined ? undefined : Number(result.maxFeedDurationMicros) / 1000

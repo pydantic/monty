@@ -174,7 +174,7 @@ impl Pool {
         });
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(options.telemetry);
-        Checkout::create(worker, Arc::clone(&self.inner), repl, redial).await
+        Ok(Checkout::create(worker, Arc::clone(&self.inner), repl, redial))
     }
 
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per

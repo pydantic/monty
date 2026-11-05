@@ -196,7 +196,10 @@ subprocesses:
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
-    streamed `Print` events out, then exactly one turn-ending event.
+    streamed `Print` events out, then exactly one turn-ending event. The one
+    exception is the session's first request, which the pool writes behind
+    `Configure` without waiting for its reply: the child answers both in order,
+    so a session opens and runs its first `Feed` or `Load` in one round trip.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
