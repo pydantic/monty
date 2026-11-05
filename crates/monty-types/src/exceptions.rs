@@ -1067,7 +1067,7 @@ mod tests {
             let exc: ExcType = name.parse().expect("every VariantNames entry parses");
             let bases = exc.direct_bases();
             if exc == ExcType::BaseException {
-                assert!(bases.is_empty());
+                assert_eq!(bases, []);
                 assert_eq!(exc.parent(), None);
             } else {
                 assert!(!bases.is_empty(), "{name} should have at least one direct base");
