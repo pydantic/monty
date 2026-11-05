@@ -802,7 +802,7 @@ impl<'h> PyTrait<'h> for Value {
     fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
         match self {
             // Interned string and bytes literals iterate without ever reaching
-            // the heap, so they answer here rather than in `HeapReadOutput`.
+            // the heap, so they answer here rather than through a heap-backed `PyValue`.
             Self::InternString(_) | Self::InlineString(_) | Self::InternBytes(_) => true,
             Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_is_iterable(vm),
             _ => false,
@@ -1951,7 +1951,7 @@ impl Value {
 // representation as needed. They return `None` (NotImplemented) when `other`
 // is not a compatible Python type, so the reflected comparison can run. These
 // are shared by `Value::py_eq_impl` (inline operands) and
-// `HeapReadOutput::py_eq_impl` (heap operands) so the interned-vs-heap and
+// `PyValue::py_eq_impl` (heap operands) so the interned-vs-heap and
 // numeric-tower logic lives once.
 // ---------------------------------------------------------------------------
 
