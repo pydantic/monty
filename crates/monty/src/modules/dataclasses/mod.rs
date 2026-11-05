@@ -40,7 +40,8 @@ use crate::{
     },
     types::{
         Class, Dict, Module, PyTrait, TupleVec, allocate_tuple,
-        class::ClassBase, generic_alias::AliasOrigin,
+        class::ClassBase,
+        generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
     },
