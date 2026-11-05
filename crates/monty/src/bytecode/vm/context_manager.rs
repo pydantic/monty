@@ -32,7 +32,7 @@ impl VM<'_> {
         let Value::Ref(ctx_id) = *self.peek() else {
             return Err(not_a_context_manager(self));
         };
-        let mut ctx = PyValue::from(self.heap.read(ctx_id));
+        let mut ctx = PyValue::from_heap(ctx_id, self.heap);
         if ctx.py_is_context_manager(self) {
             ctx.py_enter(self)
         } else {
@@ -54,7 +54,7 @@ impl VM<'_> {
         // py_exit returns a value, yields, or errors. This matches the ref-count
         // balance from BeforeWith's push.
         defer_drop!(ctx, this);
-        PyValue::from(this.heap.read(ctx_id)).py_exit(this, None)
+        PyValue::from_heap(ctx_id, this.heap).py_exit(this, None)
     }
 
     /// `WithExceptStart`: peek at `[..., ctx, exc]`, call
@@ -71,7 +71,7 @@ impl VM<'_> {
         let Value::Ref(ctx_id) = self.stack[len - 2] else {
             unreachable!("WithExceptStart: expected context-manager ref on stack");
         };
-        PyValue::from(self.heap.read(ctx_id)).py_exit(self, Some(exc_id))
+        PyValue::from_heap(ctx_id, self.heap).py_exit(self, Some(exc_id))
     }
 }
 

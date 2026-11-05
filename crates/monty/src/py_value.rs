@@ -19,7 +19,7 @@ use crate::{
     expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
@@ -216,6 +216,12 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Reads a heap object once and opens its normalized Python-type view.
+    #[inline]
+    pub(crate) fn from_heap(id: HeapId, heap: &HeapReader<'h>) -> Self {
+        heap.read(id).into()
+    }
+
     /// Converts an integer or an object implementing `__index__` into a repetition count.
     /// Returns `None` for unsupported operands; out-of-range counts raise `OverflowError`.
     /// Negative counts within range become zero.
@@ -834,5 +840,213 @@ impl fmt::LowerHex for PythonIdDisplay<'_> {
             Self::Int(value) => fmt::LowerHex::fmt(value, f),
             Self::LongInt(value) => fmt::LowerHex::fmt(value, f),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
+
+    use super::*;
+    use crate::{
+        defer_drop_mut,
+        heap::{DropGuard, HeapReader},
+        heap_data::CellValue,
+        intern::{BytesId, CompileInterns, LongIntId, StringId},
+        modules::math::MathFunctions,
+        run::Executor,
+        types::{Bytes, List, inline_str::InlineStr, property::ZeroArgOsProperty, str::allocate_string_on_heap},
+    };
+
+    struct TestIds {
+        string: StringId,
+        bytes: BytesId,
+        integer: LongIntId,
+        function: FunctionId,
+    }
+
+    fn with_vm(test: impl for<'h> FnOnce(&mut VM<'h>, TestIds)) {
+        let mut executor = Executor::new(
+            "def example():\n    return 1".to_owned(),
+            "test.py",
+            Vec::new(),
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let ids = {
+            let mut interns = CompileInterns::direct(&mut executor.tables.interns);
+            TestIds {
+                string: interns.intern("aé🐍b"),
+                bytes: interns.intern_bytes(b"a\0\xff"),
+                integer: interns.intern_long_int(BigInt::from(1_u128 << 100)),
+                function: FunctionId::from_index(0),
+            }
+        };
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut executor, |reader, executor| {
+            let vm = &mut VM::new(
+                Vec::new(),
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            test(vm, ids);
+        });
+    }
+
+    #[test]
+    fn normalized_hashes_match_value_hashes_across_representations() {
+        with_vm(|vm, ids| {
+            let values = vec![
+                Value::Undefined,
+                Value::Ellipsis,
+                Value::NotImplemented,
+                Value::None,
+                Value::Bool(true),
+                Value::Float(1.25),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
+                Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
+                Value::Builtin(Builtins::Type(BuiltinType::List)),
+                Value::ModuleFunction(ModuleFunctions::Math(MathFunctions::Sqrt)),
+                Value::DefFunction(ids.function),
+                Value::Marker(Marker(StaticStrings::Optional)),
+                Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
+                Value::Int(42),
+                Value::InternLongInt(ids.integer),
+                LongInt::new(BigInt::from(1_u128 << 100)).into_value(vm.heap),
+                Value::InternString(ids.string),
+                Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
+                allocate_string_on_heap("aé🐍b", vm.heap),
+                Value::InternBytes(ids.bytes),
+                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+            ];
+            defer_drop!(values, vm);
+            for value in values {
+                let expected = value.py_hash(vm).unwrap();
+                assert_eq!(value.py_value(vm).py_hash(vm).unwrap(), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn identity_and_unsupported_hash_protocols_survive_conversion() {
+        with_vm(|vm, _| {
+            let cell_id = vm.heap.allocate(HeapData::Cell(CellValue(Value::None)));
+            let cell = Value::Ref(cell_id);
+            defer_drop!(cell, vm);
+            assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
+
+            let exception = Value::Ref(
+                vm.heap
+                    .allocate(HeapData::Exception(SimpleException::new(ExcType::ValueError, None))),
+            );
+            defer_drop!(exception, vm);
+            assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn normalized_iterators_retain_their_source_and_preserve_items() {
+        with_vm(|vm, ids| {
+            let values = vec![
+                Value::InternString(ids.string),
+                Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
+                allocate_string_on_heap("aé🐍b", vm.heap),
+                Value::InternBytes(ids.bytes),
+                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+            ];
+            defer_drop_mut!(values, vm);
+            while let Some(value) = values.pop() {
+                let mut owner = DropGuard::new(value, vm);
+                let (value, vm) = owner.as_parts_mut();
+                let view = value.py_value(vm);
+                assert!(view.py_is_iterable(vm));
+                assert!(!view.py_is_iterator(vm));
+                let (expected, iterator_type, bytes): (Vec<String>, _, _) = match &view {
+                    PyValue::Str(string) => (
+                        string.as_str(vm).chars().map(|c| c.to_string()).collect(),
+                        Type::StrIterator,
+                        false,
+                    ),
+                    PyValue::Bytes(bytes) => (
+                        bytes.as_slice(vm).iter().map(u8::to_string).collect(),
+                        Type::BytesIterator,
+                        true,
+                    ),
+                    _ => unreachable!(),
+                };
+                let iterator = view.py_iter(vm).unwrap().require_synchronous(vm).unwrap();
+                drop(view);
+                let (value, vm) = owner.into_parts();
+                value.drop_with(vm);
+                defer_drop_mut!(iterator, vm);
+                assert_eq!(iterator.py_type(vm), iterator_type);
+                assert!(iterator.py_is_iterator(vm));
+                let mut actual = Vec::new();
+                while let Some(item) = iterator.py_next(vm).unwrap() {
+                    defer_drop!(item, vm);
+                    actual.push(if bytes {
+                        let Value::Int(byte) = item else {
+                            panic!("bytes must yield integers")
+                        };
+                        byte.to_string()
+                    } else {
+                        item.as_str(vm).unwrap().to_owned()
+                    });
+                }
+                assert_eq!(actual, expected);
+            }
+        });
+    }
+
+    #[test]
+    fn unsupported_protocols_report_errors_and_release_owned_arguments() {
+        with_vm(|vm, _| {
+            let payload_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
+            {
+                let payload = Value::Ref(payload_id);
+                defer_drop!(payload, vm);
+                let subjects = vec![Value::None, Value::InlineString(InlineStr::new("text").unwrap())];
+                defer_drop!(subjects, vm);
+                let name = EitherStr::Heap("missing".to_owned());
+                for subject in subjects {
+                    let mut view = subject.py_value(vm);
+                    assert!(!view.py_is_context_manager(vm));
+                    assert!(view.py_enter(vm).err().unwrap().is_catchable(ExcType::AttributeError));
+                    assert!(
+                        view.py_exit(vm, None)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::AttributeError)
+                    );
+                    assert!(view.py_next(vm).err().unwrap().is_catchable(ExcType::TypeError));
+                    if matches!(subject, Value::None) {
+                        assert!(view.py_iter(vm).err().unwrap().is_catchable(ExcType::TypeError));
+                    }
+                    assert!(view.py_getattr(&name, vm).unwrap().is_none());
+                    assert!(
+                        view.py_call(ArgValues::One(payload.clone_with_heap(vm)), vm)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::TypeError)
+                    );
+                    assert!(
+                        view.py_setitem(payload.clone_with_heap(vm), payload.clone_with_heap(vm), vm)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::TypeError)
+                    );
+                    assert!(
+                        view.py_set_attr(&name, payload.clone_with_heap(vm), vm)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::AttributeError)
+                    );
+                }
+            }
+            // A leaked argument clone would keep this slot alive after its original owner is dropped.
+            assert!(vm.heap.read_ptr(payload_id).try_entry(vm.heap).is_none());
+        });
     }
 }

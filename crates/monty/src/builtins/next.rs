@@ -84,7 +84,7 @@ fn next_native(iterator: &Value, default: Option<Value>, vm: &mut VM<'_>) -> Run
     let Value::Ref(id) = iterator else {
         return Err(ExcType::type_error_not_iterator(&iterator.py_type_name(vm)));
     };
-    match PyValue::from(vm.heap.read(*id)).py_next(vm)? {
+    match PyValue::from_heap(*id, vm.heap).py_next(vm)? {
         Some(item) => Ok(item),
         None => match default_guard.into_inner() {
             Some(default) => Ok(default),
