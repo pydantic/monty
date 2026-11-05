@@ -2,7 +2,8 @@
 
 ## 1. Bump Version
 
-Edit `Cargo.toml` to bump the version (both the main `version` and the package versions)
+Edit `Cargo.toml` to bump the version: the main `version` and every internal crate in `[workspace.dependencies]`.
+Keep the internal crates' `=` prefix: each published crate must depend on exactly its own release of the others.
 
 Run
 
