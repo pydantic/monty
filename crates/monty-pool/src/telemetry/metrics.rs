@@ -508,6 +508,14 @@ impl TurnMetrics {
     /// host round-trip.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
         let now = Instant::now();
+        // the request opening the session starts its execution clock, so the
+        // delta ratchet restarts as it would on a `Configure` turn
+        if request.open_session.is_some() {
+            self.feed = None;
+            self.run_active = false;
+            self.abandon_pending();
+            self.reported_micros = 0;
+        }
         match &request.kind {
             // a new session on this worker; its execution clock restarts, so
             // the delta ratchet has to as well
@@ -607,7 +615,19 @@ impl TurnMetrics {
             }
             Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
             Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
-            Some(pb::child_event::Kind::ResolveFutures(_)) => self.suspend(SuspensionKind::ResolveFutures),
+            // one record per awaited call the wait announces, as the pool
+            // counts them; a wait announcing none is one suspension itself
+            Some(pb::child_event::Kind::ResolveFutures(r)) => {
+                if r.calls.is_empty() && r.os_calls.is_empty() {
+                    self.suspend(SuspensionKind::ResolveFutures);
+                }
+                for _ in &r.calls {
+                    self.suspend(SuspensionKind::FunctionCall(None));
+                }
+                for c in &r.os_calls {
+                    self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref())));
+                }
+            }
             Some(pb::child_event::Kind::Complete(_)) => self.end_run("complete", event),
             Some(pb::child_event::Kind::Error(_)) => {
                 // an error answering an open housekeeping turn (`Dump`,
@@ -793,6 +813,7 @@ impl SuspensionKind {
 fn ext_result(result: Option<&pb::ExtFunctionResult>) -> &'static str {
     match result.and_then(|result| result.kind.as_ref()) {
         Some(pb::ext_function_result::Kind::ReturnValue(_)) => "value",
+        Some(pb::ext_function_result::Kind::Plain(_)) => "plain",
         Some(pb::ext_function_result::Kind::Error(_)) => "error",
         Some(pb::ext_function_result::Kind::Future(_)) => "future",
         Some(pb::ext_function_result::Kind::NotFound(_)) => "not_found",
@@ -1101,6 +1122,7 @@ mod tests {
         pb::ParentRequest {
             kind: Some(kind),
             trace_parent: None,
+            open_session: None,
         }
     }
 
@@ -1127,6 +1149,7 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         }))
     }
 

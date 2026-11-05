@@ -303,7 +303,14 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
 
     capture.last("monty.run.duration", "outcome", "complete");
     capture.last("monty.pool.session.duration", "outcome", "ok");
-    capture.last("monty.turn.duration", "turn", "configure");
+    // the feed opened the session itself: no turn is spent on `Configure`
+    assert!(
+        !capture.has("monty.turn.duration")
+            || capture
+                .named("monty.turn.duration")
+                .iter()
+                .all(|r| r.attributes.get("turn").is_some_and(|t| t != "configure"))
+    );
     capture.last("monty.turn.duration", "turn", "reset");
     assert!(capture.has("monty.run.execution_time"));
     // `print` writes 3 bytes including its newline
@@ -553,6 +560,7 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -577,6 +585,7 @@ async fn eager_coroutine_metrics_match_sync_outcomes() {
     for eager in [true, false] {
         let (pool, capture) = pool_with_metrics(PoolConfig::subprocess(monty_binary())).await;
         let mut checkout = pool.checkout(&ReplConfig::default()).await.unwrap();
+        checkout.set_suspend_awaited_calls(true);
         for result in [
             ResumeValue::Return(MontyObject::int(42)),
             ResumeValue::Error(MontyException::new(ExcType::ValueError, Some("failed".to_owned()))),

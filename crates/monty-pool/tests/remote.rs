@@ -603,11 +603,6 @@ async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
             &mut socket,
@@ -670,11 +665,6 @@ async fn eager_bit_on_a_non_future_os_call_is_dropped() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
             &mut socket,
@@ -746,11 +736,6 @@ async fn malformed_os_call_is_a_protocol_error() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         // "q" is not an open() mode — must not convert, let alone dispatch
         send_event(
@@ -799,12 +784,11 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
-        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // the opening feed runs under `request_timeout` alone (it also covers
+        // the worker's startup); the backstop arms from the next turn on
+        expect_opening_feed(&mut socket, "1");
+        send_complete(&mut socket);
+        expect_feed(&mut socket, "while True:\n    pass");
         // never reply; wait for the deadline to kill the connection
         let _ = socket.read();
     });
@@ -817,6 +801,10 @@ async fn duration_backstop_kills_an_unresponsive_worker() {
         })
         .await
         .expect("checkout");
+    checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the opening feed");
     let err = checkout
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
         .await
@@ -838,12 +826,11 @@ async fn duration_backstop_arms_on_the_raw_path() {
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
-        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // the opening feed runs under `request_timeout` alone; see
+        // `duration_backstop_kills_an_unresponsive_worker`
+        expect_opening_feed(&mut socket, "1");
+        send_complete(&mut socket);
+        expect_feed(&mut socket, "while True:\n    pass");
         // never reply; only the backstop can end this turn
         let _ = socket.read();
     });
@@ -863,10 +850,15 @@ async fn duration_backstop_arms_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
     let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the opening feed");
     let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
@@ -884,11 +876,6 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
         // an idle-dump `Load` reply, stamped with the dump's own limits
         send_event(
@@ -935,6 +922,7 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -956,11 +944,6 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         // the refused requests never arrive: the next frame is the Feed
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
@@ -994,6 +977,7 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1008,20 +992,19 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
 
 /// An oversize raw `Load` keeps the session's duration budget: the frame is
 /// rejected pre-send with the session live, so the budget cleared in
-/// anticipation of the dump's limits must be put back.
+/// anticipation of the dump's limits must be put back, along with the
+/// `Configure` the Load was to carry.
 #[tokio::test]
 async fn an_oversize_raw_load_keeps_the_duration_budget() {
     let (mock, mut config) = mock_pool_config().await;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         // the oversize Load never arrives: the next frame is the Feed, which
-        // is never answered so only the backstop can end it
+        // opens the session with the Configure the rejected Load gave back
+        expect_opening_feed(&mut socket, "1");
+        send_kind(&mut socket, complete_event());
+        // the second feed is never answered, so only the backstop can end it
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         let _ = socket.read();
     });
@@ -1043,17 +1026,26 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
     };
     let err = checkout.turn_raw(&load, &mut on_event).await.unwrap_err();
     assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
-    let feed = pb::ParentRequest {
+    let raw_feed = |code: &str| pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
-            code: "while True:\n    pass".to_owned(),
+            code: code.to_owned(),
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
-    let err = checkout.turn_raw(&feed, &mut on_event).await.unwrap_err();
+    // the opening request runs under `request_timeout` alone
+    checkout
+        .turn_raw(&raw_feed("1"), &mut on_event)
+        .await
+        .expect("opening feed");
+    let err = checkout
+        .turn_raw(&raw_feed("while True:\n    pass"), &mut on_event)
+        .await
+        .unwrap_err();
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
     };
@@ -1071,11 +1063,6 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
             &mut socket,
@@ -1094,6 +1081,7 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1128,11 +1116,6 @@ async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     config.request_timeout = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         // never announce anything: the turn must be killed by the deadline
         thread::sleep(Duration::from_secs(2));
@@ -1167,11 +1150,6 @@ async fn restored_session_rearms_the_duration_backstop() {
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
         // an idle restore: Ok stamped with the dump's budget/consumed time
         send_event(
@@ -1255,11 +1233,6 @@ async fn suspension_limit_is_enforced_by_the_parent() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         serve_endless_suspensions(&mut socket, 3);
         let _ = socket.read();
     });
@@ -1302,8 +1275,7 @@ async fn a_suspension_answering_an_abort_is_a_protocol_violation() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "fetch()");
+        expect_opening_feed(&mut socket, "fetch()");
         send_kind(&mut socket, function_call(1));
         assert!(matches!(
             read_request(&mut socket),
@@ -1355,8 +1327,7 @@ async fn a_malformed_over_budget_os_call_is_a_protocol_violation() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "open('x')");
+        expect_opening_feed(&mut socket, "open('x')");
         // the event shrinks the limit to zero itself, so this suspension is
         // over budget on arrival
         send_event(
@@ -1396,11 +1367,6 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         serve_endless_suspensions(&mut socket, 2);
         let _ = socket.read();
     });
@@ -1421,6 +1387,7 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1453,11 +1420,6 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call = |call_id: u32| {
             event_kind(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
                 "fetch".to_owned(),
@@ -1522,6 +1484,7 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1564,11 +1527,6 @@ async fn configured_suspension_limit_caps_a_restored_one() {
         let (mock, config) = mock_pool_config().await;
         let server = thread::spawn(move || {
             let mut socket = mock.accept();
-            assert!(matches!(
-                read_request(&mut socket),
-                pb::parent_request::Kind::Configure(_)
-            ));
-            send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
             assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
             send_event(
                 &mut socket,
@@ -1623,11 +1581,6 @@ async fn suspension_limit_defaults_to_one_thousand() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         serve_endless_suspensions(&mut socket, 1001);
         let _ = socket.read();
     });
@@ -1665,11 +1618,6 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         let function_call =
             |call_id: u32| WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), call_id, None, false, position());
         let abort_reply = |socket: &mut MockStream| {
@@ -1732,6 +1680,7 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1753,11 +1702,6 @@ async fn restored_session_readopts_the_suspension_limit() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        assert!(matches!(
-            read_request(&mut socket),
-            pb::parent_request::Kind::Configure(_)
-        ));
-        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
         send_event(
             &mut socket,
@@ -1837,31 +1781,57 @@ fn function_call(call_id: u32) -> pb::child_event::Kind {
     ))
 }
 
-/// Asserts the next request is `Configure` and acknowledges it.
-fn expect_configure(socket: &mut MockStream) {
-    let request = try_read_request(socket).expect("configure");
+/// Asserts the next request is the `Feed` of `code` that opens the session,
+/// carrying its `Configure`.
+fn expect_opening_feed(socket: &mut MockStream, code: &str) {
+    let request = try_read_request(socket).expect("opening feed");
     assert!(
-        matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))),
-        "expected Configure, got {request:?}"
+        request.open_session.is_some(),
+        "expected the opening Feed, got {request:?}"
     );
-    send_kind(socket, ok_event());
-}
-
-/// Asserts the next request is `Feed` of `code`.
-fn expect_feed(socket: &mut MockStream, code: &str) {
-    let request = try_read_request(socket).expect("feed");
     match request.kind {
         Some(pb::parent_request::Kind::Feed(feed)) => assert_eq!(feed.code, code),
         other => panic!("expected Feed, got {other:?}"),
     }
 }
 
-/// Asserts the next request is `Load` and checks its state bytes.
-fn expect_load(socket: &mut MockStream, state: &[u8]) {
-    let request = try_read_request(socket).expect("load");
+/// Asserts the next request is the `Load` of `state` that opens the session,
+/// carrying its `Configure`.
+fn expect_opening_load(socket: &mut MockStream, state: &[u8]) {
+    let request = try_read_request(socket).expect("opening load");
+    assert!(
+        request.open_session.is_some(),
+        "expected the opening Load, got {request:?}"
+    );
     match request.kind {
         Some(pb::parent_request::Kind::Load(load)) => assert_eq!(load.state, state),
         other => panic!("expected Load, got {other:?}"),
+    }
+}
+
+/// Asserts the next request is `Load` of `state`, within an open session.
+fn expect_load(socket: &mut MockStream, state: &[u8]) {
+    let request = try_read_request(socket).expect("load");
+    assert!(
+        request.open_session.is_none(),
+        "expected a Load in an open session, got {request:?}"
+    );
+    match request.kind {
+        Some(pb::parent_request::Kind::Load(load)) => assert_eq!(load.state, state),
+        other => panic!("expected Load, got {other:?}"),
+    }
+}
+
+/// Asserts the next request is `Feed` of `code`, within an open session.
+fn expect_feed(socket: &mut MockStream, code: &str) {
+    let request = try_read_request(socket).expect("feed");
+    assert!(
+        request.open_session.is_none(),
+        "expected a Feed in an open session, got {request:?}"
+    );
+    match request.kind {
+        Some(pb::parent_request::Kind::Feed(feed)) => assert_eq!(feed.code, code),
+        other => panic!("expected Feed, got {other:?}"),
     }
 }
 
@@ -1887,13 +1857,11 @@ async fn shutdown_hands_back_a_restorable_dump() {
     let server = thread::spawn(move || {
         // conn 1: a draining server intercepts the feed and replies with the dump
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"fake-dump")));
         // conn 2: the client restores the dump by hand and re-runs the feed
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"fake-dump");
+        expect_opening_load(&mut socket, b"fake-dump");
         send_kind(&mut socket, ok_event());
         expect_feed(&mut socket, "1 + 1");
         send_kind(
@@ -1939,8 +1907,7 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "ext()");
+        expect_opening_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
         let resume = try_read_request(&mut socket).expect("resume");
         assert!(
@@ -1950,8 +1917,7 @@ async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
         send_kind(&mut socket, shutdown(Some(b"susp-dump")));
         // the restored session re-announces the suspension the resume answered
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"susp-dump");
+        expect_opening_load(&mut socket, b"susp-dump");
         send_kind(&mut socket, function_call(7));
         while try_read_request(&mut socket).is_some() {}
     });
@@ -1994,15 +1960,15 @@ async fn shutdown_without_a_session_carries_no_dump() {
     let server = thread::spawn(move || {
         // a server that began draining before this session ever ran anything
         let mut socket = mock.accept();
-        let request = try_read_request(&mut socket).expect("configure");
-        assert!(matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))));
+        expect_opening_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(None));
     });
 
-    let pool = remote_pool(&url).await;
-    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
-        panic!("checkout against a draining server must fail");
-    };
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the opening feed against a draining server must fail");
     assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
     join_server(server).await;
 }
@@ -2036,12 +2002,10 @@ async fn configure_carries_persistence() {
     let server = thread::spawn(move || {
         for (_, expected) in cases {
             let mut socket = mock.accept();
-            let request = try_read_request(&mut socket).expect("configure");
-            let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
-                panic!("expected Configure, got {request:?}");
-            };
+            let request = try_read_request(&mut socket).expect("opening feed");
+            let configure = request.open_session.expect("the opening Feed carries the Configure");
             assert_eq!(configure.persistence(), expected);
-            send_kind(&mut socket, ok_event());
+            send_complete(&mut socket);
             while try_read_request(&mut socket).is_some() {}
         }
     });
@@ -2052,7 +2016,11 @@ async fn configure_carries_persistence() {
             persistence,
             ..ReplConfig::default()
         };
-        let checkout = pool.checkout(&repl).await.expect("checkout");
+        let mut checkout = pool.checkout(&repl).await.expect("checkout");
+        checkout
+            .feed("1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
         checkout.finish().await.expect("finish");
     }
     join_server(server).await;
@@ -2067,12 +2035,10 @@ async fn configure_carries_profile() {
     let server = thread::spawn(move || {
         for expected in expected {
             let mut socket = mock.accept();
-            let request = try_read_request(&mut socket).expect("configure");
-            let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
-                panic!("expected Configure, got {request:?}");
-            };
+            let request = try_read_request(&mut socket).expect("opening feed");
+            let configure = request.open_session.expect("the opening Feed carries the Configure");
             assert_eq!(configure.profile, expected);
-            send_kind(&mut socket, ok_event());
+            send_complete(&mut socket);
             while try_read_request(&mut socket).is_some() {}
         }
     });
@@ -2083,29 +2049,36 @@ async fn configure_carries_profile() {
             profile,
             ..ReplConfig::default()
         };
-        let checkout = pool.checkout(&repl).await.expect("checkout");
+        let mut checkout = pool.checkout(&repl).await.expect("checkout");
+        checkout
+            .feed("1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect("feed");
         checkout.finish().await.expect("finish");
     }
     join_server(server).await;
 }
 
 #[tokio::test]
-async fn session_id_is_read_from_the_configure_reply() {
+async fn session_id_is_read_from_the_opening_reply() {
     let mock = MockServer::start().await;
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        try_read_request(&mut socket).expect("configure");
-        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        expect_opening_feed(&mut socket, "1 + 1");
+        send_with_session_id(&mut socket, complete_event(), b"sess-1");
         expect_feed(&mut socket, "1 + 1");
-        send_kind(
-            &mut socket,
-            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
-        );
+        send_complete(&mut socket);
         while try_read_request(&mut socket).is_some() {}
     });
 
     let (_pool, mut checkout) = remote_checkout(&url).await;
+    // the session opens with the first request, so it has no ID before then
+    assert_eq!(checkout.session_id(), None);
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
     // later replies carry no ID, and the session keeps the one it has
     checkout
@@ -2123,9 +2096,7 @@ async fn restore_adopts_the_new_session_id() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        try_read_request(&mut socket).expect("configure");
-        send_with_session_id(&mut socket, ok_event(), b"sess-new");
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         // loading an ID starts a new session; a suspended one re-announces its
         // call, which carries the new ID
         send_with_session_id(&mut socket, function_call(7), b"sess-2");
@@ -2152,8 +2123,8 @@ async fn restore_clears_a_stale_session_id() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        try_read_request(&mut socket).expect("configure");
-        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        expect_opening_feed(&mut socket, "1 + 1");
+        send_with_session_id(&mut socket, complete_event(), b"sess-1");
         // restoring dump bytes: the reply names no session
         expect_load(&mut socket, b"dump-bytes");
         send_kind(&mut socket, ok_event());
@@ -2161,6 +2132,10 @@ async fn restore_clears_a_stale_session_id() {
     });
 
     let (_pool, mut checkout) = remote_checkout(&url).await;
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
     checkout
         .restore(b"dump-bytes".to_vec(), vec![], &mut no_print)
@@ -2180,7 +2155,8 @@ async fn refused_restore_keeps_the_session_id() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
+        expect_opening_feed(&mut socket, "1 + 1");
+        send_with_session_id(&mut socket, complete_event(), b"sess-1");
         expect_load(&mut socket, b"bad-dump");
         // the refusal: an ordinary Error, which names no session
         send_kind(
@@ -2198,6 +2174,10 @@ async fn refused_restore_keeps_the_session_id() {
     });
 
     let (_pool, mut checkout) = remote_checkout(&url).await;
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
     let refused = checkout.restore(b"bad-dump".to_vec(), vec![], &mut no_print).await;
     assert!(matches!(refused, Err(PoolError::Runtime(_))), "{refused:?}");
     assert_eq!(checkout.session_id(), Some(&b"sess-1"[..]));
@@ -2211,14 +2191,9 @@ async fn refused_restore_keeps_the_session_id() {
 // redials, loads its ID into a new session and re-sends the request the relay
 // did not run.
 
-/// Acknowledges the next request, which must be `Configure`, naming the session `id`.
-fn configure_with_session_id(socket: &mut MockStream, id: &[u8]) {
-    let request = try_read_request(socket).expect("configure");
-    assert!(
-        matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))),
-        "expected Configure, got {request:?}"
-    );
-    send_with_session_id(socket, ok_event(), id);
+/// Shorthand for a `Complete(42)` turn-ender.
+fn complete_event() -> pb::child_event::Kind {
+    pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42)))
 }
 
 /// Asserts the next request answers call `call_id`.
@@ -2244,14 +2219,12 @@ async fn shutdown_resumes_transparently() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         // the drain names what to load, which need not be the session's own ID
-        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        send_with_session_id(&mut socket, shutdown(Some(b"parked-1")), b"sess-1");
         // the checkout redials, reloads the session and re-sends the feed
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"parked-1");
+        expect_opening_load(&mut socket, b"parked-1");
         send_with_session_id(&mut socket, ok_event(), b"sess-2");
         expect_feed(&mut socket, "1 + 1");
         send_complete(&mut socket);
@@ -2282,22 +2255,17 @@ async fn resume_resends_the_profile() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        let request = try_read_request(&mut socket).expect("first configure");
-        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
-            panic!("expected Configure, got {request:?}");
-        };
+        let request = try_read_request(&mut socket).expect("opening feed");
+        let configure = request.open_session.expect("the opening Feed carries the Configure");
         profile_tx.send(configure.profile).expect("first profile");
-        send_with_session_id(&mut socket, ok_event(), b"sess-1");
+        send_with_session_id(&mut socket, complete_event(), b"sess-1");
         expect_feed(&mut socket, "1 + 1");
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        let request = try_read_request(&mut socket).expect("second configure");
-        let Some(pb::parent_request::Kind::Configure(configure)) = request.kind else {
-            panic!("expected Configure, got {request:?}");
-        };
+        let request = try_read_request(&mut socket).expect("opening load");
+        let configure = request.open_session.expect("the opening Load carries the Configure");
         profile_tx.send(configure.profile).expect("second profile");
-        send_kind(&mut socket, ok_event());
-        expect_load(&mut socket, b"sess-1");
+        assert!(matches!(request.kind, Some(pb::parent_request::Kind::Load(load)) if load.state == &b"sess-1"[..]));
         send_with_session_id(&mut socket, ok_event(), b"sess-2");
         expect_feed(&mut socket, "1 + 1");
         send_complete(&mut socket);
@@ -2310,6 +2278,10 @@ async fn resume_resends_the_profile() {
     };
     let pool = remote_pool(&url).await;
     let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
     checkout
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
@@ -2327,14 +2299,12 @@ async fn shutdown_while_suspended_resumes_after_the_same_call_is_reannounced() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, function_call(7));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, function_call(7), b"sess-1");
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, function_call(7), b"sess-2");
         expect_resume_call(&mut socket, 7);
         send_complete(&mut socket);
@@ -2368,14 +2338,12 @@ async fn resume_rejects_a_different_reannounced_call() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, function_call(7));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, function_call(7), b"sess-1");
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         // not the call the drained session was waiting on
         send_with_session_id(&mut socket, function_call(8), b"sess-2");
         while try_read_request(&mut socket).is_some() {}
@@ -2408,14 +2376,12 @@ async fn resume_rejects_a_reannounced_call_with_another_name() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, function_call(7));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, function_call(7), b"sess-1");
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_with_session_id(
             &mut socket,
             pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
@@ -2452,8 +2418,7 @@ async fn an_aborted_load_reply_still_names_the_session() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, function_call(7), b"sess-2");
         let request = try_read_request(&mut socket).expect("abort");
         let Some(pb::parent_request::Kind::AbortFeed(abort)) = request.kind else {
@@ -2500,9 +2465,8 @@ async fn resume_rejects_a_reannounced_lookup_on_another_object() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "obj.x");
-        send_kind(&mut socket, lookup(1));
+        expect_opening_feed(&mut socket, "obj.x");
+        send_with_session_id(&mut socket, lookup(1), b"sess-1");
         let request = try_read_request(&mut socket).expect("resume");
         assert!(
             matches!(request.kind, Some(pb::parent_request::Kind::ResumeNameLookup(_))),
@@ -2510,8 +2474,7 @@ async fn resume_rejects_a_reannounced_lookup_on_another_object() {
         );
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, lookup(2), b"sess-2");
         while try_read_request(&mut socket).is_some() {}
     });
@@ -2538,12 +2501,10 @@ async fn resumed_session_keeps_its_duration_backstop() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, shutdown(Some(b"sess-1")), b"sess-1");
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, ok_event(), b"sess-2");
         expect_feed(&mut socket, "ext()");
         send_kind(&mut socket, function_call(7));
@@ -2588,14 +2549,12 @@ async fn resumed_turn_takes_the_reloaded_backstop() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, function_call(7));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, function_call(7), b"sess-1");
         expect_resume_call(&mut socket, 7);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_event(
             &mut socket,
             &pb::ChildEvent {
@@ -2637,12 +2596,10 @@ async fn resume_refused_returns_the_original_shutdown() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "1 + 1");
-        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        expect_opening_feed(&mut socket, "1 + 1");
+        send_with_session_id(&mut socket, shutdown(Some(b"sess-1")), b"sess-1");
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         // e.g. the store no longer holds the session
         send_kind(
             &mut socket,
@@ -2670,9 +2627,8 @@ async fn auto_resume_disabled_returns_the_shutdown() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "1 + 1");
-        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        expect_opening_feed(&mut socket, "1 + 1");
+        send_with_session_id(&mut socket, shutdown(Some(b"sess-1")), b"sess-1");
     });
 
     let mut config = PoolConfig::remote(&url);
@@ -2700,9 +2656,8 @@ async fn shutdown_without_state_is_not_resumed() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "1 + 1");
-        send_kind(&mut socket, shutdown(None));
+        expect_opening_feed(&mut socket, "1 + 1");
+        send_with_session_id(&mut socket, shutdown(None), b"sess-1");
         // no redial: a second accept would hang the server thread
     });
 
@@ -2726,12 +2681,10 @@ async fn resumed_feed_restarts_the_feed_clock() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, shutdown(Some(b"sess-1")));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, shutdown(Some(b"sess-1")), b"sess-1");
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         // the previous feed used the whole budget
         send_event(
             &mut socket,
@@ -2791,16 +2744,14 @@ async fn resumed_session_keeps_its_suspension_count() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "ext()");
-        send_kind(&mut socket, function_call(1));
+        expect_opening_feed(&mut socket, "ext()");
+        send_with_session_id(&mut socket, function_call(1), b"sess-1");
         expect_resume_call(&mut socket, 1);
         send_kind(&mut socket, function_call(2));
         expect_resume_call(&mut socket, 2);
         send_kind(&mut socket, shutdown(Some(b"sess-1")));
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_load(&mut socket, b"sess-1");
+        expect_opening_load(&mut socket, b"sess-1");
         send_with_session_id(&mut socket, function_call(2), b"sess-2");
         expect_resume_call(&mut socket, 2);
         // the third suspension of the session, one past the limit
@@ -2852,8 +2803,7 @@ async fn bare_disconnect_is_never_resumed() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        configure_with_session_id(&mut socket, b"sess-1");
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         socket.close(None);
     });
 
@@ -2882,8 +2832,7 @@ async fn disconnect_preserves_peer_close_details() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         socket.close(Some(Cause::Capacity.status("session capacity exhausted")));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
@@ -2912,8 +2861,7 @@ async fn disconnect_preserves_an_unattributed_status() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         socket.close(Some(Status::internal("relay fell over")));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
@@ -2942,8 +2890,7 @@ async fn status_ending_an_idle_stream_is_reported_by_the_next_request() {
     let mock = MockServer::start().await;
     let url = mock.url();
     let server = thread::spawn(move || {
-        let mut socket = mock.accept();
-        expect_configure(&mut socket);
+        let socket = mock.accept();
         socket.close(Some(Cause::IdleTimeout.status("no request within the idle timeout")));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
@@ -2971,8 +2918,7 @@ async fn out_of_memory_status_is_a_memory_error() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "x = 'a' * 10**9");
+        expect_opening_feed(&mut socket, "x = 'a' * 10**9");
         socket.close(Some(Cause::OutOfMemory.status("worker exceeded its memory limit")));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
@@ -2999,8 +2945,7 @@ async fn server_shutdown_status_is_a_shutdown_without_state() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         socket.close(Some(Cause::ServerShutdown.status("server is draining")));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
@@ -3020,8 +2965,7 @@ async fn disconnect_preserves_a_reset_stream() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         // the connection is cut under the open stream: no status, no stream end
         mock.cut();
         expect_end(&mut socket);
@@ -3053,7 +2997,6 @@ async fn pings_are_answered_while_idle() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         // the client is now idle: nothing in flight, nothing awaited
         send_kind(&mut socket, pb::child_event::Kind::Ping(pb::Ping {}));
         // bound the wait so a missing pong fails the test rather than hanging it
@@ -3080,7 +3023,6 @@ async fn an_oversized_ping_ends_the_stream() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         // a ping padded with 100 bytes of unknown field 111, which decoding skips
         let mut body = encode_to_capped_vec(&event_kind(pb::child_event::Kind::Ping(pb::Ping {}))).expect("encode");
         body.extend([0xfa, 0x06, 100]);
@@ -3103,7 +3045,6 @@ async fn a_ping_flood_ends_the_stream() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         for _ in 0..11 {
             if socket
                 .send(Bytes::from(
@@ -3161,8 +3102,7 @@ async fn a_message_above_the_decode_budget_is_refused_unbuffered() {
     let len = body.len();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1");
+        expect_opening_feed(&mut socket, "1");
         let _ = socket.send(Bytes::from(body));
         drain_requests(&mut socket);
     });
@@ -3204,8 +3144,7 @@ async fn finishing_a_checkout_sends_a_close_frame() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
@@ -3228,7 +3167,6 @@ async fn an_abandoned_checkout_sends_a_close_frame() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
     });
 
@@ -3245,8 +3183,7 @@ async fn a_timed_out_turn_sends_a_close_frame() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "while True:\n    pass");
+        expect_opening_feed(&mut socket, "while True:\n    pass");
         // never reply: the client's deadline must end the session, and the
         // abandoned-session case is exactly when the server most wants the slot
         expect_end(&mut socket);
@@ -3274,7 +3211,6 @@ async fn finishing_a_checkout_does_not_wait_for_the_server_to_end_the_stream() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
         // the half-close has landed; take a while to end the stream in turn
         thread::sleep(Duration::from_millis(500));
@@ -3311,8 +3247,7 @@ async fn finishing_against_a_wedged_socket_does_not_leak_capacity() {
     let url = mock.url();
     let (release, wait_for_release) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
-        let mut socket = mock.accept();
-        expect_configure(&mut socket);
+        let _socket = mock.accept();
         // never read again: the client's writes now back up in the socket
         wait_for_release.recv().expect("release");
     });
@@ -3357,7 +3292,6 @@ async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut first = mock.accept();
-        expect_configure(&mut first);
         expect_end(&mut first);
         let early = mock.try_accept(Duration::from_millis(300));
         assert!(
@@ -3366,7 +3300,6 @@ async fn a_full_pool_reuses_a_slot_once_the_server_ends_the_stream() {
         );
         drop(first);
         let mut second = mock.accept();
-        expect_configure(&mut second);
         expect_end(&mut second);
     });
 
@@ -3387,7 +3320,6 @@ fn a_checkout_dropped_outside_its_runtime_still_half_closes() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
         assert!(stays_open(&socket), "the stream was reset");
     });
@@ -3407,10 +3339,8 @@ async fn closes_past_the_pool_size_reset_their_streams() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut first = mock.accept();
-        expect_configure(&mut first);
         expect_end(&mut first);
         let mut second = mock.accept();
-        expect_configure(&mut second);
         expect_end(&mut second);
         // neither is ended here: the first holds the pool's one closing slot
         let (first_open, second_open) = (stays_open(&first), stays_open(&second));
@@ -3442,8 +3372,7 @@ async fn a_dropped_connection_is_a_disconnect() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "1 + 1");
+        expect_opening_feed(&mut socket, "1 + 1");
         send_kind(
             &mut socket,
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
@@ -3525,8 +3454,6 @@ async fn a_typing_error_reply_to_a_skipped_feed_is_a_protocol_violation() {
     let url = mock.url();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        try_read_request(&mut socket).expect("configure");
-        send_kind(&mut socket, ok_event());
         assert!(matches!(
             read_request(&mut socket),
             pb::parent_request::Kind::Feed(feed) if feed.skip_type_check
@@ -3561,8 +3488,7 @@ async fn a_host_decode_limit_rejects_a_result_and_discards_the_connection() {
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
         socket.set_read_timeout(Duration::from_secs(5));
-        expect_configure(&mut socket);
-        expect_feed(&mut socket, "42");
+        expect_opening_feed(&mut socket, "42");
         send_kind(
             &mut socket,
             pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
@@ -3673,12 +3599,10 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
         let server = thread::spawn(move || {
             let mut socket = mock.accept();
             socket.set_read_timeout(Duration::from_secs(5));
-            assert!(matches!(
-                read_request(&mut socket),
-                pb::parent_request::Kind::Configure(_)
-            ));
+            // the opening feed's reply reports the clock, as `Configure`'s `Ok` would
+            expect_opening_feed(&mut socket, "1");
             let event = pb::ChildEvent {
-                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                kind: Some(complete_event()),
                 execution_clock: clock,
                 ..Default::default()
             };
@@ -3690,13 +3614,16 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
         });
         config.request_timeout = deadline;
         let pool = Pool::new(config).await.unwrap();
-        let result = pool
+        let mut checkout = pool
             .checkout(&ReplConfig {
                 limits: Some(ResourceLimits::default()),
                 ..ReplConfig::default()
             })
-            .await;
+            .await
+            .expect("checkout");
+        let result = checkout.feed("1", vec![], vec![], false, &mut no_print).await;
         assert!(matches!(result, Err(PoolError::Protocol(ref message)) if message.contains(expected)));
+        drop(checkout);
         pool.close().await;
         join_server(server).await;
     }
@@ -3708,21 +3635,17 @@ async fn remote_clock_is_reported_by_the_server_without_a_client_preference() {
         let (mock, mut config) = mock_pool_config().await;
         let server = thread::spawn(move || {
             let mut socket = mock.accept();
-            let pb::parent_request::Kind::Configure(configure) = read_request(&mut socket) else {
-                panic!("expected Configure")
-            };
+            let request = try_read_request(&mut socket).expect("opening feed");
+            let configure = request.open_session.expect("the opening Feed carries the Configure");
             assert_eq!(configure.execution_clock, None);
-            let mut configured = event_kind(ok_event());
-            configured.execution_clock = clock.map(|clock| clock as i32);
-            send_event(&mut socket, &configured);
-            assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+            assert!(matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))));
             if clock == Some(pb::ExecutionClock::Cpu) {
                 thread::sleep(Duration::from_millis(150));
             }
-            send_kind(
-                &mut socket,
-                pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
-            );
+            // the opening reply reports the server's clock with the feed's result
+            let mut completed = event_kind(complete_event());
+            completed.execution_clock = clock.map(|clock| clock as i32);
+            send_event(&mut socket, &completed);
             let _ = socket.read();
         });
         config.request_timeout = Some(Duration::from_secs(2));

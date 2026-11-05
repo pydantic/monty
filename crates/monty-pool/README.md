@@ -30,6 +30,14 @@ It discards the worker and returns `Some(ExitStatus)` only after the OS confirms
 A remote worker or an unconfirmed subprocess exit returns `None`.
 Dropping a checkout or cancelling `terminate` does not confirm physical termination.
 
+A session opens with its first request: `Pool::checkout` sends nothing, and the first `feed` or `restore` carries the
+session's `Configure`, so a session starts and runs its first snippet in one round trip (a rejected configuration
+surfaces as that call's error). The session ID a storing relay mints is therefore known only after that first turn.
+A host call the sandbox awaits as it is made does not suspend either: the worker answers it with a future and runs on,
+and the calls made since the last wait arrive together as `TurnEvent::ResolveFutures::calls`, so an `asyncio.gather`
+of host calls is one round trip. `Checkout::set_suspend_awaited_calls` restores one suspension per awaited call for
+a caller stepping through them.
+
 The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are
 cancel-safe (partial-frame state lives in the worker), and turn deadlines are ordinary timers
 rather than a watchdog thread. Turn futures are not resumable after being dropped mid-flight —
@@ -141,6 +149,8 @@ Timeouts kill the single worker PID, not a process group; the Monty sandbox must
 A remote CPython worker needs deployment-level process teardown instead.
 The default elapsed-duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
 full budget plus grace, but `request_timeout` applies independently.
+The request opening a session (the first feed or load, carrying its `Configure`) has no duration backstop, as the
+worker may still be starting; `request_timeout` alone bounds it.
 Both deadlines are polled, so decoding a large reply can delay enforcement.
 Host mount I/O runs between turns and is not covered by either deadline; see
 [filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).

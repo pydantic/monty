@@ -576,6 +576,7 @@ fn pong_body() -> Bytes {
     let pong = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Pong(pb::Pong {})),
         trace_parent: None,
+        open_session: None,
     };
     Bytes::from(encode_to_capped_vec(&pong).expect("a Pong is far below the frame cap"))
 }

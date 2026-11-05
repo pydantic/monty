@@ -4,7 +4,9 @@
 //! anyway, so the sandbox needs no instrumenting. The trace mirrors the
 //! protocol: `Configure` opens a session span `Reset` closes, `Feed` opens a
 //! span held across suspensions, and each suspension is a child span the
-//! answering `Resume*` closes — its duration is the host round-trip.
+//! answering `Resume*` closes — its duration is the host round-trip. The
+//! awaited calls a `ResolveFutures` announces each get a span of their own
+//! under the feed, closed by the `ResumeFutures` result naming the call.
 //!
 //! The adapter installs the pipeline used by the Logfire macros. Spans are
 //! parented explicitly rather than entered: a checkout's turns can run on
@@ -52,6 +54,10 @@ pub(crate) struct Recorder {
     /// The span of the suspension the feed is blocked on, closed when the
     /// answering `Resume*` is sent so its duration is the host round-trip.
     pending: Option<OpenSpan>,
+    /// One span per awaited call a `ResolveFutures` announced, closed by the
+    /// `ResumeFutures` result naming its id: the call outlives the wait that
+    /// announced it when the host settles the futures one at a time.
+    awaited: Vec<AwaitedSpan>,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -74,6 +80,7 @@ impl Recorder {
             worker_pid,
             turn: None,
             pending: None,
+            awaited: Vec::new(),
             feed: None,
             session: None,
             dump_turn: false,
@@ -96,15 +103,60 @@ impl Recorder {
         }
     }
 
+    /// Opens the session span for `c`, under the adapter's parent when it gave
+    /// one. A stale session (impossible via the checkout state machine, but
+    /// cheap to be safe against) is closed by the overwrite.
+    fn begin_session(&mut self, c: &pb::Configure, adapter_parent: Option<opentelemetry::Context>) {
+        self.pending = None;
+        self.awaited.clear();
+        self.feed = None;
+        let limits = c.limits.as_ref();
+        let (script_name, script_name_cut) = truncate_str(&c.script_name);
+        let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
+        let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
+        let span = logfire::span!(
+            "session {script_name}",
+            script_name = script_name,
+            monty_version = monty_version,
+            type_check = c.type_check,
+            type_check_stubs = type_check_stubs,
+            length_limit_exceeded = (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
+            assert_message_annotations = c.assert_message_annotations,
+            max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros),
+            max_turn_duration_micros = limits.and_then(|l| l.max_turn_duration_micros),
+            max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
+            gc_interval = limits.and_then(|l| l.gc_interval),
+            max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
+            max_suspensions = limits.and_then(|l| l.max_suspensions),
+            // i64: `tracing` has no typed u32 value, so a u32 would be
+            // recorded as its debug string
+            worker_pid = self.worker_pid.map(i64::from),
+        );
+        let span = {
+            if let Some(parent) = adapter_parent {
+                let _ = span.set_parent(parent);
+            }
+            start_span(span)
+        };
+        self.session = Some(span);
+    }
+
     /// Starts recording one turn; called once the frame is on the wire, so a
     /// rejected oversize frame records nothing.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
-        let adapter_parent = if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))) {
+        let opens_session =
+            request.open_session.is_some() || matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)));
+        let mut adapter_parent = if opens_session {
             self.adapter_context.take().and_then(TelemetryContext::into_parent)
         } else {
             None
         };
+        // the request that opens the session carries its `Configure`: the
+        // session span opens first, and the request's own span nests under it
+        if let Some(configure) = &request.open_session {
+            self.begin_session(configure, adapter_parent.take());
+        }
         // A restored suspended feed uses its `Load` turn as the feed span, so
         // resumes must preserve it until the eventual turn-ending event.
         let is_resume = matches!(
@@ -123,42 +175,7 @@ impl Recorder {
         }
         self.dump_turn = false;
         match &request.kind {
-            // a stale session (impossible via the checkout state machine, but
-            // cheap to be safe against) is closed by the overwrite
-            Some(pb::parent_request::Kind::Configure(c)) => {
-                self.pending = None;
-                self.feed = None;
-                let limits = c.limits.as_ref();
-                let (script_name, script_name_cut) = truncate_str(&c.script_name);
-                let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
-                let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
-                let span = logfire::span!(
-                    "session {script_name}",
-                    script_name = script_name,
-                    monty_version = monty_version,
-                    type_check = c.type_check,
-                    type_check_stubs = type_check_stubs,
-                    length_limit_exceeded =
-                        (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
-                    assert_message_annotations = c.assert_message_annotations,
-                    max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros),
-                    max_turn_duration_micros = limits.and_then(|l| l.max_turn_duration_micros),
-                    max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
-                    gc_interval = limits.and_then(|l| l.gc_interval),
-                    max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
-                    max_suspensions = limits.and_then(|l| l.max_suspensions),
-                    // i64: `tracing` has no typed u32 value, so a u32 would be
-                    // recorded as its debug string
-                    worker_pid = self.worker_pid.map(i64::from),
-                );
-                let span = {
-                    if let Some(parent) = adapter_parent {
-                        let _ = span.set_parent(parent);
-                    }
-                    start_span(span)
-                };
-                self.session = Some(span);
-            }
+            Some(pb::parent_request::Kind::Configure(c)) => self.begin_session(c, adapter_parent.take()),
             Some(pb::parent_request::Kind::Load(l)) => {
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
@@ -226,11 +243,18 @@ impl Recorder {
                 let (result, cut) = render_name_lookup(r.kind.as_ref(), r.values.as_ref());
                 self.close_pending("value", &result, cut);
             }
-            // An abort answers with the exception the sandbox will raise.
+            // An abort answers with the exception the sandbox will raise, on
+            // the suspension and on every awaited call it leaves unanswered.
             Some(pb::parent_request::Kind::AbortFeed(a)) => {
                 let (result, cut) = a.exception.as_ref().map_or((MISSING.into(), false), render_raised);
+                for mut call in self.awaited.drain(..) {
+                    call.span.record("aborted_with", &result, cut);
+                }
                 self.close_pending("aborted_with", &result, cut);
             }
+            // A result naming an announced call closes that call's span; the
+            // rest (futures the host returned to a blocking call) are one
+            // record under the wait they answer.
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
                 if let [result] = r.results.as_slice()
                     && self
@@ -241,14 +265,27 @@ impl Recorder {
                     let (value, cut) = render_ext_result(result.result.as_ref(), r.values.as_ref());
                     self.close_pending("return_value", &value, cut);
                 } else {
+                    let mut unmatched = Vec::new();
+                    for result in &r.results {
+                        match self.awaited.iter().position(|call| call.call_id == result.call_id) {
+                            Some(index) => {
+                                let mut call = self.awaited.remove(index);
+                                let (value, cut) = render_ext_result(result.result.as_ref(), r.values.as_ref());
+                                call.span.record("return_value", &value, cut);
+                            }
+                            None => unmatched.push(result),
+                        }
+                    }
                     let pending = self.take_pending();
-                    let (results, cut) = render_future_results(&r.results, r.values.as_ref());
-                    logfire::info!(
-                        parent: pending,
-                        "future results",
-                        results = results,
-                        length_limit_exceeded = cut.then_some(true),
-                    );
+                    if !unmatched.is_empty() {
+                        let (results, cut) = render_future_results(&unmatched, r.values.as_ref());
+                        logfire::info!(
+                            parent: pending,
+                            "future results",
+                            results = results,
+                            length_limit_exceeded = cut.then_some(true),
+                        );
+                    }
                 }
             }
             Some(pb::parent_request::Kind::Dump(_)) => {
@@ -267,6 +304,7 @@ impl Recorder {
             // exiting; closing whatever is open is the record
             Some(pb::parent_request::Kind::Shutdown(_)) => {
                 self.pending = None;
+                self.awaited.clear();
                 self.feed = None;
                 self.session = None;
             }
@@ -311,29 +349,7 @@ impl Recorder {
                 }
             }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
-                let (args, kwargs, args_cut) = render_call_arguments(c);
-                let (function_name, name_cut) = truncate_str(&c.function_name);
-                let position = PositionAttrs::new(c.position.as_ref());
-                let cut = args_cut | name_cut | position.cut;
-                let span = start_span(logfire::span!(
-                    parent: self.context_span(),
-                    "call {function_name}",
-                    function_name = function_name,
-                    args = args,
-                    kwargs = kwargs,
-                    call_id = c.call_id,
-                    object_id = c.object_id.as_ref().map(MontyUuid::to_string),
-                    sandbox.code.file.path = position.file,
-                    sandbox.code.offset.start = position.start,
-                    sandbox.code.offset.end = position.end,
-                    length_limit_exceeded = cut.then_some(true),
-                    total_execution_micros = micros,
-                    max_feed_duration_micros = max_feed_duration,
-                    // Filled by ResumeCall, an eager ResumeFutures, or AbortFeed.
-                    return_value = Empty,
-                    aborted_with = Empty,
-                ));
-                let mut pending = OpenSpan::new(span, cut);
+                let mut pending = function_call_span(c, micros, max_feed_duration, &self.context_span());
                 pending.eager_call_id = c.allow_eager_await.then_some(c.call_id);
                 self.pending = Some(pending);
             }
@@ -362,6 +378,20 @@ impl Recorder {
                 self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
+                // the awaited calls the wait announces open under the feed, as
+                // siblings of the wait: a call the host settles later than the
+                // first result outlives this wait and the next one answers it
+                let parent = self.context_span();
+                self.awaited.extend(
+                    r.calls.iter().map(|c| {
+                        AwaitedSpan::new(c.call_id, function_call_span(c, micros, max_feed_duration, &parent))
+                    }),
+                );
+                self.awaited.extend(
+                    r.os_calls
+                        .iter()
+                        .map(|c| AwaitedSpan::new(c.call_id, os_call_span(c, micros, max_feed_duration, &parent))),
+                );
                 let (pending_call_ids, ids_cut) = render_call_ids(&r.pending_call_ids);
                 let range = r.position.as_ref().map(SourceRange::from);
                 let position = PositionAttrs::new(range.as_ref());
@@ -486,6 +516,17 @@ impl Recorder {
         self.context_span().context()
     }
 
+    /// The span of the awaited call `call_id`, for the host function
+    /// answering it; the innermost open span for an id this recorder has not
+    /// announced (one restored into another process, say).
+    pub(crate) fn callback_context_for(&self, call_id: u32) -> opentelemetry::Context {
+        self.awaited
+            .iter()
+            .find(|call| call.call_id == call_id)
+            .map_or_else(|| self.context_span(), |call| call.span.span.clone())
+            .context()
+    }
+
     fn context_span(&self) -> Span {
         self.turn
             .as_ref()
@@ -516,7 +557,21 @@ impl Recorder {
     fn end_feed(&mut self) {
         self.turn = None;
         self.pending = None;
+        self.awaited.clear();
         self.feed = None;
+    }
+}
+
+/// The span of one awaited call a wait announced, kept until a
+/// `ResumeFutures` result names its id.
+struct AwaitedSpan {
+    call_id: u32,
+    span: OpenSpan,
+}
+
+impl AwaitedSpan {
+    const fn new(call_id: u32, span: OpenSpan) -> Self {
+        Self { call_id, span }
     }
 }
 
@@ -605,7 +660,9 @@ fn render_call_arguments(call: &WireFunctionCall) -> (Option<String>, Option<Str
 /// descriptively. The bool reports a cut at [`ATTR_SIZE_LIMIT`].
 fn render_ext_result(result: Option<&pb::ExtFunctionResult>, values: Option<&WireArena>) -> (OtelValue, bool) {
     match result.and_then(|r| r.kind.as_ref()) {
-        Some(pb::ext_function_result::Kind::ReturnValue(v)) => attr_value(arena_nodes(values), NodeId(*v)),
+        Some(pb::ext_function_result::Kind::ReturnValue(v) | pb::ext_function_result::Kind::Plain(v)) => {
+            attr_value(arena_nodes(values), NodeId(*v))
+        }
         Some(pb::ext_function_result::Kind::Error(e)) => render_raised(e),
         Some(pb::ext_function_result::Kind::Future(id)) => (format!("future {id}").into(), false),
         Some(pb::ext_function_result::Kind::NotFound(name)) => {
@@ -648,7 +705,7 @@ fn render_raised(e: &pb::RaisedException) -> (OtelValue, bool) {
 
 /// Renders resolved futures as `call_id: result, ...`; the bool reports a cut
 /// of any result — or of the joined output — at [`ATTR_SIZE_LIMIT`].
-fn render_future_results(results: &[pb::FutureResult], values: Option<&WireArena>) -> (Option<String>, bool) {
+fn render_future_results(results: &[&pb::FutureResult], values: Option<&WireArena>) -> (Option<String>, bool) {
     if results.is_empty() {
         return (None, false);
     }
@@ -710,6 +767,35 @@ fn capped_filename(filename: Option<&str>) -> (Option<String>, bool) {
         let (name, cut) = truncate_str(name);
         (Some(name), cut)
     })
+}
+
+/// Opens the span for one host function call, whether a blocking suspension
+/// or an awaited call a wait announced; its answer lands on it later.
+fn function_call_span(c: &WireFunctionCall, micros: u64, max_feed_duration: Option<u64>, parent: &Span) -> OpenSpan {
+    let (args, kwargs, args_cut) = render_call_arguments(c);
+    let (function_name, name_cut) = truncate_str(&c.function_name);
+    let position = PositionAttrs::new(c.position.as_ref());
+    let cut = args_cut | name_cut | position.cut;
+    let span = start_span(logfire::span!(
+        parent: parent,
+        "call {function_name}",
+        function_name = function_name,
+        args = args,
+        kwargs = kwargs,
+        call_id = c.call_id,
+        object_id = c.object_id.as_ref().map(MontyUuid::to_string),
+        sandbox.code.file.path = position.file,
+        sandbox.code.offset.start = position.start,
+        sandbox.code.offset.end = position.end,
+        length_limit_exceeded = cut.then_some(true),
+        total_execution_micros = micros,
+        max_feed_duration_micros = max_feed_duration,
+        // filled by `ResumeCall`, the `ResumeFutures` result naming the
+        // call, or `AbortFeed`
+        return_value = Empty,
+        aborted_with = Empty,
+    ));
+    OpenSpan::new(span, cut)
 }
 
 /// Opens the span for one os call suspension: the function name plus each
@@ -1203,6 +1289,7 @@ mod tests {
         pb::ParentRequest {
             kind: Some(kind),
             trace_parent: None,
+            open_session: None,
         }
     }
 
@@ -1246,6 +1333,7 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "double".to_owned(),
@@ -1433,6 +1521,7 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
             MontyObject::int(1),

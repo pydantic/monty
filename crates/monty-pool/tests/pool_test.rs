@@ -24,8 +24,8 @@ use std::{
 
 use insta::assert_snapshot;
 use monty_pool::{
-    Checkout, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture,
-    ReplConfig, ResumeValue, TurnEvent, on_print_sync,
+    Checkout, DEFAULT_MAX_CHECKOUTS_PER_WORKER, FutureCall, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError,
+    PrintFuture, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
@@ -137,6 +137,7 @@ fn write_fake_monty(dir: &Path, script: &str) -> PathBuf {
 async fn allow_eager_await_validates_replies_before_sending() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    session.set_suspend_awaited_calls(true);
     let event = session
         .feed("await f()", vec![], vec![], false, &mut no_print)
         .await
@@ -170,6 +171,213 @@ async fn allow_eager_await_validates_replies_before_sending() {
         .unwrap();
     assert_eq!(expect_complete(done), MontyObject::int(42));
     session.finish().await.unwrap();
+}
+
+/// `f` and `g` bound as host functions, for feeds that await them.
+fn host_functions() -> Vec<(String, MontyObject)> {
+    ["f", "g"]
+        .into_iter()
+        .map(|name| (name.to_owned(), MontyObject::function(name.to_owned(), None)))
+        .collect()
+}
+
+/// A gather of awaited host calls reaches the caller as one `ResolveFutures`
+/// announcing both, each settled by id; nothing suspends per call.
+#[tokio::test]
+async fn gathered_host_calls_arrive_in_one_resolve_futures() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let code = "import asyncio\nasync def main():\n    return await asyncio.gather(f(1), g(2))\nasyncio.run(main())";
+    let event = session
+        .feed(code, host_functions(), vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::ResolveFutures {
+        pending_call_ids,
+        calls,
+        ..
+    } = event
+    else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    let announced: Vec<(&str, Vec<MontyObject>)> = calls
+        .iter()
+        .map(|call| match call {
+            FutureCall::Function {
+                function_name, args, ..
+            } => (function_name.as_str(), args.args().map(|arg| arg.to_owned()).collect()),
+            other @ FutureCall::Os { .. } => panic!("expected a function call, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        announced,
+        vec![("f", vec![MontyObject::int(1)]), ("g", vec![MontyObject::int(2)])]
+    );
+    let mut ids: Vec<u32> = calls.iter().map(FutureCall::call_id).collect();
+    ids.sort_unstable();
+    let mut pending = pending_call_ids;
+    pending.sort_unstable();
+    assert_eq!(ids, pending);
+    let results = calls
+        .iter()
+        .zip([10, 20])
+        .map(|(call, value)| (call.call_id(), ResumeValue::Return(MontyObject::int(value))))
+        .collect();
+    let done = session.resume_futures(results, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(done),
+        MontyObject::list([MontyObject::int(10), MontyObject::int(20)])
+    );
+    session.finish().await.unwrap();
+}
+
+/// A host function's plain value settling an awaited call raises CPython's
+/// `TypeError` at the sandbox's `await`.
+#[tokio::test]
+async fn a_plain_result_raises_type_error_at_the_await() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let code = "async def main():\n    try:\n        await f()\n    except TypeError as e:\n        return str(e)\nimport asyncio\nasyncio.run(main())";
+    let event = session
+        .feed(code, host_functions(), vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::ResolveFutures { calls, .. } = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    let [call] = &calls[..] else {
+        panic!("expected one awaited call, got {calls:?}");
+    };
+    let done = session
+        .resume_futures(
+            vec![(call.call_id(), ResumeValue::Plain(MontyObject::int(42)))],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        expect_complete(done),
+        MontyObject::string("'int' object can't be awaited".to_owned())
+    );
+    session.finish().await.unwrap();
+}
+
+/// Each awaited call a wait announces counts against `max_suspensions`, so a
+/// gather past the limit is aborted on arrival while sequential awaits each
+/// cost one.
+#[tokio::test]
+async fn batched_calls_count_against_the_suspension_limit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let limited = ReplConfig {
+        limits: Some(ResourceLimits::default().max_suspensions(2)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&limited).await.unwrap();
+    let sequential = "async def main():\n    return await f() + await g()\nimport asyncio\nasyncio.run(main())";
+    let mut event = session
+        .feed(sequential, host_functions(), vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    for n in [1, 2] {
+        let TurnEvent::ResolveFutures { calls, .. } = event else {
+            panic!("expected ResolveFutures, got {event:?}");
+        };
+        assert_eq!(calls.len(), 1);
+        event = session
+            .resume_futures(
+                vec![(calls[0].call_id(), ResumeValue::Return(MontyObject::int(n)))],
+                &mut no_print,
+            )
+            .await
+            .unwrap();
+    }
+    assert_eq!(expect_complete(event), MontyObject::int(3));
+
+    let gathered =
+        "import asyncio\nasync def main():\n    return await asyncio.gather(f(), g(), f())\nasyncio.run(main())";
+    let err = session
+        .feed(gathered, host_functions(), vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("suspension limit 2 exceeded"));
+    session.finish().await.unwrap();
+}
+
+/// `set_suspend_awaited_calls` restores one suspension per awaited call, for
+/// a caller stepping through them.
+#[tokio::test]
+async fn suspending_awaited_calls_announces_each_call_separately() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    session.set_suspend_awaited_calls(true);
+    let code = "import asyncio\nasync def main():\n    return await asyncio.gather(f(), g())\nasyncio.run(main())";
+    let mut event = session
+        .feed(code, host_functions(), vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let mut results = Vec::new();
+    for _ in 0..2 {
+        let TurnEvent::FunctionCall {
+            call_id,
+            allow_eager_await,
+            ..
+        } = event
+        else {
+            panic!("expected a suspended call, got {event:?}");
+        };
+        assert!(!allow_eager_await);
+        results.push((call_id, ResumeValue::Return(MontyObject::int(1))));
+        event = session.resume(ResumeValue::Future, &mut no_print).await.unwrap();
+    }
+    let TurnEvent::ResolveFutures { calls, .. } = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    assert!(calls.is_empty(), "every call suspended on its own: {calls:?}");
+    let done = session.resume_futures(results, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(done),
+        MontyObject::list([MontyObject::int(1), MontyObject::int(1)])
+    );
+    session.finish().await.unwrap();
+}
+
+/// A session restored at a wait announces every unresolved call again: the
+/// restoring process has seen none of them.
+#[tokio::test]
+async fn a_restored_wait_reannounces_its_calls() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let code = "import asyncio\nasync def main():\n    return await asyncio.gather(f(), g())\nasyncio.run(main())";
+    let event = session
+        .feed(code, host_functions(), vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let TurnEvent::ResolveFutures { calls, .. } = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    let announced: Vec<u32> = calls.iter().map(FutureCall::call_id).collect();
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let (event, _) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    let Some(TurnEvent::ResolveFutures { calls, .. }) = event else {
+        panic!("expected the wait re-announced, got {event:?}");
+    };
+    assert_eq!(calls.iter().map(FutureCall::call_id).collect::<Vec<_>>(), announced);
+    let results = announced
+        .iter()
+        .map(|id| (*id, ResumeValue::Return(MontyObject::int(2))))
+        .collect();
+    let done = restored.resume_futures(results, &mut no_print).await.unwrap();
+    assert_eq!(
+        expect_complete(done),
+        MontyObject::list([MontyObject::int(2), MontyObject::int(2)])
+    );
+    restored.finish().await.unwrap();
 }
 
 /// An over-threshold frame round-trips through `decode_event`'s
@@ -1100,11 +1308,13 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     // resolvable after an oversize result is rejected.
     let code = "import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())";
     let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
-    let TurnEvent::FunctionCall { call_id, .. } = event else {
-        panic!("expected FunctionCall, got {event:?}");
+    let TurnEvent::ResolveFutures { calls, .. } = event else {
+        panic!("expected ResolveFutures, got {event:?}");
     };
-    let event = session.resume(ResumeValue::Future, &mut no_print).await.unwrap();
-    assert!(matches!(event, TurnEvent::ResolveFutures { .. }), "got {event:?}");
+    let [call] = &calls[..] else {
+        panic!("expected one awaited call, got {calls:?}");
+    };
+    let call_id = call.call_id();
     let huge = MontyObject::string("x".repeat(OVERSIZE));
     let err = session
         .resume_futures(vec![(call_id, ResumeValue::Return(huge))], &mut no_print)
@@ -1650,14 +1860,10 @@ async fn unrecognised_exit_code_stays_an_opaque_death() {
 #[tokio::test]
 async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let dir = tempfile::tempdir().unwrap();
-    // the two frames the stand-in replays, in order: `Ok` answers the
-    // `Configure` that establishes the session, then the forged dump
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
-        pb::ShutdownDump {
-            dump: Some(b"a dump the child minted itself".to_vec().into()),
-        },
-    ))));
+    // the frame the stand-in replays: the forged dump, answering the opening feed
+    let replies = framed(&child_event(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+        dump: Some(b"a dump the child minted itself".to_vec().into()),
+    })));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
@@ -1669,10 +1875,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1680,6 +1883,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1701,9 +1905,8 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
 #[tokio::test]
 async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let dir = tempfile::tempdir().unwrap();
-    // `Ok` answers the establishing `Configure`, then the kindless frame
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&pb::ChildEvent::default()));
+    // the kindless frame answers the opening feed
+    let replies = framed(&pb::ChildEvent::default());
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
@@ -1713,10 +1916,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1724,6 +1924,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -1745,13 +1946,10 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
 #[tokio::test]
 async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let dir = tempfile::tempdir().unwrap();
-    // `Ok` answers the establishing `Configure`, then the fatal frame
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&child_event(pb::child_event::Kind::FatalError(
-        pb::FatalError {
-            message: "the child is done".to_owned(),
-        },
-    ))));
+    // the fatal frame answers the opening feed
+    let replies = framed(&child_event(pb::child_event::Kind::FatalError(pb::FatalError {
+        message: "the child is done".to_owned(),
+    })));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
@@ -1761,10 +1959,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1772,6 +1967,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -3062,10 +3258,9 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             position: Some(position()),
         }))
     };
-    // `Ok` answers Configure, then the honest suspension and the rewound one.
+    // the honest suspension answers the opening feed, then the rewound one.
     // Nothing answers the third request: that is the turn the backstop must end.
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&suspension(60_000_000)));
+    let mut replies = framed(&suspension(60_000_000));
     replies.extend(framed(&suspension(0)));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
@@ -3086,7 +3281,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("checkout");
 
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -3095,6 +3290,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -3124,14 +3320,11 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
 #[tokio::test]
 async fn a_suspension_without_a_position_reads_as_unknown() {
     let dir = tempfile::tempdir().unwrap();
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
-        pb::NameLookup {
-            name: "x".to_owned(),
-            object_id: None,
-            position: None,
-        },
-    ))));
+    let replies = framed(&child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+        name: "x".to_owned(),
+        object_id: None,
+        position: None,
+    })));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
     let fake = write_fake_monty(
@@ -3140,10 +3333,7 @@ async fn a_suspension_without_a_position_reads_as_unknown() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     let TurnEvent::NameLookup { name, position, .. } = event else {
         panic!("expected a name lookup, got {event:?}");
@@ -3164,17 +3354,16 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     let dir = tempfile::tempdir().unwrap();
     let budget = Duration::from_millis(300);
     let grace = Duration::from_millis(100);
-    // `Ok` answers Configure; the suspension ends the first feed having spent
-    // the whole budget. The second feed goes unanswered.
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&pb::ChildEvent {
+    // the suspension answers the opening feed, having spent the whole
+    // budget. The second feed goes unanswered.
+    let replies = framed(&pb::ChildEvent {
         feed_execution_micros: u64::try_from(budget.as_micros()).unwrap(),
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
             position: Some(position()),
         }))
-    }));
+    });
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
     let fake = write_fake_monty(
@@ -3192,7 +3381,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("checkout");
 
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -3201,6 +3390,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         ..pb::ParentRequest::default()
     };
@@ -3224,13 +3414,12 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
     let dir = tempfile::tempdir().unwrap();
     let budget = Duration::from_millis(300);
     let grace = Duration::from_millis(100);
-    // `Ok` answers Configure, then the Load, claiming an hour's feed budget.
-    // The feed after it goes unanswered.
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
-    replies.extend(framed(&pb::ChildEvent {
+    // the opening `Load`'s `Ok` claims an hour's feed budget; the feed after
+    // it goes unanswered
+    let replies = framed(&pb::ChildEvent {
         max_feed_duration_micros: Some(3_600_000_000),
         ..child_event(pb::child_event::Kind::Ok(pb::Ok {}))
-    }));
+    });
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
     let fake = write_fake_monty(
@@ -3248,7 +3437,7 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("checkout");
     let (event, _) = checkout.restore(vec![0], vec![], &mut no_print).await.unwrap();
     assert!(event.is_none());
 
