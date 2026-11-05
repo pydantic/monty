@@ -132,6 +132,13 @@ The worker creates a settled awaitable and continues, avoiding a separate `Resol
 Synchronous returns still use `ResumeCall`; parents may also ignore the hint and register a pending future as before.
 Older workers omit the flag, which defaults to false, so newer parents retain the existing reply sequence.
 
+A `Function` node with `is_async` set, or a name in `Feed.async_functions`, marks a host coroutine function.
+The worker answers a call to one with a future itself and streams the call as `ChildEvent.async_call`, a non-turn-ending
+event like `Print`, so the parent starts the coroutine while the sandbox runs on and resolves the call ID through the
+`ResumeFutures` that answers a later `ResolveFutures`; a `Load` streams a restored session's unresolved calls again.
+An older worker ignores both and suspends per call as before; an older parent never marks a function, so it never
+sees the event.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

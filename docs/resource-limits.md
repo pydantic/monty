@@ -247,6 +247,9 @@ could abort the process.
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
 callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
 future-resolution events.
+A call to a coroutine host function counts as it is made, and the future-resolution event that settles such calls
+is then free, so `await f()` costs one either way and a `gather` of N calls costs N; past the limit the remaining
+calls are dropped unrun and the feed ends at the next suspension.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.

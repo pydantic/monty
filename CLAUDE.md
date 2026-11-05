@@ -196,7 +196,11 @@ subprocesses:
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
-    streamed `Print` events out, then exactly one turn-ending event.
+    streamed `Print` and `AsyncCall` events out, then exactly one turn-ending event.
+    An `AsyncCall` is a call to a host function the host marked async
+    (`Function.is_async`, or `Feed.async_functions` for a direct call): the child
+    answers it with a future itself and streams it, so the host starts the
+    coroutine while the sandbox runs on and resolves it at the next `ResolveFutures`.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and

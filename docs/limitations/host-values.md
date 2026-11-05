@@ -50,6 +50,9 @@ The turn completes and the session remains usable; the wire format itself has no
 A host-function proxy dispatches by name against the current feed's `external_lookup`, not to a fixed callable.
 Replacing an entry changes the target of every retained proxy for that name.
 Replacing it with a non-callable makes calls raise `TypeError`.
+A proxy also remembers whether the host marked the function a coroutine function: a call to a marked one streams to
+the host and returns a future (see [asyncio.md](asyncio.md)), and the same name exported both ways is two distinct
+proxies (`f is g` is `False`), each keeping its own behaviour.
 
 Non-callable values resolved through `external_lookup` are cached in the sandbox namespace.
 Later host-side changes to that entry are not observed by reads of the cached value.

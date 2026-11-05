@@ -69,7 +69,7 @@ Instead of driving a snippet to completion it hands control back at every suspen
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
 | [`FunctionSnapshot`][pydantic_monty.FunctionSnapshot]     | A host function or OS call, or with `object_id` set a method call on a [host object](host-objects.md) (construction arrives as `__call__`) | `resume(result)`, `resume_not_handled()`, `resume_auto()`                                                        |
 | [`NameLookupSnapshot`][pydantic_monty.NameLookupSnapshot] | An undefined name was read, or with `object_id` set a lazy attribute of a host object                                                      | `resume(value=...)`, `resume()` to raise `NameError` (`AttributeError` when `object_id` is set), `resume_auto()` |
-| [`FutureSnapshot`][pydantic_monty.FutureSnapshot]         | Every sandbox task is blocked on host futures                                                                                              | `resume({call_id: result})`                                                                                      |
+| [`FutureSnapshot`][pydantic_monty.FutureSnapshot]         | Every sandbox task is blocked on host futures; `calls` lists the coroutine host functions called since the previous snapshot (see below)   | `resume({call_id: result})`                                                                                      |
 | [`MontyComplete`][pydantic_monty.MontyComplete]           | Nothing — the snippet finished                                                                                                             | nothing; read `.output`                                                                                          |
 
 [`FunctionSnapshot.resume`][pydantic_monty.FunctionSnapshot.resume] accepts four shapes of answer:
@@ -88,6 +88,14 @@ For a `NameLookupSnapshot`, use `resumeValue(value)` to answer a variable or laz
 Both call and lookup snapshots carry `objectId`, the `ClassInstance.id` or `ClassType.id` of the wrapper involved,
 or `null` for plain host calls and name lookups.
 It is a wrapper UUID, not a memory address; routing uses the session's instance store, but the UUID can be reused across sessions.
+
+A call to a coroutine host function (an `async def` in `external_lookup`, an `async function` in JavaScript) never
+surfaces as a `FunctionSnapshot`: the sandbox holds a future for it and runs on (see
+[host functions](host-functions.md#async-host-functions)).
+The `FutureSnapshot` that follows lists each such call in `calls` — an
+[`AsyncCall`][pydantic_monty.AsyncCall] with `function_name`, `args`, `kwargs` and `call_id` — for a host resolving
+by hand; an async session has already started the coroutine, so `resume_auto()` settles it.
+A snapshot restored with `load_snapshot` lists the calls still unresolved when it was dumped.
 
 ### Where execution stopped
 

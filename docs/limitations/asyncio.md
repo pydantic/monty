@@ -92,6 +92,27 @@ maximum rather than raising the `OverflowError` `time.sleep()` raises (see
 A NaN delay raises CPython's `ValueError: Invalid delay: NaN (not a number)`,
 but at the call rather than at the `await`.
 
+## Calls to coroutine host functions start at the call, not at the `await`
+
+A host function the host marks as a coroutine function (an `async def` in `external_lookup` or `inputs`, an
+`async function` in JavaScript) is answered with a future as soon as the sandbox calls it, and the call is
+streamed to the host, which starts the coroutine right away.
+CPython would create the coroutine and run nothing until it is awaited or scheduled.
+What follows:
+
+- A call that is never awaited has still run on the host, where CPython runs nothing and warns that the
+    coroutine was never awaited.
+- The arguments cross to the host at the call, so mutating a mutable argument between the call and the
+    `await` is invisible to the host function; CPython's coroutine would see the mutation.
+- The value is a future rather than a coroutine (`repr()` is `<coroutine external_future(N)>`), as for
+    `asyncio.sleep()` above, and awaiting it twice replays the result.
+- The sandbox does not pause at the call, so a host exception surfaces at the `await` (or at the `gather`),
+    never at the call expression.
+- The names a host declares this way are fixed for the feed: a direct call `f(...)` consults that list, a
+    function reaching the sandbox as a value carries the flag itself, and a host function the host did not
+    recognise as a coroutine function (a plain function returning an awaitable) pauses the sandbox at each
+    call as every host call did before.
+
 ## Concurrency model
 
 Concurrency is cooperative and host-driven. `gather` suspends Monty whenever

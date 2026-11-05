@@ -244,7 +244,13 @@ With [`AsyncMonty`][pydantic_monty.AsyncMonty], callables in `external_lookup` m
 They are awaited on your event loop, so blocking work inside one blocks it exactly as it would anywhere else in your
 async code — what `AsyncMonty` moves off the loop is worker I/O, not your callbacks.
 In JavaScript every host function may be async, and there is no separate pool class.
-`asyncio.gather` inside the sandbox lets several run concurrently:
+
+A call to an `async def` (Python) or `async function` (JavaScript) does not pause the sandbox: the worker answers it
+with a future of its own and streams the call to the host, which starts the coroutine while the sandbox runs on.
+The sandbox pauses once every task is awaiting a result, and every result that has arrived is delivered in one reply.
+So `asyncio.gather` over any number of host calls, a list comprehension of them, `create_task` and a call held in a
+variable and awaited later all cost one round trip, and the host functions run concurrently with each other and with
+the sandbox:
 
 === "Python"
 
@@ -298,6 +304,11 @@ In JavaScript every host function may be async, and there is no separate pool cl
     await using session = await pool.checkout()
     console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 2
     ```
+
+Only a function the host can recognise as a coroutine function up front is streamed this way:
+`inspect.iscoroutinefunction` in Python, a function whose constructor is `AsyncFunction` in JavaScript.
+A plain function that returns a coroutine or promise still works, but each call pauses the sandbox until the host has
+answered it with the future, as every host call did before.
 
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).

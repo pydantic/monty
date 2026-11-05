@@ -188,6 +188,10 @@ indistinguishable from a stack overflow.
     external function calls, host-object method calls, attribute lookups and
     construction, OS calls, name lookups, and each `ResolveFutures` round trip
     (a partial future resolution that re-suspends counts again).
+    A call to a coroutine host function counts when it is streamed, and the
+    `ResolveFutures` that settles streamed calls is free, so `await f()` costs
+    one as before; past the limit a streamed call is dropped unrun and the
+    next suspension ends the feed.
     Each import of a module the [file-module cache](modules.md#modules-from-files) lacks costs one `import` call,
     whether or not the host finds its file and however many files it reads; a cached module costs nothing.
 - It defaults to 1000 and cannot be disabled (like `max_recursion_depth`):
