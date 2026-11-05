@@ -20,7 +20,7 @@
 
 use std::{
     collections::HashMap,
-    fmt,
+    fmt, mem,
     sync::{Arc, PoisonError, RwLock},
     time::{Duration, Instant},
 };
@@ -472,6 +472,10 @@ pub(crate) struct TurnMetrics {
     /// The suspension the feed is blocked on, timing the host round-trip.
     /// While this is set, the worker counts towards [`SUSPENDED_WORKERS`].
     pending: Option<Suspension>,
+    /// One timer per awaited call a `ResolveFutures` announced, closed by the
+    /// `ResumeFutures` result naming its id; a call outlives the wait that
+    /// announced it when the host settles the futures one at a time.
+    awaited: Vec<AwaitedSuspension>,
     /// The in-flight housekeeping turn: what to label it, and when it started.
     turn: Option<(&'static str, Instant)>,
     /// Cumulative sandbox execution time as last reported, so each run
@@ -487,6 +491,7 @@ impl TurnMetrics {
             feed: None,
             run_active: false,
             pending: None,
+            awaited: Vec::new(),
             turn: None,
             reported_micros: 0,
         }
@@ -565,6 +570,8 @@ impl TurnMetrics {
                 };
                 self.close_suspension(outcome);
             }
+            // each result naming an announced call closes that call's timer
+            // under its own outcome; the wait itself closes as resolved
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
                 let outcome = match (&self.pending, r.results.as_slice()) {
                     (
@@ -576,9 +583,17 @@ impl TurnMetrics {
                     ) if *call_id == result.call_id => ext_result(result.result.as_ref()),
                     _ => "resolved",
                 };
+                for result in &r.results {
+                    self.close_awaited(result.call_id, ext_result(result.result.as_ref()));
+                }
                 self.close_suspension(outcome);
             }
-            Some(pb::parent_request::Kind::AbortFeed(_)) => self.close_suspension("aborted"),
+            Some(pb::parent_request::Kind::AbortFeed(_)) => {
+                for call in mem::take(&mut self.awaited) {
+                    self.record_ext_call(call.start, &call.kind, "aborted");
+                }
+                self.close_suspension("aborted");
+            }
             // liveness, not a turn (sent by the transport, never through here)
             Some(pb::parent_request::Kind::Pong(_)) => {}
             None => {}
@@ -615,17 +630,16 @@ impl TurnMetrics {
             }
             Some(pb::child_event::Kind::OsCall(c)) => self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref()))),
             Some(pb::child_event::Kind::NameLookup(_)) => self.suspend(SuspensionKind::NameLookup),
-            // one record per awaited call the wait announces, as the pool
-            // counts them; a wait announcing none is one suspension itself
+            // the wait is the open suspension; the calls it announces are what
+            // the pool counts and times, a wait announcing none counting itself
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
-                if r.calls.is_empty() && r.os_calls.is_empty() {
-                    self.suspend(SuspensionKind::ResolveFutures);
-                }
-                for _ in &r.calls {
-                    self.suspend(SuspensionKind::FunctionCall(None));
+                let announced = !r.calls.is_empty() || !r.os_calls.is_empty();
+                self.open_suspension(SuspensionKind::ResolveFutures, announced);
+                for c in &r.calls {
+                    self.announce_call(c.call_id, SuspensionKind::FunctionCall(None));
                 }
                 for c in &r.os_calls {
-                    self.suspend(SuspensionKind::OsCall(os_call(c.call.as_ref())));
+                    self.announce_call(c.call_id, SuspensionKind::OsCall(os_call(c.call.as_ref())));
                 }
             }
             Some(pb::child_event::Kind::Complete(_)) => self.end_run("complete", event),
@@ -663,6 +677,13 @@ impl TurnMetrics {
     /// Counts one suspension and starts timing the host's answer, during which
     /// this worker is suspended.
     fn suspend(&mut self, kind: SuspensionKind) {
+        self.open_suspension(kind, false);
+    }
+
+    /// Opens the suspension the feed is blocked on. `announced` marks a wait
+    /// whose calls are counted and timed in its place (see
+    /// [`Self::announce_call`]), so it records neither itself.
+    fn open_suspension(&mut self, kind: SuspensionKind, announced: bool) {
         // a suspension answering `Load` is a restored feed re-raising it: the
         // load itself is done, and the host round-trip that follows must not
         // be billed to the load turn
@@ -670,19 +691,48 @@ impl TurnMetrics {
             self.end_turn("ok");
         }
         self.run_active = true;
+        if !announced {
+            self.count_suspension(&kind);
+        }
+        // a suspension raised while one is open would be a protocol violation
+        // the checkout rejects; releasing first keeps the count honest anyway
+        // (the awaited calls stay: a later wait can still see them answered)
+        let _ = self.take_pending();
+        self.pending = Some(Suspension {
+            start: Instant::now(),
+            kind,
+            announced,
+        });
+        self.metrics.suspended_workers(1);
+    }
+
+    /// Counts and starts timing one awaited call a wait announced, as the pool
+    /// charges it: one suspension per call.
+    fn announce_call(&mut self, call_id: u32, kind: SuspensionKind) {
+        self.count_suspension(&kind);
+        self.awaited.push(AwaitedSuspension {
+            call_id,
+            start: Instant::now(),
+            kind,
+        });
+    }
+
+    fn count_suspension(&self, kind: &SuspensionKind) {
         self.metrics.record(
             &SUSPENSIONS,
             MetricValue::I64(1),
             &[KeyValue::new("kind", kind.label())],
         );
-        // a suspension raised while one is open would be a protocol violation
-        // the checkout rejects; releasing first keeps the count honest anyway
-        self.abandon_pending();
-        self.pending = Some(Suspension {
-            start: Instant::now(),
-            kind,
-        });
-        self.metrics.suspended_workers(1);
+    }
+
+    /// Records the round-trip of the awaited call `call_id`, if this recorder
+    /// announced it; a result for a future the host returned to a blocking
+    /// call closes nothing here.
+    fn close_awaited(&mut self, call_id: u32, outcome: &'static str) {
+        if let Some(index) = self.awaited.iter().position(|call| call.call_id == call_id) {
+            let call = self.awaited.remove(index);
+            self.record_ext_call(call.start, &call.kind, outcome);
+        }
     }
 
     /// Records the round-trip the answering resume just closed, under its kind
@@ -692,23 +742,29 @@ impl TurnMetrics {
         let Some(suspension) = self.take_pending() else {
             return;
         };
-        let elapsed = MetricValue::seconds(suspension.start.elapsed());
-        let mut attributes = vec![
-            KeyValue::new("kind", suspension.kind.label()),
-            KeyValue::new("outcome", outcome),
-        ];
+        if !suspension.announced {
+            self.record_ext_call(suspension.start, &suspension.kind, outcome);
+        }
+    }
+
+    /// Records one host round-trip that began at `start`.
+    fn record_ext_call(&self, start: Instant, kind: &SuspensionKind, outcome: &'static str) {
+        let elapsed = MetricValue::seconds(start.elapsed());
+        let mut attributes = vec![KeyValue::new("kind", kind.label()), KeyValue::new("outcome", outcome)];
         // only the os call names what it did, and only from the protocol's own
         // fixed set — see the cardinality rule in the module docs
-        if let SuspensionKind::OsCall(function) = suspension.kind {
-            attributes.push(KeyValue::new("function", function));
+        if let SuspensionKind::OsCall(function) = kind {
+            attributes.push(KeyValue::new("function", *function));
         }
         self.metrics.record(&EXT_CALL, elapsed, &attributes);
     }
 
-    /// Drops the open suspension without recording a round-trip, for the turns
-    /// that end one without answering it.
+    /// Drops the open suspension, and the awaited calls announced so far,
+    /// without recording a round-trip, for the turns that end one without
+    /// answering it.
     fn abandon_pending(&mut self) {
         let _ = self.take_pending();
+        self.awaited.clear();
     }
 
     /// Takes the open suspension, releasing this worker's claim on
@@ -777,6 +833,15 @@ impl Drop for TurnMetrics {
 
 /// The suspension a feed is blocked on while the host answers it.
 struct Suspension {
+    start: Instant,
+    kind: SuspensionKind,
+    /// A wait that announced calls: they are counted and timed, not it.
+    announced: bool,
+}
+
+/// One awaited call a wait announced, timed until the result naming it.
+struct AwaitedSuspension {
+    call_id: u32,
     start: Instant,
     kind: SuspensionKind,
 }

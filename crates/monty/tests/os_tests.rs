@@ -1712,8 +1712,38 @@ fn unawaited_sleep_future_releases_its_result() {
 /// with it rather than leaking.
 #[test]
 fn asyncio_sleep_answered_with_a_failed_future_raises() {
-    let code = "import asyncio\nasync def main():\n    try:\n        await asyncio.sleep(5, [1, 2])\n    except OSError as e:\n        return str(e)\nasyncio.run(main())";
-    let runner = host_runner(code);
+    let runner = host_runner(REJECTED_SLEEP).with_suspend_awaited_calls(true);
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected the sleep, got {progress:?}")
+    };
+    let call_id = call.call_id;
+    let progress = call
+        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::ResolveFutures(state) = progress else {
+        panic!("expected the await to block, got {progress:?}")
+    };
+    assert!(state.calls().is_empty(), "the host answered the sleep itself");
+    let progress = state
+        .resume(
+            vec![(call_id, ExtFunctionResult::Error(interrupted()))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("wait interrupted".to_owned())
+    );
+}
+
+/// The same rejection of a sleep the sandbox batched: it is announced by the
+/// wait, and the host's error reaches the `await` the same way.
+#[test]
+fn awaited_asyncio_sleep_rejected_by_the_host_raises() {
+    let runner = host_runner(REJECTED_SLEEP);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1724,10 +1754,9 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
         panic!("expected one awaited sleep, got {:?}", state.calls())
     };
     let call_id = call.call_id();
-    let interrupted = MontyException::new(ExcType::OSError, Some("wait interrupted".to_owned()));
     let progress = state
         .resume(
-            vec![(call_id, ExtFunctionResult::Error(interrupted))],
+            vec![(call_id, ExtFunctionResult::Error(interrupted()))],
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -1735,6 +1764,14 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
         progress.into_complete().expect("expected Complete"),
         MontyObject::string("wait interrupted".to_owned())
     );
+}
+
+/// A sleep whose host rejection the sandbox catches and returns.
+const REJECTED_SLEEP: &str = "import asyncio\nasync def main():\n    try:\n        await asyncio.sleep(5, [1, 2])\n    except OSError as e:\n        return str(e)\nasyncio.run(main())";
+
+/// The host's rejection of a sleep.
+fn interrupted() -> MontyException {
+    MontyException::new(ExcType::OSError, Some("wait interrupted".to_owned()))
 }
 
 /// The positional arguments of a call as owned values.

@@ -521,7 +521,9 @@ impl MontyRepl {
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
                 future_annotations: self.future_annotations,
-                suspend_awaited_calls: self.suspend_awaited_calls,
+                // no host answers inside a host-driven call: suspending at an
+                // awaited call keeps the error naming the function
+                suspend_awaited_calls: true,
             },
         )?;
         self.sources.insert(input_script_name, executor.program.code.clone());

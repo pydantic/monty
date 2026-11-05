@@ -22,9 +22,10 @@
 // Two shapes keep round trips down without loosening that rule: the request
 // that opens a session carries its `Configure` (`ParentRequest.open_session`),
 // so a session starts and runs its first `Feed` or `Load` in one turn; and a
-// host call the sandbox awaits as it is made does not suspend — the child
-// answers it with a future itself and lists it in the next `ResolveFutures`
-// (`ResolveFutures.calls`), so `asyncio.gather` of N host calls is one turn.
+// host call the sandbox awaits as it is made does not suspend unless the feed
+// asks (`Feed.suspend_awaited_calls`) — the child answers it with a future
+// itself and lists it in the next `ResolveFutures` (`ResolveFutures.calls`),
+// so `asyncio.gather` of N host calls is one turn.
 //
 // Evolution rules: the schema carries its own version, independent of the
 // monty package version. A parent declares it in `Configure.protocol_version`

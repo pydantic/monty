@@ -1897,7 +1897,7 @@ fn run_mount_fs_iter_loop(
                 panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
             }
             RunProgress::ResolveFutures(mut state) => {
-                // Only awaited sleeps reach here: no external functions are defined.
+                // Awaited sleeps and fixture functions (`tools.async_call`) alike.
                 let results =
                     answer_awaited_calls(&mut state, &mut registry, |fc| match mount_table.handle_os_call(fc) {
                         MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),

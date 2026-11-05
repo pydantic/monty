@@ -191,6 +191,39 @@ fn plain_result_raises_type_error_at_the_await() {
     );
 }
 
+/// A call batched to feed a gather raises the gather's `TypeError` for a
+/// plain result even when the gather is built only after the result arrives:
+/// here the second argument suspends first.
+#[test]
+fn plain_result_for_a_gather_argument_raises_the_gather_error() {
+    let code = "import asyncio
+async def h(x):
+    return x
+async def main():
+    try:
+        await asyncio.gather(f(), h(await g()))
+    except TypeError as e:
+        return str(e)
+asyncio.run(main())";
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    let [f, g] = call_ids[..] else {
+        panic!("expected f and g, got {call_ids:?}");
+    };
+    let done = state
+        .resume(
+            vec![
+                (g, ExtFunctionResult::Return(MontyObject::int(1))),
+                (f, ExtFunctionResult::Plain(MontyObject::int(42))),
+            ],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        done.into_complete().unwrap(),
+        MontyObject::string("An asyncio.Future, a coroutine or an awaitable is required")
+    );
+}
+
 /// A loaded dump announces every unresolved awaited call again: its host has
 /// seen none of them.
 #[test]

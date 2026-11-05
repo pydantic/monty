@@ -8,7 +8,7 @@
 #[cfg(feature = "telemetry")]
 use std::env;
 use std::{
-    fmt, fs, io,
+    fmt, fs, io, mem,
     process::ExitCode,
     thread,
     time::{Duration, Instant},
@@ -472,7 +472,7 @@ fn execute_repl_with_mounts(
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
         if !matches!(progress, ReplProgress::Complete { .. })
-            && let Some(exc) = suspensions.record_suspensions(1)
+            && let Some(exc) = suspensions.record_suspensions(repl_suspensions_in(&progress))
         {
             let outcome = match progress {
                 ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -530,6 +530,7 @@ fn run_until_complete(
     host: &mut HostOs,
     suspensions: &mut SuspensionBudget,
 ) -> Result<MontyObject, String> {
+    let mut sleeps = SleepQueue::default();
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
         if !matches!(progress, RunProgress::Complete(_))
@@ -576,10 +577,17 @@ fn run_until_complete(
                             let value = resolve_external_call(function_name, args)?;
                             results.push((*call_id, ExtFunctionResult::Plain(value)));
                         }
+                        // sleeps wait together, as a gather of them expects
                         AwaitedCall::Os {
                             function_call, call_id, ..
-                        } => results.push((*call_id, host.handle_os_call(function_call.clone()))),
+                        } => match host.sleep_delay(function_call) {
+                            Some(delay) => sleeps.start(*call_id, delay),
+                            None => results.push((*call_id, host.handle_os_call(function_call.clone()))),
+                        },
                     }
+                }
+                if results.is_empty() {
+                    results = sleeps.wait_for_next();
                 }
                 if results.is_empty() {
                     return Err(format!(
@@ -610,6 +618,35 @@ fn run_until_complete(
                 progress = outcome.map_err(|err| format!("{err}"))?;
             }
         }
+    }
+}
+
+/// The awaited sleeps the CLI is waiting on, each due at its own instant, so
+/// sleeps a gather starts together elapse together rather than one after another.
+#[derive(Default)]
+struct SleepQueue {
+    due: Vec<(u32, Instant)>,
+}
+
+impl SleepQueue {
+    /// Starts the sleep answering `call_id`, due after `delay`.
+    fn start(&mut self, call_id: u32, delay: Duration) {
+        self.due.push((call_id, Instant::now() + delay));
+    }
+
+    /// Waits for the earliest sleep and answers every sleep due by then; empty
+    /// when nothing is waiting.
+    fn wait_for_next(&mut self) -> Vec<(u32, ExtFunctionResult)> {
+        let Some(next) = self.due.iter().map(|(_, due)| *due).min() else {
+            return Vec::new();
+        };
+        thread::sleep(next.saturating_duration_since(Instant::now()));
+        let now = Instant::now();
+        let (done, waiting) = mem::take(&mut self.due).into_iter().partition(|(_, due)| *due <= now);
+        self.due = waiting;
+        done.into_iter()
+            .map(|(call_id, _)| (call_id, MontyObject::none().into()))
+            .collect()
     }
 }
 
@@ -695,6 +732,14 @@ fn suspensions_in(progress: &RunProgress) -> usize {
     }
 }
 
+/// As [`suspensions_in`], for a REPL feed.
+fn repl_suspensions_in(progress: &ReplProgress) -> usize {
+    match progress {
+        ReplProgress::ResolveFutures(state) => state.calls().len().max(1),
+        _ => 1,
+    }
+}
+
 /// Handles CLI mounts and sleeps, enforcing per-sleep and total sleep limits.
 struct HostOs {
     mounts: Option<MountTable>,
@@ -729,12 +774,22 @@ impl HostOs {
         }
     }
 
-    /// Waits for system sleeps, enforcing `--max-sleep` again in case the sandbox did not.
-    /// Imports search the mounts for the module's file; other calls go to the
-    /// mounts, transferring write payloads without copying.
+    /// How long a system sleep waits, enforcing `--max-sleep` again in case
+    /// the sandbox did not; `None` for every other call.
+    fn sleep_delay(&self, call: &OsFunctionCall) -> Option<Duration> {
+        match call {
+            OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {
+                Some((*delay).min(self.max_sleep))
+            }
+            _ => None,
+        }
+    }
+
+    /// Waits for system sleeps; imports search the mounts for the module's
+    /// file; other calls go to the mounts, transferring write payloads without copying.
     fn handle_os_call(&mut self, call: OsFunctionCall) -> ExtFunctionResult {
-        if let OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) = call {
-            thread::sleep(delay.min(self.max_sleep));
+        if let Some(delay) = self.sleep_delay(&call) {
+            thread::sleep(delay);
             return MontyObject::none().into();
         }
         // The CLI has no host modules: an import is a file on the mounts or nothing.

@@ -6,6 +6,7 @@ import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { WorkerTransport } from '../ts/worker/transport.js'
 import { createWorkerPoolFromFactory } from '../ts/worker/poolOptions.js'
 import { setupPool } from './helpers.js'
+import type { Event as ComponentEvent } from '../ts/worker/component/monty.component.js'
 
 const { run, pool } = setupPool()
 
@@ -242,6 +243,94 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   t.deepEqual(requests, ['feed', 'resume-call', 'abort-feed'])
   await transport.finish()
   t.is(reusable, false)
+})
+
+// A wait announcing calls counts and charges each of them, as the Rust pool does.
+test('a wait announcing calls counts each against maxSuspensions', async () => {
+  const call = (callId: number) => ({
+    callId,
+    functionName: 'fetch',
+    values: { nodes: [] },
+    args: new Uint32Array(),
+    kwargs: [],
+    allowEagerAwait: false,
+    position: { filename: '<python-input-0>', start: 0, end: 7 },
+  })
+  const wait: ComponentEvent = {
+    tag: 'resolve-futures',
+    val: {
+      pendingCallIds: new Uint32Array([1, 2]),
+      position: { filename: '<python-input-0>', start: 0, end: 7 },
+      calls: [call(1), call(2)],
+      osCalls: [],
+    },
+  }
+  const requests: string[] = []
+  const transport = await WorkerTransport.create(async (request) => {
+    requests.push(request.tag)
+    return request.tag === 'abort-feed'
+      ? {
+          status: 'continue',
+          events: [
+            {
+              tag: 'error',
+              val: { excType: 'RuntimeError', message: 'suspension limit 1 exceeded', traceback: '', frames: [] },
+            },
+          ],
+          feedExecutionMicros: 0n,
+        }
+      : { status: 'continue', events: [wait], maxSuspensions: 1n, feedExecutionMicros: 0n }
+  })
+  const turn = await transport.feed('await gather()', null, [], { skipTypeCheck: true }, () => {})
+  t.is(turn.kind, 'error')
+  t.deepEqual(requests, ['feed', 'abort-feed'])
+  await transport.finish()
+})
+
+test('a sleep a wait announces is charged to maxTotalSleep', async () => {
+  const wait: ComponentEvent = {
+    tag: 'resolve-futures',
+    val: {
+      pendingCallIds: new Uint32Array([1]),
+      position: { filename: '<python-input-0>', start: 0, end: 7 },
+      calls: [],
+      osCalls: [
+        {
+          callId: 1,
+          functionName: 'system.async_sleep',
+          values: { nodes: [] },
+          args: new Uint32Array(),
+          kwargs: [],
+          allowEagerAwait: false,
+          systemSleepSecs: 1,
+          position: { filename: '<python-input-0>', start: 0, end: 7 },
+        },
+      ],
+    },
+  }
+  const requests: string[] = []
+  const transport = await WorkerTransport.create(
+    async (request) => {
+      requests.push(request.tag)
+      return request.tag === 'abort-feed'
+        ? {
+            status: 'continue',
+            events: [
+              {
+                tag: 'error',
+                val: { excType: 'TimeoutError', message: 'sleep limit exceeded', traceback: '', frames: [] },
+              },
+            ],
+            feedExecutionMicros: 0n,
+          }
+        : { status: 'continue', events: [wait], feedExecutionMicros: 0n }
+    },
+    { limits: { maxTotalSleepSecs: 0.5 } },
+  )
+  const turn = await transport.feed('await asyncio.sleep(1)', null, [], { skipTypeCheck: true }, () => {})
+  t.is(turn.kind, 'error')
+  t.deepEqual(requests, ['feed', 'abort-feed'])
+  await transport.finish()
 })
 
 test.each([

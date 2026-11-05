@@ -50,8 +50,8 @@ use monty_proto::{
     python::{InstanceStore, exc_py_to_monty, monty_to_py, py_to_monty_value},
 };
 use monty_types::{
-    AssertMessageAnnotations, CallArgs, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NamedValues,
-    OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
+    AssertMessageAnnotations, CallArgs, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    NamedValues, OsPolicy, PrintStream, TypeCheckingConfig, TypeCheckingFormat,
 };
 use pyo3::{
     Borrowed,
@@ -1689,7 +1689,9 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
                             system_sleep: None,
                             ..
                         } => match dispatch_os_parts(py, &function_name, &args, os.as_ref(), &instances, false) {
-                            OsDispatch::Answer(value) => immediate.push((call_id, value)),
+                            OsDispatch::Answer(value) => {
+                                immediate.push((call_id, future_answer(&function_name, value)));
+                            }
                             OsDispatch::Coroutine(coro) => {
                                 // Closed so CPython does not warn that it was never awaited.
                                 coro.bind(py).call_method0("close")?;
@@ -2292,7 +2294,7 @@ async fn answer_future_call(
             })?;
             Ok(match dispatched_answer(dispatched, call_id).await? {
                 TurnAnswer::Call(ResumeValue::Future) => None,
-                TurnAnswer::Call(value) => Some((call_id, value)),
+                TurnAnswer::Call(value) => Some((call_id, future_answer(&function_name, value))),
                 TurnAnswer::Eager(..) | TurnAnswer::Futures(..) | TurnAnswer::Name(..) => {
                     unreachable!("a sleep dispatched as a future answers with a value or a future")
                 }
@@ -2306,6 +2308,19 @@ async fn answer_future_call(
 fn plain_answer(value: ResumeValue) -> ResumeValue {
     match value {
         ResumeValue::Return(value) => ResumeValue::Plain(value),
+        other => other,
+    }
+}
+
+/// An OS handler's answer to an awaited call. A future settles only to a value
+/// or an error, so declining the call (`NOT_HANDLED`, or no handler) becomes
+/// the error the sandbox raises for an unhandled call itself.
+fn future_answer(function_name: &str, value: ResumeValue) -> ResumeValue {
+    match value {
+        ResumeValue::NotHandled => ResumeValue::Error(MontyException::new(
+            ExcType::RuntimeError,
+            Some(format!("'{function_name}' is not supported in this environment")),
+        )),
         other => other,
     }
 }

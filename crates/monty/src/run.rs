@@ -635,8 +635,10 @@ impl Executor {
     ) -> Result<RefCountOutput, MontyException> {
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
         let globals = self.empty_globals();
+        // as `run`: no host answers, so an awaited call suspends rather than batches
+        let batched = mem::replace(&mut self.program.suspend_awaited_calls, true);
 
-        HeapReader::with(&mut heap, self, |reader, executor| {
+        let result = HeapReader::with(&mut heap, self, |reader, executor| {
             // Create VM, populate inputs, and run
             let mut vm = VM::new(
                 globals,
@@ -707,7 +709,9 @@ impl Executor {
                 heap_count,
                 allocations_since_gc,
             })
-        })
+        });
+        self.program.suspend_awaited_calls = batched;
+        result
     }
 
     /// Creates an empty globals vector with all slots set to `Undefined`.

@@ -43,8 +43,8 @@ if __name__ == '__main__':
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
 The client does not automatically replay a disconnected request.
-`MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
-nothing ran, so retrying is safe.
+`MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session's
+stream, which `checkout()` waits for; nothing ran, so retrying is safe.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
 The session itself opens with the first feed or load, which is where a server refusing the session, draining or
 dropping the stream raises.

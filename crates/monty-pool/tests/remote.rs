@@ -29,10 +29,7 @@ use monty_pool::{
 use monty_proto::{
     MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, grpc::Cause, pb, resume_call_from_proto,
 };
-// only the Linux CPU-server test names the clock
-#[cfg(target_os = "linux")]
-use monty_types::ExecutionClock;
-use monty_types::{CallArgs, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
+use monty_types::{CallArgs, ExecutionClock, ExtFunctionResult, MontyObject, PrintStream, ResourceLimits, SourceRange};
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
@@ -987,6 +984,117 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
         "got {:?}",
         event.kind
     );
+    join_server(server).await;
+}
+
+/// A feed that raises still opened the session, so the clock its reply
+/// reports is the session's; only a reply with no clock is a refusal.
+#[tokio::test]
+async fn an_opening_feed_that_raises_reports_the_clock() {
+    let (mock, mut config) = mock_pool_config().await;
+    // a CPU clock needs a finite request timeout to be adopted
+    config.request_timeout = Some(Duration::from_secs(10));
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_opening_feed(&mut socket, "raise ValueError('x')");
+        let raised = pb::ChildEvent {
+            execution_clock: Some(pb::ExecutionClock::Cpu as i32),
+            ..event_kind(pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "ValueError".to_owned(),
+                    message: Some("x".to_owned()),
+                    ..Default::default()
+                }),
+            }))
+        };
+        send_event(&mut socket, &raised);
+        let _ = socket.read();
+    });
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    assert_eq!(checkout.execution_clock(), ExecutionClock::Wall);
+    let err = checkout
+        .feed("raise ValueError('x')", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
+    assert_eq!(checkout.execution_clock(), ExecutionClock::Cpu);
+    assert!(checkout.worker_id().is_some(), "a raised feed keeps the worker");
+    drop(checkout);
+    drop(pool);
+    join_server(server).await;
+}
+
+/// A bare `Configure` the frame cap rejects is kept for the next request,
+/// which carries it, rather than leaving the worker silently unconfigured.
+#[tokio::test]
+async fn an_oversize_configure_is_kept_for_the_next_request() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        // nothing ever arrives: both frames are rejected before any I/O
+        let _ = socket.read();
+    });
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            type_check_stubs: Some("#".repeat(MAX_FRAME_LEN as usize + 1)),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    // a dump cannot carry the Configure, so it is sent alone first
+    let err = checkout.dump().await.unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
+    // the feed carries the same Configure and meets the same rejection
+    let err = checkout
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "got {err:?}");
+    assert!(checkout.worker_id().is_some(), "a rejected frame keeps the worker");
+    drop(checkout);
+    drop(pool);
+    join_server(server).await;
+}
+
+/// Only a sleep can be awaited: a wait announcing any other OS call is a
+/// protocol violation, since such a call would reach the host's `os` handler
+/// without passing the mounts a blocking `OsCall` goes through.
+#[tokio::test]
+async fn a_wait_announcing_a_non_sleep_os_call_is_refused() {
+    let (mock, config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        expect_opening_feed(&mut socket, "await x");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
+                pending_call_ids: vec![1].into(),
+                position: None,
+                calls: vec![].into(),
+                os_calls: vec![pb::OsCall {
+                    values: None,
+                    call_id: 1,
+                    allow_eager_await: false,
+                    position: None,
+                    call: Some(pb::os_call::Call::ReadText("/mnt/secret".to_owned())),
+                }]
+                .into(),
+            }),
+        );
+        let _ = socket.read();
+    });
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let err = checkout
+        .feed("await x", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+    assert!(checkout.worker_id().is_none(), "a misbehaving worker is discarded");
+    drop(checkout);
+    drop(pool);
     join_server(server).await;
 }
 

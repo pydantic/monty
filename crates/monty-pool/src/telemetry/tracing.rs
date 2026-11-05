@@ -18,7 +18,7 @@ use std::fmt::{self, Write};
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
 use monty_types::{
-    MontyUuid, SourceRange, bytes_repr,
+    DEFAULT_MAX_SUSPENSIONS, MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use opentelemetry::Value as OtelValue;
@@ -58,6 +58,9 @@ pub(crate) struct Recorder {
     /// `ResumeFutures` result naming its id: the call outlives the wait that
     /// announced it when the host settles the futures one at a time.
     awaited: Vec<AwaitedSpan>,
+    /// The session's `max_suspensions`: a batch announcing more calls than
+    /// this is aborted unanswered, so the calls past it get no span.
+    max_suspensions: usize,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -81,6 +84,7 @@ impl Recorder {
             turn: None,
             pending: None,
             awaited: Vec::new(),
+            max_suspensions: DEFAULT_MAX_SUSPENSIONS,
             feed: None,
             session: None,
             dump_turn: false,
@@ -111,6 +115,11 @@ impl Recorder {
         self.awaited.clear();
         self.feed = None;
         let limits = c.limits.as_ref();
+        self.max_suspensions = limits
+            .and_then(|l| l.max_suspensions)
+            .map_or(DEFAULT_MAX_SUSPENSIONS, |limit| {
+                usize::try_from(limit).unwrap_or(usize::MAX)
+            });
         let (script_name, script_name_cut) = truncate_str(&c.script_name);
         let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
         let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
@@ -380,16 +389,22 @@ impl Recorder {
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
                 // the awaited calls the wait announces open under the feed, as
                 // siblings of the wait: a call the host settles later than the
-                // first result outlives this wait and the next one answers it
+                // first result outlives this wait and the next one answers it.
+                // A batch past `max_suspensions` is aborted before any call is
+                // answered, so rendering stops there rather than spending the
+                // parent's time on arguments nothing will run
                 let parent = self.context_span();
+                let budget = self.max_suspensions.saturating_sub(self.awaited.len());
                 self.awaited.extend(
-                    r.calls.iter().map(|c| {
+                    r.calls.iter().take(budget).map(|c| {
                         AwaitedSpan::new(c.call_id, function_call_span(c, micros, max_feed_duration, &parent))
                     }),
                 );
+                let budget = budget.saturating_sub(r.calls.len());
                 self.awaited.extend(
                     r.os_calls
                         .iter()
+                        .take(budget)
                         .map(|c| AwaitedSpan::new(c.call_id, os_call_span(c, micros, max_feed_duration, &parent))),
                 );
                 let (pending_call_ids, ids_cut) = render_call_ids(&r.pending_call_ids);

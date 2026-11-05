@@ -645,6 +645,67 @@ async fn eager_coroutine_metrics_match_sync_outcomes() {
     }
 }
 
+/// Each awaited call a wait announces is one suspension and one round-trip
+/// sample under its own outcome; the wait announcing them records neither.
+#[tokio::test]
+async fn batched_calls_are_sampled_one_each() {
+    let (pool, capture) = pool_with_metrics(PoolConfig::subprocess(monty_binary())).await;
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let code = "import asyncio\nasync def main():\n    try:\n        return await asyncio.gather(f(), g())\n    except ValueError:\n        return None\nasyncio.run(main())";
+    let event = checkout.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    let TurnEvent::ResolveFutures { calls, .. } = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    let [f, g] = &calls[..] else {
+        panic!("expected two awaited calls, got {calls:?}");
+    };
+    // settled one at a time: g's sample outlives the wait that announced it
+    let event = checkout
+        .resume_futures(
+            vec![(f.call_id(), ResumeValue::Return(MontyObject::int(1)))],
+            &mut no_print,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::ResolveFutures { ref calls, .. } if calls.is_empty()));
+    let failed = MontyException::new(ExcType::ValueError, Some("failed".to_owned()));
+    let event = checkout
+        .resume_futures(vec![(g.call_id(), ResumeValue::Error(failed))], &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::Complete(_)));
+    checkout.finish().await.unwrap();
+
+    // the two calls, each under its own outcome, and the second wait, which
+    // announced nothing and so timed its own round-trip
+    let samples = capture.named("monty.ext.call.duration");
+    assert_eq!(samples.len(), 3);
+    assert_eq!(
+        samples
+            .iter()
+            .filter(|sample| sample.attributes["kind"] == "function")
+            .count(),
+        2
+    );
+    capture.last("monty.ext.call.duration", "outcome", "value");
+    capture.last("monty.ext.call.duration", "outcome", "error");
+    assert_eq!(
+        capture
+            .last("monty.ext.call.duration", "outcome", "resolved")
+            .attributes["kind"],
+        "futures"
+    );
+    let suspensions: u64 = capture
+        .named("monty.run.suspensions")
+        .into_iter()
+        .map(|recorded| match recorded.value {
+            Value::U64(count) => count,
+            other => panic!("expected a counter, got {other:?}"),
+        })
+        .sum();
+    assert_eq!(suspensions, 3);
+}
+
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.
 fn no_print(_: PrintStream, _: &str) -> PrintFuture {
     Box::pin(ready(()))

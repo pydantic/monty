@@ -1698,9 +1698,19 @@ impl Checkout {
         let mut configure = request(pb::parent_request::Kind::Configure(*configure));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
-        match self.run_turn(&mut configure, deadline, &mut no_print).await? {
-            ControlEvent::Ok => Ok(()),
-            other => Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+        match self.run_turn(&mut configure, deadline, &mut no_print).await {
+            Ok(ControlEvent::Ok) => Ok(()),
+            Ok(other) => Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+            Err(err) => {
+                // a frame rejected before any I/O (oversize) leaves the worker
+                // usable and unconfigured: the next request opens the session
+                if self.worker.is_some()
+                    && let Some(pb::parent_request::Kind::Configure(configure)) = configure.kind.take()
+                {
+                    self.pending_configure = Some(Box::new(configure));
+                }
+                Err(err)
+            }
         }
     }
 
@@ -2064,6 +2074,14 @@ impl Checkout {
             .map_or_else(opentelemetry::Context::new, Worker::callback_context)
     }
 
+    /// The clock the session's duration limits run on: the pool's for a local
+    /// worker, and the server's once a remote session has opened (its first
+    /// feed or load reports it).
+    #[must_use]
+    pub const fn execution_clock(&self) -> ExecutionClock {
+        self.budget.execution_clock
+    }
+
     /// The telemetry context for the host function answering the awaited call
     /// `call_id` of a [`TurnEvent::ResolveFutures`]: that call's own span, so
     /// the host's spans nest under the call rather than the wait announcing it.
@@ -2101,19 +2119,21 @@ impl Checkout {
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
             // the reply to the request that opened the session reports the
-            // worker's clock, as a bare `Configure`'s `Ok` does; a refusal
-            // (`Error`, `FatalError`) reports none and is handled below
+            // worker's clock, as a bare `Configure`'s `Ok` does — a feed that
+            // raised included, since the session it opened lives on; a refusal
+            // (`FatalError`, or an `Error` stamped with no clock) reports none
+            // and is handled below
             let reports_clock = if opens_session {
-                !matches!(
-                    event.kind,
+                match event.kind {
                     Some(
                         pb::child_event::Kind::Print(_)
-                            | pb::child_event::Kind::Ping(_)
-                            | pb::child_event::Kind::Error(_)
-                            | pb::child_event::Kind::FatalError(_)
-                            | pb::child_event::Kind::Shutdown(_)
-                    )
-                )
+                        | pb::child_event::Kind::Ping(_)
+                        | pb::child_event::Kind::FatalError(_)
+                        | pb::child_event::Kind::Shutdown(_),
+                    ) => false,
+                    Some(pb::child_event::Kind::Error(_)) => event.execution_clock.is_some(),
+                    _ => true,
+                }
             } else {
                 matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
                     && matches!(event.kind, Some(pb::child_event::Kind::Ok(_)))
@@ -2447,6 +2467,15 @@ impl Checkout {
             }
             let position = suspension_position(call.position.take());
             let (call_id, function_call) = os_call_from_proto(call)?;
+            // only a sleep can be answered with a future, so only a sleep can
+            // be awaited; anything else here bypassed the mounts a blocking
+            // `OsCall` goes through, which a sound worker never sends
+            if !OsFunctionCall::accepts_future(function_call.name()) {
+                return Err(ProtoConvertError::InvalidValue {
+                    field: "ResolveFutures.os_calls",
+                    reason: format!("'{}' cannot be awaited", function_call.name()),
+                });
+            }
             // Enforce the parent's ceiling even if the worker ignored its own.
             let system_sleep = match function_call {
                 OsFunctionCall::SystemSleep(delay) | OsFunctionCall::AsyncSystemSleep(delay) => {

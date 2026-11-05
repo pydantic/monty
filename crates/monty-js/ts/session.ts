@@ -168,10 +168,10 @@ export type Snapshot = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | 
 /** A settled future outcome passed to [`FutureSnapshot.resume`]. */
 export type FutureResolution = { callId: number; value: unknown } | { callId: number; error: unknown }
 
-/** A promise-returning external call registered as a sandbox future. */
 /** What calling a host function for an awaited call produced: its value, or what the sandbox raises instead. */
 type HostOutcome = { returned: unknown } | { error: { excType: string; message: string } }
 
+/** A promise-returning external call registered as a sandbox future. */
 interface PendingFuture {
   readonly callId: number
   done: boolean

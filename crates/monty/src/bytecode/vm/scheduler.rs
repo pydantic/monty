@@ -158,6 +158,11 @@ pub(crate) struct Scheduler {
     /// How many of `awaited_calls` the host has been told about.
     #[serde(default)]
     announced_calls: usize,
+    /// The awaited calls batched because their results feed an
+    /// `asyncio.gather`: a plain result raises the gather's `TypeError` for
+    /// them, before and after the gather holding their futures is built.
+    #[serde(default)]
+    gather_fed_calls: Vec<CallId>,
 }
 
 impl Scheduler {
@@ -177,6 +182,7 @@ impl Scheduler {
             coroutine_to_task: AHashMap::new(),
             awaited_calls: Vec::new(),
             announced_calls: 0,
+            gather_fed_calls: Vec::new(),
         }
     }
 
@@ -245,7 +251,18 @@ impl Scheduler {
                 self.announced_calls -= 1;
             }
         }
+        self.gather_fed_calls.retain(|id| *id != call_id);
         Some(future_id)
+    }
+
+    /// Marks the awaited call `call_id` as one whose result feeds a gather.
+    pub fn mark_gather_fed(&mut self, call_id: CallId) {
+        self.gather_fed_calls.push(call_id);
+    }
+
+    /// Whether the awaited call `call_id` was batched to feed a gather.
+    pub fn is_gather_fed(&self, call_id: CallId) -> bool {
+        self.gather_fed_calls.contains(&call_id)
     }
 
     /// The `ExternalFuture` heap id for `call_id`, if it is still pending.

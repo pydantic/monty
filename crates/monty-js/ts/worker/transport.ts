@@ -372,16 +372,19 @@ export class WorkerTransport {
 
   /**
    * Counts a suspension and charges a `'system'` sleep, aborting the feed when
-   * either the suspension limit or the sleep budget is exceeded.
+   * either the suspension limit or the sleep budget is exceeded. A wait
+   * announcing calls counts and charges each of them, as the Rust pool does;
+   * one announcing none counts itself.
    */
   private async enforceLimits(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
     if (isSuspension(turn)) {
-      this.suspensionsSeen += 1n
+      const charged: NativeTurn[] = turn.kind === 'resolveFutures' && turn.calls.length > 0 ? turn.calls : [turn]
+      this.suspensionsSeen += BigInt(charged.length)
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
         turn = await this.abortFeed('RuntimeError', `suspension limit ${this.suspensionLimit} exceeded`, onPrint)
       } else {
-        const refused = this.chargeSleep(turn)
-        if (refused !== null) turn = await this.abortFeed('TimeoutError', refused, onPrint)
+        const refused = charged.map((call) => this.chargeSleep(call)).find((message) => message !== null)
+        if (refused !== undefined) turn = await this.abortFeed('TimeoutError', refused, onPrint)
       }
     }
     if (turn.kind === 'crashed' || turn.kind === 'protocol') {

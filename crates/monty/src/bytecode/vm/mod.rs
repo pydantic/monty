@@ -1146,7 +1146,7 @@ impl<'h> VM<'h> {
     /// `ResolveFutures` to announce. Mirrors the future arm of `resume_with_result`.
     fn record_awaited_os_call(&mut self, function_call: OsFunctionCall, effect: Option<PendingEffect>) {
         let position = self.suspension_position();
-        let call_id = self.allocate_call_id();
+        let call_id = self.allocate_awaited_call_id();
         self.scheduler.record_awaited_call(AwaitedCall::Os {
             function_call,
             call_id: call_id.raw(),
@@ -1175,7 +1175,7 @@ impl<'h> VM<'h> {
         let position = self.suspension_position();
         let function_name = function_name.into_string(self.interns);
         let args = args.into_call_args(self)?;
-        let call_id = self.allocate_call_id();
+        let call_id = self.allocate_awaited_call_id();
         self.scheduler.record_awaited_call(AwaitedCall::Function {
             function_name,
             args,
@@ -1190,6 +1190,16 @@ impl<'h> VM<'h> {
     /// Allocates a new `CallId` for an external function call.
     fn allocate_call_id(&mut self) -> CallId {
         self.scheduler.allocate_call_id()
+    }
+
+    /// Allocates the id of a call batched at this instruction, remembering
+    /// whether its result feeds a gather (which a plain result's error names).
+    fn allocate_awaited_call_id(&mut self) -> CallId {
+        let call_id = self.scheduler.allocate_call_id();
+        if self.feeds_gather() {
+            self.scheduler.mark_gather_fed(call_id);
+        }
+        call_id
     }
 
     /// Returns true if we're on the main task (or no async at all).

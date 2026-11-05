@@ -19,7 +19,9 @@ pub enum AwaitedCall {
         args: CallArgs,
         /// Unique identifier for this call.
         call_id: u32,
-        /// Uuid of the routed receiver; `None` for plain external calls.
+        /// Uuid of the routed receiver — an instance, or a class type (a
+        /// classmethod call, or construction spelled `__call__`); `None` for
+        /// plain external function calls.
         object_id: Option<MontyUuid>,
         /// Where the call expression is in the source.
         position: SourceRange,

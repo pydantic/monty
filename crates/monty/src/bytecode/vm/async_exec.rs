@@ -60,7 +60,7 @@ impl<'h> VM<'h> {
     /// what consumes its result: `true` when that is an `asyncio.gather` call
     /// taking it as a positional argument. Gives up at the first opcode that
     /// is not expression building (a jump, a store, a stack shuffle).
-    fn feeds_gather(&self) -> bool {
+    pub(crate) fn feeds_gather(&self) -> bool {
         let bytecode = self.current_frame.bytecode;
         let mut ip = self.current_frame.ip;
         // where the result lands, and how many values sit from it to the top
@@ -112,21 +112,24 @@ impl<'h> VM<'h> {
     }
 
     /// The error a plain (non-awaitable) value raises where the sandbox awaits
-    /// the future for `call_id`: the gather's own `TypeError` when a gather
-    /// holds it, otherwise the `await` expression's.
+    /// the future for `call_id`: the gather's own `TypeError` when the call was
+    /// batched to feed a gather or a gather holds its future, otherwise the
+    /// `await` expression's.
     fn plain_result_error(&mut self, call_id: u32, value: &Value) -> RunError {
-        let held_by_gather = self
-            .scheduler
-            .pending_external(CallId::new(call_id))
-            .is_some_and(|future_id| match self.heap.read(future_id) {
-                HeapReadOutput::ExternalFuture(fut) => matches!(
-                    fut.get(self.heap).state,
-                    ExternalFutureState::Pending {
-                        awaiter: Some(Awaiter::GatherSlot { .. })
-                    }
-                ),
-                _ => false,
-            });
+        let call_id = CallId::new(call_id);
+        let held_by_gather = self.scheduler.is_gather_fed(call_id)
+            || self
+                .scheduler
+                .pending_external(call_id)
+                .is_some_and(|future_id| match self.heap.read(future_id) {
+                    HeapReadOutput::ExternalFuture(fut) => matches!(
+                        fut.get(self.heap).state,
+                        ExternalFutureState::Pending {
+                            awaiter: Some(Awaiter::GatherSlot { .. })
+                        }
+                    ),
+                    _ => false,
+                });
         if held_by_gather {
             ExcType::gather_requires_awaitable()
         } else {

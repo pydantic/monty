@@ -561,6 +561,19 @@ def test_asyncio_sleep_callback(monty_run: RunMonty):
     assert calls == snapshot([('asyncio.sleep', (0.25,))])
 
 
+def test_awaited_asyncio_sleep_can_be_refused(monty_run: RunMonty):
+    """A host declining an awaited sleep leaves the sandbox with monty's own error, raised at the `await`."""
+
+    def os_handler(*, name: str, args: tuple[Any, ...], **_: Any) -> Any:
+        return NOT_HANDLED
+
+    code = 'import asyncio\nasync def main():\n    try:\n        await asyncio.sleep(1)\n    except RuntimeError as e:\n        return str(e)\nasyncio.run(main())'
+    assert monty_run(code, os=os_handler, checkout=CALL_HOST) == snapshot(
+        "'asyncio.sleep' is not supported in this environment"
+    )
+    assert monty_run(code, checkout=CALL_HOST) == snapshot("'asyncio.sleep' is not supported in this environment")
+
+
 def test_asyncio_sleep_result_stays_in_the_sandbox(monty_run: RunMonty):
     """`result` never crosses the host boundary, so values with no wire form survive."""
 
