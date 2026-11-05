@@ -25,6 +25,13 @@ pub fn ext_result_to_proto(result: ExtFunctionResult) -> (pb::ExtFunctionResult,
                 Some(WireArena::new(graph)),
             )
         }
+        ExtFunctionResult::Plain(value) => {
+            let (graph, root) = unstable::into_graph_parts(value);
+            (
+                pb::ext_function_result::Kind::Plain(root.0),
+                Some(WireArena::new(graph)),
+            )
+        }
         ExtFunctionResult::Error(exc) => (pb::ext_function_result::Kind::Error((&exc).into()), None),
         ExtFunctionResult::Future(call_id) => (pb::ext_function_result::Kind::Future(call_id), None),
         ExtFunctionResult::NotFound(name) => (pb::ext_function_result::Kind::NotFound(name), None),
@@ -44,6 +51,9 @@ pub fn ext_result_from_proto(
     match kind {
         pb::ext_function_result::Kind::ReturnValue(root) => {
             Ok(ExtFunctionResult::Return(root_object(values, root, "values")?))
+        }
+        pb::ext_function_result::Kind::Plain(root) => {
+            Ok(ExtFunctionResult::Plain(root_object(values, root, "values")?))
         }
         pb::ext_function_result::Kind::Error(err) => Ok(ExtFunctionResult::Error(MontyException::try_from(err)?)),
         pb::ext_function_result::Kind::Future(call_id) => Ok(ExtFunctionResult::Future(call_id)),
@@ -128,6 +138,11 @@ pub fn future_results_to_proto(results: Vec<(u32, ExtFunctionResult)>) -> pb::Re
                     let offset = values.merge(graph);
                     pb::ext_function_result::Kind::ReturnValue(root.0 + offset)
                 }
+                ExtFunctionResult::Plain(value) => {
+                    let (graph, root) = unstable::into_graph_parts(value);
+                    let offset = values.merge(graph);
+                    pb::ext_function_result::Kind::Plain(root.0 + offset)
+                }
                 ExtFunctionResult::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
                 ExtFunctionResult::Future(id) => pb::ext_function_result::Kind::Future(id),
                 ExtFunctionResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
@@ -167,6 +182,11 @@ pub fn future_results_from_proto(
                     let root = NodeId(root);
                     graph.check_root(root).map_err(|err| graph_error(&err))?;
                     ExtFunctionResult::Return(graph.value(root).to_owned())
+                }
+                pb::ext_function_result::Kind::Plain(root) => {
+                    let root = NodeId(root);
+                    graph.check_root(root).map_err(|err| graph_error(&err))?;
+                    ExtFunctionResult::Plain(graph.value(root).to_owned())
                 }
                 other => ext_result_from_proto(pb::ExtFunctionResult { kind: Some(other) }, None)?,
             };

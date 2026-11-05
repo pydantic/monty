@@ -9,9 +9,9 @@
 use std::{cell::RefCell, collections::hash_map::RandomState, io, time::Instant};
 
 use monty_proto::{
-    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, exceeds_max_frame_len,
-    os_call_from_proto, pb,
-    worker::{Child, EventSink, HandleOutcome, protocol_violation},
+    BudgetVec, DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, PROTOCOL_VERSION, WireArena, WireFunctionCall,
+    exceeds_max_frame_len, os_call_from_proto, pb,
+    worker::{Child, EventSink, HandleOutcome, SessionBudget, protocol_violation},
 };
 use monty_types::{
     CallArgs, ExcType, MONTY_VERSION, MontyException, MontyUuid, OsFunctionCall, memory_limit_with_headroom,
@@ -157,6 +157,12 @@ struct ComponentEventSink {
 }
 
 impl EventSink for ComponentEventSink {
+    /// The opening request runs under its session's limit from the start;
+    /// `dispatch` re-arms afterwards and reports an allocator that is missing.
+    fn session_opened(&mut self, budget: SessionBudget) {
+        let _ = monty_alloc::set_hard_limit(memory_limit_with_headroom(budget.max_memory, budget.type_check));
+    }
+
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
         if let Some(len) = exceeds_max_frame_len(event) {
             Err(FrameError::FrameTooLarge {
@@ -184,10 +190,19 @@ impl EventSink for ComponentEventSink {
                 Some(pb::child_event::Kind::OsCall(call)) => match PreparedOsEvent::from_proto(call) {
                     Ok(event) => {
                         check_event_value_budget(event.values_decoded_size())?;
-                        event.into_component()
+                        Event::OsCall(event.into_component())
                     }
                     Err(message) => invalid_event(&message),
                 },
+                Some(pb::child_event::Kind::ResolveFutures(futures)) => {
+                    match PreparedResolveFutures::from_proto(futures) {
+                        Ok(event) => {
+                            check_event_value_budget(event.values_decoded_size())?;
+                            event.into_component()
+                        }
+                        Err(message) => invalid_event(&message),
+                    }
+                }
                 kind => {
                     event.kind = kind;
                     check_event_value_budget(event_values_decoded_size(&event))?;
@@ -271,9 +286,9 @@ impl PreparedOsEvent {
     }
 
     /// Moves the already-budgeted values into the semantic component arena.
-    fn into_component(self) -> Event {
+    fn into_component(self) -> OsCallEvent {
         let (graph, args, kwargs) = unstable::into_call_args_parts(self.args);
-        Event::OsCall(OsCallEvent {
+        OsCallEvent {
             function_name: self.function_name,
             allow_eager_await: self.allow_eager_await,
             system_sleep_secs: self.system_sleep_secs,
@@ -282,7 +297,66 @@ impl PreparedOsEvent {
             kwargs: value::raw_pairs(kwargs),
             call_id: self.call_id,
             position: self.position,
+        }
+    }
+}
+
+/// A `ResolveFutures` event with its awaited OS calls projected, so the
+/// arenas of every call it carries are budgeted together before lifting.
+struct PreparedResolveFutures {
+    pending_call_ids: Vec<u32>,
+    position: SourceRange,
+    calls: Vec<WireFunctionCall>,
+    os_calls: Vec<PreparedOsEvent>,
+}
+
+impl PreparedResolveFutures {
+    /// Projects each awaited OS call; the error names what was wrong with one.
+    fn from_proto(futures: pb::ResolveFutures) -> Result<Self, String> {
+        Ok(Self {
+            pending_call_ids: futures.pending_call_ids.into_inner(),
+            position: source_range_from_proto(futures.position),
+            calls: futures.calls.into_inner(),
+            os_calls: futures
+                .os_calls
+                .into_inner()
+                .into_iter()
+                .map(PreparedOsEvent::from_proto)
+                .collect::<Result<_, _>>()?,
         })
+    }
+
+    /// Returns the host footprint of every call's arena.
+    fn values_decoded_size(&self) -> usize {
+        let calls = self.calls.iter().map(|call| nodes_decoded_size(&call.values.0));
+        let os_calls = self.os_calls.iter().map(PreparedOsEvent::values_decoded_size);
+        calls.chain(os_calls).fold(0, usize::saturating_add)
+    }
+
+    /// Moves the already-budgeted values into the semantic component arenas.
+    fn into_component(self) -> Event {
+        Event::ResolveFutures(ResolveFuturesEvent {
+            pending_call_ids: self.pending_call_ids,
+            position: self.position,
+            calls: self.calls.into_iter().map(function_call_event).collect(),
+            os_calls: self.os_calls.into_iter().map(PreparedOsEvent::into_component).collect(),
+        })
+    }
+}
+
+/// Lifts a function call announcement into the component record.
+fn function_call_event(call: WireFunctionCall) -> FunctionCallEvent {
+    let object_id = call.object_id.map(|uuid| uuid.to_string());
+    let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
+    FunctionCallEvent {
+        function_name: call.function_name,
+        values: value::into_component(call.values.0.into_inner()),
+        args: value::raw_ids(call.args.into_inner()),
+        kwargs: value::raw_pairs(call.kwargs.into_inner()),
+        call_id: call.call_id,
+        object_id,
+        allow_eager_await: call.allow_eager_await,
+        position,
     }
 }
 
@@ -306,22 +380,27 @@ fn source_range_from_proto(position: Option<pb::SourceRange>) -> SourceRange {
 /// are checked by the child, like any wire frame's.
 fn request_from_component(request: Request) -> Result<pb::ParentRequest, String> {
     let mut budget = value::DecodeBudget::default();
+    let mut open_session = None;
     let kind = match request {
         Request::Configure(request) => pb::parent_request::Kind::Configure(configure_from_component(request)),
-        Request::Feed(request) => pb::parent_request::Kind::Feed(pb::Feed {
-            code: request.code,
-            inputs: request
-                .inputs
-                .into_iter()
-                .map(|input| pb::NamedRef {
-                    name: input.name,
-                    value: input.value,
-                })
-                .collect(),
-            values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
-            skip_type_check: request.skip_type_check,
-            cwd: request.cwd,
-        }),
+        Request::Feed(request) => {
+            open_session = request.open_session.map(configure_from_component);
+            pb::parent_request::Kind::Feed(pb::Feed {
+                code: request.code,
+                inputs: request
+                    .inputs
+                    .into_iter()
+                    .map(|input| pb::NamedRef {
+                        name: input.name,
+                        value: input.value,
+                    })
+                    .collect(),
+                values: Some(WireArena::new(value::from_component(request.values, &mut budget)?)),
+                skip_type_check: request.skip_type_check,
+                cwd: request.cwd,
+                suspend_awaited_calls: request.suspend_awaited_calls,
+            })
+        }
         Request::ResumeCall(request) => pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: request.call_id,
             result: Some(call_result_from_component(request.outcome)),
@@ -355,12 +434,18 @@ fn request_from_component(request: Request) -> Result<pb::ParentRequest, String>
             exception: Some(raised_exception_from_component(error)),
         }),
         Request::Dump => pb::parent_request::Kind::Dump(pb::Dump {}),
-        Request::Load(state) => pb::parent_request::Kind::Load(pb::Load { state: state.into() }),
+        Request::Load(request) => {
+            open_session = request.open_session.map(configure_from_component);
+            pb::parent_request::Kind::Load(pb::Load {
+                state: request.state.into(),
+            })
+        }
         Request::Reset => pb::parent_request::Kind::Reset(pb::Reset {}),
     };
     Ok(pb::ParentRequest {
         kind: Some(kind),
         trace_parent: None,
+        open_session,
     })
 }
 
@@ -471,6 +556,7 @@ fn call_result_from_component(result: CallResult) -> pb::ExtFunctionResult {
         CallResult::ReturnValue(root) => pb::ext_function_result::Kind::ReturnValue(root),
         CallResult::Error(error) => pb::ext_function_result::Kind::Error(raised_exception_from_component(error)),
         CallResult::PendingFuture(call_id) => pb::ext_function_result::Kind::Future(call_id),
+        CallResult::Plain(root) => pb::ext_function_result::Kind::Plain(root),
         CallResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         CallResult::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
         CallResult::ModuleFile(file) => pb::ext_function_result::Kind::ModuleFile(pb::ModuleFile {
@@ -498,20 +584,7 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
         Some(pb::child_event::Kind::Print(_)) => invalid_event("Print event bypassed segment expansion"),
         // a serving relay's liveness probe; a child never sends one
         Some(pb::child_event::Kind::Ping(_)) => invalid_event("Ping event is a relay's, never a child's"),
-        Some(pb::child_event::Kind::FunctionCall(call)) => {
-            let object_id = call.object_id.map(|uuid| uuid.to_string());
-            let position = component_source_range(call.position.unwrap_or_else(monty_types::SourceRange::unknown));
-            Event::FunctionCall(FunctionCallEvent {
-                function_name: call.function_name,
-                values: value::into_component(call.values.0.into_inner()),
-                args: value::raw_ids(call.args.into_inner()),
-                kwargs: value::raw_pairs(call.kwargs.into_inner()),
-                call_id: call.call_id,
-                object_id,
-                allow_eager_await: call.allow_eager_await,
-                position,
-            })
-        }
+        Some(pb::child_event::Kind::FunctionCall(call)) => Event::FunctionCall(function_call_event(call)),
         Some(pb::child_event::Kind::OsCall(_)) => invalid_event("OsCall event bypassed component budget preparation"),
         Some(pb::child_event::Kind::NameLookup(lookup)) => Event::NameLookup(NameLookupEvent {
             name: lookup.name,
@@ -522,10 +595,9 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
                 .map(|uuid| uuid.to_string()),
             position: source_range_from_proto(lookup.position),
         }),
-        Some(pb::child_event::Kind::ResolveFutures(futures)) => Event::ResolveFutures(ResolveFuturesEvent {
-            pending_call_ids: futures.pending_call_ids.into_inner(),
-            position: source_range_from_proto(futures.position),
-        }),
+        Some(pb::child_event::Kind::ResolveFutures(_)) => {
+            invalid_event("ResolveFutures event bypassed component budget preparation")
+        }
         Some(pb::child_event::Kind::Complete(complete)) => complete.values.map_or_else(
             || invalid_event("Complete event carried no values"),
             |arena| {

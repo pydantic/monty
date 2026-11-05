@@ -28,10 +28,10 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
-    IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
-    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
-    SourceRange, TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, AwaitedCall, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock,
+    ExtFunctionResult, IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall,
+    OsPolicy, PrintStream, PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES,
+    SOURCE_SCAN_THRESHOLD, SourceRange, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
@@ -56,6 +56,14 @@ use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 pub trait EventSink {
     /// Frames and emits one event.
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError>;
+
+    /// The request carrying `ParentRequest.open_session` has configured the
+    /// session and is about to run under it: a transport that bounds the
+    /// worker from outside the interpreter arms `budget` here, before the
+    /// request's own work, as it does after every request.
+    fn session_opened(&mut self, budget: SessionBudget) {
+        let _ = budget;
+    }
 }
 
 /// An [`EventSink`] that appends framed events to an in-memory buffer.
@@ -89,6 +97,11 @@ impl EventSink for VecEventSink {
         write_frame(&mut self.frames, event)
     }
 }
+
+/// A `Configure` refusal: the reply that ends the turn instead of the
+/// request's own, and whether the child survives it. Boxed, as a
+/// `ChildEvent` is large for an error variant.
+type Refusal = Box<(pb::ChildEvent, HandleOutcome)>;
 
 /// What the host loop should do after [`Child::handle`] returns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,18 +274,33 @@ impl Child {
             sink.send(&protocol_violation("request has no kind"))?;
             return Ok(HandleOutcome::Continue);
         };
+        // The opening request configures first; a refusal is the whole reply.
+        let execution_clock = match request.open_session {
+            None => None,
+            Some(configure) => match self.open_session(configure, &kind) {
+                Ok(clock) => {
+                    sink.session_opened(self.session_budget());
+                    Some(clock)
+                }
+                Err(refusal) => {
+                    let (event, outcome) = *refusal;
+                    sink.send(&event)?;
+                    return Ok(outcome);
+                }
+            },
+        };
 
         let mut event = match kind {
-            pb::parent_request::Kind::Configure(configure) => {
-                // An unsupported protocol version is fatal: the parent may frame
-                // or interpret later messages differently, so serving it risks a
-                // silent desync. Emit the fatal last gasp and stop the child.
-                if let Err(refusal) = check_protocol_version(configure.protocol_version) {
-                    sink.send(&self.fatal_event(&refusal))?;
-                    return Ok(HandleOutcome::Fatal);
-                }
-                self.handle_configure(configure)
-            }
+            pb::parent_request::Kind::Configure(configure) => match self.configure(configure) {
+                Ok(event) => event,
+                Err(refusal) => match *refusal {
+                    (event, HandleOutcome::Continue) => event,
+                    (event, outcome) => {
+                        sink.send(&event)?;
+                        return Ok(outcome);
+                    }
+                },
+            },
             pb::parent_request::Kind::Feed(feed) => self.handle_repl_feed(feed, sink),
             // The Monty sandbox has no host interpreter to install packages for;
             // dependency installation is only supported by the CPython worker.
@@ -299,6 +327,10 @@ impl Child {
             // so it gets no reply
             pb::parent_request::Kind::Pong(_) => return Ok(HandleOutcome::Continue),
         };
+        // the reply to an opening request reports the clock as `Configure`'s `Ok` would
+        if execution_clock.is_some() {
+            event.execution_clock = execution_clock;
+        }
         self.stamp_session_budget(&mut event);
         let sent = sink.send(&event);
         // a suspension announcement was *lent* the payload it announces, so
@@ -313,6 +345,41 @@ impl Child {
             self.recover_send_error(&event, err, sink)?;
         }
         Ok(HandleOutcome::Continue)
+    }
+
+    /// Configures the session `kind` opens (`ParentRequest.open_session`),
+    /// returning the clock its reply reports. `Err` is the reply that ends
+    /// the turn instead, and whether the child survives it.
+    fn open_session(&mut self, configure: pb::Configure, kind: &pb::parent_request::Kind) -> Result<i32, Refusal> {
+        if !matches!(
+            kind,
+            pb::parent_request::Kind::Feed(_) | pb::parent_request::Kind::Load(_)
+        ) {
+            return Err(Box::new((
+                protocol_violation("open_session is only valid on a Feed or Load"),
+                HandleOutcome::Continue,
+            )));
+        }
+        let event = self.configure(configure)?;
+        Ok(event.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32))
+    }
+
+    /// Checks the parent's protocol version and configures the session. The
+    /// `Ok` reply is the success; `Err` is the refusal, fatal for a version
+    /// this build cannot serve.
+    fn configure(&mut self, configure: pb::Configure) -> Result<pb::ChildEvent, Refusal> {
+        // An unsupported protocol version is fatal: the parent may frame
+        // or interpret later messages differently, so serving it risks a
+        // silent desync. Emit the fatal last gasp and stop the child.
+        if let Err(refusal) = check_protocol_version(configure.protocol_version) {
+            return Err(Box::new((self.fatal_event(&refusal), HandleOutcome::Fatal)));
+        }
+        let event = self.handle_configure(configure);
+        if matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) {
+            Ok(event)
+        } else {
+            Err(Box::new((event, HandleOutcome::Continue)))
+        }
     }
 
     /// Moves a suspension announcement's payload back into the suspension it
@@ -339,6 +406,11 @@ impl Child {
                 if announced.call.is_some() =>
             {
                 call.function_call = os_call_from_proto(mem::take(announced))?.1;
+            }
+            (ReplProgress::ResolveFutures(state), Some(pb::child_event::Kind::ResolveFutures(announced))) => {
+                reclaim_awaited_calls(state.calls_mut(), announced)?;
+                // listed once: the next announcement carries only newer calls
+                state.mark_calls_announced();
             }
             // any other pairing is an event that borrowed nothing
             _ => {}
@@ -591,6 +663,7 @@ impl Child {
         let SessionState::Ready(mut repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
+        repl.set_suspend_awaited_calls(feed.suspend_awaited_calls);
         // Check nesting before the import scan, ty or the compiler parses the snippet.
         let code = feed.code;
         let checked = match repl.check_source(&code) {
@@ -696,10 +769,12 @@ impl Child {
             }
         };
         let stubs = match result {
-            ExtFunctionResult::Return(answer) => match import_stubs_from_answer(&answer, &pending.asked) {
-                Ok(stubs) => stubs,
-                Err(message) => return protocol_violation(&message),
-            },
+            ExtFunctionResult::Return(answer) | ExtFunctionResult::Plain(answer) => {
+                match import_stubs_from_answer(&answer, &pending.asked) {
+                    Ok(stubs) => stubs,
+                    Err(message) => return protocol_violation(&message),
+                }
+            }
             ExtFunctionResult::NotFound(_) => Vec::new(),
             ExtFunctionResult::Future(_) => {
                 return protocol_violation("import_stubs cannot be answered with a future");
@@ -1099,6 +1174,17 @@ impl Child {
                     event
                 }
             }
+            // carries the awaited calls' arguments, so it is size-checked like one call
+            Ok(mut progress @ ReplProgress::ResolveFutures(_)) => {
+                let mut event = suspension_event(&mut progress);
+                stamp_budget(&mut event, progress.tracker());
+                if let Some(message) = oversize_suspension_error_message(&event) {
+                    self.abort_feed_with_runtime_error(progress.into_repl(), &message)
+                } else {
+                    self.state = SessionState::Suspended(Box::new(progress));
+                    event
+                }
+            }
             Ok(mut progress) => {
                 let event = suspension_event(&mut progress);
                 self.state = SessionState::Suspended(Box::new(progress));
@@ -1299,12 +1385,77 @@ fn suspension_event(progress: &mut ReplProgress) -> pb::ChildEvent {
             object_id: lookup.object_id().as_ref().map(uuid_to_pb),
             position: Some((&lookup.position).into()),
         })),
-        ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
-            pending_call_ids: state.pending_call_ids().to_vec().into(),
-            position: Some(state.position().into()),
-        })),
+        ReplProgress::ResolveFutures(state) => {
+            let (calls, os_calls) = awaited_calls_to_proto(state.calls_mut());
+            event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
+                pending_call_ids: state.pending_call_ids().to_vec().into(),
+                position: Some(state.position().into()),
+                calls: calls.into(),
+                os_calls: os_calls.into(),
+            }))
+        }
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     }
+}
+
+/// Builds the wire form of the awaited calls a `ResolveFutures` announces,
+/// **moving** each call's payload out as [`suspension_event_function_call`] /
+/// [`suspension_event_os_call`] do; [`reclaim_awaited_calls`] brings them back.
+fn awaited_calls_to_proto(calls: &mut [AwaitedCall]) -> (Vec<WireFunctionCall>, Vec<pb::OsCall>) {
+    let mut functions = Vec::new();
+    let mut os_calls = Vec::new();
+    for call in calls {
+        match call {
+            AwaitedCall::Function {
+                function_name,
+                args,
+                call_id,
+                object_id,
+                position,
+            } => functions.push(WireFunctionCall::new(
+                function_name.clone(),
+                mem::take(args),
+                *call_id,
+                *object_id,
+                false,
+                position.clone(),
+            )),
+            AwaitedCall::Os {
+                function_call,
+                call_id,
+                position,
+            } => {
+                let function_call = mem::replace(function_call, OsFunctionCall::GetEnviron);
+                os_calls.push(os_call_to_proto(*call_id, function_call, false, position));
+            }
+        }
+    }
+    (functions, os_calls)
+}
+
+/// Moves the announced payloads back into the awaited calls they were lent
+/// from. Each wire list keeps its kind's order, so the two zip back by kind.
+fn reclaim_awaited_calls(
+    calls: &mut [AwaitedCall],
+    announced: &mut pb::ResolveFutures,
+) -> Result<(), ProtoConvertError> {
+    let mut functions = mem::take(&mut announced.calls).into_inner().into_iter();
+    let mut os_calls = mem::take(&mut announced.os_calls).into_inner().into_iter();
+    for call in calls {
+        match call {
+            AwaitedCall::Function { args, .. } => {
+                if let Some(wire) = functions.next() {
+                    *args = wire.into_call_args()?;
+                }
+            }
+            AwaitedCall::Os { function_call, .. } => {
+                if let Some(wire) = os_calls.next() {
+                    *function_call = os_call_from_proto(wire)?.1;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A validated `ResumeFutures` body, shaped for the suspension it answers.

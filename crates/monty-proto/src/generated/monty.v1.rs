@@ -662,7 +662,7 @@ pub mod random_seed {
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ExtFunctionResult {
-    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 7, 4, 5, 6")]
     pub kind: ::core::option::Option<ext_function_result::Kind>,
 }
 /// Nested message and enum types in `ExtFunctionResult`.
@@ -681,6 +681,14 @@ pub mod ext_function_result {
         /// (the id from the suspension event) and keep executing other tasks.
         #[prost(uint32, tag = "3")]
         Future(u32),
+        /// The host function returned this value (an index into `values`) without
+        /// a coroutine or promise. At a `ResumeCall` it continues like
+        /// `return_value`; answering a call the sandbox already awaits
+        /// (`ResolveFutures.calls`) it fails the future with the `TypeError`
+        /// CPython raises for awaiting a non-awaitable, so `await sync_fn()`
+        /// raises whether or not the call suspended.
+        #[prost(uint32, tag = "7")]
+        Plain(u32),
         /// No handler exists for this name — the child raises NameError.
         #[prost(string, tag = "4")]
         NotFound(crate::budgeted_prost::alloc::string::String),
@@ -741,6 +749,14 @@ pub struct ParentRequest {
     pub trace_parent: ::core::option::Option<
         crate::budgeted_prost::alloc::string::String,
     >,
+    /// Set on the request that opens a session: the child configures first,
+    /// then handles `kind`, and the reply to `kind` carries `execution_clock`
+    /// and `session_id` as `Configure`'s own `Ok` would. A refused `Configure`
+    /// is the whole reply and `kind` never runs. Only `Feed` and `Load` open
+    /// a session this way; a parent that wants `Ok` before anything else sends
+    /// the `configure` arm alone.
+    #[prost(message, optional, tag = "21")]
+    pub open_session: ::core::option::Option<Configure>,
     #[prost(
         oneof = "parent_request::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
@@ -778,11 +794,11 @@ pub mod parent_request {
         Pong(super::Pong),
     }
 }
-/// Configures the REPL session this child will serve until `Reset`, sent once
-/// when the worker is checked out. The session's repl is materialized lazily on
-/// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
-/// worker can still be initialized by `Load` instead. Valid only when the
-/// worker has no session yet.
+/// Configures the REPL session this child will serve until `Reset`, carried by
+/// the opening request (`ParentRequest.open_session`) or sent alone first. The
+/// session's repl is materialized lazily on the first `Feed` (or restored by
+/// `Load`), so a checked-out-but-unfed worker can still be initialized by
+/// `Load` instead. Valid only when the worker has no session yet.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct Configure {
@@ -879,6 +895,12 @@ pub struct Feed {
     /// the session's first feed). Empty keeps the session's current directory.
     #[prost(string, tag = "5")]
     pub cwd: crate::budgeted_prost::alloc::string::String,
+    /// Suspend at every host call the sandbox awaits as it is made, as a
+    /// `FunctionCall` / `OsCall` with `allow_eager_await`, instead of batching
+    /// it into the next `ResolveFutures`. For a parent that steps one
+    /// suspension at a time.
+    #[prost(bool, tag = "6")]
+    pub suspend_awaited_calls: bool,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -1455,17 +1477,30 @@ pub struct NameLookup {
     #[prost(message, optional, tag = "3")]
     pub position: ::core::option::Option<SourceRange>,
 }
-/// Suspension: every sandbox task is blocked on external futures previously
-/// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
-#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+/// Suspension: every sandbox task is blocked on external futures, registered
+/// via `ExtFunctionResult.future` or created by the child for the awaited
+/// calls below. Answer with `ResumeFutures`.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct ResolveFutures {
+    /// Every unresolved call id, `calls` and `os_calls` included.
     #[prost(uint32, repeated, tag = "1")]
     pub pending_call_ids: crate::budgeted_prost::alloc::vec::Vec<u32>,
     /// Where the main task's blocked `await` is in the source; absent as on
     /// `FunctionCall`.
     #[prost(message, optional, tag = "2")]
     pub position: ::core::option::Option<SourceRange>,
+    /// Host calls the sandbox awaited as it made them, answered with a future by
+    /// the child so it could run on: the parent dispatches each and resolves it
+    /// by `call_id` through `ResumeFutures`, with a plain (non-awaitable) value
+    /// as `ExtFunctionResult.plain`. Listed once; a `Load` lists every
+    /// unresolved call again, since the restored session's parent has seen none.
+    /// `allow_eager_await` is never set on them.
+    #[prost(message, repeated, tag = "3")]
+    pub calls: crate::budgeted_prost::alloc::vec::Vec<crate::WireFunctionCall>,
+    /// As `calls`, for an awaited OS call a future may answer (`asyncio.sleep`).
+    #[prost(message, repeated, tag = "4")]
+    pub os_calls: crate::budgeted_prost::alloc::vec::Vec<OsCall>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
 /// the next `Feed`.

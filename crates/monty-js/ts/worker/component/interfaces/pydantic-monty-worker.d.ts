@@ -398,6 +398,12 @@ export interface FeedRequest {
   values: Arena
   skipTypeCheck: boolean
   cwd: string
+  suspendAwaitedCalls: boolean
+  openSession?: ConfigureRequest
+}
+export interface LoadRequest {
+  state: Uint8Array
+  openSession?: ConfigureRequest
 }
 export interface RaisedError {
   excType: string
@@ -411,6 +417,7 @@ export type CallResult =
   | CallResultReturnValue
   | CallResultError
   | CallResultPendingFuture
+  | CallResultPlain
   | CallResultNotFound
   | CallResultNotHandled
   | CallResultModuleFile
@@ -424,6 +431,10 @@ export interface CallResultError {
 }
 export interface CallResultPendingFuture {
   tag: 'pending-future'
+  val: number
+}
+export interface CallResultPlain {
+  tag: 'plain'
   val: number
 }
 export interface CallResultNotFound {
@@ -505,7 +516,7 @@ export interface RequestDump {
 }
 export interface RequestLoad {
   tag: 'load'
-  val: Uint8Array
+  val: LoadRequest
 }
 export interface RequestReset {
   tag: 'reset'
@@ -551,10 +562,6 @@ export interface NameLookupEvent {
   objectId?: string
   position: SourceRange
 }
-export interface ResolveFuturesEvent {
-  pendingCallIds: Uint32Array
-  position: SourceRange
-}
 export interface OsCallEvent {
   functionName: string
   values: Arena
@@ -564,6 +571,12 @@ export interface OsCallEvent {
   allowEagerAwait: boolean
   systemSleepSecs?: number
   position: SourceRange
+}
+export interface ResolveFuturesEvent {
+  pendingCallIds: Uint32Array
+  position: SourceRange
+  calls: Array<FunctionCallEvent>
+  osCalls: Array<OsCallEvent>
 }
 export interface CompleteEvent {
   values: Arena

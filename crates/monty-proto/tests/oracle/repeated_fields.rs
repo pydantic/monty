@@ -115,4 +115,18 @@ fn every_schema_repeated_field_is_budgeted() {
         &[0],
         |message: &pb::ResolveFutures| &message.pending_call_ids,
     );
+    check_repeated(
+        "monty.v1.ResolveFutures.calls",
+        3,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::ResolveFutures| &message.calls,
+    );
+    check_repeated(
+        "monty.v1.ResolveFutures.os_calls",
+        4,
+        WireType::LengthDelimited,
+        &[],
+        |message: &pb::ResolveFutures| &message.os_calls,
+    );
 }

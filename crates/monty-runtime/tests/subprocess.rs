@@ -84,14 +84,24 @@ impl ChildProc {
     }
 
     fn send(&mut self, kind: pb::parent_request::Kind) {
-        write_frame(
-            &mut self.writer,
-            &pb::ParentRequest {
-                kind: Some(kind),
-                trace_parent: None,
-            },
-        )
-        .expect("failed to write request");
+        self.send_request(&pb::ParentRequest {
+            kind: Some(kind),
+            trace_parent: None,
+            open_session: None,
+        });
+    }
+
+    /// Sends the request that opens the session, carrying its `Configure`.
+    fn send_opening(&mut self, configure: pb::Configure, kind: pb::parent_request::Kind) {
+        self.send_request(&pb::ParentRequest {
+            kind: Some(kind),
+            trace_parent: None,
+            open_session: Some(configure),
+        });
+    }
+
+    fn send_request(&mut self, request: &pb::ParentRequest) {
+        write_frame(&mut self.writer, request).expect("failed to write request");
     }
 
     /// Reads a single event.
@@ -147,6 +157,7 @@ impl ChildProc {
             values: Some(values),
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         }));
         self.recv_turn()
     }
@@ -192,6 +203,7 @@ impl ChildProc {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         }));
         self.expect_death();
     }
@@ -3191,6 +3203,7 @@ fn killed_child_is_detected_as_eof() {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        suspend_awaited_calls: false,
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");
@@ -3239,4 +3252,88 @@ fn slice_assignment_rejects_large_replacement_without_killing_worker() {
         assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
         child.shutdown();
     }
+}
+
+/// A `Feed` carrying the session's `Configure` opens the session and runs in
+/// one turn; the reply reports the clock as `Configure`'s `Ok` would, and the
+/// configured limits govern the feed.
+#[test]
+fn an_opening_feed_configures_and_runs_in_one_turn() {
+    let mut child = ChildProc::spawn();
+    let limited = pb::Configure {
+        limits: Some(pb::ResourceLimits {
+            max_feed_duration_micros: Some(100_000),
+            ..Default::default()
+        }),
+        ..configure()
+    };
+    child.send_opening(
+        limited,
+        pb::parent_request::Kind::Feed(pb::Feed {
+            code: "while True:\n    pass".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
+        }),
+    );
+    let event = child
+        .reader
+        .read::<pb::ChildEvent>()
+        .expect("read reply")
+        .expect("a reply");
+    assert_eq!(event.execution_clock, Some(pb::ExecutionClock::Wall as i32));
+    let exc = expect_error(event.kind.expect("kind"));
+    assert_eq!(exc.exc_type, "TimeoutError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+}
+
+/// A refused `Configure` is the whole reply to the request carrying it: the
+/// feed never runs, the worker stays unconfigured, and a later opening
+/// request can still succeed.
+#[test]
+fn a_refused_configure_on_an_opening_feed_never_runs_the_feed() {
+    let mut child = ChildProc::spawn();
+    let feed = || {
+        pb::parent_request::Kind::Feed(pb::Feed {
+            code: "print('ran')".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
+        })
+    };
+    child.send_opening(
+        pb::Configure {
+            os_policy: Some(pb::OsPolicy {
+                timezone: Some(pb::SandboxTimeZone {
+                    zone: Some(pb::sandbox_time_zone::Zone::Named("Mars/Olympus".to_owned())),
+                }),
+                ..Default::default()
+            }),
+            ..configure()
+        },
+        feed(),
+    );
+    let event = child
+        .reader
+        .read::<pb::ChildEvent>()
+        .expect("read reply")
+        .expect("a reply");
+    assert_eq!(event.execution_clock, None, "a refusal reports no clock");
+    let exc = expect_error(event.kind.expect("kind"));
+    assert!(exc.message.unwrap_or_default().contains("invalid os_policy"));
+    // the feed is refused on its own too, the worker still has no session
+    child.send(feed());
+    let exc = expect_error(child.recv());
+    assert_eq!(
+        exc.message.as_deref(),
+        Some("protocol violation: session has not been configured")
+    );
+    child.send_opening(configure(), feed());
+    let (prints, event) = child.recv_turn();
+    assert_eq!(prints.len(), 1);
+    assert_eq!(expect_complete(event), MontyObject::none());
 }

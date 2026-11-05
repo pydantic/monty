@@ -25,8 +25,10 @@ fn feed() -> pb::ParentRequest {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            suspend_awaited_calls: false,
         })),
         trace_parent: None,
+        open_session: None,
     }
 }
 

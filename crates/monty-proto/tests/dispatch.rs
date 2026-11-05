@@ -16,7 +16,8 @@ use monty_types::{
     MontyUuid, NamedValues, PrintWriter, ResourceLimits, ResourceTracker, unstable,
 };
 
-/// Starts a feed with `f` already bound, leaving the worker at its first external call.
+/// Starts a feed with `f` already bound, suspending at every awaited call,
+/// and leaves the worker at its first external call.
 fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
     create_repl(child);
     let inputs = NamedValues::from(vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))]);
@@ -27,6 +28,7 @@ fn start_external_call(child: &mut Child, code: &str) -> WireFunctionCall {
         values: Some(values),
         skip_type_check: false,
         cwd: "/".to_owned(),
+        suspend_awaited_calls: true,
     }));
     let (bytes, _) = dispatch_frame(child, &request);
     let (_, event) = split_turn(&bytes);
@@ -196,6 +198,153 @@ fn allow_eager_await_preserves_legacy_replies() {
     assert_eq!(expect_complete(split_turn(&bytes).1), MontyObject::int(42));
 }
 
+/// Feeds `code` with `f` bound as a host function, batching awaited calls as
+/// a driving host does, and returns the turn-ender.
+fn feed_bound(child: &mut Child, code: &str) -> pb::child_event::Kind {
+    let inputs = NamedValues::from(vec![("f".to_owned(), MontyObject::function("f".to_owned(), None))]);
+    let (inputs, values) = named_values_to_proto(inputs);
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs,
+        values: Some(values),
+        skip_type_check: false,
+        cwd: "/".to_owned(),
+        suspend_awaited_calls: false,
+    }));
+    let (bytes, outcome) = dispatch_frame(child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    split_turn(&bytes).1
+}
+
+/// The `ResolveFutures` a turn ended with, or a panic naming what arrived.
+fn expect_resolve_futures(event: pb::child_event::Kind) -> pb::ResolveFutures {
+    match event {
+        pb::child_event::Kind::ResolveFutures(futures) => futures,
+        other => panic!("expected ResolveFutures, got {other:?}"),
+    }
+}
+
+/// A gather's awaited calls are announced together by the wait on them and
+/// never again; each settles by id through `ResumeFutures`.
+#[test]
+fn gathered_awaited_calls_are_announced_once() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let waiting = expect_resolve_futures(feed_bound(
+        &mut child,
+        "import asyncio\nawait asyncio.gather(f(1), f(2))",
+    ));
+    assert_eq!(waiting.calls.len(), 2);
+    assert!(waiting.os_calls.is_empty());
+    let ids: Vec<u32> = waiting.calls.iter().map(|call| call.call_id).collect();
+    let mut pending = waiting.pending_call_ids.into_inner();
+    pending.sort_unstable();
+    assert_eq!(pending, ids);
+    assert!(waiting.calls.iter().all(|call| !call.allow_eager_await));
+
+    // settling one call leaves a wait that announces nothing new
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![future_reply(ids[0], pb::ext_function_result::Kind::ReturnValue(0))],
+        MontyObject::int(10),
+    )));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    let waiting = expect_resolve_futures(split_turn(&bytes).1);
+    assert!(waiting.calls.is_empty());
+    assert_eq!(waiting.pending_call_ids.into_inner(), vec![ids[1]]);
+
+    let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+        vec![future_reply(ids[1], pb::ext_function_result::Kind::ReturnValue(0))],
+        MontyObject::int(20),
+    )));
+    let (bytes, _) = dispatch_frame(&mut child, &request);
+    assert_eq!(
+        expect_complete(split_turn(&bytes).1),
+        MontyObject::list([MontyObject::int(10), MontyObject::int(20)])
+    );
+}
+
+/// A `plain` result fails the call's future with the `TypeError` CPython
+/// raises where the sandbox awaits it: at the `await`, or in the gather.
+#[test]
+fn plain_results_raise_where_the_sandbox_awaits() {
+    for (code, message) in [
+        (
+            "try:\n    await f()\nexcept TypeError as e:\n    result = str(e)\nresult",
+            "'int' object can't be awaited",
+        ),
+        (
+            "import asyncio\ntry:\n    await asyncio.gather(f())\nexcept TypeError as e:\n    result = str(e)\nresult",
+            "An asyncio.Future, a coroutine or an awaitable is required",
+        ),
+    ] {
+        let mut child = Child::default();
+        create_repl(&mut child);
+        let waiting = expect_resolve_futures(feed_bound(&mut child, code));
+        let [call] = waiting.calls.as_slice() else {
+            panic!("expected one awaited call, got {:?}", waiting.calls);
+        };
+        let request = frame_request(pb::parent_request::Kind::ResumeFutures(resume_futures(
+            vec![future_reply(call.call_id, pb::ext_function_result::Kind::Plain(0))],
+            MontyObject::int(42),
+        )));
+        let (bytes, _) = dispatch_frame(&mut child, &request);
+        assert_eq!(
+            expect_complete(split_turn(&bytes).1),
+            MontyObject::string(message.to_owned()),
+            "{code}"
+        );
+    }
+}
+
+/// A `Load` carrying the session's `Configure` opens a new session in one
+/// turn, and a wait restored from a dump announces every unresolved call again.
+#[test]
+fn an_opening_load_restores_a_wait_and_reannounces_its_calls() {
+    let mut child = Child::default();
+    create_repl(&mut child);
+    let waiting = expect_resolve_futures(feed_bound(
+        &mut child,
+        "import asyncio\nawait asyncio.gather(f(1), f(2))",
+    ));
+    let ids: Vec<u32> = waiting.calls.iter().map(|call| call.call_id).collect();
+    let (bytes, _) = dispatch_frame(&mut child, &frame_request(pb::parent_request::Kind::Dump(pb::Dump {})));
+    let pb::child_event::Kind::DumpResult(dumped) = split_turn(&bytes).1 else {
+        panic!("expected a dump");
+    };
+
+    let mut restored = Child::default();
+    let mut request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Load(pb::Load { state: dumped.state })),
+        trace_parent: None,
+        open_session: Some(pb::Configure {
+            script_name: "main.py".to_owned(),
+            monty_version: MONTY_VERSION.to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            ..Default::default()
+        }),
+    };
+    let mut buf = Vec::new();
+    write_frame(&mut buf, &request).expect("framing a request never fails");
+    request.open_session = None;
+    let (bytes, outcome) = dispatch_frame(&mut restored, &buf);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let event = FrameReader::new(bytes.as_slice())
+        .read::<pb::ChildEvent>()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        event.execution_clock,
+        Some(pb::ExecutionClock::Wall as i32),
+        "the opening reply reports the clock"
+    );
+    let waiting = expect_resolve_futures(event.kind.expect("kind"));
+    assert_eq!(
+        waiting.calls.iter().map(|call| call.call_id).collect::<Vec<_>>(),
+        ids,
+        "a restored wait lists every unresolved call"
+    );
+}
+
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -204,6 +353,7 @@ fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
         &pb::ParentRequest {
             kind: Some(kind),
             trace_parent: None,
+            open_session: None,
         },
     )
     .expect("framing a request never fails");
@@ -275,6 +425,7 @@ fn feed_with_cwd(child: &mut Child, code: &str, cwd: &str) -> (Vec<pb::Print>, p
         values: None,
         skip_type_check: false,
         cwd: cwd.to_owned(),
+        suspend_awaited_calls: false,
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -418,6 +569,7 @@ fn inputs_are_injected() {
         values: Some(values),
         skip_type_check: false,
         cwd: "/".to_owned(),
+        suspend_awaited_calls: false,
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -666,6 +818,7 @@ fn turn_events_carry_the_suspension_budget() {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        suspend_awaited_calls: false,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     let events = decode_full_events(&bytes);
@@ -837,6 +990,7 @@ fn only_host_modules_of_a_type_checked_feed_are_asked_for() {
         values: None,
         skip_type_check: true,
         cwd: String::new(),
+        suspend_awaited_calls: false,
     }));
     let (bytes, _) = dispatch_frame(&mut child, &request);
     assert_eq!(expect_import(split_turn(&bytes).1), "tools");

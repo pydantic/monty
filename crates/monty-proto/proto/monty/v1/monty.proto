@@ -19,6 +19,13 @@
 // any language. Outside that alternation sit the liveness messages: a server
 // sends `Ping` between turns and the parent answers `Pong`; neither is a turn.
 //
+// Two shapes keep round trips down without loosening that rule: the request
+// that opens a session carries its `Configure` (`ParentRequest.open_session`),
+// so a session starts and runs its first `Feed` or `Load` in one turn; and a
+// host call the sandbox awaits as it is made does not suspend — the child
+// answers it with a future itself and lists it in the next `ResolveFutures`
+// (`ResolveFutures.calls`), so `asyncio.gather` of N host calls is one turn.
+//
 // Evolution rules: the schema carries its own version, independent of the
 // monty package version. A parent declares it in `Configure.protocol_version`
 // and the child rejects anything outside the range it serves
@@ -534,6 +541,13 @@ message ExtFunctionResult {
     // The call is asynchronous: register an external future for `call_id`
     // (the id from the suspension event) and keep executing other tasks.
     uint32 future = 3;
+    // The host function returned this value (an index into `values`) without
+    // a coroutine or promise. At a `ResumeCall` it continues like
+    // `return_value`; answering a call the sandbox already awaits
+    // (`ResolveFutures.calls`) it fails the future with the `TypeError`
+    // CPython raises for awaiting a non-awaitable, so `await sync_fn()`
+    // raises whether or not the call suspended.
+    uint32 plain = 7;
     // No handler exists for this name — the child raises NameError.
     string not_found = 4;
     // No handler accepted this OS call — the child raises the call's own
@@ -597,13 +611,20 @@ message ParentRequest {
   // from. Purely additive context: the child's execution of the request must
   // not depend on it, and it is absent whenever the parent is not tracing.
   optional string trace_parent = 20;
+  // Set on the request that opens a session: the child configures first,
+  // then handles `kind`, and the reply to `kind` carries `execution_clock`
+  // and `session_id` as `Configure`'s own `Ok` would. A refused `Configure`
+  // is the whole reply and `kind` never runs. Only `Feed` and `Load` open
+  // a session this way; a parent that wants `Ok` before anything else sends
+  // the `configure` arm alone.
+  optional Configure open_session = 21;
 }
 
-// Configures the REPL session this child will serve until `Reset`, sent once
-// when the worker is checked out. The session's repl is materialized lazily on
-// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
-// worker can still be initialized by `Load` instead. Valid only when the
-// worker has no session yet.
+// Configures the REPL session this child will serve until `Reset`, carried by
+// the opening request (`ParentRequest.open_session`) or sent alone first. The
+// session's repl is materialized lazily on the first `Feed` (or restored by
+// `Load`), so a checked-out-but-unfed worker can still be initialized by
+// `Load` instead. Valid only when the worker has no session yet.
 message Configure {
   string script_name = 1;
   ResourceLimits limits = 2;
@@ -702,6 +723,11 @@ message Feed {
   // feed, resolved by the parent (an explicit choice, or the first mount on
   // the session's first feed). Empty keeps the session's current directory.
   string cwd = 5;
+  // Suspend at every host call the sandbox awaits as it is made, as a
+  // `FunctionCall` / `OsCall` with `allow_eager_await`, instead of batching
+  // it into the next `ResolveFutures`. For a parent that steps one
+  // suspension at a time.
+  bool suspend_awaited_calls = 6;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -906,6 +932,8 @@ message FunctionCall {
   // The host may await a coroutine and answer with ResumeFutures for this
   // call_id. Synchronous results use ResumeCall; returning a pending
   // future remains valid. Absent/false requires the ordinary call reply.
+  // Only ever set under `Feed.suspend_awaited_calls`: by default an awaited
+  // call never suspends (see `ResolveFutures.calls`).
   bool allow_eager_await = 6;
   // The arena `args` and `kwargs` index: one per call, so an object passed
   // twice crosses once.
@@ -1114,13 +1142,24 @@ message NameLookup {
   SourceRange position = 3;
 }
 
-// Suspension: every sandbox task is blocked on external futures previously
-// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
+// Suspension: every sandbox task is blocked on external futures, registered
+// via `ExtFunctionResult.future` or created by the child for the awaited
+// calls below. Answer with `ResumeFutures`.
 message ResolveFutures {
+  // Every unresolved call id, `calls` and `os_calls` included.
   repeated uint32 pending_call_ids = 1;
   // Where the main task's blocked `await` is in the source; absent as on
   // `FunctionCall`.
   SourceRange position = 2;
+  // Host calls the sandbox awaited as it made them, answered with a future by
+  // the child so it could run on: the parent dispatches each and resolves it
+  // by `call_id` through `ResumeFutures`, with a plain (non-awaitable) value
+  // as `ExtFunctionResult.plain`. Listed once; a `Load` lists every
+  // unresolved call again, since the restored session's parent has seen none.
+  // `allow_eager_await` is never set on them.
+  repeated FunctionCall calls = 3;
+  // As `calls`, for an awaited OS call a future may answer (`asyncio.sleep`).
+  repeated OsCall os_calls = 4;
 }
 
 // Turn end: the snippet completed with this value. The session is ready for

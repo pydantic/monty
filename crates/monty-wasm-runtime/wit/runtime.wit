@@ -319,6 +319,18 @@ interface worker {
         /// Absolute virtual working directory to switch the session to; empty
         /// keeps its current one (`/` until a feed or `os.chdir` changes it).
         cwd: string,
+        /// Suspend at every awaited host call instead of batching it into the
+        /// next `resolve-futures`; for a host stepping one suspension at a time.
+        suspend-awaited-calls: bool,
+        /// Set when this feed opens the session: configures first, then feeds,
+        /// in one dispatch.
+        open-session: option<configure-request>,
+    }
+
+    /// Restores a dumped session, opening a new one when `open-session` is set.
+    record load-request {
+        state: list<u8>,
+        open-session: option<configure-request>,
     }
 
     /// A host-raised exception used to resume a call.
@@ -341,6 +353,9 @@ interface worker {
         return-value(u32),
         error(raised-error),
         pending-future(u32),
+        /// A value returned without a promise: for a call the sandbox already
+        /// awaits (`resolve-futures-event.calls`) its `await` raises `TypeError`.
+        plain(u32),
         not-found(string),
         not-handled,
         /// Only answers an `import` call with a search path.
@@ -393,7 +408,7 @@ interface worker {
         /// Raises an error uncatchably at any pending suspension; the session stays usable.
         abort-feed(raised-error),
         dump,
-        load(list<u8>),
+        load(load-request),
         reset,
     }
 
@@ -448,7 +463,8 @@ interface worker {
         /// Uuid string of the routed receiver (instance or class type);
         /// absent for plain external calls.
         object-id: option<string>,
-        /// A coroutine may settle before replying with resume-futures.
+        /// A coroutine may settle before replying with resume-futures. Only
+        /// ever set under `feed-request.suspend-awaited-calls`.
         allow-eager-await: bool,
         /// Where the call expression is in the source.
         position: source-range,
@@ -467,9 +483,17 @@ interface worker {
 
     /// Every sandbox task is blocked on external futures.
     record resolve-futures-event {
+        /// Every unresolved call id, `calls` and `os-calls` included.
         pending-call-ids: list<u32>,
         /// Where the main task's blocked `await` is in the source.
         position: source-range,
+        /// Host calls the sandbox awaited as it made them, answered with a
+        /// future by the child: dispatch each and settle it by call id through
+        /// `resume-futures`, a non-promise value as `plain`. A `load` lists
+        /// every unresolved call again.
+        calls: list<function-call-event>,
+        /// As `calls`, for awaited OS calls a future may answer (`asyncio.sleep`).
+        os-calls: list<os-call-event>,
     }
 
     /// A suspended OS call projected into the public callback shape.

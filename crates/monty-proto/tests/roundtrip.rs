@@ -879,8 +879,10 @@ fn deep_values_cross_the_wire() {
             values: Some(values),
             skip_type_check: false,
             cwd: "/work".to_owned(),
+            suspend_awaited_calls: false,
         })),
         trace_parent: None,
+        open_session: None,
     };
     let back = decode_frame::<pb::ParentRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
     let Some(pb::parent_request::Kind::Feed(feed)) = back.kind else {
