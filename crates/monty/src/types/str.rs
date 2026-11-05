@@ -1999,8 +1999,7 @@ struct ExpandtabsArgs {
 fn str_encode<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     match args {
         ArgValues::Empty => {
-            let codec = Codec::find("utf-8").expect("utf-8 codec exists");
-            let bytes = codec.encode(s.get(vm.heap), "strict", &vm.heap.tracker)?;
+            let bytes = Codec::Utf8.encode(s.get(vm.heap), "strict", &vm.heap.tracker)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)));
             return Ok(Value::Ref(heap_id));
         }

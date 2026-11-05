@@ -4,23 +4,10 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, Heap, HeapData},
-    intern::Interns,
-    types::{PyTrait, str::concat_allocate_str},
+    heap::DropGuard,
+    types::PyTrait,
     value::Value,
 };
-
-#[inline]
-fn as_str<'a>(value: &'a Value, interns: &'a Interns, heap: &'a Heap) -> Option<&'a str> {
-    match value {
-        Value::InternString(id) => Some(interns.get_str(*id)),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 impl VM<'_> {
     /// Unary minus (`-x`).
@@ -51,14 +38,6 @@ impl VM<'_> {
             && let Some(res) = a.checked_add(*b)
         {
             this.push(Value::Int(res));
-            return Ok(());
-        }
-        if let (Some(s1), Some(s2)) = (
-            as_str(lhs, this.interns, this.heap),
-            as_str(rhs, this.interns, this.heap),
-        ) {
-            let res = concat_allocate_str(s1, s2, this.heap)?;
-            this.push(res);
             return Ok(());
         }
 
@@ -203,17 +182,6 @@ impl VM<'_> {
             *lhs = Value::Int(sum);
             let (lhs, this) = lhs_guard.into_parts();
             this.push(lhs);
-            return Ok(());
-        }
-
-        if let (Some(s1), Some(s2)) = (
-            as_str(lhs, this.interns, this.heap),
-            as_str(rhs, this.interns, this.heap),
-        ) {
-            let res = concat_allocate_str(s1, s2, this.heap)?;
-            let (lhs, this) = lhs_guard.into_parts();
-            lhs.drop_with(this);
-            this.push(res);
             return Ok(());
         }
 

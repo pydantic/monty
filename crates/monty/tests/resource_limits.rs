@@ -927,29 +927,19 @@ fn timeout_in_sorted_list_and_tuple_copy() {
 
 #[test]
 fn memory_preflight_in_sorted_list_and_tuple_copy() {
-    let limits = ResourceLimits::default().max_memory(10_000 * 16 + 8);
-    let mut ex = MontyRun::new(
-        "x = [1] * 20_000\nsorted(x)".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let exc = ex
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("x = [1] * 20_000\nt = (1,) * 20_000", vec![], PrintWriter::Stdout)
+        .expect("list and tuple should build without a limit");
+
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(10_000 * 16 + 8));
+    let exc = repl
+        .feed_run("sorted(x)", vec![], PrintWriter::Stdout)
         .expect_err("sorted(list) must hit memory preflight");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 
-    let limits = ResourceLimits::default().max_memory(10_000 * 16 + 8);
-    let mut ex = MontyRun::new(
-        "t = (1,) * 20_000\nsorted(t)".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let exc = ex
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(10_000 * 16 + 8));
+    let exc = repl
+        .feed_run("sorted(t)", vec![], PrintWriter::Stdout)
         .expect_err("sorted(tuple) must hit memory preflight");
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }

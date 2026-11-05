@@ -386,7 +386,7 @@ fn offset_days(date: Date, days: i32) -> RunResult<Date> {
 /// rendered (so [`render_strftime`] never has to panic).
 pub(crate) fn format_date_strftime(date: Date, format: &str, tracker: &ResourceTracker) -> RunResult<String> {
     let y = date.0.year();
-    if (1..=9999).contains(&y) {
+    if (1000..=9999).contains(&y) {
         match format {
             "%Y-%m" => return Ok(format!("{y:04}-{:02}", date.0.month())),
             "%Y-%m-%d" => return Ok(format!("{y:04}-{:02}-{:02}", date.0.month(), date.0.day())),

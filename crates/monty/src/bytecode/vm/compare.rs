@@ -18,16 +18,10 @@ impl VM<'_> {
     pub(crate) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
             CmpOperator::Eq | CmpOperator::NotEq => {
-                let is_equal = match (lhs, rhs) {
-                    (Value::Int(a), Value::Int(b)) => *a == *b,
-                    (Value::Bool(a), Value::Bool(b)) => *a == *b,
-                    _ => {
-                        let result = lhs.py_rich_eq(rhs, self)?;
-                        let is_equal = result.py_bool(self);
-                        result.drop_with(self);
-                        is_equal?
-                    }
-                };
+                let result = lhs.py_rich_eq(rhs, self)?;
+                let is_equal = result.py_bool(self);
+                result.drop_with(self);
+                let is_equal = is_equal?;
                 Ok(if op == CmpOperator::NotEq { !is_equal } else { is_equal })
             }
             CmpOperator::Is => Ok(lhs.is(rhs)),
@@ -47,15 +41,6 @@ impl VM<'_> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        if let (Value::Int(a), Value::Int(b)) = (&lhs, &rhs) {
-            this.push(Value::Bool(a == b));
-            return Ok(());
-        }
-        if let (Value::Bool(a), Value::Bool(b)) = (&lhs, &rhs) {
-            this.push(Value::Bool(a == b));
-            return Ok(());
-        }
-
         let result = lhs.py_rich_eq(rhs, this)?;
         this.push(result);
         Ok(())
@@ -68,15 +53,6 @@ impl VM<'_> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
-
-        if let (Value::Int(a), Value::Int(b)) = (&lhs, &rhs) {
-            this.push(Value::Bool(a != b));
-            return Ok(());
-        }
-        if let (Value::Bool(a), Value::Bool(b)) = (&lhs, &rhs) {
-            this.push(Value::Bool(a != b));
-            return Ok(());
-        }
 
         let result = lhs.py_rich_eq(rhs, this)?;
         defer_drop!(result, this);

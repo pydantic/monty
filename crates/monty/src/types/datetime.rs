@@ -1247,42 +1247,44 @@ pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str, tracker: &Re
     if dt.offset_seconds.is_none() {
         let y = dt.naive.year();
         if year_in_python_range(y) {
-            match format {
-                "%Y-%m" => {
-                    return Ok(format!("{y:04}-{:02}", dt.naive.month()));
+            if format == "%H:%M:%S" {
+                return Ok(format!(
+                    "{:02}:{:02}:{:02}",
+                    dt.naive.hour(),
+                    dt.naive.minute(),
+                    dt.naive.second()
+                ));
+            }
+            if (1000..=9999).contains(&y) {
+                match format {
+                    "%Y-%m" => {
+                        return Ok(format!("{y:04}-{:02}", dt.naive.month()));
+                    }
+                    "%Y-%m-%d" => {
+                        return Ok(format!("{y:04}-{:02}-{:02}", dt.naive.month(), dt.naive.day()));
+                    }
+                    "%Y-%m-%d %H:%M:%S" => {
+                        return Ok(format!(
+                            "{y:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                            dt.naive.month(),
+                            dt.naive.day(),
+                            dt.naive.hour(),
+                            dt.naive.minute(),
+                            dt.naive.second()
+                        ));
+                    }
+                    "%Y-%m-%dT%H:%M:%S" => {
+                        return Ok(format!(
+                            "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                            dt.naive.month(),
+                            dt.naive.day(),
+                            dt.naive.hour(),
+                            dt.naive.minute(),
+                            dt.naive.second()
+                        ));
+                    }
+                    _ => {}
                 }
-                "%Y-%m-%d" => {
-                    return Ok(format!("{y:04}-{:02}-{:02}", dt.naive.month(), dt.naive.day()));
-                }
-                "%H:%M:%S" => {
-                    return Ok(format!(
-                        "{:02}:{:02}:{:02}",
-                        dt.naive.hour(),
-                        dt.naive.minute(),
-                        dt.naive.second()
-                    ));
-                }
-                "%Y-%m-%d %H:%M:%S" => {
-                    return Ok(format!(
-                        "{y:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                        dt.naive.month(),
-                        dt.naive.day(),
-                        dt.naive.hour(),
-                        dt.naive.minute(),
-                        dt.naive.second()
-                    ));
-                }
-                "%Y-%m-%dT%H:%M:%S" => {
-                    return Ok(format!(
-                        "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-                        dt.naive.month(),
-                        dt.naive.day(),
-                        dt.naive.hour(),
-                        dt.naive.minute(),
-                        dt.naive.second()
-                    ));
-                }
-                _ => {}
             }
         }
     }

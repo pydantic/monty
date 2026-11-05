@@ -1088,6 +1088,13 @@ impl Value {
     /// Tries the left operand, then reflected equality when it returns
     /// `NotImplemented`; identity is only the final fallback after both decline.
     pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let (Self::Int(a), Self::Int(b)) = (self, other) {
+            return Ok(Self::Bool(a == b));
+        }
+        if let (Self::Bool(a), Self::Bool(b)) = (self, other) {
+            return Ok(Self::Bool(a == b));
+        }
+
         let lhs_result = self.py_rich_eq_impl(other, vm)?;
         if !lhs_result.is_not_implemented() {
             return Ok(lhs_result);

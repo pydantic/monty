@@ -53,23 +53,14 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
     let items = if let Value::Ref(id) = &iterable
-        && let HeapData::List(list) = vm.heap.get(*id)
-    {
-        let res = clone_slice_with_checks(list.as_slice(), &vm.heap.tracker, vm.heap);
-        iterable.drop_with(vm);
-        match res {
-            Ok(items) => items,
-            Err(boxed) => {
-                let (partial, err) = *boxed;
-                partial.drop_with(vm);
-                kwargs.drop_with(vm);
-                return Err(err);
-            }
+        && let slice = match vm.heap.get(*id) {
+            HeapData::List(list) => Some(list.as_slice()),
+            HeapData::Tuple(tuple) => Some(tuple.as_slice()),
+            _ => None,
         }
-    } else if let Value::Ref(id) = &iterable
-        && let HeapData::Tuple(tuple) = vm.heap.get(*id)
+        && let Some(slice) = slice
     {
-        let res = clone_slice_with_checks(tuple.as_slice(), &vm.heap.tracker, vm.heap);
+        let res = clone_slice_with_checks(slice, &vm.heap.tracker, vm.heap);
         iterable.drop_with(vm);
         match res {
             Ok(items) => items,
