@@ -7,7 +7,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapReadOutput},
+    heap::{DropWithContext, HeapData, HeapReadOutput},
+    types::instance::coerce_exception_args,
     value::{EitherStr, Value},
 };
 
@@ -48,7 +49,8 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
         .into());
     };
 
-    if name.as_str(vm.interns) == "__class__" {
+    let name_str = name.as_str(vm.interns);
+    if name_str == "__class__" {
         return Err(ExcType::type_error("__class__ assignment not supported"));
     }
 
@@ -62,9 +64,25 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
         return Err(no_dict_error(object, &name, vm));
     };
 
+    let value = if name_str == "args" {
+        let class_id = instance.get(vm.heap).class();
+        let is_exc = if let HeapData::Class(cls) = vm.heap.get(class_id) {
+            cls.is_exception_class()
+        } else {
+            false
+        };
+        if is_exc {
+            coerce_exception_args(value.clone_with_heap(vm.heap), vm)?
+        } else {
+            value.clone_with_heap(vm.heap)
+        }
+    } else {
+        value.clone_with_heap(vm)
+    };
+
     let name = name.as_value(vm.heap);
     // The write path itself, bypassing whatever the class would have done.
-    let replaced = instance.set_attr_unchecked(name, value.clone_with_heap(vm), vm)?;
+    let replaced = instance.set_attr_unchecked(name, value, vm)?;
     replaced.drop_with(vm);
     Ok(Value::None)
 }

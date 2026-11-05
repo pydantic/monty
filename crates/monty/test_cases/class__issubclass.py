@@ -128,4 +128,29 @@ try:
 except TypeError as e:
     assert str(e) == 'issubclass() arg 1 must be a class'
 
+try:
+    issubclass([1, 2], int)
+    assert False, 'expected TypeError for list instance as arg 1'
+except TypeError as e:
+    assert str(e) == 'issubclass() arg 1 must be a class'
+
+# 7. Cross-kind checks (type, namedtuple, builtin types, exceptions, user classes)
+assert not issubclass(Point, Base)
+assert not issubclass(Base, Point)
+assert issubclass(type, type)
+assert issubclass(type, object)
+assert not issubclass(type, int)
+assert not issubclass(int, type)
+assert not issubclass(type, ValueError)
+assert not issubclass(ValueError, type)
+assert not issubclass(type, Base)
+assert not issubclass(Base, type)
+assert not issubclass(int, Base)
+assert not issubclass(Base, int)
+assert not issubclass(ValueError, int)
+assert not issubclass(int, ValueError)
+assert not issubclass(ValueError, Base)
+assert issubclass(int, str | int)
+assert issubclass(Base, Point | Base)
+
 print('issubclass tests passed')

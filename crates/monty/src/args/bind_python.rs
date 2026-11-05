@@ -194,6 +194,11 @@ impl Signature {
         }
     }
 
+    /// Whether this signature declares at least one positional parameter (`pos_args` or `args`).
+    pub(crate) fn has_positional_param(&self) -> bool {
+        self.pos_args.as_ref().is_some_and(|v| !v.is_empty()) || self.args.as_ref().is_some_and(|v| !v.is_empty())
+    }
+
     /// Returns the signature's [`BindMode`], deriving and caching it on first use.
     fn bind_mode(&self) -> BindMode {
         *self.bind_mode.get_or_init(|| self.derive_bind_mode())

@@ -553,31 +553,36 @@ fn event_from_proto(event: pb::ChildEvent) -> Event {
 /// Converts a protocol exception and renders its canonical traceback once.
 fn exception_from_proto(exception: pb::RaisedException) -> RaisedException {
     match MontyException::try_from(exception) {
-        Ok(exception) => RaisedException {
-            exc_type: exception.exc_type().to_string(),
-            message: exception.message().unwrap_or("").to_owned(),
-            traceback: exception.to_string(),
-            frames: exception
-                .traceback()
-                .iter()
-                .map(|frame| StackFrame {
-                    filename: frame.filename.clone(),
-                    line: frame.start.line,
-                    column: frame.start.column,
-                    end_line: frame.end.line,
-                    end_column: frame.end.column,
-                    frame_name: frame.frame_name.clone(),
-                    preview_line: frame.preview_line.as_ref().map(ToString::to_string),
-                    hide_caret: frame.hide_caret,
-                    hide_frame_name: frame.hide_frame_name,
-                })
-                .collect(),
-        },
+        Ok(exception) => {
+            let custom_type_name = exception.custom_type_name().map(ToOwned::to_owned);
+            RaisedException {
+                exc_type: exception.exc_type().to_string(),
+                message: exception.message().unwrap_or("").to_owned(),
+                traceback: exception.to_string(),
+                frames: exception
+                    .traceback()
+                    .iter()
+                    .map(|frame| StackFrame {
+                        filename: frame.filename.clone(),
+                        line: frame.start.line,
+                        column: frame.start.column,
+                        end_line: frame.end.line,
+                        end_column: frame.end.column,
+                        frame_name: frame.frame_name.clone(),
+                        preview_line: frame.preview_line.as_ref().map(ToString::to_string),
+                        hide_caret: frame.hide_caret,
+                        hide_frame_name: frame.hide_frame_name,
+                    })
+                    .collect(),
+                custom_type_name,
+            }
+        }
         Err(error) => RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
             message: format!("invalid exception from worker: {error}"),
             traceback: format!("RuntimeError: invalid exception from worker: {error}"),
             frames: vec![],
+            custom_type_name: None,
         },
     }
 }

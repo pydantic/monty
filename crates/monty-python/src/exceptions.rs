@@ -82,6 +82,12 @@ impl MontyError {
         py_err.into_value(py).into_any()
     }
 
+    /// Returns the custom type name for user-defined exception subclasses, if any.
+    #[getter]
+    fn custom_type_name(&self) -> Option<&str> {
+        self.exc.custom_type_name()
+    }
+
     fn __str__(&self) -> String {
         self.message().unwrap_or_default().to_string()
     }
@@ -314,26 +320,12 @@ impl MontyRuntimeError {
 
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __str__(slf: PyRef<'_, Self>) -> String {
-        let parent = slf.as_super();
-        let exc_type_name = parent.exc_type();
-        if let Some(msg) = parent.message()
-            && !msg.is_empty()
-        {
-            return format!("{exc_type_name}: {msg}");
-        }
-        format!("{exc_type_name}")
+        slf.as_super().exc.summary()
     }
 
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __repr__(slf: PyRef<'_, Self>) -> String {
-        let parent = slf.as_super();
-        let exc_type_name = parent.exc_type();
-        if let Some(msg) = parent.message()
-            && !msg.is_empty()
-        {
-            return format!("MontyRuntimeError({exc_type_name}: {msg})");
-        }
-        format!("MontyRuntimeError({exc_type_name})")
+        format!("MontyRuntimeError({})", slf.as_super().exc.summary())
     }
 }
 

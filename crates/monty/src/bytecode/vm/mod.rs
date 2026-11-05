@@ -559,18 +559,6 @@ impl CallFrame<'_> {
 
     #[inline]
     #[must_use]
-    pub(crate) fn code(&self) -> &Code {
-        self.code
-    }
-
-    #[inline]
-    #[must_use]
-    pub(crate) fn locals_count(&self) -> u16 {
-        self.locals_count
-    }
-
-    #[inline]
-    #[must_use]
     pub(crate) fn function_id(&self) -> Option<FunctionId> {
         self.function_id
     }

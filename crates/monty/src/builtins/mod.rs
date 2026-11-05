@@ -27,6 +27,8 @@ mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
 pub(crate) mod next;
+pub(crate) mod object_init;
+pub(crate) mod object_init_subclass;
 pub(crate) mod object_new;
 pub(crate) mod object_setattr;
 mod oct;
@@ -41,6 +43,7 @@ mod setattr;
 mod sorted;
 mod sum;
 mod type_;
+pub(crate) mod type_mro;
 mod zip;
 
 use std::{fmt, fmt::Write, str::FromStr};
@@ -178,6 +181,11 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),
             Self::ObjectNew => object_new::builtin_object_new(vm, args),
+            Self::ObjectInit => object_init::builtin_object_init(vm, args),
+            Self::ObjectInitSubclass => object_init_subclass::builtin_object_init_subclass(vm, args),
+            Self::TypeMro => type_mro::builtin_type_mro(vm, args),
+            Self::ExceptionNew => object_new::builtin_exception_new(vm, args),
+            Self::ExceptionInit => object_init::builtin_exception_init(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),

@@ -1014,6 +1014,12 @@ pub enum StaticStrings {
     /// `__cause__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__cause__")]
     DunderCause,
+    /// `__class__` — implicit closure cell synthesized in class bodies for methods using `super()` or `__class__`.
+    #[strum(serialize = "__class__")]
+    DunderClass,
+    /// `__classcell__` — class-namespace entry carrying the implicit `__class__` cell to `type.__new__`.
+    #[strum(serialize = "__classcell__")]
+    DunderClasscell,
     /// `__context__` of an exception: the one being handled when it was raised.
     #[strum(serialize = "__context__")]
     DunderContext,

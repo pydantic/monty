@@ -531,6 +531,7 @@ export interface RaisedException {
   message: string
   traceback: string
   frames: Array<StackFrame>
+  customTypeName?: string
 }
 export interface PrintEvent {
   stderr: boolean

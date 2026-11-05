@@ -124,4 +124,24 @@ pub enum BuiltinsFunctions {
     #[strum(serialize = "object.__new__")]
     #[serde(rename = "object.__new__")]
     ObjectNew,
+    /// `object.__init__(self, /, *args, **kwargs)`, appended after [`Self::ObjectNew`].
+    #[strum(serialize = "object.__init__")]
+    #[serde(rename = "object.__init__")]
+    ObjectInit,
+    /// `object.__init_subclass__(cls, /, *args, **kwargs)`, appended after [`Self::ObjectInit`].
+    #[strum(serialize = "object.__init_subclass__")]
+    #[serde(rename = "object.__init_subclass__")]
+    ObjectInitSubclass,
+    /// `type.mro(cls, /)`, appended after [`Self::ObjectInitSubclass`].
+    #[strum(serialize = "type.mro")]
+    #[serde(rename = "type.mro")]
+    TypeMro,
+    /// `BaseException.__new__(cls, *args, **kwargs)`, appended after [`Self::TypeMro`].
+    #[strum(serialize = "BaseException.__new__")]
+    #[serde(rename = "BaseException.__new__")]
+    ExceptionNew,
+    /// `BaseException.__init__(self, *args, **kwargs)`, appended after [`Self::ExceptionNew`].
+    #[strum(serialize = "BaseException.__init__")]
+    #[serde(rename = "BaseException.__init__")]
+    ExceptionInit,
 }

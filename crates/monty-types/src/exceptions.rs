@@ -580,7 +580,8 @@ impl ExcType {
 
     /// Returns the direct bases of this exception type.
     ///
-    /// In CPython, `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`.
+    /// In CPython, `io.UnsupportedOperation` and several `decimal` exception classes
+    /// inherit from multiple base exceptions.
     /// All other exception types have a single parent (or none for `BaseException`).
     #[must_use]
     pub const fn direct_bases(self) -> &'static [Self] {
@@ -1051,5 +1052,40 @@ pub fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: 
     } else {
         let last = end - 1;
         format!("'{codec}' codec can't decode bytes in position {start}-{last}: {reason}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use strum::VariantNames;
+
+    use super::ExcType;
+
+    #[test]
+    fn every_exc_type_has_consistent_bases_mro_and_subclass_checks() {
+        for &name in ExcType::VARIANTS {
+            let exc: ExcType = name.parse().expect("every VariantNames entry parses");
+            let bases = exc.direct_bases();
+            if exc == ExcType::BaseException {
+                assert!(bases.is_empty());
+                assert_eq!(exc.parent(), None);
+            } else {
+                assert!(!bases.is_empty(), "{name} should have at least one direct base");
+                assert_eq!(exc.parent(), bases.first().copied());
+            }
+
+            let mro = exc.mro();
+            assert_eq!(mro.first(), Some(&exc));
+            assert_eq!(mro.last(), Some(&ExcType::BaseException));
+            for &base in bases {
+                assert!(mro.contains(&base), "{name} MRO missing direct base {base}");
+            }
+            for &ancestor in &mro {
+                assert!(
+                    exc.is_subclass_of(ancestor),
+                    "{name}.is_subclass_of({ancestor}) should hold for every MRO entry"
+                );
+            }
+        }
     }
 }

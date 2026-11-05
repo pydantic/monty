@@ -55,6 +55,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -87,6 +88,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -123,6 +125,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -1753,6 +1756,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for module not found errors
+            origin_heap_id: None,
         })
     }
 
@@ -2899,6 +2903,7 @@ impl SimpleException {
             frame: Some(Box::new(RawStackFrame::from_position(position))),
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 
@@ -2973,6 +2978,9 @@ pub struct ExceptionRaise {
     /// for attribute SET errors. This flag allows error creators to specify
     /// whether the caret should be hidden.
     pub hide_caret: bool,
+    /// Originating heap ID if the exception was instantiated on the heap.
+    #[serde(default)]
+    pub origin_heap_id: Option<HeapId>,
 }
 
 impl From<SimpleException> for ExceptionRaise {
@@ -2982,6 +2990,7 @@ impl From<SimpleException> for ExceptionRaise {
             frame: None,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 }
@@ -2993,6 +3002,7 @@ impl From<MontyException> for ExceptionRaise {
             frame: None,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 }
@@ -3272,6 +3282,7 @@ fn import_error_without_caret(msg: String) -> RunError {
         frame: None,
         snippet_frame: None,
         hide_caret: true,
+        origin_heap_id: None,
     })
 }
 

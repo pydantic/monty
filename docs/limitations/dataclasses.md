@@ -161,7 +161,7 @@ field after a defaulted one
     - Subclassing with `@dataclass` (e.g. `@dataclass class Child(Parent): y: int`) only
         includes fields declared directly on the child class; parent fields are omitted from
         the synthesized constructor and `__dataclass_fields__`. Decorating a subclass with `@dataclass`
-        does not yet merge parent dataclass fields or validate frozen/non-frozen inheritance mismatch at decoration time.
+        does not yet merge parent dataclass fields (frozen/non-frozen inheritance mismatch is validated at decoration time).
     - Plain subclasses without `@dataclass` (e.g. `class Sub(Parent): pass`) inherit the parent dataclass's
         synthesized methods (`__init__`, `__repr__`, `__eq__`) via standard MRO lookup.
 

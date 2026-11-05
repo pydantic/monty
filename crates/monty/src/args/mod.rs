@@ -21,7 +21,7 @@ use crate::{
     intern::{Interns, StringId},
     object_bridge::{CallArgsExt, GraphExporter},
     parse::ParseError,
-    types::{Dict, dict::DictIntoIter},
+    types::{Dict, allocate_tuple, dict::DictIntoIter},
     value::{EitherStr, Value},
 };
 
@@ -68,6 +68,17 @@ impl ArgValues {
             Self::Empty | Self::One(_) | Self::Two(_, _) => false,
             Self::Kwargs(kwargs) | Self::ArgsKargs { kwargs, .. } => !kwargs.is_empty(),
         }
+    }
+
+    /// Collects positional arguments cloned with the heap into an allocated tuple `Value`.
+    pub(crate) fn positional_tuple(&self, heap: &Heap) -> Value {
+        let pos_items: Vec<Value> = match self {
+            Self::Empty | Self::Kwargs(_) => vec![],
+            Self::One(v) => vec![v.clone_with_heap(heap)],
+            Self::Two(a, b) => vec![a.clone_with_heap(heap), b.clone_with_heap(heap)],
+            Self::ArgsKargs { args, .. } => args.iter().map(|v| v.clone_with_heap(heap)).collect(),
+        };
+        allocate_tuple(pos_items.into(), heap)
     }
 
     /// Rejects keywords before a positional-only function's arity or conversion checks.

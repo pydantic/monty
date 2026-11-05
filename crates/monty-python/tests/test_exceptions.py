@@ -622,3 +622,19 @@ def test_non_ascii_earlier_line_does_not_shift_columns(monty_run: RunMonty):
             }
         ]
     )
+
+
+def test_custom_exception_type_name(monty_run: RunMonty):
+    code = """
+class MyCustomError(ValueError):
+    pass
+
+raise MyCustomError('something went wrong')
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code)
+    err = exc_info.value
+    assert isinstance(err.exception(), ValueError)
+    assert err.custom_type_name == 'MyCustomError'
+    assert str(err) == 'MyCustomError: something went wrong'
+    assert repr(err) == 'MontyRuntimeError(MyCustomError: something went wrong)'

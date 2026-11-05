@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid, PrintWriter, ResourceLimits, ResourceTracker};
 
 fn run(code: &str) {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
@@ -979,7 +979,12 @@ assert D.mro() == [D, B, C, A, object]
 assert bool.mro() == [bool, int, object]
 assert object.mro() == [object]
 assert int.mro() == [int, object]
-assert type.mro() == [type, object]
+assert type.mro(type) == [type, object]
+try:
+    type.mro()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'unbound method type.mro() needs an argument' in str(e)
 
 # Calling mro with arguments raises TypeError
 try:
@@ -998,7 +1003,7 @@ try:
     type.mro(1)
     assert False, "expected TypeError"
 except TypeError as e:
-    assert "type.mro() takes no arguments (1 given)" in str(e)
+    assert "descriptor 'mro' for 'type' objects doesn't apply to a 'int' object" in str(e)
 
 # Reassignment protection
 try:
@@ -1128,18 +1133,26 @@ try:
 except TypeError as e:
     assert str(e) == "object.__new__(): not enough arguments"
 
-# Calling object.__new__ with extra arguments or kwargs on non-exception classes
+# Calling object.__new__ with extra arguments when __new__ is overridden
+class PlainWithNew:
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+
 try:
-    object.__new__(Plain, 1)
+    object.__new__(PlainWithNew, 1)
     assert False, "expected TypeError"
 except TypeError as e:
     assert str(e) == "object.__new__() takes exactly one argument (the type to instantiate)"
 
 try:
-    object.__new__(Plain, x=1)
+    object.__new__(PlainWithNew, x=1)
     assert False, "expected TypeError"
 except TypeError as e:
     assert str(e) == "object.__new__() takes exactly one argument (the type to instantiate)"
+
+# When __init__ is overridden without overriding __new__, extra args are accepted
+p_extra = object.__new__(Plain, 1, x=2)
+assert isinstance(p_extra, Plain)
 
 # Calling __new__ on built-in exception types
 v1 = ValueError.__new__(ValueError)
@@ -1531,8 +1544,22 @@ class MethodSpoof:
         __class__ = 42
         return super()
 
-s = MethodSpoof().f()
-assert s.__thisclass__ is MethodSpoof
+try:
+    MethodSpoof().f()
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'super(): __class__ cell not found'
+
+def make_outer_spoof():
+    __class__ = 42
+    class OuterSpoof:
+        def f(self):
+            return super()
+    return OuterSpoof
+
+OuterSpoof = make_outer_spoof()
+s = OuterSpoof().f()
+assert s.__thisclass__ is OuterSpoof
 ");
 }
 
@@ -1910,7 +1937,12 @@ assert type.__name__ == 'type'
 assert type.__class__ == type
 assert type.__bases__ == (object,)
 assert type.__mro__ == (type, object)
-assert type.mro() == [type, object]
+assert type.mro(type) == [type, object]
+try:
+    type.mro()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'unbound method type.mro() needs an argument' in str(e)
 
 assert type(type) == type
 assert type(ValueError) == type
@@ -1945,7 +1977,10 @@ assert not issubclass(MyCustom, int)
         "type.nonexistent_attr",
         "type object 'type' has no attribute 'nonexistent_attr'",
     );
-    run_err("type.mro(1)", "type.mro() takes no arguments (1 given)");
+    run_err(
+        "type.mro(1)",
+        "descriptor 'mro' for 'type' objects doesn't apply to a 'int' object",
+    );
     run_err(
         "ValueError.__new__(TypeError)",
         "ValueError.__new__(TypeError): TypeError is not a subtype of ValueError",
@@ -1992,7 +2027,7 @@ assert d.val == 42
 
 class E(Exception):
     def __new__(cls, *args, **kwargs):
-        return object.__new__(cls)
+        return super().__new__(cls)
 
 e = E('hello', 100)
 assert e.args == ('hello', 100)
@@ -2003,9 +2038,9 @@ assert e.args == ('hello', 100)
 class E(Exception):
     def __new__(cls, *args, **kwargs):
         return object.__new__(cls)
-E(x=1)
+E()
 ",
-        "E() takes no keyword arguments",
+        "object.__new__(E) is not safe, use E.__new__()",
     );
 
     run_err(
@@ -2014,9 +2049,9 @@ class E2(Exception):
     def __new__(cls, *args, **kwargs):
         dyn = type('DynExc', (cls,), {})
         return object.__new__(dyn)
-E2(x=1)
+E2()
 ",
-        "DynExc() takes no keyword arguments",
+        "object.__new__(DynExc) is not safe, use DynExc.__new__()",
     );
 
     run_err(
@@ -2027,10 +2062,7 @@ E2(x=1)
         "object.__new__(type)",
         "object.__new__(type) is not safe, use type.__new__()",
     );
-    run_err(
-        "class A: pass\nobject.__new__(A, 1, 2)",
-        "object.__new__() takes exactly one argument",
-    );
+    run_err("class A: pass\nobject.__new__(A, 1, 2)", "A() takes no arguments");
 }
 
 #[test]
@@ -2075,8 +2107,8 @@ assert repr(c_exc) == 'CycleExc(...)'
 ");
 
     run_err(
-        "class CycleExc(Exception): pass\nc = CycleExc()\nc.args = 'not a tuple'\nrepr(c)",
-        "exception args must be a tuple",
+        "class CycleExc(Exception): pass\nc = CycleExc()\nc.args = 123",
+        "'int' object is not iterable",
     );
 
     run_err(
@@ -2196,15 +2228,24 @@ def f(self):
     return 1
 
 def g(self):
-    return super().m1() + 2
+    return super(Child, self).m1() + 2
+
+def free_zero_super(self):
+    return super().m1()
 
 # Base has same function bound to multiple names
 Base = type('Base', (), {'m1': f, 'm2': f, 'm3': f})
-Child = type('Child', (Base,), {'m1': g, 'm2': g})
+Child = type('Child', (Base,), {'m1': g, 'm2': g, 'bad': free_zero_super})
 
 c = Child()
 assert c.m1() == 3
 assert c.m2() == 3
+
+try:
+    c.bad()
+    assert False, 'expected RuntimeError'
+except RuntimeError as e:
+    assert str(e) == 'super(): __class__ cell not found'
 ");
 
     let code = r"
@@ -2218,6 +2259,674 @@ Base = type('Base', (), ns)
     assert!(result.is_err(), "should exceed time limit in type.__new__");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn custom_exception_caught_does_not_execute_str_or_leak_unwinding_exception() {
+    run(r"
+str_calls = 0
+
+class CustomErr(Exception):
+    def __str__(self):
+        global str_calls
+        str_calls += 1
+        return 'formatted'
+
+class Trigger:
+    def __repr__(self):
+        raise CustomErr()
+
+try:
+    repr(Trigger())
+except CustomErr:
+    pass
+
+assert str_calls == 0
+");
+}
+
+#[test]
+fn custom_exception_unhandled_str_memory_or_timeout_propagates_fatal() {
+    let code = r"
+class MemEscape(Exception):
+    def __str__(self):
+        _ = [0] * 100_000_000
+        return 'boom'
+
+raise MemEscape()
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_memory(1024 * 1024);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err());
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+
+    let code_timeout = r"
+class TimeoutEscape(Exception):
+    def __str__(self):
+        while True:
+            pass
+
+raise TimeoutEscape()
+";
+    let mut ex = MontyRun::new(code_timeout.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_nanos(1));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err());
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
+fn multi_base_builtin_exception_mro_and_subtyping() {
+    run(r"
+import decimal
+
+class CustomDivZero(decimal.DivisionByZero):
+    pass
+
+assert issubclass(CustomDivZero, decimal.DivisionByZero)
+assert issubclass(CustomDivZero, decimal.DecimalException)
+assert issubclass(CustomDivZero, ZeroDivisionError)
+assert issubclass(CustomDivZero, ArithmeticError)
+assert issubclass(CustomDivZero, Exception)
+
+try:
+    raise CustomDivZero('division')
+except ZeroDivisionError as err:
+    assert str(err) == 'division'
+except Exception:
+    assert False, 'should have been caught by ZeroDivisionError'
+else:
+    assert False, 'should have raised'
+");
+}
+
+#[test]
+fn multiple_builtin_exception_bases_instantiation_and_new() {
+    run(r"
+class DualErr(KeyError, AttributeError):
+    pass
+
+assert issubclass(DualErr, KeyError)
+assert issubclass(DualErr, AttributeError)
+
+# Direct instantiation
+err = DualErr('test')
+assert isinstance(err, KeyError)
+assert isinstance(err, AttributeError)
+
+# __new__ dispatch through either base
+err_attr = AttributeError.__new__(DualErr, 'attr')
+assert isinstance(err_attr, DualErr)
+assert isinstance(err_attr, AttributeError)
+assert isinstance(err_attr, KeyError)
+
+err_key = KeyError.__new__(DualErr, 'key')
+assert isinstance(err_key, DualErr)
+assert isinstance(err_key, KeyError)
+assert isinstance(err_key, AttributeError)
+");
+}
+
+#[test]
+fn custom_key_error_formats_with_single_quote_repr() {
+    run(r#"
+class CustomKeyErr(ValueError, KeyError):
+    pass
+
+err = CustomKeyErr('my_missing_key')
+assert str(err) == "'my_missing_key'"
+"#);
+}
+
+#[test]
+fn exception_args_coerced_to_tuple() {
+    run(r"
+class MyErr(Exception):
+    pass
+
+err = MyErr(1, 2)
+assert err.args == (1, 2)
+assert type(err.args) is tuple
+
+err.args = [3, 4]
+assert err.args == (3, 4)
+assert type(err.args) is tuple
+
+err.args = (x for x in [5, 6])
+assert err.args == (5, 6)
+assert type(err.args) is tuple
+
+object.__setattr__(err, 'args', [7, 8])
+assert err.args == (7, 8)
+assert type(err.args) is tuple
+
+try:
+    err.args = 123
+except TypeError as e:
+    assert 'iterable' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+try:
+    object.__setattr__(err, 'args', 123)
+except TypeError as e:
+    assert 'iterable' in str(e)
+else:
+    assert False, 'expected TypeError'
+");
+}
+
+#[test]
+fn custom_exception_has_custom_type_name_and_summary() {
+    let code = r"
+class SpecialFailure(ValueError):
+    pass
+
+raise SpecialFailure('bad value')
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::ValueError);
+    assert_eq!(err.custom_type_name(), Some("SpecialFailure"));
+    assert_eq!(err.summary(), "SpecialFailure: bad value");
+}
+
+#[test]
+fn descriptor_parity_and_hasattr() {
+    run(r"
+class A:
+    pass
+
+class B(A):
+    def test_super(self):
+        s = super()
+        assert hasattr(s, '__init__')
+        assert hasattr(s, '__init_subclass__')
+        assert hasattr(s, '__new__')
+        assert s.__init__() is None
+        assert s.__init_subclass__() is None
+
+        # object.__init__ extra args error
+        try:
+            s.__init__(1, 2)
+        except TypeError as e:
+            assert 'takes exactly one argument' in str(e)
+        else:
+            assert False, 'expected TypeError'
+
+b = B()
+b.test_super()
+
+# Class descriptors
+assert hasattr(A, 'mro')
+assert hasattr(A, '__init_subclass__')
+assert hasattr(A, '__new__')
+assert hasattr(A, '__init__')
+
+assert A.mro() == [A, object]
+assert type.mro(A) == [A, object]
+assert A.__init_subclass__() is None
+
+a = A.__new__(A)
+assert isinstance(a, A)
+assert A.__init__(a) is None
+
+# Instance descriptors
+inst = A()
+assert hasattr(inst, '__init__')
+assert hasattr(inst, '__init_subclass__')
+assert hasattr(inst, '__new__')
+assert not hasattr(inst, 'mro')
+
+assert inst.__init__() is None
+assert inst.__init_subclass__() is None
+a2 = inst.__new__(A)
+assert isinstance(a2, A)
+
+# Subclass hook binding
+hook_called = []
+class HookBase:
+    def __init_subclass__(cls, **kwargs):
+        hook_called.append((cls, kwargs))
+
+assert hasattr(HookBase, '__init_subclass__')
+h = HookBase()
+assert hasattr(h, '__init_subclass__')
+h.__init_subclass__(x=42)
+assert hook_called == [(HookBase, {'x': 42})]
+
+# Inherited __init_subclass__ called directly and via getattr on subclass
+class HookChild(HookBase):
+    pass
+
+hook_called.clear()
+HookChild.__init_subclass__(y=99)
+fn_hook = HookChild.__init_subclass__
+fn_hook(z=100)
+assert hook_called == [(HookChild, {'y': 99}), (HookChild, {'z': 100})]
+
+# Custom mro method on user class takes precedence over type.mro on class/instance
+class CustomMro:
+    def mro(self):
+        return 'instance_mro'
+
+assert CustomMro().mro() == 'instance_mro'
+assert CustomMro.mro(CustomMro()) == 'instance_mro'
+assert type.mro(CustomMro) == [CustomMro, object]
+
+# Exception subclass __new__ and __init__ descriptor parity
+class SubExc(ValueError):
+    pass
+
+fn_ve_new = ValueError.__new__
+e1 = fn_ve_new(SubExc, 'a', 1)
+assert isinstance(e1, SubExc) and e1.args == ('a', 1)
+
+fn_sub_new = SubExc.__new__
+e2 = fn_sub_new(SubExc, 'b')
+assert isinstance(e2, SubExc) and e2.args == ('b',)
+
+e3 = SubExc.__new__(SubExc, 'c')
+assert isinstance(e3, SubExc) and e3.args == ('c',)
+e4 = e3.__new__(SubExc, 'd')
+assert isinstance(e4, SubExc) and e4.args == ('d',)
+
+fn_init = e4.__init__
+fn_init('updated', 2)
+assert e4.args == ('updated', 2)
+
+class SubExcSuper(SubExc):
+    def __init__(self, msg):
+        fn = super().__init__
+        fn(msg, 'via_super')
+
+    def make(cls):
+        fn = super().__new__
+        return fn(cls, 'made')
+
+e5 = SubExcSuper('hi')
+assert e5.args == ('hi', 'via_super')
+e6 = SubExcSuper.make(SubExcSuper)
+assert isinstance(e6, SubExcSuper) and e6.args == ('made',)
+");
+}
+
+#[test]
+fn dynamic_annotations_isolation() {
+    run(r"
+class AnnBase:
+    x: int
+    y: str
+
+assert AnnBase.__annotations__ == {'x': int, 'y': str}
+
+DynSub = type('DynSub', (AnnBase,), {})
+a1 = DynSub.__annotations__
+a2 = DynSub.__annotations__
+assert a1 == {}
+assert a1 is a2
+a1['z'] = 'bool'
+assert DynSub.__annotations__ == {'z': 'bool'}
+# Confirm base annotations are untouched
+assert AnnBase.__annotations__ == {'x': int, 'y': str}
+");
+}
+
+#[test]
+fn class_mro_write_protection() {
+    run(r"
+class A:
+    pass
+
+try:
+    A.__mro__ = ()
+except AttributeError as e:
+    assert 'attribute \'__mro__\' of \'type\' objects is not writable' in str(e)
+else:
+    assert False, 'expected AttributeError'
+");
+}
+
+#[test]
+fn object_new_safety_and_excess_args() {
+    run(r"
+# object.__new__(object)
+try:
+    object.__new__(object)
+except TypeError as e:
+    assert 'cannot create \'object\' instances' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Builtin exception rejection
+try:
+    object.__new__(ValueError)
+except TypeError as e:
+    assert 'object.__new__(ValueError) is not safe, use ValueError.__new__()' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Custom exception rejection
+class MyCustomExc(Exception):
+    pass
+
+try:
+    object.__new__(MyCustomExc)
+except TypeError as e:
+    assert 'object.__new__(MyCustomExc) is not safe, use MyCustomExc.__new__()' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Excess args when neither __new__ nor __init__ is overridden
+class Bare:
+    pass
+
+try:
+    object.__new__(Bare, 1, 2)
+except TypeError as e:
+    assert 'Bare() takes no arguments' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Excess args when __new__ is overridden
+class CustomNew:
+    def __new__(cls, *args, **kwargs):
+        return super().__new__(cls)
+
+try:
+    object.__new__(CustomNew, 1)
+except TypeError as e:
+    assert 'object.__new__() takes exactly one argument' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Excess args when __init__ is overridden (allowed!)
+class CustomInit:
+    def __init__(self, x, y=10):
+        self.x = x
+        self.y = y
+
+inst = object.__new__(CustomInit, 1, y=20)
+assert isinstance(inst, CustomInit)
+assert not hasattr(inst, 'x')  # __init__ hasn't run yet
+inst.__init__(1, y=20)
+assert inst.x == 1
+assert inst.y == 20
+");
+}
+
+#[test]
+fn dataclass_frozen_inheritance_mismatch() {
+    run(r"
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class FrozenBase:
+    x: int
+
+try:
+    @dataclass(frozen=False)
+    class NonFrozenSub(FrozenBase):
+        y: int
+except TypeError as e:
+    assert 'cannot inherit non-frozen dataclass from a frozen one' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+@dataclass(frozen=False)
+class NonFrozenBase:
+    x: int
+
+try:
+    @dataclass(frozen=True)
+    class FrozenSub(NonFrozenBase):
+        y: int
+except TypeError as e:
+    assert 'cannot inherit frozen dataclass from a non-frozen one' in str(e)
+else:
+    assert False, 'expected TypeError'
+
+# Multi-level inheritance through intermediate plain class
+class Intermediate(FrozenBase):
+    pass
+
+try:
+    @dataclass(frozen=False)
+    class Child(Intermediate):
+        z: int
+except TypeError as e:
+    assert 'cannot inherit non-frozen dataclass from a frozen one' in str(e)
+else:
+    assert False, 'expected TypeError'
+");
+}
+
+#[test]
+fn super_class_cell_and_subclass_ops_survive_dump_restore() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        r"
+class Base:
+    def val(self):
+        return 10
+    def __add__(self, other):
+        return 'base_add'
+    def __eq__(self, other):
+        return 'base_eq'
+
+def add_one(cls):
+    class Wrapped(cls):
+        def val(self):
+            return (lambda s: super().val() + 1)(self)
+        def cls_obj(self):
+            return (lambda: __class__)()
+    return Wrapped
+
+C = add_one(add_one(Base))
+
+class Sub(Base):
+    def __radd__(self, other):
+        return 'sub_radd'
+    def __eq__(self, other):
+        return 'sub_eq'
+",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    let Session::Idle(mut restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected an idle session");
+    };
+    let output = restored
+        .feed_run(
+            "assert C().cls_obj() is C\nassert Base() + Sub() == 'sub_radd'\nassert (Base() == Sub()) == 'sub_eq'\nC().val()",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(output, MontyObject::int(12));
+}
+
+#[test]
+fn host_class_type_inheritance_issubclass_super_and_new() {
+    let code = r#"
+class Plain:
+    pass
+
+assert issubclass(host_cls, host_cls)
+assert not issubclass(host_cls, other_cls)
+assert issubclass(host_cls, object)
+assert not issubclass(host_cls, int)
+assert not issubclass(host_cls, Plain)
+assert not issubclass(Plain, host_cls)
+assert not issubclass(int, host_cls)
+assert isinstance(host_cls, type)
+assert isinstance(host_inst, host_cls)
+assert not isinstance(host_inst, other_cls)
+
+s_inst = super(host_cls, host_inst)
+assert repr(s_inst) == "<super: <class 'HostPt'>, <HostPt object>>"
+assert s_inst.__self_class__ is host_cls
+
+s_cls = super(object, host_cls)
+assert repr(s_cls) == "<super: <class 'object'>, <HostPt object>>"
+assert s_cls.__self_class__ is host_cls
+
+try:
+    super(host_cls, 42)
+    assert False
+except TypeError as e:
+    assert str(e) == 'super(type, obj): obj (instance of int) is not an instance or subtype of type (HostPt).'
+
+try:
+    object.__new__(host_cls)
+    assert False
+except TypeError as e:
+    assert str(e) == 'object.__new__(HostPt) is not safe, use HostPt.__new__()'
+
+try:
+    ValueError.__new__(host_cls)
+    assert False
+except TypeError as e:
+    assert str(e) == 'ValueError.__new__(HostPt): HostPt is not a subtype of ValueError'
+
+1
+"#;
+    let host_cls = MontyObject::class_type("HostPt", MontyUuid::from_u128(10), true, false, []);
+    let host_inst = MontyObject::class_instance(
+        MontyObject::class_type("HostPt", MontyUuid::from_u128(10), true, false, []),
+        MontyUuid::from_u128(11),
+        [],
+    );
+    let other_cls = MontyObject::class_type("OtherHost", MontyUuid::from_u128(12), true, false, []);
+    let mut ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["host_cls".to_owned(), "host_inst".to_owned(), "other_cls".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let res = ex.run_no_limits(vec![host_cls, host_inst, other_cls]).unwrap();
+    assert_eq!(res, MontyObject::int(1));
+}
+
+#[test]
+fn unhandled_custom_exception_str_resource_limit_is_uncatchable() {
+    let width = i64::try_from(isize::MAX as usize / 2 + 1).unwrap();
+
+    let unhandled_code = r"
+class OomStrError(Exception):
+    def __str__(self):
+        return ''.ljust(width, 'é')
+
+raise OomStrError()
+";
+    let err = MontyRun::new(
+        unhandled_code.to_owned(),
+        "test.py",
+        vec!["width".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![MontyObject::int(width)])
+    .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert_eq!(err.custom_type_name(), None);
+
+    let repr_code = r"
+class OomRepr:
+    def __repr__(self):
+        return ''.ljust(width, 'é')
+
+try:
+    repr(OomRepr())
+except BaseException:
+    pass
+";
+    let err2 = MontyRun::new(
+        repr_code.to_owned(),
+        "test.py",
+        vec!["width".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(vec![MontyObject::int(width)])
+    .unwrap_err();
+    assert_eq!(err2.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn pr4_review_findings_edge_cases() {
+    run(r#"
+class NewOnly:
+    def __new__(cls, *args, **kwargs):
+        return object.__new__(cls)
+
+object.__init__(NewOnly(), 1, 2, a=3)
+x = NewOnly(1, 2, a=3)
+assert isinstance(x, NewOnly)
+
+class InitOnly:
+    def __init__(self, *args, **kwargs):
+        pass
+
+try:
+    object.__init__(InitOnly(), 1, 2)
+except TypeError as e:
+    assert "object.__init__() takes exactly one argument (the instance to initialize)" in str(e)
+else:
+    assert False, "expected TypeError on InitOnly"
+
+class Neither:
+    pass
+
+try:
+    object.__init__(Neither(), 1, 2)
+except TypeError as e:
+    assert "Neither.__init__() takes exactly one argument (the instance to initialize)" in str(e)
+else:
+    assert False, "expected TypeError on Neither"
+
+# 2. BaseException.__init__ error message on > 1 args, and non-string arg conversion
+e = ValueError("orig")
+BaseException.__init__(e, 123)
+assert e.args == ("123",)
+
+try:
+    BaseException.__init__(e, "a", "b")
+except TypeError as err:
+    assert "exceptions can only be called with zero or one string argument" in str(err)
+else:
+    assert False, "expected TypeError on multi-arg BaseException.__init__"
+
+# 3. type.mro on namedtuple
+from collections import namedtuple
+Pt = namedtuple('Pt', ['x', 'y'])
+assert type.mro(Pt) == [Pt, tuple, object]
+assert Pt.mro() == [Pt, tuple, object]
+
+# 4. instance __annotations__ isolation
+class AnnClass:
+    x: int
+
+inst = AnnClass()
+assert not hasattr(inst, '__annotations__')
+try:
+    inst.__annotations__
+except AttributeError:
+    pass
+else:
+    assert False, "expected AttributeError for inst.__annotations__"
+
+# Setting explicitly on instance should work
+inst.__annotations__ = {'y': 'str'}
+assert hasattr(inst, '__annotations__')
+assert inst.__annotations__ == {'y': 'str'}
+"#);
 }
 
 #[test]
@@ -2420,4 +3129,121 @@ r = repr(e)
 assert r.startswith("BigErr('item', 'item',")
 assert r.endswith("'item')")
 "#);
+}
+
+#[test]
+fn class_annotations_call_syntax_no_panic() {
+    run_err(
+        r"
+class Foo:
+    x: int
+
+Foo.__annotations__([1, 2])
+",
+        "'dict' object is not callable",
+    );
+}
+
+#[test]
+fn type_mro_unbound_descriptor() {
+    run(r"
+class A:
+    pass
+
+assert type.mro(type) == [type, object]
+assert type.mro(A) == [A, object]
+
+m = type.mro
+assert m(A) == [A, object]
+assert m(int) == [int, object]
+");
+    run_err("type.mro()", "unbound method type.mro() needs an argument");
+    run_err("getattr(type, 'mro')()", "unbound method type.mro() needs an argument");
+}
+
+#[test]
+fn frozen_dataclass_exception_super_init() {
+    run(r"
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class HttpError(Exception):
+    status: int
+
+    def __post_init__(self):
+        super().__init__(f'HTTP {self.status}')
+
+err = HttpError(500)
+assert err.status == 500
+assert err.args == ('HTTP 500',)
+assert str(err) == 'HTTP 500'
+");
+}
+
+#[test]
+fn annotate_func_subclass_is_none() {
+    run(r"
+class AnnBase:
+    x: int
+
+class AnnSub(AnnBase):
+    pass
+
+assert AnnBase.__annotate_func__ is not None
+assert AnnSub.__annotate_func__ is None
+");
+}
+
+#[test]
+fn instance_annotations_and_custom_class_lookup() {
+    run(r"
+AnnExplicit = type('AnnExplicit', (), {'__annotations__': {'a': int}})
+inst = AnnExplicit()
+
+# Instance lookup does not find class annotations
+try:
+    _ = inst.__annotations__
+    assert False, 'expected AttributeError'
+except AttributeError:
+    pass
+
+try:
+    inst.__annotations__()
+    assert False, 'expected AttributeError'
+except AttributeError:
+    pass
+
+class C:
+    __class__ = lambda self: 'custom'
+
+c = C()
+assert c.__class__() == 'custom'
+assert (c.__class__)() == 'custom'
+assert type(c) is C
+");
+}
+
+#[test]
+fn object_init_excess_args_and_super_setattr() {
+    run(r"
+assert object.__init__(1, 2) is None
+assert object.__init__('hello', k=1) is None
+assert object.__init__((1, 2), 'extra') is None
+
+class SuperSet(object):
+    def set_val(self, k, v):
+        super().__setattr__(k, v)
+
+s = SuperSet()
+s.set_val('x', 99)
+assert s.x == 99
+");
+    run_err(
+        "object.__init__(ValueError('orig'), 1)",
+        "object.__init__() takes exactly one argument (the instance to initialize)",
+    );
+    run_err(
+        "object.__init__([1, 2], 'extra')",
+        "object.__init__() takes exactly one argument (the instance to initialize)",
+    );
 }
