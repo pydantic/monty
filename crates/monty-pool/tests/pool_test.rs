@@ -1694,6 +1694,156 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     );
 }
 
+/// The first request is written behind its session's `Configure`, and once
+/// that is answered the rest of the write is the request's turn: a worker that
+/// answers and then stops reading is ended by the feed backstop with no
+/// `request_timeout`, typed or raw. Adapted from #1071.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_blocked_first_write_is_bounded_by_the_backstop() {
+    let dir = tempfile::tempdir().unwrap();
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(
+        &replies_path,
+        framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {}))),
+    )
+    .unwrap();
+    // answers the `Configure` but never reads, so a large first request fills the pipe
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+    let (budget, grace) = (Duration::from_millis(100), Duration::from_millis(100));
+    let mut config = PoolConfig::subprocess(&fake);
+    config.request_timeout = None;
+    config.feed_duration_limit_grace = Some(grace);
+    let pool = Pool::new(config).await.unwrap();
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+        ..ReplConfig::default()
+    };
+    let code = format!("{}\n1", "#".repeat(8 * 1024 * 1024));
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.clone(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    for raw in [false, true] {
+        let mut session = pool.checkout(&repl).await.unwrap();
+        let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+        let turn = async {
+            if raw {
+                session.turn_raw(&feed, &mut on_event).await.map(drop)
+            } else {
+                session
+                    .feed(code.as_str(), vec![], vec![], false, &mut no_print)
+                    .await
+                    .map(drop)
+            }
+        };
+        // bounded, so a write the backstop misses fails here rather than hangs;
+        // generous, since the stand-in's start-up comes first
+        let outcome = timeout(Duration::from_secs(30), turn).await;
+        let Ok(Err(PoolError::Timeout { timeout })) = outcome else {
+            panic!("the backstop must end a blocked first write, got {outcome:?}");
+        };
+        assert_eq!(timeout, budget + grace);
+    }
+}
+
+/// A worker's start-up is charged to the `Configure` reply's `request_timeout`,
+/// not to the first feed's limits: a slow-starting worker answering well past
+/// the feed backstop still runs that feed, typed or raw.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_slow_start_is_not_charged_to_the_first_feed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    replies.extend(framed(&child_event(pb::child_event::Kind::Complete(
+        pb::Complete::from(MontyObject::int(2)),
+    ))));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    // starts four times slower than the feed backstop allows
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\nsleep 0.8\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+    let (budget, grace) = (Duration::from_millis(100), Duration::from_millis(100));
+    let mut config = PoolConfig::subprocess(&fake);
+    config.request_timeout = Some(Duration::from_secs(30));
+    config.feed_duration_limit_grace = Some(grace);
+    let pool = Pool::new(config).await.unwrap();
+    let repl = ReplConfig {
+        limits: Some(ResourceLimits::default().max_feed_duration(budget)),
+        ..ReplConfig::default()
+    };
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1 + 1".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+        })),
+        ..pb::ParentRequest::default()
+    };
+    for raw in [false, true] {
+        let mut session = pool.checkout(&repl).await.unwrap();
+        let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+        if raw {
+            let event = session.turn_raw(&feed, &mut on_event).await.unwrap();
+            assert!(
+                matches!(event.kind, Some(pb::child_event::Kind::Complete(_))),
+                "{event:?}"
+            );
+        } else {
+            let event = session
+                .feed("1 + 1", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap();
+            assert_eq!(expect_complete(event), MontyObject::int(2));
+        }
+    }
+}
+
+/// A worker refusing the `Configure` (protocol version skew) writes why and
+/// exits without reading on; its reason is reported even when the first request
+/// behind the `Configure` is too large to finish writing first. Adapted from #1071.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refused_configure_is_reported_whatever_the_request_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let replies = framed(&child_event(pb::child_event::Kind::FatalError(pb::FatalError {
+        message: "unsupported protocol version".to_owned(),
+    })));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nexit 4\n", replies_path.display()),
+    );
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    // the larger input overflows any pipe buffer, so its write fails
+    for input_len in [0, 8 * 1024 * 1024] {
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let input = MontyObject::string("x".repeat(input_len));
+        let err = session
+            .feed("data", vec![("data".to_owned(), input)], vec![], false, &mut no_print)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "monty worker crashed: unsupported protocol version (exit status: 4)"
+        );
+    }
+}
+
 /// An event with no `kind` ends no turn on the raw path. Every wire field is
 /// optional, so a hostile worker can send one whose oneof is unset — it must
 /// not reach the raw driver's client as a successful turn-ender.
