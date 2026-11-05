@@ -741,7 +741,19 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
             Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
         }
         Some(member) => Some(member),
-        None => None,
+        None => {
+            if let HeapData::Class(cls) = vm.heap.get(class_id)
+                && cls.base_exception().is_some()
+            {
+                match attr {
+                    "__context__" | "__cause__" => Some(Value::None),
+                    "__suppress_context__" => Some(Value::Bool(false)),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
     }
 }
 
