@@ -43,6 +43,7 @@ pub mod random;
 pub mod range;
 pub mod re_match;
 pub mod re_pattern;
+mod re_syntax;
 pub mod set;
 pub mod slice;
 pub mod str;
@@ -58,7 +59,7 @@ pub mod union;
 
 pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
-pub(crate) use class::{Class, ClassAnnotations};
+pub(crate) use class::Class;
 pub(crate) use complex::Complex;
 pub(crate) use csv::CsvObject;
 pub(crate) use deque::Deque;

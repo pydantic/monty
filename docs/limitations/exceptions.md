@@ -54,6 +54,9 @@ arguments, so `MyError(1, 2, 3)` sets `exc.args == (1, 2, 3)`.
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
     `{}[1]` gives `KeyError('1')` where CPython gives `KeyError(1)`, and a
     `bytes` key gives `KeyError("b'a'")`.
+    The key's `__str__` therefore runs when the `KeyError` is raised, which CPython never does.
+    An exception from it is replaced by the type name (`KeyError('<K>')`), but a resource limit hit inside it
+    ends the run with `MemoryError` or `TimeoutError` where CPython raises a plain `KeyError`.
 
 - `repr(exc)` — `ClassName('message')` matching CPython, **except**
     `UnicodeDecodeError`/`UnicodeEncodeError`: CPython reprs these from their

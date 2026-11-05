@@ -296,6 +296,16 @@ assert 2 * tri == (1, 2, 3, 1, 2, 3), 'reflected repetition'
 assert tri * 1 == (1, 2, 3), 'repetition by one'
 assert tri * 0 == (), 'repetition by zero'
 assert tri * -1 == (), 'negative repetition is empty'
+try:
+    tri * 2**62
+    assert False, 'expected tri * 2**62 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    tri * 2**63
+    assert False, 'expected tri * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
 
 # __getnewargs__ returns the plain tuple of values (used by copy/pickle)
 assert tri.__getnewargs__() == (1, 2, 3), '__getnewargs__ returns the values'

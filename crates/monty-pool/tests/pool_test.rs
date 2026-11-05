@@ -24,8 +24,8 @@ use std::{
 
 use insta::assert_snapshot;
 use monty_pool::{
-    DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig,
-    ResumeValue, TurnEvent, on_print_sync,
+    Checkout, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture,
+    ReplConfig, ResumeValue, TurnEvent, on_print_sync,
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
@@ -70,7 +70,7 @@ fn expect_complete(event: TurnEvent) -> MontyObject {
 /// Mount-covered calls surface like any other suspension now, so a test that
 /// only cares about the *result* of mounted I/O runs its feed through this.
 async fn feed_with_mounts(
-    checkout: &mut monty_pool::Checkout,
+    checkout: &mut Checkout,
     result: Result<TurnEvent, PoolError>,
 ) -> Result<TurnEvent, PoolError> {
     let event = result?;
@@ -1985,6 +1985,116 @@ async fn os_policy_are_answered_in_the_worker() {
         ])
     );
     session.finish().await.unwrap();
+}
+
+/// A checkout pinned to a fixed clock at `unix_seconds`.
+fn fixed_clock(unix_seconds: i64) -> ReplConfig {
+    ReplConfig {
+        os_policy: OsPolicy {
+            datetime: DateTimeSource::Fixed {
+                unix_seconds,
+                microsecond: 0,
+            },
+            ..OsPolicy::default()
+        },
+        ..ReplConfig::default()
+    }
+}
+
+/// A restored session answers clock calls with the restoring checkout's policy,
+/// both when idle and when resumed from a suspension dumped under another policy.
+#[tokio::test]
+async fn restored_session_takes_the_checkouts_os_policy() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&fixed_clock(1_000)).await.unwrap();
+    let event = session
+        .feed("import time\ntime.time()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(1_000.0));
+    let idle = session.dump().await.unwrap();
+    let event = session
+        .feed("fetch('x')\ntime.time()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
+    let suspended = session.dump().await.unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&fixed_clock(2_000)).await.unwrap();
+    let (event, _script_name) = restored.restore(idle, vec![], &mut no_print).await.unwrap();
+    assert!(event.is_none(), "idle dump should restore without a suspension");
+    let event = restored
+        .feed("time.time()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(2_000.0));
+    restored.finish().await.unwrap();
+
+    let mut restored = pool.checkout(&fixed_clock(3_000)).await.unwrap();
+    let (event, _script_name) = restored.restore(suspended, vec![], &mut no_print).await.unwrap();
+    assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(3_000.0));
+    restored.finish().await.unwrap();
+
+    // every other suspension kind resumes under the restoring policy too
+    let (event, mut restored) = restore_under_new_clock(&pool, "import os\nos.getenv('X')\ntime.time()").await;
+    assert!(matches!(event, Some(TurnEvent::OsCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(4_000.0));
+    restored.finish().await.unwrap();
+
+    let (event, mut restored) = restore_under_new_clock(&pool, "missing\ntime.time()").await;
+    assert!(matches!(event, Some(TurnEvent::NameLookup { .. })), "got {event:?}");
+    let event = restored
+        .resume_name_lookup(Some(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(4_000.0));
+    restored.finish().await.unwrap();
+
+    let code = "import asyncio\nasync def main():\n    await go()\n    return time.time()\nasyncio.run(main())";
+    let (event, mut restored) = restore_under_new_clock(&pool, code).await;
+    let Some(TurnEvent::ResolveFutures { pending_call_ids, .. }) = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    let results = pending_call_ids
+        .into_iter()
+        .map(|id| (id, ResumeValue::Return(MontyObject::none())))
+        .collect();
+    let event = restored.resume_futures(results, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(4_000.0));
+    restored.finish().await.unwrap();
+}
+
+/// Feeds `code` under a clock fixed at 1000 until it suspends (answering an
+/// external call with a future), dumps it, and restores it under a clock fixed at 4000.
+async fn restore_under_new_clock(pool: &Pool, code: &str) -> (Option<TurnEvent>, Checkout) {
+    let mut session = pool.checkout(&fixed_clock(1_000)).await.unwrap();
+    session
+        .feed("import time", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    if matches!(event, TurnEvent::FunctionCall { .. }) {
+        event = session.resume(ResumeValue::Future, &mut no_print).await.unwrap();
+    }
+    assert!(
+        !matches!(event, TurnEvent::Complete(_)),
+        "expected a suspension, got {event:?}"
+    );
+    let state = session.dump().await.unwrap();
+    drop(session);
+    let mut restored = pool.checkout(&fixed_clock(4_000)).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    (event, restored)
 }
 
 #[tokio::test]

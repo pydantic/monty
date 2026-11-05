@@ -309,20 +309,23 @@ pub(crate) trait ExcTypeExt: Sized {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
+    /// An uncatchable error (a resource limit hit inside a user `__str__`) is
+    /// returned as is, so it cannot become a catchable `KeyError`.
     fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
-        let key_str = match key.py_str(vm) {
+        match key.py_str(vm) {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                if let Some(s) = key_value.as_str(vm) {
+                let key_str = if let Some(s) = key_value.as_str(vm) {
                     s.to_owned()
                 } else {
                     format!("<{}>", key.py_type_name(vm))
-                }
+                };
+                SimpleException::new_msg(ExcType::KeyError, key_str).into()
             }
-            Err(_) => format!("<{}>", key.py_type_name(vm)),
-        };
-        SimpleException::new_msg(ExcType::KeyError, key_str).into()
+            Err(err @ RunError::UncatchableExc(_)) => err,
+            Err(_) => SimpleException::new_msg(ExcType::KeyError, format!("<{}>", key.py_type_name(vm))).into(),
+        }
     }
 
     /// Creates a KeyError for popping from an empty set.
@@ -1285,6 +1288,20 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn allocation_too_large() -> RunError {
         SimpleException::new(ExcType::MemoryError, None).into()
+    }
+
+    /// Creates the OverflowError CPython raises when `str * n` would exceed
+    /// `Py_ssize_t` bytes (`'ab' * 2**62`).
+    #[must_use]
+    fn repeated_string_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated string is too long").into()
+    }
+
+    /// Creates the OverflowError CPython raises when `bytes * n` would exceed
+    /// `Py_ssize_t` bytes (`b'ab' * 2**62`).
+    #[must_use]
+    fn repeated_bytes_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated bytes are too long").into()
     }
 
     /// Creates the ValueError `itertools.islice` raises for a non-positive or

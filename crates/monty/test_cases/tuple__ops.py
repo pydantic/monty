@@ -48,6 +48,23 @@ assert () * (2**30) == ()
 assert (2**30) * () == ()
 assert (1, 2) * 1 == (1, 2)
 
+# Counts past `Py_ssize_t`, and results past it in bytes, raise rather than panic
+try:
+    (1, 2) * 2**62
+    assert False, 'expected (1, 2) * 2**62 to raise'
+except MemoryError as exc:
+    assert str(exc) == ''
+try:
+    (1, 2) * 2**63
+    assert False, 'expected (1, 2) * 2**63 to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+try:
+    (1,) * -(2**70)
+    assert False, 'expected (1,) * -(2**70) to raise'
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
 # === Tuple augmented assignment edge cases ===
 t = ([1],)
 try:

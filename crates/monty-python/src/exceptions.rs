@@ -12,15 +12,16 @@
 //! ├── MontyRuntimeError        # Raised when code fails during execution
 //! ├── MontyTypingError         # Raised when type checking finds errors in the code
 //! ├── MontyCrashedError        # Raised when the sandbox dies or times out
-//! ├── MontyDisconnectError     # A remote worker's connection closed (websocket only)
-//! ├── MontyShutdown            # The remote server is shutting down (websocket only)
+//! ├── MontyDisconnectError     # A remote worker's stream ended (remote only)
+//! ├── MontyRefusedError        # The remote server refused to open a session (remote only)
+//! ├── MontyShutdown            # The remote server is shutting down (remote only)
 //! └── MontyConversionError     # A host value that can't be converted into the sandbox
 //! ```
 
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use monty_pool::WebSocketDisconnect;
+use monty_pool::RemoteDisconnect;
 use monty_proto::python::exc_monty_to_py;
 use monty_types::{ExcType, MontyException, SourceRange};
 use pyo3::{
@@ -375,25 +376,26 @@ impl MontyCrashedError {
     }
 }
 
-/// Raised when a remote worker's connection closed without ending its turn
-/// (WebSocket transport only — the local analogue is `MontyCrashedError`).
+/// Raised when a remote worker's stream ended without ending its turn
+/// (remote transport only — the local analogue is `MontyCrashedError`).
 ///
-/// The sandbox may have died, or the server may have dropped the session by
-/// policy: an idle/session/turn timeout, or being over capacity. A client that
-/// only sees the connection go away cannot tell those apart, so this error
-/// deliberately claims no more than that. The request may have run.
-/// Do not replay it automatically.
+/// The sandbox may have died, the connection may have dropped, or the server
+/// may have ended the session by policy: an idle/session/turn timeout, or
+/// being over capacity. A server that did so says which in `status_code`,
+/// `status_message` and `cause`; otherwise this error claims no more than
+/// that the stream went away. The request may have run. Do not replay it
+/// automatically.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyDisconnectError {
-    /// The operation that observed the transport failure.
+    /// The gRPC status code the server ended the stream with, by name.
     #[pyo3(get)]
-    stage: Option<String>,
-    /// The peer's Close frame code.
+    status_code: Option<String>,
+    /// The message on that status.
     #[pyo3(get)]
-    close_code: Option<u16>,
-    /// The peer's Close frame reason.
+    status_message: Option<String>,
+    /// The policy reason the server attached, in `snake_case`.
     #[pyo3(get)]
-    close_reason: Option<String>,
+    cause: Option<String>,
     /// The underlying transport or protocol error text.
     #[pyo3(get)]
     transport_error: Option<String>,
@@ -402,21 +404,21 @@ pub struct MontyDisconnectError {
 impl MontyDisconnectError {
     /// Creates a `MontyDisconnectError` with the given description.
     #[must_use]
-    pub fn new_err(py: Python<'_>, message: String, details: Option<WebSocketDisconnect>) -> PyErr {
+    pub fn new_err(py: Python<'_>, message: String, details: Option<RemoteDisconnect>) -> PyErr {
         let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
-        let (stage, close_code, close_reason, transport_error) = match details {
+        let (status_code, status_message, cause, transport_error) = match details {
             Some(details) => (
-                Some(details.stage.to_owned()),
-                details.close_code,
-                details.close_reason,
+                details.status_code.map(str::to_owned),
+                details.status_message,
+                details.cause.map(|cause| cause.as_str().to_owned()),
                 details.transport_error,
             ),
             None => (None, None, None, None),
         };
         let init = PyClassInitializer::from(base).add_subclass(Self {
-            stage,
-            close_code,
-            close_reason,
+            status_code,
+            status_message,
+            cause,
             transport_error,
         });
         match Py::new(py, init) {
@@ -439,7 +441,56 @@ impl MontyDisconnectError {
     }
 }
 
-/// Raised when the remote server is shutting down (WebSocket transport only).
+/// Raised when the remote server refused to open a session's stream (remote
+/// transport only): at capacity, with no worker to serve it, or rejecting
+/// the caller's credentials or what they asked for. The server says which in
+/// `status_code`, `status_message` and `cause`. No session existed, so
+/// nothing ran; unlike `MontyDisconnectError`, retrying is safe.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyRefusedError {
+    /// The gRPC status code the server refused with, by name.
+    #[pyo3(get)]
+    status_code: Option<String>,
+    /// The message on that status.
+    #[pyo3(get)]
+    status_message: Option<String>,
+    /// The policy reason the server attached, in `snake_case`.
+    #[pyo3(get)]
+    cause: Option<String>,
+}
+
+impl MontyRefusedError {
+    /// Creates a `MontyRefusedError` with the given description and the status
+    /// the server refused with.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, refusal: RemoteDisconnect) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self {
+            status_code: refusal.status_code.map(str::to_owned),
+            status_message: refusal.status_message,
+            cause: refusal.cause.map(|cause| cause.as_str().to_owned()),
+        });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyRefusedError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyRefusedError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when the remote server is shutting down (remote transport only).
 ///
 /// Not an error in your code, which is why it is the one exception here
 /// without an `Error` suffix — it still subclasses `MontyError`, so a generic

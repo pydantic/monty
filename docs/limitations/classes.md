@@ -40,8 +40,7 @@ and function-attributes-become-methods), bound methods, class variables
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
-`Foo.__annotations__` (ordered; values stringized and provisional, see
-[typing.md](typing.md)), `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`,
+`Foo.__annotations__` (evaluated lazily, see [typing.md](typing.md#annotations)), `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`,
 `super()`, `issubclass(cls, classinfo)`, `__init_subclass__`,
 `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
 `type()` constructor. The `__enter__`/`__exit__` divergences are in
@@ -385,7 +384,8 @@ every construction request. Divergences:
     decorator on a `def` inside a class body (rejected at parse time). Decorators
     on classes and on non-method functions are supported.
 - `__dict__` and `dir()` are unavailable on classes (`cls.__name__`,
-    `cls.__bases__`, `cls.__mro__`, `cls.mro()`, and `cls.__annotations__` work).
+    `cls.__bases__`, `cls.__mro__`, `cls.mro()`, and `cls.__annotations__` work, see
+    [typing.md](typing.md#annotations)).
 - **Tracebacks from decorator application point at the whole `class` statement**
     (a span from the first decorator through the body, with the body elided as
     `...<N lines>...`), where CPython pins the individual decorator that raised.
@@ -396,9 +396,6 @@ every construction request. Divergences:
     Augmented assignment falls back to binary arithmetic rather than calling an in-place dunder,
     except `@=`, which is rejected at compile time.
     `__ne__` is always the negation of `__eq__`, so a custom `__ne__` is ignored.
-- **Sequence repetition does not consult `__index__`.**
-    `'ab' * obj` and `[0] * obj` raise `TypeError: can't multiply sequence by non-int of type 'Foo'`
-    for an instance of `Foo`, where CPython repeats.
 - **Returning `bool` from `__int__` or `__index__` does not emit a `DeprecationWarning`.**
 - **Subscript assignment does not dispatch `__index__`.** `lst[obj] = x` raises
     `TypeError: list indices must be integers or slices, not Foo` where CPython
@@ -453,7 +450,8 @@ every construction request. Divergences:
     class object it does not write at all, where `Foo.x = v` sets a class member.
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`,
     `Foo.__bases__`, `Foo.__mro__`, `Foo.mro()`, and `obj.__class__`: `Foo.__dict__`,
-    `obj.__dict__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
+    `obj.__dict__`, `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__` of a compiled class
+    (a `type()` namespace may bind its own; see [typing.md](typing.md#annotations)), and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`

@@ -89,10 +89,9 @@ Containers a program grows one element at a time are pre-checked as well, at the
 rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
 assigning a new dict key.
 So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
-text `json.dumps` and `json.dump` build, the pieces `re.split` collects, and the list `re.findall` builds for a pattern
-with at most one capture group.
-A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
-[the limitations note](limitations/resource_limits.md).
+text `json.dumps` and `json.dump` build, the pieces `str.split`, `bytes.split` and `re.split` collect, the matches
+`re.finditer` builds, and the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall` allocates a tuple per match and is not covered — see [the limitations note](limitations/resource_limits.md).
 
 A few integer operations carry their own caps regardless of `max_memory`:
 
@@ -109,7 +108,7 @@ CPU mode uses the executing thread's CPU counter. It is supported only on Linux.
 Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
 Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
 Local subprocess pools on macOS and Windows reject CPU mode, as do WebAssembly workers, which have no thread CPU counter.
-A WebSocket client on any platform can still use a Linux server's CPU clock.
+A remote client on any platform can still use a Linux server's CPU clock.
 Workers reject CPU configuration if the initial thread CPU counter read fails.
 If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
 
@@ -214,19 +213,19 @@ OS counter resolution and scheduling can delay detection. This is approximate ac
 
 Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
 Snapshots do not store protocol CPU or spent CPU grace separately.
-For WebSocket sessions, the server's pool or profile selects the clock beside the actual child.
+For remote sessions, the server's pool or profile selects the clock beside the actual child.
 Clients do not select or override it. The server reports its clock with the configuration reply.
 The client uses that metadata to avoid deriving wall deadlines from CPU budgets.
 Use clients that understand the clock metadata with CPU-mode server profiles for this noisy-neighbor protection.
 Older clients ignore this metadata and can retain premature wall-time backstops under contention.
 Default wall-mode servers remain compatible with those clients.
 A CPU-mode server requires a finite client `request_timeout`, independent of its own supervisor deadline.
-Python and Node WebSocket clients default to 10 seconds. Rust clients have no default deadline.
+Python and Node remote clients default to 10 seconds. Rust clients have no default deadline.
 Choose this wall deadline for the expected budgets and scheduling delays.
 It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
 Local CPU pools require the child to acknowledge CPU mode before executing code.
-A WebSocket client cannot independently measure a remote process.
+A remote client cannot independently measure a remote process.
 See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 
 ## Recursion
@@ -266,7 +265,7 @@ caps the dump's, so a worker cannot report a looser one.
 Local pools replace a worker after 1000 checkouts, bounding how long a slow leak or a compromised worker survives.
 Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count: `0` and `1` both give
 every session a fresh worker, and `None` (`null`) never recycles.
-WebSocket checkouts are single-use, so the count does not apply to them.
+Remote checkouts are single-use, so the count does not apply to them.
 
 ## What is not covered
 

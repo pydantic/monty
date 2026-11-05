@@ -1,4 +1,4 @@
-use std::{fmt::Write, ops::Not};
+use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
@@ -8,6 +8,7 @@ use super::{
     tuple::allocate_tuple,
 };
 use crate::{
+    annotations,
     args::ArgValues,
     boundary_uuid::create_uuid,
     builtins::{
@@ -22,8 +23,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
-        HeapReader, heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead,
+        HeapReadMut, HeapReader, heap_read_ref_as_field_mut,
     },
     intern::{FunctionId, Interns, StringId},
     types::{Union, str::allocate_string},
@@ -68,10 +69,6 @@ pub(crate) struct Class {
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
     uuid: Option<MontyUuid>,
-    /// Whether the class body ran under `from __future__ import annotations`, so
-    /// `get_type_hints()` treats its `__annotations__` as PEP 563 forward references.
-    #[serde(default, skip_serializing_if = "Not::not")]
-    future_annotations: bool,
 }
 
 impl Class {
@@ -158,7 +155,6 @@ impl Class {
         all_bases: Vec<ClassBase>,
         mro: Vec<ClassBase>,
         defined_methods: Vec<FunctionId>,
-        future_annotations: bool,
     ) -> Self {
         Self {
             name,
@@ -168,14 +164,7 @@ impl Class {
             mro,
             defined_methods,
             uuid: None,
-            future_annotations,
         }
-    }
-
-    /// Whether the class body ran under `from __future__ import annotations`.
-    #[must_use]
-    pub fn future_annotations(&self) -> bool {
-        self.future_annotations
     }
 
     /// Boundary identity of the class, generated and stored on first use so
@@ -202,26 +191,6 @@ impl Class {
     pub fn namespace(&self) -> &Dict {
         &self.namespace
     }
-
-    /// What the class's own namespace binds `__annotations__` to.
-    pub(crate) fn annotations<'a>(&self, heap: &'a Heap, interns: &Interns) -> ClassAnnotations<'a> {
-        match self.namespace.get_by_str("__annotations__", heap, interns) {
-            None => ClassAnnotations::Missing,
-            Some(value) => match value.ref_id().map(|id| heap.get(id)) {
-                Some(HeapData::Dict(annotations)) => ClassAnnotations::Dict(annotations),
-                _ => ClassAnnotations::NotADict,
-            },
-        }
-    }
-}
-
-/// A class's `__annotations__` binding, from [`Class::annotations`].
-pub(crate) enum ClassAnnotations<'a> {
-    /// The class body annotated nothing and bound no `__annotations__`.
-    Missing,
-    Dict(&'a Dict),
-    /// Bound to something else, such as `None`, which `get_type_hints` rejects.
-    NotADict,
 }
 
 impl<'h> HeapReadMut<'h, Class> {
@@ -374,6 +343,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if name.as_str(vm.interns) == "__annotations__" {
+            return annotations::set_class_annotations(self.id(), value, vm);
+        }
         let mut value_guard = DropGuard::new(value, vm);
         let name = name.as_value(value_guard.ctx().heap);
         let (value, vm) = value_guard.into_parts();
@@ -407,11 +379,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
             let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap))));
         }
-
         if attr_str == "__class__" {
             return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Function(
                 BuiltinsFunctions::Type,
             )))));
+        }
+
+        // `Foo.__annotations__` is computed from the class's `__annotate__` on
+        // first access (PEP 649), another metaclass descriptor in CPython.
+        if attr_str == "__annotations__" {
+            return annotations::class_annotations(self.id(), vm).map(Some);
         }
 
         if attr_str == "__bases__" {

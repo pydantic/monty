@@ -52,6 +52,16 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             value.drop_with(vm);
             true
         }
+        // A frame computes the attribute (`__annotations__`): run it here, so an
+        // `AttributeError` it raises answers `False` as in CPython, and discard the value.
+        Ok(CallResult::FramePushed) => match CallResult::FramePushed.require_synchronous(vm) {
+            Ok(value) => {
+                value.drop_with(vm);
+                true
+            }
+            Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
+            Err(e) => return Err(e),
+        },
         Ok(CallResult::AttrLookup {
             name,
             class_name,

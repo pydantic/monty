@@ -720,6 +720,27 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
     fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         Ok(write!(f, "<bound method>")?)
     }
+
+    /// `obj.method.__annotations__` and `__annotate__` are the function's, as
+    /// CPython's method type forwards them.
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+            return Ok(None);
+        }
+        let func = self.get(vm.heap).func.clone_with_heap(vm);
+        defer_drop!(func, vm);
+        func.py_getattr(attr, vm).map(Some)
+    }
+
+    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
+        if !matches!(attr.as_str(vm.interns), "__annotations__" | "__annotate__") {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error("function", attr.as_str(vm.interns)));
+        }
+        let func = self.get(vm.heap).func.clone_with_heap(vm);
+        defer_drop!(func, vm);
+        func.py_value(vm).py_call_attr(vm, attr, args)
+    }
 }
 
 impl HeapItem for BoundMethod {

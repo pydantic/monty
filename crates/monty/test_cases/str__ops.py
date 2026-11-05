@@ -105,6 +105,29 @@ assert 'x' * -1 == ''
 assert '' * 5 == ''
 assert 'a' * 1 == 'a'
 
+# Counts past `Py_ssize_t`, and results past it in bytes, raise rather than panic
+assert 'é' * 3 == 'ééé'
+try:
+    'ab' * 2**62
+    assert False, "expected 'ab' * 2**62 to raise"
+except OverflowError as exc:
+    assert str(exc) == 'repeated string is too long'
+try:
+    2**62 * 'ab'
+    assert False, "expected 2**62 * 'ab' to raise"
+except OverflowError as exc:
+    assert str(exc) == 'repeated string is too long'
+try:
+    'ab' * 2**63
+    assert False, "expected 'ab' * 2**63 to raise"
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+try:
+    'ab' * -(2**70)
+    assert False, "expected 'ab' * -(2**70) to raise"
+except OverflowError as exc:
+    assert str(exc) == "cannot fit 'int' into an index-sized integer"
+
 # === String repetition augmented assignment (*=) ===
 s = 'ab'
 s *= 3

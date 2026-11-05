@@ -1422,6 +1422,24 @@ fn custom_exception_formatting_and_identity() {
 }
 
 #[test]
+fn custom_exception_formatting_terminal_error_propagates() {
+    let code = r"
+class InfiniteFormatError(Exception):
+    def __str__(self):
+        while True:
+            pass
+
+raise InfiniteFormatError()
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err());
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+#[test]
 fn custom_exception_repr_cycle_detection() {
     run(r#"
 class MyError(Exception):
@@ -2533,7 +2551,7 @@ class AnnBase:
     x: int
     y: str
 
-assert AnnBase.__annotations__ == {'x': 'int', 'y': 'str'}
+assert AnnBase.__annotations__ == {'x': int, 'y': str}
 
 DynSub = type('DynSub', (AnnBase,), {})
 a1 = DynSub.__annotations__
@@ -2543,7 +2561,7 @@ assert a1 is a2
 a1['z'] = 'bool'
 assert DynSub.__annotations__ == {'z': 'bool'}
 # Confirm base annotations are untouched
-assert AnnBase.__annotations__ == {'x': 'int', 'y': 'str'}
+assert AnnBase.__annotations__ == {'x': int, 'y': str}
 ");
 }
 

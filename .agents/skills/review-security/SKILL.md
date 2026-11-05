@@ -16,10 +16,13 @@ Use a subagent to run `.agents/skills/fix-pr-comments/pr-threads.sh` (from the
 each is properly addressed.
 
 Cover the changes **and any code they touch** — a caller made unsafe by a changed callee
-is in scope even if it isn't in the diff. Ask:
+is in scope even if it isn't in the diff.
 
-- **Sandbox escape?** Filesystem access outside a mount, path traversal, symlinks
-    resolving out of bounds, network, subprocesses, import-system abuse, callback misuse,
+## The sandbox worker
+
+The interpreter and the worker process around it run the untrusted code. Ask:
+
+- **Sandbox escape?** Network, subprocesses, import-system abuse, callback misuse,
     leaks through error messages or timing.
 - **Memory errors?** Worse than panics: nothing stops, state is silently corrupt, and it
     can become arbitrary execution. `unsafe`, refcount errors causing use-after-free or
@@ -34,16 +37,28 @@ is in scope even if it isn't in the diff. Ask:
     for tampered snapshots. Keep checks needed for memory safety or transport compatibility.
 - **Panics or aborts?** `unwrap`/`expect` reachable from sandboxed input, unbounded
     recursion hitting a stack-overflow abort.
-- **Mount escapes?** Any behaviour that allows sandbox code to escape a filesystem mount
-    and read or alter files outside the mount point. This is particularly severe since
-    mounts are run on the host/client connecting to a sandbox - accessing that environment
-    is a very serious breach of the sandbox and security issue.
 
 Weight both classes by where they land. In a pool worker the process dies, the parent
 replaces the child and raises an exception — contained. Nothing else is: in host/parent
 code (`monty-pool`, `monty-proto` decoding, `monty-fs`, the bindings), or in a Rust
 embedder calling the `monty` crate in-process, the same bug takes down the application.
 **Scrutinise those hardest**, especially anything handling a frame from a child.
+
+## The client and parent
+
+The subprocess parent and the gRPC client (`monty-pool` and the bindings) run inside the
+user's application. A vulnerability here is even more critical than one in the worker,
+since the client always runs in a trusted environment with no sandbox around it. A
+sandbox, a hostile frame or a hostile server must not be able to:
+
+- **Harm the client**: a panic, a memory error, excessive memory, excessive compute or an
+    excessive delay.
+- **Contaminate another session**: one session's data reaching, corrupting or being
+    observed by another — a worker reused without a clean reset, a shared buffer or
+    stream, a mixed-up id. This is a very serious incident; treat any doubt as a finding.
+- **Escape a mount**: mounts are serviced here, on the client, so filesystem access
+    outside a mount — path traversal, symlinks resolving out of bounds — reads or alters
+    the user's environment. A very serious breach.
 
 The `crates/monty/src/heap/` module and `crates/monty-fs/src/path_security.rs` are
 security-critical; any change to either needs careful justification. Also check the

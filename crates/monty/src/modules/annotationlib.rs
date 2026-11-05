@@ -81,7 +81,6 @@ fn format_class(vm: &mut VM<'_>) -> Value {
         Vec::new(),
         vec![ClassBase::Object],
         Vec::new(),
-        false,
     )))))
 }
 
@@ -131,6 +130,7 @@ fn get_annotations(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             format,
             globalns,
             localns,
+            include_extras: true,
             task: HintsTask::Annotations { eval_str },
         },
         vm,

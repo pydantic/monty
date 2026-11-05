@@ -50,6 +50,19 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
 
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(CallResult::Value(value)),
+        // A frame computes the attribute (`__annotations__`). Without a default
+        // its result is the value; with one the frame runs here, so an
+        // `AttributeError` it raises selects the default as in CPython.
+        Ok(CallResult::FramePushed) => match default {
+            None => Ok(CallResult::FramePushed),
+            Some(d) => match CallResult::FramePushed.require_synchronous(vm) {
+                Ok(value) => Ok(CallResult::Value(value)),
+                Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => {
+                    Ok(CallResult::Value(d.clone_with_heap(vm)))
+                }
+                Err(e) => Err(e),
+            },
+        },
         Ok(CallResult::AttrLookup {
             name,
             class_name,

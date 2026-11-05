@@ -18,7 +18,9 @@ dev = [
     "mdformat-mkdocs>=5.2.1",
     "mdformat-frontmatter>=2.1.2",
     "httpx2>=2.12.0",
-    "websockets>=14",
+    # the dev relay (`scripts/grpc_relay.py`) and the remote-pool test fakes
+    "grpcio>=1.75",
+    "types-grpcio>=1.0.0.20250603",
 ]
 # used only by `examples/`; opt in with `uv run --group examples ...`, `make dev-py` skips it, `make lint-py` needs it
 examples = [
@@ -138,7 +140,7 @@ extra-standard-library = ["tomllib"]
     "I001", # Import block unsorted - needed for testing `import a, b` syntax
 ]
 
-"crates/monty/test_cases/class__annotations.py" = [
+"crates/monty/test_cases/class__annotations_future.py" = [
     # Scoped to this file so the single-quote convention stays enforced across
     # the other test cases: these tests exist to prove that double-quoted
     # annotations normalize to single quotes exactly as CPython's does.
@@ -182,7 +184,11 @@ exclude = [
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
-    "crates/monty/test_cases/class__annotations.py",
+    "crates/monty/test_cases/class__annotations_future.py",
+    # `__annotate__` and the argument errors of typing forms (`Annotated[int]`,
+    # `ClassVar[int, str]`, `Any[int]`) are the behaviour under test
+    "crates/monty/test_cases/function__annotations.py",
+    "crates/monty/test_cases/typing__special_forms.py",
     # annotations that are not type expressions (`x: 1`, a string naming a
     # variable, bare generics) are evaluated by `get_type_hints` under test
     "crates/monty/test_cases/typing__get_type_hints.py",
@@ -323,7 +329,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques,wit,acount'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",

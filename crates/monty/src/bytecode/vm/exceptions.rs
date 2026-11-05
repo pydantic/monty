@@ -586,7 +586,14 @@ impl VM<'_> {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
-                format_unhandled_custom_exception(&mut error, &mut exc_guard);
+                if let Err(terminal) = format_unhandled_custom_exception(&mut error, &mut exc_guard) {
+                    let (exc_value, this) = exc_guard.into_parts();
+                    exc_value.drop_with(this);
+                    if let Some(exc) = this.unwinding_exception.take() {
+                        exc.drop_with(this);
+                    }
+                    return ExceptionHandlingResult::Unhandled(this.unwind_for_traceback(terminal));
+                }
 
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
@@ -844,8 +851,11 @@ impl Write for TruncatingWriter {
     }
 }
 
-fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropGuard<'_, VM<'_>, Value>) {
-    let replace_error = if let RunError::Exc(raise) = error
+fn format_unhandled_custom_exception(
+    error: &mut RunError,
+    exc_guard: &mut DropGuard<'_, VM<'_>, Value>,
+) -> RunResult<()> {
+    if let RunError::Exc(raise) = error
         && raise.exc.arg().is_none()
         && raise.exc.custom_type_name().is_some()
     {
@@ -858,24 +868,18 @@ fn format_unhandled_custom_exception(error: &mut RunError, exc_guard: &mut DropG
                 {
                     raise.exc.set_arg(Some(s.to_owned()));
                 }
-                None
             }
             Err(RunError::Exc(_)) => {
                 this.clear_unwinding_exception();
                 raise.exc.set_arg(Some("<exception str() failed>".to_owned()));
-                None
             }
-            Err(fatal @ (RunError::UncatchableExc(_) | RunError::Internal(_))) => {
+            Err(terminal) => {
                 this.clear_unwinding_exception();
-                Some(fatal)
+                return Err(terminal);
             }
         }
-    } else {
-        None
-    };
-    if let Some(fatal) = replace_error {
-        *error = fatal;
     }
+    Ok(())
 }
 
 fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>) -> bool {

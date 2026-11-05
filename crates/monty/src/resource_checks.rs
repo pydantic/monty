@@ -3,7 +3,7 @@ use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracke
 
 use crate::{
     bytecode::VM,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     value::{VALUE_SIZE, Value},
 };
 
@@ -14,6 +14,30 @@ use crate::{
 /// where the result size is a simple product of two known values.
 pub fn check_repeat_size(item_len: usize, count: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_estimated_size(item_len.saturating_mul(count), tracker)
+}
+
+/// The length of `len * count` repetitions, or CPython's message-less
+/// `MemoryError` when a buffer of `elem_size`-byte elements that long could not
+/// be addressed at all (`[1, 2] * 2**62`), instead of a capacity-overflow panic.
+pub(crate) fn repeated_len(len: usize, count: usize, elem_size: usize) -> RunResult<usize> {
+    len.checked_mul(count)
+        .filter(|total| {
+            total
+                .checked_mul(elem_size)
+                .is_some_and(|bytes| bytes <= isize::MAX.unsigned_abs())
+        })
+        .ok_or_else(ExcType::allocation_too_large)
+}
+
+/// Allocates an empty `Vec` with room for `capacity` elements, raising `MemoryError`
+/// rather than aborting when the allocator refuses; with no `max_memory` set
+/// nothing else stops an attacker-sized repetition.
+pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> RunResult<Vec<T>> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(capacity)
+        .map_err(|_| ExcType::allocation_too_large())?;
+    Ok(buffer)
 }
 
 /// Pre-checks that `base ** exponent` won't exceed resource limits before computing.
@@ -103,6 +127,65 @@ pub fn check_replace_size(
     };
 
     check_estimated_size(estimated, tracker)
+}
+
+/// Collects an iterator into a `Vec`, preflighting each reallocation of the buffer.
+///
+/// For scans bounded only by an attacker-sized input (split pieces), whose
+/// buffer would otherwise double past the allocator's hard headroom before any
+/// checkpoint. Also polls the time limit; see [`push_checked`].
+pub(crate) fn collect_checked<T>(
+    items: impl IntoIterator<Item = T>,
+    tracker: &ResourceTracker,
+) -> Result<Vec<T>, ResourceError> {
+    let mut items = items.into_iter();
+    let Some(first) = items.next() else {
+        return Ok(Vec::new());
+    };
+    // Allocate directly as std's `collect` does: a first push into an empty `Vec`
+    // takes the generic, out-of-line grow path, which dominates a short split.
+    let mut collected = Vec::with_capacity(4);
+    collected.push(first);
+    for item in items {
+        push_checked(&mut collected, item, tracker)?;
+    }
+    Ok(collected)
+}
+
+/// Pushes one item onto a scan buffer after [`ResourceTracker::check_growth`] and an
+/// amortized time poll; the single-push form of [`collect_checked`].
+///
+/// Scan pieces cost a few nanoseconds each, so the hot path is one branch: the growth
+/// check and clock read run only at a capacity boundary or every [`SCAN_CHECK_INTERVAL`] pushes.
+#[inline]
+pub(crate) fn push_checked<T>(buffer: &mut Vec<T>, item: T, tracker: &ResourceTracker) -> Result<(), ResourceError> {
+    let len = buffer.len();
+    if len == buffer.capacity() || len % SCAN_CHECK_INTERVAL == SCAN_CHECK_INTERVAL - 1 {
+        check_scan_buffer(len, buffer.capacity(), size_of::<T>(), tracker)?;
+    }
+    buffer.push(item);
+    Ok(())
+}
+
+/// Pushes between time polls in [`push_checked`]: wider than
+/// `ResourceTracker::LOOP_CHECK_INTERVAL` because a scan push is far cheaper than a
+/// loop iteration that allocates.
+const SCAN_CHECK_INTERVAL: usize = 1024;
+
+/// The cold half of [`push_checked`]: the growth preflight, plus a time poll on every
+/// [`SCAN_CHECK_INTERVAL`]th push, so a short scan never reads the clock.
+#[cold]
+#[inline(never)]
+fn check_scan_buffer(
+    len: usize,
+    capacity: usize,
+    elem_size: usize,
+    tracker: &ResourceTracker,
+) -> Result<(), ResourceError> {
+    if len % SCAN_CHECK_INTERVAL == SCAN_CHECK_INTERVAL - 1 {
+        tracker.check_time()?;
+    }
+    tracker.check_growth(len, capacity, elem_size)
 }
 
 /// Pre-checks the reallocation a push into a full `Value` buffer causes,
