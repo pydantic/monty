@@ -2548,7 +2548,7 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
         // the checkout collects them (`take_streamed_calls`)
-        accepts_streamed_calls: true,
+        accepts_streamed_calls: pool.stream_async_calls,
     }))
 }
 

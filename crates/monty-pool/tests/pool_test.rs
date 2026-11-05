@@ -51,6 +51,14 @@ fn config() -> PoolConfig {
     PoolConfig::subprocess(monty_binary())
 }
 
+/// A subprocess config with `stream_async_calls` on, which subprocess pools leave off by default.
+fn streaming_config() -> PoolConfig {
+    PoolConfig {
+        stream_async_calls: true,
+        ..config()
+    }
+}
+
 /// A discard-everything print callback, coercible to `OnPrint` at each callsite.
 fn no_print(_: PrintStream, _: &str) -> PrintFuture {
     Box::pin(ready(()))
@@ -2188,11 +2196,30 @@ async fn suspension_limit_aborts_the_feed() {
     session.finish().await.unwrap();
 }
 
+/// A subprocess pool leaves `stream_async_calls` off, so a call to an async host
+/// function suspends like any other.
+#[tokio::test]
+async fn async_calls_suspend_without_stream_async_calls() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let event = session
+        .feed("a = f(1)\nawait a", inputs, vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { .. }),
+        "expected a suspension, got {event:?}"
+    );
+    assert!(session.take_streamed_calls().is_empty());
+    drop(session);
+}
+
 /// Calls to an async host function arrive as started calls rather than
 /// suspensions: the feed blocks once, and one reply settles every call.
 #[tokio::test]
 async fn streamed_calls_settle_through_one_resolve_futures() {
-    let pool = Pool::new(config()).await.unwrap();
+    let pool = Pool::new(streaming_config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
     let code = "import asyncio\nawait asyncio.gather(*[f(i) for i in range(5)])";
@@ -2228,7 +2255,7 @@ async fn streamed_calls_settle_through_one_resolve_futures() {
 /// aborted once more calls than `max_suspensions` have started.
 #[tokio::test]
 async fn streamed_calls_count_against_the_suspension_limit() {
-    let pool = Pool::new(config()).await.unwrap();
+    let pool = Pool::new(streaming_config()).await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
             limits: Some(ResourceLimits::default().max_suspensions(3)),

@@ -34,9 +34,9 @@ async def test_coroutine_calls_keep_gather_concurrent(wrapped: bool):
     assert result == [1, 2]
 
 
-async def run_async(code: str, **kwargs: Any) -> Any:
+async def run_async(code: str, *, stream_async_calls: bool = False, **kwargs: Any) -> Any:
     """Runs one snippet in a fresh async pool/session and returns its result."""
-    async with pydantic_monty.AsyncMonty() as pool:
+    async with pydantic_monty.AsyncMonty(stream_async_calls=stream_async_calls) as pool:
         async with pool.checkout() as session:
             return await session.feed_run(code, **kwargs)
 
@@ -124,8 +124,17 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
 
 
 @pytest.mark.skipif(sys.version_info < (3, 12), reason='inspect.markcoroutinefunction needs Python 3.12')
-async def test_coroutine_function_calls_start_without_suspending():
-    """A call that is not awaited at once reaches the host after the sandbox has moved on."""
+@pytest.mark.parametrize(
+    'stream_async_calls,expected',
+    [
+        # the call reaches the host after the sandbox has moved on
+        (True, ['after the call\n', 'fetch(1)']),
+        # the default: the call suspends, so the host runs it first
+        (False, ['fetch(1)', 'after the call\n']),
+    ],
+)
+async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_calls: bool, expected: list[str]):
+    """A call that is not awaited at once streams to the host only with `stream_async_calls`."""
     log: list[str] = []
 
     def fetch(x: int) -> Any:
@@ -138,10 +147,11 @@ async def test_coroutine_function_calls_start_without_suspending():
     # a sync function returning a coroutine, marked so `iscoroutinefunction` sees it
     fetch = inspect.markcoroutinefunction(fetch)
     code = "a = fetch(1)\nprint('after the call')\nawait a"
-    result = await run_async(code, external_lookup={'fetch': fetch}, print_callback=on_print)
-    assert result == snapshot(1)
-    # a suspended call would have run fetch before the print
-    assert log == snapshot(['after the call\n', 'fetch(1)'])
+    result = await run_async(
+        code, stream_async_calls=stream_async_calls, external_lookup={'fetch': fetch}, print_callback=on_print
+    )
+    assert result == 1
+    assert log == expected
 
 
 async def test_coroutine_function_error_raises_at_the_await():
@@ -159,7 +169,8 @@ except ValueError as e:
     r += ': ' + str(e)
 r
 """
-    assert await run_async(code, external_lookup={'fail': fail}) == snapshot('called: intentional error')
+    result = await run_async(code, stream_async_calls=True, external_lookup={'fail': fail})
+    assert result == snapshot('called: intentional error')
 
 
 async def test_coroutine_function_in_an_external_module():
@@ -168,7 +179,7 @@ async def test_coroutine_function_in_an_external_module():
     async def fetch(x: int) -> int:
         return x + 1
 
-    async with pydantic_monty.AsyncMonty() as pool:
+    async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
         async with pool.checkout(
             external_modules={'tools': pydantic_monty.ExternalModule({'fetch': fetch})}
         ) as session:
@@ -182,7 +193,7 @@ async def test_streamed_calls_count_against_max_suspensions():
     async def fetch(x: int) -> int:
         return x
 
-    async with pydantic_monty.AsyncMonty() as pool:
+    async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
         async with pool.checkout(limits={'max_suspensions': 2}) as session:
             code = 'import asyncio\nawait asyncio.gather(*[fetch(i) for i in range(3)])'
             with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:

@@ -1357,7 +1357,7 @@ fn start_call(
         None => print.send_event(&event),
     };
     match sent {
-        // still the parent's turn, so its clock keeps running
+        // the sandbox never suspended, so the same turn's execution clock keeps running
         Ok(()) => call.resume_pending_in_turn(PrintWriter::Callback(print)),
         Err(exc) => call.resume_in_turn(ExtFunctionResult::Error(exc), PrintWriter::Callback(print)),
     }

@@ -117,6 +117,9 @@ pub struct NativePoolOptions {
     pub turn_duration_limit_grace_ms: Option<f64>,
     /// Recycle a worker after serving this many checkouts.
     pub max_checkouts_per_worker: Option<u32>,
+    /// Stream calls to async host functions without suspending (see
+    /// `PoolConfig::stream_async_calls`). Absent: off.
+    pub stream_async_calls: Option<bool>,
 }
 
 /// Options for a pool of remote workers ([`NativePool::remote`]). Timeouts
@@ -139,6 +142,8 @@ pub struct NativeRemotePoolOptions {
     /// Redial and reload a session a draining server stored, instead of
     /// reporting the shutdown (see `PoolConfig::auto_resume`).
     pub auto_resume: bool,
+    /// As [`NativePoolOptions::stream_async_calls`]. Absent: on.
+    pub stream_async_calls: Option<bool>,
 }
 
 /// One request-metadata entry for a remote checkout's stream.
@@ -319,6 +324,7 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
+        config.stream_async_calls = options.stream_async_calls.unwrap_or(false);
         if config.min_processes > config.max_processes {
             return Err(invalid("minProcesses cannot exceed maxProcesses"));
         }
@@ -341,6 +347,7 @@ impl NativePool {
             options.turn_duration_limit_grace_ms,
         )?;
         config.auto_resume = options.auto_resume;
+        config.stream_async_calls = options.stream_async_calls.unwrap_or(true);
         Self::from_config(config, "MontyRemote")
     }
 

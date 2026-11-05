@@ -145,8 +145,8 @@ This applies to all async code, not only to siblings of a failed `gather`.
 
 ### Calls to async host functions raise at the `await`
 
-Under `feed_run`, a call to an `async` host function that is not awaited at once returns an awaitable without waiting
-for the host (see [starting calls without waiting](../host-functions.md#starting-calls-without-waiting)).
+With `stream_async_calls` (on by default for remote pools), a `feed_run` call to an `async` host function that is not
+awaited at once returns an awaitable without waiting for the host (see [starting calls without waiting](../host-functions.md#starting-calls-without-waiting)).
 Whatever the host reports about the call is raised where the awaitable is awaited, including a `TypeError` for
 arguments the host function does not accept and a `NameError` for a name the host cannot resolve.
 CPython raises both at the call.

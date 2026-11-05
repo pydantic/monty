@@ -900,14 +900,15 @@ impl ReplFunctionCall {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 
-    /// [`Self::resume_pending`] within the current host turn, for a host that starts
-    /// the call without ending the turn: its time keeps counting against `max_turn_duration`.
+    /// [`Self::resume_pending`] without starting a new turn, for a call the sandbox
+    /// starts without suspending: sandbox execution time so far keeps counting
+    /// against `max_turn_duration`. Host time is never counted.
     pub fn resume_pending_in_turn(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot
             .run_inner(ExtFunctionResult::Future(self.call_id), None, Turn::Continue, print)
     }
 
-    /// [`Self::resume`] within the current host turn; see [`Self::resume_pending_in_turn`].
+    /// [`Self::resume`] without starting a new turn; see [`Self::resume_pending_in_turn`].
     pub fn resume_in_turn(
         self,
         result: impl Into<ExtFunctionResult>,
@@ -1364,12 +1365,12 @@ fn starts_with_triple_quote(source: &str) -> bool {
 // ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
 
-/// Whether a resume starts a new host turn, resetting the `max_turn_duration` clock.
+/// Whether a resume starts a new turn, resetting the `max_turn_duration` clock of sandbox execution time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Turn {
-    /// The host answered after the turn ended.
+    /// The sandbox suspended and the host answered.
     New,
-    /// The host resumed within the turn, having started the call without ending it.
+    /// The sandbox started a call without suspending, so the turn goes on.
     Continue,
 }
 

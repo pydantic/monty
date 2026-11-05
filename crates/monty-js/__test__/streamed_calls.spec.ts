@@ -1,15 +1,15 @@
 // Calls to `async` host functions that the sandbox does not await at once:
-// native and remote workers start them without suspending; the WebAssembly
-// worker suspends at each, with the same results.
+// with `streamAsyncCalls`, native and remote workers start them without
+// suspending; the WebAssembly worker suspends at each, with the same results.
 
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { ExternalModule, FunctionSnapshot, MontyRuntimeError } from '@pydantic/monty'
+import { ExternalModule, FunctionSnapshot, Monty, MontyRuntimeError } from '@pydantic/monty'
 import { skipIfWasm } from './env.js'
 import { setupPool } from './helpers.js'
 
-const { run, pool } = setupPool()
+const { run, pool } = setupPool({ streamAsyncCalls: true })
 
 class ValueError extends Error {
   override name = 'ValueError'
@@ -108,6 +108,23 @@ test('a failed print stops started calls from running on the host', async (ctx) 
   )
   t.is(error.message, 'print rejected')
   t.is(calls, 0)
+})
+
+test('a subprocess pool leaves streamAsyncCalls off, so async calls suspend', async (ctx) => {
+  skipIfWasm(ctx)
+  const log: string[] = []
+  const fetch = async (x: number) => {
+    log.push(`fetch(${x})`)
+    return x
+  }
+  await using defaults = await Monty.create()
+  await using session = await defaults.checkout()
+  const result = await session.feedRun("a = fetch(1)\nprint('after the call')\nawait a", {
+    externalLookup: { fetch },
+    printCallback: (_stream, text) => log.push(text),
+  })
+  t.is(result, 1)
+  t.deepEqual(log, ['fetch(1)', 'after the call\n'])
 })
 
 test('a sync host function still suspends at the call', async (ctx) => {

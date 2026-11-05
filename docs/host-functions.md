@@ -306,11 +306,13 @@ The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions â
 
 A call to an ordinary host function suspends the worker until the host answers it.
 Against a remote worker each answer is a network round trip, so a `gather` over 20 calls would wait for 21 of them.
-Calls to `async` host functions (`async def` in Python, `async function` in JavaScript) skip that wait when the sandbox
-does not await them at once: `feed_run` / `feedRun` lets the worker send the call to the host and keep running, and
-the sandbox blocks once, when every task is waiting.
+With `stream_async_calls` (`streamAsyncCalls` in JavaScript), calls to `async` host functions (`async def` in Python,
+`async function` in JavaScript) skip that wait when the sandbox does not await them at once: `feed_run` / `feedRun`
+lets the worker send the call to the host and keep running, and the sandbox blocks once, when every task is waiting.
 The 20-call `gather` then costs one round trip plus the slowest call.
 A call awaited at once, as in `await fetch(url)`, still suspends, since nothing else could run in the meantime.
+The option is set on the pool: it is on by default for [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] and
+`MontyRemote`, where each round trip crosses the network, and off by default for subprocess pools.
 
 === "Python"
 
@@ -333,7 +335,7 @@ A call awaited at once, as in `await fetch(url)`, still suspends, since nothing 
 
 
     async def main():
-        async with pydantic_monty.AsyncMonty() as pool:
+        async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
             async with pool.checkout() as session:
                 print(await session.feed_run(code, external_lookup={'fetch': fetch}))
                 #> 20
@@ -358,7 +360,7 @@ A call awaited at once, as in `await fetch(url)`, still suspends, since nothing 
     len(results)
     `
 
-    await using pool = await Monty.create()
+    await using pool = await Monty.create({ streamAsyncCalls: true })
     await using session = await pool.checkout()
     console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 20
     ```

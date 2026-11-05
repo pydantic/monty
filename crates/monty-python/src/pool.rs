@@ -543,7 +543,8 @@ impl PyAsyncMonty {
         max_checkouts_per_worker = Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
-    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0)")]
+        stream_async_calls = false,
+    ), text_signature = "(*, binary_path=None, min_processes=1, max_processes=None, checkout_timeout=None, request_timeout=None, execution_clock='wall', max_checkouts_per_worker=1000, feed_duration_limit_grace=1.0, turn_duration_limit_grace=1.0, stream_async_calls=False)")]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
         py: Python<'_>,
@@ -556,22 +557,25 @@ impl PyAsyncMonty {
         max_checkouts_per_worker: Option<u32>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
+        stream_async_calls: bool,
     ) -> PyResult<Self> {
+        let mut config = parse_pool_config(
+            py,
+            binary_path,
+            min_processes,
+            max_processes,
+            checkout_timeout,
+            request_timeout,
+            execution_clock,
+            max_checkouts_per_worker,
+            GraceArgs {
+                feed: feed_duration_limit_grace,
+                turn: turn_duration_limit_grace,
+            },
+        )?;
+        config.stream_async_calls = stream_async_calls;
         Ok(Self {
-            config: parse_pool_config(
-                py,
-                binary_path,
-                min_processes,
-                max_processes,
-                checkout_timeout,
-                request_timeout,
-                execution_clock,
-                max_checkouts_per_worker,
-                GraceArgs {
-                    feed: feed_duration_limit_grace,
-                    turn: turn_duration_limit_grace,
-                },
-            )?,
+            config,
             pool: Arc::new(Mutex::new(None)),
         })
     }
@@ -705,6 +709,7 @@ impl PyAsyncMontyRemote {
         auto_resume = true,
         max_decode_bytes = None,
         connect_headers = None,
+        stream_async_calls = true,
     ))]
     #[expect(clippy::too_many_arguments, reason = "one parameter per constructor argument")]
     fn new(
@@ -719,6 +724,7 @@ impl PyAsyncMontyRemote {
         auto_resume: bool,
         max_decode_bytes: Option<usize>,
         connect_headers: Option<Py<PyAny>>,
+        stream_async_calls: bool,
     ) -> PyResult<Self> {
         // the keyword's former name, kept for one release
         let metadata = match (metadata, connect_headers) {
@@ -748,6 +754,7 @@ impl PyAsyncMontyRemote {
             },
             auto_resume,
         )?;
+        config.stream_async_calls = stream_async_calls;
         if let Some(bytes) = max_decode_bytes {
             if bytes > DEFAULT_MAX_DECODE_BYTES {
                 return Err(PyValueError::new_err(format!(

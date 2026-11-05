@@ -122,7 +122,9 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
 
-Calls to async host functions do not suspend: a `MontyObject::async_function` value, or a name passed to
+With [`PoolConfig::stream_async_calls`](../api/rust/monty-pool.md#poolconfig) (on for remote pools, off for subprocess
+pools), calls to async host functions that the sandbox does not await at once do not suspend: a
+`MontyObject::async_function` value, or a name passed to
 [`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
 The worker sends them mid-turn and keeps running.
 `set_async_functions(None)` makes them suspend like any other call.

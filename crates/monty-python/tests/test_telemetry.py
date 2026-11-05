@@ -348,13 +348,40 @@ async def test_eager_coroutine_result_is_recorded_on_the_call_span(fail: bool):
 
 
 async def test_deferred_coroutine_keeps_future_resolution_telemetry():
-    """A stored awaitable starts without a call span, logging the start and its results separately."""
+    """A stored awaitable still has a separate wait span and future-results record."""
     install_telemetry()
 
     async def fetch() -> int:
         return 42
 
     async with AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            assert await session.feed_run('pending = fetch()\nawait pending', external_lookup={'fetch': fetch}) == 42
+
+    spans = _span_exporter.get_finished_spans()
+    assert [span.name for span in spans] == [
+        'call {function_name}',
+        'resolve futures',
+        'run code',
+        'session {script_name}',
+    ]
+    call, waiting, _run, _session = spans
+    assert call.attributes is not None
+    assert call.attributes['return_value'] == f'future {call.attributes["call_id"]}'
+    [log] = _log_exporter.get_finished_logs()
+    assert log.log_record.body == 'future results'
+    assert waiting.context is not None
+    assert log.log_record.span_id == waiting.context.span_id
+
+
+async def test_streamed_call_logs_its_start_without_a_call_span():
+    """With `stream_async_calls`, a stored awaitable logs its start instead of opening a call span."""
+    install_telemetry()
+
+    async def fetch() -> int:
+        return 42
+
+    async with AsyncMonty(stream_async_calls=True) as pool:
         async with pool.checkout() as session:
             assert await session.feed_run('pending = fetch()\nawait pending', external_lookup={'fetch': fetch}) == 42
 
