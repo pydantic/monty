@@ -712,15 +712,39 @@ impl VM<'_> {
     /// on the first match: an invalid element raises the `TypeError` even when an
     /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
     /// raising `TypeError` still raises the `TypeError` about catching classes).
+    /// Checks if `exception` matches `exc_type` for a `try...except` handler.
+    ///
+    /// If `exc_type` is a tuple, each element is checked with amortized deadline
+    /// checks. Like CPython, the entire tuple is validated rather than short-circuiting
+    /// on the first match (so non-exception types still raise `TypeError`), but once
+    /// matched, expensive subclass ancestry scans are skipped in favor of O(1) handler
+    /// validation. Repeated consecutive handlers are also cached to avoid redundant
+    /// ancestry traversal.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
         if let Value::Ref(id) = exc_type
             && let HeapData::Tuple(tuple) = self.heap.get(*id)
         {
             let mut matched = false;
-            for v in tuple.as_slice() {
-                let this_match = self.check_single_handler(exception, v)?;
-                if !matched && this_match {
-                    matched = true;
+            let mut last_handler: Option<(HandlerKey, bool)> = None;
+            for (i, v) in tuple.as_slice().iter().enumerate() {
+                self.heap.tracker.check_time_every(i)?;
+                if matched {
+                    self.validate_handler(v)?;
+                } else if let Some(key) = parse_handler_key(v)
+                    && let Some((prev_key, prev_match)) = last_handler
+                    && prev_key == key
+                {
+                    if prev_match {
+                        matched = true;
+                    }
+                } else {
+                    let this_match = self.check_single_handler(exception, v)?;
+                    if let Some(key) = parse_handler_key(v) {
+                        last_handler = Some((key, this_match));
+                    }
+                    if this_match {
+                        matched = true;
+                    }
                 }
             }
             return Ok(matched);
@@ -728,7 +752,24 @@ impl VM<'_> {
         self.check_single_handler(exception, exc_type)
     }
 
+    fn validate_handler(&self, handler: &Value) -> Result<(), RunError> {
+        match handler {
+            Value::Builtin(Builtins::ExcType(_)) => Ok(()),
+            Value::Ref(class_id) => {
+                if let HeapData::Class(handler_cls) = self.heap.get(*class_id)
+                    && handler_cls.base_exception().is_some()
+                {
+                    Ok(())
+                } else {
+                    Err(ExcType::except_invalid_type_error())
+                }
+            }
+            _ => Err(ExcType::except_invalid_type_error()),
+        }
+    }
+
     fn check_single_handler(&self, exception: &Value, handler: &Value) -> Result<bool, RunError> {
+        self.validate_handler(handler)?;
         match handler {
             Value::Builtin(Builtins::ExcType(handler_type)) => {
                 let matched = match exception {
@@ -750,32 +791,40 @@ impl VM<'_> {
                 Ok(matched)
             }
             Value::Ref(class_id) => {
-                if let HeapData::Class(handler_cls) = self.heap.get(*class_id)
-                    && handler_cls.base_exception().is_some()
-                {
-                    let matched = match exception {
-                        Value::Ref(id) => match self.heap.get(*id) {
-                            HeapData::Instance(inst) => {
-                                let inst_cls_id = inst.class();
-                                if inst_cls_id == *class_id {
-                                    true
-                                } else if let HeapData::Class(inst_cls) = self.heap.get(inst_cls_id) {
-                                    inst_cls.is_subclass_of(*class_id)
-                                } else {
-                                    false
-                                }
+                let matched = match exception {
+                    Value::Ref(id) => match self.heap.get(*id) {
+                        HeapData::Instance(inst) => {
+                            let inst_cls_id = inst.class();
+                            if inst_cls_id == *class_id {
+                                true
+                            } else if let HeapData::Class(inst_cls) = self.heap.get(inst_cls_id) {
+                                inst_cls.is_subclass_of(*class_id)
+                            } else {
+                                false
                             }
-                            _ => false,
-                        },
+                        }
                         _ => false,
-                    };
-                    Ok(matched)
-                } else {
-                    Err(ExcType::except_invalid_type_error())
-                }
+                    },
+                    _ => false,
+                };
+                Ok(matched)
             }
-            _ => Err(ExcType::except_invalid_type_error()),
+            _ => unreachable!(),
         }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandlerKey {
+    Builtin(ExcType),
+    Class(HeapId),
+}
+
+fn parse_handler_key(handler: &Value) -> Option<HandlerKey> {
+    match handler {
+        Value::Builtin(Builtins::ExcType(t)) => Some(HandlerKey::Builtin(*t)),
+        Value::Ref(id) => Some(HandlerKey::Class(*id)),
+        _ => None,
     }
 }
 

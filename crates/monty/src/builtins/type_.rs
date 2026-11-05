@@ -2,6 +2,8 @@
 
 use std::mem;
 
+use monty_types::ResourceTracker;
+
 use super::{Builtins, BuiltinsFunctions};
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -142,19 +144,26 @@ fn create_class(
         )));
     };
 
-    let mut bases = Vec::with_capacity(tuple.as_slice().len());
-    let mut base_names = Vec::with_capacity(tuple.as_slice().len());
+    let initial_capacity = tuple.as_slice().len().min(8);
+    let mut bases = Vec::with_capacity(initial_capacity);
+    let mut base_names = Vec::with_capacity(initial_capacity);
     let mut seen_object = false;
     let mut seen_layout_root: Option<ExcType> = None;
-    for base in tuple.as_slice() {
+    for (i, base) in tuple.as_slice().iter().enumerate() {
+        vm.heap.tracker.check_time_every(i)?;
         match base {
             Value::Builtin(Builtins::Type(BuiltinType::Object)) => {
                 if seen_object {
                     return Err(ExcType::type_error("duplicate base class object"));
                 }
                 seen_object = true;
-                bases.push(ClassBase::Object);
-                base_names.push("object");
+                push_base(
+                    &mut bases,
+                    &mut base_names,
+                    ClassBase::Object,
+                    "object",
+                    &vm.heap.tracker,
+                )?;
             }
             Value::Builtin(Builtins::Type(ty)) => {
                 let type_name = Type::from(*ty).name(vm.heap, vm.interns);
@@ -176,8 +185,13 @@ fn create_class(
                         seen_layout_root = Some(layout_root);
                     }
                 }
-                bases.push(ClassBase::BuiltinExc(*exc_type));
-                base_names.push(type_name);
+                push_base(
+                    &mut bases,
+                    &mut base_names,
+                    ClassBase::BuiltinExc(*exc_type),
+                    type_name,
+                    &vm.heap.tracker,
+                )?;
             }
             Value::Ref(id) => {
                 if let HeapData::Class(cls) = vm.heap.get(*id) {
@@ -196,8 +210,13 @@ fn create_class(
                             seen_layout_root = Some(layout_root);
                         }
                     }
-                    bases.push(ClassBase::Class(*id));
-                    base_names.push(cls_name);
+                    push_base(
+                        &mut bases,
+                        &mut base_names,
+                        ClassBase::Class(*id),
+                        cls_name,
+                        &vm.heap.tracker,
+                    )?;
                 } else {
                     let got = base.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
                     return Err(ExcType::type_error(format!(
@@ -491,4 +510,23 @@ fn exception_layout_root(exc: ExcType) -> Option<ExcType> {
         | ExcType::UnsupportedOperation => Some(ExcType::OSError),
         _ => None,
     }
+}
+
+fn push_base<'a>(
+    bases: &mut Vec<ClassBase>,
+    base_names: &mut Vec<&'a str>,
+    base: ClassBase,
+    name: &'a str,
+    tracker: &ResourceTracker,
+) -> RunResult<()> {
+    if bases.len() == bases.capacity() {
+        let additional = bases.capacity().max(4);
+        let needed = additional.saturating_mul(mem::size_of::<ClassBase>() + mem::size_of::<&str>());
+        tracker.check_allocation(needed)?;
+        bases.reserve(additional);
+        base_names.reserve(additional);
+    }
+    bases.push(base);
+    base_names.push(name);
+    Ok(())
 }

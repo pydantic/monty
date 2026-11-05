@@ -2918,3 +2918,53 @@ assert hasattr(inst, '__annotations__')
 assert inst.__annotations__ == {'y': 'str'}
 "#);
 }
+
+#[test]
+fn type_duplicate_bases_large_tuple_does_not_oom() {
+    run(r"
+try:
+    type('C', (object,) * 100_000, {})
+    assert False, 'should have raised TypeError'
+except TypeError as e:
+    assert 'duplicate base class object' in str(e)
+");
+}
+
+#[test]
+fn except_match_tuple_large_and_deadline_checks() {
+    run(r"
+class CustomError(Exception): pass
+
+matched = False
+try:
+    raise CustomError('boom')
+except (CustomError,) * 10_000:
+    matched = True
+assert matched
+
+caught = False
+try:
+    try:
+        raise ValueError('other')
+    except (CustomError,) * 1_000:
+        assert False
+except ValueError:
+    caught = True
+assert caught
+");
+
+    let code = r"
+class CustomError(Exception): pass
+handlers = (CustomError,) * 100_000
+try:
+    raise CustomError()
+except handlers:
+    pass
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_nanos(1));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+    assert!(result.is_err(), "should exceed time limit in check_exc_match");
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
