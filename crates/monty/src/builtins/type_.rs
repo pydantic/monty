@@ -350,7 +350,7 @@ fn create_class(
     }
 
     let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
-        class_name.clone(),
+        class_name,
         namespace_dict,
         bases_ids,
         bases,
@@ -388,9 +388,14 @@ fn create_class(
         }
     } else if !kwargs.is_empty() {
         kwargs.drop_with(vm.heap);
-        let name_str = class_name.as_str(vm.interns);
+        let name_str = if let HeapData::Class(cls) = vm.heap.get(class_id) {
+            cls.name().as_str(vm.interns)
+        } else {
+            "class"
+        };
+        let err = ExcType::type_error_no_kwargs(&format!("{name_str}.__init_subclass__"));
         Value::Ref(class_id).drop_with(vm.heap);
-        return Err(ExcType::type_error_no_kwargs(&format!("{name_str}.__init_subclass__")));
+        return Err(err);
     } else {
         kwargs.drop_with(vm.heap);
     }
@@ -499,13 +504,11 @@ fn push_base<'a>(
     name: &'a str,
     tracker: &ResourceTracker,
 ) -> RunResult<()> {
-    if bases.len() == bases.capacity() {
-        let additional = bases.capacity().max(4);
-        let needed = additional.saturating_mul(mem::size_of::<ClassBase>() + mem::size_of::<&str>());
-        tracker.check_allocation(needed)?;
-        bases.reserve(additional);
-        base_names.reserve(additional);
-    }
+    tracker.check_growth(
+        bases.len(),
+        bases.capacity(),
+        mem::size_of::<ClassBase>() + mem::size_of::<&str>(),
+    )?;
     bases.push(base);
     base_names.push(name);
     Ok(())

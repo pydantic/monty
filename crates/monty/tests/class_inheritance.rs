@@ -2269,3 +2269,13 @@ except handlers:
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
+
+#[test]
+fn large_class_name_without_redundant_clones() {
+    run(r"
+name = 'X' * 1_000_000
+C = type(name, (), {})
+assert C.__name__ == name
+assert type(C()) is C
+");
+}

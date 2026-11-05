@@ -697,15 +697,14 @@ impl VM<'_> {
     ///
     /// Like CPython, the *whole* tuple is validated rather than short-circuiting
     /// on the first match: an invalid element raises the `TypeError` even when an
-    /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
-    /// raising `TypeError` still raises the `TypeError` about catching classes).
     /// Checks if `exception` matches `exc_type` for a `try...except` handler.
     ///
     /// If `exc_type` is a tuple, each element is checked with amortized deadline
-    /// checks. Like CPython, the entire tuple is validated rather than short-circuiting
-    /// on the first match (so non-exception types still raise `TypeError`), but once
-    /// matched, expensive subclass ancestry scans are skipped in favor of O(1) handler
-    /// validation. Repeated consecutive handlers are also cached to avoid redundant
+    /// checks. Mirroring CPython, the entire tuple is validated rather than
+    /// short-circuiting on the first match (so non-exception types still raise
+    /// `TypeError`), but once matched, expensive subclass ancestry scans are
+    /// skipped in favor of O(1) handler validation using cached class exception
+    /// ancestry. Repeated consecutive handlers are also cached to avoid redundant
     /// ancestry traversal.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
         if let Value::Ref(id) = exc_type

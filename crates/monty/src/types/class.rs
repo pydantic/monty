@@ -55,6 +55,8 @@ pub(crate) struct Class {
     mro: Vec<ClassBase>,
     #[serde(default)]
     defined_methods: Vec<FunctionId>,
+    #[serde(default)]
+    base_exception: Option<ExcType>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -74,9 +76,11 @@ impl Class {
 
     /// The base exception type if this class derives from `BaseException` / `Exception`.
     pub(crate) fn base_exception(&self) -> Option<ExcType> {
-        self.mro.iter().find_map(|b| match b {
-            ClassBase::BuiltinExc(e) => Some(*e),
-            _ => None,
+        self.base_exception.or_else(|| {
+            self.mro.iter().find_map(|b| match b {
+                ClassBase::BuiltinExc(e) => Some(*e),
+                _ => None,
+            })
         })
     }
 
@@ -136,6 +140,10 @@ impl Class {
         mro: Vec<ClassBase>,
         defined_methods: Vec<FunctionId>,
     ) -> Self {
+        let base_exception = mro.iter().find_map(|b| match b {
+            ClassBase::BuiltinExc(e) => Some(*e),
+            _ => None,
+        });
         Self {
             name,
             namespace,
@@ -143,6 +151,7 @@ impl Class {
             all_bases,
             mro,
             defined_methods,
+            base_exception,
             uuid: None,
         }
     }
