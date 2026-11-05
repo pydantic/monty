@@ -142,7 +142,7 @@ impl ModuleRead {
     #[must_use]
     pub fn from_result(result: ExtFunctionResult) -> Self {
         match result {
-            ExtFunctionResult::Return(value) => match value.as_ref().as_str() {
+            ExtFunctionResult::Return(value) | ExtFunctionResult::Plain(value) => match value.as_ref().as_str() {
                 Some(text) => Self::Text(text.to_owned()),
                 None => Self::Error(MontyException::new(
                     ExcType::RuntimeError,

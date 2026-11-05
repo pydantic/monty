@@ -3,8 +3,8 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun, ReplProgress, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
-    ResourceTracker,
+    AwaitedCall, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    PrintWriter, ResourceTracker,
 };
 
 /// The exception the pool aborts with once `max_suspensions` is spent.
@@ -123,18 +123,8 @@ async def main():
 
 await main()
 ";
-    let mut progress = start(code);
-    let mut call_ids = vec![];
-    let state = loop {
-        match progress {
-            RunProgress::FunctionCall(call) => {
-                call_ids.push(call.call_id);
-                progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-            }
-            RunProgress::ResolveFutures(state) => break state,
-            other => panic!("unexpected progress {other:?}"),
-        }
-    };
+    let state = start(code).into_resolve_futures().expect("both calls batched");
+    let call_ids: Vec<u32> = state.calls().iter().map(AwaitedCall::call_id).collect();
     let state = state
         .resume(
             vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::int(1)))],
@@ -176,12 +166,7 @@ async def main():
 
 await main()
 ";
-    let call = start(code).into_function_call().expect("foo call");
-    let state = call
-        .resume_pending(PrintWriter::Stdout)
-        .unwrap()
-        .into_resolve_futures()
-        .expect("waiting on foo");
+    let state = start(code).into_resolve_futures().expect("waiting on foo");
     let exc = state.abort(limit_exceeded(), PrintWriter::Stdout).unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
     assert_snapshot!(exc.to_string(), @r#"

@@ -7,13 +7,25 @@ use std::thread;
 
 use monty::{Dump, MontyRun, ResolveFutures, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
-    ResourceTracker,
+    AwaitedCall, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult,
+    PrintWriter, ResourceTracker,
 };
 
-/// Starts a snippet and resolves external names without answering its first call.
+/// Starts a snippet and resolves external names without answering its first suspension.
 fn start_external(code: &str) -> RunProgress {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    start_runner(MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap())
+}
+
+/// As [`start_external`], suspending at every awaited call instead of batching.
+fn start_external_suspending(code: &str) -> RunProgress {
+    start_runner(
+        MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+            .unwrap()
+            .with_suspend_awaited_calls(true),
+    )
+}
+
+fn start_runner(runner: MontyRun) -> RunProgress {
     resolve_name_lookups(
         runner
             .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
@@ -25,7 +37,7 @@ fn start_external(code: &str) -> RunProgress {
 /// Sequential eager awaits retain container results without yielding ResolveFutures.
 #[test]
 fn allow_eager_await_sequential_results_and_errors() {
-    let mut progress = start_external("a = await foo()\nb = await foo()\n[a, b]");
+    let mut progress = start_external_suspending("a = await foo()\nb = await foo()\n[a, b]");
     for n in [1, 2] {
         let call = progress.into_function_call().unwrap();
         assert!(call.allow_eager_await);
@@ -41,7 +53,7 @@ fn allow_eager_await_sequential_results_and_errors() {
         ])
     );
 
-    let call = start_external("try:\n    await foo()\nexcept ValueError as e:\n    result = str(e)\nresult")
+    let call = start_external_suspending("try:\n    await foo()\nexcept ValueError as e:\n    result = str(e)\nresult")
         .into_function_call()
         .unwrap();
     assert!(call.allow_eager_await);
@@ -60,12 +72,12 @@ fn allow_eager_await_sequential_results_and_errors() {
 /// The hint does not change ordinary sync returns or require hosts to use eager resolution.
 #[test]
 fn allow_eager_await_keeps_existing_resume_semantics() {
-    let call = start_external("await foo()").into_function_call().unwrap();
+    let call = start_external_suspending("await foo()").into_function_call().unwrap();
     assert!(call.allow_eager_await);
     let err = call.resume(MontyObject::int(42), PrintWriter::Stdout).unwrap_err();
     assert_eq!(err.exc_type(), ExcType::TypeError);
 
-    let call = start_external("await foo()").into_function_call().unwrap();
+    let call = start_external_suspending("await foo()").into_function_call().unwrap();
     let call_id = call.call_id;
     let waiting = call
         .resume_pending(PrintWriter::Stdout)
@@ -89,7 +101,7 @@ fn allow_eager_await_excludes_competing_work() {
         "import asyncio\nasync def task():\n    return await foo()\nawait asyncio.gather(task(), task())",
         "f = foo()\nx = await foo()\nawait f",
     ] {
-        let mut progress = start_external(code);
+        let mut progress = start_external_suspending(code);
         let mut results = Vec::new();
         loop {
             match progress {
@@ -100,6 +112,7 @@ fn allow_eager_await_excludes_competing_work() {
                 }
                 RunProgress::ResolveFutures(waiting) => {
                     assert_eq!(results.len(), 2);
+                    assert!(waiting.calls().is_empty(), "every call suspended on its own");
                     assert!(
                         waiting
                             .resume(results, PrintWriter::Stdout)
@@ -113,6 +126,121 @@ fn allow_eager_await_excludes_competing_work() {
             }
         }
     }
+}
+
+// === Batched awaited calls ===
+
+/// A gather's awaited host calls are announced together by the wait on them
+/// and resolved by id; a later wait lists none of them again.
+#[test]
+fn awaited_calls_are_announced_once_by_the_wait_on_them() {
+    let progress = create_gather_two_runner()
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (mut state, call_ids) = drive_to_resolve_futures(progress);
+    let names: Vec<&str> = state
+        .calls()
+        .iter()
+        .map(|call| match call {
+            AwaitedCall::Function { function_name, .. } => function_name.as_str(),
+            other @ AwaitedCall::Os { .. } => panic!("unexpected awaited call {other:?}"),
+        })
+        .collect();
+    assert_eq!(names, ["foo", "bar"]);
+    let mut pending = state.pending_call_ids().to_vec();
+    pending.sort_unstable();
+    let mut announced = call_ids.clone();
+    announced.sort_unstable();
+    assert_eq!(pending, announced);
+
+    state.mark_calls_announced();
+    let waiting = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::int(10)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+        .into_resolve_futures()
+        .expect("bar still pending");
+    assert!(waiting.calls().is_empty());
+    assert_eq!(waiting.pending_call_ids(), &[call_ids[1]]);
+    let done = waiting
+        .resume(
+            vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::int(32)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(done.into_complete().unwrap(), MontyObject::int(42));
+}
+
+/// A plain value answering an awaited call fails its future with the
+/// `TypeError` CPython raises for awaiting a non-awaitable.
+#[test]
+fn plain_result_raises_type_error_at_the_await() {
+    let code = "try:\n    await foo()\nexcept TypeError as e:\n    result = str(e)\nresult";
+    let (state, call_ids) = drive_to_resolve_futures(start_external(code));
+    let done = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Plain(MontyObject::int(42)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(
+        done.into_complete().unwrap(),
+        MontyObject::string("'int' object can't be awaited")
+    );
+}
+
+/// A loaded dump announces every unresolved awaited call again: its host has
+/// seen none of them.
+#[test]
+fn loaded_dump_announces_unresolved_calls_again() {
+    let progress = create_gather_two_runner()
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let (mut state, call_ids) = drive_to_resolve_futures(progress);
+    state.mark_calls_announced();
+    assert!(state.calls().is_empty());
+
+    let mut state = reload(state);
+    assert_eq!(
+        state.calls().iter().map(AwaitedCall::call_id).collect::<Vec<_>>(),
+        call_ids
+    );
+    state.mark_calls_announced();
+    let state = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::int(10)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap()
+        .into_resolve_futures()
+        .expect("bar still pending");
+    assert!(state.calls().is_empty());
+
+    // only the unresolved call comes back
+    let state = reload(state);
+    assert_eq!(
+        state.calls().iter().map(AwaitedCall::call_id).collect::<Vec<_>>(),
+        vec![call_ids[1]]
+    );
+    let done = state
+        .resume(
+            vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::int(32)))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_eq!(done.into_complete().unwrap(), MontyObject::int(42));
+}
+
+/// Dumps a waiting run and loads it back, as a host restoring a session does.
+fn reload(state: ResolveFutures) -> ResolveFutures {
+    let progress = RunProgress::ResolveFutures(state);
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(loaded) = Dump::load(&bytes).unwrap().state else {
+        panic!("dumped a running session, loaded something else");
+    };
+    loaded.into_resolve_futures().expect("still waiting")
 }
 
 /// Helper to create a MontyRun for async external function tests.
@@ -158,39 +286,15 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
     Ok(progress)
 }
 
-/// Helper to drive execution through external calls until we get ResolveFutures.
-///
-/// Returns (pending_call_ids, state, collected_call_ids) where collected_call_ids
-/// are the call_ids from all the FunctionCalls we processed with resume_pending().
-fn drive_to_resolve_futures(mut progress: RunProgress) -> (ResolveFutures, Vec<u32>) {
-    let mut collected_call_ids = Vec::new();
-
-    loop {
-        match progress {
-            RunProgress::NameLookup(lookup) => {
-                let name = lookup.name.clone();
-                progress = lookup
-                    .resume(
-                        NameLookupResult::Value(MontyObject::function(name, None)),
-                        PrintWriter::Stdout,
-                    )
-                    .unwrap();
-            }
-            RunProgress::FunctionCall(call) => {
-                collected_call_ids.push(call.call_id);
-                progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-            }
-            RunProgress::ResolveFutures(state) => {
-                return (state, collected_call_ids);
-            }
-            RunProgress::Complete(_) => {
-                panic!("unexpected Complete before ResolveFutures");
-            }
-            RunProgress::OsCall(call) => {
-                panic!("unexpected OsCall: {:?}", call.function_call.name());
-            }
-        }
-    }
+/// Drives execution to its first `ResolveFutures`, returning it with the ids
+/// of the awaited calls it announces, in call order.
+fn drive_to_resolve_futures(progress: RunProgress) -> (ResolveFutures, Vec<u32>) {
+    let state = resolve_name_lookups(progress)
+        .unwrap()
+        .into_resolve_futures()
+        .expect("awaited calls are batched into ResolveFutures");
+    let call_ids = state.calls().iter().map(AwaitedCall::call_id).collect();
+    (state, call_ids)
 }
 
 // === Test: Suspended task stack stays alive across GC ===
@@ -496,33 +600,22 @@ fn sequential_awaits_second_fails() {
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
-    let progress = resolve_name_lookups(progress).unwrap();
-
-    // First external call (foo)
-    let RunProgress::FunctionCall(call) = progress else {
-        panic!("expected FunctionCall for foo");
+    // First external call (foo), announced by the wait on it
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    let [foo_call_id] = call_ids[..] else {
+        panic!("expected one awaited call, got {call_ids:?}");
     };
-    let foo_call_id = call.call_id;
-    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-
-    // Should yield for resolution
-    let state = progress.into_resolve_futures().expect("should need foo resolved");
     assert_eq!(state.pending_call_ids(), vec![foo_call_id]);
 
     // Resolve foo successfully
     let results = vec![(foo_call_id, ExtFunctionResult::Return(MontyObject::int(10)))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
-    let progress = resolve_name_lookups(progress).unwrap();
 
     // Second external call (bar)
-    let RunProgress::FunctionCall(call) = progress else {
-        panic!("expected FunctionCall for bar");
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    let [bar_call_id] = call_ids[..] else {
+        panic!("expected one awaited call, got {call_ids:?}");
     };
-    let bar_call_id = call.call_id;
-    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-
-    // Should yield for resolution
-    let state = progress.into_resolve_futures().expect("should need bar resolved");
     assert_eq!(state.pending_call_ids(), vec![bar_call_id]);
 
     // Fail bar with an exception
@@ -547,16 +640,11 @@ fn sequential_awaits_first_fails() {
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
-    let progress = resolve_name_lookups(progress).unwrap();
-
     // First external call (foo)
-    let RunProgress::FunctionCall(call) = progress else {
-        panic!("expected FunctionCall for foo");
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    let [foo_call_id] = call_ids[..] else {
+        panic!("expected one awaited call, got {call_ids:?}");
     };
-    let foo_call_id = call.call_id;
-    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-
-    let state = progress.into_resolve_futures().expect("should need foo resolved");
 
     // Fail foo with an exception - bar should never be called
     let results = vec![(
@@ -647,11 +735,10 @@ await main()
         )
         .unwrap();
 
-    let RunProgress::FunctionCall(call) = progress else {
+    let RunProgress::ResolveFutures(state) = progress else {
         panic!("expected main to reach `baz` after catching the error");
     };
-    let baz_id = call.call_id;
-    let RunProgress::ResolveFutures(state) = call.resume_pending(PrintWriter::Stdout).unwrap() else {
+    let [baz_id] = state.calls().iter().map(AwaitedCall::call_id).collect::<Vec<_>>()[..] else {
         panic!("expected to suspend on `baz`");
     };
 
@@ -1133,38 +1220,26 @@ fn gather_three_all_at_once_mixed() {
 // - Correct value pushing when restoring from a resolved task (Bug 1)
 // - Correct waiter context detection for current task (Bug 2)
 
-/// Helper to drive execution, collecting function calls and resolving them async,
-/// until we reach ResolveFutures. Returns the snapshot and a vec of
-/// (call_id, function_name) pairs for all external calls made.
-fn drive_collecting_calls(mut progress: RunProgress) -> (ResolveFutures, Vec<(u32, String)>) {
-    let mut collected = Vec::new();
-
-    loop {
-        match progress {
-            RunProgress::NameLookup(lookup) => {
-                let name = lookup.name.clone();
-                progress = lookup
-                    .resume(
-                        NameLookupResult::Value(MontyObject::function(name, None)),
-                        PrintWriter::Stdout,
-                    )
-                    .unwrap();
-            }
-            RunProgress::FunctionCall(call) => {
-                collected.push((call.call_id, call.function_name.clone()));
-                progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-            }
-            RunProgress::ResolveFutures(state) => {
-                return (state, collected);
-            }
-            RunProgress::Complete(_) => {
-                panic!("unexpected Complete before ResolveFutures");
-            }
-            RunProgress::OsCall(call) => {
-                panic!("unexpected OsCall: {:?}", call.function_call.name());
-            }
-        }
-    }
+/// Drives execution to its next `ResolveFutures` and returns it with the
+/// `(call_id, function_name)` of each awaited call it announces, marked as
+/// delivered so a later wait announces only newer calls.
+fn drive_collecting_calls(progress: RunProgress) -> (ResolveFutures, Vec<(u32, String)>) {
+    let mut state = resolve_name_lookups(progress)
+        .unwrap()
+        .into_resolve_futures()
+        .expect("awaited calls are batched into ResolveFutures");
+    let collected = state
+        .calls()
+        .iter()
+        .map(|call| match call {
+            AwaitedCall::Function {
+                function_name, call_id, ..
+            } => (*call_id, function_name.clone()),
+            other @ AwaitedCall::Os { .. } => panic!("unexpected awaited OS call {other:?}"),
+        })
+        .collect();
+    state.mark_calls_announced();
+    (state, collected)
 }
 
 // === Test: regression for https://github.com/pydantic/monty/issues/240 ===

@@ -181,9 +181,7 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
                     HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
                 )
         ) {
-            return Err(ExcType::type_error(
-                "An asyncio.Future, a coroutine or an awaitable is required",
-            ));
+            return Err(ExcType::gather_requires_awaitable());
         }
     }
 

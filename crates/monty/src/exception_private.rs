@@ -224,6 +224,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
+    /// Creates the TypeError `asyncio.gather` raises for a non-awaitable argument.
+    #[must_use]
+    fn gather_requires_awaitable() -> RunError {
+        ExcType::type_error("An asyncio.Future, a coroutine or an awaitable is required")
+    }
+
     /// Creates the canonical `RuntimeError: cannot reuse already awaited coroutine`,
     /// raised on direct re-await and on cross-gather coroutine reuse.
     #[must_use]

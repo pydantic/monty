@@ -185,6 +185,8 @@ impl Dump {
                 {
                     dump_upgrade::upgrade(version, heap, interns);
                 }
+                // whoever loads a dump has been told about none of its calls
+                value.state.unannounce_awaited_calls();
                 Ok(value)
             } else {
                 Err(DumpError::Payload(DumpDecodeError::custom(
@@ -218,6 +220,15 @@ impl Session {
             Self::Idle(repl) => Some(repl.heap_and_interns()),
             Self::Suspended(progress) => Some(progress.heap_and_interns()),
             Self::Running(progress) => progress.heap_and_interns(),
+        }
+    }
+
+    /// Makes a suspended session announce every unresolved awaited call again.
+    fn unannounce_awaited_calls(&mut self) {
+        match self {
+            Self::Idle(_) => {}
+            Self::Suspended(progress) => progress.unannounce_awaited_calls(),
+            Self::Running(progress) => progress.unannounce_awaited_calls(),
         }
     }
 }

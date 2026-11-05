@@ -142,13 +142,8 @@ fn a_one_shot_dump_carries_the_position() {
 fn resolve_futures_points_at_the_main_task_await() {
     // The main task awaits the pending future itself.
     let code = "x = await fetch()";
-    let call = start(code).into_function_call().unwrap();
-    assert_eq!(covered(&call.position, "test.py", code), "fetch()");
-    let waiting = call
-        .resume_pending(PrintWriter::Stdout)
-        .unwrap()
-        .into_resolve_futures()
-        .unwrap();
+    let waiting = start(code).into_resolve_futures().unwrap();
+    assert_eq!(covered(waiting.calls()[0].position(), "test.py", code), "fetch()");
     assert_eq!(covered(waiting.position(), "test.py", code), "await fetch()");
 }
 
@@ -157,32 +152,21 @@ fn resolve_futures_points_at_the_main_task_await_while_spawned_tasks_block() {
     // Both calls happen in spawned tasks; once the second blocks nothing can
     // run, so the VM parks and the main task's `gather` is the reported wait.
     let code = "import asyncio\n\nasync def task():\n    return await fetch()\n\nawait asyncio.gather(task(), task())";
-    let mut progress = start(code);
-    let mut pending = Vec::new();
-    loop {
-        match progress {
-            RunProgress::FunctionCall(call) => {
-                assert_eq!(covered(&call.position, "test.py", code), "fetch()");
-                pending.push(call.call_id);
-                assert!(pending.len() <= 2, "only two calls precede the wait");
-                progress = call.resume_pending(PrintWriter::Stdout).unwrap();
-            }
-            RunProgress::ResolveFutures(waiting) => {
-                assert_eq!(pending.len(), 2);
-                assert_eq!(
-                    covered(waiting.position(), "test.py", code),
-                    "await asyncio.gather(task(), task())"
-                );
-                // settle both futures so the run winds down instead of dropping live values
-                let results = pending
-                    .iter()
-                    .map(|&id| (id, ExtFunctionResult::Return(MontyObject::int(1))))
-                    .collect();
-                let done = waiting.resume(results, PrintWriter::Stdout).unwrap();
-                assert!(done.into_complete().is_some());
-                break;
-            }
-            other => panic!("unexpected progress: {other:?}"),
-        }
+    let waiting = start(code).into_resolve_futures().unwrap();
+    assert_eq!(waiting.calls().len(), 2, "only two calls precede the wait");
+    for call in waiting.calls() {
+        assert_eq!(covered(call.position(), "test.py", code), "fetch()");
     }
+    assert_eq!(
+        covered(waiting.position(), "test.py", code),
+        "await asyncio.gather(task(), task())"
+    );
+    // settle both futures so the run winds down instead of dropping live values
+    let results = waiting
+        .calls()
+        .iter()
+        .map(|call| (call.call_id(), ExtFunctionResult::Return(MontyObject::int(1))))
+        .collect();
+    let done = waiting.resume(results, PrintWriter::Stdout).unwrap();
+    assert!(done.into_complete().is_some());
 }

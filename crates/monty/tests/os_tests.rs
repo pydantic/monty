@@ -6,8 +6,8 @@
 
 use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime,
-    MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
+    AwaitedCall, CallArgs, CompileOptions, DateTimeSource, ExcType, ExtFunctionResult, FileMode, MontyDate,
+    MontyDateTime, MontyException, MontyFileHandle, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
     ResourceTracker, ScanArgs, SleepMode, dir_stat, file_stat,
     scan::{EntryInfo, ScanEntry, ScanReply, scan_reply},
 };
@@ -1612,7 +1612,7 @@ fn asyncio_sleep_answered_with_a_future_blocks_until_resolved() {
 #[test]
 fn asyncio_sleep_awaited_at_once_allows_an_eager_answer() {
     let code = "import asyncio\nasync def main():\n    return await asyncio.sleep(5, 'late')\nasyncio.run(main())";
-    let runner = host_runner(code);
+    let runner = host_runner(code).with_suspend_awaited_calls(true);
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
@@ -1621,6 +1621,39 @@ fn asyncio_sleep_awaited_at_once_allows_an_eager_answer() {
     };
     assert!(call.allow_eager_await);
     let progress = call.resume_eager(Ok(MontyObject::none()), PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        progress.into_complete().expect("expected Complete"),
+        MontyObject::string("late".to_owned())
+    );
+}
+
+/// An `asyncio.sleep` awaited at once is answered with a future by the VM
+/// and announced in the `ResolveFutures` that follows, so the host never
+/// suspends at the call; the sleep's `result` still answers the `await`.
+#[test]
+fn asyncio_sleep_awaited_at_once_is_batched() {
+    let code = "import asyncio\nasync def main():\n    return await asyncio.sleep(5, 'late')\nasyncio.run(main())";
+    let progress = host_runner(code)
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::ResolveFutures(state) = progress else {
+        panic!("expected the batched sleep, got {progress:?}")
+    };
+    let call_id = match state.calls() {
+        [
+            AwaitedCall::Os {
+                function_call, call_id, ..
+            },
+        ] => {
+            assert_eq!(function_call.name(), "asyncio.sleep");
+            *call_id
+        }
+        other => panic!("expected one awaited sleep, got {other:?}"),
+    };
+    assert_eq!(state.pending_call_ids(), vec![call_id]);
+    let progress = state
+        .resume(vec![(call_id, MontyObject::none().into())], PrintWriter::Stdout)
+        .unwrap();
     assert_eq!(
         progress.into_complete().expect("expected Complete"),
         MontyObject::string("late".to_owned())
@@ -1684,16 +1717,13 @@ fn asyncio_sleep_answered_with_a_failed_future_raises() {
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
-    let RunProgress::OsCall(call) = progress else {
-        panic!("expected the sleep, got {progress:?}")
-    };
-    let call_id = call.call_id;
-    let progress = call
-        .resume(ExtFunctionResult::Future(call_id), PrintWriter::Stdout)
-        .unwrap();
     let RunProgress::ResolveFutures(state) = progress else {
         panic!("expected the await to block, got {progress:?}")
     };
+    let [call] = state.calls() else {
+        panic!("expected one awaited sleep, got {:?}", state.calls())
+    };
+    let call_id = call.call_id();
     let interrupted = MontyException::new(ExcType::OSError, Some("wait interrupted".to_owned()));
     let progress = state
         .resume(

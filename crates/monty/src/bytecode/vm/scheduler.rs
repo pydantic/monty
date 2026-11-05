@@ -8,6 +8,7 @@
 use std::{collections::VecDeque, mem};
 
 use ahash::AHashMap;
+use monty_types::AwaitedCall;
 use smallvec::{SmallVec, smallvec};
 
 use super::{FrameNamespace, exceptions::CaughtException};
@@ -149,6 +150,14 @@ pub(crate) struct Scheduler {
     /// dispatch from coroutine heap id back to the driving task without
     /// scanning all tasks.
     coroutine_to_task: AHashMap<HeapId, TaskId>,
+    /// Host calls answered with a future as they were made, kept until each is
+    /// resolved so a loaded dump can announce them again. Appended in call
+    /// order; the first `announced_calls` have reached the host.
+    #[serde(default)]
+    awaited_calls: Vec<AwaitedCall>,
+    /// How many of `awaited_calls` the host has been told about.
+    #[serde(default)]
+    announced_calls: usize,
 }
 
 impl Scheduler {
@@ -166,6 +175,8 @@ impl Scheduler {
             next_call_id: 0,
             pending_externals: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
+            awaited_calls: Vec::new(),
+            announced_calls: 0,
         }
     }
 
@@ -221,8 +232,52 @@ impl Scheduler {
     ///
     /// The caller becomes responsible for the inc_ref previously held by the
     /// scheduler (typically dec_ref'd once the state transition is committed).
+    /// An awaited call's payload is released with it: its result has arrived.
     pub fn take_pending_external(&mut self, call_id: CallId) -> Option<HeapId> {
-        self.pending_externals.remove(&call_id)
+        let future_id = self.pending_externals.remove(&call_id)?;
+        if let Some(index) = self
+            .awaited_calls
+            .iter()
+            .position(|call| call.call_id() == call_id.raw())
+        {
+            self.awaited_calls.remove(index);
+            if index < self.announced_calls {
+                self.announced_calls -= 1;
+            }
+        }
+        Some(future_id)
+    }
+
+    /// The `ExternalFuture` heap id for `call_id`, if it is still pending.
+    pub fn pending_external(&self, call_id: CallId) -> Option<HeapId> {
+        self.pending_externals.get(&call_id).copied()
+    }
+
+    /// Records a host call the VM answered with a future itself, for the next
+    /// `ResolveFutures` to announce.
+    pub fn record_awaited_call(&mut self, call: AwaitedCall) {
+        self.awaited_calls.push(call);
+    }
+
+    /// The awaited calls the host has not been told about yet.
+    pub fn new_awaited_calls(&self) -> &[AwaitedCall] {
+        &self.awaited_calls[self.announced_calls..]
+    }
+
+    /// Mutable [`new_awaited_calls`](Self::new_awaited_calls).
+    pub fn new_awaited_calls_mut(&mut self) -> &mut [AwaitedCall] {
+        &mut self.awaited_calls[self.announced_calls..]
+    }
+
+    /// Marks every awaited call announced.
+    pub fn mark_awaited_calls_announced(&mut self) {
+        self.announced_calls = self.awaited_calls.len();
+    }
+
+    /// Forgets which awaited calls were announced, so a loaded dump announces
+    /// every unresolved call to its new host.
+    pub fn unannounce_awaited_calls(&mut self) {
+        self.announced_calls = 0;
     }
 
     /// Marks the current task as `Blocked` on the awaitable at `awaitable_id`.
@@ -420,6 +475,8 @@ impl Scheduler {
         for (_, future_id) in mem::take(&mut self.pending_externals) {
             heap.dec_ref(future_id);
         }
+        self.awaited_calls.clear();
+        self.announced_calls = 0;
         let task_ids: Vec<TaskId> = self.tasks.keys().copied().collect();
         for task_id in task_ids {
             self.cancel_task(task_id, heap);

@@ -171,7 +171,7 @@ impl VM<'_> {
         eager_call_id: Option<u32>,
     ) -> Result<FrameExit, RunError> {
         match (result, eager_call_id) {
-            (ExtFunctionResult::Return(obj), None) => self.resume(obj),
+            (ExtFunctionResult::Return(obj) | ExtFunctionResult::Plain(obj), None) => self.resume(obj),
             (ExtFunctionResult::ModuleFile(file), None) => self.resume_import_file(pending.name, file),
             (ExtFunctionResult::Error(exc), None) => {
                 let mut raise = ExceptionRaise::from(exc);

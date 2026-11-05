@@ -1076,6 +1076,63 @@ impl Opcode {
             _ => panic!("Opcode::jump_taken_delta: {self:?} is not a jump opcode"),
         }
     }
+
+    /// Pops, pushes and operand length of an opcode that only builds an
+    /// expression (loads, calls, builds, operators, `Await`), reading its
+    /// operand from `operands`; `None` for anything else — stores, jumps,
+    /// reordering, control flow — so a scan of straight-line expression code
+    /// stops at the first opcode it cannot account for.
+    #[must_use]
+    pub(crate) fn expression_stack_io(self, operands: &[u8]) -> Option<(usize, usize, usize)> {
+        #![expect(clippy::allow_attributes, reason = "expect seems broken with enum_glob_use")]
+        #[allow(clippy::enum_glob_use, reason = "simplifies churn")]
+        use Opcode::*; // allow local import
+        let u8_at = |i: usize| operands.get(i).copied().map(usize::from);
+        let u16_at = |i: usize| {
+            Some(usize::from(u16::from_le_bytes([
+                *operands.get(i)?,
+                *operands.get(i + 1)?,
+            ])))
+        };
+        match self {
+            LoadNone | LoadTrue | LoadFalse | LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3 => Some((0, 1, 0)),
+            BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
+            | BinaryOr | BinaryXor | BinaryLShift | BinaryRShift | BinaryMatMul | CompareEq | CompareNe | CompareLt
+            | CompareLe | CompareGt | CompareGe | CompareIs | CompareIsNot | CompareIn | CompareNotIn
+            | BinarySubscr => Some((2, 1, 0)),
+            UnaryNot | UnaryNeg | UnaryPos | UnaryInvert | ListToTuple | GetIter | Await => Some((1, 1, 0)),
+            BuildSlice => Some((3, 1, 0)),
+            LoadSmallInt | LoadLocal => Some((0, 1, 1)),
+            CallFunction => Some((u8_at(0)? + 1, 1, 1)),
+            FormatValue => Some((
+                if u8_at(0)? & usize::from(FORMAT_VALUE_HAS_SPEC) != 0 {
+                    2
+                } else {
+                    1
+                },
+                1,
+                1,
+            )),
+            LoadConst | LoadModule | LoadGlobal | LoadCell | LoadLocalW => Some((0, 1, 2)),
+            LoadAttr | LoadAttrImport => Some((1, 1, 2)),
+            BuildList | BuildTuple | BuildSet | BuildFString => Some((u16_at(0)?, 1, 2)),
+            BuildDict => Some((2 * u16_at(0)?, 1, 2)),
+            CallBuiltinFunction | CallBuiltinType => Some((u8_at(1)?, 1, 2)),
+            CallAttr => Some((u8_at(2)? + 1, 1, 3)),
+            LoadGlobalCallable => Some((0, 1, 4)),
+            LoadSubmodule => Some((1, 1, 4)),
+            LoadName => Some((0, 1, 5)),
+            CallFunctionKw => {
+                let (pos, kw) = (u8_at(0)?, u8_at(1)?);
+                Some((1 + pos + kw, 1, 2 + 2 * kw))
+            }
+            CallAttrKw => {
+                let (pos, kw) = (u8_at(2)?, u8_at(3)?);
+                Some((1 + pos + kw, 1, 4 + 2 * kw))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Computes an FNV-1a hash over the canonical opcode table.

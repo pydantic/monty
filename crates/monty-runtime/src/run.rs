@@ -27,9 +27,9 @@ use monty::{
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_type_checking::{SourceFile, TypeChecker};
 use monty_types::{
-    CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException, MontyObject,
-    NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker, SOURCE_SCAN_THRESHOLD,
-    SleepMode, TypeCheckingConfig, find_module_file, memory_limit_with_headroom, validate_cwd,
+    AwaitedCall, CallArgs, CompileOptions, DEFAULT_MAX_SUSPENSIONS, ExcType, ExtFunctionResult, MontyException,
+    MontyObject, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
+    SOURCE_SCAN_THRESHOLD, SleepMode, TypeCheckingConfig, find_module_file, memory_limit_with_headroom, validate_cwd,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 #[cfg(feature = "telemetry")]
@@ -472,7 +472,7 @@ fn execute_repl_with_mounts(
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
         if !matches!(progress, ReplProgress::Complete { .. })
-            && let Some(exc) = suspensions.record_suspension()
+            && let Some(exc) = suspensions.record_suspensions(1)
         {
             let outcome = match progress {
                 ReplProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -533,7 +533,7 @@ fn run_until_complete(
     loop {
         // The CLI, as host, enforces `--max-suspensions`.
         if !matches!(progress, RunProgress::Complete(_))
-            && let Some(exc) = suspensions.record_suspension()
+            && let Some(exc) = suspensions.record_suspensions(suspensions_in(&progress))
         {
             progress = match progress {
                 RunProgress::OsCall(call) => call.abort(exc, PrintWriter::Stdout),
@@ -553,11 +553,44 @@ fn run_until_complete(
                     .resume(return_value, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
-            RunProgress::ResolveFutures(state) => {
-                return Err(format!(
-                    "async futures not supported in CLI: {:?}",
-                    state.pending_call_ids()
-                ));
+            RunProgress::ResolveFutures(mut state) => {
+                // Awaited calls arrive batched; a sync function's value is
+                // `Plain`, so the `await` raises as it would at a suspended call.
+                let refused = state.calls().iter().find_map(|call| match call {
+                    AwaitedCall::Os { function_call, .. } => host.refuse_sleep(function_call),
+                    AwaitedCall::Function { .. } => None,
+                });
+                if let Some(exc) = refused {
+                    progress = state.abort(exc, PrintWriter::Stdout).map_err(|err| format!("{err}"))?;
+                    continue;
+                }
+                let mut results = Vec::new();
+                for call in state.calls() {
+                    match call {
+                        AwaitedCall::Function {
+                            function_name,
+                            args,
+                            call_id,
+                            ..
+                        } => {
+                            let value = resolve_external_call(function_name, args)?;
+                            results.push((*call_id, ExtFunctionResult::Plain(value)));
+                        }
+                        AwaitedCall::Os {
+                            function_call, call_id, ..
+                        } => results.push((*call_id, host.handle_os_call(function_call.clone()))),
+                    }
+                }
+                if results.is_empty() {
+                    return Err(format!(
+                        "async futures not supported in CLI: {:?}",
+                        state.pending_call_ids()
+                    ));
+                }
+                state.mark_calls_announced();
+                progress = state
+                    .resume(results, PrintWriter::Stdout)
+                    .map_err(|err| format!("{err}"))?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = if lookup.name == "add_ints" {
@@ -638,10 +671,11 @@ impl SuspensionBudget {
         Self { limit, seen: 0 }
     }
 
-    /// Counts one suspension and returns the exception to abort it with once
-    /// the count is over budget.
-    fn record_suspension(&mut self) -> Option<MontyException> {
-        self.seen += 1;
+    /// Counts `count` suspensions (one per awaited call a `ResolveFutures`
+    /// announces, else one) and returns the exception to abort with once the
+    /// count is over budget.
+    fn record_suspensions(&mut self, count: usize) -> Option<MontyException> {
+        self.seen += count;
         let limit = self.limit;
         (self.seen > limit).then(|| {
             MontyException::new(
@@ -649,6 +683,15 @@ impl SuspensionBudget {
                 Some(format!("suspension limit {limit} exceeded")),
             )
         })
+    }
+}
+
+/// How many suspensions `progress` costs: one per awaited call a
+/// `ResolveFutures` announces, otherwise one.
+fn suspensions_in(progress: &RunProgress) -> usize {
+    match progress {
+        RunProgress::ResolveFutures(state) => state.calls().len().max(1),
+        _ => 1,
     }
 }
 

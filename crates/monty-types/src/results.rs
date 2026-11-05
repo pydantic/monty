@@ -55,6 +55,13 @@ pub enum ExtFunctionResult {
     /// snapshot. It is used to track the pending future so it can be resolved
     /// later via `ResolveFutures::resume()`.
     Future(u32),
+    /// A value the host function returned without a coroutine or promise.
+    ///
+    /// At a blocking call it continues like [`Return`](Self::Return). As the
+    /// result of a call the sandbox already awaits (see `AwaitedCall`), it fails
+    /// the future with CPython's `TypeError` for awaiting a non-awaitable, so
+    /// `await sync_fn()` raises whether or not the call suspended.
+    Plain(MontyObject),
     /// Raises `NameError`, or `ModuleNotFoundError` for an `import` call.
     NotFound(String),
     /// Answers an `import` call with the module's `.py` file, which the sandbox

@@ -27,7 +27,8 @@ use crate::{
         ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapObjectRead, HeapRead, HeapReadMut,
         HeapReadOutput, HeapReader,
     },
-    intern::FunctionId,
+    intern::{FunctionId, StringId},
+    modules::{ModuleFunctions, asyncio::AsyncioFunctions},
     object_bridge::MontyObjectExt,
     run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     types::List,
@@ -37,8 +38,100 @@ use crate::{
 impl<'h> VM<'h> {
     /// Allows eager host resolution only for an immediate await with no competing work.
     pub(crate) fn allow_eager_await(&self) -> bool {
+        self.awaited() && self.scheduler.can_await_eagerly()
+    }
+
+    /// Whether the value the current call produces is awaited at once.
+    pub(crate) fn awaited(&self) -> bool {
         let next = self.current_frame.bytecode.get(self.current_frame.ip);
-        next == Some(&(Opcode::Await as u8)) && self.scheduler.can_await_eagerly()
+        next == Some(&(Opcode::Await as u8))
+    }
+
+    /// Whether an awaited host call is answered with a future here and announced
+    /// in the next `ResolveFutures`, rather than suspending at the call. Besides
+    /// a direct `await f()`, that covers a call whose result is a positional
+    /// argument of an `asyncio.gather(...)` call in this frame: the gather
+    /// awaits it, and raises `TypeError` for anything else.
+    pub(crate) fn batches_awaited_call(&self) -> bool {
+        !self.env.suspend_awaited_calls && (self.awaited() || self.feeds_gather())
+    }
+
+    /// Scans the straight-line expression code after the current call for
+    /// what consumes its result: `true` when that is an `asyncio.gather` call
+    /// taking it as a positional argument. Gives up at the first opcode that
+    /// is not expression building (a jump, a store, a stack shuffle).
+    fn feeds_gather(&self) -> bool {
+        let bytecode = self.current_frame.bytecode;
+        let mut ip = self.current_frame.ip;
+        // where the result lands, and how many values sit from it to the top
+        let base = self.stack.len();
+        let mut depth = 1;
+        loop {
+            let Some(op) = bytecode.get(ip).copied().and_then(Opcode::from_repr) else {
+                return false;
+            };
+            let operands = &bytecode[ip + 1..];
+            let Some((pops, pushes, len)) = op.expression_stack_io(operands) else {
+                return false;
+            };
+            if pops > depth {
+                // consumed with values below it: a call's callable sits deepest
+                let callee = base + depth - pops;
+                return match op {
+                    Opcode::CallFunction => matches!(
+                        self.stack.get(callee),
+                        Some(Value::ModuleFunction(ModuleFunctions::Asyncio(
+                            AsyncioFunctions::Gather
+                        )))
+                    ),
+                    Opcode::CallAttr => {
+                        let name = StringId::from_index(u16::from_le_bytes([operands[0], operands[1]]));
+                        self.interns.get_str(name) == "gather"
+                            && self.stack.get(callee).is_some_and(|v| self.is_asyncio_module(v))
+                    }
+                    _ => false,
+                };
+            } else if pops == depth {
+                // consumed as the deepest operand: nothing can be calling it
+                return false;
+            }
+            depth = depth - pops + pushes;
+            ip += 1 + len;
+        }
+    }
+
+    /// Whether `value` is the sandbox's `asyncio` module.
+    fn is_asyncio_module(&self, value: &Value) -> bool {
+        match value {
+            Value::Ref(id) => match self.heap.read(*id) {
+                HeapReadOutput::Module(module) => module.get(self.heap).name_str(self.interns) == "asyncio",
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The error a plain (non-awaitable) value raises where the sandbox awaits
+    /// the future for `call_id`: the gather's own `TypeError` when a gather
+    /// holds it, otherwise the `await` expression's.
+    fn plain_result_error(&mut self, call_id: u32, value: &Value) -> RunError {
+        let held_by_gather = self
+            .scheduler
+            .pending_external(CallId::new(call_id))
+            .is_some_and(|future_id| match self.heap.read(future_id) {
+                HeapReadOutput::ExternalFuture(fut) => matches!(
+                    fut.get(self.heap).state,
+                    ExternalFutureState::Pending {
+                        awaiter: Some(Awaiter::GatherSlot { .. })
+                    }
+                ),
+                _ => false,
+            });
+        if held_by_gather {
+            ExcType::gather_requires_awaitable()
+        } else {
+            ExcType::object_not_awaitable(&value.py_type_name(self))
+        }
     }
 
     /// Executes the Await opcode.
@@ -910,6 +1003,19 @@ impl<'h> VM<'h> {
                         )),
                     })?;
                     self.resolve_future(call_id, value);
+                }
+                // The sandbox awaits this future, so a plain value is a
+                // non-awaitable at an `await`.
+                ExtFunctionResult::Plain(obj) => {
+                    let value = obj.to_value(self).map_err(|e| match e {
+                        InvalidInputError::Resource(err) => RunError::from(err),
+                        other @ InvalidInputError::InvalidType(_) => RunError::from(MontyException::runtime_error(
+                            format!("Invalid return value for call {call_id}: {other}"),
+                        )),
+                    })?;
+                    let error = self.plain_result_error(call_id, &value);
+                    value.drop_with(self);
+                    self.fail_future(call_id, error);
                 }
                 ExtFunctionResult::Error(exc) => self.fail_future(call_id, RunError::from(exc)),
                 ExtFunctionResult::Future(_) => {}

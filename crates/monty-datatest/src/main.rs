@@ -31,13 +31,13 @@ use ahash::AHashMap;
 // only the dump round-trip needs these, and it is skipped under memory-model-checks
 #[cfg(not(feature = "memory-model-checks"))]
 use monty::{Dump, MontyRepl, Session, SessionRef, dump};
-use monty::{MontyRun, RunProgress};
+use monty::{MontyRun, ResolveFutures, RunProgress};
 use monty_fixture::{Header, Interpreter};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_CALL, MontyException, MontyFileHandle,
-    MontyObject, MontyType, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
-    ResourceTracker, SandboxTimeZone, TypeHintsTarget, dir_stat, file_stat, find_module_file,
+    AwaitedCall, CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_CALL, MontyException,
+    MontyFileHandle, MontyObject, MontyType, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter,
+    ResourceLimits, ResourceTracker, SandboxTimeZone, TypeHintsTarget, dir_stat, file_stat, find_module_file,
     scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -1879,6 +1879,8 @@ fn run_mount_fs_iter_loop(
     limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
     let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
+    // no host objects are defined in mount-fs cases; awaited calls still need one to dispatch against
+    let mut registry = FixtureRegistry::new();
 
     loop {
         // As in `run_iter_loop`: every suspension goes through the dump format,
@@ -1894,8 +1896,19 @@ fn run_mount_fs_iter_loop(
                 // No external function calls expected in mount-fs tests.
                 panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
             }
-            RunProgress::ResolveFutures(_) => {
-                panic!("unexpected ResolveFutures in mount-fs test");
+            RunProgress::ResolveFutures(mut state) => {
+                // Only awaited sleeps reach here: no external functions are defined.
+                let results =
+                    answer_awaited_calls(&mut state, &mut registry, |fc| match mount_table.handle_os_call(fc) {
+                        MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
+                        MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                        MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
+                    });
+                assert!(
+                    !results.is_empty(),
+                    "unexpected ResolveFutures without calls in mount-fs test"
+                );
+                progress = state.resume(results, PrintWriter::Stdout)?;
             }
             RunProgress::NameLookup(lookup) => {
                 let result = match lookup.name.as_str() {
@@ -1987,7 +2000,11 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
                     }
                 }
             }
-            RunProgress::ResolveFutures(state) => {
+            RunProgress::ResolveFutures(mut state) => {
+                // Awaited calls arrive here batched, answered like suspended ones.
+                pending_results.extend(answer_awaited_calls(&mut state, &mut registry, |fc| {
+                    dispatch_os_call(&fc)
+                }));
                 // Hand back each pending result verbatim (Return or Error) so
                 // `ResolveFutures::resume` sees both success and failure cases.
                 let results: Vec<(u32, ExtFunctionResult)> = state
@@ -2046,6 +2063,55 @@ fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, 
             }
         }
     }
+}
+
+/// Answers the awaited calls a `ResolveFutures` announces, as the loops above
+/// answer suspended ones: a sync function's value is `Plain`, so the `await`
+/// raises `TypeError` as it does at a suspended call.
+fn answer_awaited_calls(
+    state: &mut ResolveFutures,
+    registry: &mut FixtureRegistry,
+    mut os: impl FnMut(OsFunctionCall) -> ExtFunctionResult,
+) -> Vec<(u32, ExtFunctionResult)> {
+    let results = state
+        .calls()
+        .iter()
+        .map(|call| match call {
+            AwaitedCall::Function {
+                function_name,
+                args,
+                call_id,
+                object_id: Some(object_id),
+                ..
+            } => {
+                let result = match dispatch_method_call(function_name, *object_id, args, registry) {
+                    ExtFunctionResult::Return(value) => ExtFunctionResult::Plain(value),
+                    other => other,
+                };
+                (*call_id, result)
+            }
+            AwaitedCall::Function {
+                function_name,
+                args,
+                call_id,
+                object_id: None,
+                ..
+            } => {
+                let result = match dispatch_external_call(function_name, args, registry) {
+                    DispatchResult::Sync(ExtFunctionResult::Return(value)) => ExtFunctionResult::Plain(value),
+                    DispatchResult::Sync(other) => other,
+                    DispatchResult::Async(value) => ExtFunctionResult::Return(value),
+                    DispatchResult::AsyncFail(exception) => ExtFunctionResult::Error(exception),
+                };
+                (*call_id, result)
+            }
+            AwaitedCall::Os {
+                function_call, call_id, ..
+            } => (*call_id, os(function_call.clone())),
+        })
+        .collect();
+    state.mark_calls_announced();
+    results
 }
 
 /// Dumps a suspended run and reloads it, so every suspending test case exercises

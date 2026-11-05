@@ -27,7 +27,7 @@ pub(crate) use collections::unpack_exact;
 use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
-use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
+use monty_types::{AwaitedCall, InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
@@ -752,6 +752,28 @@ impl VMSnapshot {
     pub(crate) fn live_task_count(&self) -> usize {
         self.scheduler.task_count()
     }
+
+    /// The awaited calls the host has not been told about; see
+    /// [`crate::ResolveFutures::calls`].
+    pub(crate) fn new_awaited_calls(&self) -> &[AwaitedCall] {
+        self.scheduler.new_awaited_calls()
+    }
+
+    /// Mutable [`new_awaited_calls`](Self::new_awaited_calls).
+    pub(crate) fn new_awaited_calls_mut(&mut self) -> &mut [AwaitedCall] {
+        self.scheduler.new_awaited_calls_mut()
+    }
+
+    /// Marks every awaited call delivered to the host.
+    pub(crate) fn mark_awaited_calls_announced(&mut self) {
+        self.scheduler.mark_awaited_calls_announced();
+    }
+
+    /// Makes the next `ResolveFutures` announce every unresolved awaited
+    /// call, for a dump loaded by a host that has seen none of them.
+    pub(crate) fn unannounce_awaited_calls(&mut self) {
+        self.scheduler.unannounce_awaited_calls();
+    }
 }
 
 // ============================================================================
@@ -1105,13 +1127,64 @@ impl<'h> VM<'h> {
             }
         } else {
             resolve_call_paths(&mut call, &self.env.cwd);
-            // The effect is armed only after this exit is accepted for dispatch.
-            Ok(Some(FrameExit::OsCall {
-                function_call: call,
-                call_id: self.allocate_call_id(),
-                effect,
-            }))
+            if OsFunctionCall::accepts_future(call.name()) && self.batches_awaited_call() {
+                self.record_awaited_os_call(call, effect);
+                Ok(None)
+            } else {
+                // The effect is armed only after this exit is accepted for dispatch.
+                Ok(Some(FrameExit::OsCall {
+                    function_call: call,
+                    call_id: self.allocate_call_id(),
+                    effect,
+                }))
+            }
         }
+    }
+
+    /// Answers an awaited `asyncio.sleep` with a future, as a host answering
+    /// `ExtFunctionResult::Future` would, and records it for the next
+    /// `ResolveFutures` to announce. Mirrors the future arm of `resume_with_result`.
+    fn record_awaited_os_call(&mut self, function_call: OsFunctionCall, effect: Option<PendingEffect>) {
+        let position = self.suspension_position();
+        let call_id = self.allocate_call_id();
+        self.scheduler.record_awaited_call(AwaitedCall::Os {
+            function_call,
+            call_id: call_id.raw(),
+            position,
+        });
+        match effect {
+            Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                self.add_pending_sleep(call_id, result);
+            }
+            effect => {
+                release_pending_effect(effect, self.heap);
+                self.add_pending_call(call_id);
+            }
+        }
+    }
+
+    /// Answers an awaited external or host-object method call with a future
+    /// and records it for the next `ResolveFutures` to announce, so the sandbox
+    /// runs on instead of suspending. Exports the arguments now, on the clock.
+    fn record_awaited_function_call(
+        &mut self,
+        function_name: EitherStr,
+        args: ArgValues,
+        object_id: Option<MontyUuid>,
+    ) -> RunResult<()> {
+        let position = self.suspension_position();
+        let function_name = function_name.into_string(self.interns);
+        let args = args.into_call_args(self)?;
+        let call_id = self.allocate_call_id();
+        self.scheduler.record_awaited_call(AwaitedCall::Function {
+            function_name,
+            args,
+            call_id: call_id.raw(),
+            object_id,
+            position,
+        });
+        self.add_pending_call(call_id);
+        Ok(())
     }
 
     /// Allocates a new `CallId` for an external function call.
@@ -1210,20 +1283,33 @@ impl<'h> VM<'h> {
                 return Ok(None);
             }
             CallResult::FramePushed => return Ok(None),
-            CallResult::External(name, args) => FrameExit::ExternalCall {
-                function_name: name,
-                args,
-                call_id: self.allocate_call_id(),
-                name_load_ip: self.ext_function_load_ip.take(),
-            },
+            CallResult::External(name, args) => {
+                let name_load_ip = self.ext_function_load_ip.take();
+                if self.batches_awaited_call() {
+                    self.record_awaited_function_call(name, args, None)?;
+                    return Ok(None);
+                }
+                FrameExit::ExternalCall {
+                    function_name: name,
+                    args,
+                    call_id: self.allocate_call_id(),
+                    name_load_ip,
+                }
+            }
             CallResult::OsCall(call) => return self.prepare_os_call(call, None),
             CallResult::OsCallWithEffect { call, effect } => return self.prepare_os_call(call, Some(effect)),
-            CallResult::MethodCall { name, args, object_id } => FrameExit::MethodCall {
-                method_name: name,
-                args,
-                call_id: self.allocate_call_id(),
-                object_id,
-            },
+            CallResult::MethodCall { name, args, object_id } => {
+                if self.batches_awaited_call() {
+                    self.record_awaited_function_call(name, args, Some(object_id))?;
+                    return Ok(None);
+                }
+                FrameExit::MethodCall {
+                    method_name: name,
+                    args,
+                    call_id: self.allocate_call_id(),
+                    object_id,
+                }
+            }
             CallResult::AttrLookup {
                 name,
                 class_name,

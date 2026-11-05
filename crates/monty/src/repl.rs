@@ -13,8 +13,8 @@ use std::{mem, sync::Arc};
 
 use ahash::AHashMap;
 use monty_types::{
-    CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy, PrintWriter,
-    ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
+    AwaitedCall, CallArgs, ExcType, MontyException, MontyObject, MontyUuid, NamedValues, OsFunctionCall, OsPolicy,
+    PrintWriter, ResourceTracker, SOURCE_SCAN_THRESHOLD, SourceRange,
     unstable::{self, MontyGraph, NodeId},
 };
 use ruff_python_ast::token::TokenKind;
@@ -97,6 +97,10 @@ pub struct MontyRepl {
     /// applies to every later feed, as in CPython's interactive mode.
     #[serde(default)]
     future_annotations: bool,
+    /// Whether feeds suspend at every awaited host call; see
+    /// [`set_suspend_awaited_calls`](Self::set_suspend_awaited_calls).
+    #[serde(default)]
+    suspend_awaited_calls: bool,
     /// Persistent heap across snippets.
     heap: Heap,
     /// Persistent global variable values across snippets.
@@ -134,6 +138,7 @@ impl MontyRepl {
             random: SessionRandom::default(),
             modules: ModuleCache::default(),
             future_annotations: false,
+            suspend_awaited_calls: false,
             heap,
             globals: Vec::new(),
         }
@@ -158,6 +163,16 @@ impl MontyRepl {
     pub fn check_source<'a>(&self, code: &'a str) -> Result<CheckedSource<'a>, MontyException> {
         source_nesting_exception(code, &self.script_name, self.options.source_scan_threshold)?;
         Ok(CheckedSource(code))
+    }
+
+    /// Makes every feed suspend at each host call the sandbox awaits as it
+    /// is made, as a [`ReplFunctionCall`] / [`ReplOsCall`] with
+    /// `allow_eager_await`. By default such a call is answered with a future
+    /// and announced in the next [`ReplResolveFutures::calls`], so a gather of
+    /// host calls costs one suspension. For a host that steps one suspension
+    /// at a time.
+    pub fn set_suspend_awaited_calls(&mut self, suspend: bool) {
+        self.suspend_awaited_calls = suspend;
     }
 
     /// Replaces the default clock, sleep and random initialization policies
@@ -275,6 +290,7 @@ impl MontyRepl {
             cwd: &this.cwd,
             os_policy: &this.os_policy,
             future_annotations: this.future_annotations,
+            suspend_awaited_calls: this.suspend_awaited_calls,
         };
         let mut executor = match Executor::new_repl_snippet(
             code,
@@ -385,6 +401,8 @@ impl MontyRepl {
             cwd: &self.cwd,
             os_policy: &self.os_policy,
             future_annotations: self.future_annotations,
+            // no host answers a `feed_run`: suspending at an awaited call keeps its NameError at the name
+            suspend_awaited_calls: true,
         };
         let mut executor = Executor::new_repl_snippet(
             code,
@@ -503,6 +521,7 @@ impl MontyRepl {
                 cwd: &self.cwd,
                 os_policy: &self.os_policy,
                 future_annotations: self.future_annotations,
+                suspend_awaited_calls: self.suspend_awaited_calls,
             },
         )?;
         self.sources.insert(input_script_name, executor.program.code.clone());
@@ -746,6 +765,18 @@ impl ReplProgress {
         }
     }
 
+    /// Makes the next `ResolveFutures` announce every unresolved awaited call;
+    /// a loaded dump's host has seen none of them.
+    pub(crate) fn unannounce_awaited_calls(&mut self) {
+        match self {
+            Self::FunctionCall(ReplFunctionCall { snapshot, .. })
+            | Self::OsCall(ReplOsCall { snapshot, .. })
+            | Self::NameLookup(ReplNameLookup { snapshot, .. }) => snapshot.vm_state.unannounce_awaited_calls(),
+            Self::ResolveFutures(ReplResolveFutures { vm_state, .. }) => vm_state.unannounce_awaited_calls(),
+            Self::Complete { .. } => {}
+        }
+    }
+
     /// Consumes the progress and returns the [`ReplFunctionCall`] struct.
     #[must_use]
     pub fn into_function_call(self) -> Option<ReplFunctionCall> {
@@ -864,6 +895,8 @@ pub struct ReplFunctionCall {
     /// plain external function calls. The receiver is NOT included in `args`.
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
+    /// Only ever true under [`MontyRepl::set_suspend_awaited_calls`]; by
+    /// default an awaited call never suspends here.
     pub allow_eager_await: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
@@ -1152,6 +1185,25 @@ impl ReplResolveFutures {
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {
         &self.pending_call_ids
+    }
+
+    /// The awaited calls not yet announced to the host; see
+    /// [`ResolveFutures::calls`](crate::ResolveFutures::calls).
+    #[must_use]
+    pub fn calls(&self) -> &[AwaitedCall] {
+        self.vm_state.new_awaited_calls()
+    }
+
+    /// Mutable [`calls`](Self::calls), so a host can move each call's
+    /// arguments out for delivery and put them back before a dump.
+    pub fn calls_mut(&mut self) -> &mut [AwaitedCall] {
+        self.vm_state.new_awaited_calls_mut()
+    }
+
+    /// Marks [`calls`](Self::calls) delivered, so the next announcement
+    /// carries only calls made after this one.
+    pub fn mark_calls_announced(&mut self) {
+        self.vm_state.mark_awaited_calls_announced();
     }
 
     /// Returns where the main task's blocked `await` is in the source.

@@ -113,6 +113,18 @@ impl MontyRun {
         self
     }
 
+    /// Suspends at every host call the sandbox awaits as it is made, as a
+    /// [`FunctionCall`](crate::FunctionCall) / [`OsCall`](crate::OsCall) with
+    /// `allow_eager_await`, instead of the default of answering it with a
+    /// future and announcing it in the next
+    /// [`ResolveFutures::calls`](crate::ResolveFutures::calls). For a host that
+    /// steps one suspension at a time.
+    #[must_use]
+    pub fn with_suspend_awaited_calls(mut self, suspend: bool) -> Self {
+        self.executor.program.suspend_awaited_calls = suspend;
+        self
+    }
+
     /// Sets the sandbox working directory the run starts in (default `/`).
     ///
     /// `cwd` is an absolute POSIX virtual path, passed through
@@ -279,6 +291,10 @@ pub(crate) struct Program {
     /// `/` unless the host set one (see [`MontyRun::set_cwd`]). Shared with
     /// the REPL session like `script_name`.
     pub(crate) cwd: Arc<str>,
+    /// Suspend at every awaited host call rather than batching it into the
+    /// next `ResolveFutures`; see [`MontyRun::with_suspend_awaited_calls`].
+    #[serde(default)]
+    pub(crate) suspend_awaited_calls: bool,
 }
 
 /// Per-run environment handed to a fresh VM: the sandbox working directory,
@@ -301,6 +317,9 @@ pub(crate) struct VmEnv<'h> {
     pub(crate) options: CompileOptions,
     /// Clock, sleep and random initialization policies.
     pub(crate) os_policy: &'h OsPolicy,
+    /// Suspend at every awaited host call instead of batching it; see
+    /// [`MontyRun::with_suspend_awaited_calls`].
+    pub(crate) suspend_awaited_calls: bool,
 }
 
 impl VmEnv<'_> {
@@ -332,6 +351,7 @@ impl Default for VmEnv<'static> {
             assert_repr_max_bytes: AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             options: CompileOptions::default(),
             os_policy: &DEFAULT_OS_POLICY,
+            suspend_awaited_calls: false,
         }
     }
 }
@@ -356,6 +376,8 @@ pub(crate) struct ReplSession<'a> {
     /// Whether an earlier feed ran `from __future__ import annotations`, which
     /// persists for the rest of the session as in CPython's interactive mode.
     pub(crate) future_annotations: bool,
+    /// See [`MontyRepl::set_suspend_awaited_calls`](crate::MontyRepl::set_suspend_awaited_calls).
+    pub(crate) suspend_awaited_calls: bool,
 }
 
 impl Executor {
@@ -395,6 +417,7 @@ impl Executor {
                 os_policy: Arc::new(OsPolicy::default()),
                 script_name: Arc::from(script_name),
                 cwd: Arc::from(DEFAULT_CWD),
+                suspend_awaited_calls: false,
             },
             heap_capacity: namespace_size,
         })
@@ -451,6 +474,7 @@ impl Executor {
                 os_policy: Arc::clone(session.os_policy),
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
+                suspend_awaited_calls: session.suspend_awaited_calls,
             },
             heap_capacity: 0,
         })
@@ -533,6 +557,7 @@ impl Executor {
                 os_policy: Arc::clone(session.os_policy),
                 script_name: Arc::clone(session.script_name),
                 cwd: Arc::clone(session.cwd),
+                suspend_awaited_calls: session.suspend_awaited_calls,
             },
             heap_capacity: 0,
         })
@@ -557,6 +582,9 @@ impl Executor {
         let heap_capacity = self.heap_capacity;
         let mut heap = Heap::new(heap_capacity, resource_tracker);
         let globals = self.empty_globals();
+        // No host answers here, so batching awaited calls gains nothing;
+        // suspending at each keeps an undefined name's error at the name.
+        let batched = mem::replace(&mut self.program.suspend_awaited_calls, true);
 
         // Create VM first, then populate inputs with VM alive
         let result = HeapReader::with(&mut heap, &mut (&mut *self, print), |reader, (executor, print)| {
@@ -570,6 +598,7 @@ impl Executor {
             populate_inputs(inputs, &mut vm)?;
             Program::run_to_completion(&mut vm)
         });
+        self.program.suspend_awaited_calls = batched;
 
         if heap.size() > heap_capacity {
             self.heap_capacity = heap.size();
@@ -701,6 +730,7 @@ impl Program {
             assert_repr_max_bytes: self.assert_repr_max_bytes,
             options: self.options,
             os_policy: &self.os_policy,
+            suspend_awaited_calls: self.suspend_awaited_calls,
         }
     }
 
@@ -716,6 +746,7 @@ impl Program {
             os_policy: Arc::new(OsPolicy::default()),
             script_name: Arc::from(""),
             cwd: Arc::from(DEFAULT_CWD),
+            suspend_awaited_calls: false,
         }
     }
 

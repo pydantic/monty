@@ -9,8 +9,8 @@
 use std::mem;
 
 use monty_types::{
-    CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall, PrintWriter,
-    ResourceTracker, SourceRange,
+    AwaitedCall, CallArgs, ExcType, InvalidInputError, MontyException, MontyObject, MontyUuid, OsFunctionCall,
+    PrintWriter, ResourceTracker, SourceRange,
 };
 
 use crate::{
@@ -61,6 +61,18 @@ impl RunProgress {
             }
             Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &executor.tables.interns)),
             Self::Complete(_) => None,
+        }
+    }
+
+    /// Makes the next `ResolveFutures` announce every unresolved awaited call;
+    /// a loaded dump's host has seen none of them.
+    pub(crate) fn unannounce_awaited_calls(&mut self) {
+        match self {
+            Self::FunctionCall(FunctionCall { snapshot, .. })
+            | Self::OsCall(OsCall { snapshot, .. })
+            | Self::NameLookup(NameLookup { snapshot, .. }) => snapshot.vm_state.unannounce_awaited_calls(),
+            Self::ResolveFutures(ResolveFutures { vm_state, .. }) => vm_state.unannounce_awaited_calls(),
+            Self::Complete(_) => {}
         }
     }
 
@@ -139,6 +151,8 @@ pub struct FunctionCall {
     /// plain external function calls.
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
+    /// Only ever true under [`MontyRun::with_suspend_awaited_calls`](crate::MontyRun::with_suspend_awaited_calls);
+    /// by default an awaited call never suspends here.
     pub allow_eager_await: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
@@ -702,6 +716,30 @@ impl ResolveFutures {
         &self.pending_call_ids
     }
 
+    /// The awaited calls not yet announced to the host.
+    ///
+    /// An awaited host call (`x = await f()`, `gather(f(), g())`) is answered
+    /// with a future as it is made, so the sandbox runs on until every task
+    /// is blocked; the calls then arrive here together, each to be resolved
+    /// by `call_id` through [`resume`](Self::resume). A loaded dump announces
+    /// every unresolved call again.
+    #[must_use]
+    pub fn calls(&self) -> &[AwaitedCall] {
+        self.vm_state.new_awaited_calls()
+    }
+
+    /// Mutable [`calls`](Self::calls), so a host can move each call's
+    /// arguments out for delivery and put them back before a dump.
+    pub fn calls_mut(&mut self) -> &mut [AwaitedCall] {
+        self.vm_state.new_awaited_calls_mut()
+    }
+
+    /// Marks [`calls`](Self::calls) delivered, so the next announcement
+    /// carries only calls made after this one.
+    pub fn mark_calls_announced(&mut self) {
+        self.vm_state.mark_awaited_calls_announced();
+    }
+
     /// Returns where the main task's blocked `await` is in the source.
     #[must_use]
     pub fn position(&self) -> &SourceRange {
@@ -974,7 +1012,9 @@ pub(crate) fn resume_with_result(
             }
             vm.run_external()
         }
-        (ExtFunctionResult::Return(obj), None) => vm.resume(obj),
+        // A plain value at a blocking call continues as a return; the sandbox
+        // raises at its `await` if it awaits it.
+        (ExtFunctionResult::Return(obj) | ExtFunctionResult::Plain(obj), None) => vm.resume(obj),
         (ExtFunctionResult::Error(exc), None) => vm.resume_with_exception(exc.into()),
         (ExtFunctionResult::NotFound(function_name), None) => {
             vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))

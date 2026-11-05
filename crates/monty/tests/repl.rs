@@ -11,8 +11,8 @@ use monty::{
     ReplStartError, Session, SessionRef, detect_repl_continuation_mode, dump,
 };
 use monty_types::{
-    CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult,
-    PrintWriter, ResourceLimits, ResourceTracker,
+    AwaitedCall, CallArgs, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid,
+    NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
     unstable::{self, MontyNode},
 };
 use serde_json::to_value;
@@ -624,8 +624,6 @@ fn repl_abandoned_snippet_keeps_rebound_globals_usable() {
             PrintWriter::Stdout,
         )
         .unwrap();
-    let call = progress.into_function_call().expect("expected function call");
-    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
     check(
         progress
             .into_resolve_futures()
@@ -1193,15 +1191,26 @@ for _ in range(32):
         );
         *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_recursion_depth(2));
         let mut progress = repl.feed_start("run(main())", vec![], PrintWriter::Disabled).unwrap();
-        let mut call_ids = Vec::new();
-        for n in [1, 2] {
+        // both awaited host calls are announced by the gather's wait
+        let call_ids: Vec<u32> = {
             let restored = round_trip_progress(&progress);
-            drop(progress.into_repl());
-            let call = restored.into_function_call().expect("expected asynchronous host call");
-            assert_eq!(call.args.args().collect::<Vec<_>>(), vec![MontyObject::int(n)]);
-            call_ids.push(call.call_id);
-            progress = call.resume_pending(PrintWriter::Disabled).unwrap();
-        }
+            let pending = restored.into_resolve_futures().expect("expected pending futures");
+            let call_ids = pending
+                .calls()
+                .iter()
+                .zip([1, 2])
+                .map(|(call, n)| {
+                    let AwaitedCall::Function { args, call_id, .. } = call else {
+                        panic!("expected a host call, got {call:?}")
+                    };
+                    assert_eq!(args.args().collect::<Vec<_>>(), vec![MontyObject::int(n)]);
+                    *call_id
+                })
+                .collect();
+            drop(pending.into_repl());
+            call_ids
+        };
+        assert_eq!(call_ids.len(), 2);
         for (i, call_id) in call_ids.into_iter().enumerate() {
             let restored = round_trip_progress(&progress);
             drop(progress.into_repl());
@@ -1682,13 +1691,12 @@ async def main():
     .unwrap();
 
     let progress = repl.feed_start("await main()", vec![], PrintWriter::Stdout).unwrap();
-    // With LoadGlobalCallable, foo() goes directly to FunctionCall
-    let call = progress.into_function_call().expect("expected function call");
-    let call_id = call.call_id;
-
-    let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
+    // the awaited foo() is announced by the wait on it, and again after a reload
     let loaded = round_trip_progress(&progress);
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
+    let [call_id] = state.calls().iter().map(AwaitedCall::call_id).collect::<Vec<_>>()[..] else {
+        panic!("expected one awaited call, got {:?}", state.calls())
+    };
     assert_eq!(state.pending_call_ids(), &[call_id]);
 
     let progress = state

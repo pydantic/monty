@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ProcessTime, ResourceLimits,
-    ResourceTracker, SandboxTimeZone, SleepMode,
+    AwaitedCall, CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ProcessTime,
+    ResourceLimits, ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
 /// 2023-11-14 22:13:20 UTC, shared with the datatest fixtures.
@@ -788,28 +788,31 @@ fn gathered_sleeps_are_the_hosts_to_overlap() {
                 async def main():\n    \
                     return await asyncio.gather(wait_then(1), wait_then(2))\n\
                 asyncio.run(main())";
-    let mut progress = runner(code, with_sleep(SleepMode::System(Duration::from_millis(20))))
+    let progress = runner(code, with_sleep(SleepMode::System(Duration::from_millis(20))))
         .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
         .unwrap();
-    let mut call_ids = vec![];
-    for _ in 0..2 {
-        let RunProgress::OsCall(call) = progress else {
-            panic!("expected asyncio.sleep, got {progress:?}")
-        };
-        assert!(
-            matches!(call.function_call, OsFunctionCall::AsyncSystemSleep(delay) if delay == Duration::from_millis(20)),
-            "got {:?}",
-            call.function_call
-        );
-        let call_id = call.call_id;
-        call_ids.push(call_id);
-        progress = call
-            .resume(monty_types::ExtFunctionResult::Future(call_id), PrintWriter::Disabled)
-            .unwrap();
-    }
     let RunProgress::ResolveFutures(state) = progress else {
         panic!("expected both sleeps pending, got {progress:?}")
     };
+    // both awaited sleeps are announced together, as futures the host resolves
+    let call_ids: Vec<u32> = state
+        .calls()
+        .iter()
+        .map(|call| {
+            let AwaitedCall::Os {
+                function_call, call_id, ..
+            } = call
+            else {
+                panic!("expected asyncio.sleep, got {call:?}")
+            };
+            assert!(
+                matches!(function_call, OsFunctionCall::AsyncSystemSleep(delay) if *delay == Duration::from_millis(20)),
+                "got {function_call:?}"
+            );
+            *call_id
+        })
+        .collect();
+    assert_eq!(call_ids.len(), 2);
     let mut pending = state.pending_call_ids().to_vec();
     pending.sort_unstable();
     assert_eq!(pending, call_ids);
