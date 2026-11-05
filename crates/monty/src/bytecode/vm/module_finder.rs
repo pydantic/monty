@@ -330,8 +330,8 @@ impl VM<'_> {
     }
 
     /// A package's `__path__` (a list or tuple) as directories joined to the
-    /// working directory, skipping anything that is not a `str`, up to the
-    /// [`MAX_SEARCH_DIRS`] the host searches.
+    /// working directory, skipping anything that is not a `str` or that holds
+    /// a NUL byte (the host skips those too), up to the [`MAX_SEARCH_DIRS`] it searches.
     fn search_path(&self, path: &Value) -> Vec<String> {
         let dirs = match path.ref_id().map(|id| self.heap.get(id)) {
             Some(HeapData::List(list)) => list.as_slice(),
@@ -340,6 +340,7 @@ impl VM<'_> {
         };
         dirs.iter()
             .filter_map(|dir| dir.as_str_heap(self.heap, self.interns))
+            .filter(|dir| !dir.contains('\0'))
             .take(MAX_SEARCH_DIRS)
             .map(|dir| posix_join(&self.env.cwd, dir))
             .collect()
