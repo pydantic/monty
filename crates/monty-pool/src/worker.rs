@@ -83,6 +83,14 @@ struct SubprocessWorker {
     recv: FrameRecv,
     /// Reused encode buffer for outgoing frames (see [`Worker::send`]).
     send_buf: Vec<u8>,
+    /// The frame [`Worker::queue`] left in `send_buf`, which `recv` writes on.
+    queued: Option<QueuedWrite>,
+}
+
+/// Progress of a queued frame: bytes of `send_buf` written, or the error that ended the write.
+enum QueuedWrite {
+    Writing(usize),
+    Failed(io::Error),
 }
 
 impl Worker {
@@ -166,6 +174,7 @@ impl Worker {
             stdin,
             recv: FrameRecv::new(stdout),
             send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
+            queued: None,
         }))))
     }
 
@@ -198,24 +207,44 @@ impl Worker {
     pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
         let result = match &mut self.kind {
             WorkerKind::Subprocess(w) => {
+                w.finish_queued().await?;
                 // prefix + body in one reused buffer: a single write syscall
                 // per request, no per-frame allocation, and a pipe write needs
                 // no flush
                 encode_framed_into(request, &mut w.send_buf)?;
                 w.stdin.write_all(&w.send_buf).await?;
-                // body only, matching the remote transport and both receive
-                // paths, which never see the 4-byte length prefix
-                let len = w.send_buf.len() - 4;
-                // don't let one huge frame pin its capacity for the worker's life
-                if w.send_buf.capacity() > RETAIN_BUF_MAX {
-                    w.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
-                }
-                Ok(len)
+                Ok(w.end_frame())
             }
             WorkerKind::Remote(w) => w.send(request).await,
         };
-        // record only requests that hit the wire: a rejected oversize frame
-        // leaves the turn (and any pending suspension) exactly where it was
+        self.record_sent(request, result)
+    }
+
+    /// Queues `request` behind the frame just sent, for [`Self::recv`] to write
+    /// while it reads: a child answers the earlier frame before reading this one
+    /// through, so the parent reads that answer even while this write is stalled.
+    /// An oversize frame is rejected before anything is queued. A remote stream
+    /// does not stall on the child, so it sends outright.
+    pub(crate) async fn queue(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+        let result = match &mut self.kind {
+            WorkerKind::Subprocess(w) => {
+                w.finish_queued().await?;
+                encode_framed_into(request, &mut w.send_buf)?;
+                w.queued = Some(QueuedWrite::Writing(0));
+                Ok(w.send_buf.len() - 4)
+            }
+            WorkerKind::Remote(w) => w.send(request).await,
+        };
+        self.record_sent(request, result)
+    }
+
+    /// Records a request that was written or queued. A rejected oversize frame
+    /// is not recorded, leaving the turn (and any pending suspension) where it was.
+    fn record_sent(
+        &mut self,
+        request: &pb::ParentRequest,
+        result: Result<usize, FrameError>,
+    ) -> Result<(), FrameError> {
         #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
             if let Some(recorder) = &mut self.recorder {
@@ -274,10 +303,7 @@ impl Worker {
     /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
         let (event, len) = match &mut self.kind {
-            WorkerKind::Subprocess(w) => match w.recv.recv(self.max_decode_bytes).await? {
-                Some(framed) => Ok(framed),
-                None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
-            },
+            WorkerKind::Subprocess(w) => w.recv_writing(self.max_decode_bytes).await,
             // events come from the reader task; a channel recv is
             // cancel-safe, preserving the deadline race
             WorkerKind::Remote(w) => w.recv().await,
@@ -395,6 +421,72 @@ const SEND_BUF_CAPACITY: usize = 1024;
 /// Frames at or above this size decode under `block_in_place` (see
 /// [`decode_event`]); below it (< ~4ms) inline decode beats the handoff.
 pub(crate) const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
+
+impl SubprocessWorker {
+    /// Receives one event, writing any queued frame meanwhile. Cancel-safe:
+    /// a partial write keeps its offset in `queued`, as a partial read does in `recv`.
+    ///
+    /// A failed write still reads on, since a child that stopped reading may
+    /// have said why: its `FatalError` is returned, anything else is the write error.
+    async fn recv_writing(&mut self, max_decode_bytes: usize) -> Result<(pb::ChildEvent, usize), FrameError> {
+        let framed = loop {
+            let Some(QueuedWrite::Writing(written)) = self.queued else {
+                break self.recv.recv(max_decode_bytes).await;
+            };
+            tokio::select! {
+                biased;
+                framed = self.recv.recv(max_decode_bytes) => break framed,
+                wrote = self.stdin.write(&self.send_buf[written..]) => self.advance_queued(written, wrote),
+            }
+        };
+        let framed = framed?.ok_or(FrameError::Truncated)?; // clean EOF mid-checkout is still a vanished peer
+        match self.queued.take_if(|queued| matches!(queued, QueuedWrite::Failed(_))) {
+            Some(QueuedWrite::Failed(error))
+                if !matches!(framed.0.kind, Some(pb::child_event::Kind::FatalError(_))) =>
+            {
+                Err(FrameError::Io(error))
+            }
+            _ => Ok(framed),
+        }
+    }
+
+    /// Writes the rest of a queued frame before another goes out.
+    async fn finish_queued(&mut self) -> Result<(), FrameError> {
+        match self.queued.take() {
+            Some(QueuedWrite::Writing(written)) => {
+                self.stdin.write_all(&self.send_buf[written..]).await?;
+                self.end_frame();
+                Ok(())
+            }
+            Some(QueuedWrite::Failed(error)) => Err(FrameError::Io(error)),
+            None => Ok(()),
+        }
+    }
+
+    /// Records one write of the queued frame, retiring it once fully written.
+    fn advance_queued(&mut self, written: usize, wrote: io::Result<usize>) {
+        self.queued = match wrote {
+            Ok(0) => Some(QueuedWrite::Failed(io::ErrorKind::WriteZero.into())),
+            Ok(n) if written + n == self.send_buf.len() => {
+                self.end_frame();
+                None
+            }
+            Ok(n) => Some(QueuedWrite::Writing(written + n)),
+            Err(error) => Some(QueuedWrite::Failed(error)),
+        };
+    }
+
+    /// Ends the frame just written: returns its body length, which matches the
+    /// remote transport and both receive paths (they never see the 4-byte
+    /// prefix), and stops one huge frame pinning its buffer for the worker's life.
+    fn end_frame(&mut self) -> usize {
+        let len = self.send_buf.len().saturating_sub(4);
+        if self.send_buf.capacity() > RETAIN_BUF_MAX {
+            self.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
+        }
+        len
+    }
+}
 
 /// A cancel-safe reader of length-prefixed frames from the child's stdout.
 ///

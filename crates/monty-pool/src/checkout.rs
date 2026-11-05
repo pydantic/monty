@@ -1568,7 +1568,7 @@ impl Checkout {
     ///
     /// The session's first request also opens it (see [`Self::open_session`]);
     /// an execution turn then re-derives its deadline from the budget the
-    /// `Configure` reply settled.
+    /// `Configure` reply settled, timed from that reply.
     async fn request_turn(
         &mut self,
         request: &pb::ParentRequest,
@@ -1577,14 +1577,14 @@ impl Checkout {
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
         let outcome = match self.open_session(request).await {
-            Ok(false) => self.turn(request, deadline, true, on_print).await,
-            Ok(true) => {
+            Ok(None) => self.turn(request, deadline, None, on_print).await,
+            Ok(Some(opened)) => {
                 let deadline = if is_execution_turn(request) {
                     min_deadline(self.pool.config.request_timeout, self.backstop_deadline())
                 } else {
                     deadline
                 };
-                self.turn(request, deadline, false, on_print).await
+                self.turn(request, deadline, Some(opened), on_print).await
             }
             Err(err) => Err(err),
         };
@@ -1598,37 +1598,41 @@ impl Checkout {
         }
     }
 
-    /// One bounded turn: send `request` (unless `open_session` already did),
-    /// then stream and classify its reply.
+    /// One bounded turn: send `request`, then stream and classify its reply.
+    /// `opened` is when [`Self::open_session`] opened the session behind
+    /// `request`, already queued: the turn is timed from then, not resent.
     async fn turn(
         &mut self,
         request: &pb::ParentRequest,
         deadline: Option<Duration>,
-        send: bool,
+        opened: Option<DeadlineInstant>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
-        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
+        let started = opened.unwrap_or_else(DeadlineInstant::now);
+        let wall_deadline = deadline.and_then(|limit| started.checked_add(limit));
         let monitor = self.cpu_monitor(request).await?;
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
+        let send = opened.is_none();
         let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io(request, send, on_print)).await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
         outcome
     }
 
-    /// Opens the session a pending `Configure` describes, sending it and
-    /// `request` back to back and reading only the `Configure` reply, bounded
-    /// by `request_timeout` on its own: the request's reply is the turn that
-    /// follows, timed as if the session already existed. The child answers in
-    /// order, so pipelining the two costs the first turn no round trip.
-    /// Returns whether a session was opened (`false` when none was pending).
+    /// Opens the session a pending `Configure` describes: sends it, queues
+    /// `request` behind it and reads only the `Configure` reply, bounded by
+    /// `request_timeout` alone, as a checkout's `Configure` turn would be. The
+    /// child answers in order, so pipelining the two costs the first turn no
+    /// round trip. Returns when the reply arrived, which is when the request's
+    /// turn starts: a worker's start-up is never charged to it, but the rest of
+    /// its write is (see [`Worker::queue`]). `None` when no session was pending.
     ///
     /// A refused `Configure` ends the session: the worker is discarded, and the
     /// request's own reply (an error for the missing session) is never read.
     /// `Reset` and `Shutdown` drop the pending `Configure` instead: nothing
     /// ran, so there is no session to open.
-    async fn open_session(&mut self, request: &pb::ParentRequest) -> Result<bool, PoolError> {
+    async fn open_session(&mut self, request: &pb::ParentRequest) -> Result<Option<DeadlineInstant>, PoolError> {
         if matches!(
             request.kind,
             Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
@@ -1636,16 +1640,8 @@ impl Checkout {
             self.pending_configure = None;
         }
         let Some(configure) = self.pending_configure.take() else {
-            return Ok(false);
+            return Ok(None);
         };
-        // the child starts `request` as soon as it has answered `Configure`,
-        // so its CPU is charged from before either is written
-        if self.supervises_cpu(request) {
-            match self.sample_cpu()? {
-                Ok(baseline) => self.cpu_baseline = Some(baseline),
-                Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
-            }
-        }
         let timeout = self.pool.config.request_timeout;
         let wall_deadline = timeout.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.turn_in_flight = true;
@@ -1653,27 +1649,26 @@ impl Checkout {
         let outcome = cpu::run(None, wall_deadline, self.open_session_io(&configure, request)).await;
         let outcome = self.finish_cpu_turn(None, wall_deadline, outcome).await;
         self.turn_in_flight = false;
-        outcome.map(|()| true)
+        outcome.map(Some)
     }
 
-    /// The body of [`Self::open_session`]: both sends, then the `Configure`
-    /// reply. An oversize `request` is rejected before any bytes are written,
-    /// so the session still opens and the request fails as it would have on
-    /// an open session; an oversize `Configure` can never open one.
+    /// The body of [`Self::open_session`]: the send and the queue, then the
+    /// `Configure` reply. An oversize `request` is rejected before it is
+    /// queued, so the session still opens and the request fails as it would
+    /// have on an open session; an oversize `Configure` can never open one.
     async fn open_session_io(
         &mut self,
         configure: &pb::ParentRequest,
         request: &pb::ParentRequest,
-    ) -> Result<(), PoolError> {
+    ) -> Result<DeadlineInstant, PoolError> {
         if let Err(err) = self.send_request(configure).await {
             self.discard_worker();
             return Err(err);
         }
-        let sent = self.send_request(request).await;
-        // a send that broke the stream has discarded the worker (and classified
-        // its death); only the pre-write size rejection leaves it to open the session
+        // only an oversize request leaves the worker to open the session
+        let queued = self.deliver(request, true).await;
         if self.worker.is_none() {
-            return sent;
+            return Err(queued.err().unwrap_or(PoolError::Finished));
         }
         loop {
             let mut event = self.recv_event().await?;
@@ -1696,7 +1691,16 @@ impl Checkout {
                         saved.execution_clock = self.budget.execution_clock;
                         saved.update_from(&event);
                     }
-                    return sent;
+                    queued?;
+                    let opened = DeadlineInstant::now();
+                    // the child starts `request` once it has answered, so its CPU is charged from here
+                    if self.supervises_cpu(request) {
+                        match self.sample_cpu()? {
+                            Ok(baseline) => self.cpu_baseline = Some(baseline),
+                            Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
+                        }
+                    }
+                    return Ok(opened);
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
                     let Some(exception) = error.exception else {
@@ -1973,12 +1977,14 @@ impl Checkout {
         // as `expect_turn`: `request_timeout` alone would drop the duration
         // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
-        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
+        // a first request is timed from the `Configure` reply, as in `turn`
+        let started = opened.unwrap_or_else(DeadlineInstant::now);
+        let wall_deadline = deadline.and_then(|limit| started.checked_add(limit));
         self.armed_deadline = deadline;
         let outcome = cpu::run(
             monitor.as_ref(),
             wall_deadline,
-            self.turn_io_raw(request, !opened, on_event),
+            self.turn_io_raw(request, opened.is_none(), on_event),
         )
         .await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
@@ -2361,21 +2367,25 @@ impl Checkout {
     /// answerable with a smaller value. Every other send failure is a real
     /// I/O break (dead worker / closed pipe).
     async fn send_request(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
+        self.deliver(request, false).await
+    }
+
+    /// Writes `request`, or with `queue` hands it to the worker to write while
+    /// it reads (see [`Worker::queue`]), recording whether it reached the worker.
+    async fn deliver(&mut self, request: &pb::ParentRequest, queue: bool) -> Result<(), PoolError> {
         self.request_sent = false;
-        let Some(worker) = self.worker.as_mut() else {
-            return Err(PoolError::Finished);
+        let worker = self.worker.as_mut().ok_or(PoolError::Finished)?;
+        let delivered = if queue {
+            worker.queue(request).await
+        } else {
+            worker.send(request).await
         };
-        match worker.send(request).await {
+        match delivered {
             Ok(()) => {
                 self.request_sent = true;
                 Ok(())
             }
-            Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!(
-                    "request frame of {len} bytes exceeds the maximum of {max} bytes"
-                )),
-            ))),
+            Err(FrameError::FrameTooLarge { len, max }) => Err(frame_too_large(len, max)),
             Err(_) => Err(self.poison("sending a request").await),
         }
     }
@@ -2703,6 +2713,16 @@ pub(crate) fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
 /// Python `ValueError`.
 fn invalid_requirement(message: String) -> PoolError {
     PoolError::Runtime(MontyException::new(ExcType::ValueError, Some(message)))
+}
+
+/// The session-preserving error for a request too large to frame, raised before any byte is written.
+fn frame_too_large(len: u32, max: u32) -> PoolError {
+    PoolError::Runtime(MontyException::new(
+        ExcType::RuntimeError,
+        Some(format!(
+            "request frame of {len} bytes exceeds the maximum of {max} bytes"
+        )),
+    ))
 }
 
 /// The tighter of two optional deadlines (`None` means no deadline).

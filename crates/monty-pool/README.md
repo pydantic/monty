@@ -27,6 +27,8 @@ state cannot be trusted back into the pool. The session's `Configure` goes out w
 request rather than in a turn of its own, so a worker refusing it (an invalid `os_policy`, a
 clock it cannot serve) fails that first `feed` / `restore`, which also ends the session; a
 checkout that is finished without a request never configures its worker.
+The `Configure` reply is awaited under `request_timeout`, and the first request's duration limits
+start when it arrives, so a worker's start-up is never charged to them.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
