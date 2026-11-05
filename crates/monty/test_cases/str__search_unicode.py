@@ -1,7 +1,7 @@
 # Search boundaries use Python character positions, including empty needles.
-for text in ('', 'abcdef', 'äbc中文🐍def', 'aé中🐍' * 200):
+for text in ('', 'abcdef', 'aaaaa', 'äbc中文🐍def', 'aé中🐍' * 200):
     characters = list(text)
-    for needle in ('', 'a', '中', '中🐍', 'not-present'):
+    for needle in ('', 'a', 'aa', '中', '中🐍', 'not-present'):
         for start in (-10000, -10, -1, 0, 1, 6, 10000):
             for stop in (-10000, -1, 0, 1, 8, 10000):
                 low = max(len(text) + start, 0) if start < 0 else start
@@ -23,8 +23,13 @@ for text in ('', 'abcdef', 'äbc中文🐍def', 'aé中🐍' * 200):
                 )
                 assert text.startswith(needle, start, stop) == expected_start
                 assert text.endswith(needle, start, stop) == expected_end
-                if not needle:
-                    assert text.count(needle, start, stop) == len(matches)
+                expected_count = 0
+                next_start = low
+                for position in matches:
+                    if position >= next_start:
+                        expected_count += 1
+                        next_start = position + max(len(needle), 1)
+                assert text.count(needle, start, stop) == expected_count
         for bounds in ((), (None,), (None, None)):
             assert text.find(needle, *bounds) == text.find(needle)
             assert text.rfind(needle, *bounds) == text.rfind(needle)

@@ -5,7 +5,7 @@ use std::{
 
 use monty_types::{ResourceLimits, ResourceTracker};
 
-use super::copy_format_template;
+use super::{STRING_COPY_CHUNK, copy_with_time_checks};
 use crate::exception_private::RunError;
 
 #[test]
@@ -22,7 +22,15 @@ fn format_template_copy_checks_an_exhausted_budget() {
     }
     tracker.on_execution_stop();
     assert!(matches!(
-        copy_format_template("{missing}", &tracker),
+        copy_with_time_checks("{missing}", &tracker),
         Err(RunError::UncatchableExc(_))
     ));
+}
+
+#[test]
+fn string_copy_preserves_utf8_chunk_boundaries() {
+    for prefix in STRING_COPY_CHUNK - 3..=STRING_COPY_CHUNK {
+        let text = "a".repeat(prefix) + "é中🐍tail";
+        assert_eq!(copy_with_time_checks(&text, &ResourceTracker::default()).unwrap(), text);
+    }
 }
