@@ -503,6 +503,18 @@ pub fn get_name(f: &Bound<'_, PyAny>) -> String {
         .unwrap_or_else(|_| "<unknown>".to_string())
 }
 
+/// Whether `f` is an `async def` function (or wraps one), via
+/// `inspect.iscoroutinefunction`: such a host function crosses with
+/// `Function.is_async` set, so the sandbox streams its calls.
+pub fn is_coroutine_function(f: &Bound<'_, PyAny>) -> bool {
+    let py = f.py();
+    py.import(intern!(py, "inspect"))
+        .and_then(|inspect| inspect.getattr(intern!(py, "iscoroutinefunction")))
+        .and_then(|predicate| predicate.call1((f,)))
+        .and_then(|result| result.is_truthy())
+        .unwrap_or(false)
+}
+
 /// get the `__doc__` attribute from a (hopefully) function
 pub fn get_docstring(f: &Bound<'_, PyAny>) -> Option<String> {
     f.getattr(intern!(f.py(), "__doc__"))

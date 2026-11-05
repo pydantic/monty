@@ -178,12 +178,26 @@ impl MontyObject {
         Self::leaf(MontyNode::Exception { exc_type, arg })
     }
 
-    /// A host function the sandbox calls back by `name`.
+    /// A host function the sandbox calls back by `name`, suspending at each call.
     #[must_use]
     pub fn function(name: impl Into<String>, docstring: Option<String>) -> Self {
         Self::leaf(MontyNode::Function {
             name: name.into(),
             docstring,
+            is_async: false,
+        })
+    }
+
+    /// A host coroutine function the sandbox calls back by `name`: a call is
+    /// streamed to the host as an [`AsyncCall`](crate::AsyncCall) and answered
+    /// with a future at once, so the host starts the coroutine while the sandbox
+    /// runs on, and resolves it when every task is blocked.
+    #[must_use]
+    pub fn async_function(name: impl Into<String>, docstring: Option<String>) -> Self {
+        Self::leaf(MontyNode::Function {
+            name: name.into(),
+            docstring,
+            is_async: true,
         })
     }
 

@@ -13,8 +13,8 @@
 //   `monty-cause` trailer names the reason; see `monty_proto::grpc`.
 //
 // The protocol is a strict alternation: the parent writes exactly one
-// `ParentRequest`; the child replies with zero or more streamed `Print` events
-// followed by exactly one turn-ending event. A stream never interleaves two
+// `ParentRequest`; the child replies with zero or more streamed `Print` and
+// `AsyncCall` events followed by exactly one turn-ending event. A stream never interleaves two
 // turns, so a parent can be implemented with a single blocking read loop in
 // any language. Outside that alternation sit the liveness messages: a server
 // sends `Ping` between turns and the parent answers `Pong`; neither is a turn.
@@ -303,6 +303,11 @@ message ModuleNode {
 message Function {
   string name = 1;
   optional string docstring = 2;
+  // The host runs it as a coroutine: the child answers a call with a future
+  // itself and streams the call as `ChildEvent.async_call` rather than
+  // suspending on it. A child that predates the field suspends as for any
+  // function.
+  bool is_async = 3;
 }
 
 // ============================================================================
@@ -702,6 +707,13 @@ message Feed {
   // feed, resolved by the parent (an explicit choice, or the first mount on
   // the session's first feed). Empty keeps the session's current directory.
   string cwd = 5;
+  // The host functions the parent runs as coroutines, by the name sandbox
+  // code calls them by. A call site never asks the parent for a name before
+  // calling it, so this is how a direct call `f(...)` learns to stream as an
+  // `async_call` rather than suspend; a function reaching the sandbox as a
+  // value carries the flag itself (`Function.is_async`). Replaces the
+  // session's previous list; kept by a dump.
+  repeated string async_functions = 6;
 }
 
 // Ends a pending suspension by raising `exception` uncatchably at its site.
@@ -814,6 +826,14 @@ message ChildEvent {
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
     Ping ping = 13;
+    // Streamed like `Print`, never a turn end and never answered: the sandbox
+    // called a `Function` with `is_async` set and the child answered it with
+    // a future of its own, so the parent starts the host coroutine now and
+    // resolves `call_id` through the `ResumeFutures` that answers a later
+    // `ResolveFutures`. `object_id` and `allow_eager_await` are never set. A
+    // `Load` streams one per still-unresolved call before its turn-ending
+    // event, since the restored session's parent has seen none of them.
+    FunctionCall async_call = 14;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in

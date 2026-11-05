@@ -290,6 +290,7 @@ fn class_instance_and_function_values_round_trip() {
         Some("fetches a url".to_owned()),
     ));
     assert_value_round_trip(&MontyObject::function("f".to_owned(), None));
+    assert_value_round_trip(&MontyObject::async_function("fetch".to_owned(), None));
 }
 
 #[test]
@@ -879,6 +880,7 @@ fn deep_values_cross_the_wire() {
             values: Some(values),
             skip_type_check: false,
             cwd: "/work".to_owned(),
+            async_functions: vec!["fetch".to_owned()].into(),
         })),
         trace_parent: None,
     };

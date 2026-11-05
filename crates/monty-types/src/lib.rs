@@ -4,6 +4,7 @@
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod args;
+mod async_call;
 mod builtins;
 mod exceptions;
 mod file_mode;
@@ -23,6 +24,7 @@ mod uuid;
 mod virtual_path;
 
 pub use crate::{
+    async_call::AsyncCall,
     builtins::BuiltinsFunctions,
     exceptions::{
         CodeLoc, ExcData, ExcType, JsonErrorData, MontyException, SourceRange, StackFrame, UnicodeErrorData,

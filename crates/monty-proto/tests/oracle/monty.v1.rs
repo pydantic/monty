@@ -354,6 +354,12 @@ pub struct Function {
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
+    /// The host runs it as a coroutine: the child answers a call with a future
+    /// itself and streams the call as `ChildEvent.async_call` rather than
+    /// suspending on it. A child that predates the field suspends as for any
+    /// function.
+    #[prost(bool, tag = "3")]
+    pub is_async: bool,
 }
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
@@ -863,6 +869,14 @@ pub struct Feed {
     /// the session's first feed). Empty keeps the session's current directory.
     #[prost(string, tag = "5")]
     pub cwd: ::prost::alloc::string::String,
+    /// The host functions the parent runs as coroutines, by the name sandbox
+    /// code calls them by. A call site never asks the parent for a name before
+    /// calling it, so this is how a direct call `f(...)` learns to stream as an
+    /// `async_call` rather than suspend; a function reaching the sandbox as a
+    /// value carries the flag itself (`Function.is_async`). Replaces the
+    /// session's previous list; kept by a dump.
+    #[prost(string, repeated, tag = "6")]
+    pub async_functions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -1026,7 +1040,7 @@ pub struct ChildEvent {
     /// Configure acknowledgment. Local CPU-mode parents require this before execution.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1059,6 +1073,15 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
         #[prost(message, tag = "13")]
         Ping(super::Ping),
+        /// Streamed like `Print`, never a turn end and never answered: the sandbox
+        /// called a `Function` with `is_async` set and the child answered it with
+        /// a future of its own, so the parent starts the host coroutine now and
+        /// resolves `call_id` through the `ResumeFutures` that answers a later
+        /// `ResolveFutures`. `object_id` and `allow_eager_await` are never set. A
+        /// `Load` streams one per still-unresolved call before its turn-ending
+        /// event, since the restored session's parent has seen none of them.
+        #[prost(message, tag = "14")]
+        AsyncCall(super::FunctionCall),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may

@@ -24,6 +24,7 @@ fn feed() -> pb::ParentRequest {
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
+            async_functions: vec![].into(),
             cwd: "/".to_owned(),
         })),
         trace_parent: None,

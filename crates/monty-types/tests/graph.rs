@@ -89,6 +89,7 @@ fn corpus() -> Vec<MontyObject> {
             [pair("x", MontyObject::int(1))],
         ),
         MontyObject::function("fetch".to_owned(), Some("doc".to_owned())),
+        MontyObject::async_function("fetch_async".to_owned(), None),
         MontyObject::module("tools", MontyUuid::from_u128(3), [pair("VERSION", MontyObject::int(3))]),
         MontyObject::repr("<object>".to_owned()),
         MontyObject::cycle("[...]".to_owned()),
