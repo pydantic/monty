@@ -3106,7 +3106,10 @@ fn resume_pending_in_turn_keeps_the_turn_clock() {
             matches!(progress, ReplProgress::FunctionCall(_)),
             "expected the second call"
         );
-        (first, progress.tracker().turn_elapsed())
+        let second = progress.tracker().turn_elapsed();
+        // ends the suspended snippet so its heap references are released
+        let _repl = progress.into_repl();
+        (first, second)
     };
     let (first, second) = second_call_turn_time(true);
     assert!(second >= first, "turn clock restarted: {second:?} < {first:?}");
