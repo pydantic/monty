@@ -2209,10 +2209,11 @@ impl<'h> VM<'h> {
             }
             Some(PendingEffect::Post(PostConversionEffect::WritePosition {
                 file_id,
+                payload_length,
                 text_length,
                 result_none,
                 ..
-            })) => apply_write_position(file_id, text_length, result_none, value, self).map(Some),
+            })) => apply_write_position(file_id, payload_length, text_length, result_none, value, self).map(Some),
             Some(PendingEffect::Post(PostConversionEffect::LoadThenCall {
                 file_id,
                 callable,

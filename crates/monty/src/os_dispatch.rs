@@ -347,6 +347,9 @@ pub(crate) enum PostConversionEffect {
         previous_position: u64,
         /// Known file length before dispatch, restored on host exception.
         previous_length: u64,
+        /// Bound for a binary write reply; absent on older pending writes.
+        #[serde(default)]
+        payload_length: Option<u64>,
         /// Length of the text as passed to `write()` when newline translation
         /// lengthened the payload: CPython reports that, not what reached the file.
         #[serde(default)]

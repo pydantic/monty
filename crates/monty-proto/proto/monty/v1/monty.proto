@@ -988,6 +988,8 @@ message OsCall {
     GetTypeHints get_type_hints = 34;
     // Create a new empty file; an existing entry must never be opened or replaced.
     CreateExclusive create_exclusive = 35;
+    // Overwrite a range in an existing regular file, without truncation.
+    WriteBytesAt write_bytes_at = 36;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -1006,6 +1008,11 @@ message OsCall {
   message BytesWrite {
     string path = 1;
     bytes data = 2;
+  }
+  message WriteBytesAt {
+    string path = 1;
+    uint64 offset = 2;
+    bytes data = 3;
   }
   message Open {
     string path = 1;

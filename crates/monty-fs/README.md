@@ -25,12 +25,23 @@ Each mount has a configurable aggregate memory budget that defaults to `DEFAULT_
 Retained in-memory overlay data and transient filesystem results share that
 budget; oversized operations return `MemoryError` before an unbounded read.
 
+## Positional writes
+
+`WriteBytesAt` overwrites an existing regular file at an absolute byte offset, preserving surrounding bytes.
+It never creates or truncates the file; an empty payload does not extend it.
+Native mounts seek and write through one confined handle, which is closed before returning.
+Overlays copy backing content on the first mutation and keep all changes in memory.
+The write budget charges the payload and any zero-filled gap, or the resulting materialized content on first copy.
+Overlay memory limits apply separately.
+Native write failures can leave partially modified content.
+
 ## Exclusive creation
 
 `OsFunctionCall::CreateExclusive` reserves an empty file and returns a `MontyFileHandle` in one request.
 An occupied name, including a directory or dangling symlink, returns `FileExistsError` without changing it.
 Parent directories must already exist, and creation requires a writable mount even when the returned handle is read-only.
-The handle accepts the supported `r`, `rb`, `w`, `wb`, `a`, and `ab` modes; update modes are rejected.
+The handle accepts `r`, `rb`, `w`, `wb`, `a`, `ab`, and binary write/update (`w+b` / `wb+`).
+Other update modes are rejected.
 
 Native mounts use descriptor-relative exclusive creation, so checking and reserving the name are atomic.
 The `permissions` field accepts read/write access bits (`0o666` mask), applied on Unix subject to umask.

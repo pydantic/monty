@@ -1277,3 +1277,30 @@ fn exclusive_creation_is_byte_compatible_with_generated_oracle() {
         hand
     );
 }
+
+#[test]
+fn positional_writes_are_byte_compatible_with_generated_oracle() {
+    let hand = os_call_to_proto(
+        42,
+        OsFunctionCall::WriteBytesAt(monty_types::WriteBytesAtArgs {
+            path: "/data/file".into(),
+            offset: 7,
+            data: b"abc".to_vec(),
+        }),
+        false,
+        &SourceRange::unknown(),
+    );
+    let oracle = oracle::OsCall::decode(hand.encode_to_vec().as_slice()).unwrap();
+    let Some(oracle::os_call::Call::WriteBytesAt(args)) = &oracle.call else {
+        panic!("missing positional write")
+    };
+    assert_eq!(
+        (&*args.path, args.offset, args.data.as_slice()),
+        ("/data/file", 7, b"abc".as_slice())
+    );
+    assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
+    assert_eq!(
+        decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),
+        hand
+    );
+}

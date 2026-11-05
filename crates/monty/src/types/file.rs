@@ -19,7 +19,7 @@
 //! line for `readline`, etc.) is computed from the now-loaded buffer and
 //! pushed in its place. Subsequent reads and seeks slice that heap buffer in
 //! pure Monty with no further OS calls. The buffer lives in the heap and
-//! counts against the configured `max_memory`. With `newline=None`, `\r\n`
+//! counts against the configured `max_memory`; writes invalidate it. With `newline=None`, `\r\n`
 //! and `\r` become `\n` as the buffer is installed, so positions count
 //! translated chars.
 //!
@@ -55,10 +55,7 @@
 //!   `__exit__` always returns `None` — it cannot suppress an in-flight
 //!   exception. The file is closed on exit on both the success and exception
 //!   paths.
-//! - `+` update modes (`r+`, `w+`, `a+`, and their `b` variants) are
-//!   rejected at parse time because Monty has no read-position tracking;
-//!   without it a write after a read would silently truncate the file via
-//!   the one-shot OS write.
+//! - Update modes other than binary `w+b` / `wb+` are rejected at parse time.
 //! - The `encoding` and `errors` arguments to `open()` are accepted only at
 //!   their CPython defaults (with `encoding="utf-8"` as a documented no-op).
 //!   Text I/O is whole-file UTF-8 with no error handlers; `newline` is
@@ -81,7 +78,7 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
+use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, WriteBytesAtArgs};
 
 use super::{
     LazyHeapSet, List, PyTrait, Type,
@@ -264,10 +261,8 @@ pub(crate) struct OpenFile {
     /// ignore it (their lines end at `\n`), as do host-injected handles.
     #[serde(default)]
     newline: Newline,
-    /// Whether at least one write has been issued. For `w`/`wb` mode this
-    /// switches subsequent writes from truncating to appending so write #2
-    /// doesn't clobber write #1. Truncating modes start `true` because the
-    /// host already emptied the file at `open()` time.
+    /// Selects append after the first text write. Binary writes use their cursor.
+    /// Truncating modes start `true` because `open()` already emptied the file.
     first_write_done: bool,
     /// Whether `close()` has been called. Operations on a closed file raise
     /// `ValueError`.
@@ -686,16 +681,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         effect: fn(HeapId) -> PostConversionEffect,
     ) -> RunResult<CallResult> {
         self.check_readable(vm)?;
-        // `eof` on a readable file is only ever flipped by a path that
-        // also populates `buffer`, so we never need to short-circuit on
-        // EOF without a loaded buffer here. Write-only files would be
-        // the only case where `eof=true && buffer=None` is possible, and
-        // they're rejected by the readable check above.
-        let buffer_loaded = {
-            let file = self.get(vm.heap);
-            debug_assert!(!file.eof || file.buffer.is_some());
-            file.buffer.is_some()
-        };
+        let buffer_loaded = self.get(vm.heap).buffer.is_some();
 
         if buffer_loaded {
             return compute_slice(self, spec, vm).map(CallResult::Value);
@@ -781,14 +767,14 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             let text = extract_str_payload(data, vm).expect("validate_write_data accepted a str-shaped value");
             WritePayload::Text(text)
         };
-        Ok(self.dispatch_write(vm, payload, false))
+        self.dispatch_write(vm, payload, false)
     }
 
     /// `json.dump`'s `fp.write(text)`: the same host write as [`Self::write`],
     /// but the call answers `None` rather than the character count.
     pub(crate) fn write_text_discarding_count(&mut self, vm: &mut VM<'h>, text: String) -> RunResult<CallResult> {
         self.check_text_write(vm)?;
-        Ok(self.dispatch_write(vm, WritePayload::Text(text), true))
+        self.dispatch_write(vm, WritePayload::Text(text), true)
     }
 
     /// The checks `write(str)` makes before reaching the host, in the same
@@ -815,8 +801,8 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
 
     /// Builds the one-shot write or append for an already validated payload,
     /// with the position update armed for the host's reply.
-    fn dispatch_write(&mut self, vm: &mut VM<'h>, payload: WritePayload, result_none: bool) -> CallResult {
-        let (path, append, newline, previous_position, previous_length) = {
+    fn dispatch_write(&mut self, vm: &mut VM<'h>, payload: WritePayload, result_none: bool) -> RunResult<CallResult> {
+        let (path, append, positional, newline, previous_position, previous_length) = {
             let file = self.get(vm.heap);
             // `first_write_done` is flipped in `apply_write_position`, only once
             // the host confirms the write — a rejected or host-failed write must
@@ -825,6 +811,7 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             (
                 MontyPath::new(file.path().to_owned()),
                 append,
+                file.mode.is_binary() && !file.mode.is_append(),
                 file.newline,
                 file.position,
                 file.file_length,
@@ -832,13 +819,20 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         };
 
         let mut text_length = None;
+        let mut payload_length = None;
         let call = match payload {
             WritePayload::Bytes(bytes) => {
-                let args = PathBytesDataArgs { path, data: bytes };
-                if append {
-                    OsFunctionCall::AppendBytes(args)
+                payload_length = Some(bytes.len() as u64);
+                if positional {
+                    let args = WriteBytesAtArgs {
+                        path,
+                        offset: previous_position,
+                        data: bytes,
+                    };
+                    args.validate().map_err(ExcType::value_error)?;
+                    OsFunctionCall::WriteBytesAt(args)
                 } else {
-                    OsFunctionCall::WriteBytes(args)
+                    OsFunctionCall::AppendBytes(PathBytesDataArgs { path, data: bytes })
                 }
             }
             WritePayload::Text(text) => {
@@ -853,6 +847,17 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             }
         };
 
+        // A failed host write can still modify a prefix, so discard cached reads before dispatch.
+        let buffer = {
+            let file = self.get_mut(vm.heap);
+            file.buffer_meta = None;
+            file.eof = false;
+            file.buffer.take()
+        };
+        if let Some(buffer) = buffer {
+            vm.heap.dec_ref(buffer);
+        }
+
         let file_id = self.id();
         inc_ref_for_pending_oscall(vm, file_id);
         // The effect travels with the call and is armed at dispatch, so a
@@ -861,11 +866,12 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             file_id,
             previous_position,
             previous_length,
+            payload_length,
             text_length,
             result_none,
         }
         .into();
-        CallResult::OsCallWithEffect { call, effect }
+        Ok(CallResult::OsCallWithEffect { call, effect })
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -1213,6 +1219,7 @@ fn unloaded_iteration_error(file_type: Type) -> RunError {
 /// is released by `defer_drop!` regardless of which path the function takes.
 pub(crate) fn apply_write_position(
     file_id: HeapId,
+    payload_length: Option<u64>,
     text_length: Option<u64>,
     result_none: bool,
     result: Value,
@@ -1225,11 +1232,12 @@ pub(crate) fn apply_write_position(
 
     let written = result_ref.as_int(vm)?;
     if written < 0 {
-        return Err(RunError::internal(
-            "apply_write_position: write count cannot be negative",
-        ));
+        return Err(ExcType::value_error("write count cannot be negative"));
     }
     let written = u64::try_from(written).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    if payload_length.is_some_and(|length| written > length) {
+        return Err(ExcType::value_error("write count exceeds the supplied data length"));
+    }
 
     let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
         return Err(RunError::internal(
@@ -1242,7 +1250,9 @@ pub(crate) fn apply_write_position(
         .checked_add(written)
         .ok_or_else(ExcType::overflow_c_ssize_t)?;
     f.position = new_position;
-    f.file_length = f.file_length.max(new_position);
+    if written != 0 {
+        f.file_length = f.file_length.max(new_position);
+    }
     f.eof = new_position >= f.file_length;
     // The write is confirmed — subsequent writes append. Deliberately not set
     // at dispatch time so a rejected or host-failed write leaves the file in

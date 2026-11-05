@@ -13,7 +13,7 @@ use super::{
         DIRECTORY_WRITE_BYTES, MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes,
         host_append_bytes, host_append_text, host_create_exclusive, host_is_dir, host_is_file, host_iterdir,
         host_list_visible_dir_entries, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink,
-        host_write_bytes, host_write_text, map_io, reject_non_regular,
+        host_write_bytes, host_write_bytes_at, host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -54,6 +54,10 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         FsRequest::WriteBytes { path, data } => write_bytes(&path, &data, ctx),
         FsRequest::AppendText { path, data } => append_text(&path, &data, ctx),
         FsRequest::AppendBytes { path, data } => append_bytes(&path, &data, ctx),
+        FsRequest::WriteBytesAt { path, offset, data } => {
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            host_write_bytes_at(ctx, target.for_dir_op(), offset, &data, &path)
+        }
         FsRequest::Mkdir {
             path,
             parents,

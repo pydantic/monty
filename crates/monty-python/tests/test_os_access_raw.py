@@ -84,6 +84,14 @@ class TestOS(AbstractOS):
         self.files[p] = self.files.get(p, b'') + data
         return len(data)
 
+    def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
+        p = str(path_from_arg(path))
+        content = self.files[p]
+        if data:
+            end = offset + len(data)
+            self.files[p] = content[:offset] + b'\0' * max(0, offset - len(content)) + data + content[end:]
+        return len(data)
+
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
         p = str(path)
         if p in self.directories:

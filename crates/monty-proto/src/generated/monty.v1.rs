@@ -1148,7 +1148,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1168,6 +1168,16 @@ pub mod os_call {
         #[prost(string, tag = "1")]
         pub path: crate::budgeted_prost::alloc::string::String,
         #[prost(bytes = "vec", tag = "2")]
+        pub data: crate::budgeted_prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct WriteBytesAt {
+        #[prost(string, tag = "1")]
+        pub path: crate::budgeted_prost::alloc::string::String,
+        #[prost(uint64, tag = "2")]
+        pub offset: u64,
+        #[prost(bytes = "vec", tag = "3")]
         pub data: crate::budgeted_prost::alloc::vec::Vec<u8>,
     }
     #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
@@ -1449,6 +1459,9 @@ pub mod os_call {
         /// Create a new empty file; an existing entry must never be opened or replaced.
         #[prost(message, tag = "35")]
         CreateExclusive(CreateExclusive),
+        /// Overwrite a range in an existing regular file, without truncation.
+        #[prost(message, tag = "36")]
+        WriteBytesAt(WriteBytesAt),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

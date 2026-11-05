@@ -1144,7 +1144,7 @@ fn os_call_open_round_trips_all_modes() {
 
 #[test]
 fn os_call_create_exclusive_round_trips_modes_and_permissions() {
-    for mode in ["r", "rb", "w", "wb", "a", "ab"] {
+    for mode in ["r", "rb", "w", "wb", "a", "ab", "w+b"] {
         for permissions in [0, 0o600, 0o666] {
             assert_os_call_round_trip(OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
                 path: "/mnt/new".into(),
@@ -1152,6 +1152,29 @@ fn os_call_create_exclusive_round_trips_modes_and_permissions() {
                 permissions,
             }));
         }
+    }
+}
+
+#[test]
+fn positional_writes_round_trip_and_reject_overflow() {
+    assert_os_call_round_trip(OsFunctionCall::WriteBytesAt(monty_types::WriteBytesAtArgs {
+        path: "/mnt/file".into(),
+        offset: 7,
+        data: b"abc".to_vec(),
+    }));
+    for (offset, data) in [(u64::MAX, vec![]), (i64::MAX as u64, vec![0])] {
+        let call = pb::os_call::Call::WriteBytesAt(pb::os_call::WriteBytesAt {
+            path: "/mnt/file".to_owned(),
+            offset,
+            data: data.into(),
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidValue {
+                field: "WriteBytesAt.offset",
+                ..
+            })
+        ));
     }
 }
 

@@ -5,7 +5,7 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
-    io::{Error as IoError, ErrorKind, Read, Write},
+    io::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write},
     time::SystemTime,
 };
 
@@ -213,6 +213,35 @@ fn append_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Re
     reject_non_regular(dir, rel, vpath)?;
     let mut file = open_regular(dir, rel, vpath, OpenOptions::new().create(true).append(true))?;
     file.write_all(content).map_err(|err| map_io(err, vpath))
+}
+
+/// Charges both the supplied bytes and any hole created before them.
+pub(super) fn positional_write_charge(offset: u64, length: u64, count: usize) -> Result<usize, MountError> {
+    let gap = if count == 0 { 0 } else { offset.saturating_sub(length) };
+    gap.checked_add(as_u64(count))
+        .and_then(|charge| usize::try_from(charge).ok())
+        .ok_or_else(|| MountError::InvalidArgument("write range exceeds the supported file-position range".to_owned()))
+}
+
+/// Uses one confined handle for the length check, seek, and overwrite.
+pub(super) fn host_write_bytes_at(
+    ctx: &mut MountContext<'_>,
+    rel: &str,
+    offset: u64,
+    content: &[u8],
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    reject_non_regular(ctx.mount_dir, rel, vpath)?;
+    let mut file = open_regular(ctx.mount_dir, rel, vpath, OpenOptions::new().write(true))?;
+    let length = file.metadata().map_err(|err| map_io(err, vpath))?.len();
+    let charge = positional_write_charge(offset, length, content.len())?;
+    check_write_limit(charge, ctx)?;
+    if !content.is_empty() {
+        file.seek(SeekFrom::Start(offset)).map_err(|err| map_io(err, vpath))?;
+        file.write_all(content).map_err(|err| map_io(err, vpath))?;
+    }
+    commit_write_bytes(charge, ctx);
+    Ok(MontyObject::int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
 
 /// Opens `rel` and rejects it unless the *handle* is a regular file — the
