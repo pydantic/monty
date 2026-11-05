@@ -17,6 +17,7 @@ use std::{
     future::ready,
     io,
     path::{Path, PathBuf},
+    pin::pin,
     process::Command,
     thread,
     time::Duration,
@@ -41,9 +42,9 @@ use monty_types::{
     ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
-use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
+use tokio::{sync::mpsc::unbounded_channel, time::sleep};
 
 use crate::{binary::monty_binary, common::wait_for_idle};
 
@@ -2215,6 +2216,35 @@ async fn async_calls_suspend_without_stream_async_calls() {
     drop(session);
 }
 
+/// With a sink set, a streamed call reaches the host while the turn is still
+/// running, so the host can start it before the sandbox's long loop ends.
+#[tokio::test]
+async fn streamed_calls_reach_the_sink_before_the_turn_ends() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let (sink, mut streamed) = unbounded_channel();
+    session.set_streamed_call_sink(Some(sink));
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let code = "a = f(1)\nfor _ in range(2_000_000):\n    pass\nawait a";
+    let (call, event) = {
+        let mut print = no_print;
+        let mut feed = pin!(session.feed(code, inputs, vec![], false, &mut print));
+        let call = tokio::select! {
+            call = streamed.recv() => call.expect("the sink stays open"),
+            event = &mut feed => panic!("the turn ended before the call arrived: {event:?}"),
+        };
+        (call, feed.await.unwrap())
+    };
+    assert_eq!(call.function_name, "f");
+    assert!(matches!(event, TurnEvent::ResolveFutures { .. }), "got {event:?}");
+    // delivered to the sink, so nothing was kept for `take_streamed_calls`
+    assert!(session.take_streamed_calls().is_empty());
+    let results = vec![(call.call_id, ResumeValue::Return(MontyObject::int(7)))];
+    let event = session.resume_futures(results, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::int(7));
+    session.finish().await.unwrap();
+}
+
 /// Calls to an async host function arrive as started calls rather than
 /// suspensions: the feed blocks once, and one reply settles every call.
 #[tokio::test]
@@ -2275,6 +2305,36 @@ async fn streamed_calls_count_against_the_suspension_limit() {
     assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
     // the worker started three, then suspended on the fourth
     assert_eq!(session.take_streamed_calls().len(), 3);
+    session.finish().await.unwrap();
+}
+
+/// A feed refused before it is sent (here an oversize input) leaves the
+/// previous turn's streamed calls for the caller to take.
+///
+/// Allocates just over the 256 MiB frame limit in the test process.
+#[tokio::test]
+async fn an_unsent_feed_keeps_the_previous_turns_streamed_calls() {
+    const OVERSIZE: usize = 257 * 1024 * 1024;
+
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let event = session
+        .feed("t = f(1)", inputs, vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+
+    let huge = MontyObject::string("x".repeat(OVERSIZE));
+    let err = session
+        .feed("data", vec![("data".to_owned(), huge)], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Runtime(_)), "unexpected error: {err:?}");
+
+    let started = session.take_streamed_calls();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].function_name, "f");
     session.finish().await.unwrap();
 }
 

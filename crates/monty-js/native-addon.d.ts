@@ -57,4 +57,5 @@ export declare class NativeSession {
   resumeLazyAttr(...args: unknown[]): Promise<object>
   resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
+  takeStreamedCall(callId: number): object | null
 }

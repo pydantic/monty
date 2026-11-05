@@ -85,8 +85,8 @@ test('calls to async functions start without suspending the remote worker', asyn
     printCallback: (_stream, text) => log.push(text),
   })
   t.deepEqual(result, [0, 10, 20])
-  // the worker printed before the host ran any call: none of them suspended it
-  t.deepEqual(log, ['started\n', 'fetch(0)', 'fetch(1)', 'fetch(2)'])
+  // each call started on the host as it arrived, ahead of the print that followed them
+  t.deepEqual(log, ['fetch(0)', 'fetch(1)', 'fetch(2)', 'started\n'])
 })
 
 test('separate checkouts are isolated', async () => {

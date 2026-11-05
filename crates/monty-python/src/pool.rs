@@ -32,7 +32,7 @@ use std::{
     future::{Future, ready},
     num::NonZeroU32,
     path::PathBuf,
-    pin::Pin,
+    pin::{Pin, pin},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
@@ -63,7 +63,10 @@ use pyo3::{
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
-    sync::Mutex as AsyncMutex,
+    sync::{
+        Mutex as AsyncMutex,
+        mpsc::{UnboundedReceiver, unbounded_channel},
+    },
     task::{JoinSet, block_in_place},
     time::sleep as tokio_sleep,
 };
@@ -1831,8 +1834,22 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
     let async_functions = names.async_functions.clone();
+    // streamed calls reach this drive as they arrive, so each starts while the turn runs
+    let (sink, mut streamed) = unbounded_channel();
+    // A fresh borrow per turn: `join_set` is also answered between turns.
+    macro_rules! starter {
+        () => {
+            &mut CallStarter {
+                streamed: &mut streamed,
+                join_set: &mut join_set,
+                names: &names,
+                instances: &instances,
+                callback_context: &callback_context,
+            }
+        };
+    }
 
-    let mut event = run_turn_async(
+    let mut event = run_turn_starting_calls(
         &checkout,
         &print_target,
         turn_fn(move |c, p| {
@@ -1842,10 +1859,12 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             started.store(true, Ordering::Release);
             Box::pin(async move {
                 c.set_async_functions(Some(async_functions));
+                c.set_streamed_call_sink(Some(sink));
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
         }),
+        starter!(),
     )
     .await?;
 
@@ -1854,12 +1873,12 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let (native, started) = callback_context_and_streamed_calls(&checkout).await;
-        // started before the turn's own event is answered: `ResolveFutures` may name them
-        for call in started {
-            if let Err(err) =
-                start_call_async(call, &names, &instances, &mut join_set, &callback_context, &native).await
-            {
+        let (native, buffered) = callback_context_and_streamed_calls(&checkout).await;
+        // Calls the pool kept because the sink could not take them (none while
+        // this drive holds the receiver), started before the turn's own event
+        // is answered: `ResolveFutures` may name them.
+        for call in buffered {
+            if let Err(err) = start_call_async(call, &names, &instances, &mut join_set, &callback_context).await {
                 discard_checkout(&checkout).await;
                 return Err(err);
             }
@@ -1907,10 +1926,11 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                         return Err(err);
                     }
                 };
-                event = run_turn_async(
+                event = run_turn_starting_calls(
                     &checkout,
                     &print_target,
                     turn_fn(move |c, p| Box::pin(c.resume_futures(results, p))),
+                    starter!(),
                 )
                 .await?;
                 continue;
@@ -1933,10 +1953,11 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 allow_eager_await,
                 ..
             } => {
-                let mounted = run_turn_async(
+                let mounted = run_turn_starting_calls(
                     &checkout,
                     &print_target,
                     turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
+                    starter!(),
                 )
                 .await?;
                 if let Some(next) = mounted {
@@ -1965,7 +1986,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                 }
             }
         };
-        event = run_turn_async(
+        event = run_turn_starting_calls(
             &checkout,
             &print_target,
             turn_fn(move |c, p| {
@@ -1978,6 +1999,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     }
                 })
             }),
+            starter!(),
         )
         .await?;
     }
@@ -2128,12 +2150,12 @@ async fn start_call_async(
     instances: &InstanceStore,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     callback_context: &CallbackContext,
-    native: &opentelemetry::Context,
 ) -> PyResult<()> {
     let StreamedCall {
         function_name,
         args,
         call_id,
+        callback_context: native,
         ..
     } = call;
     let dispatch = || dispatch_function_call(&function_name, None, &args, names, instances);
@@ -2145,7 +2167,7 @@ async fn start_call_async(
         instances,
         join_set,
         callback_context,
-        native,
+        &native,
     )
     .await?
     {
@@ -2244,10 +2266,28 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> (Result<T, PoolError>, Option<MontyException>) {
+    match run_turn_inner(checkout, print_target, turn, None).await {
+        Ok(outcome) => outcome,
+        Err(_) => unreachable!("only starting a streamed call fails, and no starter was given"),
+    }
+}
+
+/// Body of [`run_turn`], starting the turn's streamed calls with `starter` when given.
+///
+/// `Err` means a streamed call failed to start: the turn was abandoned
+/// mid-flight, so the checkout has been discarded.
+async fn run_turn_inner<T: TurnOutcome>(
+    checkout: &SharedCheckout,
+    print_target: &PrintTarget,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+    starter: Option<&mut CallStarter<'_>>,
+) -> PyResult<(Result<T, PoolError>, Option<MontyException>)> {
     let mut guard = checkout.lock().await;
-    let Some(checkout) = guard.as_mut() else {
-        return (Err(PoolError::Finished), None);
+    let Some(locked) = guard.as_mut() else {
+        return Ok((Err(PoolError::Finished), None));
     };
+    // set with the first failed print: no streamed call may start after one
+    let print_failed = AtomicBool::new(false);
     let mut print_err: Option<MontyException> = None;
     let result = {
         let mut on_print = |stream: PrintStream, text: &str| -> PrintFuture {
@@ -2255,10 +2295,22 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
                 && let Err(err) = print_target.write_event(stream, text)
             {
                 print_err = Some(err);
+                print_failed.store(true, Ordering::Release);
             }
             Box::pin(ready(()))
         };
-        turn(checkout, &mut on_print).await
+        let turn = turn(locked, &mut on_print);
+        match starter {
+            None => Ok(turn.await),
+            Some(starter) => starter.run(turn, &print_failed).await,
+        }
+    };
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            *guard = None;
+            return Err(err);
+        }
     };
     // A print-callback failure aborts the feed. If the turn left the worker
     // suspended awaiting a resume the aborted feed will never send, drop the
@@ -2267,7 +2319,65 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
     if print_err.is_some() && result.as_ref().is_ok_and(TurnOutcome::left_suspended) {
         *guard = None;
     }
-    (result, print_err)
+    Ok((result, print_err))
+}
+
+/// The calls a turn streams and what starting each needs, borrowed from
+/// [`drive_async_inner`]: the receiver the checkout's sink feeds
+/// ([`Checkout::set_streamed_call_sink`]) and the drive's pending futures.
+struct CallStarter<'a> {
+    streamed: &'a mut UnboundedReceiver<StreamedCall>,
+    join_set: &'a mut JoinSet<(u32, ExtFunctionResult)>,
+    names: &'a HostNames,
+    instances: &'a InstanceStore,
+    callback_context: &'a CallbackContext,
+}
+
+impl CallStarter<'_> {
+    /// Awaits `turn` while starting each streamed call as it arrives, so host I/O
+    /// overlaps the sandbox's own work, then starts those that arrived as it ended.
+    ///
+    /// Once a print fails no further call starts, matching a suspended call that
+    /// the failed feed never answers; calls left when the turn itself fails stay
+    /// unstarted, as that error ends the feed.
+    async fn run<T>(
+        &mut self,
+        turn: impl Future<Output = Result<T, PoolError>>,
+        print_failed: &AtomicBool,
+    ) -> PyResult<Result<T, PoolError>> {
+        let mut turn = pin!(turn);
+        let result = loop {
+            tokio::select! {
+                result = &mut turn => break result,
+                Some(call) = self.streamed.recv(), if !print_failed.load(Ordering::Acquire) => {
+                    self.start(call).await?;
+                }
+            }
+        };
+        if result.is_ok() && !print_failed.load(Ordering::Acquire) {
+            while let Ok(call) = self.streamed.try_recv() {
+                self.start(call).await?;
+            }
+        }
+        Ok(result)
+    }
+
+    /// Starts one streamed call (see [`start_call_async`]).
+    async fn start(&mut self, call: StreamedCall) -> PyResult<()> {
+        start_call_async(call, self.names, self.instances, self.join_set, self.callback_context).await
+    }
+}
+
+/// [`run_turn_async`] for the async drive loop, starting the turn's streamed
+/// calls as they arrive (see [`CallStarter::run`]).
+async fn run_turn_starting_calls<T: TurnOutcome>(
+    checkout: &SharedCheckout,
+    print_target: &PrintTarget,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+    starter: &mut CallStarter<'_>,
+) -> PyResult<T> {
+    let (result, print_err) = run_turn_inner(checkout, print_target, turn, Some(starter)).await?;
+    Python::attach(|py| finalize_turn(py, result, print_err))
 }
 
 /// Blocks on `future` using the pyo3-async-runtimes runtime, adapting to the

@@ -122,14 +122,17 @@ It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
 
-With [`PoolConfig::stream_async_calls`](../api/rust/monty-pool.md#poolconfig) (on for remote pools, off for subprocess
-pools), calls to async host functions that the sandbox does not await at once do not suspend: a
+With [`PoolConfig::stream_async_calls`](../api/rust/monty-pool.md#poolconfig) (on by default for remote pools, off by
+default for subprocess pools), calls to async host functions that the sandbox does not await at once do not suspend: a
 `MontyObject::async_function` value, or a name passed to
 [`Checkout::set_async_functions`](../api/rust/monty-pool.md#checkout) for the feeds that follow.
 The worker sends them mid-turn and keeps running.
+Each counts against `max_suspensions`: once that budget is spent, the next call suspends instead and the feed is
+aborted there.
 `set_async_functions(None)` makes them suspend like any other call.
-Take them with [`Checkout::take_streamed_calls`](../api/rust/monty-pool.md#checkout) after every turn, start each, and
-settle them with `resume_futures` once `ResolveFutures` names them.
+Take them with [`Checkout::take_streamed_calls`](../api/rust/monty-pool.md#checkout) after every turn, or receive each
+while the turn runs through a channel passed to `Checkout::set_streamed_call_sink`; start each, and settle them with
+`resume_futures` once `ResolveFutures` names them.
 
 A [`Checkout`](../api/rust/monty-pool.md#checkout) dropped without `finish()` kills its worker rather than returning it — mid-execution state cannot be
 trusted back into the pool.

@@ -76,20 +76,34 @@ test('a call awaited at once costs one suspension', async () => {
 
 // === Native and remote workers start calls without suspending ===
 
-test('an async call runs on the host after the sandbox has moved on', async (ctx) => {
-  skipIfWasm(ctx)
-  const log: string[] = []
-  const fetch = async (x: number) => {
+// Times the call from inside the sandbox, then works long enough for a call
+// started mid-turn to run before the turn ends.
+const TIMED_CALL =
+  'import time\nt0 = time.monotonic()\na = fetch(1)\nelapsed = time.monotonic() - t0\n' +
+  "for _ in range(2_000_000):\n    pass\nprint('after the loop')\n[await a, elapsed < 0.25]"
+
+/** An async host function that blocks the host for 300ms before its first await. */
+function blockingFetch(log: string[]): (x: number) => Promise<number> {
+  return async (x: number) => {
     log.push(`fetch(${x})`)
+    const until = Date.now() + 300
+    while (Date.now() < until) {
+      // busy-wait: the sandbox only waits for this if the call suspended it
+    }
     return x
   }
-  const result = await run("a = fetch(1)\nprint('after the call')\nawait a", {
-    externalLookup: { fetch },
+}
+
+test('a streamed call starts on the host while the sandbox keeps running', async (ctx) => {
+  skipIfWasm(ctx)
+  const log: string[] = []
+  const result = await run(TIMED_CALL, {
+    externalLookup: { fetch: blockingFetch(log) },
     printCallback: (_stream, text) => log.push(text),
   })
-  t.is(result, 1)
-  // a suspended call would have run fetch before the print
-  t.deepEqual(log, ['after the call\n', 'fetch(1)'])
+  // the call returned at once, and the host ran it before the sandbox's loop ended
+  t.deepEqual(result, [1, true])
+  t.deepEqual(log, ['fetch(1)', 'after the loop\n'])
 })
 
 test('a failed print stops started calls from running on the host', async (ctx) => {
@@ -113,18 +127,15 @@ test('a failed print stops started calls from running on the host', async (ctx) 
 test('a subprocess pool leaves streamAsyncCalls off, so async calls suspend', async (ctx) => {
   skipIfWasm(ctx)
   const log: string[] = []
-  const fetch = async (x: number) => {
-    log.push(`fetch(${x})`)
-    return x
-  }
   await using defaults = await Monty.create()
   await using session = await defaults.checkout()
-  const result = await session.feedRun("a = fetch(1)\nprint('after the call')\nawait a", {
-    externalLookup: { fetch },
+  const result = await session.feedRun(TIMED_CALL, {
+    externalLookup: { fetch: blockingFetch(log) },
     printCallback: (_stream, text) => log.push(text),
   })
-  t.is(result, 1)
-  t.deepEqual(log, ['fetch(1)', 'after the call\n'])
+  // the sandbox waited at the call for the host's 300ms
+  t.deepEqual(result, [1, false])
+  t.deepEqual(log, ['fetch(1)', 'after the loop\n'])
 })
 
 test('a sync host function still suspends at the call', async (ctx) => {

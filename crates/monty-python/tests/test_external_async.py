@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import sys
+import time
 from typing import Any
 
 import pytest
@@ -123,22 +124,36 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
             assert str(exc_info2.value) == snapshot('this checkout has already been finished')
 
 
+# times the call from inside the sandbox, then works long enough for a call started mid-turn to run before it ends
+TIMED_CALL = """
+import time
+t0 = time.monotonic()
+a = fetch(1)
+elapsed = time.monotonic() - t0
+for _ in range(2_000_000):
+    pass
+print('after the loop')
+[await a, elapsed < 0.25]
+"""
+
+
 @pytest.mark.skipif(sys.version_info < (3, 12), reason='inspect.markcoroutinefunction needs Python 3.12')
 @pytest.mark.parametrize(
-    'stream_async_calls,expected',
+    'stream_async_calls,returned_at_once',
     [
-        # the call reaches the host after the sandbox has moved on
-        (True, ['after the call\n', 'fetch(1)']),
-        # the default: the call suspends, so the host runs it first
-        (False, ['fetch(1)', 'after the call\n']),
+        # the call streams, so the sandbox runs on while the host blocks in it
+        (True, True),
+        # the default: the call suspends until the host has answered
+        (False, False),
     ],
 )
-async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_calls: bool, expected: list[str]):
-    """A call that is not awaited at once streams to the host only with `stream_async_calls`."""
+async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_calls: bool, returned_at_once: bool):
+    """A call not awaited at once streams to the host, which starts it while the sandbox runs."""
     log: list[str] = []
 
     def fetch(x: int) -> Any:
         log.append(f'fetch({x})')
+        time.sleep(0.3)
         return asyncio.sleep(0, x)
 
     def on_print(_stream: str, text: str) -> None:
@@ -146,12 +161,12 @@ async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_ca
 
     # a sync function returning a coroutine, marked so `iscoroutinefunction` sees it
     fetch = inspect.markcoroutinefunction(fetch)
-    code = "a = fetch(1)\nprint('after the call')\nawait a"
     result = await run_async(
-        code, stream_async_calls=stream_async_calls, external_lookup={'fetch': fetch}, print_callback=on_print
+        TIMED_CALL, stream_async_calls=stream_async_calls, external_lookup={'fetch': fetch}, print_callback=on_print
     )
-    assert result == 1
-    assert log == expected
+    assert result == [1, returned_at_once]
+    # either way the host ran the call before the sandbox's loop ended
+    assert log == ['fetch(1)', 'after the loop\n']
 
 
 async def test_coroutine_function_error_raises_at_the_await():

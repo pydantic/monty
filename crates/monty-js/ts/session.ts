@@ -224,9 +224,19 @@ export class MontySession {
     this.ensureUsable()
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
-    const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // Discard pending futures between feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
+    // streamed calls arrive on the print callback mid-turn, so each starts while the sandbox runs
+    const onPrint = bindPrintCallback((stream, text) => {
+      if (stream === STREAMED_CALL) {
+        // a failed print ends the feed, so no host call may start after one
+        if (!printTarget.hasFailed()) {
+          answerer.startStreamedCall(Number(text))
+        }
+      } else {
+        printTarget.write(stream, text)
+      }
+    })
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -687,6 +697,21 @@ class TurnAnswerer {
     })
   }
 
+  /**
+   * Starts a call the native session announced mid-turn (see `takeStreamedCall`
+   * in src/pool.rs), registering its future at once so a later `resolveFutures`
+   * finds it. Runs in the announcing turn's callback context.
+   */
+  startStreamedCall(callId: number): void {
+    const call = this.native.takeStreamedCall(callId) as NativeStreamedCall | null
+    if (call !== null) {
+      this.registerFuture(
+        call.callId,
+        this.startCall(call).then(({ promise }) => promise),
+      )
+    }
+  }
+
   /** Resolves and calls one started call's function; the promise settles with its outcome. */
   private async startCall(call: NativeStreamedCall): Promise<{ promise: Promise<unknown> }> {
     let resolved: { value: unknown } | undefined
@@ -1125,6 +1150,11 @@ class PrintTarget {
     }
   }
 
+  /** Whether a print callback has failed this feed. */
+  hasFailed(): boolean {
+    return this.failed
+  }
+
   /** Print failures take precedence over the turn's own outcome. */
   throwIfFailed(): void {
     if (this.failed) {
@@ -1145,7 +1175,12 @@ class SnapshotDriver {
 
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
-    return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
+    return bindPrintCallback((stream, text) => {
+      // `feedStart` sends no `asyncFunctions`, so the worker streams no calls
+      if (stream !== STREAMED_CALL) {
+        this.printTarget.write(stream, text)
+      }
+    })
   }
 
   constructor(
@@ -1532,6 +1567,12 @@ export class MontyComplete {
   /** @internal */
   constructor(readonly output: unknown) {}
 }
+
+/**
+ * The `stream` the native print callback receives for a call the worker
+ * streamed mid-turn, with its call ID as `text`. Mirrors `STREAMED_CALL` in src/pool.rs.
+ */
+const STREAMED_CALL = 'call'
 
 /** The OS call the sandbox makes for an `import` it cannot resolve itself. */
 const IMPORT_CALL = 'import'

@@ -2,7 +2,8 @@
 
 import { diag, trace, type Context, type Span } from '@opentelemetry/api'
 
-type NativePrintCallback = (stream: 'stdout' | 'stderr', text: string, parent?: string | null) => void
+// `'call'` announces a streamed call (`STREAMED_CALL` in session.ts), its call ID as `text`.
+type NativePrintCallback = (stream: 'stdout' | 'stderr' | 'call', text: string, parent?: string | null) => void
 
 interface CallbackContextHandlers {
   bindPrint(callback: NativePrintCallback): NativePrintCallback
