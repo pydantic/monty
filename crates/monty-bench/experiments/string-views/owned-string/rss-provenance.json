@@ -1,0 +1,16 @@
+{
+  "method": "macOS wait4(2) per-child ru_maxrss, bytes",
+  "machine": "arm64",
+  "trials_per_case_per_build": 5,
+  "shuffle_seed": 20261105,
+  "base_revision": "5c9dddf39c92981b8ef023be059e8c3aeabf7e91",
+  "arcstr_revision": "f7be4e56439039296812a6160638be9fd0d5a58e",
+  "owned_worktree": "/private/tmp/monty-string-owned-views (uncommitted trial)",
+  "profile": "profiling",
+  "processes": 180,
+  "executable_sha256": {
+    "base": "a72b427025eec3d1f858b6c9ac4e698f510f2d3b7dd6aa5983a5bf3c9ece14af",
+    "candidate": "e5b895b5df9ff1c7124da54bb8117e06893007e78ed524baf5730d371e59907c",
+    "owned": "d66c74319ce463bb290d01b59f2444182fb8001e99334980ebdd86124b1367a3"
+  }
+}

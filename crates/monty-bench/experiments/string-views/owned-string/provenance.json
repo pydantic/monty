@@ -1,0 +1,17 @@
+{
+  "base": "f7be4e56439039296812a6160638be9fd0d5a58e",
+  "trial": "uncommitted Arc<String> owned/view experiment",
+  "timing_processes_per_build": 3,
+  "rounds_per_process": 9,
+  "timing_samples": 3564,
+  "source_sha256": {
+    "crates/monty/src/types/str/mod.rs": "4b402bd12b9fe7e3293b0c7fad8a0cdf631eed4097efe7244f78198f7a74f6de",
+    "crates/monty/src/types/str/str_view_bench.rs": "d6b6cad2a3b8affcb97c73009f7e06b1bbc157866060adc1b5476339bea2a9ac",
+    "crates/monty/src/string_builder.rs": "29055e13f8d79e9127b0c5d9d875e1e84b3b80bfb45d2b36c07d668450183780",
+    "crates/monty/src/modules/json/dump.rs": "03a37229d815a328ae2269c2fe228b51d4145bdd4242f4e0f469a19b88bd2107"
+  },
+  "binary_sha256": {
+    "arcstr": "d6e659ce1c17d81ae2a3cd6ad70ed5e3155d2747ae3031ae6cf1e88115221049",
+    "owned": "bf3be6009bc99fe185656c3fe6a8babaf0d5c005a23f72426d76e72dd90bafe4"
+  }
+}

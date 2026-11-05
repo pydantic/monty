@@ -22,8 +22,8 @@ See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, la
 
 ## String slices
 
-Contiguous slices of heap strings share `Arc<str>` storage when the result contains at least 16 UTF-8 bytes and
-at least one quarter of the original backing allocation.
+Contiguous slices of heap strings share `Arc<String>` storage when the result contains at least 16 UTF-8 bytes and
+at least one quarter of the original backing buffer capacity.
 Chained slices compose byte offsets directly; smaller results copy or use the existing inline representation.
 Full slices reuse the source value, and stepped slices materialize their result.
 
@@ -31,7 +31,8 @@ Views remain valid after the source string is released.
 Interned strings still materialize slices, and dumps serialize visible text without preserving shared storage.
 Unicode positions use the existing character-navigation caches.
 Views retain their known character count and start with fresh navigation cursors.
-Owned construction buffers copy once into the final `Arc<str>` allocation.
+Owned construction buffers are shrunk with `shrink_to_fit()` and adopted without an unconditional byte copy.
+The byte buffer and shared header remain separate allocations.
 
 ## Basic usage
 

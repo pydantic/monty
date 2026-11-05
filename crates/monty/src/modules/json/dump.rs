@@ -264,10 +264,6 @@ fn encode(obj: &Value, config: &JsonDumpsConfig, default: &Value, vm: &mut VM<'_
         vm,
     };
     encoder.serialize_value(obj, 0)?;
-    if output.len() > 15 {
-        // Finalizing for dumps/write keeps the encoded buffer alongside its Arc copy.
-        vm.heap.tracker.check_allocation(output.len())?;
-    }
     Ok(output)
 }
 

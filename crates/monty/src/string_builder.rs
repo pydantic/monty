@@ -146,10 +146,6 @@ impl<'t> StringBuilder<'t> {
         if let Some(e) = self.pending_error.take() {
             return Err(e.into());
         }
-        if self.inner.len() > 15 {
-            // Arc finalization copies while this builder's allocation is still live.
-            self.tracker.check_allocation(self.inner.len())?;
-        }
         Ok(allocate_string(mem::take(&mut self.inner), heap))
     }
 

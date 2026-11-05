@@ -1,5 +1,8 @@
 # String views on Unicode access caches
 
+This report describes the published `Arc<str>` implementation at `f7be4e56`.
+The local `Arc<String>` owned/view experiment is reported in [owned-string/](owned-string/).
+
 The candidate is based on PR #1236 at `5c9dddf39c92981b8ef023be059e8c3aeabf7e91`.
 Heap strings use `Arc<str>` with a flattened byte range.
 The production policy requires at least 16 UTF-8 bytes and one quarter of the original backing allocation.

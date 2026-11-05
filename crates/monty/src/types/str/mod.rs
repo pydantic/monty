@@ -149,43 +149,52 @@ pub(crate) struct Str(
 const MIN_VIEW_LEN: usize = 16;
 const MIN_VIEW_RATIO: usize = 4;
 
-/// Views share UTF-8 storage directly; materialized strings use one Arc allocation.
+/// Whole strings own a shared buffer; slices add a flattened byte range.
 #[derive(Debug, Clone)]
-struct StringStorage {
-    backing: Arc<str>,
-    start: usize,
-    len: usize,
+enum StringStorage {
+    Owned(Arc<String>),
+    View {
+        backing: Arc<String>,
+        start: usize,
+        len: usize,
+    },
 }
 
 impl StringStorage {
     fn new<'a>(text: impl Into<Cow<'a, str>>) -> Self {
-        let text = text.into();
-        let storage = Self {
-            len: text.len(),
-            backing: Arc::from(text.as_ref()),
-            start: 0,
-        };
+        let mut text = text.into().into_owned();
+        text.shrink_to_fit();
+        let storage = Self::Owned(Arc::new(text));
         #[cfg(test)]
-        {
-            view_bench::allocated(&storage);
-            if let Cow::Owned(text) = &text {
-                view_bench::owned_finalized(text.len(), text.capacity());
-            }
-        }
+        view_bench::allocated(&storage);
         storage
+    }
+
+    fn backing(&self) -> &Arc<String> {
+        match self {
+            Self::Owned(backing) | Self::View { backing, .. } => backing,
+        }
+    }
+
+    fn start(&self) -> usize {
+        match self {
+            Self::Owned(_) => 0,
+            Self::View { start, .. } => *start,
+        }
     }
 
     fn should_view(&self, len: usize) -> bool {
         let (minimum, ratio) = view_policy();
-        len >= minimum && len >= self.backing.len().div_ceil(ratio)
+        // shrink_to_fit may leave spare capacity, which views also retain.
+        len >= minimum && len >= self.backing().capacity().div_ceil(ratio)
     }
 
     fn slice(&self, range: ops::Range<usize>) -> Self {
         let len = range.len();
         if self.should_view(len) {
-            Self {
-                backing: Arc::clone(&self.backing),
-                start: self.start + range.start,
+            Self::View {
+                backing: Arc::clone(self.backing()),
+                start: self.start() + range.start,
                 len,
             }
         } else {
@@ -197,12 +206,12 @@ impl StringStorage {
 
     #[cfg(test)]
     fn shares_backing(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.backing, &other.backing)
+        Arc::ptr_eq(self.backing(), other.backing())
     }
 
     #[cfg(test)]
     fn backing_len(&self) -> usize {
-        self.backing.len()
+        self.backing().capacity()
     }
 }
 
@@ -235,7 +244,10 @@ impl ops::Deref for StringStorage {
     type Target = str;
 
     fn deref(&self) -> &str {
-        &self.backing[self.start..self.start + self.len]
+        match self {
+            Self::Owned(backing) => backing.as_str(),
+            Self::View { backing, start, len } => &backing[*start..*start + *len],
+        }
     }
 }
 
@@ -279,7 +291,7 @@ impl PartialEq for Str {
 }
 
 impl Str {
-    /// Copies text directly into shared UTF-8 storage.
+    /// Adopts owned buffers or copies borrowed text into immutable shared storage.
     ///
     /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
     #[must_use]
@@ -544,7 +556,7 @@ fn ctor_str_arg<'a>(arg: Option<&'a Value>, default: &'a str, vm: &'a VM<'_>) ->
 }
 
 /// Creates a string value, reusing reserved IDs for empty strings and ASCII characters.
-/// Borrowed text copies directly into the final allocation; owned builders copy when finalized.
+/// Owned buffers are shrunk and adopted; borrowed text is copied into a fresh buffer.
 pub fn allocate_string<'a>(s: impl Into<Cow<'a, str>>, heap: &Heap) -> Value {
     let s = s.into();
     let bytes = s.as_bytes();
@@ -575,10 +587,6 @@ pub fn allocate_string_on_heap<'a>(s: impl Into<Cow<'a, str>>, heap: &Heap) -> V
 fn repeat_str(value: &str, count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
     check_repeat_size(value.len(), count, &vm.heap.tracker)?;
     let repeated = value.repeat(count);
-    if repeated.len() > 15 {
-        // The growable buffer and final Arc allocation coexist during conversion.
-        vm.heap.tracker.check_allocation(repeated.len())?;
-    }
     Ok(Some(allocate_string(repeated, vm.heap)))
 }
 
@@ -605,9 +613,6 @@ pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value
     let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
-    if result_len > 15 {
-        heap.tracker.check_allocation(result_len)?;
-    }
     Ok(allocate_string(concat, heap))
 }
 
@@ -771,7 +776,6 @@ fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunRes
                     #[cfg(test)]
                     view_bench::copied(stop - start);
                     let copied = copy_with_time_checks(&text[start..stop], &vm.heap.tracker)?;
-                    vm.heap.tracker.check_allocation(copied.len())?;
                     return Ok(allocate_string(copied, vm.heap));
                 }
                 let storage = original.slice(start..stop);
@@ -788,7 +792,6 @@ fn str_getitem<'h>(s: &TextView<'_, 'h>, key: &Value, vm: &mut VM<'h>) -> RunRes
             let result = &text[start..stop];
             if result.len() > STRING_COPY_CHUNK {
                 let copied = copy_with_time_checks(result, &vm.heap.tracker)?;
-                vm.heap.tracker.check_allocation(copied.len())?;
                 return Ok(allocate_string(copied, vm.heap));
             }
             return Ok(allocate_string(result, vm.heap));
@@ -2556,15 +2559,36 @@ mod view_tests {
     use super::*;
 
     #[test]
+    fn owned_storage_adopts_an_exact_capacity_buffer() {
+        let text = "x".repeat(1000);
+        assert_eq!(text.len(), text.capacity());
+        let buffer = text.as_ptr();
+        let storage = StringStorage::new(text);
+        assert!(matches!(storage, StringStorage::Owned(_)));
+        assert_eq!(buffer, storage.as_ptr());
+    }
+
+    #[test]
+    fn retention_counts_spare_backing_capacity() {
+        let mut text = String::with_capacity(1024);
+        text.push_str(&"x".repeat(256));
+        // Model an allocator that could not shrink the buffer to its visible length.
+        let storage = StringStorage::Owned(Arc::new(text));
+        let part = storage.slice(0..128);
+        assert!(!storage.shares_backing(&part));
+        assert_eq!(&*part, "x".repeat(128));
+    }
+
+    #[test]
     fn chained_views_use_original_backing_and_release_it_after_copy() {
         let source = StringStorage::new("x".repeat(1000));
-        let backing = Arc::downgrade(&source.backing);
+        let backing = Arc::downgrade(source.backing());
         let half = source.slice(100..600);
         let third = half.slice(50..350);
         let fifth = third.slice(0..200);
         assert!(source.shares_backing(&half));
         assert!(source.shares_backing(&third));
-        assert_eq!(third.start, 150);
+        assert_eq!(third.start(), 150);
         assert!(!source.shares_backing(&fifth));
         drop(source);
         drop(half);
@@ -2601,7 +2625,7 @@ mod view_tests {
         assert_eq!(encoded, serde_json::to_string(view.as_str()).unwrap());
         let restored: Str = serde_json::from_str(&encoded).unwrap();
         assert_eq!(view, restored);
-        assert_eq!(restored.0.start, 0);
+        assert_eq!(restored.0.start(), 0);
         assert_eq!(restored.0.backing_len(), 256);
     }
 }

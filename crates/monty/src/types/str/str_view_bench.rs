@@ -38,18 +38,12 @@ fn update(f: impl FnOnce(&mut Stats)) {
 pub(super) fn allocated(storage: &StringStorage) {
     update(|stats| {
         let length = storage.backing_len();
-        stats.allocations += 1;
+        // The byte buffer and Arc header occupy separate allocations.
+        stats.allocations += 2;
         stats.created += length;
         stats.live += length;
         stats.peak = stats.peak.max(stats.live);
         stats.peak_with_owned = stats.peak_with_owned.max(stats.live);
-    });
-}
-
-pub(super) fn owned_finalized(length: usize, capacity: usize) {
-    update(|stats| {
-        stats.owned_finalize += length;
-        stats.peak_with_owned = stats.peak_with_owned.max(stats.live + capacity);
     });
 }
 
@@ -62,7 +56,7 @@ pub(super) fn released(storage: &StringStorage) {
         return;
     }
 
-    let last = Arc::strong_count(&storage.backing) == 1;
+    let last = Arc::strong_count(storage.backing()) == 1;
     if last {
         update(|stats| {
             stats.live = stats
