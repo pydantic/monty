@@ -26,6 +26,9 @@ ignores it.
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, no session existed, and retrying is safe.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+The stream opens at `checkout()`; the session opens with the first `feed_run`, `feed_start` or `load_*` call, so a
+server that refuses the session (an unknown `profile`, say) raises `MontyRuntimeError` from that call, and a drain or
+a dropped stream before it raises `MontyShutdown` or `MontyDisconnectError` there too.
 A server that cannot be reached, or that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
 no Monty server), raises `RuntimeError`.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
@@ -46,7 +49,8 @@ Neither exception occurs on the local subprocess transport.
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
-[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it; it is `None` against a server that stores nothing.
+[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it once the first feed or load has completed, since
+that call opens the session; it is `None` before then and against a server that stores nothing.
 `monty-server` run without a store also refuses `dump()`, `load_session()` and `load_snapshot()` with
 `MontyRuntimeError`, and the session carries on; the development relay in `scripts/grpc_relay.py` instead passes
 them to its worker, which dumps and loads bytes as a local session does.

@@ -175,6 +175,8 @@ Host-side deadlines cover that:
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
     every protocol turn. The host uses the selected execution clock for the remaining budget plus grace.
     Local CPU supervision reads the child's OS counter rather than trusting its reported time.
+    The request that opens a session (the first feed or load, which carries its configuration) has no duration
+    backstop: the worker may still be starting, so only `request_timeout` bounds it.
 
 The grace is what the sandbox gets to raise `TimeoutError` itself and keep the session alive; missing it costs the
 session, so set it well above how long a checkpoint may be away.
@@ -248,6 +250,8 @@ could abort the process.
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
 callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
 future-resolution events.
+A call the sandbox awaits as it is made reaches the host with the next future-resolution event rather than on its
+own; each such call counts once, and a future-resolution event announcing none counts as one.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.

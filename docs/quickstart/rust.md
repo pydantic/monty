@@ -111,13 +111,13 @@ Dropping a checkout requests cleanup without waiting for that confirmation.
 [working directory](../filesystem.md#working-directory), which otherwise defaults to the first mount.
 It returns a [`TurnEvent`](../api/rust/monty-pool.md#turnevent):
 
-| `TurnEvent`                                                             | Meaning                                                                                                                                                                | Answer with                                                                      |
-| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| [`Complete(value)`](../api/rust/monty-pool.md#turnevent)                | The snippet finished                                                                                                                                                   | nothing; feed again                                                              |
-| [`FunctionCall { object_id, .. }`](../api/rust/monty-pool.md#turnevent) | The sandbox called a host function, or with `object_id` (the wrapper's uuid) `Some`, a method on a host object or a host class's construction (arriving as `__call__`) | [`Checkout::resume`](../api/rust/monty-pool.md#checkout)                         |
-| [`OsCall { .. }`](../api/rust/monty-pool.md#turnevent)                  | The sandbox performed an OS operation                                                                                                                                  | [`Checkout::resume_from_mounts`](../api/rust/monty-pool.md#checkout) or `resume` |
-| [`NameLookup { name, object_id }`](../api/rust/monty-pool.md#turnevent) | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some`                                                                    | [`Checkout::resume_name_lookup`](../api/rust/monty-pool.md#checkout)             |
-| [`ResolveFutures { .. }`](../api/rust/monty-pool.md#turnevent)          | Every sandbox task is blocked on host futures                                                                                                                          | [`Checkout::resume_futures`](../api/rust/monty-pool.md#checkout)                 |
+| `TurnEvent`                                                             | Meaning                                                                                                                                                                                         | Answer with                                                                      |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [`Complete(value)`](../api/rust/monty-pool.md#turnevent)                | The snippet finished                                                                                                                                                                            | nothing; feed again                                                              |
+| [`FunctionCall { object_id, .. }`](../api/rust/monty-pool.md#turnevent) | The sandbox called a host function, or with `object_id` (the wrapper's uuid) `Some`, a method on a host object or a host class's construction (arriving as `__call__`)                          | [`Checkout::resume`](../api/rust/monty-pool.md#checkout)                         |
+| [`OsCall { .. }`](../api/rust/monty-pool.md#turnevent)                  | The sandbox performed an OS operation                                                                                                                                                           | [`Checkout::resume_from_mounts`](../api/rust/monty-pool.md#checkout) or `resume` |
+| [`NameLookup { name, object_id }`](../api/rust/monty-pool.md#turnevent) | The sandbox read an undefined name, or a lazy attribute of a host object when `object_id` is `Some`                                                                                             | [`Checkout::resume_name_lookup`](../api/rust/monty-pool.md#checkout)             |
+| [`ResolveFutures { calls, .. }`](../api/rust/monty-pool.md#turnevent)   | Every sandbox task is blocked on host futures; `calls` are the host calls the sandbox awaited since the last wait, each to settle by its id (a value with no coroutine as `ResumeValue::Plain`) | [`Checkout::resume_futures`](../api/rust/monty-pool.md#checkout)                 |
 
 Every suspension variant also carries `position`, a `SourceRange` locating the suspending expression: the call, the
 name, or the `await` the main task is blocked on.
@@ -348,9 +348,14 @@ let progress = call.resume(hints, PrintWriter::Stdout).unwrap();
 assert_eq!(progress.into_complete().unwrap(), MontyObject::type_object(MontyType::Str));
 ```
 
-Async host functions work the same way: [`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) continues with a pending future the sandboxed
-code can `await`, and when every task is blocked the run yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) for the host to settle.
-When `FunctionCall::allow_eager_await` is true the call is awaited immediately and no other task can run, so a host that already has the
+A host call the sandbox awaits as it is made never suspends on its own: the interpreter answers it with a future and runs on until every
+task is blocked, then yields [`RunProgress::ResolveFutures`](../api/rust/monty.md#runprogress) whose
+[`calls`](../api/rust/monty.md#resolvefutures) are the awaited calls made since the last wait, each settled by its id with `resume`
+(a value the host function returned without a coroutine as `ExtFunctionResult::Plain`, so the sandbox's `await` raises as CPython's would).
+A call whose result is not awaited at once still suspends as a `FunctionCall`, which
+[`FunctionCall::resume_pending`](../api/rust/monty.md#functioncall) answers with a pending future the sandboxed code can `await` later.
+[`MontyRun::with_suspend_awaited_calls`](../api/rust/monty.md#montyrun) restores one suspension per awaited call, with
+`FunctionCall::allow_eager_await` set when the call is awaited immediately and no other task can run, so a host that already has the
 result can pass it to [`FunctionCall::resume_eager`](../api/rust/monty.md#functioncall) and skip the `ResolveFutures` round trip.
 
 Unknown imports suspend with [`OsFunctionCall::Import`](../api/rust/monty-types.md#osfunctioncall), whose

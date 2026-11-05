@@ -344,7 +344,8 @@ Manual suspension drivers receive capped `system.sleep` or `system.async_sleep` 
 
 A wait costs nothing against the duration limits, which measure execution time and stop while the sandbox is
 suspended.
-Each nonzero system sleep costs a suspension, plus another if an async future is awaited later.
+Each nonzero system sleep costs a suspension, plus another if its future is kept and awaited later rather than
+awaited as it is made.
 `max_suspensions` therefore bounds sleeping loops.
 The pool also enforces `max_total_sleep_secs`, charging capped delays before waiting and raising an uncatchable
 `TimeoutError` if a sleep would exceed the total, independently of the worker's checks.

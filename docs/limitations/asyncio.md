@@ -57,7 +57,7 @@ The session's `sleep` setting determines concurrency (see [time.md](time.md)):
 
 - `'system'`: all pools answer with futures, so gathered sleeps overlap and sibling tasks can run meanwhile.
     Standard Rust execution and the CLI wait inline, making gathered sleeps sequential.
-    An immediately awaited sleep may be answered eagerly if no other task can run.
+    Under the stepping APIs (`feed_start`) an immediately awaited sleep may be answered eagerly if no other task can run.
 - `'call_host'`: async handlers in `AsyncMonty` and JavaScript allow gathered sleeps to overlap.
     `OSAccess` is async by default under `AsyncMonty`.
     Sync handlers, including `Monty` callbacks, wait sequentially; results are unchanged.

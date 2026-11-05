@@ -147,6 +147,8 @@ Python snapshots expose [`trace_context()`][pydantic_monty.FunctionSnapshot.trac
 `traceContext()`.
 Both return a standard OpenTelemetry `Context`, preserving baggage and other entries captured at feed/load entry and
 replacing its span with the suspension's span when Monty tracing is enabled.
+Under `feed_run` / `feedRun`, each awaited host call the sandbox batches (see [host functions](host-functions.md))
+gets a host-call span of its own beneath the run span, and its host function runs under that span.
 The returned context does not depend on which thread or task later calls the method.
 Without Monty tracing, including on Browser/WASM, the methods return the captured context unchanged.
 If JavaScript context composition fails, `traceContext()` returns the captured context and reports the error through
@@ -403,6 +405,8 @@ Calling a loader after a feed or a previous load is rejected before restoration,
 
 [`AsyncMonty`][pydantic_monty.AsyncMonty] sessions expose the same `feed_start`, `load_session`, `load_snapshot` and `dump`, with awaitable
 `resume(...)` and `resume_auto()`.
+Unlike `feed_run`, which lets the worker batch the host calls a snippet awaits into one exchange, `feed_start` asks
+the worker to suspend at every one of them, so each awaited call is a snapshot of its own.
 A coroutine host function, or a coroutine answer to `asyncio.sleep()` under `os_policy={'sleep': 'call_host'}`, is awaited directly by `resume_auto()` when the
 snapshot's `allow_eager_await` is true,
 which it is for a call that is awaited immediately while no other sandbox task can run and no external future is pending.

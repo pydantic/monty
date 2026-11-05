@@ -299,6 +299,14 @@ In JavaScript every host function may be async, and there is no separate pool cl
     console.log(await session.feedRun(code, { externalLookup: { fetch } })) // 2
     ```
 
+A call the sandbox awaits as it is made, as `gather` does with each of its arguments, costs no round trip of its own:
+the worker answers it with a future and runs on until every task is blocked, then hands the host every call made since
+the last wait at once. The gather above is one exchange with the worker however many host calls it makes; a call whose
+result is kept for later (`t = fetch('a')`) still suspends on its own.
+A host function that returns a plain value rather than a coroutine or promise to an awaited call makes the sandbox's
+`await` raise `TypeError: 'int' object can't be awaited`, as CPython does.
+The stepping APIs suspend at every awaited call instead; see [snapshots](snapshots.md).
+
 The sync [`Monty`][pydantic_monty.Monty] cannot drive coroutine host functions — use `AsyncMonty`, or resolve the pending futures by hand with
 [`feed_start`](snapshots.md).
 
