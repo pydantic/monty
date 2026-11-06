@@ -825,6 +825,7 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::AppendText(_)) => "append_text",
         Some(Call::WriteBytes(_)) => "write_bytes",
         Some(Call::AppendBytes(_)) => "append_bytes",
+        Some(Call::WriteBytesAt(_)) => "write_bytes_at",
         Some(Call::Open(_)) => "open",
         Some(Call::CreateExclusive(_)) => "create_exclusive",
         Some(Call::Mkdir(_)) => "mkdir",

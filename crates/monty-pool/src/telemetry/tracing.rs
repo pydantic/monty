@@ -792,6 +792,16 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
             args.path = string_arg!(&o.path),
             args.mode = string_arg!(&o.mode),
         ),
+        Some(Call::WriteBytesAt(w)) => {
+            let (data, cut) = bytes_attr(&w.data);
+            args_cut |= cut;
+            os_call!(
+                "write_bytes_at",
+                args.path = string_arg!(&w.path),
+                args.offset = w.offset,
+                args.data = data
+            )
+        }
         Some(Call::CreateExclusive(c)) => os_call!(
             "create_exclusive",
             args.path = string_arg!(&c.path),

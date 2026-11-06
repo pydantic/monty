@@ -129,6 +129,13 @@ Each directory `mkdir` creates, parents included, counts 4,096 bytes against the
 The total is checked before anything is created, so a `mkdir(parents=True)` that would exceed the limit creates
 nothing.
 
+Native positional writes use a cumulative fallback budget of 256 MB (256,000,000 bytes) when
+`write_bytes_limit` is `None`.
+Payloads and zero-filled gaps count against this budget, including repeated overwrites.
+The full charge is reserved before writing and remains charged if a partial write fails.
+An explicit `write_bytes_limit` replaces the fallback, so hosts can choose a smaller or larger budget.
+The fallback applies only to native positional writes; other write operations retain their configured behavior.
+
 Python's [`OSAccess`][pydantic_monty.OSAccess] caps [`MemoryFile`][pydantic_monty.MemoryFile] content instead.
 A write that would grow all `MemoryFile` content past `max_total_file_bytes` (50 MB by default, initial files
 included) raises `OSError` with `[Errno 28] No space left on device`.

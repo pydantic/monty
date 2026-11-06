@@ -15,7 +15,7 @@ use super::{
         DIRECTORY_WRITE_BYTES, LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8,
         check_write_limit, commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir,
         host_is_file, host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative,
-        map_io, read_file_limited, visible_entries,
+        map_io, positional_write_charge, read_file_limited, reject_non_regular, visible_entries,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -156,6 +156,7 @@ pub(super) fn execute(
         FsRequest::WriteBytes { path, data } => write_bytes(state, &path, data, ctx),
         FsRequest::AppendText { path, data } => append_text(state, &path, &data, ctx),
         FsRequest::AppendBytes { path, data } => append_bytes(state, &path, &data, ctx),
+        FsRequest::WriteBytesAt { path, offset, data } => write_bytes_at(state, &path, offset, &data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
@@ -720,6 +721,57 @@ fn append_bytes(
     Ok(MontyObject::int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
 }
 
+/// Overwrites the visible file; backing content is copied into the overlay once.
+fn write_bytes_at(
+    state: &mut OverlayState,
+    vpath: &str,
+    offset: u64,
+    data: &[u8],
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    open(state, vpath, FileMode::Read(true), ctx)?;
+    let relative = relative_path(vpath, ctx)?;
+    reject_directory_target(state, &relative, ctx, vpath)?;
+    let existing_len = existing_file_len(state, &relative, ctx, vpath)?;
+    let retained = matches!(state.get(&relative), Some(OverlayEntry::File(_)));
+    let charge = positional_write_charge(offset, as_u64(existing_len), data.len())?;
+    if data.is_empty() {
+        check_write_limit(0, ctx)?;
+        return Ok(MontyObject::int(0));
+    }
+    let end = usize::try_from(offset)
+        .ok()
+        .and_then(|offset| offset.checked_add(data.len()))
+        .ok_or_else(|| MountError::InvalidArgument("write range is too large".to_owned()))?;
+    let final_len = existing_len.max(end);
+    let charge = if !retained && !data.is_empty() {
+        final_len
+    } else {
+        charge
+    };
+    check_write_limit(charge, ctx)?;
+    state.check_file_replacement(&relative, final_len, ctx.memory_usage_limit)?;
+    let offset =
+        usize::try_from(offset).map_err(|_| MountError::InvalidArgument("write offset is too large".to_owned()))?;
+    if !state.write_file_at(&relative, offset, data, current_timestamp(), ctx.memory_usage_limit)? {
+        let budget = available_memory(state, ctx)?;
+        budget.check(as_u64(final_len))?;
+        let mut content = existing_file_bytes(state, &relative, ctx, vpath, budget)?;
+        content.resize(content.len().max(end), 0);
+        content[offset..end].copy_from_slice(data);
+        state.insert(
+            relative,
+            OverlayEntry::File(OverlayFile {
+                content,
+                mtime: current_timestamp(),
+            }),
+            ctx.memory_usage_limit,
+        )?;
+    }
+    commit_write_bytes(charge, ctx);
+    Ok(MontyObject::int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+}
+
 /// Returns the visible file length for append accounting without loading bytes.
 ///
 /// Overlay append may need to copy a real backing file into memory before
@@ -753,6 +805,7 @@ fn existing_file_len(
 /// File sizes larger than addressable memory saturate so quota comparison fails
 /// closed instead of wrapping before the overlay tries to allocate.
 fn file_len(dir: &Dir, rel: &str, vpath: &str) -> Result<usize, MountError> {
+    reject_non_regular(dir, rel, vpath)?;
     let len = dir.metadata(rel).map_err(|error| map_io(error, vpath))?.len();
     Ok(usize::try_from(len).unwrap_or(usize::MAX))
 }

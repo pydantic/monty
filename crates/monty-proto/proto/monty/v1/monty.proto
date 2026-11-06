@@ -229,6 +229,9 @@ message FileHandle {
   string mode = 2;
   // Char index (text mode) or byte index (binary mode).
   uint64 position = 3;
+  // Reserved for observed byte length. The current domain handle and custom
+  // arena codec do not populate or preserve this field yet.
+  optional uint64 file_length = 4;
 }
 
 // A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and
@@ -988,6 +991,8 @@ message OsCall {
     GetTypeHints get_type_hints = 34;
     // Create a new empty file; an existing entry must never be opened or replaced.
     CreateExclusive create_exclusive = 35;
+    // Overwrite a range in an existing regular file, without truncation.
+    WriteBytesAt write_bytes_at = 36;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -1006,6 +1011,11 @@ message OsCall {
   message BytesWrite {
     string path = 1;
     bytes data = 2;
+  }
+  message WriteBytesAt {
+    string path = 1;
+    uint64 offset = 2;
+    bytes data = 3;
   }
   message Open {
     string path = 1;

@@ -383,6 +383,7 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             path: fh.path.clone(),
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
+            file_length: None,
         }),
         MontyNode::ClassInstance {
             class_type,
@@ -835,6 +836,7 @@ fn invalid_values_are_rejected_during_decode() {
             path: "/f".to_owned(),
             mode: "r+".to_owned(),
             position: 0,
+            file_length: None,
         })),
         "frame decode error: failed to decode Protobuf message: invalid file mode \"r+\""
     );
@@ -1271,6 +1273,33 @@ fn exclusive_creation_is_byte_compatible_with_generated_oracle() {
     assert_eq!(args.path, "/data/new");
     assert_eq!(args.mode, "wb");
     assert_eq!(args.permissions, 0o600);
+    assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
+    assert_eq!(
+        decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),
+        hand
+    );
+}
+
+#[test]
+fn positional_writes_are_byte_compatible_with_generated_oracle() {
+    let hand = os_call_to_proto(
+        42,
+        OsFunctionCall::WriteBytesAt(monty_types::WriteBytesAtArgs {
+            path: "/data/file".into(),
+            offset: 7,
+            data: b"abc".to_vec(),
+        }),
+        false,
+        &SourceRange::unknown(),
+    );
+    let oracle = oracle::OsCall::decode(hand.encode_to_vec().as_slice()).unwrap();
+    let Some(oracle::os_call::Call::WriteBytesAt(args)) = &oracle.call else {
+        panic!("missing positional write")
+    };
+    assert_eq!(
+        (&*args.path, args.offset, args.data.as_slice()),
+        ("/data/file", 7, b"abc".as_slice())
+    );
     assert_eq!(oracle.encode_to_vec(), hand.encode_to_vec());
     assert_eq!(
         decode_frame::<pb::OsCall>(oracle.encode_to_vec().as_slice()).unwrap(),

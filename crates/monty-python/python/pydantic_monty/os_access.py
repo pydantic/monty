@@ -57,6 +57,7 @@ OsFunction = Literal[
     'Path.write_bytes',
     'Path.append_text',
     'Path.append_bytes',
+    'Path.write_bytes_at',
     'Path.mkdir',
     'Path.unlink',
     'Path.rmdir',
@@ -183,6 +184,9 @@ _MAX_SCAN_ENTRIES = 100_000
 _MAX_SCAN_PATH_BYTES = 100_000_000
 """Maximum accumulated scan path data, estimated at four bytes per character for absolute and relative paths."""
 
+_MAX_POSITIONAL_WRITE_BYTES = MAX_TOTAL_FILE_BYTES_DEFAULT
+"""Largest replacement constructed by the default positional-write fallback."""
+
 
 class ScanEntry(NamedTuple):
     """One entry of a `Path.scan` reply: what `os.DirEntry` would report for it.
@@ -300,6 +304,8 @@ class AbstractOS(ABC):
                 return self.path_append_text(*args)
             case 'Path.append_bytes':
                 return self.path_append_bytes(*args)
+            case 'Path.write_bytes_at':
+                return self.path_write_bytes_at(*args)
             case 'Path.mkdir':
                 assert len(kwargs) <= 2, f'Unexpected keyword arguments: {kwargs}'
                 parents = kwargs.get('parents', False)
@@ -515,6 +521,33 @@ class AbstractOS(ABC):
         `path_read_text` for details).
         """
         raise NotImplementedError
+
+    def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
+        """Overwrite bytes in an existing file and return the number of input bytes written.
+
+        The default caps the replacement at 50 MB and requires read access.
+        The handler must bound allocations in path_read_bytes itself; stat cannot bound a concurrent read.
+        It is not atomic with concurrent changes; override for native positional I/O or larger files.
+        """
+        if offset < 0 or offset + len(data) > 2**63 - 1:
+            raise ValueError('write range exceeds the supported file-position range')
+        file_path = path_from_arg(path)
+        metadata = self.path_stat(file_path)
+        if stat.S_ISDIR(metadata.st_mode):
+            raise IsADirectoryError(errno.EISDIR, 'Is a directory', str(file_path))
+        if not data:
+            return 0
+        end = offset + len(data)
+        if max(metadata.st_size, end) > _MAX_POSITIONAL_WRITE_BYTES:
+            raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
+        content = self.path_read_bytes(path)
+        # A file can grow between the metadata lookup and the read.
+        if len(content) > _MAX_POSITIONAL_WRITE_BYTES:
+            raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
+        replacement = content[:offset] + b'\0' * max(0, offset - len(content)) + data + content[end:]
+        if self.path_write_bytes(path, replacement) != len(replacement):
+            raise OSError(errno.EIO, 'Incomplete file write', str(file_path))
+        return len(data)
 
     @abstractmethod
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
@@ -1103,7 +1136,8 @@ class OSAccess(AbstractOS):
                 the full time.
             max_total_file_bytes: Largest total size, in bytes, of all `MemoryFile` content,
                 initial files included (default 50 MB); a write past it raises `OSError` (`ENOSPC`).
-                `None` removes the cap. Content stored by a `CallbackFile` is not counted.
+                `None` removes the cap. Content stored by a `CallbackFile` is not counted,
+                but a positional write's constructed replacement is bounded by this cap.
                 Initial files are not checked against the cap, so content that starts over it
                 only blocks writes that would grow it.
 
@@ -1262,6 +1296,25 @@ class OSAccess(AbstractOS):
 
     def path_append_bytes(self, path: PurePosixPath | MontyFileHandle, data: bytes) -> int:
         self._append(path_from_arg(path), data)
+        return len(data)
+
+    def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
+        if offset < 0 or offset + len(data) > 2**63 - 1:
+            raise ValueError('write range exceeds the supported file-position range')
+        file_path = path_from_arg(path)
+        entry = self._get_file(file_path)
+        content = entry.read_content()
+        content = content.encode() if isinstance(content, str) else content
+        if not data:
+            return 0
+        end = offset + len(data)
+        new_size = max(len(content), end)
+        if isinstance(entry, MemoryFile):
+            self._charge(file_path, len(content), new_size)
+        elif self.max_total_file_bytes is not None and new_size > self.max_total_file_bytes:
+            raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
+        replacement = content[:offset] + b'\0' * max(0, offset - len(content)) + data + content[end:]
+        entry.write_content(replacement)
         return len(data)
 
     def _append(self, path: PurePosixPath, data: bytes | str) -> None:
