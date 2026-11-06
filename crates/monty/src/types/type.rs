@@ -671,9 +671,7 @@ impl Type {
                 Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
             }
             (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::ByteArray, _) if attr.as_str(vm.interns) == "maketrans" => {
-                bytearray::maketrans(args, vm).map(CallResult::Value)
-            }
+            (Self::ByteArray, Some(StaticStrings::Maketrans)) => bytearray::maketrans(args, vm).map(CallResult::Value),
             (Self::ByteArray, Some(StaticStrings::Fromhex)) => {
                 let value = bytes_fromhex(args, vm)?;
                 Ok(CallResult::Value(bytearray::convert_result(value, vm)?))

@@ -9,6 +9,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, heap_read_ref_as_field},
+    intern::StaticStrings,
     percent_format::{copy_bytes_template, percent_format_bytes},
     py_value::PyValue,
     resource_checks::check_repeat_size,
@@ -39,6 +40,7 @@ impl ByteArray {
         Value::Ref(vm.heap.allocate(HeapData::ByteArray(Self::new(bytes))))
     }
 
+    /// Constructs from encoded text, a zero-filled size, a buffer, or an iterable of byte values.
     pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let InitArgs {
             source,
@@ -48,6 +50,8 @@ impl ByteArray {
         defer_drop!(source, vm);
         defer_drop!(encoding, vm);
         defer_drop!(errors, vm);
+
+        // Encoding requires text; validate this before trying the index or iterator protocols.
         let source_str = source.as_ref().and_then(|value| value.as_str(vm));
         if let Some(encoding) = encoding {
             let Some(text) = source_str else {
@@ -58,34 +62,43 @@ impl ByteArray {
             let errors = errors.as_ref().map_or("strict", |value| value.as_str(vm));
             return Ok(Self::allocate(codec.encode(text, errors, &vm.heap.tracker)?, vm));
         }
+
         if source_str.is_some() {
             return Err(ExcType::type_error_string_without_encoding());
         }
         if errors.is_some() {
             return Err(ExcType::type_error_errors_without_string());
         }
+
+        // Prefer `__index__` over iteration when the source implements both protocols.
         let count = match source {
             Some(value) => value.py_index_impl(vm)?,
             None => None,
         };
         defer_drop!(count, vm);
+
         let data = match (source, count) {
             (_, Some(value)) => {
                 let count = value.as_int(vm)?;
                 if count < 0 {
                     return Err(ExcType::value_error_negative_bytes_count());
                 }
+
+                // Preflight the full buffer so a large size fails before reaching the allocator's hard limit.
                 let count = usize::try_from(count).map_err(|_| ExcType::overflow_index_sized_int())?;
                 check_repeat_size(count, 1, &vm.heap.tracker)?;
                 let mut data = Vec::new();
                 data.try_reserve_exact(count)
                     .map_err(|_| ExcType::allocation_too_large())?;
+
                 data.resize(count, 0);
                 data
             }
             (None, None) => Vec::new(),
+            // Buffers are copied; other inputs must yield integers in `0..=255`.
             (Some(value), None) => collect_bytes(value, vm)?,
         };
+
         Ok(Self::allocate(data, vm))
     }
 }
@@ -207,9 +220,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         }
     }
 
+    /// Assigns one byte by index, or replaces a slice from a buffer or iterable of byte values.
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         defer_drop!(key, vm);
         defer_drop!(value, vm);
+
         let slice = match key {
             Value::Ref(id) => match vm.heap.get(*id) {
                 HeapData::Slice(slice) => Some(slice.clone()),
@@ -217,22 +232,29 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             },
             _ => None,
         };
+
         if let Some(slice) = slice {
             if matches!(value.py_value(vm), PyValue::Int(_) | PyValue::Bool(_) | PyValue::Str(_)) {
                 return Err(ExcType::type_error(
                     "can assign only bytes, buffers, or iterables of ints in range(0, 256)",
                 ));
             }
+
+            // Collect before writing replacement bytes, handling self-assignment and iterator errors.
             let replacement = collect_bytes(value, vm)?;
+
             // User iteration can mutate the destination, so normalize against its final length.
             let (start, stop, step) = slice.indices(self.get(vm.heap).0.len())?;
+
             if step == 1 {
+                // Contiguous slices may resize; a reversed start/stop denotes an insertion point.
                 let start = usize::try_from(start).expect("normalized slice start");
                 let stop = (usize::try_from(stop).expect("normalized slice stop")).max(start);
                 let new_len = self.get(vm.heap).0.len() - (stop - start) + replacement.len();
                 check_repeat_size(new_len, 1, &vm.heap.tracker)?;
                 self.get_mut(vm.heap).0.splice(start..stop, replacement);
             } else {
+                // Extended slices cannot resize: validate the replacement length before writing any bytes.
                 let indices = successors(Some(start), |i| i.checked_add(step))
                     .take_while(|i| if step > 0 { *i < stop } else { *i > stop })
                     .map(|i| usize::try_from(i).expect("normalized slice index"));
@@ -248,6 +270,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     )
                     .into());
                 }
+
                 let data = self.get_mut(vm.heap);
                 for (index, byte) in indices.zip(replacement) {
                     data.as_mut_slice()[index] = byte;
@@ -255,8 +278,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             }
             return Ok(());
         }
+
+        // Both conversions may call `__index__` and mutate this buffer; read its length afterward.
         let index = key.as_index(vm, Type::ByteArray)?;
         let byte = byte_value(value, vm)?;
+
         let len = i64::try_from(self.get(vm.heap).0.len()).expect("buffer length fits i64");
         let index = if index < 0 { index + len } else { index };
         let Some(slot) = usize::try_from(index)
@@ -265,6 +291,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         else {
             return Err(SimpleException::new_msg(ExcType::IndexError, "bytearray index out of range").into());
         };
+
         *slot = byte;
         Ok(())
     }
@@ -332,25 +359,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let method = attr.as_str(vm.interns).to_owned();
-        match method.as_str() {
-            "clear" | "reverse" | "copy" => {
-                args.check_zero_args(&format!("bytearray.{method}"), vm.heap)?;
-                match method.as_str() {
-                    "clear" => self.get_mut(vm.heap).0.clear(),
-                    "reverse" => self.get_mut(vm.heap).0.reverse(),
+        let Some(method) = attr.static_string(vm.interns) else {
+            args.drop_with(vm);
+            return Err(ExcType::attribute_error(Type::ByteArray, attr.as_str(vm.interns)));
+        };
+        let name: &'static str = method.into();
+
+        match method {
+            StaticStrings::Clear | StaticStrings::Reverse | StaticStrings::Copy => {
+                args.check_zero_args(&format!("bytearray.{name}"), vm.heap)?;
+                match method {
+                    StaticStrings::Clear => self.get_mut(vm.heap).0.clear(),
+                    StaticStrings::Reverse => self.get_mut(vm.heap).0.reverse(),
                     _ => return self.allocate_copy(vm).map(CallResult::Value),
                 }
                 return Ok(CallResult::Value(Value::None));
             }
-            "expandtabs" => return expandtabs(self, args, vm).map(CallResult::Value),
-            "translate" => return translate(self, args, vm).map(CallResult::Value),
-            "maketrans" => return maketrans(args, vm).map(CallResult::Value),
-            "fromhex" => {
+            StaticStrings::Expandtabs => return expandtabs(self, args, vm).map(CallResult::Value),
+            StaticStrings::Translate => return translate(self, args, vm).map(CallResult::Value),
+            StaticStrings::Maketrans => return maketrans(args, vm).map(CallResult::Value),
+            StaticStrings::Fromhex => {
                 let result = super::bytes::bytes_fromhex(args, vm)?;
                 return Ok(CallResult::Value(convert_result(result, vm)?));
             }
-            "resize" => {
+            StaticStrings::Resize => {
                 let value = args.get_one_arg("bytearray.resize", vm.heap)?;
                 defer_drop!(value, vm);
                 let size = value.as_int(vm)?;
@@ -368,10 +400,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 data.0.resize(size, 0);
                 return Ok(CallResult::Value(Value::None));
             }
-            "append" | "extend" | "remove" => {
-                let value = args.get_one_arg(&format!("bytearray.{method}"), vm.heap)?;
+            StaticStrings::Append | StaticStrings::Extend | StaticStrings::Remove => {
+                let value = args.get_one_arg(&format!("bytearray.{name}"), vm.heap)?;
                 defer_drop!(value, vm);
-                if method == "extend" {
+                if method == StaticStrings::Extend {
                     if matches!(value.py_value(vm), PyValue::Int(_) | PyValue::Bool(_)) {
                         return Err(ExcType::type_error(format!(
                             "can't extend bytearray with {}",
@@ -387,7 +419,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     self.get_mut(vm.heap).0.extend(bytes);
                 } else {
                     let byte = byte_value(value, vm)?;
-                    if method == "append" {
+                    if method == StaticStrings::Append {
                         let data = self.get(vm.heap);
                         vm.heap.tracker.check_growth(data.0.len(), data.0.capacity(), 1)?;
                         self.get_mut(vm.heap).0.push(byte);
@@ -402,16 +434,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 }
                 return Ok(CallResult::Value(Value::None));
             }
-            "pop" | "insert" => {
-                let values = args.into_pos_only(&format!("bytearray.{method}"), vm.heap)?;
+            StaticStrings::Pop | StaticStrings::Insert => {
+                let values = args.into_pos_only(&format!("bytearray.{name}"), vm.heap)?;
                 defer_drop!(values, vm);
-                let (index, byte) = match (method.as_str(), values.as_slice()) {
-                    ("pop", []) => (-1, None),
-                    ("pop", [index]) => (index.as_int(vm)?, None),
-                    ("insert", [index, value]) => (index.as_int(vm)?, Some(byte_value(value, vm)?)),
+                let (index, byte) = match (method, values.as_slice()) {
+                    (StaticStrings::Pop, []) => (-1, None),
+                    (StaticStrings::Pop, [index]) => (index.as_int(vm)?, None),
+                    (StaticStrings::Insert, [index, value]) => (index.as_int(vm)?, Some(byte_value(value, vm)?)),
                     _ => {
                         return Err(ExcType::type_error(format!(
-                            "bytearray.{method} received an invalid number of arguments"
+                            "bytearray.{name} received an invalid number of arguments"
                         )));
                     }
                 };
@@ -440,10 +472,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             }
             _ => {}
         }
-        let Some(method) = attr.static_string(vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::ByteArray, &method));
-        };
         let field = heap_read_ref_as_field!(self, ByteArray, 0);
         let result = super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, vm)?;
         Ok(CallResult::Value(convert_result(result, vm)?))
