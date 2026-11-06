@@ -119,6 +119,8 @@ export interface OsPolicy {
   sleep?: SleepMode
   /**
    * Maximum seconds per `'system'` sleep (default 10; `Infinity` disables the cap).
+   * Longer sleeps return normally at the cap without a warning.
+   * This is independent of `requestTimeout`.
    * Raises `RangeError` with other sleep modes.
    */
   sleepSystemMax?: number

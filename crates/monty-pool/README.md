@@ -307,7 +307,12 @@ A server refusing a stream before admitting it — at capacity, or rejecting the
 (`unauthenticated`) or for a valid credential that does not allow the requested project or profile
 (`permission_denied`) — fails the checkout with
 `PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
-fails or times out is `PoolError::Spawn`.
+fails or times out is `PoolError::Connect`, with a status code when the server sent one.
+Both errors include the server's reason in their display text.
+Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date.
+`retryable()` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not credential errors.
+No automatic retry is performed.
+An incompatible CPU-mode server configuration returns `PoolError::Configuration`, naming `request_timeout`.
 A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one
 whose cause is `server_shutdown` as `PoolError::Shutdown` with nothing to load.
 The status message is unverified text, and a disconnect does not establish whether the request ran.

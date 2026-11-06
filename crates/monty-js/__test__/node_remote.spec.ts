@@ -4,7 +4,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 
-import { status } from '@grpc/grpc-js'
+import { Metadata, status } from '@grpc/grpc-js'
 import { afterEach, test } from 'vitest'
 import { t } from './assertions.js'
 import {
@@ -25,6 +25,8 @@ import {
 
 import {
   MontyDisconnectError,
+  MontyConfigurationError,
+  MontyConnectError,
   MontyRefusedError,
   MontyRemote,
   type MontyRemoteOptions,
@@ -171,8 +173,10 @@ test('a bad metadata result rejects the checkout and leaves the pool usable', as
 
 test('a refused connection rejects the checkout', async () => {
   await using pool = await MontyRemote.create('http://127.0.0.1:9', { requestTimeout: 30 })
-  const error = await t.throwsAsync(() => pool.checkout())
-  t.regex(error.message, /^failed to spawn monty worker: http:\/\/127\.0\.0\.1:9/)
+  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConnectError })
+  t.is(error.statusCode, null)
+  t.is(error.statusMessage, null)
+  t.is(error.message, `http://127.0.0.1:9: ${error.transportError}`)
 })
 
 test('a session the server refuses rejects the checkout with MontyRuntimeError', async () => {
@@ -186,14 +190,14 @@ test('a connection dropped during checkout rejects it with MontyDisconnectError'
   const { url } = await server(droppingRelay(1))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyDisconnectError })
-  t.regex(error.message, /^RuntimeError: monty worker connection closed while /)
+  t.regex(error.message, /^monty worker connection closed while /)
 })
 
 test('a draining server rejects the checkout with MontyShutdown', async () => {
   const { url } = await server(drainingServer)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyShutdown })
-  t.is(error.message, 'RuntimeError: monty server is shutting down; the request did not run')
+  t.is(error.message, 'monty server is shutting down; the request did not run')
   t.is(error.dump, null)
 })
 
@@ -238,7 +242,7 @@ test('a dropped connection raises MontyDisconnectError and loses the session', a
   await using session = await pool.checkout()
   t.is(await session.feedRun('1 + 1'), 2)
   const error = await t.throwsAsync(() => session.feedRun('2 + 2'), { instanceOf: MontyDisconnectError })
-  t.regex(error.message, /^RuntimeError: monty worker connection closed while /)
+  t.regex(error.message, /^monty worker connection closed while /)
   t.is(await t.throwsAsync(() => session.feedRun('3 + 3')), error)
 })
 
@@ -270,10 +274,7 @@ test('with autoResume off a shutdown raises MontyShutdown naming the session', a
     await using session = await pool.checkout()
     await session.feedRun('x = 20')
     const error = await t.throwsAsync(() => session.feedRun('x + 1'), { instanceOf: MontyShutdown })
-    t.is(
-      error.message,
-      'RuntimeError: monty server is shutting down; the request did not run (restorable state attached)',
-    )
+    t.is(error.message, 'monty server is shutting down; the request did not run (restorable state attached)')
     t.deepEqual(error.dump, Buffer.from('sess-1'))
   }
   await using session = await pool.checkout()
@@ -333,10 +334,53 @@ test('a stream the server refuses before admitting it rejects the checkout with 
   const { url } = await server((stream) => endWithStatus(stream, status.RESOURCE_EXHAUSTED, 'at capacity', 'capacity'))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyRefusedError })
-  t.is(error.message, `RuntimeError: failed to spawn monty worker: ${url}: RESOURCE_EXHAUSTED: at capacity`)
+  t.is(error.message, `${url} refused the session: RESOURCE_EXHAUSTED: at capacity`)
   t.is(error.statusCode, 'RESOURCE_EXHAUSTED')
   t.is(error.statusMessage, 'at capacity')
-  t.is(error.cause, 'capacity')
+  t.is(error.remoteCause, 'capacity')
+  t.is(Object.hasOwn(error, 'cause'), false)
+  t.is(error.retryable, true)
+  t.is(error.retryAfter, null)
+})
+
+test.each([
+  [status.RESOURCE_EXHAUSTED, true],
+  [status.UNAVAILABLE, true],
+  [status.UNAUTHENTICATED, false],
+  [status.PERMISSION_DENIED, false],
+] as const)('retry metadata for refusal %s is preserved', async (code, retryable) => {
+  const { url } = await server((stream) => {
+    const metadata = new Metadata()
+    metadata.set('retry-after', '12')
+    stream.emit('error', { code, details: 'session unavailable', metadata })
+  })
+  await using pool = await MontyRemote.create(url)
+  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyRefusedError })
+  t.is(error.retryable, retryable)
+  t.is(error.retryAfter, 12)
+})
+
+test('an unexpected server status is a typed connection error', async () => {
+  const { url } = await server((stream) => endWithStatus(stream, status.UNIMPLEMENTED, 'unknown service'))
+  await using pool = await MontyRemote.create(url)
+  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConnectError })
+  t.is(error.statusCode, 'UNIMPLEMENTED')
+  t.is(error.statusMessage, 'unknown service')
+  t.is(error.transportError, null)
+  t.is(error.message, `${url}: UNIMPLEMENTED: unknown service`)
+})
+
+test('a CPU-mode server requires a finite requestTimeout', async () => {
+  const { url } = await server(async (stream) => {
+    admit(stream)
+    const requests = messages(stream)
+    await requests.next()
+    stream.write(Buffer.concat([OK_EVENT, Buffer.from([0xf0, 0x01, 0x01])]))
+    for await (const _request of requests) t.fail('incompatible configuration must not send another request')
+  })
+  await using pool = await MontyRemote.create(url, { requestTimeout: null })
+  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConfigurationError })
+  t.is(error.message, 'CPU execution clock requires a finite client request_timeout')
 })
 
 test('a status ending the stream is reported with its code, message and cause', async () => {
@@ -351,10 +395,14 @@ test('a status ending the stream is reported with its code, message and cause', 
   await using pool = await MontyRemote.create(url, { requestTimeout: 30, autoResume: false })
   await using session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
-  t.is(error.message, 'RuntimeError: monty worker connection closed while waiting for a reply')
+  t.is(
+    error.message,
+    'monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (idle_timeout): idle timeout',
+  )
   t.is(error.statusCode, 'DEADLINE_EXCEEDED')
   t.is(error.statusMessage, 'idle timeout')
-  t.is(error.cause, 'idle_timeout')
+  t.is(error.remoteCause, 'idle_timeout')
+  t.is(Object.hasOwn(error, 'cause'), false)
   t.is(error.transportError, null)
 })
 
@@ -372,7 +420,7 @@ test('a stream the server simply ends reports an OK status', async () => {
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyDisconnectError })
   t.is(error.statusCode, 'OK')
   t.is(error.statusMessage, null)
-  t.is(error.cause, null)
+  t.is(error.remoteCause, null)
 })
 
 test('a server ping is answered with a pong while the session is idle', async () => {

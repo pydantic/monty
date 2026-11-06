@@ -1048,6 +1048,13 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
+    /// A remote connection failed before the session opened.
+    Connect {
+        message: String,
+        details: Box<RemoteDisconnect>,
+    },
+    /// The client configuration cannot be used with this server.
+    Configuration(String),
     /// A remote worker's stream ended mid-session; the session is lost.
     /// `details` is the status or transport failure that ended it, when known.
     Disconnected {
@@ -1104,10 +1111,24 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 message: PoolError::Crashed { status, cause }.to_string(),
                 timed_out: false,
             },
-            Err(PoolError::Disconnected { context, remote }) => Self::Disconnected {
-                message: PoolError::Disconnected { context, remote: None }.to_string(),
-                details: remote,
-            },
+            Err(err @ PoolError::Disconnected { .. }) => {
+                let message = err.to_string();
+                let PoolError::Disconnected { remote, .. } = err else {
+                    unreachable!("matched as Disconnected above")
+                };
+                Self::Disconnected {
+                    message,
+                    details: remote,
+                }
+            }
+            Err(err @ PoolError::Connect { .. }) => {
+                let message = err.to_string();
+                let PoolError::Connect { details, .. } = err else {
+                    unreachable!("matched as Connect above")
+                };
+                Self::Connect { message, details }
+            }
+            Err(PoolError::Configuration(message)) => Self::Configuration(message),
             // rendered before the status is taken back out, as for `Shutdown`
             Err(err @ PoolError::Refused { .. }) => {
                 let message = err.to_string();
@@ -1136,6 +1157,10 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
 /// Writes a remote status's fields — its code,
 /// message and cause, or the transport error — onto a turn object.
 fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()> {
+    obj.set("retryable", details.retryable())?;
+    if let Some(delay) = details.retry_after {
+        obj.set("retryAfter", delay.as_secs_f64())?;
+    }
     if let Some(code) = details.status_code {
         obj.set("statusCode", code)?;
     }
@@ -1143,7 +1168,7 @@ fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()>
         obj.set("statusMessage", status_message)?;
     }
     if let Some(cause) = details.cause {
-        obj.set("cause", cause.as_str())?;
+        obj.set("remoteCause", cause.as_str())?;
     }
     if let Some(error) = details.transport_error {
         obj.set("transportError", error)?;
@@ -1249,6 +1274,15 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         TurnOutcome::Protocol(message) => {
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
+        }
+        TurnOutcome::Configuration(message) => {
+            obj.set("kind", "configuration")?;
+            obj.set("message", message)?;
+        }
+        TurnOutcome::Connect { message, details } => {
+            obj.set("kind", "connect")?;
+            obj.set("message", message)?;
+            set_remote_details(&mut obj, *details)?;
         }
         TurnOutcome::Disconnected { message, details } => {
             obj.set("kind", "disconnected")?;

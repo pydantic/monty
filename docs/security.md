@@ -337,6 +337,8 @@ See [random](limitations/random.md).
 
 Default system sleeps bypass your `os=` handler.
 The sandbox caps each delay at `sleep_system_max`, ten seconds by default (`--max-sleep` in the CLI).
+A longer sleep returns normally at the cap without a warning.
+This cap is independent of `request_timeout`.
 The pool waits on the calling thread under `Monty`, or with a timer under `AsyncMonty` and JavaScript, including browsers.
 All pools answer `asyncio.sleep()` with futures, so gathered sleeps overlap and other sandbox tasks can run meanwhile.
 Manual suspension drivers receive capped `system.sleep` or `system.async_sleep` calls.

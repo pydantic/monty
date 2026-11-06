@@ -1936,9 +1936,10 @@ impl Checkout {
                             .request_timeout
                             .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
                     {
-                        return Err(
-                            self.protocol_violation("CPU execution clock requires a finite client request_timeout")
-                        );
+                        self.discard_worker();
+                        return Err(PoolError::Configuration(
+                            "CPU execution clock requires a finite client request_timeout".to_owned(),
+                        ));
                     }
                     self.budget.execution_clock = clock;
                 } else if clock != self.pool.config.execution_clock {
@@ -2460,12 +2461,12 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {
         PoolError::Exhausted => "exhausted",
-        PoolError::Disconnected { .. } | PoolError::Spawn(_) => "disconnected",
+        PoolError::Disconnected { .. } | PoolError::Spawn(_) | PoolError::Connect { .. } => "disconnected",
         PoolError::Refused { .. } | PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => {
             "refused"
         }
         PoolError::Shutdown { .. } => "shutdown",
-        PoolError::Protocol(_) => "mismatch",
+        PoolError::Protocol(_) | PoolError::Configuration(_) => "mismatch",
         PoolError::Timeout { .. } => "timeout",
         PoolError::CpuLimit { .. } => "cpu_limit",
         PoolError::Finished => "error",

@@ -204,6 +204,16 @@ Every `time` module clock then reaches `AbstractOS.time(caller)` as the one OS f
 naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
 A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
+When either cap shortens a sleep, the call returns normally without a warning.
+These caps are independent of `request_timeout`.
+
+Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
+`status_message` and `transport_error` attributes.
+Refusals raise `MontyRefusedError`; its `retryable` attribute identifies temporary refusals, and
+`retry_after` gives the server's suggested delay in seconds, when present.
+Disconnect messages include the server's status, cause and message, or the transport error.
+A disconnect does not establish whether the request ran, so do not replay it automatically.
+CPU-mode servers require a finite `request_timeout`; incompatible settings raise `MontyConfigurationError`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.

@@ -41,6 +41,8 @@ export { ExternalModule } from './externalModule.js'
 export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from './print.js'
 export {
   MontyCrashedError,
+  MontyConfigurationError,
+  MontyConnectError,
   MontyDisconnectError,
   MontyError,
   MontyRefusedError,

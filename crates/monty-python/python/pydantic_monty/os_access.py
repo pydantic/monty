@@ -215,7 +215,9 @@ class AbstractOS(ABC):
     max_sleep: float | None = 10
     """Maximum seconds per host sleep; `None` waits the full requested time.
     Applies to `'call_host'` sleeps and manually dispatched `feed_start` sleeps.
-    Default `'system'` sleeps use the pool's `sleep_system_max` instead."""
+    Default `'system'` sleeps use the pool's `sleep_system_max` instead.
+    A capped sleep returns normally without a warning, even when the sandbox
+    requested a longer wait. This cap is independent of `request_timeout`."""
 
     def __call__(
         self,

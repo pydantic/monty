@@ -28,6 +28,8 @@ import {
   MontyError,
   montyErrorFromNative,
   MontyRefusedError,
+  MontyConfigurationError,
+  MontyConnectError,
   MontyShutdown,
   MontyTypingError,
   notCallableMessage,
@@ -1718,7 +1720,8 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * the stream at all (no session existed, so retrying is safe),
  * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
  * is lost, and a `TimeoutError` `DOMException` when no worker became available
- * within the checkout timeout. Anything else (a failed spawn or dial) is a plain `Error`.
+ * within the checkout timeout. Remote connection failures raise `MontyConnectError`;
+ * incompatible client settings raise `MontyConfigurationError`.
  */
 export async function enterSession(
   native: NativeSession,
@@ -1739,6 +1742,10 @@ export async function enterSession(
       throw lostSessionError(turn)
     case 'refused':
       throw new MontyRefusedError(turn.message, turn)
+    case 'connect':
+      throw new MontyConnectError(turn.message, turn)
+    case 'configuration':
+      throw new MontyConfigurationError(turn.message)
     case 'typingError':
       throw new Error(turn.diagnostics)
     case 'protocol':

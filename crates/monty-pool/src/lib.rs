@@ -220,14 +220,21 @@ pub enum PoolError {
     Typing(String),
     /// No worker became available within `checkout_timeout`.
     Exhausted,
-    /// A worker process could not be spawned, or a remote stream could not
-    /// be opened for a reason other than the server refusing it: a dial that
-    /// failed or timed out, a malformed metadata entry.
+    /// A worker process could not be spawned.
     Spawn(String),
+    /// A remote connection or session stream could not be opened.
+    Connect {
+        /// The server's URL, as configured.
+        url: String,
+        /// The status or transport failure that prevented the connection.
+        details: Box<RemoteDisconnect>,
+    },
+    /// The client configuration is incompatible with the server.
+    Configuration(String),
     /// The remote server refused to open the session stream (remote transport
     /// only) with an admission code: `RESOURCE_EXHAUSTED`, `UNAVAILABLE`,
     /// `UNAUTHENTICATED`, `PERMISSION_DENIED` or `FAILED_PRECONDITION`; any
-    /// other status is [`Self::Spawn`]. `refusal` carries the status, so a
+    /// other status is [`Self::Connect`]. `refusal` carries the status, so a
     /// caller can act on its code and cause rather than on the message. No
     /// session existed, so nothing ran.
     Refused {
@@ -310,6 +317,36 @@ pub struct RemoteDisconnect {
     /// The transport or protocol error for this failure; absent when the
     /// server sent a status.
     pub transport_error: Option<String>,
+    /// The server's `Retry-After` delay, when valid, in seconds.
+    pub retry_after: Option<Duration>,
+}
+
+impl RemoteDisconnect {
+    /// Whether a refusal can succeed later without changing the request.
+    /// This does not make replaying a disconnected session safe.
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        matches!(self.status_code, Some("RESOURCE_EXHAUSTED" | "UNAVAILABLE"))
+    }
+}
+
+impl fmt::Display for RemoteDisconnect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(code) = self.status_code {
+            f.write_str(code)?;
+            if let Some(cause) = self.cause {
+                write!(f, " ({})", cause.as_str())?;
+            }
+            if let Some(message) = &self.status_message
+                && !message.is_empty()
+            {
+                write!(f, ": {message}")?;
+            }
+            Ok(())
+        } else {
+            f.write_str(self.transport_error.as_deref().unwrap_or("unknown reason"))
+        }
+    }
 }
 
 impl fmt::Display for PoolError {
@@ -333,14 +370,22 @@ impl fmt::Display for PoolError {
             Self::Typing(diagnostics) => write!(f, "type checking failed:\n{diagnostics}"),
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
+            Self::Connect { url, details } => write!(f, "{url}: {details}"),
+            Self::Configuration(message) => f.write_str(message),
             Self::Refused { url, refusal } => write!(
                 f,
-                "failed to spawn monty worker: {url}: {}: {}",
+                "{url} refused the session: {}: {}",
                 refusal.status_code.unwrap_or("UNKNOWN"),
                 refusal.status_message.as_deref().unwrap_or_default()
             ),
             Self::Finished => f.write_str("this checkout has already been finished"),
-            Self::Disconnected { context, .. } => write!(f, "monty worker connection closed while {context}"),
+            Self::Disconnected { context, remote } => {
+                write!(f, "monty worker connection closed while {context}")?;
+                if let Some(reason) = remote {
+                    write!(f, ": {reason}")?;
+                }
+                Ok(())
+            }
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
                     f.write_str("monty server is shutting down; the request did not run (restorable state attached)")

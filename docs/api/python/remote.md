@@ -24,14 +24,24 @@ ignores it.
 
 [`MontyRefusedError`][pydantic_monty.MontyRefusedError] means the server refused to open the session's stream: at
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
-why, no session existed, and retrying is safe.
-It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+why, and no session existed.
+`retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
+`retry_after` is the suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+The client accepts delay-seconds and HTTP dates but does not retry automatically.
 A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
-no Monty server), or that is no gRPC server at all (such as a web server's page), raises `RuntimeError`.
+no Monty server), or that is no gRPC server at all (such as a web server's page), raises
+[`MontyConnectError`][pydantic_monty.MontyConnectError].
+It retains `status_code` and `status_message` when the server sent a status, or `transport_error` otherwise.
+Both errors subclass [`MontyError`][pydantic_monty.MontyError].
+If a CPU-mode server requires a finite `request_timeout`, an incompatible client setting raises
+[`MontyConfigurationError`][pydantic_monty.MontyConfigurationError].
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
 A server that ended it by policy says so in the error's status and cause (see
 [disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.
 Either way the session is lost; check out a new one.
+The error text includes the recorded code, cause and message, or the transport error.
+For example: `monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (turn_timeout): turn expired`.
+This does not establish whether the request ran, so do not replay it automatically.
 
 [`MontyShutdown`][pydantic_monty.MontyShutdown] means the server declined the next request because it is shutting down.
 That request did not run.
