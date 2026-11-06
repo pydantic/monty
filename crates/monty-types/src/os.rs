@@ -22,6 +22,7 @@ use crate::{
     results::ExtFunctionResult,
     scan::ScanArgs,
     unstable::{self, PushValue},
+    uuid::MontyUuid,
     virtual_path::normalize_virtual_path,
 };
 // =============================================================================
@@ -33,6 +34,10 @@ pub const IMPORT_CALL: &str = "import";
 
 /// [`OsFunctionCall::ImportStubs`]'s dispatch name, handled like [`IMPORT_CALL`].
 pub const IMPORT_STUBS_CALL: &str = "import_stubs";
+
+/// [`OsFunctionCall::GetTypeHints`]'s dispatch name. Hosts answer it from the
+/// functions and classes they sent, before other OS handlers.
+pub const GET_TYPE_HINTS_CALL: &str = "typing.get_type_hints";
 
 /// Reserved pre-feed [`OsFunctionCall::ImportStubs`] ID, outside the interpreter's IDs counted from zero.
 pub const IMPORT_STUBS_CALL_ID: u32 = u32::MAX;
@@ -104,6 +109,9 @@ pub enum OsFunctionCall {
     /// handle across calls.
     #[strum(serialize = "open")]
     Open(OpenCallArgs),
+    /// Create a new empty file, refusing every existing entry, and return its file handle.
+    #[strum(serialize = "Path.create_exclusive")]
+    CreateExclusive(CreateExclusiveCallArgs),
     /// Create directory (`parents`/`exist_ok` kwargs).
     #[strum(serialize = "Path.mkdir")]
     Mkdir(MkdirCallArgs),
@@ -177,6 +185,11 @@ pub enum OsFunctionCall {
     /// or `not_found` / `not_handled` for no stubs.
     #[strum(serialize = "import_stubs")] // IMPORT_STUBS_CALL
     ImportStubs(Vec<String>),
+    /// `typing.get_type_hints()` of a host function or host class. The host
+    /// answers with a dict of hints, which the call returns as is; a host
+    /// that does not handle it gives `{}`.
+    #[strum(serialize = "typing.get_type_hints")] // GET_TYPE_HINTS_CALL
+    GetTypeHints(TypeHintsTarget),
 }
 
 impl OsFunctionCall {
@@ -228,6 +241,7 @@ impl OsFunctionCall {
             Self::WriteText(a) | Self::AppendText(a) => a.to_args(),
             Self::WriteBytes(a) | Self::AppendBytes(a) => a.to_args(),
             Self::Open(a) => a.to_args(),
+            Self::CreateExclusive(a) => a.to_args(),
             Self::Mkdir(a) => a.to_args(),
             Self::Rename(a) => a.to_args(),
             Self::Scan(a) => a.to_args(),
@@ -246,6 +260,7 @@ impl OsFunctionCall {
                 call
             }
             Self::ImportStubs(names) => single_arg(MontyObject::list(names.into_iter().map(MontyObject::string))),
+            Self::GetTypeHints(target) => target.to_args(),
         }
     }
 
@@ -260,6 +275,7 @@ impl OsFunctionCall {
             | Self::AppendText(_)
             | Self::AppendBytes(_)
             | Self::Mkdir(_)
+            | Self::CreateExclusive(_)
             | Self::Unlink(_)
             | Self::Rmdir(_)
             | Self::Rename(_) => true,
@@ -290,6 +306,16 @@ impl OsFunctionCall {
         } else {
             Ok(())
         }
+    }
+
+    /// Whether either raw filesystem path is `''`.
+    ///
+    /// CPython fails every such call with `FileNotFoundError` (existence
+    /// predicates return `False`), so the interpreter answers it locally rather
+    /// than resolving `''` to the working directory and asking the host.
+    #[must_use]
+    pub fn has_empty_path(&self) -> bool {
+        self.fs_primary_path().is_some_and(str::is_empty) || self.rename_destination().is_some_and(str::is_empty)
     }
 
     /// CPython's `ValueError` message for a path containing a null byte.
@@ -342,6 +368,7 @@ impl OsFunctionCall {
             Self::WriteText(a) | Self::AppendText(a) => Some(a.path.as_str()),
             Self::WriteBytes(a) | Self::AppendBytes(a) => Some(a.path.as_str()),
             Self::Open(a) => Some(a.path.as_str()),
+            Self::CreateExclusive(a) => Some(a.path.as_str()),
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Scan(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
@@ -356,7 +383,8 @@ impl OsFunctionCall {
             | Self::AsyncSleep(_)
             | Self::AsyncSystemSleep(_)
             | Self::Import(_)
-            | Self::ImportStubs(_) => None,
+            | Self::ImportStubs(_)
+            | Self::GetTypeHints(_) => None,
         }
     }
 
@@ -392,6 +420,7 @@ impl OsFunctionCall {
             Self::WriteText(a) | Self::AppendText(a) => (Some(&mut a.path), None),
             Self::WriteBytes(a) | Self::AppendBytes(a) => (Some(&mut a.path), None),
             Self::Open(a) => (Some(&mut a.path), None),
+            Self::CreateExclusive(a) => (Some(&mut a.path), None),
             Self::Mkdir(a) => (Some(&mut a.path), None),
             Self::Scan(a) => (Some(&mut a.path), None),
             Self::Rename(a) => (Some(&mut a.src), Some(&mut a.dst)),
@@ -406,18 +435,20 @@ impl OsFunctionCall {
             | Self::AsyncSleep(_)
             | Self::AsyncSystemSleep(_)
             | Self::Import(_)
-            | Self::ImportStubs(_) => (None, None),
+            | Self::ImportStubs(_)
+            | Self::GetTypeHints(_) => (None, None),
         };
         primary.into_iter().chain(dst)
     }
 
     /// The answer when no handler accepted this call: `not_found` for an import,
-    /// which the sandbox raises as `ModuleNotFoundError`, else the
-    /// [`on_no_handler`](Self::on_no_handler) exception.
+    /// which the sandbox raises as `ModuleNotFoundError`, no hints (`{}`) for
+    /// `get_type_hints`, else the [`on_no_handler`](Self::on_no_handler) exception.
     #[must_use]
     pub fn no_handler_result(&self) -> ExtFunctionResult {
         match self {
             Self::Import(_) => ExtFunctionResult::NotFound(IMPORT_CALL.to_owned()),
+            Self::GetTypeHints(_) => ExtFunctionResult::Return(MontyObject::dict([])),
             _ => ExtFunctionResult::Error(self.on_no_handler()),
         }
     }
@@ -535,6 +566,45 @@ fn single_arg(value: impl PushValue) -> CallArgs {
 // =============================================================================
 // Args structs — per-variant payloads carried by `OsFunctionCall`.
 // =============================================================================
+
+/// The host object an [`OsFunctionCall::GetTypeHints`] asks about.
+///
+/// A host sees it as two positional args: `('function', name)` or
+/// `('class', id)`, the id as a uuid string.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TypeHintsTarget {
+    /// A host function, by the name the sandbox calls it with.
+    Function(String),
+    /// A host class, by the id of the `ClassType` it crossed as.
+    Class(MontyUuid),
+}
+
+impl TypeHintsTarget {
+    /// The `(kind, name or id)` args a host callback receives.
+    fn to_args(&self) -> CallArgs {
+        let (kind, key) = match self {
+            Self::Function(name) => ("function", name.clone()),
+            Self::Class(id) => ("class", id.to_string()),
+        };
+        let mut call = single_arg(MontyObject::string(kind));
+        call.push_arg(MontyObject::string(key));
+        call
+    }
+
+    /// Reads the target back from the [`CallArgs`] a host sees; `None` when malformed.
+    #[must_use]
+    pub fn from_call_args(args: &CallArgs) -> Option<Self> {
+        let mut args = args.args();
+        let kind = args.next()?.as_str()?;
+        let key = args.next()?.as_str()?;
+        let target = match kind {
+            "function" => Some(Self::Function(key.to_owned())),
+            "class" => MontyUuid::parse(key).map(Self::Class),
+            _ => None,
+        };
+        target.filter(|_| args.next().is_none())
+    }
+}
 //
 // Each variant carries a struct that derives `ToArgs` for projection to
 // `CallArgs`. Zero-arg variants use empty structs so `to_args()` has no
@@ -561,6 +631,36 @@ pub struct PathBytesDataArgs {
 pub struct OpenCallArgs {
     pub path: MontyPath,
     pub mode: FileMode,
+}
+
+/// Exclusive file creation, independent of the access mode of the returned handle.
+/// Native hosts apply `permissions` at creation, subject to umask; virtual filesystems use their access policy.
+/// Backends must validate these arguments before modifying storage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, monty_macros::ToArgs)]
+pub struct CreateExclusiveCallArgs {
+    pub path: MontyPath,
+    pub mode: FileMode,
+    /// Owner, group and other read/write bits; execute bits are rejected.
+    #[from_args(kw_only)]
+    pub permissions: u32,
+}
+
+impl CreateExclusiveCallArgs {
+    /// Rejects update modes, execute bits and permission bits outside the access mask.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.permissions > 0o777 {
+            Err("permissions must be between 0 and 0o777")
+        } else if self.permissions & 0o111 != 0 {
+            Err("execute permission bits are not supported")
+        } else if matches!(
+            self.mode,
+            FileMode::ReadUpdate(_) | FileMode::WriteUpdate(_) | FileMode::AppendUpdate(_)
+        ) {
+            Err("update modes ('+') are not yet supported")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// `mkdir(path, parents=False, exist_ok=False)` shape. `parents`/`exist_ok`

@@ -6,18 +6,18 @@
 use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
-    GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath,
-    MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs, ScanArgs,
-    SourceRange, UrandomArgs, sleep_duration, unstable,
+    CreateExclusiveCallArgs, GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+    MkdirCallArgs, MontyPath, MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
     convert::{ProtoConvertError, root_object},
     pb::{
         self, TimeZone, Unit,
-        os_call::{self, Call},
+        os_call::{self, Call, get_type_hints},
     },
-    wire::WireArena,
+    wire::{WireArena, uuid_to_pb},
 };
 
 /// Builds the `OsCall` envelope: call id, typed arm, the eager-await hint,
@@ -78,6 +78,11 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
             path: a.path.into_string(),
             mode: a.mode.as_str().to_owned(),
         }),
+        OsFunctionCall::CreateExclusive(a) => Call::CreateExclusive(os_call::CreateExclusive {
+            path: a.path.into_string(),
+            mode: a.mode.as_str().to_owned(),
+            permissions: a.permissions,
+        }),
         OsFunctionCall::Mkdir(a) => Call::Mkdir(os_call::Mkdir {
             path: a.path.into_string(),
             parents: a.parents,
@@ -123,6 +128,12 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::ImportStubs(modules) => Call::ImportStubs(os_call::ImportStubs {
             modules: modules.into(),
         }),
+        OsFunctionCall::GetTypeHints(target) => Call::GetTypeHints(os_call::GetTypeHints {
+            target: Some(match target {
+                TypeHintsTarget::Function(name) => get_type_hints::Target::Function(name),
+                TypeHintsTarget::Class(id) => get_type_hints::Target::ClassId(uuid_to_pb(&id)),
+            }),
+        }),
         OsFunctionCall::Scan(a) => Call::Scan(os_call::Scan {
             path: a.path.into_string(),
             max_depth: a.max_depth,
@@ -162,6 +173,18 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 mode: o.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(o.mode))?,
                 path: MontyPath::new(o.path),
             }),
+            os_call::Call::CreateExclusive(c) => {
+                let args = CreateExclusiveCallArgs {
+                    path: MontyPath::new(c.path),
+                    mode: c.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(c.mode))?,
+                    permissions: c.permissions,
+                };
+                args.validate().map_err(|reason| ProtoConvertError::InvalidValue {
+                    field: "CreateExclusive.permissions",
+                    reason: reason.to_owned(),
+                })?;
+                Self::CreateExclusive(args)
+            }
             os_call::Call::Mkdir(m) => Self::Mkdir(MkdirCallArgs {
                 path: MontyPath::new(m.path),
                 parents: m.parents,
@@ -210,6 +233,22 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 }
                 Self::ImportStubs(modules)
             }
+            os_call::Call::GetTypeHints(hints) => Self::GetTypeHints(
+                match hints
+                    .target
+                    .ok_or(ProtoConvertError::MissingField("GetTypeHints.target"))?
+                {
+                    get_type_hints::Target::Function(name) => TypeHintsTarget::Function(name),
+                    get_type_hints::Target::ClassId(id) => {
+                        TypeHintsTarget::Class(MontyUuid::try_from_slice(&id.data).ok_or_else(|| {
+                            ProtoConvertError::InvalidValue {
+                                field: "GetTypeHints.class_id",
+                                reason: format!("uuid must be 16 bytes, got {}", id.data.len()),
+                            }
+                        })?)
+                    }
+                },
+            ),
             // An empty pattern reads as a plain listing. The interpreter sends `listing(Some(0))`
             // for a fully literal glob, and `glob` with no parts derives `max_depth: Some(0)` too,
             // so either way the host lists the root alone.

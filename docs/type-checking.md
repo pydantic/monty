@@ -267,7 +267,7 @@ the flag is `--type-check-format`.
 ## Caveats
 
 - **Type checking is static only.** The `typing` module inside the sandbox provides markers, not runtime enforcement —
-    no annotation is ever checked at runtime, and class annotations are stored in stringized form.
+    no annotation is ever checked at runtime; annotations evaluate lazily, as in CPython 3.14.
     See [`limitations/typing.md`](limitations/typing.md).
 - **Code compiled at runtime is not checked.** `eval()` and `exec()` compile their source strings inside the sandbox,
     where no checker runs.

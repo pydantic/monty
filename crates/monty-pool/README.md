@@ -18,12 +18,17 @@ This is the recommended way to run Monty from Rust. It is also the engine undern
 A `Pool` keeps an elastic set of workers (`min_processes` prewarmed, up to `max_processes`).
 Until it is closed, a subprocess pool replaces any worker that is recycled, crashes or is
 discarded in the background until `min_processes` workers are live again; a replacement that
-fails to spawn is retried with a doubling backoff. WebSocket pools never refill.
+fails to spawn is retried with a doubling backoff. Remote pools never refill.
 `Pool::checkout` dedicates one worker to one REPL session: the caller feeds snippets of code
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool.
+
+Use `Checkout::terminate` when cleanup must wait for subprocess exit.
+It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
+A remote worker or an unconfirmed subprocess exit returns `None`.
+Dropping a checkout or cancelling `terminate` does not confirm physical termination.
 
 The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are
 cancel-safe (partial-frame state lives in the worker), and turn deadlines are ordinary timers
@@ -83,6 +88,7 @@ overlap on the host or repeat a virtual path fail the feed with a session-preser
 It returns `None` after the worker is released or discarded; `Checkout::pid` remains the subprocess-only OS diagnostic.
 
 `Checkout::dump` snapshots a session; `Checkout::restore` can restore it on another worker or machine.
+The restored session uses the restoring checkout's `ReplConfig::os_policy`, not the one it was dumped under.
 The caller must establish that restored bytes are unmodified output from a trusted, compatible Monty producer.
 Neither the pool nor the interpreter authenticates snapshots; successful loading does not establish validity.
 Invalid snapshots have no correctness or availability guarantees.
@@ -96,7 +102,7 @@ Invalid snapshots have no correctness or availability guarantees.
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
   enforcement while they run because the timer cannot be polled. When a session has a
-  `max_feed_duration` or `max_turn_duration` budget, the deadline also enforces it from outside the child,
+  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the child,
   each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
   `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
@@ -109,10 +115,13 @@ Invalid snapshots have no correctness or availability guarantees.
   `PoolConfig::max_decode_bytes` can lower the default 1 GiB per-frame decode
   budget. This excludes wire buffers and host-language conversion; it is not a
   process-memory limit. Exhaustion discards the worker without replaying the request.
+  On the remote transport it also caps each message, clamped between 64 KiB and the
+  256 MiB frame limit, so a larger one is refused before it is buffered.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
-  the impact of any slow leak. With the subprocess transport, `Some(1)` runs every session in
-  a fresh process, which with `min_processes > 0` the background refill has usually spawned
-  before the checkout asks.
+  how long a slow leak or a compromised worker survives. It defaults to
+  `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
+  subprocess transport, `Some(1)` runs every session in a fresh process, which with
+  `min_processes > 0` the background refill has usually spawned before the checkout asks.
 - **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
   enforced in the worker's own global allocator
   ([`monty-alloc`](https://crates.io/crates/monty-alloc)) plus 4 MB of headroom (32 MB with
@@ -130,11 +139,66 @@ A failed restore also discards the worker.
 
 Timeouts kill the single worker PID, not a process group; the Monty sandbox must never spawn subprocesses.
 A remote CPython worker needs deployment-level process teardown instead.
-The duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
+The default elapsed-duration backstop trusts the worker's reported execution time: under-reporting can stretch each turn to the
 full budget plus grace, but `request_timeout` applies independently.
 Both deadlines are polled, so decoding a large reply can delay enforcement.
 Host mount I/O runs between turns and is not covered by either deadline; see
 [filesystem timeouts](https://github.com/pydantic/monty/blob/main/docs/filesystem.md#io-timeouts-and-cancellation).
+
+## Execution clocks
+
+`PoolConfig::execution_clock` selects `Wall` (default) or `Cpu` for VM budgets and supervisor backstops.
+CPU mode uses the VM's thread counter and an independent OS process counter during active turns.
+It requires a finite `request_timeout`, which remains a separate wall deadline.
+The feed and turn graces use the selected clock and default to one second.
+For tight CPU budgets, set graces that allow for compilation and protocol CPU.
+
+```rust
+use std::time::Duration;
+use monty_pool::PoolConfig;
+use monty_types::ExecutionClock;
+let mut pool = PoolConfig::subprocess("monty");
+pool.execution_clock = ExecutionClock::Cpu;
+pool.request_timeout = Some(Duration::from_secs(2));
+pool.feed_duration_limit_grace = Some(Duration::from_millis(10));
+pool.turn_duration_limit_grace = Some(Duration::from_millis(10));
+```
+
+CPU mode replaces budget-derived wall deadlines.
+CPU mode needs Linux workers: `Pool::new` rejects it for subprocess pools on other platforms.
+A remote pool on any platform can still adopt a Linux server's CPU clock.
+When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
+The pool checks a final sample before accepting a reply. Scheduling and OS counter resolution can delay enforcement.
+Idle workers and host work between turns do not incur periodic CPU reads.
+
+Live worker reports cannot spend or refund the supervisor's CPU allowance.
+Resuming preserves observed feed CPU and its single grace allowance. A new feed resets both.
+Host work between turns is outside the measurement window.
+CPU exhaustion returns `PoolError::CpuLimit`; the wall deadline returns `PoolError::Timeout`.
+Both kill and reap the worker. Clock failures also discard it without weakening enforcement.
+CPU mode needs `/proc` mounted for the pool's own PID namespace: at spawn the pool checks `/proc` reports it as the child's
+parent, and fails the spawn otherwise.
+The pool records the child's `/proc` start time at spawn and checks it before acting on a CPU reading: before killing for
+a crossed limit or a clock error, and before charging the final reading to the feed.
+A matching start time shows the PID named the child throughout, so ordinary polls skip the check.
+If the PID stopped naming the child, for example because something else in the host process reaped it and the PID was
+reused, the reading is discarded as a clock failure.
+Both mechanisms require the host runtime to make progress.
+
+Snapshots store their clock. A load with another clock fails without consuming the configured session.
+Restore seeds consumption from trusted saved VM usage and takes a fresh OS baseline.
+Snapshots do not store protocol CPU or spent CPU grace separately.
+Local CPU pools reject workers that do not acknowledge the selected clock. Wall mode supports older workers.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+Remote servers select the clock through their pool or profile and report it in the configuration reply.
+Clients adopt that clock for deadlines; CPU mode requires a finite client `request_timeout`.
+CPU profiles need clients that understand the clock metadata to avoid premature wall backstops under contention.
+The server does not enforce this requirement; older clients remain accepted.
+A missing clock means legacy wall time. The server's local subprocess pool enforces CPU beside the child.
+WebAssembly workers support wall mode only.
+
+The independent client `request_timeout` still bounds response latency under contention.
+Choose it for the expected CPU budgets and scheduling delays. CPU accounting does not extend this wall deadline.
 
 ## Observability
 
@@ -184,8 +248,8 @@ called function's name (under any outcome — a host lookup that is a callable r
 anything), an exception class and any path are all left out rather than becoming a time
 series each. The one name recorded is an os call's, which comes from the protocol's own
 fixed set. The subtraction worth knowing: `monty.run.duration` minus
-`monty.run.execution_time` is host and transport overhead, primarily time spent answering
-suspensions.
+`monty.run.execution_time` includes host and transport overhead. In CPU mode, the difference also
+includes descheduling and CPU throttling.
 
 Metric attributes deliberately never identify a pool. The worker up/down counters therefore
 total over all pools recording into the same host meter, and a dropped pool subtracts its
@@ -205,18 +269,48 @@ input so adapters that do not support metrics continue to work.
 - **Subprocess** (`PoolConfig::subprocess`) — spawn local `monty subprocess` children over
   framed stdio. These are the poolable workers: prewarmed, reused across checkouts, and
   replaced on crash.
-- **WebSocket** (`PoolConfig::websocket`) — dial a remote child (or a relay pairing the two
-  ends) over `ws://`/`wss://`. These workers are single-use: dialed fresh per checkout,
-  never prewarmed or returned to the pool. Isolation is the remote host's responsibility —
-  a remote crash is observed as the connection dropping. `Pool::checkout_with` takes
-  `CheckoutOptions::connect_headers`, extra headers for that checkout's upgrade request —
-  e.g. a token for a relay in front of the worker. The request carries
-  `User-Agent: monty-pool/<version>`, and with the `telemetry` feature the `traceparent`
-  (and `tracestate`) of `CheckoutOptions::telemetry`, so server-side spans join the
-  caller's trace; a `connect_headers` entry of the same name replaces either.
+- **Remote** (`PoolConfig::remote`) — reach a remote child through a relay over gRPC at an
+  `http://`/`https://` URL (`ws://`/`wss://` are read as those two). The pool holds one
+  HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
+  checkout opens one `MontySession.Session` stream on it. An `https://` server's certificate
+  is verified against the operating system's trust store, not a root list bundled into the
+  binary: the Security framework on macOS and CryptoAPI on Windows, which also apply the OS's
+  revocation data, and the distro's CA bundle on Linux, where the chain is checked without
+  revocation; a Linux host with no CA bundle cannot make an `https://` pool. A stream the server never took
+  — it sent `GOAWAY` as it drained, refused the stream, or closed the connection before
+  the stream was sent — is opened again, up to twice, within the same `request_timeout`. These workers are single-use:
+  a fresh stream per checkout, never prewarmed or returned to the pool. `finish` half-closes
+  the stream and returns at once, but its `max_processes` slot is freed only when the server
+  ends the stream (or after a second), so a full pool does not open its next stream while the
+  server still counts the last one. At most `max_processes` closed streams wait like this;
+  a close past that resets its stream and frees its slot at once, as does discarding a
+  worker after a timeout or limit. Isolation is the remote host's responsibility — a remote crash is observed as the stream ending.
+  `Pool::checkout_with` takes `CheckoutOptions::metadata`, extra request metadata
+  for that checkout's stream — e.g. a token for a relay in front of the worker. Every
+  stream carries `user-agent: monty-pool/<version>` (tonic appends its own), and with the
+  `telemetry` feature the `traceparent` (and `tracestate`) of `CheckoutOptions::telemetry`,
+  so server-side spans join the caller's trace; a `metadata` entry replaces the
+  trace metadata and is put in front of the user agent. A `Ping` event from the server is
+  answered with a `Pong` request by the transport, even while the checkout sits idle, so a
+  relay behind a proxy can tell a quiet client from a vanished one; the answer follows the
+  events read before the ping, so a server pings between turns, where a slow host callback
+  cannot delay it. A ping over 64 bytes, or more than ten in any one second, ends the stream as
+  a transport failure. `PoolConfig::keep_alive` (five minutes by default, the fastest cadence a
+  gRPC server's default policy permits; `None` for none) adds an HTTP/2 `PING` on the first
+  hop while streams are open. `PoolConfig::request_timeout` (30 s when unset) also bounds
+  opening a stream, from a cold dial through the server's admission.
 
-A WebSocket connection lost mid-session reports `PoolError::Disconnected`; it cannot distinguish a worker crash
-from a server policy drop.
+A stream ended mid-session reports `PoolError::Disconnected`.
+Its optional `remote` details retain the first recorded failure: the gRPC status the server ended the stream with
+(code, message, and the `RemoteCause` it named in its `monty-cause` trailer), or the transport error.
+A server refusing a stream before admitting it — at capacity, or rejecting the caller for missing credentials
+(`unauthenticated`) or for a valid credential that does not allow the requested project or profile
+(`permission_denied`) — fails the checkout with
+`PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
+fails or times out is `PoolError::Spawn`.
+A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one
+whose cause is `server_shutdown` as `PoolError::Shutdown` with nothing to load.
+The status message is unverified text, and a disconnect does not establish whether the request ran.
 A draining server can instead return `PoolError::Shutdown`, naming what to load the session from when it could store
 it.
 The interrupted request did not run, but restoring a suspended dump repeats its host call, which may already have
@@ -234,16 +328,18 @@ other consumers or it may issue a new session.
 A remote without persistence refuses `Checkout::dump` and `Checkout::restore` with `PoolError::Runtime`, and the
 session carries on.
 With `PoolConfig::auto_resume` (the default), a shutdown answering a named session's request is not returned: the
-checkout redials, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
+checkout opens a new stream, loads what the `ShutdownDump` named into a new session, re-sends the request and adopts the new
 session's ID.
 The session's host-counted suspension and sleep totals carry over, so a shutdown grants no extra allowance.
 It returns the original `PoolError::Shutdown` if the shutdown named nothing to load, if the new connection fails, or
 if the new session is not in the state the old one was in at the shutdown.
-The redial reuses the checkout's original upgrade headers, so a short-lived token in them can make the resume fail.
+The new stream reuses the checkout's original request metadata, so a short-lived token in it can make the resume fail.
 A bare disconnect is never resumed, since the request may have run.
 
 Before type checking a feed, `import_stubs` requests host module stubs once per module per session.
 Answer with a dict of dotted module paths to `.pyi` source or `None`, or `NotHandled` for no stubs.
+`typing.get_type_hints()` of a host function or class asks the host with `OsFunctionCall::GetTypeHints`,
+naming the function or the `ClassType` id; answer with a dict of hints, or `NotHandled` for `{}`.
 
 ## Monty crates
 

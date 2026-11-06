@@ -71,35 +71,36 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 The following modules are present:
 
-| Module        | Divergences                      |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `decimal`     | [decimal.md](decimal.md)         |
-| `fnmatch`     | [fnmatch.md](fnmatch.md)         |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
+| Module          | Divergences                          |
+| --------------- | ------------------------------------ |
+| `annotationlib` | [annotationlib.md](annotationlib.md) |
+| `asyncio`       | [asyncio.md](asyncio.md)             |
+| `base64`        | [base64.md](base64.md)               |
+| `binascii`      | [base64.md](base64.md)               |
+| `bisect`        | [bisect.md](bisect.md)               |
+| `collections`   | [collections.md](collections.md)     |
+| `copy`          | [copy.md](copy.md)                   |
+| `csv`           | [csv.md](csv.md)                     |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)     |
+| `datetime`      | [datetime.md](datetime.md)           |
+| `decimal`       | [decimal.md](decimal.md)             |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)             |
+| `functools`     | [functools.md](functools.md)         |
+| `hashlib`       | [hashlib.md](hashlib.md)             |
+| `itertools`     | [itertools.md](itertools.md)         |
+| `json`          | [json.md](json.md)                   |
+| `math`          | [math.md](math.md)                   |
+| `os`            | [os.md](os.md)                       |
+| `os.path`       | [os.md](os.md)                       |
+| `pathlib`       | [pathlib.md](pathlib.md)             |
+| `posixpath`     | [os.md](os.md)                       |
+| `random`        | [random.md](random.md)               |
+| `re`            | [re.md](re.md)                       |
+| `sys`           | [sys.md](sys.md)                     |
+| `time`          | [time.md](time.md)                   |
+| `tomllib`       | [tomllib.md](tomllib.md)             |
+| `typing`        | [typing.md](typing.md)               |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)     |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
 `hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
@@ -126,7 +127,7 @@ Each links to the page that owns it, which is where the full account lives:
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy.
     So `map(f, itertools.count())` runs until a resource limit trips
     ([builtins.md](builtins.md)).
-- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `VERBOSE` flag, and some
+- **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns, no `re.VERBOSE` constant, and some
     error messages differ ([re.md](re.md)).
 - **Only the class dunders listed above are dispatched.** `__lt__` and `__len__` raise
     `TypeError` as if undefined, while in-place arithmetic dunders are skipped in favor of binary arithmetic

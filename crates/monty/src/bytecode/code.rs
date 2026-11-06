@@ -4,6 +4,8 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
+use std::ops::Not;
+
 use crate::{intern::StringId, parse::CodeRange, value::Value};
 
 /// Compiled bytecode for a function or module.
@@ -42,6 +44,11 @@ pub struct Code {
     /// messages when accessing undefined local variables (e.g., "name 'x' is not defined").
     #[serde(rename = "N")]
     local_names: Vec<StringId>,
+
+    /// Whether the source ran under `from __future__ import annotations`: its
+    /// definitions store PEP 563 strings, and `exec()` here inherits the flag.
+    #[serde(rename = "U", default, skip_serializing_if = "Not::not")]
+    future_annotations: bool,
 }
 
 impl Code {
@@ -68,7 +75,21 @@ impl Code {
             location_table,
             exception_table,
             local_names,
+            future_annotations: false,
         }
+    }
+
+    /// Marks the code as compiled under `from __future__ import annotations`.
+    #[must_use]
+    pub(crate) fn with_future_annotations(mut self, future_annotations: bool) -> Self {
+        self.future_annotations = future_annotations;
+        self
+    }
+
+    /// Whether the code was compiled under `from __future__ import annotations`.
+    #[must_use]
+    pub(crate) fn future_annotations(&self) -> bool {
+        self.future_annotations
     }
 
     /// Returns the raw bytecode bytes.
@@ -111,6 +132,16 @@ impl Code {
         after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
+    /// Visits every source range in the location table, for a dump upgrade that rebases positions.
+    pub(crate) fn for_each_position_mut(&mut self, mut f: impl FnMut(&mut CodeRange)) {
+        for entry in &mut self.location_table {
+            f(&mut entry.range);
+            if let Some(focus) = &mut entry.focus {
+                f(focus);
+            }
+        }
+    }
+
     /// Finds an exception handler for the given bytecode offset.
     ///
     /// Searches the exception table for an entry whose protected range contains
@@ -133,6 +164,7 @@ impl Clone for Code {
             location_table: self.location_table.clone(),
             exception_table: self.exception_table.clone(),
             local_names: self.local_names.clone(),
+            future_annotations: self.future_annotations,
         }
     }
 }

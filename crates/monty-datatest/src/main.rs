@@ -36,8 +36,8 @@ use monty_fixture::{Header, Interpreter};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
     CallArgs, CompileOptions, ExcType, ExtFunctionResult, FileMode, IMPORT_CALL, MontyException, MontyFileHandle,
-    MontyObject, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits, ResourceTracker,
-    SandboxTimeZone, dir_stat, file_stat, find_module_file,
+    MontyObject, MontyType, MontyUuid, NameLookupResult, OsFunctionCall, OsPolicy, PrintWriter, ResourceLimits,
+    ResourceTracker, SandboxTimeZone, TypeHintsTarget, dir_stat, file_stat, find_module_file,
     scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -725,6 +725,56 @@ fn dispatch_method_call(
     }
 }
 
+/// Answers `typing.get_type_hints()` of a fixture function or class as the Python binding
+/// would for the annotations in `test_fixtures.py`: modeled builtin types cross as type
+/// objects, anything else as text. Class targets are keyed by the fixture `type_id`.
+fn fixture_type_hints(target: &TypeHintsTarget) -> MontyObject {
+    let ty = MontyObject::type_object;
+    let text = MontyObject::string;
+    let hints: Vec<(&str, MontyObject)> = match target {
+        TypeHintsTarget::Function(name) => match name.as_str() {
+            "add_ints" => vec![
+                ("a", ty(MontyType::Int)),
+                ("b", ty(MontyType::Int)),
+                ("return", ty(MontyType::Int)),
+            ],
+            "concat_strings" => vec![
+                ("a", ty(MontyType::Str)),
+                ("b", ty(MontyType::Str)),
+                ("return", ty(MontyType::Str)),
+            ],
+            "return_value" => vec![("x", ty(MontyType::Object)), ("return", ty(MontyType::Object))],
+            "get_list" => vec![("return", text("list[int]"))],
+            "raise_error" => vec![
+                ("exc_type", ty(MontyType::Str)),
+                ("message", ty(MontyType::Str)),
+                ("return", ty(MontyType::NoneType)),
+            ],
+            "make_point" => vec![("return", text("test_fixtures.Point"))],
+            "make_mutable_point" => vec![("return", text("test_fixtures.MutablePoint"))],
+            "make_user" => vec![("name", ty(MontyType::Str)), ("return", text("test_fixtures.User"))],
+            "make_empty" => vec![("return", text("test_fixtures.Empty"))],
+            "async_call" => vec![("x", ty(MontyType::Object)), ("return", text("asyncio.Future[object]"))],
+            "async_fail" => vec![
+                ("exc_type", ty(MontyType::Str)),
+                ("message", ty(MontyType::Str)),
+                ("return", text("asyncio.Future[None]")),
+            ],
+            _ => panic!("Unknown external function: {name}"),
+        },
+        // `Point` and `MutablePoint` (type ids 1 and 2) share their fields
+        TypeHintsTarget::Class(id) if [1, 2].map(MontyUuid::from_u128).contains(id) => {
+            vec![("x", ty(MontyType::Int)), ("y", ty(MontyType::Int))]
+        }
+        TypeHintsTarget::Class(id) if *id == MontyUuid::from_u128(3) => {
+            vec![("name", ty(MontyType::Str)), ("active", ty(MontyType::Bool))]
+        }
+        // `Empty`, and any class the harness never registered, as a host store miss
+        TypeHintsTarget::Class(_) => vec![],
+    };
+    MontyObject::dict(hints.into_iter().map(|(name, hint)| (MontyObject::string(name), hint)))
+}
+
 /// Answers a lazy attribute lookup on a host class instance (`NameLookup`
 /// with an instance id): class attributes and properties the eager attrs do
 /// not carry. Mirrors the class attributes in `test_fixtures.py`.
@@ -1032,6 +1082,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
         OsFunctionCall::Import(args) if args.module == "tools" => FixtureRegistry::make_tools_module().into(),
         OsFunctionCall::Import(_) => ExtFunctionResult::NotFound(call.name().to_owned()),
         OsFunctionCall::ImportStubs(_) => unreachable!("{} is asked only by a type-checking worker", call.name()),
+        OsFunctionCall::GetTypeHints(target) => fixture_type_hints(target).into(),
         // Fixed bytes for `os.urandom()`; fixtures assert invariants because CPython reads real entropy.
         OsFunctionCall::Urandom(args) => MontyObject::bytes(fixture_entropy(args.size)).into(),
         // `OsPolicy::default()` answers the clock and initial random seed in the sandbox.
@@ -1137,6 +1188,42 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             .into(),
         },
         OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::string(p.as_str().to_owned()).into(),
+        OsFunctionCall::CreateExclusive(args) => {
+            let path = args.path.as_str().to_owned();
+            if let Err(message) = args.validate() {
+                return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
+            }
+            if path == "/" || get_virtual_file(&path).is_some() || is_virtual_dir(&path) {
+                return MontyException::new(
+                    ExcType::FileExistsError,
+                    Some(format!("[Errno 17] File exists: '{path}'")),
+                )
+                .into();
+            }
+            for (separator, _) in path.match_indices('/').filter(|(index, _)| *index > 0) {
+                let parent = &path[..separator];
+                let (exc_type, errno, message) = if get_virtual_file(parent).is_some() {
+                    (ExcType::NotADirectoryError, 20, "Not a directory")
+                } else if !is_virtual_dir(parent) {
+                    (ExcType::FileNotFoundError, 2, "No such file or directory")
+                } else {
+                    continue;
+                };
+                return MontyException::new(exc_type, Some(format!("[Errno {errno}] {message}: '{path}'"))).into();
+            }
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                vfs.files
+                    .insert(path.clone(), (Vec::new(), i64::from(args.permissions)));
+                vfs.deleted_files.remove(&path);
+            });
+            MontyObject::file_handle(MontyFileHandle {
+                path,
+                mode: args.mode,
+                position: 0,
+            })
+            .into()
+        }
         OsFunctionCall::Open(args) => {
             let path = args.path.as_str().to_owned();
             let file_mode = args.mode;
@@ -2928,3 +3015,7 @@ datatest_stable::harness!(
     TEST_CASES_DIR,
     r"^.*\.py$",
 );
+
+#[cfg(test)]
+#[path = "../tests/units/create_exclusive.rs"]
+mod create_exclusive_tests;

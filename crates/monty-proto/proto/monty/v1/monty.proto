@@ -1,14 +1,23 @@
-// Wire protocol for driving a `monty subprocess` child process.
+// Wire protocol for driving a `monty subprocess` child process, locally or
+// through a remote server.
 //
-// Transport: each message is framed as a 4-byte unsigned little-endian length
-// prefix followed by the protobuf-encoded bytes, written to the child's stdin
-// (`ParentRequest`) and read from its stdout (`ChildEvent`). stderr carries free-form
-// diagnostics only.
+// Transports:
+// - stdio: each message is framed as a 4-byte unsigned little-endian length
+//   prefix followed by the protobuf-encoded bytes, written to the child's
+//   stdin (`ParentRequest`) and read from its stdout (`ChildEvent`). stderr
+//   carries free-form diagnostics only.
+// - gRPC: `MontySession.Session` (at the end of this file) is one
+//   bidirectional stream per session over a shared HTTP/2 connection, one
+//   message per frame with no length prefix (gRPC frames messages itself).
+//   A server ends a stream it drops by policy with a gRPC status whose
+//   `monty-cause` trailer names the reason; see `monty_proto::grpc`.
 //
 // The protocol is a strict alternation: the parent writes exactly one
 // `ParentRequest`; the child replies with zero or more streamed `Print` events
-// followed by exactly one turn-ending event. There is no multiplexing, so a
-// parent can be implemented with a single blocking read loop in any language.
+// followed by exactly one turn-ending event. A stream never interleaves two
+// turns, so a parent can be implemented with a single blocking read loop in
+// any language. Outside that alternation sit the liveness messages: a server
+// sends `Ping` between turns and the parent answers `Pong`; neither is a turn.
 //
 // Evolution rules: the schema carries its own version, independent of the
 // monty package version. A parent declares it in `Configure.protocol_version`
@@ -394,6 +403,12 @@ message StackFrame {
 // Configuration
 // ============================================================================
 
+// One clock for VM budgets and subprocess supervision. Wall time is the default.
+enum ExecutionClock {
+  WALL = 0;
+  CPU = 1;
+}
+
 // Sandbox resource limits. Absent fields are unlimited except recursion depth
 // and `max_suspensions`, which both default to 1000. The parent enforces
 // `max_suspensions`; the child only retains it for dumps and echoes it on
@@ -574,6 +589,7 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
     AbortFeed abort_feed = 11;
+    Pong pong = 12;
   }
 
   // W3C `traceparent` identifying the caller's span, so a child that exports
@@ -616,7 +632,7 @@ message Configure {
   // Version of the wire schema the parent speaks. The child rejects the
   // session with a `FatalError` naming its own supported range when this
   // falls outside it, so a parent deployed separately from its worker (over
-  // a websocket, say) learns what to downgrade to without a handshake.
+  // a gRPC stream, say) learns what to downgrade to without a handshake.
   //
   // 0 means the parent declared nothing — either it predates this field or it
   // is not a monty parent — and is always rejected. The protocol has no
@@ -632,7 +648,8 @@ message Configure {
   // the field trades streaming latency for event volume and nothing else.
   optional uint32 print_flush_interval_ms = 10;
   // Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
-  // with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+  // with parent-serviced sleeps capped at 10s. It also governs a session restored by
+  // `Load`, replacing the policy the dump was taken under.
   optional OsPolicy os_policy = 11;
   // Relay-only: whether a serving relay may store the session. Children ignore
   // it.
@@ -640,6 +657,9 @@ message Configure {
   // Relay-only: names the server-side profile to run the session under.
   // Absent = the relay's default. Children ignore it.
   optional string profile = 13;
+  // Local VM and supervisor clock; absent defaults to wall time in the child.
+  // Remote clients leave this absent. The server selects the worker's clock.
+  optional ExecutionClock execution_clock = 14;
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -738,6 +758,8 @@ message Dump {}
 // the restored state was suspended, the child re-emits the suspension event so
 // the parent learns the resume point; otherwise it replies `Ok`. A relay
 // without session storage answers `Error` and the session carries on.
+// The restored session takes the preceding `Configure`'s `os_policy` (the
+// default without one), not the policy it was dumped under.
 message Load {
   // Either:
   // - Dump bytes, or
@@ -791,6 +813,7 @@ message ChildEvent {
     Ok ok = 10;
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
+    Ping ping = 13;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -836,6 +859,14 @@ message ChildEvent {
   // reply's kind. Unset for ephemeral sessions or for remotes that don't
   // support persistence.
   optional bytes session_id = 28;
+
+  // On Error or TypingError, whether the feed still awaits a host answer.
+  // Absent for older workers or errors generated outside the session state
+  // machine. Parents must preserve an outstanding suspension when unknown.
+  optional bool feed_suspended = 29;
+
+  // Configure acknowledgment. Local CPU-mode parents require this before execution.
+  optional ExecutionClock execution_clock = 30;
 }
 
 enum PrintStream {
@@ -952,6 +983,11 @@ message OsCall {
     ImportStubs import_stubs = 32;
     // Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
     Scan scan = 33;
+    // typing.get_type_hints() of a host function or class. Answer with a dict
+    // of hints, which the call returns as is; `not_handled` means `{}`.
+    GetTypeHints get_type_hints = 34;
+    // Create a new empty file; an existing entry must never be opened or replaced.
+    CreateExclusive create_exclusive = 35;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -975,6 +1011,13 @@ message OsCall {
     string path = 1;
     // Canonical open() mode string, same set as `FileHandle.mode`.
     string mode = 2;
+  }
+  message CreateExclusive {
+    string path = 1;
+    // Access mode of the returned handle; creation is exclusive for every mode.
+    string mode = 2;
+    // Access bits only (0..0777); native backends apply the host umask.
+    uint32 permissions = 3;
   }
   message Mkdir {
     string path = 1;
@@ -1053,6 +1096,16 @@ message OsCall {
   message ImportStubs {
     repeated string modules = 1;
   }
+
+  // The host object `OsCall.get_type_hints` asks about.
+  message GetTypeHints {
+    oneof target {
+      // A host function, by the name the sandbox calls it with.
+      string function = 1;
+      // A host class, by the id of the `ClassType` it crossed as.
+      Uuid class_id = 2;
+    }
+  }
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether
@@ -1121,14 +1174,36 @@ message FatalError {
 // and did NOT run the request it is replying to. Sent only in reply to an
 // in-flight request, so the client is always reading when it arrives.
 //
-// Every other server policy action (idle/session/turn timeout, capacity) is
-// just a dropped connection, which the client already classifies as a dead
-// worker — only shutdown needs a message, because only shutdown has state to
-// hand back.
+// Every other server policy action (idle/session/turn timeout, capacity,
+// memory) ends the stream with a gRPC status instead — only shutdown needs a
+// message, because only shutdown has state to hand back.
 message ShutdownDump {
   // What `Load` restores the session from on a fresh connection: the ID a
   // relay with session storage parked it under. Absent when there is nothing
   // to load: no session yet, an ephemeral session, a relay without storage, or
   // a park that failed.
   optional bytes dump = 1;
+}
+
+// Liveness probe from a serving relay, never a turn end. A parent answers
+// each one with `Pong` without otherwise acting on it; a relay that hears
+// nothing back for a further interval treats the parent as gone. A parent
+// reads the stream in order, so the answer follows the events before the
+// ping, which a slow host callback may hold: a relay sends it between turns.
+// In-band because HTTP/2 PING frames stop at the nearest proxy, while the
+// parent a relay wants to hear from sits beyond it. A child never sends one.
+message Ping {}
+
+// The parent's answer to `Ping`. Not a request: it opens no turn, and a child
+// or relay that receives one between turns simply notes the parent is alive.
+message Pong {}
+
+// One REPL session per stream over a shared HTTP/2 connection. The server
+// sends its response headers as soon as it admits the stream — a client sends
+// nothing, not even `Configure`, until it sees them — or refuses it with a
+// trailers-only status. Once admitted, the alternation above follows. Closing
+// the request side or cancelling the stream ends the session; the server ends
+// it by policy with a status carrying a `monty-cause` trailer.
+service MontySession {
+  rpc Session(stream ParentRequest) returns (stream ChildEvent);
 }

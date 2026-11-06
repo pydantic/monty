@@ -19,35 +19,36 @@ in the next feed, and after a dump (see [random.md](random.md)).
 
 ## Modules available
 
-| Module        | See                              |
-| ------------- | -------------------------------- |
-| `asyncio`     | [asyncio.md](asyncio.md)         |
-| `base64`      | [base64.md](base64.md)           |
-| `binascii`    | [base64.md](base64.md)           |
-| `bisect`      | [bisect.md](bisect.md)           |
-| `collections` | [collections.md](collections.md) |
-| `copy`        | [copy.md](copy.md)               |
-| `csv`         | [csv.md](csv.md)                 |
-| `dataclasses` | [dataclasses.md](dataclasses.md) |
-| `datetime`    | [datetime.md](datetime.md)       |
-| `decimal`     | [decimal.md](decimal.md)         |
-| `fnmatch`     | [fnmatch.md](fnmatch.md)         |
-| `functools`   | [functools.md](functools.md)     |
-| `hashlib`     | [hashlib.md](hashlib.md)         |
-| `itertools`   | [itertools.md](itertools.md)     |
-| `json`        | [json.md](json.md)               |
-| `math`        | [math.md](math.md)               |
-| `os`          | [os.md](os.md)                   |
-| `os.path`     | [os.md](os.md)                   |
-| `pathlib`     | [pathlib.md](pathlib.md)         |
-| `posixpath`   | [os.md](os.md)                   |
-| `random`      | [random.md](random.md)           |
-| `re`          | [re.md](re.md)                   |
-| `sys`         | [sys.md](sys.md)                 |
-| `time`        | [time.md](time.md)               |
-| `tomllib`     | [tomllib.md](tomllib.md)         |
-| `typing`      | [typing.md](typing.md)           |
-| `unicodedata` | [unicodedata.md](unicodedata.md) |
+| Module          | See                                  |
+| --------------- | ------------------------------------ |
+| `annotationlib` | [annotationlib.md](annotationlib.md) |
+| `asyncio`       | [asyncio.md](asyncio.md)             |
+| `base64`        | [base64.md](base64.md)               |
+| `binascii`      | [base64.md](base64.md)               |
+| `bisect`        | [bisect.md](bisect.md)               |
+| `collections`   | [collections.md](collections.md)     |
+| `copy`          | [copy.md](copy.md)                   |
+| `csv`           | [csv.md](csv.md)                     |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)     |
+| `datetime`      | [datetime.md](datetime.md)           |
+| `decimal`       | [decimal.md](decimal.md)             |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)             |
+| `functools`     | [functools.md](functools.md)         |
+| `hashlib`       | [hashlib.md](hashlib.md)             |
+| `itertools`     | [itertools.md](itertools.md)         |
+| `json`          | [json.md](json.md)                   |
+| `math`          | [math.md](math.md)                   |
+| `os`            | [os.md](os.md)                       |
+| `os.path`       | [os.md](os.md)                       |
+| `pathlib`       | [pathlib.md](pathlib.md)             |
+| `posixpath`     | [os.md](os.md)                       |
+| `random`        | [random.md](random.md)               |
+| `re`            | [re.md](re.md)                       |
+| `sys`           | [sys.md](sys.md)                     |
+| `time`          | [time.md](time.md)                   |
+| `tomllib`       | [tomllib.md](tomllib.md)             |
+| `typing`        | [typing.md](typing.md)               |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)     |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
@@ -143,6 +144,7 @@ Differences from CPython:
     A module whose body raises is dropped from the cache, so the next import runs it again.
 - Each submodule of a file package is its own `import` call for the dotted name (`pkg.sub`), searching the package's
     `__path__` directories, joined to the working directory.
+    Only the first 32 directories of `__path__` are searched; later entries are ignored.
     Relative imports (`from . import x`) are rejected, so a package that uses them raises
     `ImportError: attempted relative import with no known parent package` when imported.
     Directories without an `__init__.py` (namespace packages) are not found.

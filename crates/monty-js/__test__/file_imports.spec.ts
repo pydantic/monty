@@ -59,6 +59,18 @@ test('the os handler sees normalized paths', async () => {
   t.deepEqual(reads, ['/pkg/__init__.py', '/private/secrets/__init__.py', '/private/secrets.py'])
 })
 
+test('only the first 32 __path__ directories are searched', async () => {
+  const reads: unknown[] = []
+  const handler = (_name: string, args: unknown[]) => {
+    reads.push(args[0])
+    return args[0] === '/pkg/__init__.py' ? "__path__ = [f'/d{i}' for i in range(40)]\n" : NOT_HANDLED
+  }
+  const error = await t.throwsAsync(() => run('import pkg.sub', { os: handler }))
+  t.is(error.message, "ModuleNotFoundError: No module named 'pkg.sub'")
+  t.is(reads.length, 1 + 2 * 32)
+  t.is(reads.at(-1), '/d31/sub.py')
+})
+
 test('an async os handler serves module files', async () => {
   const handler = async (_name: string, args: unknown[]) => (args[0] === '/served.py' ? 'answer = 42\n' : NOT_HANDLED)
   t.is(await run('import served\nserved.answer', { os: handler }), 42)

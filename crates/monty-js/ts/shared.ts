@@ -43,6 +43,7 @@ export {
   MontyCrashedError,
   MontyDisconnectError,
   MontyError,
+  MontyRefusedError,
   MontyRuntimeError,
   MontyShutdown,
   MontySyntaxError,

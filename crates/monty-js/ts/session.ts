@@ -27,6 +27,7 @@ import {
   MontyDisconnectError,
   MontyError,
   montyErrorFromNative,
+  MontyRefusedError,
   MontyShutdown,
   MontyTypingError,
   notCallableMessage,
@@ -310,8 +311,10 @@ export class MontySession {
    * taken mid-execution.
    *
    * Valid only on a fresh session, before any feed or load (it replaces the
-   * whole session); throws otherwise. The dump restores its own resource limits
-   * and type-check state. Throws if the dump is actually a suspended snapshot.
+   * whole session); throws otherwise. Checkout limits cap the restored limits.
+   * The execution clock must match the dump. Type-check state comes from the dump.
+   * The checkout's `osPolicy` replaces the dump's.
+   * Throws if the dump is actually a suspended snapshot.
    *
    * Only load unmodified bytes from a trusted, compatible Monty producer.
    * The caller must establish provenance and integrity; Monty does not authenticate
@@ -344,12 +347,15 @@ export class MontySession {
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
    * `snapshot.dump()` — and resolves to the snapshot to resume. Use
    * [`loadSession`] for a dump taken between feeds. Its snapshot trust requirements
-   * also apply here.
+   * also apply here. Checkout limits cap the restored limits, and the execution
+   * clock must match the dump.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
    * in the dump), or its filesystem calls degrade into unhandled OS calls.
-   * Throws if the dump is actually an idle session.
+   * The checkout's `osPolicy` replaces the dump's, so the rest of the feed reads
+   * its clock, zone, sleep, process-time and random settings. Throws if the dump
+   * is actually an idle session.
    */
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
@@ -407,7 +413,7 @@ export class MontySession {
    * format. The session stays usable; the bytes can only be restored by a
    * monty worker of the same version.
    *
-   * Against a `MontyWebsocket` server that stores sessions, returns the ID of
+   * Against a `MontyRemote` server that stores sessions, returns the ID of
    * a record holding the current state instead; `loadSession` / `loadSnapshot`
    * accept it like dump bytes. A server that stores nothing may refuse with
    * `MontyRuntimeError`, and the session carries on.
@@ -463,7 +469,7 @@ export class MontySession {
   }
 
   /**
-   * The opaque ID a `MontyWebsocket` server that stores sessions gave this
+   * The opaque ID a `MontyRemote` server that stores sessions gave this
    * session, or `undefined`: local workers, ephemeral sessions and servers that
    * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
    * to start a new session from the state stored under it. Changes when the
@@ -862,7 +868,7 @@ class TurnAnswerer {
   }
 
   /**
-   * Handles imports and sleeps locally; other calls try mounts, `os`, then the sandbox default.
+   * Handles imports, type hints and sleeps locally; other calls try mounts, `os`, then the sandbox default.
    */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.functionName === IMPORT_CALL) {
@@ -870,6 +876,10 @@ class TurnAnswerer {
     }
     if (call.functionName === IMPORT_STUBS_CALL) {
       return this.answerImportStubs(call, onPrint)
+    }
+    if (call.functionName === GET_TYPE_HINTS_CALL) {
+      // JavaScript functions and classes carry no type hints, which the sandbox reads as `{}`.
+      return this.native.resumeNotHandled(onPrint)
     }
     const wait = this.systemSleepFor(call)
     if (wait !== null) {
@@ -1454,6 +1464,9 @@ const IMPORT_CALL = 'import'
 /** The OS call a type-checked feed makes for the stubs of the host modules it imports. */
 const IMPORT_STUBS_CALL = 'import_stubs'
 
+/** The OS call `typing.get_type_hints()` makes for a host function or class. */
+const GET_TYPE_HINTS_CALL = 'typing.get_type_hints'
+
 /** Modules keyed by import name, read when a snippet first imports one: invalid identifiers, keywords
  *  and sandbox-provided names throw there. Factories run at most once per session and may return a Promise. */
 export type ExternalModules = Record<string, ExternalModule | (() => ExternalModule | Promise<ExternalModule>)>
@@ -1644,6 +1657,9 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
 /** The OS call an import's candidate file is read with, as `open()`'s handler sees it. */
 const READ_TEXT_CALL = 'Path.read_text'
 
+/** The most search-path directories an import searches, as `MAX_SEARCH_DIRS` in monty-types. */
+const MAX_SEARCH_DIRS = 32
+
 /** Errors reading a candidate that mean its file is not there, so the search moves on. */
 const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 'IsADirectoryError', 'PermissionError'])
 
@@ -1651,7 +1667,8 @@ const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 
  * An import's candidate files, mirroring `ImportArgs::candidates` in
  * monty-types: per directory, the package `name/__init__.py` before the module
  * `name.py`. The call comes from an untrusted worker, so a name that is not
- * dotted identifiers, or a directory that is not absolute, yields nothing. The
+ * dotted identifiers, or a directory that is not absolute, yields nothing, and
+ * only the first `MAX_SEARCH_DIRS` remaining directories are searched. The
  * paths are built one at a time, so a long name times many directories never
  * sits in memory, and kept as sent, so mounts check them before collapsing `..`.
  */
@@ -1660,8 +1677,13 @@ function* importCandidates(name: string, searchPath: unknown): Generator<string>
     return
   }
   const leaf = name.slice(name.lastIndexOf('.') + 1)
+  let searched = 0
   for (const dir of searchPath) {
+    if (searched === MAX_SEARCH_DIRS) {
+      return
+    }
     if (typeof dir === 'string' && dir.startsWith('/') && !dir.includes('\0')) {
+      searched++
       const base = dir.endsWith('/') ? dir.slice(0, -1) : dir
       yield `${base}/${leaf}/__init__.py`
       yield `${base}/${leaf}.py`
@@ -1691,7 +1713,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Checks `native` out of its pool, raising what a turn would for the same
- * failure: `MontyRuntimeError` when the server refuses the session,
+ * failure: `MontyRuntimeError` when the server rejects the session's
+ * configuration, `MontyRefusedError` when a remote server refuses to open
+ * the stream at all (no session existed, so retrying is safe),
  * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
  * is lost, and a `TimeoutError` `DOMException` when no worker became available
  * within the checkout timeout. Anything else (a failed spawn or dial) is a plain `Error`.
@@ -1699,9 +1723,9 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 export async function enterSession(
   native: NativeSession,
   telemetryContext: unknown,
-  connectHeaders?: { name: string; value: string }[],
+  metadata?: { name: string; value: string }[],
 ): Promise<void> {
-  const turn = (await native.enter(telemetryContext, connectHeaders)) as EnterTurn
+  const turn = (await native.enter(telemetryContext, metadata)) as EnterTurn
   switch (turn.kind) {
     case 'ok':
       return
@@ -1713,6 +1737,8 @@ export async function enterSession(
     case 'disconnected':
     case 'shutdown':
       throw lostSessionError(turn)
+    case 'refused':
+      throw new MontyRefusedError(turn.message, turn)
     case 'typingError':
       throw new Error(turn.diagnostics)
     case 'protocol':
@@ -1729,7 +1755,7 @@ function lostSessionError(turn: CrashedTurn | DisconnectedTurn | ShutdownTurn): 
     case 'crashed':
       return new MontyCrashedError(turn.message, turn)
     case 'disconnected':
-      return new MontyDisconnectError(turn.message)
+      return new MontyDisconnectError(turn.message, turn)
     case 'shutdown':
       return new MontyShutdown(turn.message, turn.dump === undefined ? null : bufferFrom(turn.dump))
   }

@@ -19,7 +19,7 @@ The chart is the time to get a new sandbox and then run ten REPL commands in it;
 | Tech               | Language completeness      | Security          | Execution env | New sandbox           | FOSS       | Setup        | File mounting  | Snapshotting                |
 | ------------------ | -------------------------- | ----------------- | ------------- | --------------------- | ---------- | ------------ | -------------- | --------------------------- |
 | OSS Monty          | partial                    | strict            | local         | 0.8 ms, 5 ms new pool | free / OSS | easy         | easy           | interpreter, kilobytes      |
-| Full Monty         | partial, or full via proxy | strict + OS-level | remote        | 2 ms, 3 ms new pool   | not free   | easy         | easy           | interpreter, kilobytes      |
+| Full Monty         | partial, or full via proxy | strict + OS-level | remote        | 2 ms, 5 ms new pool   | not free   | easy         | easy           | interpreter, kilobytes      |
 | Docker             | full                       | good              | local         | 195 ms                | free / OSS | intermediate | easy           | CRIU image, experimental    |
 | Pyodide            | full                       | poor              | local         | 2700 ms               | free / OSS | intermediate | easy           | no                          |
 | starlark-rust      | very limited               | good              | local         | 1.3 ms                | free / OSS | easy         | not available? | no                          |
@@ -61,7 +61,7 @@ The others have no pool, so each new sandbox starts from nothing.
 | OSS Monty, pool already open                 | 0.8 ms      | 0.4 ms           | 1.2 ms   |
 | OSS Monty, new pool                          | 5 ms        | 0.4 ms           | 5 ms     |
 | Full Monty, client pool already open         | 2 ms        | 5 ms             | 7 ms     |
-| Full Monty, new client pool                  | 3 ms        | 5 ms             | 9 ms     |
+| Full Monty, new client pool                  | 5 ms        | 5 ms             | 10 ms    |
 | WASI / wasmtime, precompiled CPython         | 16 ms       | 180 ms           | 200 ms   |
 | Docker, running container, `docker exec`     | 195 ms      | 700 ms           | 900 ms   |
 | Sandboxing service, existing Daytona sandbox | 1500 ms     | 400 ms           | 1900 ms  |
@@ -124,7 +124,7 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
 
 ## Full Monty
 
-[Full Monty](server.md) is the commercial server: the same `monty` workers behind a WebSocket, as a container image.
+[Full Monty](server.md) is the commercial server: the same `monty` workers behind gRPC, as a container image.
 
 - **Language completeness**: the same subset as OSS Monty, or full CPython when the server proxies a session to a CPython
     sandbox.
@@ -136,9 +136,9 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
     The sandboxes scale by adding server replicas behind a load balancer, independent of the application hosts; a
     draining replica hands each session a signed dump so the client can resume on another.
     See [Full Monty](server.md).
-- **New sandbox**: a WebSocket connection, relayed to a worker process for the session, 1.7 ms measured between
-    containers on one machine; a deployment adds its network round trip.
-- **FOSS**: closed-source and commercial; the client, [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket], ships in the MIT `pydantic-monty`
+- **New sandbox**: a gRPC stream on the client's connection, relayed to a worker process for the session; 1.7 ms
+    measured between containers on one machine. A deployment adds its network round trip.
+- **FOSS**: closed-source and commercial; the client, [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], ships in the MIT `pydantic-monty`
     package.
 - **Setup complexity**: run the container image with one environment variable, the dump-signing key.
 - **File mounting**: client directories are mounted over the wire, the same [`MountDir`][pydantic_monty.MountDir] as a local pool.
@@ -146,20 +146,20 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
 
 ### How it was measured
 
-Measured on 2026-09-24: the production pair of containers, the Full Monty server relaying to a separate worker
-container that runs one process per session, both native `linux/arm64` builds on monty 1.0.0-beta.2 in Docker
+Measured on 2026-11-03: the production pair of containers, the Full Monty server relaying to a separate worker
+container that runs one process per session, both native `linux/arm64` builds on monty 1.4.0 in Docker
 Desktop on the same machine.
-The client is `pydantic-monty` 1.0.0b2's [`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] in a third
+The client is `pydantic-monty` 1.4.0's [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] in a third
 container on the same Docker network, so the figures are the server's own overhead, not Docker Desktop's
 port-forwarding proxy.
 The new client pool and agent run figures are medians of 7 runs.
 
-New sandbox is the median of 20 `checkout()` + `feed_run()` round trips on a client pool that is already open, at
-1.7 ms, measured back to back; each is a new connection and a new worker process, because the server never lets one
-process serve two clients.
-New client pool creates the client pool and opens the WebSocket connection as well, at 3.4 ms.
+New sandbox is the fastest of 100 `checkout()` + `feed_run()` round trips on a client pool that is already open, at
+1.7 ms, measured back to back (the median is 1.9 ms); each is a new stream on the pool's connection and a new worker
+process, because the server never lets one process serve two clients.
+New client pool creates the client pool and dials the connection as well, in a cold process, at 5.1 ms.
 
-The agent run is ten `feed_run` calls on one checkout, 5.3 ms; each is a WebSocket round trip relayed from the server
+The agent run is ten `feed_run` calls on one checkout, 4.9 ms; each is a round trip relayed from the server
 to the same worker.
 The worker runs inside a Linux container, where creating an OSS Monty pool measures 2.4 ms against 4.5 ms on macOS,
 so the Full Monty numbers are not directly comparable with the macOS ones.

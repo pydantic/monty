@@ -8,7 +8,9 @@ For tests of the AbstractOS interface via custom subclasses, see test_os_access_
 """
 
 import datetime
+import errno
 import time
+import tracemalloc
 from pathlib import Path, PurePosixPath
 from typing import Any
 from unittest.mock import Mock
@@ -21,6 +23,57 @@ from pydantic_monty import CallbackFile, MemoryFile, MontyRuntimeError, OSAccess
 
 # Alias for brevity in tests
 P = PurePosixPath
+
+
+def test_create_exclusive_callback_preserves_collisions():
+    osa = OSAccess([MemoryFile('/existing', 'original')])
+    handle = osa(
+        name='Path.create_exclusive',
+        args=(P('/new'), 'wb'),
+        kwargs={'permissions': 0o600},
+        is_async=False,
+    )
+    assert (handle.path, handle.mode, handle.position) == snapshot(('/new', 'wb', 0))
+    assert osa.path_read_bytes(P('/new')) == snapshot(b'')
+    assert osa.path_stat(P('/new')).st_mode & 0o777 == snapshot(0o600)
+    for path in ['/existing', '/new']:
+        with pytest.raises(FileExistsError):
+            osa.path_create_exclusive(P(path), 'w', permissions=0o600)
+    assert osa.path_read_text(P('/existing')) == snapshot('original')
+
+
+def test_create_exclusive_validation_precedes_mutation():
+    osa = OSAccess([MemoryFile('/existing', 'original')])
+    for permissions in [-1, 0o1000]:
+        with pytest.raises(ValueError, match='permissions must be between'):
+            osa.path_create_exclusive(P('/new'), 'w', permissions=permissions)
+    for permissions in [0o001, 0o010, 0o100, 0o777]:
+        with pytest.raises(ValueError, match='execute permission bits'):
+            osa.path_create_exclusive(P('/new'), 'w', permissions=permissions)
+    with pytest.raises(ValueError, match='update modes'):
+        osa.path_create_exclusive(P('/new'), 'w+', permissions=0o600)
+    with pytest.raises(FileNotFoundError):
+        osa.path_create_exclusive(P('/missing/new'), 'w', permissions=0o600)
+    with pytest.raises(FileExistsError):
+        osa.path_create_exclusive(P('/'), 'w', permissions=0o600)
+    assert osa.path_exists(P('/new')) == snapshot(False)
+    assert osa.path_read_text(P('/existing')) == snapshot('original')
+
+
+@pytest.mark.parametrize('mode', ['w', 'wb', 'a', 'ab'])
+def test_create_exclusive_handle_works_in_sandbox(monty_run: RunMonty, mode: str):
+    osa = OSAccess()
+    handle = osa.path_create_exclusive(P('/new'), mode, permissions=0o600)
+    content = b'created' if handle.binary else 'created'
+    result = monty_run(
+        'f.write(content); f.close(); f.closed',
+        inputs={'f': handle, 'content': content},
+        os=osa,
+        skip_type_check=True,
+    )
+    assert result is True
+    assert osa.path_read_bytes(P('/new')) == snapshot(b'created')
+
 
 # =============================================================================
 # OSAccess Initialization & Validation
@@ -196,6 +249,188 @@ def test_sleep_override_sees_the_requested_length(monty_run: RunMonty):
     result = monty_run('import time; time.sleep(3600) is None', os=RecordingSleep(max_sleep=0.001), checkout=CALL_HOST)
     assert result == snapshot(True)
     assert waited == snapshot([3600.0])
+
+
+def test_file_byte_cap_default_and_none():
+    assert OSAccess().max_total_file_bytes == snapshot(50_000_000)
+    fs = OSAccess(max_total_file_bytes=None)
+    fs.path_write_bytes(P('/big.bin'), b'x' * 60_000_000)
+    assert fs.path_stat(P('/big.bin')).st_size == 60_000_000
+
+
+@pytest.mark.parametrize(
+    ('limit', 'error'),
+    [
+        (-1, ValueError),
+        (1.5, TypeError),
+        (float('nan'), TypeError),
+        (True, TypeError),
+        ('8', TypeError),
+    ],
+)
+def test_file_byte_cap_validation(limit: Any, error: type[Exception]):
+    with pytest.raises(error) as exc_info:
+        OSAccess(max_total_file_bytes=limit)
+    expected = (
+        'max_total_file_bytes must be non-negative'
+        if error is ValueError
+        else f'max_total_file_bytes must be an int or None, not {type(limit).__name__}'
+    )
+    assert str(exc_info.value) == expected
+
+
+def test_rejected_write_leaves_file_unchanged(monty_run: RunMonty):
+    """A write past `max_total_file_bytes` fails with ENOSPC and leaves the file unchanged."""
+    fs = OSAccess([MemoryFile('/a.txt', 'start')], max_total_file_bytes=10)
+    code = """
+from pathlib import Path
+p = Path('/a.txt')
+results = [p.write_text('0123456789')]
+for write in (lambda: p.write_text('x' * 11), lambda: p.write_bytes(b'x' * 11), lambda: open('/a.txt', 'a').write('!')):
+    try:
+        write()
+    except OSError as e:
+        results.append(str(e))
+results.append(p.read_text())
+results
+"""
+    assert monty_run(code, os=fs) == snapshot(
+        [
+            10,
+            "[Errno 28] No space left on device: '/a.txt'",
+            "[Errno 28] No space left on device: '/a.txt'",
+            "[Errno 28] No space left on device: '/a.txt'",
+            '0123456789',
+        ]
+    )
+    with pytest.raises(OSError) as exc_info:
+        fs.path_write_text(P('/new.txt'), 'x')
+    assert not fs.path_exists(P('/new.txt'))
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/new.txt'")
+    assert (exc_info.value.errno, exc_info.value.filename) == (errno.ENOSPC, '/new.txt')
+
+
+def test_max_total_file_bytes(monty_run: RunMonty):
+    """All `MemoryFile` content shares `max_total_file_bytes`, initial files included;
+    unlinking, overwriting by rename and shrinking give space back."""
+    fs = OSAccess([MemoryFile('/a.txt', 'x' * 40)], max_total_file_bytes=100)
+    code = """
+from pathlib import Path
+results = []
+def attempt(f):
+    try:
+        results.append(f())
+    except OSError as e:
+        results.append(str(e))
+attempt(lambda: Path('/b.txt').write_text('y' * 61))
+attempt(lambda: Path('/b.txt').write_text('y' * 60))
+attempt(lambda: Path('/a.txt').write_text('x' * 41))
+attempt(lambda: Path('/a.txt').write_text('x'))
+attempt(lambda: Path('/c.txt').write_text('z' * 39))
+Path('/c.txt').unlink()
+attempt(lambda: Path('/c.txt').write_text('z' * 39))
+Path('/c.txt').rename('/b.txt')
+attempt(lambda: Path('/d.txt').write_bytes(b'w' * 60))
+results
+"""
+    assert monty_run(code, os=fs) == snapshot(
+        [
+            "[Errno 28] No space left on device: '/b.txt'",
+            60,
+            "[Errno 28] No space left on device: '/a.txt'",
+            1,
+            39,
+            39,
+            60,
+        ]
+    )
+
+
+def test_file_byte_cap_counts_encoded_text():
+    """Text counts as its UTF-8 size, matching `stat`; appends are charged before concatenating."""
+    fs = OSAccess([MemoryFile('/a.txt', 'é' * 4)], max_total_file_bytes=10)
+    assert fs.path_append_text(P('/a.txt'), 'é') == 1
+    with pytest.raises(OSError) as exc_info:
+        fs.path_append_text(P('/a.txt'), 'é')
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/a.txt'")
+    assert fs.path_append_bytes(P('/a.txt'), b'') == 0
+    assert fs.path_read_text(P('/a.txt')) == 'é' * 5
+
+
+@pytest.mark.parametrize('remove', ['overwrite', 'unlink', 'rename_over'])
+def test_released_content_is_not_retained(remove: str):
+    """Accounting must not keep old payloads alive, or the host grows past the cap."""
+    fs = OSAccess(max_total_file_bytes=2_000_000)
+    tracemalloc.start()
+    try:
+        for i in range(20):
+            if remove == 'rename_over':
+                fs.path_write_bytes(P('/b.bin'), bytes([i]) * 1_000_000)
+                fs.path_rename(P('/b.bin'), P('/a.bin'))
+            else:
+                fs.path_write_bytes(P('/a.bin'), bytes([i]) * 1_000_000)
+                if remove == 'unlink':
+                    fs.path_unlink(P('/a.bin'))
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert retained < 3_000_000
+    assert len(fs.files) <= 1
+
+
+def test_unlink_after_rename(monty_run: RunMonty):
+    """A renamed file unlinks once under its new name; the refund cannot repeat."""
+    fs = OSAccess(max_total_file_bytes=20)
+    code = """
+from pathlib import Path
+results = []
+def attempt(f):
+    try:
+        results.append(f())
+    except OSError as e:
+        results.append(str(e))
+Path('/a').write_text('x' * 20)
+Path('/a').rename('/b')
+Path('/b').rename('/c')
+attempt(lambda: Path('/c').unlink())
+attempt(lambda: Path('/c').unlink())
+attempt(lambda: Path('/d').write_text('y' * 20))
+attempt(lambda: Path('/e').write_text('z'))
+results.append(sorted(str(p) for p in Path('/').iterdir()))
+results
+"""
+    assert monty_run(code, os=fs) == snapshot(
+        [
+            None,
+            "[Errno 2] No such file or directory: '/c'",
+            20,
+            "[Errno 28] No space left on device: '/e'",
+            ['/d'],
+        ]
+    )
+
+
+def test_initial_content_over_cap_only_blocks_growth():
+    """Initial files are not rejected; content already over the cap can shrink but not grow."""
+    fs = OSAccess([MemoryFile('/a.txt', 'x' * 20)], max_total_file_bytes=10)
+    with pytest.raises(OSError) as exc_info:
+        fs.path_append_text(P('/a.txt'), 'x')
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/a.txt'")
+    assert fs.path_write_text(P('/a.txt'), 'x' * 15) == 15
+    with pytest.raises(OSError) as exc_info:
+        fs.path_write_text(P('/b.txt'), 'y')
+    assert str(exc_info.value) == snapshot("[Errno 28] No space left on device: '/b.txt'")
+    assert fs.path_write_text(P('/a.txt'), 'x' * 4) == 4
+    assert fs.path_write_text(P('/b.txt'), 'y' * 6) == 6
+
+
+def test_file_byte_cap_ignores_callback_files():
+    """A `CallbackFile` stores its content itself, so it is outside the cap."""
+    stored: list[str | bytes] = []
+    callback = CallbackFile('/cb.txt', read=lambda _: '', write=lambda _, content: stored.append(content))
+    fs = OSAccess([callback], max_total_file_bytes=1)
+    assert fs.path_write_text(P('/cb.txt'), 'x' * 100) == 100
+    assert stored == ['x' * 100]
 
 
 # =============================================================================

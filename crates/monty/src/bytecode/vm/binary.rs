@@ -53,6 +53,11 @@ impl VM<'_> {
         self.binary_op(|lhs, rhs, vm| lhs.py_mul(rhs, vm))
     }
 
+    /// Tries in-place multiplication, then binary fallback; reflected results may replace the operand.
+    pub(super) fn inplace_mult(&mut self) -> Result<(), RunError> {
+        self.inplace_op(PyTrait::py_imul_impl, |lhs, rhs, vm| lhs.py_mul(rhs, vm))
+    }
+
     /// Binary division.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
         if self.binary_numeric_division(
@@ -113,6 +118,11 @@ impl VM<'_> {
     /// Binary `^`.
     pub(super) fn binary_xor(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_xor(rhs, vm))
+    }
+
+    /// Set symmetric difference mutates the left operand before binary fallback.
+    pub(super) fn inplace_xor(&mut self) -> Result<(), RunError> {
+        self.inplace_op(PyTrait::py_ixor_impl, |lhs, rhs, vm| lhs.py_xor(rhs, vm))
     }
 
     /// Binary left shift.
@@ -272,9 +282,9 @@ impl VM<'_> {
     /// Applies an in-place operation, offering the left operand `inplace` (its
     /// `py_i*_impl` hook) first and otherwise falling back to `binary`.
     ///
-    /// A hook reporting `true` has mutated the left operand, which is pushed
-    /// back so it keeps its identity; `false` means the type has no in-place
-    /// form and the ordinary binary operator produces a fresh value.
+    /// A handled operation pushes the updated left operand: native mutation keeps
+    /// its identity, while reflected arithmetic may replace it. Otherwise the
+    /// ordinary binary operator produces the result.
     fn inplace_op(
         &mut self,
         inplace: impl FnOnce(&mut Value, &Value, &mut Self) -> RunResult<bool>,

@@ -211,7 +211,7 @@ test('feed after session close rejects', async () => {
   t.is(error.message, 'the session is closed — check out a new one')
 })
 
-test.each([undefined, 0xffffffff])(
+test.each([undefined, null, 0xffffffff])(
   'workers are reused across checkouts (recycle count %s)',
   async (maxCheckoutsPerWorker) => {
     await using pool = await Monty.create({ maxProcesses: 1, maxCheckoutsPerWorker })
@@ -242,6 +242,23 @@ test.each([0, 1])('maxCheckoutsPerWorker %s recycles the worker', async (maxChec
   const second = await pool.checkout()
   t.not(second.workerId, id)
   await second.close()
+})
+
+test.each([
+  [undefined, true],
+  [null, false],
+])('recycle count %s: worker replaced after 1000 checkouts = %s', async (maxCheckoutsPerWorker, recycled) => {
+  await using pool = await Monty.create({ maxProcesses: 1, maxCheckoutsPerWorker })
+  const ids = new Set<number | undefined>()
+  for (let i = 0; i < 1000; i++) {
+    const session = await pool.checkout()
+    ids.add(session.workerId)
+    await session.close()
+  }
+  t.is(ids.size, 1)
+  const last = await pool.checkout()
+  t.is(ids.has(last.workerId), !recycled)
+  await last.close()
 })
 
 test('maxMemory leaves normal work alone', async () => {

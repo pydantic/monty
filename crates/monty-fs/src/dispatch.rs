@@ -65,9 +65,13 @@ pub(super) enum FsRequest {
     Resolve { path: MontyPath },
     /// `Path.absolute()`
     Absolute { path: MontyPath },
-    /// `open(path, mode)` — performs the open-time effect and returns a
-    /// [`MontyFileHandle`] value. The mode is parsed once during dispatch
-    /// so backends never re-parse the raw string.
+    /// Create an empty file only when the pathname is unoccupied.
+    CreateExclusive {
+        path: MontyPath,
+        mode: FileMode,
+        permissions: u32,
+    },
+    /// `open(path, mode)` returns a handle after the host performs its open-time effect.
     Open {
         /// Target path.
         path: MontyPath,
@@ -99,6 +103,7 @@ impl FsRequest {
             | Self::Resolve { path }
             | Self::Absolute { path }
             | Self::Open { path, .. }
+            | Self::CreateExclusive { path, .. }
             | Self::Rename { src: path, .. } => path,
         }
     }
@@ -116,6 +121,7 @@ impl FsRequest {
             | Self::AppendText { .. }
             | Self::AppendBytes { .. }
             | Self::Mkdir { .. }
+            | Self::CreateExclusive { .. }
             | Self::Unlink { .. }
             | Self::Rmdir { .. }
             | Self::Rename { .. } => true,
@@ -157,6 +163,11 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
             path: a.path,
             data: a.data,
         },
+        OsFunctionCall::CreateExclusive(a) => FsRequest::CreateExclusive {
+            path: a.path,
+            mode: a.mode,
+            permissions: a.permissions,
+        },
         OsFunctionCall::Mkdir(a) => FsRequest::Mkdir {
             path: a.path,
             parents: a.parents,
@@ -184,7 +195,8 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::AsyncSleep(_)
         | OsFunctionCall::AsyncSystemSleep(_)
         | OsFunctionCall::Import(_)
-        | OsFunctionCall::ImportStubs(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
+        | OsFunctionCall::ImportStubs(_)
+        | OsFunctionCall::GetTypeHints(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
         OsFunctionCall::Scan(_) => unreachable!("scans are run by the mount table, not one mount"),
     }
 }

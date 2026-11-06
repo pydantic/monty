@@ -733,7 +733,7 @@ pub struct ParentRequest {
     /// not depend on it, and it is absent whenever the parent is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -762,6 +762,8 @@ pub mod parent_request {
         Shutdown(super::Shutdown),
         #[prost(message, tag = "11")]
         AbortFeed(super::AbortFeed),
+        #[prost(message, tag = "12")]
+        Pong(super::Pong),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
@@ -806,7 +808,7 @@ pub struct Configure {
     /// Version of the wire schema the parent speaks. The child rejects the
     /// session with a `FatalError` naming its own supported range when this
     /// falls outside it, so a parent deployed separately from its worker (over
-    /// a websocket, say) learns what to downgrade to without a handshake.
+    /// a gRPC stream, say) learns what to downgrade to without a handshake.
     ///
     /// 0 means the parent declared nothing — either it predates this field or it
     /// is not a monty parent — and is always rejected. The protocol has no
@@ -824,7 +826,8 @@ pub struct Configure {
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
     /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
-    /// with parent-serviced sleeps capped at 10s. `Load` restores the dump's settings.
+    /// with parent-serviced sleeps capped at 10s. It also governs a session restored by
+    /// `Load`, replacing the policy the dump was taken under.
     #[prost(message, optional, tag = "11")]
     pub os_policy: ::core::option::Option<OsPolicy>,
     /// Relay-only: whether a serving relay may store the session. Children ignore
@@ -835,6 +838,10 @@ pub struct Configure {
     /// Absent = the relay's default. Children ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
+    /// Local VM and supervisor clock; absent defaults to wall time in the child.
+    /// Remote clients leave this absent. The server selects the worker's clock.
+    #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
+    pub execution_clock: ::core::option::Option<i32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -927,6 +934,8 @@ pub struct Dump {}
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`. A relay
 /// without session storage answers `Error` and the session carries on.
+/// The restored session takes the preceding `Configure`'s `os_policy` (the
+/// default without one), not the policy it was dumped under.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
     /// Either:
@@ -1009,7 +1018,15 @@ pub struct ChildEvent {
     /// support persistence.
     #[prost(bytes = "vec", optional, tag = "28")]
     pub session_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    /// On Error or TypingError, whether the feed still awaits a host answer.
+    /// Absent for older workers or errors generated outside the session state
+    /// machine. Parents must preserve an outstanding suspension when unknown.
+    #[prost(bool, optional, tag = "29")]
+    pub feed_suspended: ::core::option::Option<bool>,
+    /// Configure acknowledgment. Local CPU-mode parents require this before execution.
+    #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
+    pub execution_clock: ::core::option::Option<i32>,
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1040,6 +1057,8 @@ pub mod child_event {
         FatalError(super::FatalError),
         #[prost(message, tag = "12")]
         Shutdown(super::ShutdownDump),
+        #[prost(message, tag = "13")]
+        Ping(super::Ping),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1124,7 +1143,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1151,6 +1170,17 @@ pub mod os_call {
         /// Canonical open() mode string, same set as `FileHandle.mode`.
         #[prost(string, tag = "2")]
         pub mode: ::prost::alloc::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct CreateExclusive {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        /// Access mode of the returned handle; creation is exclusive for every mode.
+        #[prost(string, tag = "2")]
+        pub mode: ::prost::alloc::string::String,
+        /// Access bits only (0..0777); native backends apply the host umask.
+        #[prost(uint32, tag = "3")]
+        pub permissions: u32,
     }
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Mkdir {
@@ -1259,6 +1289,24 @@ pub mod os_call {
         #[prost(string, repeated, tag = "1")]
         pub modules: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     }
+    /// The host object `OsCall.get_type_hints` asks about.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct GetTypeHints {
+        #[prost(oneof = "get_type_hints::Target", tags = "1, 2")]
+        pub target: ::core::option::Option<get_type_hints::Target>,
+    }
+    /// Nested message and enum types in `GetTypeHints`.
+    pub mod get_type_hints {
+        #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+        pub enum Target {
+            /// A host function, by the name the sandbox calls it with.
+            #[prost(string, tag = "1")]
+            Function(::prost::alloc::string::String),
+            /// A host class, by the id of the `ClassType` it crossed as.
+            #[prost(message, tag = "2")]
+            ClassId(super::super::Uuid),
+        }
+    }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
         /// ---- FS read / check / remove — the string is the virtual path -------
@@ -1365,6 +1413,13 @@ pub mod os_call {
         /// Path.scan — a subtree for os.walk / os.scandir / Path.walk / Path.glob.
         #[prost(message, tag = "33")]
         Scan(Scan),
+        /// typing.get_type_hints() of a host function or class. Answer with a dict
+        /// of hints, which the call returns as is; `not_handled` means `{}`.
+        #[prost(message, tag = "34")]
+        GetTypeHints(GetTypeHints),
+        /// Create a new empty file; an existing entry must never be opened or replaced.
+        #[prost(message, tag = "35")]
+        CreateExclusive(CreateExclusive),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
@@ -1444,10 +1499,9 @@ pub struct FatalError {
 /// and did NOT run the request it is replying to. Sent only in reply to an
 /// in-flight request, so the client is always reading when it arrives.
 ///
-/// Every other server policy action (idle/session/turn timeout, capacity) is
-/// just a dropped connection, which the client already classifies as a dead
-/// worker — only shutdown needs a message, because only shutdown has state to
-/// hand back.
+/// Every other server policy action (idle/session/turn timeout, capacity,
+/// memory) ends the stream with a gRPC status instead — only shutdown needs a
+/// message, because only shutdown has state to hand back.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShutdownDump {
     /// What `Load` restores the session from on a fresh connection: the ID a
@@ -1457,6 +1511,19 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
+/// Liveness probe from a serving relay, never a turn end. A parent answers
+/// each one with `Pong` without otherwise acting on it; a relay that hears
+/// nothing back for a further interval treats the parent as gone. A parent
+/// reads the stream in order, so the answer follows the events before the
+/// ping, which a slow host callback may hold: a relay sends it between turns.
+/// In-band because HTTP/2 PING frames stop at the nearest proxy, while the
+/// parent a relay wants to hear from sits beyond it. A child never sends one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Ping {}
+/// The parent's answer to `Ping`. Not a request: it opens no turn, and a child
+/// or relay that receives one between turns simply notes the parent is alive.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Pong {}
 /// Where a `Type` comes from — drives id presence and input validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -1495,6 +1562,33 @@ impl TypeOrigin {
             "TYPE_ORIGIN_BUILTIN" => Some(Self::Builtin),
             "TYPE_ORIGIN_SANDBOX" => Some(Self::Sandbox),
             "TYPE_ORIGIN_HOST" => Some(Self::Host),
+            _ => None,
+        }
+    }
+}
+/// One clock for VM budgets and subprocess supervision. Wall time is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ExecutionClock {
+    Wall = 0,
+    Cpu = 1,
+}
+impl ExecutionClock {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Wall => "WALL",
+            Self::Cpu => "CPU",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WALL" => Some(Self::Wall),
+            "CPU" => Some(Self::Cpu),
             _ => None,
         }
     }

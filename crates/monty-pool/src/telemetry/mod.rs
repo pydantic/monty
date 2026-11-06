@@ -167,7 +167,7 @@ impl TelemetryContext {
     }
 
     /// W3C `traceparent` (and `tracestate`, when non-empty) headers naming the
-    /// propagated span, for a remote worker's WebSocket upgrade request; empty
+    /// propagated span, as a remote worker's stream metadata; empty
     /// when the host captured no span.
     pub(crate) fn propagation_headers(&self) -> Vec<(String, String)> {
         let Some(parent) = &self.parent else {

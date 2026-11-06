@@ -1,75 +1,143 @@
-// In-process WebSocket servers for the `MontyWebsocket` specs, the Node
-// counterparts of the fixtures in crates/monty-python/tests/test_websocket.py.
-// Each connection is bridged to a real `monty subprocess` child: the child
-// length-prefixes each protocol frame on stdio, the WebSocket carries one
-// frame per binary message, so the bridge only adds and strips the prefix.
+// In-process gRPC servers for the `MontyRemote` specs, the Node counterparts
+// of the fixtures in crates/monty-python/tests/test_remote.py. Each session
+// stream is bridged to a real `monty subprocess` child: the child
+// length-prefixes each protocol frame on stdio, gRPC carries one frame per
+// message, so the bridge only adds and strips the prefix. The service is
+// declared by hand over raw bytes — no schema, nothing generated.
 
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
-import type { IncomingHttpHeaders } from 'node:http'
-import type { AddressInfo } from 'node:net'
 
+import {
+  Metadata,
+  Server,
+  ServerCredentials,
+  type ServerDuplexStream,
+  type ServiceDefinition,
+  status,
+} from '@grpc/grpc-js'
 import { findMontyBinary } from '@pydantic/monty/node'
-import { type RawData, type WebSocket, WebSocketServer } from 'ws'
+
+/** One session stream, from the server's side. */
+export type Stream = ServerDuplexStream<Buffer, Buffer>
 
 /** A listening test server. */
 export interface TestServer {
   url: string
-  /** The headers of every upgrade request received, in arrival order. */
-  headers: IncomingHttpHeaders[]
+  /** The request metadata of every stream opened, in arrival order. */
+  headers: Record<string, string>[]
   close(): Promise<void>
 }
 
-/** Serves `handle` for each connection on an ephemeral loopback port. */
-export async function serve(handle: (ws: WebSocket) => Promise<void> | void): Promise<TestServer> {
-  const server = new WebSocketServer({ host: '127.0.0.1', port: 0, maxPayload: 0 })
-  const headers: IncomingHttpHeaders[] = []
-  server.on('connection', (ws, request) => {
-    headers.push(request.headers)
-    void Promise.resolve(handle(ws)).catch(() => ws.terminate())
+/** The one RPC the pool calls, from `crates/monty-proto/proto/monty/v1/monty.proto`. */
+const SESSION_METHOD = '/monty.v1.MontySession/Session'
+
+/** `MAX_FRAME_LEN` in `monty-proto`, plus a little for gRPC's own framing. */
+const MAX_MESSAGE_BYTES = 256 * 1024 * 1024 + 1024
+
+const identity = (buffer: Buffer): Buffer => buffer
+
+/** The session RPC over raw bytes: identity serializers in both directions. */
+const sessionService: ServiceDefinition = {
+  Session: {
+    path: SESSION_METHOD,
+    requestStream: true,
+    responseStream: true,
+    requestSerialize: identity,
+    requestDeserialize: identity,
+    responseSerialize: identity,
+    responseDeserialize: identity,
+  },
+}
+
+/** Serves `handle` for each session stream on an ephemeral loopback port. */
+export async function serve(handle: (stream: Stream) => Promise<void> | void): Promise<TestServer> {
+  const server = new Server({
+    'grpc.max_receive_message_length': MAX_MESSAGE_BYTES,
+    'grpc.max_send_message_length': MAX_MESSAGE_BYTES,
   })
-  await new Promise<void>((resolve) => server.once('listening', resolve))
-  const { port } = server.address() as AddressInfo
+  const headers: Record<string, string>[] = []
+  server.addService(sessionService, {
+    Session: (stream: Stream) => {
+      headers.push(asciiMetadata(stream.metadata))
+      void Promise.resolve(handle(stream)).catch((error: unknown) => stream.destroy(error as Error))
+    },
+  })
+  const port = await new Promise<number>((resolve, reject) => {
+    server.bindAsync('127.0.0.1:0', ServerCredentials.createInsecure(), (error, bound) =>
+      error ? reject(error) : resolve(bound),
+    )
+  })
   return {
-    url: `ws://127.0.0.1:${port}`,
+    url: `http://127.0.0.1:${port}`,
     headers,
     close: () =>
       new Promise<void>((resolve) => {
-        for (const client of server.clients) client.terminate()
-        server.close(() => resolve())
+        server.forceShutdown()
+        resolve()
       }),
   }
 }
 
-/** The plain relay, as `scripts/websocket_relay.py`: frames pass through unchanged. */
-export function relay(ws: WebSocket): void {
+/** The ASCII entries of a stream's request metadata, as a plain record. */
+function asciiMetadata(metadata: Metadata): Record<string, string> {
+  const record: Record<string, string> = {}
+  for (const [key, values] of Object.entries(metadata.getMap())) {
+    if (typeof values === 'string') record[key] = values
+  }
+  return record
+}
+
+/**
+ * Sends the response headers that admit the stream. The pool sends nothing,
+ * not even `Configure`, until it sees them, so a handler that waits for a
+ * request first deadlocks with it; a refusal instead ends the stream *before*
+ * this, as a trailers-only status the pool reports as a failed checkout.
+ */
+export function admit(stream: Stream): void {
+  stream.sendMetadata(new Metadata())
+}
+
+/** Ends a stream with `code` and `details`, naming `cause` in the `monty-cause` trailer when given. */
+export function endWithStatus(stream: Stream, code: status, details: string, cause?: string): void {
+  const metadata = new Metadata()
+  if (cause !== undefined) metadata.set('monty-cause', cause)
+  stream.emit('error', { code, details, metadata })
+}
+
+/** The plain relay, as `scripts/grpc_relay.py`: frames pass through unchanged. */
+export function relay(stream: Stream): void {
+  admit(stream)
   const child = new ChildFrames()
-  ws.on('message', (data) => child.send(toBuffer(data)))
-  ws.on('close', () => child.kill())
+  stream.on('data', (data: Buffer) => child.send(data))
+  stream.on('end', () => child.endInput())
+  stream.on('close', () => child.kill())
   void (async () => {
     for (;;) {
       const frame = await child.next()
       if (frame === null) break
-      ws.send(frame)
+      stream.write(frame)
     }
-    ws.terminate()
+    stream.end()
   })()
 }
 
-/** A relay that drops the connection, without a reply, on its `dropAt`-th request. */
-export function droppingRelay(dropAt: number): (ws: WebSocket) => Promise<void> {
-  return async (ws) => {
+/** A relay that drops the stream, with an `UNAVAILABLE` status, on its `dropAt`-th request. */
+export function droppingRelay(dropAt: number): (stream: Stream) => Promise<void> {
+  return async (stream) => {
+    admit(stream)
     const child = new ChildFrames()
     let requests = 0
     try {
-      for await (const message of messages(ws)) {
+      for await (const message of messages(stream)) {
         requests += 1
         if (requests === dropAt) {
-          ws.terminate()
+          endWithStatus(stream, status.UNAVAILABLE, 'relay dropped the session')
           return
         }
         child.send(message)
-        await forwardReplies(child, ws)
+        await forwardReplies(child, stream)
       }
+      stream.end()
     } finally {
       child.kill()
     }
@@ -84,7 +152,9 @@ const REQUEST_LOAD = 8
 const EVENT_PRINT = 1
 const EVENT_ERROR = 7
 const EVENT_DUMP_RESULT = 9
+const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
+const EVENT_PING = 13
 // `ChildEvent`'s message-level fields:
 const FIRST_EVENT_FIELD = 20
 const EVENT_SESSION_ID = 28
@@ -109,11 +179,17 @@ const VARINT_PAYLOAD_BITS = 7
 const VARINT_PAYLOAD_MASK = 0x7f
 const VARINT_CONTINUES = 0x80
 
+/** The `Ok` acknowledgement event. */
+export const OK_EVENT = bytesField(EVENT_OK, Buffer.alloc(0))
+
+/** The liveness probe a serving relay sends between turns. */
+export const PING_EVENT = bytesField(EVENT_PING, Buffer.alloc(0))
+
 /**
  * A server that answers the session's `Configure` with a `RuntimeError`
- * naming `message`, as a server refusing a profile does, then hangs up.
+ * naming `message`, as a server refusing a profile does, then ends the stream.
  */
-export function refusingServer(message: string): (ws: WebSocket) => Promise<void> {
+export function refusingServer(message: string): (stream: Stream) => Promise<void> {
   return answerConfigure(
     bytesField(
       EVENT_ERROR,
@@ -129,16 +205,17 @@ export function refusingServer(message: string): (ws: WebSocket) => Promise<void
 }
 
 /** A draining server: answers `Configure` with a shutdown naming no stored session. */
-export function drainingServer(ws: WebSocket): Promise<void> {
-  return answerConfigure(bytesField(EVENT_SHUTDOWN, Buffer.alloc(0)))(ws)
+export function drainingServer(stream: Stream): Promise<void> {
+  return answerConfigure(bytesField(EVENT_SHUTDOWN, Buffer.alloc(0)))(stream)
 }
 
-/** Answers the first request with `reply` instead of running it, then closes. */
-function answerConfigure(reply: Buffer): (ws: WebSocket) => Promise<void> {
-  return async (ws) => {
-    for await (const _ of messages(ws)) {
-      ws.send(reply)
-      ws.close()
+/** Answers the first request with `reply` instead of running it, then ends the stream. */
+function answerConfigure(reply: Buffer): (stream: Stream) => Promise<void> {
+  return async (stream) => {
+    admit(stream)
+    for await (const _ of messages(stream)) {
+      stream.write(reply)
+      stream.end()
       return
     }
   }
@@ -147,24 +224,25 @@ function answerConfigure(reply: Buffer): (ws: WebSocket) => Promise<void> {
 /**
  * A fake of a server that stores sessions, as `_StoringServer` in the Python
  * tests. It names the session on the reply to `Configure` and to `Load`, and
- * does not run the third request of the first connection: the child is dumped,
+ * does not run the third request of the first stream: the child is dumped,
  * its state kept under the session's ID, and the request answered with
  * `ShutdownDump` naming that ID. A later `Load` of the ID gets the stored state.
  */
 export class StoringServer {
   private readonly records = new Map<string, Buffer>()
   private minted = 0
-  private connections = 0
+  private streams = 0
 
-  readonly handle = async (ws: WebSocket): Promise<void> => {
-    this.connections += 1
-    // request 1 is `Configure`, 2 the first feed; the first connection parks the next
-    const drainAt = this.connections === 1 ? 3 : null
+  readonly handle = async (stream: Stream): Promise<void> => {
+    admit(stream)
+    this.streams += 1
+    // request 1 is `Configure`, 2 the first feed; the first stream parks the next
+    const drainAt = this.streams === 1 ? 3 : null
     const child = new ChildFrames()
     let sessionId: Buffer | null = null
     let requests = 0
     try {
-      for await (let message of messages(ws)) {
+      for await (let message of messages(stream)) {
         requests += 1
         const fields = protoFields(message)
         if (requests === drainAt) {
@@ -176,8 +254,8 @@ export class StoringServer {
             sessionId!.toString('latin1'),
             protoFields(reply.get(EVENT_DUMP_RESULT)!).get(DUMP_RESULT_STATE)!,
           )
-          ws.send(bytesField(EVENT_SHUTDOWN, bytesField(SHUTDOWN_DUMP_DUMP, sessionId!)))
-          ws.close()
+          stream.write(bytesField(EVENT_SHUTDOWN, bytesField(SHUTDOWN_DUMP_DUMP, sessionId!)))
+          stream.end()
           return
         }
         const names = requests === 1 || fields.has(REQUEST_LOAD)
@@ -195,22 +273,23 @@ export class StoringServer {
             sessionId = Buffer.from(`sess-${this.minted}`)
             reply = Buffer.concat([reply, bytesField(EVENT_SESSION_ID, sessionId)])
           }
-          ws.send(reply)
+          stream.write(reply)
           if (kind !== EVENT_PRINT) break
         }
       }
+      stream.end()
     } finally {
       child.kill()
     }
   }
 }
 
-/** Sends the child's replies to `ws` up to and including the turn-ending one. */
-async function forwardReplies(child: ChildFrames, ws: WebSocket): Promise<void> {
+/** Sends the child's replies to `stream` up to and including the turn-ending one. */
+async function forwardReplies(child: ChildFrames, stream: Stream): Promise<void> {
   for (;;) {
     const reply = await child.next()
     if (reply === null) return
-    ws.send(reply)
+    stream.write(reply)
     const kind = Math.min(...[...protoFields(reply).keys()].filter((field) => field < FIRST_EVENT_FIELD))
     if (kind !== EVENT_PRINT) return
   }
@@ -248,6 +327,11 @@ class ChildFrames {
     this.child.stdin.write(Buffer.concat([prefix, frame]))
   }
 
+  /** Closes the child's stdin: it reads EOF as a clean end and exits. */
+  endInput(): void {
+    this.child.stdin.end()
+  }
+
   /** The next frame from the child, or `null` once its output ends. */
   async next(): Promise<Buffer | null> {
     while (this.frames.length === 0 && !this.ended) {
@@ -266,19 +350,22 @@ class ChildFrames {
   }
 }
 
-/** The connection's binary messages, ending when it closes. */
-async function* messages(ws: WebSocket): AsyncGenerator<Buffer> {
+/** The stream's request messages, ending when the pool half-closes or cancels it. */
+export async function* messages(stream: Stream): AsyncGenerator<Buffer> {
   const queue: Buffer[] = []
   let closed = false
   let wake: (() => void) | null = null
-  ws.on('message', (data) => {
-    queue.push(toBuffer(data))
+  stream.on('data', (data: Buffer) => {
+    queue.push(data)
     wake?.()
   })
-  ws.on('close', () => {
+  const finish = () => {
     closed = true
     wake?.()
-  })
+  }
+  stream.on('end', finish)
+  stream.on('close', finish)
+  stream.on('error', finish)
   for (;;) {
     while (queue.length === 0 && !closed) {
       await new Promise<void>((resolve) => (wake = resolve))
@@ -289,16 +376,12 @@ async function* messages(ws: WebSocket): AsyncGenerator<Buffer> {
   }
 }
 
-function toBuffer(data: RawData): Buffer {
-  return Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer)
-}
-
 /**
  * The top-level fields of one protobuf message, keyed by field number: the
  * bytes of a length-delimited field, and other wire types as their raw bytes.
  * Only what the fakes need, so a repeated field keeps its last value.
  */
-function protoFields(buf: Buffer): Map<number, Buffer> {
+export function protoFields(buf: Buffer): Map<number, Buffer> {
   const fields = new Map<number, Buffer>()
   let i = 0
   while (i < buf.length) {

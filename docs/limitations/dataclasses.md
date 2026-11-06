@@ -36,8 +36,8 @@ around a decoration will not catch these.
     imply.
 - **`InitVar[...]`** — raises
     `NotImplementedError: dataclass() does not yet support InitVar (field <name>), which would become an ordinary field`.
-    Detected textually, since annotations are never evaluated: the name need not
-    be imported to be rejected.
+    Matched by name in a string or unresolved (`ForwardRef`) annotation, Monty
+    having no `InitVar` object: the name need not be imported to be rejected.
 - **Every `field(...)` argument except `default` and `default_factory`** —
     `init`, `repr`, `hash`, `compare`, `metadata`, `kw_only` and `doc`. Setting one
     away from its CPython default raises
@@ -52,9 +52,8 @@ around a decoration will not catch these.
     `dataclasses._FIELD`), the objects behind them being unimplemented.
 - **Module helpers** — `fields`, `asdict`, `astuple` and `replace` do not exist: accessing them raises
     `AttributeError`, not `NotImplementedError`, since the module has no such attribute.
-- **`__match_args__` and `__replace__`** are never generated, so `C.__match_args__` and `C.__replace__` raise
-    `AttributeError` where CPython gives `('x', 'y')` and a method. Monty has no `match` statement to use the
-    first (see [language.md](language.md)), and `copy.replace` is covered in [copy.md](copy.md).
+- **`__replace__`** is never generated, so `C.__replace__` raises `AttributeError` where CPython gives a method;
+    `copy.replace` is covered in [copy.md](copy.md).
 
 Mutable defaults are rejected as CPython rejects them
 (`ValueError: mutable default <class 'list'> for field xs is not allowed: use default_factory`), and so is a non-default
@@ -63,18 +62,21 @@ field after a defaulted one
 
 ## Divergences from CPython
 
-- **Annotations are stringized.** Fields come from the class's
-    `__annotations__`, which Monty stores as never-evaluated source text (always
-    PEP 563); see [typing.md](typing.md). Field
-    discovery and the generated methods are unaffected, the field *type* being
-    inert metadata, but `C.__dataclass_fields__['x'].type` is the string `'int'`,
-    not the `int` type object.
+- **Annotations are evaluated at decoration, synchronously.** `@dataclass` reads
+    `annotationlib.get_annotations(cls, format=Format.FORWARDREF)` as CPython does, so `Field.type` is the evaluated
+    object, a `ForwardRef` for a name not yet defined, or the string a `from __future__ import annotations` class
+    stores (see [typing.md](typing.md#annotations)). The
+    evaluation runs in the synchronous position of `default_factory` below, so an annotation that calls an external
+    function raises `NotImplementedError` where CPython evaluates it.
+- **An annotation key that is not a string literal is skipped.** A `type()` namespace whose `__annotations__`
+    has a key such as `1` is decorated without it, where CPython raises
+    `TypeError: attribute name must be string, not 'int'`; a key built at run time (`'a' + b`) is skipped too,
+    where CPython makes it a field.
 - **`__dataclass_fields__` holds only real fields.** CPython keeps `ClassVar`
     (and `InitVar`) entries in the mapping, marked `_FIELD_CLASSVAR`, and filters
     them in `fields()`. Monty has no field kinds, so the mapping *is* the field
     list and class variables never appear in it.
-- **`Field` renders differently.** `repr(field)` follows CPython's layout but
-    writes the stringized `type`.
+- **`Field` renders differently.** `repr(field)` follows CPython's layout, but
     `repr(type(field))` is `<class 'Field'>`,
     not `<class 'dataclasses.Field'>` (`Field.__name__` matches either way, so
     attribute errors read the same).
@@ -89,13 +91,16 @@ field after a defaulted one
     `NotImplementedError: external function 'f' cannot suspend in this synchronous context`.
     The traceback identifies the calling code.
     Ordinary in-sandbox code in them runs normally.
-- **`ClassVar` / `InitVar` detection is purely textual.** Monty matches the
-    annotation text (bare, dotted, subscripted, or quoted) without checking that
-    the name is actually imported, where CPython resolves a *string* annotation
-    through the defining module's namespace. So `c: "ClassVar[int]"` without
-    `ClassVar` in scope is excluded by Monty but is an ordinary field to CPython.
-    Conversely any dotted spelling matches, so a same-named attribute on an
-    unrelated module (`mymod.ClassVar`) is treated as `typing.ClassVar`.
+- **A string or unresolved `ClassVar` / `InitVar` is matched by text.** A
+    `ClassVar` object or `ClassVar[...]` alias is recognised as in CPython. A
+    string or `ForwardRef` annotation is matched by its text (bare, dotted,
+    subscripted or quoted) without checking that the name is imported, where
+    CPython resolves a *string* annotation through the defining module's
+    namespace. So `c: "ClassVar[int]"` without `ClassVar` in scope is excluded by
+    Monty but is an ordinary field to CPython; any dotted spelling matches, so a
+    same-named attribute on an unrelated module (`mymod.ClassVar`) is treated as
+    `typing.ClassVar`; and an undefined `InitVar` is rejected where CPython would
+    make the field ordinary.
 - **A field holding a function or bound method reprs differently**, since
     Monty's own `repr` for those differs (see [classes.md](classes.md)). Only the
     text differs; the value and its equality match CPython.

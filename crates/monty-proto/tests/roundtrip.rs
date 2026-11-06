@@ -7,12 +7,13 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, ImportArgs,
-    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, ModuleFile, MontyDate, MontyDateTime, MontyException,
+    CodeLoc, CompileOptions, CreateExclusiveCallArgs, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
+    ImportArgs, JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, ModuleFile, MontyDate, MontyDateTime, MontyException,
     MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs,
     ProcessTime, RandomSeed, RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode,
-    SourceRange, StackFrame, TimeCaller, UnicodeErrorData, UrandomArgs, sleep_duration, sleep_duration_saturating,
+    SourceRange, StackFrame, TimeCaller, TypeHintsTarget, UnicodeErrorData, UrandomArgs, sleep_duration,
+    sleep_duration_saturating,
     unstable::{self, MontyGraph, MontyNode, NodeId},
 };
 use num_bigint::BigInt;
@@ -1061,6 +1062,8 @@ fn os_calls_round_trip_all_variants() {
             module: "pkg.sub".to_owned(),
             search_path: vec!["/proj/pkg".to_owned(), "/lib".to_owned()],
         }),
+        OsFunctionCall::GetTypeHints(TypeHintsTarget::Function("fetch".to_owned())),
+        OsFunctionCall::GetTypeHints(TypeHintsTarget::Class(MontyUuid::from_u128(7))),
     ]
     .into_iter()
     // every caller, so a new one cannot be added without a wire round trip
@@ -1140,6 +1143,58 @@ fn os_call_open_round_trips_all_modes() {
 }
 
 #[test]
+fn os_call_create_exclusive_round_trips_modes_and_permissions() {
+    for mode in ["r", "rb", "w", "wb", "a", "ab"] {
+        for permissions in [0, 0o600, 0o666] {
+            assert_os_call_round_trip(OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
+                path: "/mnt/new".into(),
+                mode: mode.parse().unwrap(),
+                permissions,
+            }));
+        }
+    }
+}
+
+#[test]
+fn os_call_create_exclusive_rejects_malformed_arguments() {
+    for mode in ["x", "w+", "", "invalid"] {
+        let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
+            path: "/mnt/new".to_owned(),
+            mode: mode.to_owned(),
+            permissions: 0o600,
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidFileMode(_))
+        ));
+    }
+    for permissions in [0o001, 0o010, 0o100, 0o777, 0o1000, 0o7777, u32::MAX] {
+        let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
+            path: "/mnt/new".to_owned(),
+            mode: "w".to_owned(),
+            permissions,
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidValue {
+                field: "CreateExclusive.permissions",
+                ..
+            })
+        ));
+    }
+    // An older schema discards the unknown arm. Conversion must reject a missing call,
+    // never reinterpret it as an ordinary open that could truncate an existing file.
+    let missing = pb::OsCall {
+        call: None,
+        ..Default::default()
+    };
+    assert!(matches!(
+        os_call_from_proto(missing),
+        Err(ProtoConvertError::MissingField("OsCall.call"))
+    ));
+}
+
+#[test]
 fn os_call_conversion_rejects_invalid_payloads() {
     // A bogus open mode the child could never produce.
     let bad_mode = pb::os_call::Call::Open(pb::os_call::Open {
@@ -1202,6 +1257,23 @@ fn a_stubs_ask_repeating_a_module_is_rejected() {
     assert_eq!(
         OsFunctionCall::try_from(call).unwrap_err().to_string(),
         "invalid value for ImportStubs.modules: module \"tools\" is asked about twice"
+    );
+}
+
+/// A `get_type_hints` ask needs a target, and a class id must be a 16-byte uuid.
+#[test]
+fn a_malformed_type_hints_ask_is_rejected() {
+    let call = |target| pb::os_call::Call::GetTypeHints(pb::os_call::GetTypeHints { target });
+    assert_eq!(
+        OsFunctionCall::try_from(call(None)).unwrap_err().to_string(),
+        "missing required field GetTypeHints.target"
+    );
+    let short_id = pb::os_call::get_type_hints::Target::ClassId(pb::Uuid {
+        data: vec![1, 2, 3].into(),
+    });
+    assert_eq!(
+        OsFunctionCall::try_from(call(Some(short_id))).unwrap_err().to_string(),
+        "invalid value for GetTypeHints.class_id: uuid must be 16 bytes, got 3"
     );
 }
 

@@ -174,6 +174,11 @@ Not every value crosses unchanged: unsupported sandbox values become strings, an
 are truncated.
 See [host-value limitations](limitations/host-values.md) for conversion failures, identity rules and size caps.
 
+`typing.get_type_hints(f)` in the sandbox asks a Python host for the function's type hints, which it evaluates only then.
+Builtin types on the [data-type allowlist](limitations/host-values.md#lossy-outputs) arrive as type objects and
+anything else as text; JavaScript functions have none.
+See [type hints](limitations/host-values.md#type-hints) for the conversion rules.
+
 ## Raising into the sandbox
 
 An exception raised by a host function crosses the boundary and behaves like an ordinary Python exception inside the
@@ -407,6 +412,8 @@ The bindings answer two [OS calls](snapshots.md#the-snapshot-kinds) from `extern
     Return a dict of dotted paths to `.pyi` sources, including submodules, with `None` for missing stubs.
 
 A host driving suspensions itself answers both like any other OS call.
+It also answers `typing.get_type_hints`, whose arguments are `('function', name)` or `('class', id)`, with a dict of
+hints; `NOT_HANDLED` gives `{}` (see [type hints](limitations/host-values.md#type-hints)).
 In Rust, `ImportArgs::candidates` lists the files to read and `find_module_file` runs the search; reply with
 `ExtFunctionResult::ModuleFile` only to an `import` with a non-empty search path, which a worker from a release before
 file imports never sends.

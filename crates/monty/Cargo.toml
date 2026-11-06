@@ -18,7 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 monty-macros = { workspace = true }
-monty-types = { workspace = true }
+monty-types = { workspace = true, features = ["cpu-clock"] }
 ruff_python_parser = { workspace = true }
 ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
@@ -45,7 +45,7 @@ memchr = { workspace = true }
 # `union` keeps `Tuple` within `HeapData`'s 56-byte 32-bit limit (heap_data.rs);
 # without it wasm32 builds that do not also link ty fail that assert
 smallvec = { version = "1.13", features = ["serde", "union"] }
-fancy-regex = "0.17.0"
+fancy-regex = "0.20.0"
 # worker-side uuid generation for sandbox-defined classes/instances crossing the
 # boundary; supports native and wasm32-wasip1 (WASI random)
 getrandom = "0.3"
@@ -80,3 +80,6 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[target.'cfg(any(unix, windows))'.dev-dependencies]
+cpu-time = { workspace = true }

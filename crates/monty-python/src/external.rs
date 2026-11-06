@@ -7,7 +7,8 @@ use monty_proto::python::{
     DecodedArena, InstanceStore, PyExternalModule, exc_py_to_monty, get_docstring, py_to_monty, py_to_monty_value,
 };
 use monty_types::{
-    CallArgs, ExtFunctionResult, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject, MontyUuid, NameLookupResult,
+    CallArgs, ExtFunctionResult, GET_TYPE_HINTS_CALL, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, MontyObject,
+    MontyUuid, NameLookupResult, TypeHintsTarget,
     unstable::{self, MontyNode},
     validate_module_name,
 };
@@ -18,9 +19,13 @@ use pyo3::{
     types::{PyDict, PyMapping, PyTuple, PyType},
 };
 
-use crate::{callback_context, exceptions::MontyConversionError};
+use crate::{
+    callback_context,
+    exceptions::MontyConversionError,
+    type_hints::{callable_type_hints, class_type_hints},
+};
 
-/// Resolves a feed's bare names, dotted module calls and module OS calls.
+/// Resolves a feed's bare names, dotted module calls and intercepted OS calls.
 /// Calls re-read the dict entry, so replacing a callable with a value raises `TypeError`.
 /// Returned `ClassInstance` wrappers register in the instance store.
 pub struct ExternalLookup<'a, 'py> {
@@ -162,24 +167,45 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Answers an `import` or `import_stubs` OS call (see [`is_module_call`])
-    /// from `external_modules`; `None` for any other call. A factory's
-    /// awaitable is an error here, as the sync pool cannot await it.
-    pub fn module_call(&self, function_name: &str, args: &CallArgs) -> Option<ExtFunctionResult> {
+    /// Answers an `import` or `import_stubs` OS call (see [`is_intercepted_os_call`])
+    /// from `external_modules`, or `typing.get_type_hints` from the host function
+    /// or class it names; `None` for any other call. A factory's awaitable is an
+    /// error here, as the sync pool cannot await it.
+    pub fn intercepted_os_call(&self, function_name: &str, args: &CallArgs) -> Option<ExtFunctionResult> {
         match function_name {
             IMPORT_CALL => Some(self.import_module(args)),
             IMPORT_STUBS_CALL => Some(self.import_stubs(args)),
+            GET_TYPE_HINTS_CALL => Some(self.type_hints(args)),
             _ => None,
         }
     }
 
-    /// Like [`module_call`](Self::module_call) but hands a factory's awaitable
+    /// Like [`intercepted_os_call`](Self::intercepted_os_call) but hands a factory's awaitable
     /// back as [`CallResult::ModuleCoroutine`] for the async loop to await.
-    pub fn module_call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> Option<CallResult> {
+    pub fn intercepted_os_call_or_coroutine(&self, function_name: &str, args: &CallArgs) -> Option<CallResult> {
         match function_name {
             IMPORT_CALL => Some(self.import_module_or_coroutine(args)),
             IMPORT_STUBS_CALL => Some(self.import_stubs_or_coroutine(args)),
+            GET_TYPE_HINTS_CALL => Some(CallResult::Sync(self.type_hints(args))),
             _ => None,
+        }
+    }
+
+    /// Answers `typing.get_type_hints` of a host function, resolved by name as a
+    /// call to it would be, or of a host class, by its registered wrapper. `{}`
+    /// when the target is malformed or no longer resolves; an exception evaluating
+    /// the hints is raised in the sandbox.
+    fn type_hints(&self, args: &CallArgs) -> ExtFunctionResult {
+        let hints = match TypeHintsTarget::from_call_args(args) {
+            Some(TypeHintsTarget::Function(name)) => self
+                .callable(&name)
+                .and_then(|callable| callable.map_or_else(|| Ok(MontyObject::dict([])), |c| callable_type_hints(&c))),
+            Some(TypeHintsTarget::Class(id)) => class_type_hints(self.py, self.instances, &id),
+            None => Ok(MontyObject::dict([])),
+        };
+        match hints {
+            Ok(hints) => ExtFunctionResult::Return(hints),
+            Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
         }
     }
 
@@ -467,10 +493,11 @@ impl HostModules {
     }
 }
 
-/// Identifies module OS calls, which take precedence over mounts and `os=`.
+/// Identifies intercepted OS calls (imports, stubs and type hints): the binding
+/// answers them from what the session was given, ahead of mounts and `os=`.
 /// Call only for OS events: an ordinary function named `import_stubs` is unrelated.
-pub(crate) fn is_module_call(function_name: &str) -> bool {
-    function_name == IMPORT_CALL || function_name == IMPORT_STUBS_CALL
+pub(crate) fn is_intercepted_os_call(function_name: &str) -> bool {
+    matches!(function_name, IMPORT_CALL | IMPORT_STUBS_CALL | GET_TYPE_HINTS_CALL)
 }
 
 /// An `external_modules` entry after its factory (if any) ran.

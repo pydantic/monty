@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     fmt::{self, Display, Write},
+    mem,
 };
 
 use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
@@ -11,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     fstring::{FormatError, ascii_escape},
-    heap::{DropWithContext, HeapData, HeapRead},
+    heap::{DropWithContext, HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     py_value::PyValue,
@@ -175,6 +176,31 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `typing.get_type_hints()` raises for an object that
+    /// is neither annotated nor callable: `5 does not have annotations`.
+    fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
+        match obj.py_repr(vm) {
+            Ok(repr_value) => {
+                defer_drop!(repr_value, vm);
+                let repr = repr_value
+                    .as_str(vm)
+                    .map_or_else(|| format!("<{}>", obj.py_type_name(vm)), str::to_owned);
+                Self::type_error(format!("{repr} does not have annotations"))
+            }
+            Err(err) => err,
+        }
+    }
+
+    /// Creates the SyntaxError `typing.get_type_hints()` raises for a forward
+    /// reference that does not compile as an expression, e.g. `' int'` or `'x = 1'`.
+    fn forward_ref_not_expression(source: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::SyntaxError,
+            format!("Forward reference must be an expression -- got {}", StringRepr(source)),
+        )
+        .into()
+    }
+
     /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
     /// between values whose types define no ordering, e.g. `1 < 'a'` or two
     /// instances of a user class without comparison dunders.
@@ -261,20 +287,23 @@ pub(crate) trait ExcTypeExt: Sized {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
+    /// An uncatchable error (a resource limit hit inside a user `__str__`) is
+    /// returned as is, so it cannot become a catchable `KeyError`.
     fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
-        let key_str = match key.py_str(vm) {
+        match key.py_str(vm) {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                if let Some(s) = key_value.as_str(vm) {
+                let key_str = if let Some(s) = key_value.as_str(vm) {
                     s.to_owned()
                 } else {
                     format!("<{}>", key.py_type_name(vm))
-                }
+                };
+                SimpleException::new_msg(ExcType::KeyError, key_str).into()
             }
-            Err(_) => format!("<{}>", key.py_type_name(vm)),
-        };
-        SimpleException::new_msg(ExcType::KeyError, key_str).into()
+            Err(err @ RunError::UncatchableExc(_)) => err,
+            Err(_) => SimpleException::new_msg(ExcType::KeyError, format!("<{}>", key.py_type_name(vm))).into(),
+        }
     }
 
     /// Creates a KeyError for popping from an empty set.
@@ -782,12 +811,27 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 
     /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{path}'`,
-    /// as raised by `os.chdir('')` without consulting the host.
+    /// as raised for an empty path without consulting the host.
     #[must_use]
     fn file_not_found_error(path: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::FileNotFoundError,
             format!("[Errno 2] No such file or directory: {}", StringRepr(path)),
+        )
+        .into()
+    }
+
+    /// Creates `FileNotFoundError: [Errno 2] No such file or directory: '{src}' -> '{dst}'`,
+    /// CPython's two-path form for `os.rename` / `os.replace` with an empty path.
+    #[must_use]
+    fn file_not_found_error_pair(src: &str, dst: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::FileNotFoundError,
+            format!(
+                "[Errno 2] No such file or directory: {} -> {}",
+                StringRepr(src),
+                StringRepr(dst)
+            ),
         )
         .into()
     }
@@ -1086,12 +1130,19 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for C PyTime_t").into()
     }
 
-    /// The `OverflowError` the `time` conversion functions raise for epoch
-    /// seconds outside the range a broken-down time can hold:
+    /// The `OverflowError` the `time` conversion functions and `fromtimestamp()`
+    /// raise for epoch seconds outside the range a broken-down time can hold:
     /// `timestamp out of range for platform time_t`.
     #[must_use]
     fn timestamp_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "timestamp out of range for platform time_t").into()
+    }
+
+    /// The `ValueError` CPython's time conversions raise for a NaN length or
+    /// timestamp: `Invalid value NaN (not a number)`.
+    #[must_use]
+    fn invalid_nan() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "Invalid value NaN (not a number)").into()
     }
 
     /// `time.mktime()`'s `OverflowError` for a wall clock it cannot place on
@@ -1215,6 +1266,20 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn allocation_too_large() -> RunError {
         SimpleException::new(ExcType::MemoryError, None).into()
+    }
+
+    /// Creates the OverflowError CPython raises when `str * n` would exceed
+    /// `Py_ssize_t` bytes (`'ab' * 2**62`).
+    #[must_use]
+    fn repeated_string_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated string is too long").into()
+    }
+
+    /// Creates the OverflowError CPython raises when `bytes * n` would exceed
+    /// `Py_ssize_t` bytes (`b'ab' * 2**62`).
+    #[must_use]
+    fn repeated_bytes_too_long() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "repeated bytes are too long").into()
     }
 
     /// Creates the ValueError `itertools.islice` raises for a non-positive or
@@ -2609,7 +2674,7 @@ impl ExcTypeExt for ExcType {
 ///
 /// This is used for performance reasons for common exception patterns.
 /// Exception messages use `String` for owned storage.
-#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
@@ -2617,6 +2682,41 @@ pub(crate) struct SimpleException {
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
     data: ExcData,
+    /// The chained exceptions; only the heap-resident object owns them. Boxed
+    /// because most exceptions have none and `HeapData` has a size ceiling.
+    #[serde(default)]
+    chain: Option<Box<ExceptionChain>>,
+}
+
+/// `Clone` rebuilds the copy without its [`ExceptionChain`]: a raw `HeapId` copied
+/// out of the heap object would be a second, uncounted owner. The chain lives on the
+/// raised heap object, which `raise` reuses, so it is only lost where an exception is
+/// rebuilt from a copy, such as after a nested synchronous call.
+impl Clone for SimpleException {
+    fn clone(&self) -> Self {
+        Self {
+            exc_type: self.exc_type,
+            arg: self.arg.clone(),
+            data: self.data.clone(),
+            chain: None,
+        }
+    }
+}
+
+/// An exception's `__cause__`, `__context__` and `__suppress_context__`.
+///
+/// Both references are owned by the heap-resident exception and released by its
+/// `py_dec_ref_ids`. Exceptions stay GC leaves, so a cycle through them
+/// (`raise e from e`) is only reclaimed with the session; `__context__` links
+/// that would loop are cut when attached, as CPython cuts them.
+#[derive(Debug, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ExceptionChain {
+    /// Owned: set by `raise ... from`.
+    cause: Option<HeapId>,
+    /// Owned: the exception being handled when this one was raised.
+    context: Option<HeapId>,
+    /// Set by `raise ... from`, hiding the context in a chained traceback.
+    suppress_context: bool,
 }
 
 impl fmt::Display for SimpleException {
@@ -2630,6 +2730,7 @@ impl From<MontyException> for SimpleException {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
             arg: exc.into_message(),
+            chain: None,
         }
     }
 }
@@ -2642,6 +2743,7 @@ impl SimpleException {
             exc_type,
             arg,
             data: ExcData::None,
+            chain: None,
         }
     }
 
@@ -2652,6 +2754,7 @@ impl SimpleException {
             exc_type,
             arg: Some(arg.to_string()),
             data: ExcData::None,
+            chain: None,
         }
     }
 
@@ -2662,6 +2765,7 @@ impl SimpleException {
             exc_type,
             arg: None,
             data: ExcData::None,
+            chain: None,
         }
     }
 
@@ -2692,15 +2796,43 @@ impl SimpleException {
             (_, None) => String::new(),
         }
     }
-}
 
-impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    /// The `__cause__`, borrowed.
+    pub(crate) fn cause(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.cause)
     }
-}
 
-impl SimpleException {
+    /// The `__context__`, borrowed.
+    pub(crate) fn context(&self) -> Option<HeapId> {
+        self.chain.as_ref().and_then(|chain| chain.context)
+    }
+
+    /// `__suppress_context__`: whether this exception was raised with `from`.
+    pub(crate) fn suppress_context(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| chain.suppress_context)
+    }
+
+    /// Replaces the cause with an owned reference and sets `__suppress_context__`,
+    /// returning the previous owned cause for the caller to release.
+    pub(crate) fn set_cause(&mut self, cause: Option<HeapId>) -> Option<HeapId> {
+        let chain = self.chain.get_or_insert_default();
+        chain.suppress_context = true;
+        mem::replace(&mut chain.cause, cause)
+    }
+
+    /// Replaces the context with an owned reference, returning the previous owned
+    /// context for the caller to release.
+    pub(crate) fn set_context(&mut self, context: Option<HeapId>) -> Option<HeapId> {
+        mem::replace(&mut self.chain.get_or_insert_default().context, context)
+    }
+
+    /// Both owned chain references, for `py_dec_ref_ids`.
+    pub(crate) fn owned_chain_ids(&self) -> impl Iterator<Item = HeapId> {
+        self.chain
+            .iter()
+            .flat_map(|chain| chain.cause.into_iter().chain(chain.context))
+    }
+
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         let type_str: &'static str = self.exc_type.into();
@@ -2737,27 +2869,46 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    /// Gets an attribute from this exception.
-    ///
-    /// Handles the `.args` attribute by allocating a tuple containing the message.
-    /// Returns `None` for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
-        // Fast path: interned strings can be matched by ID
-        let is_args = attr
-            .static_string(vm.interns)
-            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
+        Type::Exception(self.get(vm.heap).exc_type)
+    }
 
-        if is_args {
-            // Construct tuple with 0 or 1 elements based on whether arg exists
-            let elements = if let Some(arg_str) = &self.get(vm.heap).arg {
-                smallvec![allocate_string(arg_str.as_str(), vm.heap)]
-            } else {
-                smallvec![]
-            };
-            Some(CallResult::Value(allocate_tuple(elements, vm.heap)))
-        } else {
-            None
+    /// Gets an attribute from this exception: `args` (a tuple of the message, if
+    /// any), `__cause__`, `__context__` and `__suppress_context__`. Returns `None`
+    /// for all other attributes.
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
+        // Interned names match by ID; only `args` can also arrive as a dynamic string.
+        let name = attr.static_string(vm.interns);
+        let exc = self.get(vm.heap);
+        let value = match name {
+            Some(StaticStrings::DunderCause) => chained_value(exc.cause(), vm),
+            Some(StaticStrings::DunderContext) => chained_value(exc.context(), vm),
+            Some(StaticStrings::DunderSuppressContext) => Value::Bool(exc.suppress_context()),
+            Some(StaticStrings::Args) => args_tuple(exc.arg.as_deref(), vm),
+            None if attr.as_str(vm.interns) == "args" => args_tuple(exc.arg.as_deref(), vm),
+            _ => return None,
+        };
+        Some(CallResult::Value(value))
+    }
+}
+
+/// `exc.args`: a tuple holding the message, or empty.
+fn args_tuple(arg: Option<&str>, vm: &VM<'_>) -> Value {
+    let elements = match arg {
+        Some(arg) => smallvec![allocate_string(arg, vm.heap)],
+        None => smallvec![],
+    };
+    allocate_tuple(elements, vm.heap)
+}
+
+/// A new reference to a chained exception, or `None`.
+fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
+    match id {
+        Some(id) => {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
         }
+        None => Value::None,
     }
 }
 

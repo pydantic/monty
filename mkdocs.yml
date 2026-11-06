@@ -38,6 +38,7 @@ nav:
       - Type Checking: 'type-checking.md'
   - Reference:
       - Comparison to Alternatives: 'alternatives.md'
+      - Python Operators: 'operators.md'
       - Examples: 'examples.md'
       - Command Line: 'cli.md'
   - Limitations:
@@ -59,6 +60,7 @@ nav:
       - Format mini-language: 'limitations/format.md'
       - str.encode() / bytes.decode(): 'limitations/encoding.md'
       - typing: 'limitations/typing.md'
+      - annotationlib: 'limitations/annotationlib.md'
       - asyncio: 'limitations/asyncio.md'
       - Standard library modules: 'limitations/modules.md'
       - base64: 'limitations/base64.md'
@@ -89,7 +91,7 @@ nav:
   - API Docs:
       - Python:
           - Pools: 'api/python/pools.md'
-          - Websocket Client: 'api/python/websocket.md'
+          - Remote Client: 'api/python/remote.md'
           - Suspend & Resume: 'api/python/suspend_resume.md'
           - Host Objects: 'api/python/host_objects.md'
           - Filesystem & OS: 'api/python/os.md'

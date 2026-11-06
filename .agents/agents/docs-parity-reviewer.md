@@ -102,7 +102,7 @@ fix.
     list will not appear on the site.
 
 1. **Security framing is preserved.** Where the change touches mounts, host callbacks,
-    the worker boundary, resource limits or the WebSocket transport, `docs/security.md`
+    the worker boundary, resource limits or the remote transport, `docs/security.md`
     must still state the caveat honestly. Watch for a guarantee that has quietly become
     stronger in the prose than it is in the code.
 

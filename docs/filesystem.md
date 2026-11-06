@@ -82,6 +82,8 @@ Pass `cwd=` to switch to another absolute virtual path before a feed.
 Custom `os` callbacks in Python and JavaScript receive normalized absolute paths, with `.` and `..` collapsed.
 For example, `os.listdir()` passes `/data` when the cwd is `/data`, and `../secret` becomes `/secret`.
 Both rename arguments are normalized.
+An empty string path never reaches a callback or mount: `os.stat('')` and the like raise `FileNotFoundError` in the interpreter, and `os.path.exists('')` returns `False`.
+`Path('')` is `Path('.')`, as in CPython, so `Path('').exists()` checks the working directory.
 Check access rules against complete path components: a string prefix check can confuse `/data` with `/database`.
 Use `MountTable` for host filesystem access: normalization and prefix checks alone do not confine symlinks or prevent races.
 
@@ -232,6 +234,8 @@ Each feed starts with a fresh overlay.
 Validation happens at construction, not at feed time — a bad `virtual_path` raises immediately.
 Mounts are serviced by the host, including for remote workers; the worker never receives host paths.
 Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
+Each directory `mkdir` creates, parents included, counts as [`DIRECTORY_WRITE_BYTES`](api/rust/monty-fs.md#directory_write_bytes)
+(4,096 bytes) against `write_bytes_limit`.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
 nginx's `alias`), so requiring names removes the ambiguity.
@@ -281,8 +285,9 @@ Use host storage whose availability and side effects are acceptable for the work
 ## The `os` callback
 
 Operations no mount covers fall through to the `os=` handler, an [`OsHandler`][pydantic_monty.OsHandler].
-[Host module](host-functions.md#importing-host-modules) calls (`import` and `import_stubs`) use the checkout's
-`external_modules` and never reach this handler.
+Two kinds of call never reach this handler: [host module](host-functions.md#importing-host-modules) calls
+(`import` and `import_stubs`) are answered from the checkout's `external_modules`, and `typing.get_type_hints` of a
+host function or class is answered by that function or class.
 An import of a module the checkout does not provide reaches it first, before the mounts, as `Path.read_text` of
 `<cwd>/name/__init__.py` and `<cwd>/name.py` (see [importing modules](#importing-modules)): return the source of a
 file you serve, and answer one you do not with `NOT_HANDLED`, so the mounts are read next.
@@ -429,6 +434,10 @@ The write callback then receives the full content (existing plus appended) in th
 
 [`OSAccess`][pydantic_monty.OSAccess] backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed: content lives in host memory, path traversal cannot escape
 to real files, and `os.getenv` sees only the `environ` mapping you passed.
+Because that content lives in host memory, `OSAccess` caps all `MemoryFile` content, initial files included, at
+`max_total_file_bytes` (50 MB by default).
+A write past it raises `OSError` in the sandbox, and `None` removes the cap; see
+[write limits](limitations/filesystem.md#write-limits).
 
 [`CallbackFile`][pydantic_monty.CallbackFile] read and write callbacks run in the host and can reach real resources.
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback

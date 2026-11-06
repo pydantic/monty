@@ -8,7 +8,9 @@ use std::{
 use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_check_time};
+use super::{
+    DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple, list::repr_should_truncate,
+};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -1156,7 +1158,7 @@ impl<'h> HeapRead<'h, Dict> {
             defer_drop!(pair, vm);
             let (key, value) = pair;
             if printed > 0 {
-                if repr_check_time(printed, vm) {
+                if repr_should_truncate(printed, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
@@ -1204,7 +1206,7 @@ impl<'h> HeapRead<'h, Dict> {
         f.write_char('{')?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
-                if repr_check_time(n, vm) {
+                if repr_should_truncate(n, vm)? {
                     f.write_str(", ...[timeout]")?;
                     break;
                 }
@@ -1734,14 +1736,8 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
     let Some(HeapReadOutput::Dict(right_dict)) = right.read_heap(vm) else {
         return Ok(None);
     };
-    // `from_pairs` builds a fresh dict of exactly these pairs while the snapshot
-    // is still live, so charge both: copying a near-limit dict must raise
-    // `MemoryError` rather than jump past the allocator's hard ceiling. The
-    // growth term is exact here only because the destination starts empty.
     let left_len = left.get(vm.heap).len();
-    vm.heap.tracker.check_allocation(
-        left_len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()),
-    )?;
+    check_pairs_into_fresh_dict(left_len, vm)?;
     let pairs = left.clone_all_pairs(vm)?;
     let merged = Dict::from_pairs(pairs, vm)?;
     let mut merged_guard = DropGuard::new(merged, vm);
@@ -1842,6 +1838,17 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_>) -
 /// unknowable until the keys are compared.
 fn check_pair_snapshot(len: usize, vm: &VM<'_>) -> RunResult<()> {
     Ok(vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?)
+}
+
+/// Preflights a snapshot of `len` pairs and the fresh dict `from_pairs` builds
+/// from it while the snapshot is still live, so copying a near-limit mapping
+/// raises `MemoryError` rather than jumping past the allocator's hard ceiling.
+/// The growth term is exact only because the destination starts empty.
+pub(crate) fn check_pairs_into_fresh_dict(len: usize, vm: &VM<'_>) -> RunResult<()> {
+    Ok(vm
+        .heap
+        .tracker
+        .check_allocation(len.saturating_mul(2 * VALUE_SIZE + mem::size_of::<DictEntry>() + mem::size_of::<usize>()))?)
 }
 
 /// Merges key-value pairs from an iterable of 2-item iterables.

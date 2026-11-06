@@ -1041,7 +1041,7 @@ fn factorial(n: &BigInt, tracker: &ResourceTracker) -> RunResult<BigInt> {
     };
     let n = n.unsigned_abs();
     // `n!` has fewer than `n * bits(n)` bits.
-    check_product_size(n.saturating_mul(u64::from(u64::BITS - n.leading_zeros())), tracker)?;
+    check_product_size(n.saturating_mul(u64::from(n.bit_width())), tracker)?;
     product_range(2, n, &mut 0, tracker)
 }
 

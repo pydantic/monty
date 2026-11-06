@@ -28,7 +28,7 @@ use exceptions::CaughtException;
 pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
-pub(crate) use namespace::{FrameNamespace, function_namespace};
+pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
 use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
 use scheduler::Scheduler;
@@ -56,10 +56,11 @@ use crate::{
     name_map::NameMap,
     object_bridge::MontyObjectExt,
     os_dispatch::{
-        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, release_pending_effect, resolve_call_paths,
-        urandom_reply_error,
+        PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, check_raw_call_paths,
+        release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
+    py_value::PyValue,
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, PyTrait, SessionRandom,
@@ -1088,23 +1089,23 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Joins paths to cwd and rejects NUL bytes before yielding an OS call.
+    /// Rejects NUL-byte and empty paths, then joins the rest to cwd before yielding an OS call.
     /// Rejected calls release their pending effect; existence predicates finish locally.
     fn prepare_os_call(
         &mut self,
         mut call: OsFunctionCall,
         effect: Option<PendingEffect>,
     ) -> RunResult<Option<FrameExit>> {
-        resolve_call_paths(&mut call, &self.env.cwd);
-        if let Err(message) = call.check_path_null_bytes() {
+        if let Err(err) = check_raw_call_paths(&call) {
             release_pending_effect(effect, self.heap);
             if call.is_existence_check() {
                 self.push(Value::Bool(false));
                 Ok(None)
             } else {
-                Err(ExcType::value_error(message))
+                Err(err)
             }
         } else {
+            resolve_call_paths(&mut call, &self.env.cwd);
             // The effect is armed only after this exit is accepted for dispatch.
             Ok(Some(FrameExit::OsCall {
                 function_call: call,
@@ -1142,6 +1143,22 @@ impl<'h> VM<'h> {
         let result = self.run();
         self.heap.tracker.on_execution_stop();
         self.finish_host_turn(result)
+    }
+
+    /// Runs an export made after [`Self::run_external`] has returned, with the
+    /// execution clock running, so a user `__repr__` it calls counts towards
+    /// the time limits. Like `run_external` it must not nest: an export inside
+    /// the loop (`os.getenv`'s default) is already on the clock and calls
+    /// `export` directly.
+    pub(crate) fn export_on_clock<T>(&mut self, export: impl FnOnce(&mut Self) -> RunResult<T>) -> RunResult<T> {
+        self.heap.tracker.on_execution_start();
+        let result = export(self);
+        self.heap.tracker.on_execution_stop();
+        // A container repr truncates on timeout (`...[timeout]`) rather than failing.
+        result.and_then(|value| match self.heap.tracker.check_time() {
+            Ok(()) => Ok(value),
+            Err(err) => Err(err.into()),
+        })
     }
 
     /// Epilogue for every host-boundary execution window (here, and the
@@ -1501,31 +1518,19 @@ impl<'h> VM<'h> {
                 Opcode::UnaryNeg => try_catch!(self, self.unary_neg()),
                 Opcode::UnaryPos => try_catch!(self, self.unary_pos()),
                 Opcode::UnaryInvert => try_catch!(self, self.unary_invert()),
-                // In-place Operations - route through exception handling.
-                // `+=`/`-=`/`&=`/`|=` first try a true in-place `Counter` op
-                // (mutating the left operand); everything else — and the
-                // non-Counter fallback — reuses the binary implementation, since
-                // Monty's other types have no distinct in-place form.
+                // `+=`, `-=`, `*=`, `&=`, `|=`, and `^=` try mutation before binary fallback.
                 Opcode::InplaceAdd => try_catch!(self, self.inplace_add()),
                 Opcode::InplaceSub => try_catch!(self, self.inplace_sub()),
-                Opcode::InplaceMul => try_catch!(self, self.binary_mult()),
+                Opcode::InplaceMul => try_catch!(self, self.inplace_mult()),
                 Opcode::InplaceDiv => try_catch!(self, self.binary_div()),
                 Opcode::InplaceFloorDiv => try_catch!(self, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch!(self, self.binary_mod()),
                 Opcode::InplacePow => try_catch!(self, self.binary_pow()),
-                Opcode::InplaceAnd => {
-                    try_catch!(self, self.inplace_and());
-                }
+                Opcode::InplaceAnd => try_catch!(self, self.inplace_and()),
                 Opcode::InplaceOr => try_catch!(self, self.inplace_or()),
-                Opcode::InplaceXor => {
-                    try_catch!(self, self.binary_xor());
-                }
-                Opcode::InplaceLShift => {
-                    try_catch!(self, self.binary_lshift());
-                }
-                Opcode::InplaceRShift => {
-                    try_catch!(self, self.binary_rshift());
-                }
+                Opcode::InplaceXor => try_catch!(self, self.inplace_xor()),
+                Opcode::InplaceLShift => try_catch!(self, self.binary_lshift()),
+                Opcode::InplaceRShift => try_catch!(self, self.binary_rshift()),
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
                     let count = self.current_frame.fetch_u16() as usize;
@@ -1713,7 +1718,7 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let mut iter = self.heap.read(heap_id);
+                    let iter = self.heap.read(heap_id);
                     // A file nobody has read yet has no buffer to slice: load it from
                     // the host, then re-dispatch this instruction against the buffer.
                     if let HeapReadOutput::OpenFile(file) = &iter
@@ -1727,10 +1732,11 @@ impl<'h> VM<'h> {
                         continue;
                     }
 
+                    let mut iter = PyValue::from(iter);
                     match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
-                            // Drop the HeapRead before dec_ref to release the reader count
+                            // Release the iterator view before decrementing its owned reference.
                             drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
@@ -1914,6 +1920,14 @@ impl<'h> VM<'h> {
                         decode_assert_flags(self.current_frame.fetch_u8()).expect("invalid assert flags in bytecode");
                     let error = self.assert_failed_msg(cmp_op);
                     catch!(self, error);
+                }
+                Opcode::RaiseFrom => {
+                    let cause = self.pop();
+                    let exc = self.pop();
+                    if let Some(result) = self.raise_with_cause(exc, cause) {
+                        return Err(result);
+                    }
+                    yield_if_parked!(self);
                 }
                 Opcode::Reraise => {
                     // Clone rather than pop: a locally caught bare raise must
@@ -2460,7 +2474,7 @@ impl<'h> VM<'h> {
         should_return
     }
 
-    /// Releases what a finished frame owns: its stack region and namespace.
+    /// Releases what a finished frame owns: its stack region, open handlers and namespace.
     #[inline]
     fn cleanup_frame_state(&mut self, frame: CallFrame<'_>) {
         // Clean up frame's stack region (locals + operand stack, which now
@@ -2469,6 +2483,11 @@ impl<'h> VM<'h> {
         self.stack
             .drain(frame.stack_base()..)
             .for_each(|value| value.drop_with(&mut *self.heap));
+        // An exception unwinding out of a handler leaves that handler's entry
+        // behind; a later raise in the caller must not see it as being handled.
+        self.exception_stack
+            .drain(frame.exception_stack_base()..)
+            .drop_with(self.heap);
         // Almost every frame has no namespace; skip the release call for those.
         if let Some(namespace) = frame.namespace {
             namespace.drop_with(self.heap);

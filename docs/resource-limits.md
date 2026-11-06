@@ -44,7 +44,7 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
     }
     ```
 
-## The six settings
+## Settings
 
 | Key                      | Meaning                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
@@ -89,10 +89,9 @@ Containers a program grows one element at a time are pre-checked as well, at the
 rather than on every push: `list.append` and `list.insert`, `deque.append` and `deque.appendleft`, `set.add`, and
 assigning a new dict key.
 So are the value buffers a single call fills: the argument pack behind `f(*args)`, the array `json.loads` parses, the
-text `json.dumps` and `json.dump` build, the pieces `re.split` collects, and the list `re.findall` builds for a pattern
-with at most one capture group.
-A wider `findall`, and `re.finditer`, allocate an object per match and are not covered — see
-[the limitations note](limitations/resource_limits.md).
+text `json.dumps` and `json.dump` build, the pieces `str.split`, `bytes.split` and `re.split` collect, the matches
+`re.finditer` builds, and the list `re.findall` builds for a pattern with at most one capture group.
+A wider `findall` allocates a tuple per match and is not covered — see [the limitations note](limitations/resource_limits.md).
 
 A few integer operations carry their own caps regardless of `max_memory`:
 
@@ -102,9 +101,23 @@ A few integer operations carry their own caps regardless of `max_memory`:
 
 ## Time
 
-Both duration limits count **execution time**, not wall clock:
+Both duration limits count **execution time**.
 
-- The clock runs only while the interpreter executes bytecode.
+Wall mode counts elapsed time while the VM runs. It is the default.
+CPU mode uses the executing thread's CPU counter. It is supported only on Linux.
+Native OS counters exclude scheduling delays, CPU throttling, and work on other threads.
+Virtualized counters can approximate CPU consumption. gVisor can still misattribute time and report coarse samples.
+Local subprocess pools on macOS and Windows reject CPU mode, as do WebAssembly workers, which have no thread CPU counter.
+A remote client on any platform can still use a Linux server's CPU clock.
+Workers reject CPU configuration if the initial thread CPU counter read fails.
+If the counter later fails or reverses during execution, Monty conservatively charges elapsed time for that window.
+
+Cooperative checks reuse a CPU sample for at most 1 ms of elapsed time.
+A smaller remaining budget shortens that interval when the execution window starts.
+The VM takes a fresh sample at every execution boundary, even for shorter windows.
+Limit detection can overshoot by the polling interval, OS counter resolution, and work between checks.
+
+- The clock runs only while the interpreter executes bytecode or its native builtins.
 - It is paused while execution is suspended waiting on the host — a [host function](host-functions.md) that takes a
     minute costs nothing, and neither does a `time.sleep()` or `asyncio.sleep()`, which the host waits out.
     Under the default `'system'` sleep mode the pool charges those sleeps to `max_total_sleep_secs` instead, refusing
@@ -132,11 +145,14 @@ the checkout yourself.
 
 `max_feed_duration_secs` is serialized into [snapshots](snapshots.md), so a restored session resumes that budget rather
 than restarting from zero.
+Older snapshots retain their recorded consumption, including previously charged elapsed time.
+The snapshot stores its clock. Loading with a different configured clock fails.
+Snapshots without a clock field use wall time. No consumed budget is reset or estimated backwards.
 A snapshot is only ever taken between turns, so `max_turn_duration_secs` has nothing to carry.
 
 Reach for `max_feed_duration_secs` to keep a long-lived session responsive per request, and
 `max_turn_duration_secs` to bound one uninterrupted stretch of sandbox code, so a host driving the session gets control
-back within a known time.
+back after a bounded amount of execution. Use `request_timeout` for a wall deadline.
 Neither bounds how long a host callback itself may take: the clock is paused for exactly that, and a host that needs
 to bound its own waiting wants `request_timeout`.
 
@@ -156,7 +172,8 @@ Host-side deadlines cover that:
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on
-    every protocol turn, and the host kills the worker a grace period after the budget expires.
+    every protocol turn. The host uses the selected execution clock for the remaining budget plus grace.
+    Local CPU supervision reads the child's OS counter rather than trusting its reported time.
 
 The grace is what the sandbox gets to raise `TimeoutError` itself and keep the session alive; missing it costs the
 session, so set it well above how long a checkpoint may be away.
@@ -164,10 +181,52 @@ Each grace defaults to 1 second and is a pool option: `feed_duration_limit_grace
 in Python, `feedDurationLimitGrace` and `turnDurationLimitGrace` in JavaScript.
 `None` (`null` in JavaScript) disables that backstop, leaving only the in-sandbox check and `request_timeout`.
 
+The explicit `request_timeout` always uses wall time. CPU mode does not derive wall deadlines from CPU budgets.
+
 Set a duration limit for untrusted code that may suspend repeatedly; `request_timeout` alone does not bound the
 overall call.
 These deadlines are polled: synchronous host telemetry callbacks and decoding a large reply can delay enforcement.
 Neither deadline covers [host mount I/O](filesystem.md#io-timeouts-and-cancellation).
+
+### CPU execution clock
+
+Select `Monty(execution_clock='cpu', request_timeout=2)` in Python,
+`Monty.create({executionClock: 'cpu', requestTimeout: 2})` in JavaScript,
+or `PoolConfig::execution_clock = ExecutionClock::Cpu` in Rust.
+The pool applies this policy to every session. Session limits select numeric budgets, not clocks.
+Wall time remains the default. CPU mode requires a Linux subprocess worker and a finite local pool `request_timeout`.
+Local subprocess pools on macOS and Windows and WebAssembly workers reject CPU mode.
+
+The subprocess pool independently measures child process CPU, including compilation and protocol work during execution turns.
+It stops measuring at each completion or suspension. Host callback time is outside the window.
+The existing feed and turn grace settings use CPU time in this mode.
+Feed consumption and grace do not renew on resume.
+
+When a CPU backstop is active, the pool polls the child's CPU clock every 5 ms during execution turns.
+CPU exhaustion kills and reaps the worker. The explicit wall deadline handles blocked workers.
+A supervisor clock failure discards the worker instead of weakening enforcement.
+CPU mode needs `/proc` mounted for the pool's own PID namespace, as in a standard container; spawning a worker fails
+otherwise.
+The pool records the child's start time at spawn and checks it before acting on a reading, so another process's CPU
+time never decides a kill or charges the feed; a reused PID counts as a clock failure.
+OS counter resolution and scheduling can delay detection. This is approximate accounting, not a hard overshoot guarantee.
+
+Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
+Snapshots do not store protocol CPU or spent CPU grace separately.
+For remote sessions, the server's pool or profile selects the clock beside the actual child.
+Clients do not select or override it. The server reports its clock with the configuration reply.
+The client uses that metadata to avoid deriving wall deadlines from CPU budgets.
+Use clients that understand the clock metadata with CPU-mode server profiles for this noisy-neighbor protection.
+Older clients ignore this metadata and can retain premature wall-time backstops under contention.
+Default wall-mode servers remain compatible with those clients.
+A CPU-mode server requires a finite client `request_timeout`, independent of its own supervisor deadline.
+Python and Node remote clients default to 10 seconds. Rust clients have no default deadline.
+Choose this wall deadline for the expected budgets and scheduling delays.
+It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
+A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
+Local CPU pools require the child to acknowledge CPU mode before executing code.
+A remote client cannot independently measure a remote process.
+See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 
 ## Recursion
 
@@ -201,6 +260,13 @@ The session stays consistent and can be dumped; later feeds run until they suspe
 Restoring a dump preserves the limit but resets the count to zero; a `max_suspensions` set on the restoring checkout
 caps the dump's, so a worker cannot report a looser one.
 
+## Worker recycling
+
+Local pools replace a worker after 1000 checkouts, bounding how long a slow leak or a compromised worker survives.
+Set `max_checkouts_per_worker` (`maxCheckoutsPerWorker` in JavaScript) to change the count: `0` and `1` both give
+every session a fresh worker, and `None` (`null`) never recycles.
+Remote checkouts are single-use, so the count does not apply to them.
+
 ## What is not covered
 
 - **Compilation time.** Parsing and bytecode compilation happen before the VM exists and are not charged to the duration
@@ -226,6 +292,8 @@ caps the dump's, so a worker cannot report a looser one.
 - **Host entropy.** Python's `AbstractOS.urandom()` raises `MemoryError` before allocating when a request exceeds
     `max_urandom_bytes`, 1 MiB by default (`OSAccess(max_urandom_bytes=...)`).
     A custom entropy callback allocates in the host process, so it must apply its own cap.
+- **`OSAccess` files.** [`MemoryFile`][pydantic_monty.MemoryFile] content lives in the host process; `OSAccess` caps all of
+    it at `max_total_file_bytes` (50 MB) by default (see [write limits](limitations/filesystem.md#write-limits)).
 - **The host instance store.** Every [`ClassInstance`][pydantic_monty.ClassInstance]/[`ClassType`][pydantic_monty.ClassType] wrapper sent into a session (nested wrappers,
     `init=True` constructions and `convert_value` wraps included) is retained in the host process until the session
     ends; re-sending a wrapper with the same id reuses its entry, distinct wrappers accumulate; see

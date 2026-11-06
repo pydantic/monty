@@ -18,21 +18,21 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{
-        DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView, heap_read_ref_as_field,
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReader, HeapView,
+        heap_read_ref_as_field,
     },
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
-    resource_checks::{check_repeat_size, check_replace_size},
+    resource_checks::{check_repeat_size, check_replace_size, collect_checked, push_checked, repeated_len},
     str_format::str_format,
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
-        long_int::repeat_count,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{EitherStr, Value, eq_str},
+    value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
 
 /// Heap-backed Python string with cached hash and ASCII status.
@@ -187,6 +187,26 @@ impl PyObjectIdentity for PyStr<'_> {
 }
 
 impl<'h> PyTrait<'h> for PyStr<'h> {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+            Self::Inline(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
+            Self::Heap(value) => value.py_iter(vm),
+        }
+    }
+
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Interned(id) => Ok(Some(vm.interns.str_hash(*id))),
+            Self::Inline(text) => Ok(Some(hash_python_str(text.as_str()))),
+            Self::Heap(value) => value.py_hash(vm),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Str
     }
@@ -194,7 +214,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         match self {
             Self::Interned(id) => Value::InternString(*id).py_eq_impl(other, vm),
-            Self::Inline(text) => Ok(eq_str(text.as_str(), other, vm)),
+            Self::Inline(text) => Ok(text.eq_value(other, vm)),
             Self::Heap(value) => value.py_eq_impl(other, vm),
         }
     }
@@ -209,7 +229,14 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         match self {
-            Self::Interned(id) => Some(vm.interns.get_str(*id).chars().count()),
+            Self::Interned(id) => {
+                let text = vm.interns.get_str(*id);
+                Some(if vm.interns.str_is_ascii(*id) {
+                    text.len()
+                } else {
+                    text.chars().count()
+                })
+            }
             Self::Inline(text) => Some(text.as_str().chars().count()),
             Self::Heap(value) => value.py_len(vm),
         }
@@ -228,7 +255,10 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
     }
 
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_str(self.as_str(vm), other, vm)
+        let Some(count) = other.py_value(vm).repeat_count(vm)? else {
+            return Ok(None);
+        };
+        repeat_str(self.as_str(vm), count, vm)
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -243,9 +273,9 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         match self {
             Self::Interned(id) => {
                 let text = vm.interns.get_str(*id);
-                str_getitem(&*vm.heap.protect(text), text.is_ascii(), key, vm)
+                str_getitem(&*vm.heap.protect(text), vm.interns.str_is_ascii(*id), key, vm)
             }
-            Self::Inline(text) => str_getitem(text, text.as_str().is_ascii(), key, vm),
+            Self::Inline(text) => str_getitem(text, text.as_bytes().is_ascii(), key, vm),
             Self::Heap(value) => value.py_getitem(key, vm),
         }
     }
@@ -344,13 +374,25 @@ pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
     Value::Ref(heap.allocate(HeapData::Str(Str::new(s.into()))))
 }
 
-/// Converts a native integer count and preflights the repeated string allocation.
-fn repeat_str(value: &str, count: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    let Some(count) = repeat_count(count, vm)? else {
-        return Ok(None);
-    };
+/// Preflights the repeated string allocation.
+///
+/// Raises CPython's `OverflowError` past `isize::MAX` bytes and `MemoryError` when the
+/// allocator refuses, where `str::repeat` would panic or abort with no memory limit set.
+fn repeat_str(value: &str, count: usize, vm: &VM<'_>) -> RunResult<Option<Value>> {
+    let total = repeated_len(value.len(), count, 1).map_err(|_| ExcType::repeated_string_too_long())?;
     check_repeat_size(value.len(), count, &vm.heap.tracker)?;
-    Ok(Some(allocate_string(value.repeat(count), vm.heap)))
+    let mut repeated = String::new();
+    repeated
+        .try_reserve_exact(total)
+        .map_err(|_| ExcType::allocation_too_large())?;
+    if total > 0 {
+        // Doubling copies: each pass appends a whole number of copies, so every cut is a char boundary.
+        repeated.push_str(value);
+        while repeated.len() < total {
+            repeated.extend_from_within(..repeated.len().min(total - repeated.len()));
+        }
+    }
+    Ok(Some(allocate_string(repeated, vm.heap)))
 }
 
 /// Creates a single-character string without allocating.
@@ -386,19 +428,22 @@ pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value
 ///
 /// Negative indices count from the end: -1 is the last character.
 pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
-    let char_count = if ascii { s.len() } else { s.chars().count() };
-    let len = i64::try_from(char_count).ok()?;
-    let normalized = if index < 0 { index + len } else { index };
-
-    if normalized < 0 || normalized >= len {
-        return None;
-    }
-
-    let idx = usize::try_from(normalized).ok()?;
     if ascii {
-        Some(char::from(s.as_bytes()[idx]))
+        let offset = if index < 0 {
+            s.len().checked_sub(usize::try_from(index.unsigned_abs()).ok()?)?
+        } else {
+            usize::try_from(index).ok()?
+        };
+        s.as_bytes().get(offset).copied().map(char::from)
+    } else if index == -1 {
+        s.chars().next_back()
+    } else if index < 0 {
+        // Forward skipping is faster than reverse traversal for distant offsets.
+        let length = s.chars().count();
+        let offset = usize::try_from(index.unsigned_abs()).ok()?;
+        s.chars().nth(length.checked_sub(offset)?)
     } else {
-        s.chars().nth(idx)
+        s.chars().nth(usize::try_from(index).ok()?)
     }
 }
 
@@ -428,7 +473,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::Value(StringIterator::from_heap(
             self.id(),
-            self.get(vm.heap).as_str().is_ascii(),
+            self.get(vm.heap).is_ascii(),
             vm,
         )))
     }
@@ -481,14 +526,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
         str_add(self.get(vm.heap).as_str(), other, vm)
     }
 
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        repeat_str(self.get(vm.heap).as_str(), other, vm)
-    }
-
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.py_mul_impl(other, vm)
-    }
-
     /// `str % args` is printf-style formatting, see `percent_format`.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let template = copy_format_template(self.get(vm.heap).as_str(), &vm.heap.tracker)?;
@@ -523,6 +560,22 @@ fn str_getitem<'h>(s: &impl HeapView<'h, str>, ascii: bool, key: &Value, vm: &mu
         && let HeapData::Slice(slice) = vm.heap.get(*id)
     {
         let text = s.get(vm.heap);
+        if slice.step.unwrap_or(1) == 1 {
+            let length = if ascii { text.len() } else { text.chars().count() };
+            let (start, stop, _) = slice.indices(length)?;
+            if start >= stop {
+                return Ok(allocate_string("", vm.heap));
+            }
+            let start = usize::try_from(start).expect("normalized slice start");
+            let stop = usize::try_from(stop).expect("normalized slice stop");
+            let result = if ascii {
+                &text[start..stop]
+            } else {
+                slice_string(text, start, stop)
+            };
+            // Contiguous slices copy UTF-8 directly, without collecting characters.
+            return Ok(allocate_string(result, vm.heap));
+        }
         let result: Box<str> = if ascii {
             // Byte iterators count and skip in O(1), unlike `chars()`.
             slice_collect_iterator(vm, slice, text.bytes(), char::from)?
@@ -914,8 +967,7 @@ fn str_isdecimal(s: &str) -> bool {
 /// Returns the lowest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
 fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.find", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.find", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.find('', 4) == -1`
         return Ok(Value::Int(-1));
@@ -938,8 +990,7 @@ fn str_find<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) ->
 /// Returns the highest index in the string where substring sub is found within
 /// the slice s[start:end]. Returns -1 if sub is not found.
 fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.rfind", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.rfind", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.rfind('', 4) == -1`
         return Ok(Value::Int(-1));
@@ -961,8 +1012,7 @@ fn str_rfind<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 ///
 /// Like find(), but raises ValueError when the substring is not found.
 fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.index", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.index", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.index('', 4)` raises `ValueError`
         return Err(ExcType::value_error_substring_not_found());
@@ -983,8 +1033,7 @@ fn str_index<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 ///
 /// Like rfind(), but raises ValueError when the substring is not found.
 fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.rindex", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.rindex", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` finds nothing: `'abc'.rindex('', 4)` raises `ValueError`
         return Err(ExcType::value_error_substring_not_found());
@@ -1006,8 +1055,7 @@ fn str_rindex<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
 /// Returns the number of non-overlapping occurrences of substring sub in
 /// the string s[start:end].
 fn str_count<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (sub, range) = parse_search_args("str.count", str_len, args, vm)?;
+    let (sub, range) = parse_search_args("str.count", s, args, vm)?;
     let Some((start, end)) = range else {
         // `start` past `end` counts nothing: `'abc'.count('', 2, 1) == 0`
         return Ok(Value::Int(0));
@@ -1054,7 +1102,6 @@ fn str_starts_ends_with<'h>(
     args: ArgValues,
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
     let [affix, rest @ ..] = pos.as_slice() else {
@@ -1063,7 +1110,7 @@ fn str_starts_ends_with<'h>(
     if rest.len() > 2 {
         return Err(ExcType::type_error_at_most(method, 3, pos.len()));
     }
-    let Some((start, end)) = search_range(rest.first(), rest.get(1), str_len, vm)? else {
+    let Some((start, end)) = string_search_range(s, rest, vm)? else {
         // `start` past `end` matches nothing, but each affix is still type-checked
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
@@ -1120,23 +1167,38 @@ fn affix_matches(
 ///
 /// Returns the substring and the `(start, end)` character range to search, or
 /// `None` for a `start` past `end`, where nothing is found (see [`search_range`]).
-fn parse_search_args(
+fn parse_search_args<'h>(
     method: &str,
-    str_len: usize,
+    s: &impl HeapView<'h, str>,
     args: ArgValues,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<(String, SearchRange)> {
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
     match pos.as_slice() {
         [sub_value, bounds @ ..] if bounds.len() <= 2 => {
             let sub = extract_string_arg(sub_value, vm)?;
-            let range = search_range(bounds.first(), bounds.get(1), str_len, vm)?;
+            let range = string_search_range(s, bounds, vm)?;
             Ok((sub, range))
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
     }
+}
+
+/// Normalizes explicit character bounds; entirely omitted/`None` bounds return `(0, usize::MAX)`.
+/// `slice_string` treats that sentinel as the original UTF-8 without counting characters.
+fn string_search_range<'h>(s: &impl HeapView<'h, str>, bounds: &[Value], vm: &mut VM<'h>) -> RunResult<SearchRange> {
+    if bounds.iter().all(|bound| matches!(bound, Value::None)) {
+        return Ok(Some((0, usize::MAX)));
+    }
+    let text = s.get(vm.heap);
+    let length = if text.is_ascii() {
+        text.len()
+    } else {
+        text.chars().count()
+    };
+    search_range(bounds.first(), bounds.get(1), length, vm)
 }
 
 /// Extracts a string from a Value, returning an error if not a string.
@@ -1171,6 +1233,10 @@ fn extract_c_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i32> {
 
 /// Returns a substring of s from character index start to end; ASCII text is sliced by byte offset.
 fn slice_string(s: &str, start: usize, end: usize) -> &str {
+    // Omitted bounds refer to the original UTF-8, without a character-count scan.
+    if start == 0 && end == usize::MAX {
+        return s;
+    }
     if start >= end {
         return "";
     }
@@ -1292,6 +1358,9 @@ fn str_removesuffix<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM
 fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+    // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
+    let mut items_guard = DropGuard::new(Vec::new(), vm);
+    let (list_items, vm) = items_guard.as_parts_mut();
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1301,32 +1370,37 @@ fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                s.split(sep.as_str()).collect()
+                collect_checked(s.split(sep.as_str()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                s.splitn(max.saturating_add(1), sep.as_str()).collect()
+                collect_checked(s.splitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?
             }
         }
         None => {
             // Split on whitespace, filtering empty strings
             if maxsplit < 0 {
-                s.split(is_space).filter(|part| !part.is_empty()).collect()
+                collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                split_whitespace_n(s, max)
+                split_whitespace_n(s, max, &vm.heap.tracker)?
             }
         }
     };
 
     // Convert to list of strings (using interned empty string when applicable)
-    let mut list_items = Vec::with_capacity(parts.len());
+    vm.heap
+        .tracker
+        .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
     }
 
+    let (list_items, vm) = items_guard.into_parts();
     let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
@@ -1339,6 +1413,9 @@ fn str_split<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -
 fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
     let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
+    // Guarded before the subject borrow, so a limit error mid-loop releases the pieces built so far.
+    let mut items_guard = DropGuard::new(Vec::new(), vm);
+    let (list_items, vm) = items_guard.as_parts_mut();
     let s = s.get(vm.heap);
 
     let parts: Vec<&str> = match &sep {
@@ -1348,11 +1425,13 @@ fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                s.rsplit(sep.as_str()).collect::<Vec<_>>().into_iter().rev().collect()
+                let mut parts = collect_checked(s.rsplit(sep.as_str()), &vm.heap.tracker)?;
+                parts.reverse();
+                parts
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                let mut parts: Vec<_> = s.rsplitn(max.saturating_add(1), sep.as_str()).collect();
+                let mut parts = collect_checked(s.rsplitn(max.saturating_add(1), sep.as_str()), &vm.heap.tracker)?;
                 parts.reverse();
                 parts
             }
@@ -1360,22 +1439,27 @@ fn str_rsplit<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'h>) 
         None => {
             // Split on whitespace from right
             if maxsplit < 0 {
-                s.split(is_space).filter(|part| !part.is_empty()).collect()
+                collect_checked(s.split(is_space).filter(|part| !part.is_empty()), &vm.heap.tracker)?
             } else {
                 // Safe cast: we've checked maxsplit >= 0
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                rsplit_whitespace_n(s, max)
+                rsplit_whitespace_n(s, max, &vm.heap.tracker)?
             }
         }
     };
 
     // Convert to list of strings (using interned empty string when applicable)
-    let mut list_items = Vec::with_capacity(parts.len());
+    vm.heap
+        .tracker
+        .check_allocation(parts.len().saturating_mul(VALUE_SIZE))?;
+    // `with_capacity` allocates directly; `reserve` on the empty guarded `Vec` takes the grow path.
+    *list_items = Vec::with_capacity(parts.len());
     for (i, part) in parts.into_iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         list_items.push(allocate_string(part, vm.heap));
     }
 
+    let (list_items, vm) = items_guard.into_parts();
     let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
@@ -1420,14 +1504,18 @@ struct RsplitArgs {
 }
 
 /// Split string on whitespace, returning at most `maxsplit + 1` parts.
-fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
+fn split_whitespace_n<'a>(
+    s: &'a str,
+    maxsplit: usize,
+    tracker: &ResourceTracker,
+) -> Result<Vec<&'a str>, ResourceError> {
     let mut parts = Vec::new();
     let mut remaining = s.trim_start_matches(is_space);
     let mut count = 0;
 
     while !remaining.is_empty() && count < maxsplit {
         if let Some(end) = remaining.find(is_space) {
-            parts.push(&remaining[..end]);
+            push_checked(&mut parts, &remaining[..end], tracker)?;
             remaining = remaining[end..].trim_start_matches(is_space);
             count += 1;
         } else {
@@ -1436,14 +1524,18 @@ fn split_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     }
 
     if !remaining.is_empty() {
-        parts.push(remaining);
+        push_checked(&mut parts, remaining, tracker)?;
     }
 
-    parts
+    Ok(parts)
 }
 
 /// Split string on whitespace from the right, returning at most `maxsplit + 1` parts.
-fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
+fn rsplit_whitespace_n<'a>(
+    s: &'a str,
+    maxsplit: usize,
+    tracker: &ResourceTracker,
+) -> Result<Vec<&'a str>, ResourceError> {
     let mut parts = Vec::new();
     let mut remaining = s.trim_end_matches(is_space);
     let mut count = 0;
@@ -1451,7 +1543,7 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     while !remaining.is_empty() && count < maxsplit {
         if let Some(start) = remaining.rfind(is_space) {
             let ws_len = remaining[start..].chars().next().unwrap().len_utf8();
-            parts.push(&remaining[start + ws_len..]);
+            push_checked(&mut parts, &remaining[start + ws_len..], tracker)?;
             remaining = remaining[..start].trim_end_matches(is_space);
             count += 1;
         } else {
@@ -1460,11 +1552,11 @@ fn rsplit_whitespace_n(s: &str, maxsplit: usize) -> Vec<&str> {
     }
 
     if !remaining.is_empty() {
-        parts.push(remaining);
+        push_checked(&mut parts, remaining, tracker)?;
     }
 
     parts.reverse();
-    parts
+    Ok(parts)
 }
 
 /// Implements Python's `str.splitlines(keepends?)` method.
@@ -1485,9 +1577,11 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
     };
 
     let keepends = parse_splitlines_args(args, vm)?;
+    // Guarded before the subject borrow, so a limit error mid-loop releases the lines built so far.
+    let mut lines_guard = DropGuard::new(Vec::new(), vm);
+    let (lines, vm) = lines_guard.as_parts_mut();
     let s = s.get(vm.heap);
 
-    let mut lines = Vec::new();
     let mut start = 0;
     let bytes = s.as_bytes();
     let len = bytes.len();
@@ -1527,11 +1621,17 @@ fn str_splitlines<'h>(s: &impl HeapView<'h, str>, args: ArgValues, vm: &mut VM<'
 
         let line = if keepends { &s[start..end] } else { &s[start..line_end] };
 
+        // Empty and short lines cost no heap entry, so the per-item poll alone
+        // cannot stop the buffer's own doubling crossing the hard limit.
+        vm.heap
+            .tracker
+            .check_growth(lines.len(), lines.capacity(), VALUE_SIZE)?;
         lines.push(allocate_string(line, vm.heap));
 
         start = end;
     }
 
+    let (lines, vm) = lines_guard.into_parts();
     let list = super::List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list));
     Ok(Value::Ref(heap_id))
@@ -2006,13 +2106,13 @@ pub(crate) struct StringIterator {
 impl StringIterator {
     /// Allocates an iterator over an interned string.
     pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> Value {
-        let ascii = vm.interns.get_str(id).is_ascii();
+        let ascii = vm.interns.str_is_ascii(id);
         Self::allocate(StringIteratorSource::Intern(id), ascii, vm)
     }
 
     /// Allocates an iterator over a string stored inside its `Value`.
     pub(crate) fn from_inline(text: InlineStr, vm: &mut VM<'_>) -> Value {
-        Self::allocate(StringIteratorSource::Inline(text), text.as_str().is_ascii(), vm)
+        Self::allocate(StringIteratorSource::Inline(text), text.as_bytes().is_ascii(), vm)
     }
 
     /// Allocates an iterator retaining a heap string.
@@ -2154,6 +2254,66 @@ mod tests {
     }
 
     #[test]
+    fn comparisons_agree_across_string_storage_kinds() {
+        let texts = [
+            "",
+            "\0",
+            "\0\0",
+            "a",
+            "a\0",
+            "a\0\0",
+            "1234",
+            "1235",
+            "é",
+            "é\0",
+            "🐍",
+            "éééééééa",
+            "abcdefghijklmno",
+            "abcdefghijklmn",
+            "\u{e000}",
+            "\u{10000}",
+        ];
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let ids: Vec<_> = {
+            let mut interns = crate::intern::CompileInterns::direct(&mut tables.interns);
+            texts.iter().map(|text| interns.intern(text)).collect()
+        };
+
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            let values: Vec<_> = texts
+                .iter()
+                .zip(ids)
+                .flat_map(|(text, id)| {
+                    [
+                        Value::InternString(id),
+                        Value::InlineString(InlineStr::new(text).unwrap()),
+                        allocate_string_on_heap(*text, vm.heap),
+                    ]
+                })
+                .collect();
+            defer_drop!(values, vm);
+
+            for lhs in values {
+                for rhs in values {
+                    let expected = lhs.as_str(vm) == rhs.as_str(vm);
+                    assert_eq!(lhs.py_eq_impl(rhs, vm).unwrap(), Some(expected));
+                    assert_eq!(lhs.py_eq_operator(rhs, vm).unwrap(), expected);
+                    let view = PyStr::from_value(lhs, vm).unwrap();
+                    assert_eq!(view.py_eq_impl(rhs, vm).unwrap(), Some(expected));
+                    let order = lhs.as_str(vm).unwrap().cmp(rhs.as_str(vm).unwrap());
+                    assert_eq!(lhs.py_cmp(rhs, vm).unwrap(), CmpOrder::Ordered(order));
+                }
+                assert_eq!(lhs.py_eq_impl(&Value::Int(7), vm).unwrap(), None);
+                let view = PyStr::from_value(lhs, vm).unwrap();
+                assert_eq!(view.py_eq_impl(&Value::Int(7), vm).unwrap(), None);
+            }
+        });
+    }
+
+    #[test]
     fn string_views_preserve_identity_and_content_across_storage_kinds() {
         let mut heap = Heap::new(16, ResourceTracker::default());
         let mut tables = SessionTables::default();
@@ -2187,3 +2347,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/format_template.rs"]
+mod format_template_tests;

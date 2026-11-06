@@ -134,6 +134,8 @@ The sandbox runs the file as the module and caches it for the session.
 `ExtFunctionResult::NotFound` (what `OsFunctionCall::no_handler_result` answers), or running without a host, raises
 `ModuleNotFoundError`; an exception the host raises for the import is raised as it is.
 The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the interpreter never raises it.
+`typing.get_type_hints()` of a host function or class suspends with `OsFunctionCall::GetTypeHints`; the host's dict
+answer is the call's result, and running without a host gives `{}`.
 
 ## Other pieces
 
@@ -156,6 +158,8 @@ The worker requests module type stubs through `OsFunctionCall::ImportStubs`; the
   Defaults use the system clock, UTC and OS entropy, with sleeps capped at ten seconds.
   System sleeps suspend for the host to wait without its `os` handler; standard execution waits inline.
   `CallHost` delegates to the host through `RunProgress::OsCall`.
+  A loaded dump keeps the policy it was taken under until the host calls `MontyRepl::set_os_policy` or
+  `ReplProgress::set_os_policy`; the worker applies the restoring checkout's policy this way.
 
 ## Monty crates
 

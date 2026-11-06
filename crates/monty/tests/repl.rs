@@ -205,6 +205,29 @@ fn repl_persists_state_and_definitions() {
     assert_eq!(output, MontyObject::int(42));
 }
 
+/// `from __future__ import annotations` in one feed governs every later feed, as
+/// in CPython's interactive mode, including after a dump round trip.
+#[test]
+fn repl_future_annotations_persist_across_feeds() {
+    let (mut repl, _) = init_repl("from annotationlib import get_annotations");
+    feed_run_print(&mut repl, "def before(x: 'Foo'): pass").unwrap();
+    feed_run_print(&mut repl, "from __future__ import annotations").unwrap();
+    let mut repl = round_trip_repl(&repl);
+    feed_run_print(&mut repl, "def after(x: 'Foo'): pass").unwrap();
+    let output = feed_run_print(&mut repl, "(get_annotations(before)['x'], get_annotations(after)['x'])").unwrap();
+    assert_eq!(
+        output,
+        MontyObject::tuple([MontyObject::string("Foo"), MontyObject::string("'Foo'")])
+    );
+
+    // A host `call_function` of `exec` runs in a synthetic frame that carries the flag too.
+    feed_run_print(&mut repl, "run = exec").unwrap();
+    let source = MontyObject::string("def called(x: 'Foo'): pass");
+    repl.call_function("run", vec![source], PrintWriter::Stdout).unwrap();
+    let output = feed_run_print(&mut repl, "get_annotations(called)['x']").unwrap();
+    assert_eq!(output, MontyObject::string("'Foo'"));
+}
+
 #[test]
 fn repl_function_redefinition_uses_latest_definition() {
     let (mut repl, init_output) = init_repl("");
@@ -3011,6 +3034,20 @@ fn repl_failed_exec_locals_snapshot_releases_globals() {
         feed_run_print(&mut repl, "ns = None\ngc.collect()").unwrap();
         assert_eq!(repl.heap_entry_count(), baseline);
     }
+}
+
+/// A resource limit hit by a user `__repr__` while a host-driven call's return
+/// value is exported fails the call, rather than becoming a repr string.
+#[test]
+fn repl_call_function_return_export_propagates_memory_error() {
+    let (mut repl, _) = init_repl(
+        "import functools\nclass R:\n    def __repr__(self):\n        return 'x' * 10_000_000\ndef make():\n    return functools.partial(print, R())",
+    );
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(1024 * 1024));
+    let error = repl.call_function("make", vec![], PrintWriter::Disabled).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    *repl.tracker_mut() = ResourceTracker::default();
+    assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::int(2));
 }
 
 /// Rejected snippets retain diagnostic locations without committing their source or intern IDs.

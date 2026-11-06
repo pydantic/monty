@@ -2,35 +2,37 @@
 //! headline scenarios: a worker dying mid-execution (kill, crash, timeout)
 //! must surface as a clean error and never poison the pool.
 
+mod binary;
 mod common;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_dir;
+#[cfg(target_os = "linux")]
+use std::{env, ffi::OsStr, os::unix::ffi::OsStrExt};
 use std::{
-    env,
     fmt::Write as _,
     fs,
     future::ready,
     io,
     path::{Path, PathBuf},
     process::Command,
-    sync::Once,
     thread,
     time::Duration,
 };
-#[cfg(target_os = "linux")]
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 use insta::assert_snapshot;
 use monty_pool::{
-    MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-    on_print_sync,
+    Checkout, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture,
+    ReplConfig, ResumeValue, TurnEvent, on_print_sync,
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
+// only the off-Linux CPU rejection test names the clock; Linux CPU tests import their own
+#[cfg(not(target_os = "linux"))]
+use monty_types::ExecutionClock;
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
@@ -43,33 +45,7 @@ use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
 
-use crate::common::wait_for_idle;
-
-/// Locates (building once if needed) the `monty` CLI binary for tests.
-fn monty_binary() -> PathBuf {
-    static BUILD: Once = Once::new();
-    if let Ok(path) = env::var("MONTY_TEST_BIN") {
-        return PathBuf::from(path);
-    }
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_owned();
-    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(|| workspace.join("target"), PathBuf::from);
-    let path = target.join("debug").join(format!("monty{}", env::consts::EXE_SUFFIX));
-    BUILD.call_once(|| {
-        if !path.exists() {
-            let status = Command::new(env!("CARGO"))
-                .args(["build", "-p", "monty-runtime"])
-                .status()
-                .expect("failed to run cargo build -p monty-runtime");
-            assert!(status.success(), "building the monty binary failed");
-        }
-    });
-    assert!(path.exists(), "monty binary missing at {}", path.display());
-    path
-}
+use crate::{binary::monty_binary, common::wait_for_idle};
 
 fn config() -> PoolConfig {
     PoolConfig::subprocess(monty_binary())
@@ -94,7 +70,7 @@ fn expect_complete(event: TurnEvent) -> MontyObject {
 /// Mount-covered calls surface like any other suspension now, so a test that
 /// only cares about the *result* of mounted I/O runs its feed through this.
 async fn feed_with_mounts(
-    checkout: &mut monty_pool::Checkout,
+    checkout: &mut Checkout,
     result: Result<TurnEvent, PoolError>,
 ) -> Result<TurnEvent, PoolError> {
     let event = result?;
@@ -2011,6 +1987,116 @@ async fn os_policy_are_answered_in_the_worker() {
     session.finish().await.unwrap();
 }
 
+/// A checkout pinned to a fixed clock at `unix_seconds`.
+fn fixed_clock(unix_seconds: i64) -> ReplConfig {
+    ReplConfig {
+        os_policy: OsPolicy {
+            datetime: DateTimeSource::Fixed {
+                unix_seconds,
+                microsecond: 0,
+            },
+            ..OsPolicy::default()
+        },
+        ..ReplConfig::default()
+    }
+}
+
+/// A restored session answers clock calls with the restoring checkout's policy,
+/// both when idle and when resumed from a suspension dumped under another policy.
+#[tokio::test]
+async fn restored_session_takes_the_checkouts_os_policy() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&fixed_clock(1_000)).await.unwrap();
+    let event = session
+        .feed("import time\ntime.time()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(1_000.0));
+    let idle = session.dump().await.unwrap();
+    let event = session
+        .feed("fetch('x')\ntime.time()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
+    let suspended = session.dump().await.unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&fixed_clock(2_000)).await.unwrap();
+    let (event, _script_name) = restored.restore(idle, vec![], &mut no_print).await.unwrap();
+    assert!(event.is_none(), "idle dump should restore without a suspension");
+    let event = restored
+        .feed("time.time()", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(2_000.0));
+    restored.finish().await.unwrap();
+
+    let mut restored = pool.checkout(&fixed_clock(3_000)).await.unwrap();
+    let (event, _script_name) = restored.restore(suspended, vec![], &mut no_print).await.unwrap();
+    assert!(matches!(event, Some(TurnEvent::FunctionCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(3_000.0));
+    restored.finish().await.unwrap();
+
+    // every other suspension kind resumes under the restoring policy too
+    let (event, mut restored) = restore_under_new_clock(&pool, "import os\nos.getenv('X')\ntime.time()").await;
+    assert!(matches!(event, Some(TurnEvent::OsCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(4_000.0));
+    restored.finish().await.unwrap();
+
+    let (event, mut restored) = restore_under_new_clock(&pool, "missing\ntime.time()").await;
+    assert!(matches!(event, Some(TurnEvent::NameLookup { .. })), "got {event:?}");
+    let event = restored
+        .resume_name_lookup(Some(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(4_000.0));
+    restored.finish().await.unwrap();
+
+    let code = "import asyncio\nasync def main():\n    await go()\n    return time.time()\nasyncio.run(main())";
+    let (event, mut restored) = restore_under_new_clock(&pool, code).await;
+    let Some(TurnEvent::ResolveFutures { pending_call_ids, .. }) = event else {
+        panic!("expected ResolveFutures, got {event:?}");
+    };
+    let results = pending_call_ids
+        .into_iter()
+        .map(|id| (id, ResumeValue::Return(MontyObject::none())))
+        .collect();
+    let event = restored.resume_futures(results, &mut no_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::float(4_000.0));
+    restored.finish().await.unwrap();
+}
+
+/// Feeds `code` under a clock fixed at 1000 until it suspends (answering an
+/// external call with a future), dumps it, and restores it under a clock fixed at 4000.
+async fn restore_under_new_clock(pool: &Pool, code: &str) -> (Option<TurnEvent>, Checkout) {
+    let mut session = pool.checkout(&fixed_clock(1_000)).await.unwrap();
+    session
+        .feed("import time", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    let mut event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
+    if matches!(event, TurnEvent::FunctionCall { .. }) {
+        event = session.resume(ResumeValue::Future, &mut no_print).await.unwrap();
+    }
+    assert!(
+        !matches!(event, TurnEvent::Complete(_)),
+        "expected a suspension, got {event:?}"
+    );
+    let state = session.dump().await.unwrap();
+    drop(session);
+    let mut restored = pool.checkout(&fixed_clock(4_000)).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    (event, restored)
+}
+
 #[tokio::test]
 async fn call_host_delivers_clock_and_sleeps_as_os_calls() {
     let pool = Pool::new(config()).await.unwrap();
@@ -2317,6 +2403,45 @@ async fn workers_are_recycled_after_max_checkouts() {
     session.finish().await.unwrap();
 }
 
+/// Without an explicit setting a worker serves `DEFAULT_MAX_CHECKOUTS_PER_WORKER`
+/// sessions, then is retired so no child outlives that many tenants.
+#[tokio::test]
+async fn workers_are_recycled_after_the_default_checkout_count() {
+    let mut config = config();
+    config.max_processes = 1;
+    assert_eq!(config.max_checkouts_per_worker, Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER));
+    let pool = Pool::new(config).await.unwrap();
+
+    let mut first_id = None;
+    for _ in 0..DEFAULT_MAX_CHECKOUTS_PER_WORKER {
+        let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let id = session.worker_id().unwrap();
+        assert_eq!(*first_id.get_or_insert(id), id);
+        session.finish().await.unwrap();
+    }
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_ne!(session.worker_id(), first_id);
+    session.finish().await.unwrap();
+}
+
+/// `None` opts out of recycling: one worker serves past the default count.
+#[tokio::test]
+async fn no_recycle_limit_keeps_the_worker() {
+    let mut config = config();
+    config.max_processes = 1;
+    config.max_checkouts_per_worker = None;
+    let pool = Pool::new(config).await.unwrap();
+
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let first_id = session.worker_id();
+    session.finish().await.unwrap();
+    for _ in 0..DEFAULT_MAX_CHECKOUTS_PER_WORKER {
+        let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        assert_eq!(session.worker_id(), first_id);
+        session.finish().await.unwrap();
+    }
+}
+
 /// With one checkout per process, every session gets a fresh worker, and the
 /// pool refills to `min_processes` after each so the next one is warm.
 #[tokio::test]
@@ -2557,6 +2682,58 @@ async fn type_check_state_is_scrubbed_between_checkouts_on_the_same_worker() {
 // =============================================================================
 // Cancellation
 // =============================================================================
+
+/// Explicit termination reaps the owned process before it reports completion.
+#[tokio::test]
+async fn termination_reaps_a_cancelled_turn_and_preserves_pool_capacity() {
+    let mut settings = config();
+    settings.max_processes = 1;
+    let pool = Pool::new(settings).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let worker = session.worker_id().unwrap();
+    {
+        let mut printer = no_print;
+        tokio::select! {
+            result = session.feed("while True:\n    pass", vec![], vec![], false, &mut printer) => panic!("the controlled turn cannot finish: {result:?}"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    assert!(session.terminate().await.is_some());
+    let mut next = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_ne!(next.worker_id(), Some(worker));
+    assert_eq!(
+        expect_complete(next.feed("6 * 7", vec![], vec![], false, &mut no_print).await.unwrap()),
+        MontyObject::int(42)
+    );
+    next.finish().await.unwrap();
+}
+
+/// An idle process is killed rather than returned to the reusable pool.
+#[tokio::test]
+async fn termination_reaps_an_idle_checkout() {
+    let pool = Pool::new(config()).await.unwrap();
+    let session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert!(session.terminate().await.is_some());
+}
+
+/// A worker discarded by an earlier protocol failure has no retained exit proof.
+#[tokio::test]
+async fn termination_without_an_owned_worker_does_not_confirm_exit() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    {
+        let mut printer = no_print;
+        tokio::select! {
+            result = session.feed("while True:\n    pass", vec![], vec![], false, &mut printer) => panic!("the controlled turn cannot finish: {result:?}"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    assert!(matches!(
+        session.feed("6 * 7", vec![], vec![], false, &mut no_print).await,
+        Err(PoolError::Protocol(_))
+    ));
+    assert!(session.terminate().await.is_none());
+}
 
 /// A turn future dropped mid-flight leaves the protocol state unknowable: the
 /// next call on the checkout must discard the worker and fail cleanly, and
@@ -3319,6 +3496,61 @@ async fn module_stubs_do_not_outlive_their_session_on_a_reused_worker() {
     };
     assert_snapshot!(diagnostics, @"main.py:1:8: error[unresolved-import] Cannot resolve imported module `tools`");
     session.finish().await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_stub_answers_without_cpu_supervision_remain_resumable() {
+    let pool = Pool::new(config()).await.unwrap();
+    for answer in [ResumeValue::Future, ResumeValue::Return(MontyObject::int(42))] {
+        let mut session = pool
+            .checkout(&ReplConfig {
+                type_check: true,
+                ..ReplConfig::default()
+            })
+            .await
+            .unwrap();
+        let event = session
+            .feed("import tools", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_import_stubs(event), vec!["tools".to_owned()]);
+        assert!(matches!(
+            session.resume(answer, &mut no_print).await,
+            Err(PoolError::Protocol(_))
+        ));
+        let error = MontyException::new(ExcType::RuntimeError, Some("stub provider failed".to_owned()));
+        let result = session.resume(ResumeValue::Error(error), &mut no_print).await;
+        assert!(
+            matches!(result, Err(PoolError::Runtime(ref error)) if error.message() == Some("stub provider failed"))
+        );
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        assert_eq!(expect_complete(event), MontyObject::int(2));
+        session.finish().await.unwrap();
+    }
+    pool.close().await;
+}
+
+#[cfg(target_os = "linux")]
+#[path = "support/cpu_limits.rs"]
+mod cpu_limits;
+
+/// CPU supervision is Linux-only, so other platforms refuse CPU mode before spawning a worker.
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn cpu_clock_is_rejected_off_linux() {
+    let mut config = config();
+    config.execution_clock = ExecutionClock::Cpu;
+    config.request_timeout = Some(Duration::from_secs(2));
+    let Err(error) = Pool::new(config).await else {
+        panic!("CPU pool must be rejected off Linux");
+    };
+    assert_eq!(
+        error.to_string(),
+        "failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux"
+    );
 }
 
 /// An oversized result discards the worker; the next checkout still succeeds.

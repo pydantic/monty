@@ -35,19 +35,29 @@ telemetry-adapter = ["telemetry"]
 [dependencies]
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
-monty-proto = { workspace = true }
-# The pool is async end-to-end: workers are tokio child processes (or WebSocket
-# connections) read via cancel-safe in-worker frame state, and turn deadlines
+# The pool is async end-to-end: workers are tokio child processes (or gRPC
+# streams) read via cancel-safe in-worker frame state, and turn deadlines
 # are tokio timers. (rt-multi-thread is needed for `block_in_place` in
 # `worker::decode_event`.)
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
-# Async WebSocket client for the remote (Websocket) transport; rustls gives
-# `wss://` support without a system TLS dependency.
-tokio-tungstenite = { workspace = true }
-# Stream/sink combinators for driving the split WebSocket halves.
+# gRPC client for the remote transport: one HTTP/2 connection per pool, one
+# stream per session. rustls speaks `https://`; the server certificate is
+# verified by the OS (below), not against roots bundled into the binary.
+tonic = { workspace = true, features = ["channel", "tls-aws-lc"] }
+rustls-platform-verifier = { workspace = true }
+# to tell a stream the server never took (a `GOAWAY` as it drains, a request
+# cancelled by the connection closing) from a failed one
+h2 = "0.4"
+hyper = { version = "1", default-features = false }
+# The protocol's codec and status vocabulary for that transport.
+monty-proto = { workspace = true, features = ["grpc"] }
+bytes = { workspace = true }
+tokio-stream = { workspace = true }
+http = { workspace = true }
+# `join_all` for concurrent worker teardown.
 futures-util = { workspace = true }
 # Pulled in only so the pool can install a process-level rustls `CryptoProvider`
-# before the first `wss://` dial (see `install_crypto_provider` in worker.rs).
+# before the first `https://` dial (see `install_crypto_provider` in remote.rs).
 rustls = { workspace = true }
 # Span construction only; applications choose and configure exporter features.
 logfire = { workspace = true, optional = true }
@@ -66,13 +76,27 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
 opentelemetry_sdk = { version = "0.32", optional = true }
 
+# CPU supervision is Linux-only: `nix` reads the child's CPU clock without `unsafe`.
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31.3", features = ["process", "time"] }
+
+[[example]]
+name = "cpu-test-worker"
+path = "tests/support/cpu_worker.rs"
+
 [dev-dependencies]
+serde_json = { workspace = true }
+cpu-time = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
-# The mock WebSocket child servers in tests stay synchronous, on plain threads.
-tungstenite = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+# In-process scripted gRPC servers standing in for a remote child.
+tonic = { workspace = true, features = ["server", "router"] }
+# A self-signed certificate for the server the trust-store test dials.
+rcgen = { workspace = true }
+tokio-stream = { workspace = true, features = ["net"] }
+tower = { version = "0.5", default-features = false }
 # In-memory exporters for the telemetry recorder's structural tests.
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 

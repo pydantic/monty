@@ -25,8 +25,8 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "1.4.0"
-rust-version = "1.96"
+version = "1.5.0"
+rust-version = "1.98"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 description = "A secure, snapshotable Python sandbox written in Rust."
@@ -60,16 +60,18 @@ strip = false
 # is required so the crates can be published to crates.io (`cargo publish`
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
-# RELEASING.md.
-monty = { path = "crates/monty", version = "1.4.0" }
-monty-types = { path = "crates/monty-types", version = "1.4.0" }
-monty-alloc = { path = "crates/monty-alloc", version = "1.4.0" }
-monty-fs = { path = "crates/monty-fs", version = "1.4.0" }
-monty-macros = { path = "crates/monty-macros", version = "1.4.0" }
-monty-proto = { path = "crates/monty-proto", version = "1.4.0" }
-monty-pool = { path = "crates/monty-pool", version = "1.4.0" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "1.4.0" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "1.4.0" }
+# RELEASING.md. They are exact (`=`) because the crates' APIs change between
+# minor releases: a caret range lets a published `monty` resolve a newer,
+# incompatible `monty-types` (#981).
+monty = { path = "crates/monty", version = "=1.5.0" }
+monty-types = { path = "crates/monty-types", version = "=1.5.0" }
+monty-alloc = { path = "crates/monty-alloc", version = "=1.5.0" }
+monty-fs = { path = "crates/monty-fs", version = "=1.5.0" }
+monty-macros = { path = "crates/monty-macros", version = "=1.5.0" }
+monty-proto = { path = "crates/monty-proto", version = "=1.5.0" }
+monty-pool = { path = "crates/monty-pool", version = "=1.5.0" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "=1.5.0" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "=1.5.0" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.14"
 ruff_python_stdlib = "0.0.14"
@@ -134,14 +136,19 @@ sha2 = "0.11"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
-# WebSocket client with rustls for `wss://`, used by the pool's remote
-# transport (monty-pool). The sync `tungstenite` is dev-only (mock servers in
-# monty-pool's tests); the pool itself dials with `tokio-tungstenite`. Both
-# pins must track the same underlying tungstenite version.
-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-# Stream/sink combinators (splitting the WebSocket into read/write halves).
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# gRPC over HTTP/2 for the pool's remote transport. Only the version is pinned
+# here: monty-proto takes the core (codec and status types) with no features,
+# monty-pool adds the `channel` client with rustls (`aws-lc` to match the
+# `rustls` pin below), and tests add `server` for in-process mock servers.
+tonic = { version = "0.14.9", default-features = false }
+# `Bytes` payloads for the opaque gRPC codec and the pool's event channel.
+bytes = "1"
+# `ReceiverStream` turns the pool's request channel into a gRPC request body.
+tokio-stream = { version = "0.1", default-features = false }
+# `PathAndQuery` for the session RPC path.
+http = "1"
+# Stream combinators for the pool's gRPC event reader and the Python driver.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
 # Capability-based filesystem access for monty-fs: every mount operation runs
@@ -153,11 +160,20 @@ cap-std = "4.0"
 rustix = { version = "1.1", features = ["fs"] }
 # `mkfifo` for the tests behind that guard — rustix gates its own out on Apple.
 nix = { version = "0.31", features = ["fs"] }
+cpu-time = "1.0"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
-# first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
+# first `https://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
 # tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# Server certificates are checked against the operating system's trust store
+# rather than a root list bundled at build time, so a root the OS has distrusted
+# is refused without a monty release. macOS (Security framework) and Windows
+# (CryptoAPI) also apply the OS's revocation data; Linux checks the chain against
+# the distro CA bundle through webpki, with no revocation checking.
+rustls-platform-verifier = "0.7"
+# Self-signed certificates for the pool's TLS test server.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Async runtime. Only the version is pinned here — tokio has no default
 # features and each consumer needs a very different slice of it.
 tokio = { version = "1" }

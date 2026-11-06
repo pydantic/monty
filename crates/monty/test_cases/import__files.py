@@ -26,6 +26,7 @@
 (root / 'elsewhere' / 'far.py').write_text('value = 5\n')
 (root / 'redirect').mkdir()
 (root / 'redirect' / '__init__.py').write_text(f'__path__ = ({str(root / "elsewhere")!r},)\n')
+(root / 'refmod.py').write_text("target = 'refmod'\n")
 (root / 'mixed').mkdir()
 (root / 'mixed' / '__init__.py').write_text(f'__path__ = [1, None, {str(root / "elsewhere")!r}]\n')
 (root / 'circ_a.py').write_text('import circ_b\nlate = 1\n')
@@ -107,6 +108,15 @@ except NameError as e:
     assert str(e) == "name 'fetch' is not defined"
 helpers.fetch = lambda: 42
 assert helpers.run() == 42
+
+# === A ForwardRef's module= names an imported file module's namespace ===
+from annotationlib import ForwardRef
+import refmod
+
+assert ForwardRef('target', module='refmod').evaluate() == 'refmod'
+refmod.target = 'rebound'
+assert ForwardRef('target', module='refmod').evaluate() == 'rebound'
+
 
 # === Packages ===
 import pkg

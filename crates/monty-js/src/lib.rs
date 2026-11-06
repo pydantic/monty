@@ -21,6 +21,14 @@ pub use limits::JsResourceLimits;
 pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession};
 pub use telemetry::{flush_telemetry, install_telemetry, set_telemetry_metrics_enabled};
 
+/// `monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER`, so a test can pin the
+/// TypeScript default (shared with the WASM pool, which cannot load this addon).
+#[napi_derive::napi(js_name = "_defaultMaxCheckoutsPerWorker")]
+#[must_use]
+pub const fn default_max_checkouts_per_worker() -> u32 {
+    monty_pool::DEFAULT_MAX_CHECKOUTS_PER_WORKER
+}
+
 /// Returns the package version used for the OpenTelemetry instrumentation scope.
 #[napi_derive::napi(js_name = "_montyVersion")]
 #[must_use]

@@ -1,8 +1,9 @@
 # `re` module
 
 Monty's `re` module is backed by the Rust `fancy-regex` crate, not
-CPython's regex engine. Most patterns behave identically; the engines differ
-in syntax extensions and error reporting.
+CPython's regex engine.
+Patterns are parsed with CPython's grammar first, so patterns CPython's parser rejects raise CPython's messages.
+The differences below are in what the engine can compile and how it matches.
 
 ## Module functions
 
@@ -11,6 +12,13 @@ Implemented: `compile`, `search`, `match`, `fullmatch`, `findall`, `sub`,
 
 Not implemented: `subn`, `purge`, `template`. The pre-compiled `re._compile`
 internal is not exposed.
+
+`re.finditer` and `Pattern.finditer` return a `list` of matches, not CPython's lazy `callable_iterator`:
+
+- Every match is found when `finditer` is called, so an error a later match hits (such as the backtracking limit)
+    is raised by the call itself rather than by the iteration that reaches it.
+- `next(re.finditer(...))` raises `TypeError: 'list' object is not an iterator`.
+- The result can be iterated more than once, where CPython's iterator is empty the second time.
 
 The module-level functions accept the same positional-or-keyword arguments
 as CPython (including compiled `re.Pattern` objects as the first argument,
@@ -46,8 +54,12 @@ match CPython's, with these divergences:
 Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
 `ASCII` / `A`.
 
+`ASCII` is accepted but has no effect: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
+
 Not implemented: `VERBOSE` / `X`, `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U`
-(Unicode is always on). Unknown flag bits within the accepted `u16` range are
+(Unicode is always on). `re.VERBOSE` / `re.X` are not exposed, but the inline `(?x)` flag and the bit value `64`
+enable verbose mode.
+Unknown flag bits within the accepted `u16` range are
 silently accepted; bits above that range are rejected by the integer range
 check.
 
@@ -80,11 +92,16 @@ representation does not carry them.
 
 ## Engine-level differences
 
-- Unsupported regex features (some Unicode property escapes, some
-    CPython-specific extensions) raise `re.PatternError` at compile time.
-- Backreference syntax `\10` and higher is not recognized; only `\1`–`\9`.
-- Error messages for invalid patterns come from `fancy-regex` and do not
-    match CPython's wording.
+These valid CPython patterns raise `re.PatternError` with a message from `fancy-regex`:
+
+- A quantifier on a lookaround or an empty group, such as `(?=a)*` or `(?:)*`.
 - Patterns whose *compiled* form is very large, e.g. huge counted repeats
-    like `a{5000000}`, raise `re.PatternError` (`fancy-regex`/`regex` enforce a
-    compiled-size limit), whereas CPython compiles them.
+    like `a{5000000}` (`fancy-regex`/`regex` enforce a compiled-size limit).
+
+Groups nested 64 or more deep raise `re.PatternError: pattern too deeply nested`; CPython accepts a few hundred
+levels.
+
+`\s` follows Unicode's `White_Space` property, so it does not match `\x1c`–`\x1f`, which CPython's `\s` does.
+Case-insensitive backreferences compare by Unicode case folding, so `(?i)(σ)\1` matches `Σς`, which CPython does not.
+
+An escape for a surrogate (`\ud800`) never matches, since Monty strings cannot contain surrogates.

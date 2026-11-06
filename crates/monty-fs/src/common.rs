@@ -250,6 +250,31 @@ fn non_blocking(options: &mut OpenOptions) -> &mut OpenOptions {
     options
 }
 
+/// Creates a new regular file without following or replacing an existing final entry.
+/// The descriptor is closed before returning; permissions apply at creation, never through chmod.
+pub(super) fn host_create_exclusive(dir: &Dir, rel: &str, permissions: u32, vpath: &str) -> Result<(), MountError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(permissions);
+    #[cfg(not(unix))]
+    let _ = permissions;
+    let file = dir.open_with(rel, &options).map_err(|err| {
+        // Windows can report access denied when the name is an existing directory.
+        #[cfg(windows)]
+        if err.kind() == ErrorKind::PermissionDenied
+            && err.raw_os_error().is_some()
+            && dir.symlink_metadata(rel).is_ok_and(|meta| meta.is_dir())
+        {
+            return MountError::io_err(ErrorKind::AlreadyExists, "File exists", vpath);
+        }
+
+        map_io(err, vpath)
+    })?;
+    drop(file);
+    Ok(())
+}
+
 /// Creates a directory, matching CPython `pathlib.Path.mkdir()` semantics:
 ///
 /// - `exist_ok=False`: always raises `FileExistsError` if the path already exists
@@ -340,6 +365,11 @@ pub(super) fn host_iterdir(dir: &Dir, rel: &str, vpath: &str, budget: MemoryBudg
     }
     Ok(MontyObject::list(result))
 }
+
+/// Bytes charged against a mount's `write_bytes_limit` for each directory
+/// `mkdir` creates (one filesystem block), so a write budget also bounds how
+/// many directories sandboxed code can leave on the host.
+pub const DIRECTORY_WRITE_BYTES: usize = 4096;
 
 /// Validates that writing `bytes` would not exceed the mount's quota.
 pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<(), MountError> {

@@ -1,7 +1,6 @@
 //! Scoped Python values with storage differences hidden from operation dispatch.
 //!
-//! Arithmetic, method calls, subscription, containment, length, truth and repr use
-//! this view. Unmigrated protocols still enter through `Value`; heap payloads are never copied.
+//! Protocol dispatch converts heap reads to this view without copying their payloads.
 
 use std::{
     borrow::Cow,
@@ -11,14 +10,17 @@ use std::{
 use num_bigint::BigInt;
 
 use crate::{
+    annotations,
     args::ArgValues,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    expressions::CmpOperator,
     fstring::FormatFloat,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput},
-    heap_data::{heap_payloads, heap_read_output_py_trait_forward},
+    hash::{HashValue, identity_hash},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapObjectRead, HeapReadOutput, HeapReader},
+    heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
     modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
@@ -124,12 +126,71 @@ macro_rules! forward_py_value {
         forward_py_value!($self, |$value| $body, { _ => $fallback, })
     };
     ($self:expr, |$value:ident| $body:expr, {$($custom:tt)*}) => {
-        heap_read_output_py_trait_forward!(
-            $self, |$value| $body, {
-                Self::Int($value) => $body,
-                $($custom)*
-            }
-        )
+        match $self {
+            Self::Str($value) => $body,
+            Self::Bytes($value) => $body,
+            Self::List($value) => $body,
+            Self::Deque($value) => $body,
+            Self::ListIterator($value) => $body,
+            Self::DequeIterator($value) => $body,
+            Self::TupleIterator($value) => $body,
+            Self::StringIterator($value) => $body,
+            Self::BytesIterator($value) => $body,
+            Self::RangeIterator($value) => $body,
+            Self::DictKeyIterator($value) => $body,
+            Self::DictItemIterator($value) => $body,
+            Self::DictValueIterator($value) => $body,
+            Self::SetIterator($value) => $body,
+            Self::CallableIterator($value) => $body,
+            Self::Itertools($value) => $body,
+            Self::DirScan($value) => $body,
+            Self::Csv($value) => $body,
+            Self::Partial($value) => $body,
+            Self::Random($value) => $body,
+            Self::HashObject($value) => $body,
+            Self::GenericAlias($value) => $body,
+            Self::Union($value) => $body,
+            Self::ForwardRef($value) => $body,
+            Self::LruCache($value) => $body,
+            Self::Tuple($value) => $body,
+            Self::NamedTuple($value) => $body,
+            Self::NamedTupleClass($value) => $body,
+            Self::Dict($value) => $body,
+            Self::DictKeysView($value) => $body,
+            Self::DictItemsView($value) => $body,
+            Self::DictValuesView($value) => $body,
+            Self::Set($value) => $body,
+            Self::FrozenSet($value) => $body,
+            Self::Range($value) => $body,
+            Self::Slice($value) => $body,
+            Self::HostClass($value) => $body,
+            Self::HostClassType($value) => $body,
+            Self::Class($value) => $body,
+            Self::Instance($value) => $body,
+            Self::BoundMethod($value) => $body,
+            Self::DataclassField($value) => $body,
+            Self::DataclassMethod($value) => $body,
+            Self::DataclassParams($value) => $body,
+            Self::Complex($value) => $body,
+            Self::Path($value) => $body,
+            Self::OpenFile($value) => $body,
+            Self::RePattern($value) => $body,
+            Self::ReMatch($value) => $body,
+            Self::Date($value) => $body,
+            Self::DateTime($value) => $body,
+            Self::Time($value) => $body,
+            Self::TimeDelta($value) => $body,
+            Self::TimeZone($value) => $body,
+            Self::Closure($value) => $body,
+            Self::FunctionDefaults($value) => $body,
+            Self::ExtFunction($value) => $body,
+            Self::Decimal($value) => $body,
+            Self::DecimalContext($value) => $body,
+            Self::DecimalSignalDict($value) => $body,
+            Self::DecimalContextManager($value) => $body,
+            Self::Int($value) => $body,
+            $($custom)*
+        }
     };
 }
 
@@ -155,6 +216,32 @@ macro_rules! numeric_binary {
 }
 
 impl<'h> PyValue<'h> {
+    /// Reads a heap object once and opens its normalized Python-type view.
+    #[inline]
+    pub(crate) fn from_heap(id: HeapId, heap: &HeapReader<'h>) -> Self {
+        heap.read(id).into()
+    }
+
+    /// Converts an integer or an object implementing `__index__` into a repetition count.
+    /// Returns `None` for unsupported operands; out-of-range counts raise `OverflowError`.
+    /// Negative counts within range become zero.
+    pub(crate) fn repeat_count(self, vm: &mut VM<'h>) -> RunResult<Option<usize>> {
+        let count = self.py_index_impl(vm)?;
+        // An integer may return itself; release its reader before cleaning up the result.
+        drop(self);
+        let Some(count) = count else {
+            return Ok(None);
+        };
+        defer_drop!(count, vm);
+
+        // Check overflow before clamping: even an oversized negative count must raise.
+        let count = count.as_int_with_overflow(vm, || ExcType::overflow_index_sized_int().into())?;
+        // In-range negatives mean no repetitions; check that the result fits the host's usize.
+        Ok(Some(
+            usize::try_from(count.max(0)).map_err(|_| ExcType::overflow_index_sized_int())?,
+        ))
+    }
+
     /// Includes the mutating `defaultdict.__missing__` path outside `PyTrait`.
     pub(crate) fn subscript(self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self {
@@ -205,6 +292,163 @@ impl<'h> PyValue<'h> {
 }
 
 impl<'h> PyTrait<'h> for PyValue<'h> {
+    fn py_matmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        forward_py_value!(self, |value| value.py_matmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rmatmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        forward_py_value!(self, |value| value.py_rmatmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        forward_py_value!(
+            self,
+            |value| value.py_call(args, vm),
+            else {
+                args.drop_with(vm);
+                Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
+            }
+        )
+    }
+
+    fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
+        match self {
+            // A user-defined class is an iterator only if it defines `__next__`.
+            Self::Instance(inst) => inst.py_is_iterator(vm),
+            // Every built-in iterator is identified by its type, so there is no
+            // list to keep in step with new iterator types here.
+            other => other.py_type(vm).is_iterator(),
+        }
+    }
+
+    fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
+        forward_py_value!(self, |value| value.py_is_iterable(vm), else false)
+    }
+
+    fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
+        // A real __enter__ may raise AttributeError; check protocol support before calling it.
+        forward_py_value!(self, |value| value.py_is_context_manager(vm), else false)
+    }
+
+    fn py_enter(&mut self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        forward_py_value!(
+            self,
+            |value| value.py_enter(vm),
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__enter__")) }
+        )
+    }
+
+    fn py_exit(&mut self, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
+        forward_py_value!(
+            self,
+            |value| value.py_exit(vm, exc),
+            else { Err(ExcType::attribute_error(self.py_type_name(vm), "__exit__")) }
+        )
+    }
+
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_iadd_impl(other, vm), else Ok(false))
+    }
+
+    fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_imul_impl(other, vm), else Ok(false))
+    }
+
+    fn py_ixor_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_ixor_impl(other, vm), else Ok(false))
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_isub_impl(other, vm), else Ok(false))
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_iand_impl(other, vm), else Ok(false))
+    }
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        forward_py_value!(self, |value| value.py_ior_impl(other, vm), else Ok(false))
+    }
+
+    fn py_cmp_op(&self, other: &Value, op: CmpOperator, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        forward_py_value!(self, |value| value.py_cmp_op(other, op, vm), else Ok(None))
+    }
+
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        forward_py_value!(
+            self,
+            |item| item.py_setitem(key, value, vm),
+            else {
+                key.drop_with(vm);
+                value.drop_with(vm);
+                Err(ExcType::type_error_not_sub_assignment(
+                    &self.py_type_name(vm),
+                ))
+            }
+        )
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        if let Self::Module(module) = self {
+            return module.py_set_attr(name, value, vm);
+        }
+        forward_py_value!(
+            self,
+            |item| item.py_set_attr(name, value, vm),
+            else {
+                value.drop_with(vm);
+                let type_name = self.py_type_name(vm);
+                Err(ExcType::attribute_error_no_setattr(
+                    &type_name,
+                    name.as_str(vm.interns),
+                ))
+            }
+        )
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        forward_py_value!(
+            self,
+            |value| value.py_getattr(attr, vm),
+            else {
+                match self {
+                    Self::Module(m) => Ok(m.py_getattr(attr, vm)),
+                    Self::Exception(e) => Ok(e.py_getattr(attr, vm)),
+                    _ => Ok(None),
+                }
+            }
+        )
+    }
+
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        forward_py_value!(self, |value| value.py_hash(vm), {
+            Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Module(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Undefined => Value::Undefined.py_hash(vm),
+            Self::Ellipsis => Value::Ellipsis.py_hash(vm),
+            Self::NotImplemented => Value::NotImplemented.py_hash(vm),
+            Self::None => Value::None.py_hash(vm),
+            Self::Bool(value) => Value::Bool(*value).py_hash(vm),
+            Self::Float(value) => Value::Float(*value).py_hash(vm),
+            Self::Builtin(value) => Value::Builtin(*value).py_hash(vm),
+            Self::ModuleFunction(value) => Value::ModuleFunction(*value).py_hash(vm),
+            Self::DefFunction(id) => Value::DefFunction(*id).py_hash(vm),
+            Self::Marker(value) => Value::Marker(*value).py_hash(vm),
+            Self::Property(value) => Value::Property(*value).py_hash(vm),
+            _ => Ok(None),
+        })
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        forward_py_value!(self, |value| value.py_iter(vm),
+            else Err(ExcType::type_error_not_iterable(&self.py_type_name(vm))))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        forward_py_value!(self, |value| value.py_next(vm),
+            else Err(ExcType::type_error_not_iterator(&self.py_type_name(vm))))
+    }
+
     fn py_type(&self, vm: &VM<'h>) -> Type {
         forward_py_value!(self, |value| value.py_type(vm), {
             Self::Undefined => panic!("Cannot get type of undefined value"),
@@ -532,6 +776,12 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::DefFunction(func_id) => {
+                match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
+                    Some(result) => result,
+                    None => Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns))),
+                }
+            }
             _ => {
                 args.drop_with(vm);
                 Err(ExcType::attribute_error(self.py_type_name(vm), attr.as_str(vm.interns)))
@@ -545,6 +795,18 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => Ok(GenericAlias::subscript(BuiltinType::Type, key.clone_with_heap(vm), vm)),
             Self::Builtin(Builtins::Type(BuiltinType::Union)) => Union::subscript(key.clone_with_heap(vm), vm),
             Self::Marker(Marker(StaticStrings::Optional)) => Union::optional(key.clone_with_heap(vm), vm),
+            Self::Marker(form) if form.is_generic_form() => GenericAlias::subscript_special(*form, key.clone_with_heap(vm), vm),
+            // CPython's wording per kind of `typing` object: `Any` and `TypeVar`
+            // are classes, `Self` and friends special forms, the two bases generic.
+            Self::Marker(Marker(StaticStrings::Any)) => Err(ExcType::type_error_type_not_subscriptable("Any")),
+            Self::Marker(Marker(StaticStrings::TypeVar)) => Err(ExcType::type_error_type_not_subscriptable("typing.TypeVar")),
+            Self::Marker(Marker(form @ (StaticStrings::Generic | StaticStrings::Protocol))) => Err(ExcType::type_error(format!(
+                "Parameters to {}[...] must all be type variables or parameter specification variables.",
+                <&str>::from(*form)
+            ))),
+            Self::Marker(form) if form.py_type() == Type::SpecialForm => {
+                Err(ExcType::type_error(format!("typing.{} is not subscriptable", <&str>::from(form.0))))
+            }
             Self::Builtin(Builtins::Type(t)) => Err(ExcType::type_error_type_not_subscriptable(&Type::from(*t).name(vm.heap, vm.interns))),
             Self::Builtin(Builtins::ExcType(exc_type)) => Err(ExcType::type_error_type_not_subscriptable((*exc_type).into())),
             _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
@@ -578,5 +840,213 @@ impl fmt::LowerHex for PythonIdDisplay<'_> {
             Self::Int(value) => fmt::LowerHex::fmt(value, f),
             Self::LongInt(value) => fmt::LowerHex::fmt(value, f),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
+
+    use super::*;
+    use crate::{
+        defer_drop_mut,
+        heap::{DropGuard, HeapReader},
+        heap_data::CellValue,
+        intern::{BytesId, CompileInterns, LongIntId, StringId},
+        modules::math::MathFunctions,
+        run::Executor,
+        types::{Bytes, List, inline_str::InlineStr, property::ZeroArgOsProperty, str::allocate_string_on_heap},
+    };
+
+    struct TestIds {
+        string: StringId,
+        bytes: BytesId,
+        integer: LongIntId,
+        function: FunctionId,
+    }
+
+    fn with_vm(test: impl for<'h> FnOnce(&mut VM<'h>, TestIds)) {
+        let mut executor = Executor::new(
+            "def example():\n    return 1".to_owned(),
+            "test.py",
+            Vec::new(),
+            CompileOptions::default(),
+        )
+        .unwrap();
+        let ids = {
+            let mut interns = CompileInterns::direct(&mut executor.tables.interns);
+            TestIds {
+                string: interns.intern("aé🐍b"),
+                bytes: interns.intern_bytes(b"a\0\xff"),
+                integer: interns.intern_long_int(BigInt::from(1_u128 << 100)),
+                function: FunctionId::from_index(0),
+            }
+        };
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut executor, |reader, executor| {
+            let vm = &mut VM::new(
+                Vec::new(),
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            test(vm, ids);
+        });
+    }
+
+    #[test]
+    fn normalized_hashes_match_value_hashes_across_representations() {
+        with_vm(|vm, ids| {
+            let values = vec![
+                Value::Undefined,
+                Value::Ellipsis,
+                Value::NotImplemented,
+                Value::None,
+                Value::Bool(true),
+                Value::Float(1.25),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
+                Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
+                Value::Builtin(Builtins::Type(BuiltinType::List)),
+                Value::ModuleFunction(ModuleFunctions::Math(MathFunctions::Sqrt)),
+                Value::DefFunction(ids.function),
+                Value::Marker(Marker(StaticStrings::Optional)),
+                Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
+                Value::Int(42),
+                Value::InternLongInt(ids.integer),
+                LongInt::new(BigInt::from(1_u128 << 100)).into_value(vm.heap),
+                Value::InternString(ids.string),
+                Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
+                allocate_string_on_heap("aé🐍b", vm.heap),
+                Value::InternBytes(ids.bytes),
+                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+            ];
+            defer_drop!(values, vm);
+            for value in values {
+                let expected = value.py_hash(vm).unwrap();
+                assert_eq!(value.py_value(vm).py_hash(vm).unwrap(), expected);
+            }
+        });
+    }
+
+    #[test]
+    fn identity_and_unsupported_hash_protocols_survive_conversion() {
+        with_vm(|vm, _| {
+            let cell_id = vm.heap.allocate(HeapData::Cell(CellValue(Value::None)));
+            let cell = Value::Ref(cell_id);
+            defer_drop!(cell, vm);
+            assert_eq!(cell.py_value(vm).py_hash(vm).unwrap(), Some(identity_hash(cell_id)));
+
+            let exception = Value::Ref(
+                vm.heap
+                    .allocate(HeapData::Exception(SimpleException::new(ExcType::ValueError, None))),
+            );
+            defer_drop!(exception, vm);
+            assert_eq!(exception.py_value(vm).py_hash(vm).unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn normalized_iterators_retain_their_source_and_preserve_items() {
+        with_vm(|vm, ids| {
+            let values = vec![
+                Value::InternString(ids.string),
+                Value::InlineString(InlineStr::new("aé🐍b").unwrap()),
+                allocate_string_on_heap("aé🐍b", vm.heap),
+                Value::InternBytes(ids.bytes),
+                Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b"a\0\xff".to_vec())))),
+            ];
+            defer_drop_mut!(values, vm);
+            while let Some(value) = values.pop() {
+                let mut owner = DropGuard::new(value, vm);
+                let (value, vm) = owner.as_parts_mut();
+                let view = value.py_value(vm);
+                assert!(view.py_is_iterable(vm));
+                assert!(!view.py_is_iterator(vm));
+                let (expected, iterator_type, bytes): (Vec<String>, _, _) = match &view {
+                    PyValue::Str(string) => (
+                        string.as_str(vm).chars().map(|c| c.to_string()).collect(),
+                        Type::StrIterator,
+                        false,
+                    ),
+                    PyValue::Bytes(bytes) => (
+                        bytes.as_slice(vm).iter().map(u8::to_string).collect(),
+                        Type::BytesIterator,
+                        true,
+                    ),
+                    _ => unreachable!(),
+                };
+                let iterator = view.py_iter(vm).unwrap().require_synchronous(vm).unwrap();
+                drop(view);
+                let (value, vm) = owner.into_parts();
+                value.drop_with(vm);
+                defer_drop_mut!(iterator, vm);
+                assert_eq!(iterator.py_type(vm), iterator_type);
+                assert!(iterator.py_is_iterator(vm));
+                let mut actual = Vec::new();
+                while let Some(item) = iterator.py_next(vm).unwrap() {
+                    defer_drop!(item, vm);
+                    actual.push(if bytes {
+                        let Value::Int(byte) = item else {
+                            panic!("bytes must yield integers")
+                        };
+                        byte.to_string()
+                    } else {
+                        item.as_str(vm).unwrap().to_owned()
+                    });
+                }
+                assert_eq!(actual, expected);
+            }
+        });
+    }
+
+    #[test]
+    fn unsupported_protocols_report_errors_and_release_owned_arguments() {
+        with_vm(|vm, _| {
+            let payload_id = vm.heap.allocate(HeapData::List(List::new(Vec::new())));
+            {
+                let payload = Value::Ref(payload_id);
+                defer_drop!(payload, vm);
+                let subjects = vec![Value::None, Value::InlineString(InlineStr::new("text").unwrap())];
+                defer_drop!(subjects, vm);
+                let name = EitherStr::Heap("missing".to_owned());
+                for subject in subjects {
+                    let mut view = subject.py_value(vm);
+                    assert!(!view.py_is_context_manager(vm));
+                    assert!(view.py_enter(vm).err().unwrap().is_catchable(ExcType::AttributeError));
+                    assert!(
+                        view.py_exit(vm, None)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::AttributeError)
+                    );
+                    assert!(view.py_next(vm).err().unwrap().is_catchable(ExcType::TypeError));
+                    if matches!(subject, Value::None) {
+                        assert!(view.py_iter(vm).err().unwrap().is_catchable(ExcType::TypeError));
+                    }
+                    assert!(view.py_getattr(&name, vm).unwrap().is_none());
+                    assert!(
+                        view.py_call(ArgValues::One(payload.clone_with_heap(vm)), vm)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::TypeError)
+                    );
+                    assert!(
+                        view.py_setitem(payload.clone_with_heap(vm), payload.clone_with_heap(vm), vm)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::TypeError)
+                    );
+                    assert!(
+                        view.py_set_attr(&name, payload.clone_with_heap(vm), vm)
+                            .err()
+                            .unwrap()
+                            .is_catchable(ExcType::AttributeError)
+                    );
+                }
+            }
+            // A leaked argument clone would keep this slot alive after its original owner is dropped.
+            assert!(vm.heap.read_ptr(payload_id).try_entry(vm.heap).is_none());
+        });
     }
 }

@@ -6,6 +6,8 @@ export declare function _installTelemetry(
   metricsEnabled: boolean,
 ): void
 
+export declare function _defaultMaxCheckoutsPerWorker(): number
+
 export declare function _montyVersion(): string
 
 export declare function _setTelemetryMetricsEnabled(enabled: boolean): void
@@ -26,7 +28,7 @@ export declare class NativeMountDir {
 
 export declare class NativePool {
   constructor(options?: unknown)
-  static websocket(options?: unknown): NativePool
+  static remote(options?: unknown): NativePool
   start(): Promise<void>
   checkout(options?: unknown): NativeSession
   close(): Promise<void>
@@ -36,7 +38,7 @@ export declare class NativeSession {
   readonly workerId?: number
   readonly workerPid?: number
   readonly sessionId?: Uint8Array | null
-  enter(telemetryContext?: unknown, connectHeaders?: unknown): Promise<object>
+  enter(telemetryContext?: unknown, metadata?: unknown): Promise<object>
   feed(...args: unknown[]): Promise<object>
   feedStart(...args: unknown[]): Promise<object>
   restore(...args: unknown[]): Promise<object>

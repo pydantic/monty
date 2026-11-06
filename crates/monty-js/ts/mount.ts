@@ -39,7 +39,7 @@ export interface MountDirOptions {
    * Read the warning on [`MountDir`] before choosing it.
    */
   mode?: MountDirMode
-  /** Cap on total bytes written through this mount. */
+  /** Cap on total bytes written through this mount; each directory created counts as 4,096 bytes. */
   writeBytesLimit?: number
   /** Aggregate mount memory budget in bytes (default: monty-fs's `DEFAULT_MEMORY_USAGE_LIMIT`). */
   memoryUsageLimit?: number

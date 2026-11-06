@@ -28,16 +28,16 @@ use monty::{
 };
 use monty_type_checking::{SourceFile, TypeCheckContext, TypeChecker, scan_imports};
 use monty_types::{
-    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExtFunctionResult, IMPORT_STUBS_CALL_ID,
-    ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream, PrintWriter,
-    PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD, SourceRange,
-    TypeCheckState, TypeCheckingConfig,
+    AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
+    IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
+    SourceRange, TypeCheckState, TypeCheckingConfig,
 };
 
 use super::{
     BudgetVec, DEFAULT_PRINT_FLUSH_INTERVAL, FrameError, FrameReader, MAX_FRAME_LEN, ProtoConvertError,
     WireFunctionCall, check_protocol_version, exceeds_max_frame_len, ext_result_from_proto, future_results_from_proto,
-    named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
+    import_stubs_from_answer, named_values_from_proto, os_call_from_proto, os_call_to_proto, pb, write_frame,
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
@@ -227,7 +227,7 @@ pub struct Child {
     /// `Configure`. `Duration::ZERO` means line buffering (see the field's
     /// documentation in the schema).
     print_flush_interval: Duration,
-    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL.
+    /// The session's `OsPolicy` from `Configure`, applied when creating the REPL or restoring one by `Load`.
     os_policy: OsPolicy,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
@@ -295,6 +295,9 @@ impl Child {
                 sink.send(&ok_event())?;
                 return Ok(HandleOutcome::Shutdown);
             }
+            // a liveness answer meant for a serving relay; it opens no turn,
+            // so it gets no reply
+            pb::parent_request::Kind::Pong(_) => return Ok(HandleOutcome::Continue),
         };
         self.stamp_session_budget(&mut event);
         let sent = sink.send(&event);
@@ -438,6 +441,15 @@ impl Child {
     /// Reported timing drives the parent's backstop. Fields are absent without
     /// a session.
     fn stamp_session_budget(&self, event: &mut pb::ChildEvent) {
+        if matches!(
+            event.kind,
+            Some(pb::child_event::Kind::Error(_) | pb::child_event::Kind::TypingError(_))
+        ) {
+            event.feed_suspended = Some(matches!(
+                self.state,
+                SessionState::Suspended(_) | SessionState::AwaitingStubs(_)
+            ));
+        }
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
@@ -461,6 +473,14 @@ impl Child {
             self.print_flush_interval = configure
                 .print_flush_interval_ms
                 .map_or(DEFAULT_PRINT_FLUSH_INTERVAL, |ms| Duration::from_millis(u64::from(ms)));
+            if let Some(clock) = configure.execution_clock {
+                let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
+                    return protocol_violation("invalid execution_clock");
+                };
+                if !ExecutionClock::from(clock).is_available() {
+                    return protocol_violation("CPU execution clock is unavailable");
+                }
+            }
             // Reject invalid settings on the Configure turn.
             self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
                 None => OsPolicy::default(),
@@ -473,8 +493,11 @@ impl Child {
             {
                 return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
             }
+            let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
             self.state = SessionState::Configured(Some(Box::new(configure)));
-            ok_event()
+            let mut event = ok_event();
+            event.execution_clock = Some(clock);
+            event
         } else {
             protocol_violation("Configure while a session already exists")
         }
@@ -500,6 +523,7 @@ impl Child {
         let pb::Configure {
             script_name,
             limits,
+            execution_clock,
             type_check,
             type_check_stubs,
             assert_message_annotations,
@@ -538,8 +562,16 @@ impl Child {
             // Not on the wire: every host gets the default.
             source_scan_threshold: SOURCE_SCAN_THRESHOLD,
         };
-        let repl = MontyRepl::new(&self.script_name, ResourceTracker::new(limits), options)
-            .with_os_policy(self.os_policy.clone());
+        let repl = MontyRepl::new(
+            &self.script_name,
+            ResourceTracker::new(limits).with_execution_clock(
+                pb::ExecutionClock::try_from(execution_clock.unwrap_or_default())
+                    .expect("validated clock")
+                    .into(),
+            ),
+            options,
+        )
+        .with_os_policy(self.os_policy.clone());
         self.state = SessionState::Ready(Box::new(repl));
         Ok(())
     }
@@ -664,7 +696,7 @@ impl Child {
             }
         };
         let stubs = match result {
-            ExtFunctionResult::Return(answer) => match stubs_from_answer(&answer, &pending.asked) {
+            ExtFunctionResult::Return(answer) => match import_stubs_from_answer(&answer, &pending.asked) {
                 Ok(stubs) => stubs,
                 Err(message) => return protocol_violation(&message),
             },
@@ -929,9 +961,14 @@ impl Child {
     /// session), the repl exists and `Load` is rejected rather than silently
     /// discarding it.
     fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
-        let limits = match &self.state {
+        let (limits, clock) = match &self.state {
             SessionState::Configured(config) => {
-                ResourceLimits::from(config.as_ref().and_then(|config| config.limits).unwrap_or_default())
+                let configured = config.as_ref();
+                let clock = configured.and_then(|config| config.execution_clock).unwrap_or_default();
+                (
+                    ResourceLimits::from(configured.and_then(|config| config.limits).unwrap_or_default()),
+                    pb::ExecutionClock::try_from(clock).expect("validated clock").into(),
+                )
             }
             _ => return protocol_violation("Load requires a session that has not started (a feed has already run)"),
         };
@@ -945,10 +982,26 @@ impl Child {
             module_stubs,
             mut state,
         } = restored;
+        let tracker = match &state {
+            Session::Idle(repl) => Some(repl.tracker()),
+            Session::Suspended(progress) => Some(progress.tracker()),
+            Session::Running(_) => None,
+        };
+        if tracker.is_some_and(|tracker| tracker.execution_clock() != clock) {
+            return protocol_violation("snapshot execution clock differs from Configure");
+        }
         // Retain snapshot clocks and stricter limits across both idle and suspended restores.
+        // The checkout's `OsPolicy` replaces the dump's: the policy is the restoring host's
+        // authority over the clock, zone, sleeps and entropy, not session state.
         match &mut state {
-            Session::Idle(repl) => repl.tracker_mut().tighten_limits(&limits),
-            Session::Suspended(progress) => progress.tracker_mut().tighten_limits(&limits),
+            Session::Idle(repl) => {
+                repl.tracker_mut().tighten_limits(&limits);
+                repl.set_os_policy(self.os_policy.clone());
+            }
+            Session::Suspended(progress) => {
+                progress.tracker_mut().tighten_limits(&limits);
+                progress.set_os_policy(self.os_policy.clone());
+            }
             Session::Running(_) => {}
         }
         // In-process Rust producers can dump suspensions exceeding the wire size limit;
@@ -1168,32 +1221,6 @@ fn error_event_from(exc: &MontyException) -> pb::ChildEvent {
     event(pb::child_event::Kind::Error(pb::Error {
         exception: Some(exc.into()),
     }))
-}
-
-/// Validates a dict of dotted module paths to `.pyi` source or `None`.
-/// Paths must belong to a requested module; errors are protocol-violation messages.
-fn stubs_from_answer(answer: &MontyObject, asked: &[String]) -> Result<Vec<ModuleStub>, String> {
-    let answer = answer.as_ref();
-    let pairs = match answer.pairs() {
-        Some(pairs) if answer.type_name() == "dict" => pairs,
-        _ => return Err("import_stubs must be answered with a dict of module to stub source".to_owned()),
-    };
-    let mut stubs = Vec::new();
-    for (key, value) in pairs {
-        let Some(module) = key.as_str() else {
-            return Err("import_stubs answer keys must be module names".to_owned());
-        };
-        let top_level = module.split('.').next().unwrap_or_default();
-        if !asked.iter().any(|name| name == top_level) {
-            return Err(format!("import_stubs answered for {module:?}, which was not asked for"));
-        }
-        if let Some(source) = value.as_str() {
-            stubs.push(ModuleStub::new(module, source).map_err(|err| format!("import_stubs: {err}"))?);
-        } else if value.type_name() != "NoneType" {
-            return Err(format!("import_stubs answer for {module:?} must be a str or None"));
-        }
-    }
-    Ok(stubs)
 }
 
 /// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called

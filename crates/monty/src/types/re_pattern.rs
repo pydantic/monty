@@ -6,6 +6,9 @@
 //! to ReDoS. Monty's resource limits (time and allocation budgets) are the primary defense
 //! against catastrophic backtracking in untrusted patterns.
 //!
+//! Patterns are translated from CPython's syntax by [`re_syntax::translate`] before `fancy_regex`
+//! sees them, so CPython's errors are raised and `fancy_regex`'s own extensions are unreachable.
+//!
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
@@ -13,18 +16,19 @@ use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use smallvec::SmallVec;
 
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{HEAP_ENTRY_SIZE, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
     types::{
-        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
+        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple, re_syntax,
         str::{allocate_string, string_repr_fmt},
         tuple::TupleVec,
     },
@@ -99,7 +103,8 @@ impl RePattern {
     ///
     /// Returns `re.PatternError` if the pattern is invalid.
     pub fn compile(pattern: String, flags: u16) -> RunResult<Self> {
-        Self::compile_inner(pattern, flags, None).map_err(ExcType::re_pattern_error)
+        let source = re_syntax::translate(&pattern, flags)?;
+        Self::compile_inner(pattern, &source, flags, None).map_err(ExcType::re_pattern_error)
     }
 
     /// As [`RePattern::compile`], but caps the compiled size of the delegated regex
@@ -112,7 +117,8 @@ impl RePattern {
         flags: u16,
         delegate_size_limit: usize,
     ) -> Result<Self, BoundedCompileError> {
-        Self::compile_inner(pattern, flags, Some(delegate_size_limit)).map_err(|err| {
+        let source = re_syntax::translate(&pattern, flags).map_err(BoundedCompileError::Invalid)?;
+        Self::compile_inner(pattern, &source, flags, Some(delegate_size_limit)).map_err(|err| {
             if is_size_limit_error(&err) {
                 BoundedCompileError::TooBig
             } else {
@@ -131,8 +137,15 @@ impl RePattern {
     }
 
     /// Shared constructor for [`RePattern::compile`] / [`RePattern::compile_bounded`].
-    fn compile_inner(pattern: String, flags: u16, delegate_size_limit: Option<usize>) -> Result<Self, RegexError> {
-        let compiled = compile_regex_limited(&pattern, flags, delegate_size_limit)?;
+    ///
+    /// `source` is `pattern` translated by [`re_syntax::translate`].
+    fn compile_inner(
+        pattern: String,
+        source: &str,
+        flags: u16,
+        delegate_size_limit: Option<usize>,
+    ) -> Result<Self, RegexError> {
+        let compiled = compile_regex_limited(source, flags, delegate_size_limit)?;
         Ok(Self {
             pattern,
             flags,
@@ -145,18 +158,16 @@ impl RePattern {
 
     /// Returns the `\A(?:pattern)` regex for `match()`, compiling it on first use.
     ///
+    /// The pattern is translated again rather than kept, since cached patterns should stay small.
     /// Wrapping a pattern that already compiled essentially never fails, so any
     /// error surfaces (as `re.PatternError`) at `match()` rather than `re.compile()`.
     fn match_regex(&self) -> RunResult<&Regex> {
         if let Some(regex) = self.compiled_match.get() {
             return Ok(regex);
         }
-        let compiled = compile_regex_limited(
-            &anchored_source(&self.pattern, ""),
-            self.flags,
-            self.delegate_size_limit,
-        )
-        .map_err(ExcType::re_pattern_error)?;
+        let source = re_syntax::translate(&self.pattern, self.flags)?;
+        let compiled = compile_regex_limited(&anchored_source(&source, ""), self.flags, self.delegate_size_limit)
+            .map_err(ExcType::re_pattern_error)?;
         // `set` only fails on a concurrent init, impossible on the single-threaded VM.
         let _ = self.compiled_match.set(compiled);
         Ok(self.compiled_match.get().expect("cell was just initialised"))
@@ -167,22 +178,43 @@ impl RePattern {
         if let Some(regex) = self.compiled_fullmatch.get() {
             return Ok(regex);
         }
-        let compiled = compile_regex_limited(
-            &anchored_source(&self.pattern, "\\z"),
-            self.flags,
-            self.delegate_size_limit,
-        )
-        .map_err(ExcType::re_pattern_error)?;
+        let source = re_syntax::translate(&self.pattern, self.flags)?;
+        let compiled = compile_regex_limited(&anchored_source(&source, "\\z"), self.flags, self.delegate_size_limit)
+            .map_err(ExcType::re_pattern_error)?;
         let _ = self.compiled_fullmatch.set(compiled);
         Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
     }
 
-    /// Builds a single `ReMatch` heap value from a capture result, keeping the
-    /// subject alive by refcount (`subject.clone_with_heap`) rather than copying
-    /// its text. `all_ascii` is precomputed by the caller (once per `finditer`).
-    fn build_match(&self, caps: &fancy_regex::Captures<'_>, subject: &Value, all_ascii: bool, heap: &Heap) -> Value {
-        let m = ReMatch::from_captures(caps, subject.clone_with_heap(heap), all_ascii, &self.compiled);
+    /// Builds a single `ReMatch` heap value from one match's spans (see
+    /// [`ReMatch::from_spans`]), keeping the subject alive by refcount
+    /// (`subject.clone_with_heap`) rather than copying its text. `all_ascii` is
+    /// precomputed by the caller (once per `finditer`).
+    fn build_match(
+        &self,
+        text: &str,
+        spans: &[Option<(usize, usize)>],
+        subject: &Value,
+        all_ascii: bool,
+        heap: &Heap,
+    ) -> Value {
+        let m = ReMatch::from_spans(text, spans, subject.clone_with_heap(heap), all_ascii, &self.compiled);
         Value::Ref(heap.allocate(HeapData::ReMatch(Box::new(m))))
+    }
+
+    /// Builds the `ReMatch` for a single-match search (`search`, `match`, `fullmatch`).
+    ///
+    /// The spans sit on the stack for patterns with up to seven groups, so a search
+    /// allocates nothing beyond the match itself.
+    fn build_single_match(
+        &self,
+        text: &str,
+        caps: &fancy_regex::Captures<'_, str>,
+        subject: &Value,
+        heap: &Heap,
+    ) -> Value {
+        let spans: SmallVec<[Option<(usize, usize)>; 8]> =
+            caps.iter().map(|m| m.map(|m| (m.start(), m.end()))).collect();
+        self.build_match(text, &spans, subject, text.is_ascii(), heap)
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -191,7 +223,7 @@ impl RePattern {
     /// borrowed contents. Returns a `ReMatch` heap object, or `Value::None`.
     pub fn search(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.compiled.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_match(&caps, subject, text.is_ascii(), heap)),
+            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -206,7 +238,7 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.match_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_match(&caps, subject, text.is_ascii(), heap)),
+            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -221,7 +253,7 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
         match self.fullmatch_regex()?.captures(text) {
-            Ok(Some(caps)) => Ok(self.build_match(&caps, subject, text.is_ascii(), heap)),
+            Ok(Some(caps)) => Ok(self.build_single_match(text, &caps, subject, heap)),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -364,41 +396,66 @@ impl RePattern {
 
     /// `pattern.finditer(string)` — return all matches as a list.
     ///
-    /// Eagerly collects all match objects into a list. This differs from CPython's
-    /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
-    /// opcode handles iteration over the returned list.
+    /// Unlike CPython's lazy `callable_iterator`, every match is found and built when
+    /// `finditer` is called, so errors are raised by the call itself, `next()` on the
+    /// result raises `TypeError`, and the list can be iterated again.
+    ///
+    /// The scan records each match's spans in one flat buffer, so its growth checks
+    /// see the whole cost, and a scan error leaves no half-built match objects behind.
+    /// The build pass that follows is preflighted as a whole, since it cannot stop
+    /// part way without leaking the matches it has built.
     pub fn finditer(&self, subject: &Value, text: &str, heap: &Heap) -> RunResult<Value> {
-        // Every match shares one refcounted subject reference, not a copy each.
-        let all_ascii = text.is_ascii();
-
-        let mut results = Vec::new();
-        for caps in self.compiled.captures_iter(text) {
-            check_results_growth(&results, heap)?;
+        let stride = self.compiled.captures_len();
+        let mut spans: Vec<Option<(usize, usize)>> = Vec::new();
+        let mut text_len = 0usize;
+        for (count, caps) in self.compiled.captures_iter(text).enumerate() {
             let caps = caps.map_err(ExcType::re_pattern_error)?;
-            results.push(self.build_match(&caps, subject, all_ascii, heap));
+            // `check_slice_growth` for a push of `stride` spans at once.
+            heap.tracker.check_time_every(count)?;
+            heap.tracker.check_growth(
+                spans.len() + stride - 1,
+                spans.capacity(),
+                mem::size_of::<Option<(usize, usize)>>(),
+            )?;
+            spans.reserve(stride);
+            push_spans(&caps, &mut spans);
+            // Saturating: on 32-bit targets overlapping captures can sum past `usize::MAX`.
+            text_len = caps
+                .iter()
+                .flatten()
+                .fold(text_len, |total, m| total.saturating_add(m.end() - m.start()));
         }
 
-        let list = List::new(results);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))))
+        let count = spans.len() / stride;
+        let (name_count, names_len) = self
+            .compiled
+            .capture_names()
+            .flatten()
+            .fold((0, 0), |(count, len), name| (count + 1, len + name.len()));
+        let per_match = VALUE_SIZE + HEAP_ENTRY_SIZE + ReMatch::estimated_size(stride - 1, name_count, names_len);
+        heap.tracker
+            .check_allocation(count.saturating_mul(per_match).saturating_add(text_len))?;
+        // Every match shares one refcounted subject reference, not a copy each.
+        let all_ascii = text.is_ascii();
+        let results = spans
+            .chunks_exact(stride)
+            .map(|spans| self.build_match(text, spans, subject, all_ascii, heap))
+            .collect();
+        Ok(Value::Ref(heap.allocate(HeapData::List(List::new(results)))))
     }
 }
 
-/// Preflights the growth one more match result would cause.
-///
-/// A match list grows as long as the subject allows with no instruction
-/// checkpoint in between, so without this the buffer's doubling can clear the
-/// allocator's hard-limit headroom and kill the worker.
-fn check_results_growth(results: &Vec<Value>, heap: &Heap) -> RunResult<()> {
-    Ok(heap
-        .tracker
-        .check_growth(results.len(), results.capacity(), VALUE_SIZE)?)
+/// Appends one match's byte spans to `spans`: the full match, then each group.
+fn push_spans(caps: &fancy_regex::Captures<'_, str>, spans: &mut Vec<Option<(usize, usize)>>) {
+    spans.extend(caps.iter().map(|m| m.map(|m| (m.start(), m.end()))));
 }
 
-/// [`check_results_growth`] for a buffer of borrowed match slices (`&str`, or
-/// `Option<&str>` where a split's group may be missing).
+/// Preflights the growth one more scan result would cause, for a buffer of borrowed
+/// match slices (`&str`, or `Option<&str>` where a split's group may be missing).
 ///
-/// Also polls the time limit, amortized with `check_time_every`: no instruction
-/// checkpoint can stop the scan that fills the buffer either.
+/// A scan buffer grows as long as the subject allows with no instruction checkpoint
+/// in between, so without this its doubling can clear the allocator's hard-limit
+/// headroom and kill the worker. Also polls the time limit, amortized with `check_time_every`.
 fn check_slice_growth<T>(slices: &Vec<T>, heap: &Heap) -> RunResult<()> {
     heap.tracker.check_time_every(slices.len())?;
     Ok(heap
@@ -482,7 +539,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         write!(f, "re.compile(")?;
         string_repr_fmt(&this.pattern, f)?;
         if this.flags != 0 {
-            let mut flag_parts = smallvec::SmallVec::<[&'static str; 4]>::new();
+            let mut flag_parts = SmallVec::<[&'static str; 4]>::new();
             if this.flags & IGNORECASE != 0 {
                 flag_parts.push("re.IGNORECASE");
             }
@@ -698,7 +755,7 @@ fn anchored_source(pattern: &str, suffix: &str) -> String {
     format!("\\A(?:{pattern}(?x)\n){suffix}")
 }
 
-/// Compiles a Python regex pattern string with flags into a Rust `Regex`.
+/// Compiles a pattern already translated by [`re_syntax::translate`], with flags, into a Rust `Regex`.
 ///
 /// Translates Python flag constants into inline regex flag prefixes:
 /// - `re.IGNORECASE` (2) → `(?i)` prefix
@@ -737,11 +794,15 @@ fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<
     };
 
     let mut builder = RegexBuilder::new(&full_pattern);
+    builder.max_prog_size(MAX_PROG_SIZE);
     if let Some(limit) = delegate_size_limit {
         builder.delegate_size_limit(limit);
     }
     builder.build()
 }
+
+/// Cap on the backtracking VM's instructions; translated patterns grow it only linearly with their length.
+const MAX_PROG_SIZE: usize = 1_000_000;
 
 /// True when `err` is the delegated engine's exceeded-size-limit error: the
 /// pattern is valid, its compiled form just doesn't fit the requested cap.

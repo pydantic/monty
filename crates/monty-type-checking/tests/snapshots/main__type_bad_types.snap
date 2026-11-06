@@ -48,3 +48,6 @@ bad_types.py:181:1: error[no-matching-overload] No overload of bound method `Pat
 bad_types.py:182:11: error[invalid-argument-type] Argument to bound method `Path.open` is incorrect: Expected `str | None`, found `Literal[1]`
 bad_types.py:183:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
 bad_types.py:184:1: error[no-matching-overload] No overload of bound method `Path.open` matches arguments
+bad_types.py:188:1: error[unresolved-attribute] Module `annotationlib` has no member `call_annotate_function`
+bad_types.py:189:26: error[invalid-argument-type] Argument to `ForwardRef.__init__` is incorrect: Expected `str`, found `Literal[1]`
+bad_types.py:190:42: error[invalid-argument-type] Argument to function `get_annotations` is incorrect: Expected `bool`, found `Literal["yes"]`

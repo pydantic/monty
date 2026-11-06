@@ -314,6 +314,10 @@ Under `datetime='call_host'` it learns whatever your handler answers; the defaul
 [`OSAccess`][pydantic_monty.OSAccess] handler answers with the host's real clock and zone.
 See [datetime](limitations/datetime.md#reading-the-clock).
 
+A restored session uses the whole `os_policy` of the `checkout()` that restored it, not the one it was dumped under:
+its clock, zone, sleep, process clock and entropy settings (see
+[snapshots](snapshots.md#what-restoring-does-and-does-not-carry)).
+
 ### Entropy
 
 `os.urandom()` is the only call that reads entropy from the host.
@@ -404,7 +408,7 @@ Its return value is ignored: the sandbox itself produces the `result` argument o
 Python's local [`Monty`][pydantic_monty.Monty] / [`AsyncMonty`][pydantic_monty.AsyncMonty] pools and the native
 `@pydantic/monty` binding run every session in a `monty` worker subprocess.
 Worker panics and aborts terminate the worker rather than the host.
-For WebSocket sessions, see [remote workers](#remote-workers).
+For remote sessions, see [remote workers](#remote-workers).
 
 The WebAssembly build runs off-thread in a browser Web Worker or Node `worker_threads` worker.
 Both support hard termination and replacement after WASM traps; environments without workers are rejected.
@@ -426,6 +430,9 @@ Two more properties of the subprocess worker boundary matter:
     A worker that violates the protocol is discarded.
     See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
     for what the per-frame budget counts and excludes.
+- **Workers are reused, then recycled.** A compromised worker could see later sessions until it is replaced, after
+    1000 checkouts by default.
+    Set the count to 1 when callers do not trust each other (see [worker recycling](resource-limits.md#worker-recycling)).
 
 From Rust, this is why [`monty-pool`](quickstart/rust.md) is the recommended entry point rather than the in-process
 `monty` crate.
@@ -444,9 +451,10 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Neither accumulates across feeds — there is no session-lifetime budget, so bounding what a session costs in total is
     the host's job.
 - The in-sandbox time check only runs at interpreter checkpoints.
-    Host-side backstops cover a wedged worker: `request_timeout` (a per-turn deadline; a loop of quick host calls
-    resets it), and one grace per duration limit — `feed_duration_limit_grace` and `turn_duration_limit_grace` — each firing only if the
-    session also set the limit it backs.
+    Host-side backstops cover a wedged worker.
+    `request_timeout` sets a per-turn wall deadline, reset by each quick host call.
+    The optional `feed_duration_limit_grace` and `turn_duration_limit_grace` use the selected execution clock.
+    They apply only when the session sets the corresponding duration budget.
     Set `request_timeout` and at least one duration limit for untrusted code.
     `max_turn_duration_secs` does not close the gap named above: its clock also restarts at each host answer, so a loop
     of quick host calls resets it just as it resets `request_timeout`.
@@ -455,14 +463,20 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     Across feeds neither applies — every in-sandbox budget restarts at the next feed, so a session fed repeatedly is
     bounded only by what the host counts and ends itself.
     Every local pool ([`Monty`][pydantic_monty.Monty], [`AsyncMonty`][pydantic_monty.AsyncMonty], JavaScript `Monty.create()`, [`PoolConfig::subprocess`](api/rust/monty-pool.md#poolconfig)) defaults
-    `request_timeout` to no deadline; only the WebSocket pools ([`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket],
-    JavaScript `MontyWebsocket.create()`) set one, at 10 seconds.
+    `request_timeout` to no deadline; only the remote pools ([`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote],
+    JavaScript `MontyRemote.create()`) set one, at 10 seconds.
+    Local Python, JavaScript and Rust subprocess pools support [CPU execution clocks](resource-limits.md#cpu-execution-clock)
+    on Linux only. Their graces use an independent process CPU counter.
+    CPU mode requires a finite wall deadline: `request_timeout` in Python, `requestTimeout` in JavaScript,
+    or `PoolConfig::request_timeout` in Rust.
+    Remote clients adopt the server's clock; only the server's local CPU-mode subprocess pool enforces CPU.
 - **After a memory or time limit fires, no guarantees are made about heap state or reference counts.** Discard the
     session rather than continuing to run code in it.
     The pool does not do this for you, and neither limit stops you: the duration budgets restart at the next feed, and
     after a `max_memory` trip a later feed may quietly succeed against a corrupted heap.
-- Compilation of the fed source is not charged against the duration budgets.
-    It has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
+- The VM duration budgets do not charge compilation of the fed source.
+    The supervisor CPU limit includes compilation and protocol CPU during each execution request.
+    Compilation has its own structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally` expansion), but
     a host accepting untrusted source should still isolate compilation — as the subprocess and WebAssembly runtimes do.
     The parser grows its native stack outside the allocator's accounting, so a source longer than
     `CompileOptions::source_scan_threshold` (4 KiB by default, and fixed at that for Python and JavaScript hosts) is
@@ -475,6 +489,9 @@ See [resource limits](resource-limits.md) for the full picture; the security-rel
     A snippet can otherwise retry a rejected host call while the duration budgets are paused.
     Each allowed `ClassType(init=True)` construction adds an instance-store entry outside `max_memory`.
     The pool aborts the first suspension over the limit with an uncatchable `RuntimeError`.
+- [`MemoryFile`][pydantic_monty.MemoryFile] content written through `OSAccess` lives in the host process, outside
+    `max_memory`.
+    `OSAccess` caps what writes can grow it to: `max_total_file_bytes`, 50 MB by default (see [write limits](limitations/filesystem.md#write-limits)).
 
 ## Where the guarantees weaken
 
@@ -493,11 +510,16 @@ process. The Python and JavaScript APIs do not offer an in-process execution mod
 
 ### Remote workers
 
-[`AsyncMontyWebsocket`][pydantic_monty.AsyncMontyWebsocket] (Python), `MontyWebsocket` (JavaScript) and [`PoolConfig::websocket`](api/rust/monty-pool.md#poolconfig) (Rust) dial a remote worker instead of spawning a local one.
+[`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] (Python), `MontyRemote` (JavaScript) and [`PoolConfig::remote`](api/rust/monty-pool.md#poolconfig) (Rust) reach a remote worker over gRPC instead of spawning a local one: one HTTP/2 connection per pool, one stream per session.
+An `https://` server's certificate is verified against the operating system's trust store, not roots bundled into the client, so a root the OS has distrusted is refused without a Monty release.
+macOS and Windows verify with the OS and apply its revocation data; Linux checks the chain against the distro CA bundle only, with no revocation checking, and a Linux host with no CA bundle cannot create an `https://` pool.
 **A remote peer need not be a Monty sandbox at all.** It may be real CPython with no sandbox, no resource limits and
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the
 other end.
+
+Closing a remote pool waits, up to one second each, for the server to end the streams of sessions already finished.
+If the server checks a session's credentials when it ends the stream, keep them valid until the pool's close returns.
 
 ### Pin the worker binary
 

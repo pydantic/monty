@@ -4,6 +4,8 @@ use std::str;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 
+use crate::{bytecode::VM, heap::HeapData, value::Value};
+
 /// UTF-8 text of at most 15 bytes.
 /// The length enum supplies niches so a containing `Value` remains 16 bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,8 +22,24 @@ impl InlineStr {
         Some(Self { len, bytes })
     }
 
+    /// Compares without validating UTF-8; non-string operands return `None`.
+    pub(crate) fn eq_value(&self, other: &Value, vm: &VM<'_>) -> Option<bool> {
+        match other {
+            Value::InlineString(other) => Some(self == other),
+            Value::InternString(id) => Some(self.as_bytes() == vm.interns.get_str(*id).as_bytes()),
+            Value::Ref(id) if let HeapData::Str(other) = vm.heap.get(*id) => {
+                Some(self.as_bytes() == other.as_str().as_bytes())
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len.get()]
+    }
+
     pub(crate) fn as_str(&self) -> &str {
-        str::from_utf8(&self.bytes[..self.len.get()]).expect("inline string contains valid UTF-8")
+        str::from_utf8(self.as_bytes()).expect("inline string contains valid UTF-8")
     }
 }
 
