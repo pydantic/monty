@@ -110,7 +110,7 @@ impl<'h> PyStr<'h> {
     /// ASCII strings use byte coordinates directly.
     fn is_ascii(&self, vm: &VM<'h>) -> bool {
         match self {
-            PyStr::Heap(string) => string.get(vm.heap).is_ascii(),
+            PyStr::Heap(heap_string) => heap_string.get(vm.heap).is_ascii(),
             PyStr::Interned(id) => vm.interns.str_is_ascii(*id),
             PyStr::Inline(text) => text.as_str().is_ascii(),
         }
@@ -119,7 +119,7 @@ impl<'h> PyStr<'h> {
     /// Returns the number of Unicode code points; ASCII strings use their byte length.
     fn char_len(&self, vm: &VM<'h>) -> usize {
         match self {
-            PyStr::Heap(string) => string.get(vm.heap).char_len(),
+            PyStr::Heap(heap_string) => heap_string.get(vm.heap).char_len(),
             PyStr::Interned(id) => {
                 let text = vm.interns.get_str(*id);
                 if vm.interns.str_is_ascii(*id) {
@@ -177,7 +177,7 @@ impl<'h> PyStr<'h> {
         match self {
             Self::Interned(id) => vm.interns.get_str(*id),
             Self::Inline(text) => text.as_str(),
-            Self::Heap(value) => value.get(vm.heap).as_str(),
+            Self::Heap(heap_string) => heap_string.get(vm.heap).as_str(),
         }
     }
 }
@@ -187,7 +187,7 @@ impl PyObjectIdentity for PyStr<'_> {
         match self {
             Self::Interned(id) => Identity::InternString(id.index()),
             Self::Inline(text) => Identity::InlineString(*text),
-            Self::Heap(value) => value.py_identity(),
+            Self::Heap(heap_string) => heap_string.py_identity(),
         }
     }
 }
@@ -201,8 +201,8 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         match self {
             Self::Interned(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
             Self::Inline(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
-            Self::Heap(value) => Ok(CallResult::Value(StringIterator::from_heap(
-                value.id(),
+            Self::Heap(heap_string) => Ok(CallResult::Value(StringIterator::from_heap(
+                heap_string.id(),
                 self.is_ascii(vm),
                 vm,
             ))),
@@ -213,17 +213,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         match self {
             Self::Interned(id) => Ok(Some(vm.interns.str_hash(*id))),
             Self::Inline(text) => Ok(Some(hash_python_str(text.as_str()))),
-            Self::Heap(value) => {
-                let string = value.get(vm.heap);
-                if let Some(hash) = string.1.get() {
-                    Ok(Some(hash))
-                } else {
-                    // Equal strings must hash identically across all storage representations.
-                    let hash = hash_python_str(string.as_str());
-                    string.1.set(Some(hash));
-                    Ok(Some(hash))
-                }
-            }
+            Self::Heap(heap_string) => Ok(Some(heap_string.get(vm.heap).hash())),
         }
     }
 
@@ -239,7 +229,7 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
         Ok(match self {
             Self::Interned(id) => Value::InternString(*id),
             Self::Inline(text) => Value::InlineString(*text),
-            Self::Heap(value) => value.clone_value(vm.heap),
+            Self::Heap(heap_string) => heap_string.clone_value(vm.heap),
         })
     }
 

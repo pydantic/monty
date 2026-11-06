@@ -3,7 +3,7 @@
 use std::{cell::Cell, ops};
 
 use crate::{
-    hash::HashValue,
+    hash::{HashValue, hash_python_str},
     heap::{HeapId, HeapItem},
 };
 
@@ -37,6 +37,18 @@ impl HeapStr {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Returns the Python string hash, computing it only on the first call.
+    pub fn hash(&self) -> HashValue {
+        if let Some(hash) = self.1.get() {
+            hash
+        } else {
+            // Use the same hash as inline and interned strings for dictionary lookup.
+            let hash = hash_python_str(self.as_str());
+            self.1.set(Some(hash));
+            hash
+        }
     }
 
     /// Whether every character is ASCII, scanning the text only on the first call.

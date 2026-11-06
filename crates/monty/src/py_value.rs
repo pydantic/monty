@@ -61,7 +61,7 @@ macro_rules! define_py_value {
         impl<'h> From<HeapReadOutput<'h>> for PyValue<'h> {
             fn from(value: HeapReadOutput<'h>) -> Self {
                 match value {
-                    HeapReadOutput::Str(value) => Self::Str(PyStr::Heap(value)),
+                    HeapReadOutput::Str(heap_string) => Self::Str(PyStr::Heap(heap_string)),
                     HeapReadOutput::Bytes(value) => Self::Bytes(PyBytes::Heap(value)),
                     HeapReadOutput::LongInt(value) => Self::Int(PyInt::Heap(value)),
                     $(HeapReadOutput::$variant(value) => Self::$variant(value),)*
