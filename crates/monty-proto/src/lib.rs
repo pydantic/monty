@@ -39,6 +39,8 @@ pub mod worker;
 /// `import_stubs` OS calls, which version 5 parents cannot answer. Version 7
 /// moved the remote transport from one WebSocket per session to one gRPC
 /// stream per session, with `Ping`/`Pong` liveness and status-ended streams.
+/// `StreamedCalls` did not bump it: a parent opts in with
+/// `Configure.accepts_streamed_calls`, which older children ignore.
 pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.

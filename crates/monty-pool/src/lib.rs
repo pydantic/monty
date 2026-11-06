@@ -25,7 +25,7 @@ use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
         Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, Persistence, PrintFuture, ReplConfig,
-        ResumeValue, TurnEvent, on_print_sync,
+        ResumeValue, StreamedCall, TurnEvent, on_print_sync,
     },
     pool::Pool,
 };
@@ -131,6 +131,11 @@ pub struct PoolConfig {
     /// shutdown named and re-sends the request the relay reported it did not run. The session's suspension
     /// and sleep totals carry over. Remote transport only; on by default.
     pub auto_resume: bool,
+    /// Let calls to async host functions that the sandbox does not await at once
+    /// stream to the host without suspending the worker (`Configure.accepts_streamed_calls`).
+    /// Saves a round trip per call, which matters most over the network, but moves
+    /// call-time errors to the `await`. On by default for [`Self::remote`], off for [`Self::subprocess`].
+    pub stream_async_calls: bool,
     /// Where pool and turn metrics are recorded, from
     /// [`TelemetryAdapterHandle::metrics`](telemetry::TelemetryAdapterHandle::metrics).
     /// `None` records nothing at all. Independent of tracing: metrics cover
@@ -150,10 +155,12 @@ impl PoolConfig {
     }
 
     /// Creates a remote-transport config for the gRPC server at `url`, with a
-    /// stream opened per checkout. `min_processes` is 0 (no pre-warming).
+    /// stream opened per checkout. `min_processes` is 0 (no pre-warming) and
+    /// `stream_async_calls` is on.
     pub fn remote(url: impl Into<String>) -> Self {
         let mut config = Self::with_transport(MontyTransport::Remote(url.into()));
         config.min_processes = 0;
+        config.stream_async_calls = true;
         config
     }
 
@@ -171,6 +178,7 @@ impl PoolConfig {
             turn_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),
             max_checkouts_per_worker: Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER),
             auto_resume: true,
+            stream_async_calls: false,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
             #[cfg(feature = "telemetry")]
             metrics: None,

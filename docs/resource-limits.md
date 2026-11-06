@@ -46,15 +46,15 @@ Monty enforces hard limits on memory, execution time and recursion depth, config
 
 ## Settings
 
-| Key                      | Meaning                                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `max_memory`             | Maximum heap memory in bytes                                                                                          |
-| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                     |
-| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                |
-| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                      |
-| `gc_interval`            | Run garbage collection every N allocations                                                                            |
-| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000) |
-| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                            |
+| Key                      | Meaning                                                                                                                                                                           |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_memory`             | Maximum heap memory in bytes                                                                                                                                                      |
+| `max_feed_duration_secs` | Maximum execution time per `feed_run`, in seconds                                                                                                                                 |
+| `max_turn_duration_secs` | Maximum execution time per host round trip, in seconds                                                                                                                            |
+| `max_recursion_depth`    | Maximum function call stack depth (default 1000)                                                                                                                                  |
+| `gc_interval`            | Run garbage collection every N allocations                                                                                                                                        |
+| `max_suspensions`        | Maximum host round trips (external calls, `os` callbacks, name lookups, future resolution) per session (default 1000), counting calls to async host functions started without one |
+| `max_total_sleep_secs`   | Maximum cumulative time the host waits on `time.sleep()` and `asyncio.sleep()`, in seconds                                                                                        |
 
 Every key is optional.
 Omit `max_memory`, either duration key or `max_total_sleep_secs`, or set them to `None`, to disable that limit.
@@ -247,6 +247,10 @@ could abort the process.
 `max_suspensions` counts external calls, host-object method calls and construction, lazy attribute lookups, `os`
 callbacks (the sleeps among them in every mode but `'zero'`, the clock only under `'call_host'`), name lookups and
 future-resolution events.
+Each call to an [async host function](host-functions.md#starting-calls-without-waiting) counts too, though it starts
+without a suspension.
+Once a session has started `max_suspensions` such calls, the next one suspends, so the limit still ends a loop that
+never awaits them.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.

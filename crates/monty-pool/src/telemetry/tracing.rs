@@ -11,7 +11,11 @@
 //! different threads, so an entered-span stack would be wrong and make
 //! [`crate::Checkout`] `!Send`.
 
-use std::fmt::{self, Write};
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Write},
+    mem,
+};
 
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
@@ -52,6 +56,9 @@ pub(crate) struct Recorder {
     /// The span of the suspension the feed is blocked on, closed when the
     /// answering `Resume*` is sent so its duration is the host round-trip.
     pending: Option<OpenSpan>,
+    /// One span per streamed call, by call id: open from the call until the
+    /// `ResumeFutures` carrying its result, so the host call runs under it.
+    streamed_calls: BTreeMap<u32, OpenSpan>,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -74,6 +81,7 @@ impl Recorder {
             worker_pid,
             turn: None,
             pending: None,
+            streamed_calls: BTreeMap::new(),
             feed: None,
             session: None,
             dump_turn: false,
@@ -127,6 +135,7 @@ impl Recorder {
             // cheap to be safe against) is closed by the overwrite
             Some(pb::parent_request::Kind::Configure(c)) => {
                 self.pending = None;
+                self.streamed_calls.clear();
                 self.feed = None;
                 let limits = c.limits.as_ref();
                 let (script_name, script_name_cut) = truncate_str(&c.script_name);
@@ -175,6 +184,7 @@ impl Recorder {
             // land mid-suspension, so close innermost-first.
             Some(pb::parent_request::Kind::Reset(_)) => {
                 self.pending = None;
+                self.streamed_calls.clear();
                 self.feed = None;
                 self.session = None;
             }
@@ -193,6 +203,7 @@ impl Recorder {
                 // a feed while one is open is a checkout-level error the
                 // worker rejects; close the stale spans so nesting stays sane
                 self.pending = None;
+                self.streamed_calls.clear();
                 self.feed = None;
                 let cut = code_cut | inputs_cut;
                 let span = start_span(logfire::span!(
@@ -227,12 +238,29 @@ impl Recorder {
                 self.close_pending("value", &result, cut);
             }
             // An abort answers with the exception the sandbox will raise.
+            // the streamed calls the aborted feed would have settled end with it
             Some(pb::parent_request::Kind::AbortFeed(a)) => {
                 let (result, cut) = a.exception.as_ref().map_or((MISSING.into(), false), render_raised);
+                for mut call in mem::take(&mut self.streamed_calls).into_values() {
+                    call.record("aborted_with", &result, cut);
+                }
                 self.close_pending("aborted_with", &result, cut);
             }
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
-                if let [result] = r.results.as_slice()
+                // a streamed call's result closes its own span
+                let results: Vec<&pb::FutureResult> = r
+                    .results
+                    .iter()
+                    .filter(|result| match self.streamed_calls.remove(&result.call_id) {
+                        Some(mut call) => {
+                            let (value, cut) = render_ext_result(result.result.as_ref(), r.values.as_ref());
+                            call.record("return_value", &value, cut);
+                            false
+                        }
+                        None => true,
+                    })
+                    .collect();
+                if let [result] = results.as_slice()
                     && self
                         .pending
                         .as_ref()
@@ -242,13 +270,15 @@ impl Recorder {
                     self.close_pending("return_value", &value, cut);
                 } else {
                     let pending = self.take_pending();
-                    let (results, cut) = render_future_results(&r.results, r.values.as_ref());
-                    logfire::info!(
-                        parent: pending,
-                        "future results",
-                        results = results,
-                        length_limit_exceeded = cut.then_some(true),
-                    );
+                    if !results.is_empty() {
+                        let (results, cut) = render_future_results(&results, r.values.as_ref());
+                        logfire::info!(
+                            parent: pending,
+                            "future results",
+                            results = results,
+                            length_limit_exceeded = cut.then_some(true),
+                        );
+                    }
                 }
             }
             Some(pb::parent_request::Kind::Dump(_)) => {
@@ -267,6 +297,7 @@ impl Recorder {
             // exiting; closing whatever is open is the record
             Some(pb::parent_request::Kind::Shutdown(_)) => {
                 self.pending = None;
+                self.streamed_calls.clear();
                 self.feed = None;
                 self.session = None;
             }
@@ -310,30 +341,16 @@ impl Recorder {
                     );
                 }
             }
+            // the worker kept running, so each span stays open, under the
+            // feed, until the `ResumeFutures` carrying the call's result
+            Some(pb::child_event::Kind::StreamedCalls(started)) => {
+                for c in &started.calls {
+                    let span = self.call_span(c, micros, max_feed_duration);
+                    self.streamed_calls.insert(c.call_id, span);
+                }
+            }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
-                let (args, kwargs, args_cut) = render_call_arguments(c);
-                let (function_name, name_cut) = truncate_str(&c.function_name);
-                let position = PositionAttrs::new(c.position.as_ref());
-                let cut = args_cut | name_cut | position.cut;
-                let span = start_span(logfire::span!(
-                    parent: self.context_span(),
-                    "call {function_name}",
-                    function_name = function_name,
-                    args = args,
-                    kwargs = kwargs,
-                    call_id = c.call_id,
-                    object_id = c.object_id.as_ref().map(MontyUuid::to_string),
-                    sandbox.code.file.path = position.file,
-                    sandbox.code.offset.start = position.start,
-                    sandbox.code.offset.end = position.end,
-                    length_limit_exceeded = cut.then_some(true),
-                    total_execution_micros = micros,
-                    max_feed_duration_micros = max_feed_duration,
-                    // Filled by ResumeCall, an eager ResumeFutures, or AbortFeed.
-                    return_value = Empty,
-                    aborted_with = Empty,
-                ));
-                let mut pending = OpenSpan::new(span, cut);
+                let mut pending = self.call_span(c, micros, max_feed_duration);
                 pending.eager_call_id = c.allow_eager_await.then_some(c.call_id);
                 self.pending = Some(pending);
             }
@@ -486,6 +503,41 @@ impl Recorder {
         self.context_span().context()
     }
 
+    /// The span of the streamed call `call_id`, for the host call to run
+    /// under; the innermost open span when the call has none.
+    pub(crate) fn streamed_call_context(&self, call_id: u32) -> opentelemetry::Context {
+        self.streamed_calls
+            .get(&call_id)
+            .map_or_else(|| self.callback_context(), |call| call.span().context())
+    }
+
+    /// Opens the `call {function_name}` span for a suspended or streamed call.
+    fn call_span(&self, c: &WireFunctionCall, micros: u64, max_feed_duration: Option<u64>) -> OpenSpan {
+        let (args, kwargs, args_cut) = render_call_arguments(c);
+        let (function_name, name_cut) = truncate_str(&c.function_name);
+        let position = PositionAttrs::new(c.position.as_ref());
+        let cut = args_cut | name_cut | position.cut;
+        let span = start_span(logfire::span!(
+            parent: self.context_span(),
+            "call {function_name}",
+            function_name = function_name,
+            args = args,
+            kwargs = kwargs,
+            call_id = c.call_id,
+            object_id = c.object_id.as_ref().map(MontyUuid::to_string),
+            sandbox.code.file.path = position.file,
+            sandbox.code.offset.start = position.start,
+            sandbox.code.offset.end = position.end,
+            length_limit_exceeded = cut.then_some(true),
+            total_execution_micros = micros,
+            max_feed_duration_micros = max_feed_duration,
+            // Filled by ResumeCall, a ResumeFutures, or AbortFeed.
+            return_value = Empty,
+            aborted_with = Empty,
+        ));
+        OpenSpan::new(span, cut)
+    }
+
     fn context_span(&self) -> Span {
         self.turn
             .as_ref()
@@ -516,6 +568,7 @@ impl Recorder {
     fn end_feed(&mut self) {
         self.turn = None;
         self.pending = None;
+        self.streamed_calls.clear();
         self.feed = None;
     }
 }
@@ -648,7 +701,7 @@ fn render_raised(e: &pb::RaisedException) -> (OtelValue, bool) {
 
 /// Renders resolved futures as `call_id: result, ...`; the bool reports a cut
 /// of any result — or of the joined output — at [`ATTR_SIZE_LIMIT`].
-fn render_future_results(results: &[pb::FutureResult], values: Option<&WireArena>) -> (Option<String>, bool) {
+fn render_future_results(results: &[&pb::FutureResult], values: Option<&WireArena>) -> (Option<String>, bool) {
     if results.is_empty() {
         return (None, false);
     }
@@ -1252,6 +1305,8 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
             "double".to_owned(),
@@ -1439,6 +1494,8 @@ mod tests {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })));
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
             MontyObject::int(1),

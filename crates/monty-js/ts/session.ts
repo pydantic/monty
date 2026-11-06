@@ -12,7 +12,13 @@
 import { context as ContextAPI, type Context } from '@opentelemetry/api'
 
 import type { NativeSession } from '../native-addon.js'
-import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
+import { isAsyncFunction } from './asyncFunction.js'
+import {
+  bindPrintCallback,
+  bindStreamedCallCallback,
+  getCallbackContext,
+  runWithCallbackContext,
+} from './callbackContext.js'
 import {
   AttrNotExposed,
   attributeErrorMessage,
@@ -48,6 +54,7 @@ import {
   type ModuleReadTurn,
   type NameLookupTurn,
   type NativeFutureResult,
+  type NativeStreamedCall,
   type NativeTurn,
   type OkTurn,
   type NotMountedTurn,
@@ -55,6 +62,7 @@ import {
   type ResolveFuturesTurn,
   type ShutdownTurn,
   osCallAcceptsFuture,
+  streamedCallsOf,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -198,6 +206,8 @@ export class MontySession {
    *  wrapper sent through any boundary of this session lives here so method
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
+  /** Starts a call the worker streamed mid-turn; bound by each `feedRun` to its answerer and async context. */
+  private onStreamedCall: ((callId: number, parent?: string | null) => void) | undefined
 
   /** @internal — sessions are created by `Monty.checkout`, which validates the modules first. */
   constructor(
@@ -207,6 +217,7 @@ export class MontySession {
   ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
+    native.setStreamedCallSink((callId, parent) => this.onStreamedCall?.(callId, parent))
   }
 
   /**
@@ -221,23 +232,38 @@ export class MontySession {
     this.ensureUsable()
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
-    const onPrint = bindPrintCallback(printTarget.write.bind(printTarget))
     // Discard pending futures between feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
+    const onPrint = bindPrintCallback((stream, text) => printTarget.write(stream, text))
+    // streamed calls arrive on the session's sink mid-turn, so each starts while the sandbox runs
+    this.onStreamedCall = bindStreamedCallCallback((callId) => {
+      // a failed print ends the feed, so no host call may start after one
+      if (!printTarget.hasFailed()) {
+        answerer.startStreamedCall(callId)
+      }
+    })
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        asyncFunctions: asyncFunctionNames(options.externalLookup),
+      },
       onPrint,
     )) as NativeTurn
     for (;;) {
+      // A failed print is checked before any started call runs on the host, so
+      // an output limit or a throwing print callback stops host-side effects too.
       switch (turn.kind) {
         case 'complete':
           printTarget.throwIfFailed()
+          await answerer.startCalls(turn)
           return restore(turn.value, this.instances)
         case 'error':
           printTarget.throwIfFailed()
+          await answerer.startCalls(turn)
           throw montyErrorFromNative(turn.exception)
         case 'typingError':
           printTarget.throwIfFailed()
@@ -257,6 +283,8 @@ export class MontySession {
       } catch (err) {
         throw this.poison(err instanceof Error ? err : new Error(String(err)))
       }
+      // before the turn is answered: a `resolveFutures` turn may name these calls
+      await answerer.startCalls(turn)
       try {
         turn = await answerer.answer(turn, onPrint)
       } catch (err) {
@@ -299,7 +327,11 @@ export class MontySession {
       code,
       prepareInputs(options.inputs, this.instances),
       mountsToNative(options.mount),
-      { cwd: options.cwd, skipTypeCheck: options.skipTypeCheck ?? false },
+      {
+        cwd: options.cwd,
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        // no `asyncFunctions`: every call suspends, so each reaches a snapshot
+      },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -570,7 +602,10 @@ class TurnAnswerer {
           next = this.native.resumeNameLookup(null, null, onPrint)
         } else {
           const v = lookup[turn.name]
-          if (typeof v === 'function') {
+          if (isAsyncFunction(v)) {
+            // by value, so the native converter sees that it is async
+            next = this.native.resumeNameLookup(null, { value: v }, onPrint)
+          } else if (typeof v === 'function') {
             next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
           } else {
             next = this.native.resumeNameLookup(null, { value: prepare(v, this.instances) }, onPrint)
@@ -646,6 +681,71 @@ class TurnAnswerer {
     const entry = ownEntry(resolved.attrs, attr)
     // Preserve the receiver of `module.attr(...)`.
     return boxed(typeof entry === 'function' ? (entry as ExternalFunction).bind(resolved.receiver) : entry)
+  }
+
+  /**
+   * Runs the calls to async host functions `turn` started, in the order the
+   * sandbox made them, and registers each outcome as the call's future. Never
+   * throws: a lookup failure or a throwing function settles that future with
+   * the error, which the sandbox raises at the `await`.
+   */
+  async startCalls(turn: object): Promise<void> {
+    const started = streamedCallsOf(turn)
+    if (started.length === 0) {
+      return
+    }
+    const spanKey = (turn as { callbackSpanKey?: string }).callbackSpanKey
+    await runWithCallbackContext(spanKey, async () => {
+      for (const call of started) {
+        this.registerFuture(call.callId, (await this.startCall(call)).promise)
+      }
+    })
+  }
+
+  /**
+   * Starts a call the native session announced mid-turn on its streamed-call
+   * sink (see `setStreamedCallSink` in src/pool.rs), registering its future at once so a later `resolveFutures`
+   * finds it. Runs in the announcing turn's callback context.
+   */
+  startStreamedCall(callId: number): void {
+    const call = this.native.takeStreamedCall(callId) as NativeStreamedCall | null
+    if (call !== null) {
+      this.registerFuture(
+        call.callId,
+        this.startCall(call).then(({ promise }) => promise),
+      )
+    }
+  }
+
+  /** Resolves and calls one started call's function; the promise settles with its outcome. */
+  private async startCall(call: NativeStreamedCall): Promise<{ promise: Promise<unknown> }> {
+    let resolved: { value: unknown } | undefined
+    try {
+      resolved = await this.hostEntry(call.functionName)
+    } catch (err) {
+      return { promise: Promise.reject(err) }
+    }
+    if (resolved === undefined) {
+      // a future settles only with a value or an error, so "not found" is the NameError a suspension raises
+      return { promise: Promise.reject(pythonError('NameError', `name '${call.functionName}' is not defined`)) }
+    }
+    if (typeof resolved.value !== 'function') {
+      return { promise: Promise.reject(pythonError('TypeError', notCallableMessage(resolved.value))) }
+    }
+    return { promise: this.callAsPromise(resolved.value as ExternalFunction, call) }
+  }
+
+  /** Calls `fn` with the call's arguments, folding a synchronous return or throw into a promise. */
+  private callAsPromise(
+    fn: ExternalFunction,
+    call: { args: unknown[]; kwargs: [unknown, unknown][] },
+  ): Promise<unknown> {
+    try {
+      const [args, kwargs] = restoreCallArgs(call, this.instances)
+      return Promise.resolve(fn(...(buildCallArgs(args, kwargs) as never[])))
+    } catch (err) {
+      return Promise.reject(err)
+    }
   }
 
   /**
@@ -1055,6 +1155,11 @@ class PrintTarget {
     }
   }
 
+  /** Whether a print callback has failed this feed. */
+  hasFailed(): boolean {
+    return this.failed
+  }
+
   /** Print failures take precedence over the turn's own outcome. */
   throwIfFailed(): void {
     if (this.failed) {
@@ -1075,7 +1180,7 @@ class SnapshotDriver {
 
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
-    return bindPrintCallback(this.printTarget.write.bind(this.printTarget))
+    return bindPrintCallback((stream, text) => this.printTarget.write(stream, text))
   }
 
   constructor(
@@ -1090,6 +1195,11 @@ class SnapshotDriver {
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
+    if (streamedCallsOf(turn).length > 0) {
+      // `feedStart` never asks the worker to start calls, and a snapshot cannot
+      // hand over calls that started without a suspension.
+      throw this.poison(new Error('worker started host calls during feedStart()'))
+    }
     for (;;) {
       switch (turn.kind) {
         case 'complete':
@@ -1572,10 +1682,35 @@ function moduleValue(path: string, entry: ExternalModule): HostModuleValue {
   return new HostModuleValue(path, entry.id, attrs)
 }
 
+/** A proxy named by its dotted path; async when `fn` is, so its calls still start without waiting. */
 function namedHostFunction(name: string, fn: ExternalFunction): ExternalFunction {
-  const proxy: ExternalFunction = (...args: unknown[]) => fn(...(args as never[]))
+  const proxy: ExternalFunction = isAsyncFunction(fn)
+    ? async (...args: unknown[]) => await fn(...(args as never[]))
+    : (...args: unknown[]) => fn(...(args as never[]))
   Object.defineProperty(proxy, 'name', { value: name })
   return proxy
+}
+
+/**
+ * The own `externalLookup` keys holding async functions, sent with the feed so
+ * a bare call to one starts without waiting for the host.
+ * Reads data properties only: a getter runs lazily, when the sandbox reads its
+ * name, and the converter checks the value it returns then.
+ */
+function asyncFunctionNames(lookup: Record<string, unknown> | undefined): string[] {
+  if (lookup === undefined) {
+    return []
+  }
+  return Object.entries(Object.getOwnPropertyDescriptors(lookup))
+    .filter(([, descriptor]) => 'value' in descriptor && isAsyncFunction(descriptor.value))
+    .map(([key]) => key)
+}
+
+/** A JS error the sandbox re-raises as Python's `excType` (see [`jsErrorParts`]). */
+function pythonError(excType: string, message: string): Error {
+  const err = new Error(message)
+  err.name = excType
+  return err
 }
 
 /** Positional args, with kwargs appended as an object when present. */

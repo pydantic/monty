@@ -503,6 +503,17 @@ pub fn get_name(f: &Bound<'_, PyAny>) -> String {
         .unwrap_or_else(|_| "<unknown>".to_string())
 }
 
+/// Whether `f` is a coroutine function by `inspect.iscoroutinefunction` (an
+/// `async def`, or a `functools.partial` of one), so its calls start without
+/// waiting for the host. A failing check counts as not async.
+pub fn is_coroutine_function(f: &Bound<'_, PyAny>) -> bool {
+    let py = f.py();
+    py.import(intern!(py, "inspect"))
+        .and_then(|inspect| inspect.call_method1(intern!(py, "iscoroutinefunction"), (f,)))
+        .and_then(|result| result.is_truthy())
+        .unwrap_or(false)
+}
+
 /// get the `__doc__` attribute from a (hopefully) function
 pub fn get_docstring(f: &Bound<'_, PyAny>) -> Option<String> {
     f.getattr(intern!(f.py(), "__doc__"))

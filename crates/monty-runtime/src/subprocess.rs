@@ -4,8 +4,8 @@
 //! state machine). Reads framed [`pb::ParentRequest`]s from stdin and writes
 //! the [`pb::ChildEvent`]s the child emits to stdout (see `monty-proto` for the
 //! schema and protocol rules). The child is strictly turn-based: one request
-//! in, zero or more streamed `Print` events out, then exactly one turn-ending
-//! event.
+//! in, zero or more streamed `Print` and `StreamedCalls` events out, then
+//! exactly one turn-ending event.
 //!
 //! Crash isolation is the entire point of this mode: the parent must treat a
 //! child that exits (or EOFs) *without* a `FatalError` event as crashed —

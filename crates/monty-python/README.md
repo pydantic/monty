@@ -70,6 +70,11 @@ first import, and a factory runs once, when a feed first needs it, and may be as
 An `ExternalModule` copies its `attrs` dict at construction and imports as a `module` object: callables become host
 functions, nested `ExternalModule` values become importable submodules, and other values are converted normally.
 Its `id` identifies the module when it crosses back out of the sandbox.
+With `stream_async_calls` (on by default for `AsyncMontyRemote`, off for `AsyncMonty`), a `feed_run` call to a
+coroutine function (by `inspect.iscoroutinefunction`) in `external_lookup`
+or an `ExternalModule` that is not awaited at once starts without suspending the worker: the call returns an awaitable
+at once, and the host's result or error arrives at the `await`.
+`feed_start()` and the sync `Monty` suspend at every call.
 The optional `.pyi` source in `stubs` is requested at the first type-checked import and retained for the session.
 An import of a non-bundled name the mapping does not answer reads `<cwd>/name/__init__.py` (or `name.py`) through the
 `os` handler, then the feed's mounts, and runs it as the module, once per session.

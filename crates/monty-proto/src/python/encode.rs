@@ -25,7 +25,8 @@ use super::{
     },
     convert::{
         PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring, get_name, get_pure_posix_path,
-        py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
+        is_coroutine_function, py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty,
+        py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
     external_module::PyExternalModule,
@@ -574,5 +575,6 @@ fn callable_node(obj: &Bound<'_, PyAny>) -> MontyNode {
     MontyNode::Function {
         name: get_name(obj),
         docstring: get_docstring(obj),
+        is_async: is_coroutine_function(obj),
     }
 }

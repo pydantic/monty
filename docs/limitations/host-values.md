@@ -50,6 +50,9 @@ The turn completes and the session remains usable; the wire format itself has no
 A host-function proxy dispatches by name against the current feed's `external_lookup`, not to a fixed callable.
 Replacing an entry changes the target of every retained proxy for that name.
 Replacing it with a non-callable makes calls raise `TypeError`.
+A proxy also remembers whether the host function is `async`, which decides whether its calls can start without
+waiting (see [asyncio.md](asyncio.md#calls-to-async-host-functions-raise-at-the-await)).
+A sync and an async host function sharing one name are two distinct proxies (`f is g` is `False`), each keeping its own behaviour.
 
 Non-callable values resolved through `external_lookup` are cached in the sandbox namespace.
 Later host-side changes to that entry are not observed by reads of the cached value.

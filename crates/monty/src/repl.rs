@@ -865,6 +865,10 @@ pub struct ReplFunctionCall {
     pub object_id: Option<MontyUuid>,
     /// The host may await a coroutine and answer with [`Self::resume_eager`].
     pub allow_eager_await: bool,
+    /// The callee is an async host function: the host may answer with
+    /// [`Self::resume_pending`] without running it first.
+    #[serde(default)]
+    pub is_async: bool,
     /// Where the call expression is in the source.
     pub position: SourceRange,
     /// Internal REPL execution snapshot.
@@ -896,6 +900,23 @@ impl ReplFunctionCall {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 
+    /// [`Self::resume_pending`] without starting a new turn, for a call the sandbox
+    /// starts without suspending: sandbox execution time so far keeps counting
+    /// against `max_turn_duration`. Host time is never counted.
+    pub fn resume_pending_in_turn(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot
+            .run_inner(ExtFunctionResult::Future(self.call_id), None, Turn::Continue, print)
+    }
+
+    /// [`Self::resume`] without starting a new turn; see [`Self::resume_pending_in_turn`].
+    pub fn resume_in_turn(
+        self,
+        result: impl Into<ExtFunctionResult>,
+        print: PrintWriter<'_>,
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.snapshot.run_inner(result.into(), None, Turn::Continue, print)
+    }
+
     /// Resumes with a settled coroutine, preserving its awaitable value and exception timing.
     /// Only use when [`Self::allow_eager_await`] is true; synchronous returns use [`Self::resume`].
     pub fn resume_eager(
@@ -906,6 +927,7 @@ impl ReplFunctionCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -981,6 +1003,7 @@ impl ReplOsCall {
         self.snapshot.run_inner(
             result.map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return),
             Some(self.call_id),
+            Turn::New,
             print,
         )
     }
@@ -1342,6 +1365,15 @@ fn starts_with_triple_quote(source: &str) -> bool {
 // ReplSnapshot — internal execution state for suspend/resume
 // ---------------------------------------------------------------------------
 
+/// Whether a resume starts a new turn, resetting the `max_turn_duration` clock of sandbox execution time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    /// The sandbox suspended and the host answered.
+    New,
+    /// The sandbox started a call without suspending, so the turn goes on.
+    Continue,
+}
+
 /// Restores the REPL VM and aborts uncatchably, preserving its globals.
 ///
 /// Any armed OS effect is rolled back.
@@ -1438,15 +1470,16 @@ impl ReplSnapshot {
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
-        self.run_inner(result.into(), None, print)
+        self.run_inner(result.into(), None, Turn::New, print)
     }
 
-    /// Shared body of [`Self::run`] and [`ReplFunctionCall::resume_eager`];
-    /// `eager_call_id` is set only for the latter.
+    /// Shared body of [`Self::run`], the eager resumes and the in-turn resumes;
+    /// `eager_call_id` is set only for an eager resume.
     fn run_inner(
         self,
         ext_result: ExtFunctionResult,
         eager_call_id: Option<u32>,
+        turn: Turn,
         print: PrintWriter<'_>,
     ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
@@ -1455,7 +1488,9 @@ impl ReplSnapshot {
             vm_state,
         } = self;
 
-        repl.heap.tracker.on_turn_start();
+        if turn == Turn::New {
+            repl.heap.tracker.on_turn_start();
+        }
         let (converted, vm_state) = HeapReader::with(
             &mut repl.heap,
             &mut (&mut executor, print),
@@ -1571,6 +1606,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
         } => Ok(ReplProgress::FunctionCall(ReplFunctionCall {
             function_name,
@@ -1578,6 +1614,7 @@ fn build_repl_progress(
             call_id,
             object_id,
             allow_eager_await,
+            is_async,
             position,
             snapshot: new_repl_snapshot!(),
         })),

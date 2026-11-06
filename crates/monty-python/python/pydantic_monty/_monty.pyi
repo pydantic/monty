@@ -1026,11 +1026,19 @@ class AsyncMonty:
         max_checkouts_per_worker: int | None = 1000,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
+        stream_async_calls: bool = False,
     ) -> Self:
         """
         Configure a worker pool; the workers are spawned by `async with`.
 
-        Arguments are identical to `Monty`.
+        Arguments are identical to `Monty`, plus:
+
+        Arguments:
+            stream_async_calls: Let a call to an `async def` host function that
+                the sandbox does not await at once go to the host without
+                suspending the worker, saving a round trip per call; errors
+                from such calls are raised at the `await`. Off by default, unlike
+                `AsyncMontyRemote`. See [starting calls without waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
         """
 
     async def __aenter__(self) -> Self: ...
@@ -1109,6 +1117,7 @@ class AsyncMontyRemote:
         auto_resume: bool = True,
         max_decode_bytes: int | None = None,
         connect_headers: Callable[[], Mapping[str, str]] | None = None,
+        stream_async_calls: bool = True,
     ) -> Self:
         """
         Configure a remote worker pool; the connection is made by the first
@@ -1141,6 +1150,12 @@ class AsyncMontyRemote:
                 at construction. Excludes wire buffers and Python conversion.
                 Exhaustion ends the session with a protocol error without replay.
                 Also caps each message's size, clamped between 64 KiB and the 256 MiB frame limit.
+            stream_async_calls: Let a call to an `async def` host function that
+                the sandbox does not await at once go to the host without
+                suspending the worker, saving a network round trip per call;
+                errors from such calls are raised at the `await`. On by default,
+                unlike the subprocess `AsyncMonty`. See [starting calls without
+                waiting](https://pydantic.dev/docs/monty/host-functions#starting-calls-without-waiting).
             connect_headers: The former name of `metadata`, accepted for one
                 release with a `DeprecationWarning`; passing both raises
                 `TypeError`.

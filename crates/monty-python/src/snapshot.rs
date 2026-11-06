@@ -64,9 +64,9 @@ use crate::{
     },
     import_files::{find_import_file_async, find_import_file_sync, import_search},
     pool::{
-        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, decode_result, discard_checkout,
-        discard_checkout_sync, dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync,
-        turn_fn,
+        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, callback_context_and_streamed_calls,
+        decode_result, discard_checkout, discard_checkout_sync, dispatch_os_parts, ext_to_resume, pool_err_to_py,
+        run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
     telemetry::{capture_otel_context, snapshot_trace_context},
@@ -182,6 +182,8 @@ pub(crate) fn feed_start_sync(
         ctx,
         turn_fn(move |c, p| {
             Box::pin(async move {
+                // every call suspends, so each one reaches a snapshot
+                c.set_async_functions(None);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -224,6 +226,8 @@ pub(crate) fn feed_start_async(
             ctx,
             turn_fn(move |c, p| {
                 Box::pin(async move {
+                    // every call suspends, so each one reaches a snapshot
+                    c.set_async_functions(None);
                     c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                         .await
                 })
@@ -249,6 +253,7 @@ fn drive_sync(
     initial: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, TurnEvent> + Send,
 ) -> PyResult<Py<PyAny>> {
     let event = run_turn_sync(py, &ctx.checkout, &ctx.print_target, initial)?;
+    reject_streamed_calls_sync(py, &ctx.checkout)?;
     build_snapshot(py, ctx, event, false)
 }
 
@@ -258,7 +263,37 @@ async fn drive_async(
     initial: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, TurnEvent> + Send,
 ) -> PyResult<Py<PyAny>> {
     let event = run_turn_async(&ctx.checkout, &ctx.print_target, initial).await?;
+    reject_streamed_calls_async(&ctx.checkout).await?;
     Python::attach(|py| build_snapshot(py, ctx, event, true))
+}
+
+/// Discards the worker and fails when the last turn started calls: run after
+/// every turn whose event becomes a snapshot.
+fn reject_streamed_calls_sync(py: Python<'_>, checkout: &SharedCheckout) -> PyResult<()> {
+    let (_, started) = py.detach(|| block_on_sync(callback_context_and_streamed_calls(checkout)))?;
+    if started.is_empty() {
+        Ok(())
+    } else {
+        discard_checkout_sync(py, checkout);
+        Err(streamed_calls_unsupported())
+    }
+}
+
+/// Async counterpart of [`reject_streamed_calls_sync`].
+async fn reject_streamed_calls_async(checkout: &SharedCheckout) -> PyResult<()> {
+    let (_, started) = callback_context_and_streamed_calls(checkout).await;
+    if started.is_empty() {
+        Ok(())
+    } else {
+        discard_checkout(checkout).await;
+        Err(streamed_calls_unsupported())
+    }
+}
+
+/// `feed_start` never asks the worker to start calls, and a snapshot has no way
+/// to hand the caller calls the sandbox started without suspending.
+fn streamed_calls_unsupported() -> PyErr {
+    PyRuntimeError::new_err("worker started host calls during feed_start()")
 }
 
 /// Answers a suspended OS call from the feed's mounts, returning the next
@@ -751,6 +786,7 @@ impl PyFunctionSnapshot {
         let intercepted = call.is_os_function && is_intercepted_os_call(&call.function_name);
         let value = if call.is_os_function && !intercepted {
             if let Some(event) = try_mounts_sync(py, &ctx)? {
+                reject_streamed_calls_sync(py, &ctx.checkout)?;
                 return build_snapshot(py, ctx, event, false);
             }
             match dispatch_os_parts(
@@ -935,6 +971,7 @@ impl PyAsyncFunctionSnapshot {
                 )
                 .await?;
                 if let Some(event) = mounted {
+                    reject_streamed_calls_async(&ctx.checkout).await?;
                     return Python::attach(|py| build_snapshot(py, ctx, event, true));
                 }
                 let mut join_set = ctx.pending_futures.lock().await;

@@ -70,6 +70,25 @@ test('inputs, prints and async external functions cross the stream', async () =>
   t.deepEqual(printed, ['stdout:hi\n'])
 })
 
+test('calls to async functions start without suspending the remote worker', async () => {
+  const { url } = await server(relay)
+  const log: string[] = []
+  const fetch = async (x: number) => {
+    log.push(`fetch(${x})`)
+    return x * 10
+  }
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  const code = "import asyncio\naws = [fetch(i) for i in range(3)]\nprint('started')\nawait asyncio.gather(*aws)"
+  const result = await session.feedRun(code, {
+    externalLookup: { fetch },
+    printCallback: (_stream, text) => log.push(text),
+  })
+  t.deepEqual(result, [0, 10, 20])
+  // each call started on the host as it arrived, ahead of the print that followed them
+  t.deepEqual(log, ['fetch(0)', 'fetch(1)', 'fetch(2)', 'started\n'])
+})
+
 test('separate checkouts are isolated', async () => {
   const { url } = await server(relay)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })

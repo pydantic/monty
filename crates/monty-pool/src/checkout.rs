@@ -27,7 +27,11 @@ use monty_types::{
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
-use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
+use tokio::{
+    sync::mpsc::{UnboundedSender, error::SendError},
+    task::spawn_blocking,
+    time::Instant as DeadlineInstant,
+};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
@@ -332,6 +336,27 @@ pub enum TurnEvent {
     Complete(MontyObject),
 }
 
+/// A call to an async host function the sandbox started without waiting
+/// for the host, delivered as it arrives (see [`Checkout::set_streamed_call_sink`])
+/// or collected during a turn (see [`Checkout::take_streamed_calls`]).
+///
+/// The sandbox already holds a pending future for `call_id`: start the call,
+/// then settle it with [`Checkout::resume_futures`] once a
+/// [`TurnEvent::ResolveFutures`] names it. Each counts against `max_suspensions`.
+#[derive(Debug)]
+pub struct StreamedCall {
+    pub function_name: String,
+    /// One arena holding every positional and keyword argument.
+    pub args: CallArgs,
+    pub call_id: u32,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
+    /// The telemetry context for the host callback running this call: the
+    /// call's own span, open until the `ResumeFutures` carrying its result.
+    #[cfg(feature = "telemetry")]
+    pub callback_context: opentelemetry::Context,
+}
+
 /// The caller's answer to a [`TurnEvent::FunctionCall`] or
 /// [`TurnEvent::OsCall`].
 #[derive(Debug)]
@@ -439,6 +464,15 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
+    /// Names sent as `Feed.async_functions` with every later feed, or `None`
+    /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
+    async_functions: Option<Vec<String>>,
+    /// Calls to async host functions started since the caller last took them.
+    /// Cleared once a `Feed`, `Load` or `Reset` is sent, so a feed never sees another's.
+    streamed_calls: Vec<StreamedCall>,
+    /// Where streamed calls go as they arrive instead of `streamed_calls`; see
+    /// [`Checkout::set_streamed_call_sink`].
+    streamed_call_sink: Option<UnboundedSender<StreamedCall>>,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
@@ -552,6 +586,9 @@ impl SessionBudget {
         if is_suspension(event) {
             self.suspensions_seen += 1;
             self.cpu_feed_suspended = true;
+        } else if let Some(pb::child_event::Kind::StreamedCalls(started)) = &event.kind {
+            // a started call replaces the suspension it would have been
+            self.suspensions_seen = self.suspensions_seen.saturating_add(started.calls.len() as u64);
         } else if matches!(
             event.kind,
             Some(
@@ -668,6 +705,15 @@ fn is_execution_turn(request: &pb::ParentRequest) -> bool {
                 | pb::parent_request::Kind::ResumeNameLookup(_)
                 | pb::parent_request::Kind::ResumeFutures(_)
         )
+    )
+}
+
+/// Recognizes the events a worker streams before a turn-ender: `Print`, and
+/// `StreamedCalls` (which `Configure.accepts_streamed_calls` asks for).
+fn is_mid_turn(event: &pb::ChildEvent) -> bool {
+    matches!(
+        event.kind,
+        Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::StreamedCalls(_))
     )
 }
 
@@ -798,6 +844,9 @@ impl Checkout {
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
+            async_functions: Some(Vec::new()),
+            streamed_calls: Vec::new(),
+            streamed_call_sink: None,
             session_id: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
@@ -959,6 +1008,8 @@ impl Checkout {
             values: Some(values),
             skip_type_check,
             cwd,
+            async_functions: self.async_functions.clone().unwrap_or_default().into(),
+            stream_async_calls: self.async_functions.is_some(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1364,6 +1415,49 @@ impl Checkout {
         self.session_id.as_deref()
     }
 
+    /// Sets how the feeds that follow treat calls to async host functions,
+    /// replacing any earlier choice. With `Some(names)` (the default, with no
+    /// names) calls to a [`MontyObject::async_function`] value or to one of
+    /// `names` start without waiting and arrive through [`Self::take_streamed_calls`];
+    /// `None` makes them suspend like any call, for a host answering each call itself.
+    ///
+    /// `names` covers names the sandbox calls without ever reading as a value,
+    /// which reach the host only as a call by name. A worker that predates
+    /// `StreamedCalls` ignores all of this and suspends on each call as before.
+    pub fn set_async_functions(&mut self, names: Option<Vec<String>>) {
+        self.async_functions = names;
+    }
+
+    /// Takes the calls to async host functions the sandbox started since the
+    /// last take, in the order it made them.
+    ///
+    /// Take them after every turn, before answering its event: a
+    /// [`TurnEvent::ResolveFutures`] can name a call that only arrived this way.
+    /// Calls past `max_suspensions` are dropped; the feed is aborted at its
+    /// next suspension.
+    pub fn take_streamed_calls(&mut self) -> Vec<StreamedCall> {
+        mem::take(&mut self.streamed_calls)
+    }
+
+    /// Sends the streamed calls of the turns that follow to `sink` as they
+    /// arrive, so the host can start each while the sandbox keeps running;
+    /// `None` collects them for [`Self::take_streamed_calls`] instead.
+    ///
+    /// A call the sink can no longer take (its receiver was dropped) is
+    /// collected as if no sink were set, so none is lost.
+    pub fn set_streamed_call_sink(&mut self, sink: Option<UnboundedSender<StreamedCall>>) {
+        self.streamed_call_sink = sink;
+    }
+
+    /// Hands one streamed call to the sink, or collects it when there is none.
+    fn deliver_streamed_call(&mut self, call: StreamedCall) {
+        let unsent = match &self.streamed_call_sink {
+            Some(sink) => sink.send(call).err().map(|SendError(call)| call),
+            None => Some(call),
+        };
+        self.streamed_calls.extend(unsent);
+    }
+
     /// Sends a request and requires the reply to be a [`TurnEvent`].
     ///
     /// This is the entry point for *execution* turns (feed/resume — the
@@ -1478,7 +1572,7 @@ impl Checkout {
     ) -> Result<bool, PoolError> {
         let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
         let was_aborting = self.abort_in_flight;
-        let is_print = matches!(event.kind, Some(pb::child_event::Kind::Print(_)));
+        let is_print = is_mid_turn(event);
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
@@ -1840,9 +1934,9 @@ impl Checkout {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
             }
-            // strict alternation: zero or more `Print`s, then exactly one
-            // turn-ender — so anything that is not a print ends the turn
-            if matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+            // strict alternation: zero or more mid-turn events, then exactly
+            // one turn-ender — so anything else ends the turn
+            if is_mid_turn(&event) {
                 on_event(&event).await;
             } else if matches!(event.kind, Some(pb::child_event::Kind::FatalError(_))) {
                 // the far end is gone (see `fatal_error`): discard the worker
@@ -1991,6 +2085,37 @@ impl Checkout {
                         }
                         #[cfg(not(feature = "telemetry"))]
                         future.await;
+                    }
+                }
+                Some(pb::child_event::Kind::StreamedCalls(started)) => {
+                    // `update_from` already counted these. Keep only the calls the
+                    // budget had room for: the suspension after an overrun is
+                    // aborted, so more would only let a worker grow this buffer.
+                    let calls = started.calls.into_inner();
+                    let seen_before = self.budget.suspensions_seen.saturating_sub(calls.len() as u64);
+                    let room = self.budget.suspension_limit.saturating_sub(seen_before);
+                    let room = usize::try_from(room).unwrap_or(usize::MAX);
+                    for mut call in calls.into_iter().take(room) {
+                        let position = suspension_position(call.position.take());
+                        let function_name = mem::take(&mut call.function_name);
+                        let call_id = call.call_id;
+                        let args = match call.into_call_args() {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                            }
+                        };
+                        let call = StreamedCall {
+                            function_name,
+                            args,
+                            call_id,
+                            position,
+                            #[cfg(feature = "telemetry")]
+                            callback_context: self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
+                                worker.streamed_call_context(call_id)
+                            }),
+                        };
+                        self.deliver_streamed_call(call);
                     }
                 }
                 Some(pb::child_event::Kind::FunctionCall(mut call)) => {
@@ -2184,6 +2309,18 @@ impl Checkout {
         match worker.send(request).await {
             Ok(()) => {
                 self.request_sent = true;
+                // a new turn starts only once its request is out, so a refused
+                // request leaves the previous turn's calls for the caller
+                if matches!(
+                    request.kind,
+                    Some(
+                        pb::parent_request::Kind::Feed(_)
+                            | pb::parent_request::Kind::Load(_)
+                            | pb::parent_request::Kind::Reset(_)
+                    )
+                ) {
+                    self.streamed_calls.clear();
+                }
                 Ok(())
             }
             Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
@@ -2449,6 +2586,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
+        // the checkout collects them (`take_streamed_calls`)
+        accepts_streamed_calls: pool.stream_async_calls,
     }))
 }
 
