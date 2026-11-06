@@ -1678,6 +1678,8 @@ pub enum StaticStrings {
     Major,
     /// `os.makedirs()` function.
     Makedirs,
+    /// `bytearray.maketrans()` translation table constructor.
+    Maketrans,
     /// `sys.float_info.mant_dig` field.
     MantDig,
     /// `map01` parameter of `base64.b32decode()`.
@@ -2117,6 +2119,8 @@ pub enum StaticStrings {
     Replace,
     /// `@dataclass(repr=...)`.
     Repr,
+    /// `bytearray.resize()` method.
+    Resize,
     /// `resolution` class constant of the `datetime` classes.
     Resolution,
     /// `Path.resolve()` method — yields a host call.
