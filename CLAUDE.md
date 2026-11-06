@@ -304,6 +304,15 @@ Snippet source IDs occupy a separate range from canonical string IDs.
 They display as `<string>` without allowing duplicate entries in the string-deduplication maps.
 Resolve filenames with `Interns::get_filename`; ordinary `get_str` only accepts canonical string IDs.
 
+### Async scheduler paths converge
+
+Every async operation has several entry paths: direct resume, a pending host future, an eager or timer reply, and a
+failure. Fix invariants once, not per path. A task must never be activated twice: if a delivery already queued the
+waiter, remove that stale queue entry before activating it; the normal dequeue-then-activate path in
+`resume_after_task_exit` is fine. An error must not return between mutating scheduler state and its cleanup; and a
+drained queue with no current task must yield to the host instead of dispatching a parked frame. Any host-call reply
+(including sleep and timer) is a scheduling point: on resume, run the ready queue before the suspended task continues.
+
 ### HeapReader API — Safe Heap Access
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.
@@ -438,6 +447,14 @@ iter.drop_with(self); // single path, no branching
 - The explicit call to `drop_with` produces more lines of code than `defer_drop!` or `DropGuard` would. The latter often avoid rightward drift and make the cleanup logic easier.
 - The value is part of a container (e.g. `Vec<Value>`). Ideally the container itself implements `DropWithContext` and so `defer_drop` or `DropGuard` can be used on the whole container. Consider if a `DropWithContext` implementation for the container might be missing.
 
+#### Take handles before destructive calls
+
+A call that drops, cancels, removes or settles an object may release the last owner of handles reachable from it.
+Take (`Option::take`) or `inc_ref` every handle used afterwards *before* that call; reading it afterwards is a
+use-after-free. `Scheduler::cancel_task` and `cleanup_current_task` are current examples; `remove_from_ready_queue`
+only removes a queue slot and releases no handles. Test the fire-and-forget shape where the sandbox holds no
+reference, not only the held/awaited shape.
+
 ### `#[strum(use_phf)]` only on large `EnumString` enums
 
 Add `use_phf` only to `EnumString` enums with more than ~100 variants, or ones that will clearly grow past that.
@@ -509,6 +526,14 @@ still open. Test each graceful path in
 `large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.
+
+### Account for the peak, not each copy
+
+For guest-controlled data with an unbounded or input-amplifying allocation, preflight the peak live bytes: source,
+destination, temporaries (`format!`, repr, exception payloads), container growth that retains its old buffer, and the
+new heap entry. One aggregate `check_allocation` is preferred to per-copy checks; a single copy of an already-tracked
+value is fine, two simultaneous copies are not. Never cache a terminal resource error as a catchable task failure,
+and test the rejection in `large_allocations_are_rejected_before_the_hard_limit`.
 
 ## Dev Commands
 
@@ -712,6 +737,12 @@ values, `drop_with` paths, cycle collection) and then run just the relevant
 test binary, e.g. `cargo test -p monty --test TEST --features memory-model-checks`.
 
 See more test commands above.
+
+### Test strength
+
+A test must prove the path it names: assert the exact message, keep both branches of a Monty/CPython case meaningful,
+and never use a wall-clock lower bound as a resource-limit assertion; calibrate as `resource_limits.rs` does. An
+expected value that only matches the broken behaviour is not proof.
 
 ### Experimentation and Playground
 
@@ -1062,6 +1093,17 @@ a `docs/` page instead of `limitations/` is a defect — move it and link.
     `docs/filesystem.md`, `docs/security.md` respectively, plus `limitations/`.
 - **CLI flags** (`crates/monty-runtime/src/main.rs`) — `crates/monty-runtime/README.md`
     and `docs/cli.md`.
+
+### Renames and new surface area
+
+A rename or a new public item is a documentation change, not only a code change.
+Before pushing, search the repository for the old name and update every intra-doc link, module/type doc, ownership
+note, test header, limitations page, binding docstring and README that mentions it.
+Verify the links compile:
+
+```
+RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc -p <crate> --no-deps
+```
 
 ### Named duplication points
 
