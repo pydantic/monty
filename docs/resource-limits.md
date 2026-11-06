@@ -154,7 +154,11 @@ Reach for `max_feed_duration_secs` to keep a long-lived session responsive per r
 `max_turn_duration_secs` to bound one uninterrupted stretch of sandbox code, so a host driving the session gets control
 back after a bounded amount of execution. Use `request_timeout` for a wall deadline.
 Neither bounds how long a host callback itself may take: the clock is paused for exactly that, and a host that needs
-to bound its own waiting wants `request_timeout`.
+to bound worker waiting wants `request_timeout`.
+In the Python binding, neither deadline preempts an executing synchronous host callback.
+Monty's async shutdown drain waits for that callback to return, so an unbounded callback can prevent process exit.
+The drain abandons pending Python host coroutines without cancelling or settling them;
+see [Python interpreter shutdown](quickstart/python.md#interpreter-shutdown).
 
 Exceeding either raises `TimeoutError` in the sandbox.
 The next feed resets both clocks, so the worker keeps serving the session — but a time limit stops the sandbox

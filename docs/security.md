@@ -502,6 +502,11 @@ callback, and [`CallbackFile`][pydantic_monty.CallbackFile] in the Python [`OSAc
 `OSAccess` backed by [`MemoryFile`][pydantic_monty.MemoryFile] objects is fully sandboxed; `OSAccess` backed by `CallbackFile` is exactly as
 sandboxed as the callback you wrote.
 
+Python's `request_timeout` and sandbox duration limits do not preempt an executing synchronous host callback.
+Such a callback must return before Monty's async shutdown drain can finish; an unbounded callback can prevent process exit.
+Pending Python host coroutines are abandoned at exit and may run cleanup during later Python teardown.
+See [Python interpreter shutdown](quickstart/python.md#interpreter-shutdown) for the async admission contract.
+
 ### In-process execution
 
 The Rust `monty` crate runs the interpreter in the calling process.

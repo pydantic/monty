@@ -15,14 +15,16 @@ use monty_pool::ResumeValue;
 use monty_proto::python::InstanceStore;
 use monty_types::{CallArgs, ExtFunctionResult, MontyObject, MontyUuid, OsFunctionCall};
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
-use pyo3_async_runtimes::{into_future_with_locals, tokio::get_current_locals};
 use tokio::{
     task::{JoinError, JoinSet},
     time::sleep,
 };
 
-use crate::external::{
-    AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
+use crate::{
+    external::{
+        AfterModule, CallResult, ExternalLookup, HostNames, Staged, py_err_to_ext_result, py_obj_to_ext_result,
+    },
+    py_future::{get_current_locals, into_future_with_locals, track},
 };
 
 /// Answers an intercepted OS call (see
@@ -200,7 +202,13 @@ fn dispatch_future(
     match mode {
         CoroutineMode::Eager => Dispatched::Eager(future),
         CoroutineMode::Future => {
-            join_set.spawn(async move { (call_id, future.await) });
+            if let Some(task) = track(async move { (call_id, future.await) }) {
+                join_set.spawn(async move {
+                    // Shutdown cancels the consumer too; this placeholder is never resumed.
+                    task.await
+                        .unwrap_or((call_id, ExtFunctionResult::Return(MontyObject::none())))
+                });
+            }
             Dispatched::Done(ResumeValue::Future)
         }
         CoroutineMode::AsValue => Dispatched::AsValue(future),

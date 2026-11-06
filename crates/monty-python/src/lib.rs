@@ -20,6 +20,7 @@ mod mount;
 mod os_policy;
 mod pool;
 mod print_target;
+mod py_future;
 mod snapshot;
 mod telemetry;
 mod type_hints;
@@ -171,6 +172,7 @@ mod _monty {
         m.add("AsyncMontyWebsocket", m.getattr("AsyncMontyRemote")?)?;
         // cache the binary resolver now so pool construction never imports
         binary_finder(py)?;
+        super::py_future::register_shutdown(py)?;
         Ok(())
     }
 }
