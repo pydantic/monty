@@ -458,6 +458,9 @@ pub struct MontyConnectError {
     /// The server's status message, when present.
     #[pyo3(get)]
     status_message: Option<String>,
+    /// The policy reason the server attached, in `snake_case`.
+    #[pyo3(get)]
+    cause: Option<String>,
     /// The underlying transport error, when present.
     #[pyo3(get)]
     transport_error: Option<String>,
@@ -471,6 +474,7 @@ impl MontyConnectError {
         let init = PyClassInitializer::from(base).add_subclass(Self {
             status_code: details.status_code.map(str::to_owned),
             status_message: details.status_message,
+            cause: details.cause.map(|cause| cause.as_str().to_owned()),
             transport_error: details.transport_error,
         });
         match Py::new(py, init) {
@@ -486,9 +490,14 @@ impl MontyConnectError {
     fn __str__(slf: PyRef<'_, Self>) -> String {
         slf.as_super().message().unwrap_or_default().to_owned()
     }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyConnectError({})", slf.as_super().message().unwrap_or_default())
+    }
 }
 
-/// Raised when the client configuration is incompatible with the remote server.
+/// Raised for malformed request metadata or settings incompatible with the remote server.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyConfigurationError;
 
@@ -509,6 +518,14 @@ impl MontyConfigurationError {
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __str__(slf: PyRef<'_, Self>) -> String {
         slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!(
+            "MontyConfigurationError({})",
+            slf.as_super().message().unwrap_or_default()
+        )
     }
 }
 

@@ -527,12 +527,12 @@ def raise_no_token() -> dict[str, str]:
         ),
         (
             lambda: {'bad header': 't'},
-            MontyConnectError,
+            MontyConfigurationError,
             snapshot('http://127.0.0.1:9: metadata entry "bad header": invalid gRPC metadata key name'),
         ),
         (
             lambda: {'x-token': 'a\nb'},
-            MontyConnectError,
+            MontyConfigurationError,
             snapshot('http://127.0.0.1:9: metadata entry "x-token" value: failed to parse metadata value'),
         ),
         (raise_no_token, ValueError, snapshot('no token available')),
@@ -808,7 +808,11 @@ async def test_unexpected_server_status_is_a_connect_error():
     async def behaviour(
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
-        await context.abort(grpc.StatusCode.UNIMPLEMENTED, 'unknown service')
+        await context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            'unknown service',
+            trailing_metadata=(('monty-cause', 'protocol_violation'),),
+        )
         yield b''
 
     async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
@@ -817,25 +821,33 @@ async def test_unexpected_server_status_is_a_connect_error():
                 pass
     assert caught.value.status_code == snapshot('UNIMPLEMENTED')
     assert caught.value.status_message == snapshot('unknown service')
+    assert caught.value.cause == snapshot('protocol_violation')
     assert caught.value.transport_error == snapshot(None)
-    assert str(caught.value) == f'{url}: UNIMPLEMENTED: unknown service'
+    assert str(caught.value) == f'{url}: UNIMPLEMENTED (protocol_violation): unknown service'
+    assert repr(caught.value) == f'MontyConnectError({url}: UNIMPLEMENTED (protocol_violation): unknown service)'
 
 
 async def test_cpu_server_requires_a_finite_request_timeout():
+    extra_requests: list[bytes] = []
+
     async def behaviour(
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
         await anext(requests)
         yield _bytes_field(_EVENT_OK, b'') + b'\xf0\x01\x01'
-        async for _request in requests:
-            pytest.fail('incompatible configuration must not send another request')
+        async for request in requests:
+            extra_requests.append(request)
 
     async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=None) as pool:
         with pytest.raises(MontyConfigurationError) as caught:
             async with pool.checkout():
                 pass
     assert str(caught.value) == snapshot('CPU execution clock requires a finite client request_timeout')
+    assert repr(caught.value) == snapshot(
+        'MontyConfigurationError(CPU execution clock requires a finite client request_timeout)'
+    )
+    assert extra_requests == snapshot([])
 
 
 async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):

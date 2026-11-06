@@ -182,6 +182,8 @@ const VARINT_CONTINUES = 0x80
 /** The `Ok` acknowledgement event. */
 export const OK_EVENT = bytesField(EVENT_OK, Buffer.alloc(0))
 
+export const CPU_CLOCK_OK_EVENT = Buffer.concat([OK_EVENT, Buffer.from([0xf0, 0x01, 0x01])])
+
 /** The liveness probe a serving relay sends between turns. */
 export const PING_EVENT = bytesField(EVENT_PING, Buffer.alloc(0))
 

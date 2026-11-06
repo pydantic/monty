@@ -286,7 +286,8 @@ export interface RefusalDetails {
  * (`MontyRemote` only): at capacity (`capacity`, or `caller_cap` for this
  * caller's share), with no worker to serve it (`worker_unavailable`), or
  * rejecting the caller's credentials (`unauthenticated`) or what a valid
- * credential asked for (`permission_denied`), which it says in `statusCode`,
+ * credential asked for (`permission_denied`), or returning `FAILED_PRECONDITION`.
+ * The server gives details in `statusCode`,
  * `statusMessage` and `remoteCause`. No session existed, so
  * nothing ran. `retryable` identifies temporary refusals; `retryAfter` is
  * the server's suggested delay, not an automatic retry. A server that
@@ -325,6 +326,8 @@ export class MontyConnectError extends MontyError {
   readonly statusCode: string | null
   /** The server's status message, or `null`. */
   readonly statusMessage: string | null
+  /** The policy reason the server named, in `snake_case`, or `null`. */
+  readonly remoteCause: string | null
   /** The underlying transport error, or `null` when the server sent a status. */
   readonly transportError: string | null
 
@@ -334,11 +337,12 @@ export class MontyConnectError extends MontyError {
     this.name = 'MontyConnectError'
     this.statusCode = details.statusCode ?? null
     this.statusMessage = details.statusMessage ?? null
+    this.remoteCause = details.remoteCause ?? details.cause ?? null
     this.transportError = details.transportError ?? null
   }
 }
 
-/** Raised when the client configuration cannot be used with the remote server. */
+/** Raised for malformed request metadata or settings incompatible with the remote server. */
 export class MontyConfigurationError extends MontyError {
   constructor(message: string) {
     super('ValueError', message)

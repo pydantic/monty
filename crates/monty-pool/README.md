@@ -239,7 +239,8 @@ pool health
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
 `monty.pool.session.resumed` counts auto-resume attempts: `ok`, or why the reload failed (`exhausted`,
-`disconnected`, `refused`, `shutdown`, `mismatch`, `timeout`).
+`disconnected`, `refused`, `shutdown`, `mismatch`, `configuration`, `timeout`, `cpu_limit`, `error`).
+`configuration` means the new server is incompatible with the client settings.
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —
@@ -308,11 +309,13 @@ A server refusing a stream before admitting it — at capacity, or rejecting the
 (`permission_denied`) — fails the checkout with
 `PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
 fails or times out is `PoolError::Connect`, with a status code when the server sent one.
-Both errors include the server's reason in their display text.
+Disconnect messages include the server's status, `RemoteCause` and message, or the transport error.
+Refusal messages include the server's status and message; structured details also retain `RemoteCause`.
 Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date.
 `retryable()` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not credential errors.
 No automatic retry is performed.
 An incompatible CPU-mode server configuration returns `PoolError::Configuration`, naming `request_timeout`.
+Malformed request metadata names or values also return `PoolError::Configuration` before any connection attempt.
 A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one
 whose cause is `server_shutdown` as `PoolError::Shutdown` with nothing to load.
 The status message is unverified text, and a disconnect does not establish whether the request ran.

@@ -43,9 +43,15 @@ if __name__ == '__main__':
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
 The client does not automatically replay a disconnected request.
+Disconnect messages include the server's status, cause and message, or the transport error.
 `MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
 nothing ran, so retrying is safe.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+Its `retryable` attribute identifies temporary refusals, and `retry_after` gives the server's suggested delay in seconds, when present.
+Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
+`status_message`, `cause` and `transport_error` attributes.
+A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
+Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
 
 ## Host decode budget
 
@@ -205,15 +211,8 @@ naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
 A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
 When either cap shortens a sleep, the call returns normally without a warning.
+System sleeps that exceed `max_total_sleep_secs` instead raise an uncatchable `TimeoutError`.
 These caps are independent of `request_timeout`.
-
-Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
-`status_message` and `transport_error` attributes.
-Refusals raise `MontyRefusedError`; its `retryable` attribute identifies temporary refusals, and
-`retry_after` gives the server's suggested delay in seconds, when present.
-Disconnect messages include the server's status, cause and message, or the transport error.
-A disconnect does not establish whether the request ran, so do not replay it automatically.
-CPU-mode servers require a finite `request_timeout`; incompatible settings raise `MontyConfigurationError`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.

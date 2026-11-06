@@ -260,8 +260,9 @@ which ignores any argument:
 rejecting the session's configuration.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
-A remote connection failure raises `MontyConnectError`, whose `statusCode` is `null` without a server status.
+A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
 `MontyConfigurationError` identifies settings incompatible with the server, such as no finite CPU-mode `requestTimeout`.
+It also identifies malformed request metadata names or values before any connection attempt.
 Host-side error messages do not have a `RuntimeError:` prefix.
 Remote policy reasons use `remoteCause`, leaving the standard `Error.cause` available for error chains.
 The deprecated `cause` constructor option is accepted as an alias for `remoteCause`.
@@ -411,7 +412,7 @@ console.log(await session.feedRun('1 + 1')) // 2
 `checkout()` also takes `ephemeral` and `profile`, which the server interprets.
 A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
 `MontyConnectError`.
-Use `retryable` and `retryAfter` to decide whether and when to try a new checkout.
+Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
 No automatic retry is performed for these errors.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.

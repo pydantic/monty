@@ -31,10 +31,11 @@ The client accepts delay-seconds and HTTP dates but does not retry automatically
 A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
 no Monty server), or that is no gRPC server at all (such as a web server's page), raises
 [`MontyConnectError`][pydantic_monty.MontyConnectError].
-It retains `status_code` and `status_message` when the server sent a status, or `transport_error` otherwise.
+It retains `status_code`, `status_message` and `cause` when the server sent a status, or `transport_error` otherwise.
 Both errors subclass [`MontyError`][pydantic_monty.MontyError].
 If a CPU-mode server requires a finite `request_timeout`, an incompatible client setting raises
 [`MontyConfigurationError`][pydantic_monty.MontyConfigurationError].
+Malformed request metadata names or values raise the same error before any connection attempt.
 [`MontyDisconnectError`][pydantic_monty.MontyDisconnectError] means the stream ended mid-session.
 A server that ended it by policy says so in the error's status and cause (see
 [disconnect diagnostics](#disconnect-diagnostics)); a transport failure says nothing about the worker's fate.

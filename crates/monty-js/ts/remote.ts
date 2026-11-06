@@ -31,7 +31,8 @@ export interface MontyRemoteOptions {
    * throws `MontyConfigurationError`.
    * This deadline does not set the sleep cap. System sleeps return normally
    * after at most `sleepSystemMax` (default ten seconds), even when sandbox
-   * code asks for longer. Set `osPolicy.sleepSystemMax: Infinity` on checkout
+   * code asks for longer, unless the capped delay would exceed `maxTotalSleepSecs`.
+   * Set `osPolicy.sleepSystemMax: Infinity` on checkout
    * to request uncapped sleeps, subject to the server's policy.
    */
   requestTimeout?: number | null
@@ -129,7 +130,7 @@ export class MontyRemote {
       await native.start()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      throw new MontyConnectError(message, { transportError: message })
+      throw new MontyConnectError(message)
     }
     return new MontyRemote(native, metadata)
   }

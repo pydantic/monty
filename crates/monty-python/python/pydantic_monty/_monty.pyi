@@ -593,14 +593,18 @@ class MontyConnectError(MontyError):
         """The server's status message, or `None`."""
 
     @property
+    def cause(self) -> str | None:
+        """The recognized policy reason in `monty-cause`, in `snake_case`, or `None`."""
+
+    @property
     def transport_error(self) -> str | None:
         """The underlying transport error, or `None` when the server sent a status."""
 
 @final
 class MontyConfigurationError(MontyError):
-    """Raised when the client configuration is incompatible with the remote server.
+    """Raised for malformed request metadata or settings incompatible with the remote server.
 
-    CPU-mode servers require a finite `request_timeout`.
+    CPU-mode servers require a finite client `request_timeout`.
     Cannot be constructed directly from Python.
     """
 
@@ -1181,7 +1185,8 @@ class AsyncMontyRemote:
 
                 This deadline does not set the sleep cap. System sleeps return
                 normally after at most `sleep_system_max` (default ten seconds),
-                even if sandbox code asks for longer. Use `os_policy` with
+                even if sandbox code asks for longer, unless `max_total_sleep_secs`
+                would be exceeded. Use `os_policy` with
                 `sleep='call_host'` and `OSAccess(max_sleep=None)` to handle full sleeps.
 
                 Note that `install_dependencies` is a turn too, so the default
@@ -1205,7 +1210,7 @@ class AsyncMontyRemote:
                 are lowercase ASCII and values ASCII, duplicate names are
                 last-wins, also over the `traceparent` the Logfire integration
                 adds, a `user-agent` entry is put in front of the default one,
-                and a malformed name or value raises `MontyConnectError` as the
+                and a malformed name or value raises `MontyConfigurationError` as the
                 session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.

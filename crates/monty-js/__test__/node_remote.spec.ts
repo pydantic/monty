@@ -9,6 +9,7 @@ import { afterEach, test } from 'vitest'
 import { t } from './assertions.js'
 import {
   admit,
+  CPU_CLOCK_OK_EVENT,
   drainingServer,
   droppingRelay,
   endWithStatus,
@@ -165,6 +166,16 @@ test('a bad metadata result rejects the checkout and leaves the pool usable', as
     instanceOf: TypeError,
     message: "metadata must return string header values, got number for 'x-token'",
   })
+  result = { 'bad header': 't' }
+  await t.throwsAsync(() => pool.checkout(), {
+    instanceOf: MontyConfigurationError,
+    message: `${relayServer.url}: metadata entry "bad header": invalid gRPC metadata key name`,
+  })
+  result = { 'x-token': 'a\nb' }
+  await t.throwsAsync(() => pool.checkout(), {
+    instanceOf: MontyConfigurationError,
+    message: `${relayServer.url}: metadata entry "x-token" value: failed to parse metadata value`,
+  })
   result = { 'x-token': 't' }
   await using session = await pool.checkout()
   t.is(await session.feedRun('1 + 1'), 2)
@@ -177,6 +188,15 @@ test('a refused connection rejects the checkout', async () => {
   t.is(error.statusCode, null)
   t.is(error.statusMessage, null)
   t.is(error.message, `http://127.0.0.1:9: ${error.transportError}`)
+})
+
+test('a URL validation error has no transport failure', async () => {
+  const error = await t.throwsAsync(() => MontyRemote.create('http://localhost/sandbox'), {
+    instanceOf: MontyConnectError,
+  })
+  t.is(error.statusCode, null)
+  t.is(error.transportError, null)
+  t.true(error.message.includes('use only the scheme and host, with an optional port'))
 })
 
 test('a session the server refuses rejects the checkout with MontyRuntimeError', async () => {
@@ -361,26 +381,31 @@ test.each([
 })
 
 test('an unexpected server status is a typed connection error', async () => {
-  const { url } = await server((stream) => endWithStatus(stream, status.UNIMPLEMENTED, 'unknown service'))
+  const { url } = await server((stream) =>
+    endWithStatus(stream, status.UNIMPLEMENTED, 'unknown service', 'protocol_violation'),
+  )
   await using pool = await MontyRemote.create(url)
   const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConnectError })
   t.is(error.statusCode, 'UNIMPLEMENTED')
   t.is(error.statusMessage, 'unknown service')
+  t.is(error.remoteCause, 'protocol_violation')
   t.is(error.transportError, null)
-  t.is(error.message, `${url}: UNIMPLEMENTED: unknown service`)
+  t.is(error.message, `${url}: UNIMPLEMENTED (protocol_violation): unknown service`)
 })
 
 test('a CPU-mode server requires a finite requestTimeout', async () => {
+  const extraRequests: Buffer[] = []
   const { url } = await server(async (stream) => {
     admit(stream)
     const requests = messages(stream)
     await requests.next()
-    stream.write(Buffer.concat([OK_EVENT, Buffer.from([0xf0, 0x01, 0x01])]))
-    for await (const _request of requests) t.fail('incompatible configuration must not send another request')
+    stream.write(CPU_CLOCK_OK_EVENT)
+    for await (const request of requests) extraRequests.push(request)
   })
   await using pool = await MontyRemote.create(url, { requestTimeout: null })
   const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConfigurationError })
   t.is(error.message, 'CPU execution clock requires a finite client request_timeout')
+  t.deepEqual(extraRequests, [])
 })
 
 test('a status ending the stream is reported with its code, message and cause', async () => {

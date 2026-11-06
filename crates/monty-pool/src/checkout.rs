@@ -2456,7 +2456,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
 /// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
 /// (no pool capacity), `disconnected` (the new connection failed), `refused`
 /// (the relay rejected the load), `shutdown` (the new relay is shutting down
-/// too), `mismatch` (the reloaded state is not the one shut down) or `timeout`.
+/// too), `mismatch` (the reloaded state is not the one shut down), `configuration`
+/// (the new server is incompatible with the client settings) or `timeout`.
 #[cfg(feature = "telemetry")]
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {
@@ -2466,7 +2467,8 @@ fn resume_failure(err: &PoolError) -> &'static str {
             "refused"
         }
         PoolError::Shutdown { .. } => "shutdown",
-        PoolError::Protocol(_) | PoolError::Configuration(_) => "mismatch",
+        PoolError::Protocol(_) => "mismatch",
+        PoolError::Configuration(_) => "configuration",
         PoolError::Timeout { .. } => "timeout",
         PoolError::CpuLimit { .. } => "cpu_limit",
         PoolError::Finished => "error",
@@ -2566,3 +2568,7 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
 fn suspension_position(position: Option<impl Into<SourceRange>>) -> SourceRange {
     position.map_or_else(SourceRange::unknown, Into::into)
 }
+
+#[cfg(all(test, feature = "telemetry"))]
+#[path = "../tests/unit/checkout.rs"]
+mod tests;

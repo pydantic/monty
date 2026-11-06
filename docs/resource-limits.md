@@ -172,7 +172,7 @@ Host-side deadlines cover that:
     Each resume after a host-function or mount call starts a new deadline, so a program that suspends often can outlive
     any single timeout.
     This deadline does not set the sleep cap: default system sleeps return normally after at most ten seconds,
-    without a warning, even when sandbox code asks for longer.
+    without a warning, even when sandbox code asks for longer, unless the capped delay would exceed `max_total_sleep_secs`.
     Configure `sleep_system_max` (`sleepSystemMax` in JavaScript) in the session's OS policy to change that cap.
     See [waiting](security.md#waiting).
 - **A duration backstop per limit.** For each duration budget a session sets, the worker reports its consumed time on

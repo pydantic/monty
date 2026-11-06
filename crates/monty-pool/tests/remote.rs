@@ -338,10 +338,10 @@ async fn telemetry_context_is_propagated_on_the_dial() {
 }
 
 /// A malformed header name or value is validated before any I/O, so no server
-/// is needed: the checkout fails loudly with the promised dial error instead
+/// is needed: the checkout fails with a configuration error instead
 /// of the pair being silently dropped.
 #[tokio::test]
-async fn malformed_metadata_fail_the_dial() {
+async fn malformed_metadata_are_configuration_errors() {
     let cases = [
         (
             ("bad name", "v"),
@@ -356,9 +356,11 @@ async fn malformed_metadata_fail_the_dial() {
     for ((name, value), expected) in cases {
         let options = CheckoutOptions::default().with_metadata(vec![(name.to_owned(), value.to_owned())]);
         let Err(err) = pool.checkout_with(&ReplConfig::default(), options).await else {
-            panic!("malformed header must fail the dial");
+            panic!("malformed header must fail the checkout");
         };
-        let msg = connect_message(&err);
+        let PoolError::Configuration(msg) = err else {
+            panic!("expected a configuration error, got {err:?}");
+        };
         assert_eq!(msg, expected);
     }
 }
@@ -600,8 +602,8 @@ async fn an_unexpected_status_is_a_connect_failure() {
     assert_eq!(message, format!("{}: UNIMPLEMENTED: unknown service", mock.url()));
 }
 
-/// A URL that is an HTTP/2 server but no gRPC one — a web server's error
-/// page fails the checkout as `Connect`, rather than opening a session whose
+/// An HTTP/2 server without gRPC support, such as a web server's error page,
+/// fails the checkout as `Connect`, rather than opening a session whose
 /// first turn then dies decoding the page as a message.
 #[tokio::test]
 async fn a_non_grpc_server_is_a_connect_failure() {

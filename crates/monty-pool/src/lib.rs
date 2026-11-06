@@ -104,7 +104,7 @@ pub struct PoolConfig {
     /// telemetry callbacks prevent the timer from being polled while they run.
     /// On the remote transport it also bounds opening a stream, from a cold
     /// dial through the server's admission (30 s when `None`); that expiry
-    /// fails with [`PoolError::Spawn`] instead, and there is no worker to kill.
+    /// fails with [`PoolError::Connect`] instead, and there is no worker to kill.
     pub request_timeout: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
@@ -220,7 +220,7 @@ pub enum PoolError {
     Typing(String),
     /// No worker became available within `checkout_timeout`.
     Exhausted,
-    /// A worker process could not be spawned.
+    /// A worker process could not be spawned, or the pool configuration is invalid.
     Spawn(String),
     /// A remote connection or session stream could not be opened.
     Connect {

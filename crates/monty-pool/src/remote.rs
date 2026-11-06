@@ -150,12 +150,11 @@ impl Remote {
     ) -> Result<RemoteWorker, PoolError> {
         let url = &self.url;
         let mut map = MetadataMap::new();
-        // a malformed name/value is a caller bug: fail the dial
         for (name, value) in metadata {
             let key = MetadataKey::from_bytes(name.as_bytes())
-                .map_err(|err| connection_failure(url, format!("metadata entry {name:?}: {err}")))?;
+                .map_err(|err| PoolError::Configuration(format!("{url}: metadata entry {name:?}: {err}")))?;
             let value = MetadataValue::try_from(value.as_str())
-                .map_err(|err| connection_failure(url, format!("metadata entry {name:?} value: {err}")))?;
+                .map_err(|err| PoolError::Configuration(format!("{url}: metadata entry {name:?} value: {err}")))?;
             // never indexed: a token must not sit in the connection's HPACK
             // table, which every stream on it shares
             let mut value = value;
