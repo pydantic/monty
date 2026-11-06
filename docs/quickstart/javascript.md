@@ -262,7 +262,8 @@ When no worker becomes free within `checkoutTimeout` it rejects with a `DOMExcep
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
 `MontyConfigurationError` identifies settings incompatible with the server, such as no finite CPU-mode `requestTimeout`.
-It also identifies malformed request metadata names or values before any connection attempt.
+Invalid gRPC header names or string values also raise `MontyConfigurationError`.
+If `metadata` returns a non-object, `null`, an array, or an object with non-string values, checkout raises `TypeError` instead.
 Host-side error messages do not have a `RuntimeError:` prefix.
 Remote policy reasons use `remoteCause`, leaving the standard `Error.cause` available for error chains.
 The deprecated `cause` constructor option is accepted as an alias for `remoteCause`.
