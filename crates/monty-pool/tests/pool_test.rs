@@ -30,21 +30,20 @@ use monty_pool::{
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
-// only the off-Linux CPU rejection test names the clock; Linux CPU tests import their own
-#[cfg(not(target_os = "linux"))]
-use monty_types::ExecutionClock;
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, DateTimeSource, ExcType, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, ModuleFile, ModuleRead,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart,
-    ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, ExecutionClock, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, ModuleFile,
+    ModuleRead, MontyException, MontyObject, MontyUuid, NameLookupResult, OsPolicy, PrintStream, RandomSeed,
+    RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
 
+#[cfg(unix)]
+use crate::common::write_fake_monty;
 use crate::{binary::monty_binary, common::wait_for_idle};
 
 fn config() -> PoolConfig {
@@ -110,22 +109,6 @@ fn kill_pid(pid: u32) {
             .unwrap();
         assert!(status.success());
     }
-}
-
-/// Writes the executable stand-in for `monty` that a test drives, from a child shell rather than
-/// this process: a descriptor open for writing here would be inherited by any concurrently
-/// forking test, and executing the file while that child still holds it fails with `ETXTBSY`.
-#[cfg(unix)]
-fn write_fake_monty(dir: &Path, script: &str) -> PathBuf {
-    let fake = dir.join("monty");
-    let status = Command::new("sh")
-        .args(["-c", r#"printf '%s' "$2" > "$1" && chmod 755 "$1""#, "sh"])
-        .arg(&fake)
-        .arg(script)
-        .status()
-        .unwrap();
-    assert!(status.success(), "writing the stand-in `monty` failed");
-    fake
 }
 
 // =============================================================================
@@ -1810,6 +1793,50 @@ async fn a_slow_start_is_not_charged_to_the_first_feed() {
             assert_eq!(expect_complete(event), MontyObject::int(2));
         }
     }
+}
+
+/// Under CPU supervision the first request is queued only once the `Configure`
+/// reply has been read and the child's clock sampled: written sooner, the child
+/// could run part of it before the baseline. The stand-in logs what reaches it
+/// before it answers, which must not include the feed.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_cpu_supervised_first_request_waits_for_the_configure_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let replies_path = dir.path().join("replies.bin");
+    let ok = pb::ChildEvent {
+        execution_clock: Some(pb::ExecutionClock::Cpu as i32),
+        ..child_event(pb::child_event::Kind::Ok(pb::Ok {}))
+    };
+    fs::write(&replies_path, framed(&ok)).unwrap();
+    let log = dir.path().join("before-reply.bin");
+    // reads whatever arrives in its first half second, then answers and stops reading
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!(
+            "#!/bin/sh\nsleep 0.3\ntimeout 0.3 cat > '{}'\ncat '{}'\nsleep 30\n",
+            log.display(),
+            replies_path.display()
+        ),
+    );
+    let mut config = PoolConfig::subprocess(&fake);
+    config.execution_clock = ExecutionClock::Cpu;
+    config.request_timeout = Some(Duration::from_secs(2));
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let err = session
+        .feed("'first-request-marker'", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Timeout { .. }), "{err:?}");
+    let before_reply = fs::read(&log).unwrap();
+    assert!(!before_reply.is_empty(), "the Configure must reach the stand-in first");
+    assert!(
+        !before_reply
+            .windows(b"first-request-marker".len())
+            .any(|window| window == b"first-request-marker"),
+        "the first request was written before the Configure reply"
+    );
 }
 
 /// A worker refusing the `Configure` (protocol version skew) writes why and

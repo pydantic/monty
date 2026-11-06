@@ -24,8 +24,10 @@ use monty_pool::{
     telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
+#[cfg(unix)]
+use monty_proto::encode_framed_into;
 use monty_proto::pb;
-use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
+use monty_types::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
 use opentelemetry::{
     KeyValue,
     trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState},
@@ -42,6 +44,8 @@ use opentelemetry_sdk::{
 use prost::Message;
 use tokio::time::{Instant, sleep};
 
+#[cfg(unix)]
+use crate::common::write_fake_monty;
 use crate::{binary::monty_binary, common::wait_for_idle};
 
 /// A cumulative aggregate exported from a test Logfire provider.
@@ -365,6 +369,45 @@ async fn an_unconfigured_checkout_leaves_no_trace_parent_behind() {
     pool.close().await;
     // read while `logfire` lives: its provider's shutdown clears the exporter
     assert_eq!(spans.get_finished_spans().unwrap().len(), 0);
+}
+
+/// A first request queued behind its `Configure` counts its bytes once written,
+/// not when queued: a worker that answers and then stops reading was sent one frame.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_queued_request_counts_its_bytes_once_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let ok = pb::ChildEvent {
+        kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+        ..pb::ChildEvent::default()
+    };
+    let mut replies = Vec::new();
+    encode_framed_into(&ok, &mut replies).unwrap();
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    // answers the `Configure` but never reads, so a large first request never finishes writing
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+    );
+    let mut config = PoolConfig::subprocess(&fake);
+    config.request_timeout = None;
+    config.feed_duration_limit_grace = Some(Duration::from_millis(100));
+    let (pool, capture) = pool_with_metrics(config).await;
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .await
+        .expect("checkout");
+    let code = format!("{}\n1", "#".repeat(8 * 1024 * 1024));
+    let err = checkout
+        .feed(code, vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Timeout { .. }), "{err:?}");
+    assert_eq!(capture.last("monty.wire.frame.bytes", "direction", "sent").count, 1);
 }
 
 /// A checkout that cannot be served, and a session abandoned rather than
