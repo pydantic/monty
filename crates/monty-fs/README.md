@@ -32,6 +32,8 @@ It never creates or truncates the file; an empty payload does not extend it.
 Native mounts seek and write through one confined handle, which is closed before returning.
 Overlays copy backing content on the first mutation and keep all changes in memory.
 The write budget charges the payload and any zero-filled gap, or the resulting materialized content on first copy.
+Native positional writes default to a cumulative 256 MB budget when no write limit is configured.
+An explicit write limit replaces that fallback; other write operations retain their configured behavior.
 Overlay memory limits apply separately.
 Native write failures can leave partially modified content.
 

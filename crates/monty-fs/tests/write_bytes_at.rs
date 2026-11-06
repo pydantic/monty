@@ -5,8 +5,8 @@ use std::{
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
-use monty_fs::{Mount, MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, WriteBytesAtArgs};
+use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
+use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, WriteBytesAtArgs};
 use proptest::{
     prelude::*,
     test_runner::{FileFailurePersistence, TestCaseResult},
@@ -60,6 +60,64 @@ fn overwrites_preserve_suffixes_and_gaps_without_writing_through_overlays() {
             assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abcdef");
         }
     }
+}
+
+#[test]
+fn native_positional_writes_default_to_a_bounded_budget() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file"), b"abc").unwrap();
+    let mut table = table(&dir, false, None);
+    assert!(matches!(
+        dispatch(&mut table, write(256_000_003, b"x")),
+        Err(MountError::WriteLimitExceeded(256_000_000))
+    ));
+    assert!(dispatch(&mut table, write(1_u64 << 40, b"x")).is_err());
+    assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abc");
+}
+
+#[test]
+fn native_positional_budget_is_cumulative_without_limiting_other_writes() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file"), b"").unwrap();
+    let mut table = table(&dir, false, None);
+    let chunk = vec![0; 1_000_000];
+    // Repeated overwrites exhaust the quota while keeping the actual file at 1 MB.
+    for _ in 0..256 {
+        dispatch(&mut table, write(0, &chunk)).unwrap();
+    }
+    assert!(matches!(
+        dispatch(&mut table, write(0, b"x")),
+        Err(MountError::WriteLimitExceeded(256_000_000))
+    ));
+    assert_eq!(
+        dispatch(&mut table, write(1_u64 << 40, b"")).unwrap(),
+        MontyObject::int(0)
+    );
+    // The per-call fallback must not change the mount's ordinary append policy.
+    dispatch(
+        &mut table,
+        OsFunctionCall::AppendBytes(PathBytesDataArgs {
+            path: "/mnt/file".into(),
+            data: b"!".to_vec(),
+        }),
+    )
+    .unwrap();
+    let content = fs::read(dir.path().join("file")).unwrap();
+    assert_eq!(content.len(), 1_000_001);
+    assert!(content[..1_000_000].iter().all(|byte| *byte == 0));
+    assert_eq!(content[1_000_000], b'!');
+}
+
+#[test]
+fn native_positional_writes_use_a_larger_explicit_budget() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("file"), b"").unwrap();
+    let mut table = table(&dir, false, Some(256_000_001));
+    assert!(matches!(
+        dispatch(&mut table, write(256_000_001, b"x")),
+        Err(MountError::WriteLimitExceeded(256_000_001))
+    ));
+    assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"");
 }
 
 #[test]

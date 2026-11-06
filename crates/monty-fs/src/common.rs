@@ -232,6 +232,9 @@ pub(super) fn positional_write_charge(offset: u64, length: u64, count: usize) ->
         .ok_or_else(|| MountError::InvalidArgument("write range exceeds the supported file-position range".to_owned()))
 }
 
+/// Cumulative native positional-write budget when the host supplied no write limit.
+const DEFAULT_POSITIONAL_WRITE_BYTES_LIMIT: u64 = 256_000_000;
+
 /// Uses one confined handle for the length check, seek, and overwrite.
 pub(super) fn host_write_bytes_at(
     ctx: &mut MountContext<'_>,
@@ -244,6 +247,9 @@ pub(super) fn host_write_bytes_at(
     let mut file = open_regular(ctx.mount_dir, rel, vpath, OpenOptions::new().write(true))?;
     let length = file.metadata().map_err(|err| map_io(err, vpath))?.len();
     let charge = positional_write_charge(offset, length, content.len())?;
+    // This context is per-call; the mount retains the cumulative counter.
+    ctx.write_bytes_limit
+        .get_or_insert(DEFAULT_POSITIONAL_WRITE_BYTES_LIMIT);
     check_write_limit(charge, ctx)?;
     if !content.is_empty() {
         file.seek(SeekFrom::Start(offset)).map_err(|err| map_io(err, vpath))?;
