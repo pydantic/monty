@@ -25,6 +25,8 @@ host resources, including when using WASM worker sessions and snapshots.
 It also means external processes can observe partial state
 between calls, and that there is no protection against the underlying file
 being changed or removed between calls, both documented further down.
+Access permissions are also checked again on later operations; permission changes can make a read or write fail
+after `open()` succeeded, unlike access through CPython's retained descriptor.
 
 ## Mode strings
 

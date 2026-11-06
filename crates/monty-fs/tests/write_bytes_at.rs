@@ -1,10 +1,12 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     fs,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
 use monty_fs::{Mount, MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_types::{ExcType, MontyObject, OsFunctionCall, WriteBytesAtArgs};
+use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, WriteBytesAtArgs};
 use proptest::{prelude::*, test_runner::FileFailurePersistence};
 use tempfile::TempDir;
 
@@ -90,6 +92,60 @@ fn invalid_ranges_missing_files_and_read_only_mounts_are_rejected() {
     let mut table = MountTable::new();
     table.mount("/mnt", dir.path(), MountMode::ReadOnly, None).unwrap();
     assert!(dispatch(&mut table, write(0, b"x")).is_err());
+}
+
+#[test]
+fn native_update_open_checks_access_before_truncating() {
+    for write_only in [false, true] {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("file");
+        fs::write(&path, b"unchanged").unwrap();
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut restricted = original.clone();
+        if write_only {
+            #[cfg(unix)]
+            {
+                restricted = fs::Permissions::from_mode(0o200);
+            }
+            // Windows' readonly attribute cannot represent a write-only file.
+            #[cfg(not(unix))]
+            {
+                continue;
+            }
+        } else {
+            restricted.set_readonly(true);
+        }
+        fs::set_permissions(&path, restricted).unwrap();
+        let denied = match fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => {
+                drop(file);
+                false
+            }
+            Err(error) => {
+                assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+                true
+            }
+        };
+        if !denied {
+            // Elevated processes can bypass mode bits, so there is no denial to test.
+            fs::set_permissions(&path, original).unwrap();
+            continue;
+        }
+        let mut table = table(&dir, false, None);
+        let result = dispatch(
+            &mut table,
+            OsFunctionCall::Open(OpenCallArgs {
+                path: "/mnt/file".into(),
+                mode: "w+b".parse().unwrap(),
+            }),
+        );
+        fs::set_permissions(&path, original).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"unchanged", "write_only={write_only}");
+        assert_eq!(
+            result.unwrap_err().into_exception().exc_type(),
+            ExcType::PermissionError
+        );
+    }
 }
 
 #[test]

@@ -179,14 +179,23 @@ pub(super) fn host_write_bytes(dir: &Dir, rel: &str, content: &[u8], vpath: &str
 
 /// Truncates `rel` and writes `content` through the mount descriptor.
 fn write_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Result<(), MountError> {
+    let mut file = open_for_write(dir, rel, false, vpath)?;
+    file.write_all(content).map_err(|err| map_io(err, vpath))
+}
+
+/// Requests the required read/write access in the same open that truncates or creates the file.
+pub(super) fn open_for_write(dir: &Dir, rel: &str, readable: bool, vpath: &str) -> Result<File, MountError> {
     reject_non_regular(dir, rel, vpath)?;
-    let mut file = open_regular(
+    open_regular(
         dir,
         rel,
         vpath,
-        OpenOptions::new().write(true).create(true).truncate(true),
-    )?;
-    file.write_all(content).map_err(|err| map_io(err, vpath))
+        OpenOptions::new()
+            .read(readable)
+            .write(true)
+            .create(true)
+            .truncate(true),
+    )
 }
 
 /// Appends text to a file and returns the number of characters written.

@@ -13,7 +13,7 @@ use super::{
         DIRECTORY_WRITE_BYTES, MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes,
         host_append_bytes, host_append_text, host_create_exclusive, host_is_dir, host_is_file, host_iterdir,
         host_list_visible_dir_entries, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink,
-        host_write_bytes, host_write_bytes_at, host_write_text, map_io, reject_non_regular,
+        host_write_bytes, host_write_bytes_at, host_write_text, map_io, open_for_write, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -140,7 +140,8 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;
-            host_write_text(ctx.mount_dir, rel, "", path)?;
+            let file = open_for_write(ctx.mount_dir, rel, mode.readable(), path)?;
+            drop(file);
             commit_write_bytes(0, ctx);
         }
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
