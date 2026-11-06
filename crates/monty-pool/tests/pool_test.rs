@@ -23,11 +23,13 @@ use std::{
 };
 
 use insta::assert_snapshot;
+// only the unix-gated raw-path test forges worker frames
+#[cfg(unix)]
+use monty_pool::CrashCause;
 use monty_pool::{
     Checkout, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture,
     ReplConfig, ResumeValue, TurnEvent, on_print_sync,
 };
-// only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
 use monty_proto::{encode_framed_into, pb};
 #[cfg(unix)]
@@ -1869,6 +1871,42 @@ async fn a_refused_configure_is_reported_whatever_the_request_size() {
             "monty worker crashed: unsupported protocol version (exit status: 4)"
         );
     }
+}
+
+/// A child that stopped reading before the `Configure` was written fails that
+/// write outright; the reason it announced is still read and reported.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_refusal_before_configure_is_written_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let replies = framed(&child_event(pb::child_event::Kind::FatalError(pb::FatalError {
+        message: "unsupported protocol version".to_owned(),
+    })));
+    let replies_path = dir.path().join("replies.bin");
+    fs::write(&replies_path, &replies).unwrap();
+    let ready = dir.path().join("ready");
+    let fake = write_fake_monty(
+        dir.path(),
+        &format!(
+            "#!/bin/sh\nexec 0<&-\ncat '{}'\ntouch '{}'\nexec sleep 5\n",
+            replies_path.display(),
+            ready.display()
+        ),
+    );
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    // the pre-spawned child has closed its stdin, so the `Configure` write fails
+    while !ready.exists() {
+        sleep(Duration::from_millis(10)).await;
+    }
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let err = session
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PoolError::Crashed { cause: CrashCause::Announced { reason }, .. } if reason == "unsupported protocol version"),
+        "{err:?}"
+    );
 }
 
 /// An event with no `kind` ends no turn on the raw path. Every wire field is

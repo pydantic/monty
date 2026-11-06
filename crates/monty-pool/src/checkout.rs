@@ -27,7 +27,10 @@ use monty_types::{
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
-use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
+use tokio::{
+    task::spawn_blocking,
+    time::{Instant as DeadlineInstant, timeout},
+};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
@@ -2398,7 +2401,29 @@ impl Checkout {
                 Ok(())
             }
             Err(FrameError::FrameTooLarge { len, max }) => Err(frame_too_large(len, max)),
-            Err(_) => Err(self.poison("sending a request").await),
+            Err(_) => Err(self.write_failed().await),
+        }
+    }
+
+    /// Discards the worker after a failed write. A local child that stopped
+    /// reading may have said why before exiting, so an announced `FatalError` is
+    /// read first, as [`Worker::recv`] does when a queued write fails.
+    async fn write_failed(&mut self) -> PoolError {
+        let announced = match self.worker.as_mut() {
+            Some(worker) if !self.pool.config.transport.is_remote() => {
+                match timeout(FATAL_EXIT_GRACE, worker.recv()).await {
+                    Ok(Ok(pb::ChildEvent {
+                        kind: Some(pb::child_event::Kind::FatalError(fatal)),
+                        ..
+                    })) => Some(fatal.message),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        match announced {
+            Some(message) => self.fatal_error(&message).await,
+            None => self.poison("sending a request").await,
         }
     }
 

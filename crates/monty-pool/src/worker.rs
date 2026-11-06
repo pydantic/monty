@@ -251,42 +251,54 @@ impl Worker {
         result: Result<Option<usize>, FrameError>,
     ) -> Result<(), FrameError> {
         self.record_queued_write();
-        #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
-            if let Some(recorder) = &mut self.recorder {
-                recorder.begin_turn(request);
-            }
-            if let Some(metrics) = &mut self.metrics {
-                if let Some(len) = len {
-                    metrics.frame("sent", len);
-                }
-                metrics.begin_turn(request);
-            }
-            if matches!(
-                request.kind,
-                Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
-            ) {
-                self.recorder = None;
-            }
+            self.record_turn_sent(request, len);
         }
-        #[cfg(not(feature = "telemetry"))]
-        let _ = request;
         result.map(drop)
     }
 
+    /// Starts the telemetry for a turn whose request was written or queued.
+    #[cfg(feature = "telemetry")]
+    fn record_turn_sent(&mut self, request: &pb::ParentRequest, len: Option<usize>) {
+        if let Some(recorder) = &mut self.recorder {
+            recorder.begin_turn(request);
+        }
+        if let Some(len) = len {
+            self.record_frame_sent(len);
+        }
+        if let Some(metrics) = &mut self.metrics {
+            metrics.begin_turn(request);
+        }
+        if matches!(
+            request.kind,
+            Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
+        ) {
+            self.recorder = None;
+        }
+    }
+
+    #[cfg(not(feature = "telemetry"))]
+    fn record_turn_sent(&mut self, _request: &pb::ParentRequest, _len: Option<usize>) {}
+
     /// Counts a queued frame's bytes once [`SubprocessWorker`] has written it all.
     fn record_queued_write(&mut self) {
-        let WorkerKind::Subprocess(w) = &mut self.kind else {
-            return;
-        };
-        let written = w.queued_written.take();
-        #[cfg(feature = "telemetry")]
-        if let (Some(len), Some(metrics)) = (written, &self.metrics) {
+        if let WorkerKind::Subprocess(w) = &mut self.kind
+            && let Some(len) = w.queued_written.take()
+        {
+            self.record_frame_sent(len);
+        }
+    }
+
+    /// Counts one sent frame's body bytes.
+    #[cfg(feature = "telemetry")]
+    fn record_frame_sent(&self, len: usize) {
+        if let Some(metrics) = &self.metrics {
             metrics.frame("sent", len);
         }
-        #[cfg(not(feature = "telemetry"))]
-        let _ = written;
     }
+
+    #[cfg(not(feature = "telemetry"))]
+    fn record_frame_sent(&self, _len: usize) {}
 
     /// Copies the first recorded stream failure before teardown can add a
     /// local one; `None` for a subprocess.
