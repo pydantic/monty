@@ -28,13 +28,12 @@ use crate::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, Type,
         bytes::PyBytes,
         decimal, host_class_type,
-        inline_str::InlineStr,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
         namedtuple::cmp_item_seqs,
-        str::{PyStr, allocate_string},
+        str::{InlineStr, PyStr, allocate_string},
         tuple::allocate_tuple,
     },
 };
