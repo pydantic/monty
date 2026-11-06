@@ -13,7 +13,12 @@ import { context as ContextAPI, type Context } from '@opentelemetry/api'
 
 import type { NativeSession } from '../native-addon.js'
 import { isAsyncFunction } from './asyncFunction.js'
-import { bindPrintCallback, getCallbackContext, runWithCallbackContext } from './callbackContext.js'
+import {
+  bindPrintCallback,
+  bindStreamedCallCallback,
+  getCallbackContext,
+  runWithCallbackContext,
+} from './callbackContext.js'
 import {
   AttrNotExposed,
   attributeErrorMessage,
@@ -201,6 +206,8 @@ export class MontySession {
    *  wrapper sent through any boundary of this session lives here so method
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
+  /** Starts a call the worker streamed mid-turn; bound by each `feedRun` to its answerer and async context. */
+  private onStreamedCall: ((callId: number, parent?: string | null) => void) | undefined
 
   /** @internal — sessions are created by `Monty.checkout`, which validates the modules first. */
   constructor(
@@ -210,6 +217,7 @@ export class MontySession {
   ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
+    native.setStreamedCallSink((callId, parent) => this.onStreamedCall?.(callId, parent))
   }
 
   /**
@@ -226,15 +234,12 @@ export class MontySession {
     const printTarget = new PrintTarget(options.printCallback)
     // Discard pending futures between feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
-    // streamed calls arrive on the print callback mid-turn, so each starts while the sandbox runs
-    const onPrint = bindPrintCallback((stream, text) => {
-      if (stream === STREAMED_CALL) {
-        // a failed print ends the feed, so no host call may start after one
-        if (!printTarget.hasFailed()) {
-          answerer.startStreamedCall(Number(text))
-        }
-      } else {
-        printTarget.write(stream, text)
+    const onPrint = bindPrintCallback((stream, text) => printTarget.write(stream, text))
+    // streamed calls arrive on the session's sink mid-turn, so each starts while the sandbox runs
+    this.onStreamedCall = bindStreamedCallCallback((callId) => {
+      // a failed print ends the feed, so no host call may start after one
+      if (!printTarget.hasFailed()) {
+        answerer.startStreamedCall(callId)
       }
     })
     let turn = (await this.native.feed(
@@ -698,8 +703,8 @@ class TurnAnswerer {
   }
 
   /**
-   * Starts a call the native session announced mid-turn (see `takeStreamedCall`
-   * in src/pool.rs), registering its future at once so a later `resolveFutures`
+   * Starts a call the native session announced mid-turn on its streamed-call
+   * sink (see `setStreamedCallSink` in src/pool.rs), registering its future at once so a later `resolveFutures`
    * finds it. Runs in the announcing turn's callback context.
    */
   startStreamedCall(callId: number): void {
@@ -1175,12 +1180,7 @@ class SnapshotDriver {
 
   /** Exposed so the session's first turn can stream prints through it. */
   get onPrint(): PrintCallback {
-    return bindPrintCallback((stream, text) => {
-      // `feedStart` sends no `asyncFunctions`, so the worker streams no calls
-      if (stream !== STREAMED_CALL) {
-        this.printTarget.write(stream, text)
-      }
-    })
+    return bindPrintCallback((stream, text) => this.printTarget.write(stream, text))
   }
 
   constructor(
@@ -1567,12 +1567,6 @@ export class MontyComplete {
   /** @internal */
   constructor(readonly output: unknown) {}
 }
-
-/**
- * The `stream` the native print callback receives for a call the worker
- * streamed mid-turn, with its call ID as `text`. Mirrors `STREAMED_CALL` in src/pool.rs.
- */
-const STREAMED_CALL = 'call'
 
 /** The OS call the sandbox makes for an `import` it cannot resolve itself. */
 const IMPORT_CALL = 'import'

@@ -17,8 +17,9 @@
 //! never on the JS event loop thread. Sandbox `print()` output streams
 //! mid-turn through a threadsafe function; the turn awaits each JS callback
 //! (`call_async`), preserving print ordering and backpressure. Calls to async
-//! host functions the worker streams are announced on the same callback as
-//! they arrive (see [`STREAMED_CALL`]), so the host starts them mid-turn. The checkout
+//! host functions the worker streams are announced the same way, on the
+//! session's streamed-call sink as they arrive (see
+//! [`NativeSession::set_streamed_call_sink`]), so the host starts them mid-turn. The checkout
 //! mutex (a tokio mutex) is held for a whole turn: event-loop-thread methods
 //! must never block on it (`worker_pid` uses `try_lock`, everything else
 //! locks inside the spawned future).
@@ -74,9 +75,11 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
 
-/// The `stream` the print callback receives for a streamed call: `text` is its
-/// call ID, for [`NativeSession::take_streamed_call`]. Mirrors `STREAMED_CALL` in `ts/session.ts`.
-const STREAMED_CALL: &str = "call";
+/// The JS callback announcing a streamed call: its call ID and the span key of
+/// its telemetry context.
+type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
+/// Announces one streamed call to JS and resolves once the callback has run.
+type StreamedCallAnnouncer = Arc<dyn Fn(u32, Option<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
@@ -411,6 +414,7 @@ impl NativePool {
             checkout: Arc::new(AsyncMutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
             announced_calls: Arc::new(Mutex::new(HashMap::new())),
+            streamed_call_sink: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -498,13 +502,32 @@ pub struct NativeSession {
     /// Streamed calls announced mid-turn, by call ID, until TypeScript takes
     /// them with [`NativeSession::take_streamed_call`].
     announced_calls: Arc<Mutex<HashMap<u32, StreamedCall>>>,
+    /// Set by [`NativeSession::set_streamed_call_sink`]; without it a turn's
+    /// streamed calls arrive only as its `streamedCalls` once it ends.
+    streamed_call_sink: Arc<Mutex<Option<StreamedCallAnnouncer>>>,
 }
 
 #[napi]
 impl NativeSession {
-    /// Takes the streamed call announced mid-turn as `(STREAMED_CALL, callId, spanKey)`
-    /// on the turn's print callback, converted like a turn's `streamedCalls`
-    /// entry; `null` once taken.
+    /// Installs the callback every later turn announces its streamed calls on,
+    /// as `(callId, spanKey)` while the turn runs; the turn awaits each one,
+    /// so TypeScript registers the call's future before the turn resolves.
+    /// Weak, so an idle session does not keep Node's event loop alive.
+    #[napi]
+    pub fn set_streamed_call_sink(&self, callback: StreamedCallCallback<'_>) -> Result<()> {
+        let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
+        let announcer: StreamedCallAnnouncer = Arc::new(move |call_id, span_key| {
+            let tsfn = Arc::clone(&tsfn);
+            Box::pin(async move {
+                let _ = tsfn.call_async(FnArgs::from((call_id, span_key))).await;
+            })
+        });
+        *lock(&self.streamed_call_sink) = Some(announcer);
+        Ok(())
+    }
+
+    /// Takes the streamed call announced mid-turn on the streamed-call sink,
+    /// converted like a turn's `streamedCalls` entry; `null` once taken.
     #[napi]
     pub fn take_streamed_call<'env>(&self, env: &'env Env, call_id: u32) -> Result<Option<Object<'env>>> {
         let call = lock(&self.announced_calls).remove(&call_id);
@@ -1025,7 +1048,7 @@ impl NativeSession {
         compute: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> OutcomeFuture<'a, TurnOutcome> + Send + 'static,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = Arc::new(on_print.build_threadsafe_function().build()?);
-        let announcer = Arc::clone(&tsfn);
+        let announcer = lock(&self.streamed_call_sink).clone();
         let announced_calls = Arc::clone(&self.announced_calls);
         let slot = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
@@ -1060,39 +1083,39 @@ impl NativeSession {
                         let _ = tsfn.call_async(args).await;
                     })
                 };
-                // Each streamed call is held for `take_streamed_call` and
-                // announced on the print callback, awaited as a print is, so
-                // TypeScript starts it while the turn runs and has registered
-                // its future before the turn resolves.
-                let announce = |call: StreamedCall| {
-                    let call_id = call.call_id;
-                    let args = FnArgs::from((
-                        STREAMED_CALL.to_owned(),
-                        call_id.to_string(),
-                        callback_span_key(&call.callback_context),
-                    ));
-                    lock(&announced_calls).insert(call_id, call);
-                    let announcer = Arc::clone(&announcer);
-                    async move {
-                        let _ = announcer.call_async(args).await;
-                    }
-                };
-                let (sink, mut streamed) = unbounded_channel();
-                checkout.set_streamed_call_sink(Some(sink));
-                let outcome = {
-                    let mut turn = pin!(compute(checkout, &mut on_print));
-                    loop {
-                        tokio::select! {
-                            outcome = &mut turn => break outcome,
-                            Some(call) = streamed.recv() => announce(call).await,
+                let outcome = match announcer {
+                    // Each streamed call is held for `take_streamed_call` and
+                    // announced on the sink, awaited as a print is, so
+                    // TypeScript starts it while the turn runs and has
+                    // registered its future before the turn resolves.
+                    Some(announcer) => {
+                        let announce = |call: StreamedCall| {
+                            let call_id = call.call_id;
+                            let span_key = callback_span_key(&call.callback_context);
+                            lock(&announced_calls).insert(call_id, call);
+                            announcer(call_id, span_key)
+                        };
+                        let (sink, mut streamed) = unbounded_channel();
+                        checkout.set_streamed_call_sink(Some(sink));
+                        let outcome = {
+                            let mut turn = pin!(compute(checkout, &mut on_print));
+                            loop {
+                                tokio::select! {
+                                    outcome = &mut turn => break outcome,
+                                    Some(call) = streamed.recv() => announce(call).await,
+                                }
+                            }
+                        };
+                        checkout.set_streamed_call_sink(None);
+                        // calls that arrived as the turn ended
+                        while let Ok(call) = streamed.try_recv() {
+                            announce(call).await;
                         }
+                        outcome
                     }
+                    // no sink: the checkout collects them for the turn's `streamedCalls`
+                    None => compute(checkout, &mut on_print).await,
                 };
-                checkout.set_streamed_call_sink(None);
-                // calls that arrived as the turn ended
-                while let Ok(call) = streamed.try_recv() {
-                    announce(call).await;
-                }
                 // a load or an auto-resume can each move the session to a new ID
                 *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                 // taken every turn: a `resolveFutures` can name a call that only arrived this way
