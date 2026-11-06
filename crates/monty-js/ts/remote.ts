@@ -84,7 +84,8 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
 export class MontyRemote {
   private readonly native: NativePool
   private readonly metadata: MontyRemoteOptions['metadata']
-  private closed = false
+  /** The first `close()` call's promise, shared by every later call. */
+  private closing: Promise<void> | undefined
 
   private constructor(native: NativePool, metadata: MontyRemoteOptions['metadata']) {
     this.native = native
@@ -130,7 +131,7 @@ export class MontyRemote {
    * created. Release the stream with `session.close()` (or `await using`).
    */
   async checkout(options: RemoteCheckoutOptions = {}): Promise<MontySession> {
-    if (this.closed) {
+    if (this.closing !== undefined) {
       throw new Error('the pool is closed — create a new MontyRemote pool')
     }
     const modules = new HostModules(options.externalModules)
@@ -147,17 +148,13 @@ export class MontyRemote {
   }
 
   /**
-   * Shuts the pool down. Pending/new checkouts reject; live sessions stay usable.
-   * Only the first call waits for retained graceful closes, up to `maxProcesses`,
-   * within the existing one-second grace. Excess closes reset immediately.
-   * Finish sessions first, then retain their credentials until that first call resolves.
+   * Shuts the pool down: pending and new checkouts reject. Sessions already
+   * checked out keep their streams until closed. Resolves once finished
+   * sessions' streams have closed (each bounded by a one-second grace).
    */
   async close(): Promise<void> {
-    if (this.closed) {
-      return
-    }
-    this.closed = true
-    await this.native.close()
+    this.closing ??= this.native.close()
+    return this.closing
   }
 
   async [Symbol.asyncDispose](): Promise<void> {

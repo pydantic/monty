@@ -12,11 +12,6 @@ Additionally, Full Monty can act as a reverse proxy, forwarding requests to a fu
 
 The server is closed-source and distributed as a container image.
 
-Client pool exit waits for retained graceful closes, each within its existing one-second grace.
-Each pool retains at most its concurrent-stream cap. Excess closes reset their streams immediately.
-Finish sessions before using pool exit to end their credential lifetime. Keep those credentials valid until exit completes.
-Live checkouts can outlive the pool. Stream closure does not prove that the server committed its final work.
-
 !!! tip "Design partners"
 
     If you're interested in being an early design partner for Full Monty, please

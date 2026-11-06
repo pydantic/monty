@@ -21,12 +21,6 @@ pip install pydantic-monty-client
 You can use this library alone to connect to a remote monty server over gRPC: one HTTP/2 connection per pool, one
 stream per session. `AsyncMontyWebsocket` is the same class under its former name, deprecated.
 
-Pool exit waits for retained graceful closes, each within its existing one-second grace.
-At most `max_processes` closes are retained. Excess closes reset their streams immediately.
-Finish sessions before pool exit if you use its completion to end their credential lifetime.
-Keep those credentials valid until exit completes. Live checkouts can outlive the pool.
-Stream closure does not prove that the server committed its final work.
-
 ```python test="skip"
 from pydantic_monty import AsyncMontyRemote
 

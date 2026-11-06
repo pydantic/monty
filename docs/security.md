@@ -512,6 +512,9 @@ full host access, relying on deployment isolation — a container or VM per sess
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the
 other end.
 
+Closing a remote pool waits, up to one second each, for the server to end the streams of sessions already finished.
+If the server checks a session's credentials when it ends the stream, keep them valid until the pool's close returns.
+
 ### Pin the worker binary
 
 The worker binary is resolved from the explicit path you pass, then `MONTY_BIN`, then the bundled platform package, then
