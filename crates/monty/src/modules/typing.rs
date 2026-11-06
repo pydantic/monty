@@ -28,7 +28,7 @@ use crate::{
     intern::{FunctionId, StaticStrings},
     modules::ModuleFunctions,
     types::{
-        BuiltinType, LazyHeapSet, Module, PyTrait, allocate_string, allocate_tuple, forward_ref::format_code,
+        LazyHeapSet, Module, PyTrait, Type, allocate_string, allocate_tuple, forward_ref::format_code,
         generic_alias::repr_type_arg,
     },
     value::{Marker, Value},
@@ -46,13 +46,13 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     // `types.UnionType` since 3.14), so it is a real type rather than a marker.
     module.set_attr(
         StaticStrings::UnionType,
-        Value::Builtin(Builtins::Type(BuiltinType::Union)),
+        Value::Builtin(Builtins::Type(Type::Union)),
         vm,
     );
     // `typing.ForwardRef is annotationlib.ForwardRef` in CPython.
     module.set_attr(
         StaticStrings::ForwardRef,
-        Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+        Value::Builtin(Builtins::Type(Type::ForwardRef)),
         vm,
     );
 
@@ -590,22 +590,22 @@ fn resolve_hints(
             cache,
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::AliasWith)),
-            Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+            Value::Builtin(Builtins::Type(Type::ForwardRef)),
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::TypeRepr)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
-            Value::Builtin(Builtins::Type(BuiltinType::Str)),
-            Value::Builtin(Builtins::Type(BuiltinType::Tuple)),
-            Value::Builtin(Builtins::Type(BuiltinType::Dict)),
+            Value::Builtin(Builtins::Type(Type::Str)),
+            Value::Builtin(Builtins::Type(Type::Tuple)),
+            Value::Builtin(Builtins::Type(Type::Dict)),
             Value::Builtin(Builtins::Function(BuiltinsFunctions::Repr)),
-            Value::Builtin(Builtins::Type(BuiltinType::GenericAlias)),
+            Value::Builtin(Builtins::Type(Type::GenericAlias)),
             Value::Marker(Marker(StaticStrings::Literal)),
-            Value::Builtin(Builtins::Type(BuiltinType::Union)),
-            Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
-            Value::Builtin(Builtins::ExcType(ExcType::Exception)),
-            Value::Builtin(Builtins::ExcType(ExcType::NotImplementedError)),
-            Value::Builtin(Builtins::ExcType(ExcType::SyntaxError)),
-            Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
+            Value::Builtin(Builtins::Type(Type::Union)),
+            Value::Builtin(Builtins::Type(Type::NoneType)),
+            Value::Builtin(Builtins::Type(Type::Exception)),
+            Value::Builtin(Builtins::Type(Type::NotImplementedError)),
+            Value::Builtin(Builtins::Type(Type::SyntaxError)),
+            Value::Builtin(Builtins::Type(Type::ValueError)),
         ],
     )
 }

@@ -34,7 +34,7 @@ use crate::{
     },
     py_value::PyValue,
     resource_checks::check_estimated_size,
-    types::{Module, PyTrait},
+    types::{Module, PyTrait, Type},
     value::Value,
 };
 
@@ -92,12 +92,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
 
     module.set_attr(
         StaticStrings::ErrorClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiError)),
+        Value::Builtin(Builtins::Type(Type::BinasciiError)),
         vm,
     );
     module.set_attr(
         StaticStrings::IncompleteClass,
-        Value::Builtin(Builtins::ExcType(ExcType::BinasciiIncomplete)),
+        Value::Builtin(Builtins::Type(Type::BinasciiIncomplete)),
         vm,
     );
     for (name, func) in BINASCII_FUNCTIONS {

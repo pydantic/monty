@@ -1903,7 +1903,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // - Callable must be a builtin type constructor (known at compile time)
         // - Arguments must be positional-only (Empty, One, Two, or Args)
         if let Callable::Builtin(Builtins::Type(t)) = callable
-            && let Some(type_id) = Type::from(*t).callable_to_u8()
+            && let Some(type_id) = t.callable_to_u8()
             && let Some(arg_count) = self.compile_builtin_call(args, call_pos)?
         {
             // Optimization applied - CallBuiltinType emitted
@@ -2364,11 +2364,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
                 let name: &'static str = function.into();
                 self.interns.get_string_id_by_name(name)?
             }
-            Builtins::ExcType(exc_type) => self.interns.get_string_id_by_name(&exc_type.to_string())?,
-            Builtins::Type(type_) => {
-                let name = Type::from(type_).builtin_name()?;
-                self.interns.get_string_id_by_name(name)?
-            }
+            Builtins::Type(type_) => self.interns.get_string_id_by_name(type_.builtin_name()?)?,
         };
 
         u16::try_from(name_id.index()).ok()
@@ -3535,7 +3531,7 @@ impl<'a, 'i> Compiler<'a, 'i> {
         // Raise AssertionError
         let exc_idx = self
             .code
-            .add_const(Value::Builtin(Builtins::ExcType(ExcType::AssertionError)))?;
+            .add_const(Value::Builtin(Builtins::Type(Type::AssertionError)))?;
         self.code.emit_u16(Opcode::LoadConst, exc_idx)?;
 
         if let Some(msg_expr) = msg {

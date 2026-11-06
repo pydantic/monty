@@ -355,8 +355,9 @@ pub(super) fn sumprod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
 /// The compensated path accepts float/float and float/int pairs, including booleans.
 fn float_pair(a: &Value, b: &Value, vm: &VM<'_>) -> RunResult<Option<(f64, f64)>> {
-    if (matches!(a, Value::Float(_)) && matches!(b.py_type(vm), Type::Float | Type::Int | Type::Bool))
-        || (matches!(b, Value::Float(_)) && matches!(a.py_type(vm), Type::Float | Type::Int | Type::Bool))
+    if (matches!(a, Value::Float(_)) && matches!(b.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
+        || (matches!(b, Value::Float(_))
+            && matches!(a.py_type(vm).native(), Some(Type::Float | Type::Int | Type::Bool)))
     {
         Ok(Some((value_to_float(a, vm)?, value_to_float(b, vm)?)))
     } else {

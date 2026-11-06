@@ -164,16 +164,18 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
         };
     }
     // _bisect obtains sq_item even when the search interval is empty.
-    match a.py_type(vm) {
-        Type::List
-        | Type::Tuple
-        | Type::NamedTuple
-        | Type::Str
-        | Type::Bytes
-        | Type::Range
-        | Type::Deque
-        | Type::Counter => {}
-        Type::Dict | Type::DefaultDict => {
+    match a.py_type(vm).native() {
+        Some(
+            Type::List
+            | Type::Tuple
+            | Type::NamedTuple
+            | Type::Str
+            | Type::Bytes
+            | Type::Range
+            | Type::Deque
+            | Type::Counter,
+        ) => {}
+        Some(Type::Dict | Type::DefaultDict) => {
             return Err(ExcType::type_error(format!("{} is not a sequence", a.py_type_name(vm))));
         }
         _ => {
@@ -214,8 +216,12 @@ fn search(vm: &mut VM<'_>, a: &Value, x: &Value, bounds: (i64, i64), key: &Value
 /// shortcuts (including NaNs) and reports errors on the offending elements.
 fn less_than(vm: &mut VM<'_>, a: &Value, b: &Value) -> RunResult<bool> {
     if !matches!(
-        (a.py_type(vm), b.py_type(vm)),
-        (Type::List, Type::List) | (Type::Tuple | Type::NamedTuple, Type::Tuple | Type::NamedTuple)
+        (a.py_type(vm).native(), b.py_type(vm).native()),
+        (Some(Type::List), Some(Type::List))
+            | (
+                Some(Type::Tuple | Type::NamedTuple),
+                Some(Type::Tuple | Type::NamedTuple)
+            )
     ) {
         return vm.cmp_values(CmpOperator::Lt, a, b);
     }

@@ -30,7 +30,7 @@ use crate::{
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
     types::{
-        BuiltinType, Dict, LazyHeapSet, PyTrait, Type, Union,
+        Dict, LazyHeapSet, PyTrait, Type, TypeRef, Union,
         generic_alias::repr_type_arg,
         str::{StringRepr, allocate_string},
     },
@@ -457,10 +457,10 @@ impl<'h> HeapObjectRead<'h, ForwardRef> {
                 Value::Bool(is_class),
                 Value::Bool(forwardref),
                 Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::EvalHint)),
-                Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+                Value::Builtin(Builtins::Type(Type::ForwardRef)),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Isinstance)),
-                Value::Builtin(Builtins::ExcType(ExcType::Exception)),
-                Value::Builtin(Builtins::ExcType(ExcType::SyntaxError)),
+                Value::Builtin(Builtins::Type(Type::Exception)),
+                Value::Builtin(Builtins::Type(Type::SyntaxError)),
             ],
         )
     }
@@ -508,8 +508,8 @@ fn bundled_module_dict(bundled: StandardLib, vm: &mut VM<'_>) -> RunResult<Value
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::ForwardRef
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::ForwardRef.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

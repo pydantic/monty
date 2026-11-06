@@ -13,7 +13,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        BuiltinType, Module, NamedTupleClass, allocate_string,
+        Module, NamedTupleClass, Type, allocate_string,
         decimal::{
             context::{MAX_EMAX, MAX_PREC, MIN_EMIN, MIN_ETINY, Rounding},
             py_context::{self, IEEE_CONTEXT_MAX_BITS, Template},
@@ -70,12 +70,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::DecimalMod, vm.interns);
     module.set_attr(
         StaticStrings::DecimalType,
-        Value::Builtin(Builtins::Type(BuiltinType::Decimal)),
+        Value::Builtin(Builtins::Type(Type::Decimal)),
         vm,
     );
     module.set_attr(
         StaticStrings::ContextType,
-        Value::Builtin(Builtins::Type(BuiltinType::DecimalContext)),
+        Value::Builtin(Builtins::Type(Type::DecimalContext)),
         vm,
     );
     for (name, function) in [
@@ -87,7 +87,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Decimal(function)), vm);
     }
     for (name, exc_type) in EXCEPTIONS {
-        module.set_attr(name, Value::Builtin(Builtins::ExcType(exc_type)), vm);
+        module.set_attr(name, Value::Builtin(Builtins::Type(Type::from(exc_type))), vm);
     }
     for (name, rounding) in ROUNDING_NAMES.into_iter().zip(Rounding::ALL) {
         module.set_attr(name, allocate_string(rounding.name(), vm.heap), vm);

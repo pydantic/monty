@@ -25,9 +25,9 @@ use crate::{
     modules::ModuleFunctions,
     py_value::PyValue,
     types::{
-        BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
+        BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type, TypeRef,
         bytes::PyBytes,
-        decimal, host_class_type,
+        decimal,
         inline_str::InlineStr,
         instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
         long_int::{
@@ -248,23 +248,23 @@ impl<'h> PyTrait<'h> for Value {
         Self::py_type_name(self, vm)
     }
 
-    fn py_type(&self, vm: &VM<'_>) -> Type {
+    fn py_type(&self, vm: &VM<'_>) -> TypeRef {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
-            Self::Ellipsis => Type::Ellipsis,
-            Self::NotImplemented => Type::NotImplementedType,
-            Self::None => Type::NoneType,
-            Self::Bool(_) => Type::Bool,
-            Self::Int(_) | Self::InternLongInt(_) => Type::Int,
-            Self::Float(_) => Type::Float,
-            Self::InternString(_) => Type::Str,
-            Self::InlineString(_) => Type::Str,
-            Self::InternBytes(_) => Type::Bytes,
-            Self::Builtin(c) => c.py_type(),
-            Self::ModuleFunction(_) => Type::BuiltinFunction,
-            Self::DefFunction(_) => Type::Function,
-            Self::Marker(m) => m.py_type(),
-            Self::Property(_) => Type::Property,
+            Self::Ellipsis => Type::Ellipsis.into(),
+            Self::NotImplemented => Type::NotImplementedType.into(),
+            Self::None => Type::NoneType.into(),
+            Self::Bool(_) => Type::Bool.into(),
+            Self::Int(_) | Self::InternLongInt(_) => Type::Int.into(),
+            Self::Float(_) => Type::Float.into(),
+            Self::InternString(_) => Type::Str.into(),
+            Self::InlineString(_) => Type::Str.into(),
+            Self::InternBytes(_) => Type::Bytes.into(),
+            Self::Builtin(c) => c.py_type().into(),
+            Self::ModuleFunction(_) => Type::BuiltinFunction.into(),
+            Self::DefFunction(_) => Type::Function.into(),
+            Self::Marker(m) => m.py_type().into(),
+            Self::Property(_) => Type::Property.into(),
             Self::Ref(id) => PyValue::from_heap(*id, vm.heap).py_type(vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
@@ -498,9 +498,9 @@ impl<'h> PyTrait<'h> for Value {
         // sequence in-place concatenation. A user operand can therefore replace
         // the assigned value even if it is iterable; aliases keep the original container.
         // Only an absent or declined `__radd__` permits native extension; errors propagate.
-        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        let sequence = matches!(self.py_type_heap(vm.heap).native(), Some(Type::List | Type::Deque));
         if sequence
-            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && other.is_instance(vm.heap)
             && let Some(result) = other.py_radd_impl(self, vm)?
         {
             let old = mem::replace(self, result);
@@ -522,9 +522,9 @@ impl<'h> PyTrait<'h> for Value {
         // sequence in-place repetition. A user operand can therefore replace
         // the assigned value even if it implements `__index__`; aliases keep the original container.
         // Only an absent or declined `__rmul__` permits native repetition; errors propagate.
-        let sequence = matches!(self.py_type_heap(vm.heap), Type::List | Type::Deque);
+        let sequence = matches!(self.py_type_heap(vm.heap).native(), Some(Type::List | Type::Deque));
         if sequence
-            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && other.is_instance(vm.heap)
             && let Some(result) = other.py_rmul_impl(self, vm)?
         {
             let old = mem::replace(self, result);
@@ -534,7 +534,7 @@ impl<'h> PyTrait<'h> for Value {
 
         if let Self::Ref(id) = self {
             let handled = PyValue::from_heap(*id, vm.heap).py_imul_impl(other, vm)?;
-            if !handled && sequence && matches!(other.py_type_heap(vm.heap), Type::Instance(_)) {
+            if !handled && sequence && other.is_instance(vm.heap) {
                 // `__rmul__` already declined; binary dispatch would call it a second time.
                 return Err(ExcType::type_error_sequence_repeat(other.py_type_name(vm)));
             }
@@ -932,6 +932,12 @@ impl Value {
         Some(text.as_str())
     }
 
+    /// Whether this is an instance of a user-defined class (`HeapData::Instance`).
+    #[must_use]
+    pub(crate) fn is_instance(&self, heap: &Heap) -> bool {
+        matches!(self, Self::Ref(id) if matches!(heap.get(*id), HeapData::Instance(_)))
+    }
+
     /// Returns the Python `Type` for this value using only `&Heap` (no full VM borrow).
     ///
     /// Wraps [`py_type_shallow`](Self::py_type_shallow) for immediate values and
@@ -940,10 +946,10 @@ impl Value {
     /// errors) but don't have a `&VM` handy — notably the macro-generated
     /// `from_args` bodies, which are passed `heap` + `interns` rather than a VM.
     #[must_use]
-    pub(crate) fn py_type_heap(&self, heap: &Heap) -> Type {
+    pub(crate) fn py_type_heap(&self, heap: &Heap) -> TypeRef {
         match self {
             Self::Ref(id) => heap.get(*id).py_type(),
-            _ => self.py_type_shallow(),
+            _ => self.py_type_shallow().into(),
         }
     }
 
@@ -968,16 +974,15 @@ impl Value {
             .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
     }
 
-    /// Class name to use in error messages when [`Type`] does not carry it:
-    /// a named tuple, a host class instance, or a `random.Random`.
+    /// Class name to use in error messages when the [`TypeRef`] does not carry
+    /// it: a named tuple or a `random.Random`.
     ///
-    /// Named tuples and host classes keep their class name in the heap entry
-    /// (unlike `Type::Instance`, whose payload is the refcounted class
-    /// object), so messages name the class (`'P'`, `'Point'`) rather than
-    /// the generic `'namedtuple'` / `'HostClass'`, matching CPython. That
-    /// includes structseqs, whose stored name is already the qualified
-    /// `sys.version_info`. `Random` is the reverse case: its `Type` name is
-    /// the qualified `random.Random`, but messages use the bare class name.
+    /// Named tuples report the native `namedtuple` type but keep their class
+    /// name in the heap entry, so messages name the class (`'P'`) rather than
+    /// the generic `'namedtuple'`, matching CPython. That includes structseqs,
+    /// whose stored name is already the qualified `sys.version_info`. `Random`
+    /// is the reverse case: its `Type` name is the qualified `random.Random`,
+    /// but messages use the bare class name.
     #[must_use]
     fn dynamic_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
         let Self::Ref(heap_id) = self else {
@@ -985,7 +990,6 @@ impl Value {
         };
         let name = match heap.get(*heap_id) {
             HeapData::NamedTuple(nt) => nt.name_either(),
-            HeapData::HostClass(hc) => host_class_type(heap, hc.class_id()).name_either(),
             // A Python class in CPython, so messages carry the bare name and
             // only `repr(type(x))` the module-qualified one.
             HeapData::Random(_) => return Some(Cow::Borrowed("Random")),
@@ -1088,6 +1092,13 @@ impl Value {
     /// Tries the left operand, then reflected equality when it returns
     /// `NotImplemented`; identity is only the final fallback after both decline.
     pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        let lhs_result = self.py_rich_eq_impl(other, vm)?;
+            return Ok(if lhs_result.is_not_implemented() {
+                Self::Bool(self.is(other))
+            } else {
+                lhs_result
+            });
+        }
         let lhs_result = self.py_rich_eq_impl(other, vm)?;
         if !lhs_result.is_not_implemented() {
             return Ok(lhs_result);
@@ -1198,10 +1209,10 @@ impl Value {
             Self::NotImplemented => Ok(Some(hash_named("singleton", "NotImplemented"))),
             Self::None => Ok(Some(hash_named("singleton", "None"))),
             Self::Builtin(Builtins::Function(function)) => Ok(Some(hash_named("builtin", (*function).into()))),
-            Self::Builtin(Builtins::ExcType(exc_type)) => Ok(Some(hash_named("type", (*exc_type).into()))),
-            Self::Builtin(Builtins::Type(ty)) => {
-                Ok(Some(hash_named("type", &Type::from(*ty).name(vm.heap, vm.interns))))
-            }
+            // `type` was a builtin function before it joined the type table;
+            // keeping that hash keeps stored dicts keyed by `type` valid.
+            Self::Builtin(Builtins::Type(Type::Type)) => Ok(Some(hash_named("builtin", "type"))),
+            Self::Builtin(Builtins::Type(ty)) => Ok(Some(hash_named("type", ty.name()))),
             // the `Debug` form carries the module too, so `time.sleep` and `asyncio.sleep` differ
             Self::ModuleFunction(function) => Ok(Some(hash_named("module_function", &format!("{function:?}")))),
             // Hash functions based on function ID
@@ -1279,9 +1290,9 @@ impl Value {
             // `__name__`, class constants and the members handed out as values
             // all live with the type, including the `AttributeError`.
             Self::Builtin(Builtins::Type(t)) => {
-                return match Type::from(*t).class_getattr(attr, vm) {
+                return match t.class_getattr(attr, vm) {
                     Some(value) => Ok(CallResult::Value(value)),
-                    None => Err(Type::from(*t).attribute_error(attr, vm)),
+                    None => Err(t.attribute_error(attr, vm)),
                 };
             }
             // A plain `def` has its PEP 649 attributes and nothing else.
@@ -1530,7 +1541,7 @@ impl Value {
     /// Absent or declined methods allow fallback; exceptions propagate immediately.
     pub(crate) fn py_mul(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if matches!(other, Self::Ref(_))
-            && matches!(other.py_type_heap(vm.heap), Type::Instance(_))
+            && other.is_instance(vm.heap)
             && self.py_type_heap(vm.heap).has_sequence_repeat()
         {
             // Numeric reflected multiplication precedes the sequence's `__index__` conversion.
@@ -1626,9 +1637,12 @@ impl Value {
             if matches!(modulus, Self::Float(_)) {
                 Err(ExcType::type_error_pow_modulo())
             } else if modulus.py_type(vm) == Type::Complex
-                && [self, other]
-                    .iter()
-                    .all(|value| matches!(value.py_type(vm), Type::Int | Type::Bool | Type::Float | Type::Complex))
+                && [self, other].iter().all(|value| {
+                    matches!(
+                        value.py_type(vm).native(),
+                        Some(Type::Int | Type::Bool | Type::Float | Type::Complex)
+                    )
+                })
             {
                 Err(ExcType::value_error_complex_modulo())
             } else {
@@ -1744,7 +1758,7 @@ impl Value {
     ) -> RunResult<Option<Self>> {
         if let Some(result) = direct(vm)? {
             Ok(Some(result))
-        } else if matches!(self.py_type(vm), Type::Instance(_)) && self.py_type(vm) == other.py_type(vm) {
+        } else if self.is_instance(vm.heap) && self.py_type(vm) == other.py_type(vm) {
             Ok(None)
         } else {
             reflected(vm)

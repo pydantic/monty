@@ -20,7 +20,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    types::{Type, Union},
+    types::{Type, TypeRef, Union},
     value::{EitherStr, Value},
 };
 
@@ -132,8 +132,8 @@ impl<'h> HeapRead<'h, HostClass> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::HostClass
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        TypeRef::Class(self.get(vm.heap).class_id())
     }
 
     /// The real class name (`'Point'`), not the `Type::HostClass` placeholder.
@@ -483,8 +483,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClassType> {
         })
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Type
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Type.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

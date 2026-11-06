@@ -27,11 +27,11 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        BuiltinType, Module, Set, allocate_string,
+        Module, Set, Type, allocate_string,
         bytes::allocate_bytes,
         hashlib::{Blake2Params, Blake2b, Blake2s, DigestBytes, HashAlgorithm, HashObject, hash_input},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// `hashlib` module functions, one variant per Python-visible function.
@@ -86,12 +86,12 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     }
     module.set_attr(
         StaticStrings::Blake2b,
-        Value::Builtin(Builtins::Type(BuiltinType::Blake2b)),
+        Value::Builtin(Builtins::Type(Type::Blake2b)),
         vm,
     );
     module.set_attr(
         StaticStrings::Blake2s,
-        Value::Builtin(Builtins::Type(BuiltinType::Blake2s)),
+        Value::Builtin(Builtins::Type(Type::Blake2s)),
         vm,
     );
     // Two sets, as in CPython, where mutating one leaves the other alone.
@@ -468,6 +468,34 @@ macro_rules! blake2_constructor_args {
 }
 
 blake2_constructor_args!(Blake2bArgs => "blake2b", Blake2sArgs => "blake2s");
+
+/// The `blake2b` constructor, for the native type table.
+pub(crate) fn blake2b_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    blake2_init(Blake2Kind::Blake2b, vm, args)
+}
+
+/// The `blake2s` constructor, for the native type table.
+pub(crate) fn blake2s_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    blake2_init(Blake2Kind::Blake2s, vm, args)
+}
+
+/// `blake2b`'s size limits, on the class and so on its instances.
+pub(crate) fn blake2b_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    match attr.static_string(vm.interns)? {
+        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(64)),
+        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(16)),
+        _ => None,
+    }
+}
+
+/// `blake2s`'s size limits, on the class and so on its instances.
+pub(crate) fn blake2s_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    match attr.static_string(vm.interns)? {
+        StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize => Some(Value::Int(32)),
+        StaticStrings::SaltSize | StaticStrings::PersonSize => Some(Value::Int(8)),
+        _ => None,
+    }
+}
 
 /// `blake2b(...)` / `blake2s(...)`, also reached through `hashlib.new()`.
 ///

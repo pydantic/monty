@@ -19,7 +19,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type},
+    types::{PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -234,8 +234,8 @@ fn normalize_index(index: i64, length: i64, lower: i64, upper: i64) -> i64 {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Slice> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Slice
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Slice.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

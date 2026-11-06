@@ -10,7 +10,7 @@ use crate::{
     heap::{DropGuard, HeapReadOutput},
     os_dispatch::PostConversionEffect,
     py_value::PyValue,
-    types::PyTrait,
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -59,7 +59,7 @@ pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
                         iterator.clone_with_heap(vm.heap),
                         default,
                         Value::Builtin(Builtins::Function(BuiltinsFunctions::Next)),
-                        Value::Builtin(Builtins::ExcType(ExcType::StopIteration)),
+                        Value::Builtin(Builtins::Type(Type::StopIteration)),
                     ],
                 )
             } else {

@@ -84,7 +84,7 @@ use std::{
 use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
 
 use super::{
-    LazyHeapSet, List, PyTrait, Type,
+    LazyHeapSet, List, PyTrait, Type, TypeRef,
     bytes::{Bytes, bytes_repr_fmt},
     str::{allocate_string, allocate_string_on_heap},
 };
@@ -428,8 +428,8 @@ impl HeapItem for OpenFile {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).file_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).file_type().into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -1741,7 +1741,7 @@ fn is_bytes(data: &Value, heap: &Heap) -> bool {
 /// Builds the `io.UnsupportedOperation` used for file operations that the
 /// open mode forbids (e.g. `read()` on `'w'`, `write()` on `'r'`). In CPython
 /// this is a subclass of both `OSError` and `ValueError`; Monty matches both
-/// in `try`/`except` matching via [`ExcType::is_subclass_of`].
+/// in `try`/`except` matching through its two bases in the native type table.
 fn unsupported_operation(message: &'static str) -> RunError {
     SimpleException::new_msg(ExcType::UnsupportedOperation, message).into()
 }
