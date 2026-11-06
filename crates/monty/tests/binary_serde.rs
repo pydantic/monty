@@ -273,6 +273,7 @@ fn module_imports_after_snapshot() {
         "binascii",
         "fnmatch",
         "annotationlib",
+        "urllib.parse",
     ] {
         let runner = MontyRun::new(
             format!("import {module}\n42"),

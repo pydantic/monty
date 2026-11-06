@@ -205,6 +205,8 @@ typing: 3.5-
 typing_extensions: 3.7-
 types: 3.0-
 unicodedata: 3.0-
+urllib: 3.0-
+urllib.parse: 3.0-
 """
 
 CRATE_DIR = Path(__file__).parent
