@@ -964,10 +964,12 @@ def test_path_open_returns_monty_file_handle():
 
 
 def test_path_open_normalizes_mode():
-    """`mode='rt'` is canonicalized to `'r'`. `+` modes are rejected (see
-    `test_path_open_rejects_plus_modes`)."""
+    """Text spellings and binary update spellings expose canonical modes."""
     fs = OSAccess([MemoryFile('/data/file.txt', content='x')])
     assert fs.path_open(P('/data/file.txt'), 'rt').mode == snapshot('r')
+    handle = fs.path_open(P('/data/file.txt'), 'wb+')
+    assert handle.mode == 'wb+'
+    assert (handle.binary, handle.readable, handle.writable) == (True, True, True)
 
 
 def test_path_open_rejects_deferred_update_modes():

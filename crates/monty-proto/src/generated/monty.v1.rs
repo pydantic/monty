@@ -254,7 +254,8 @@ pub struct FileHandle {
     /// Char index (text mode) or byte index (binary mode).
     #[prost(uint64, tag = "3")]
     pub position: u64,
-    /// Observed byte length; absent when an older or custom host cannot report it.
+    /// Reserved for observed byte length. The current domain handle and custom
+    /// arena codec do not populate or preserve this field yet.
     #[prost(uint64, optional, tag = "4")]
     pub file_length: ::core::option::Option<u64>,
 }

@@ -525,7 +525,8 @@ class AbstractOS(ABC):
     def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
         """Overwrite bytes in an existing file and return the number of input bytes written.
 
-        The default reads and rewrites the whole file, capped at 50 MB, and requires read access.
+        The default caps the replacement at 50 MB and requires read access.
+        The handler must bound allocations in path_read_bytes itself; stat cannot bound a concurrent read.
         It is not atomic with concurrent changes; override for native positional I/O or larger files.
         """
         if offset < 0 or offset + len(data) > 2**63 - 1:

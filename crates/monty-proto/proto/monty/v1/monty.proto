@@ -229,7 +229,8 @@ message FileHandle {
   string mode = 2;
   // Char index (text mode) or byte index (binary mode).
   uint64 position = 3;
-  // Observed byte length; absent when an older or custom host cannot report it.
+  // Reserved for observed byte length. The current domain handle and custom
+  // arena codec do not populate or preserve this field yet.
   optional uint64 file_length = 4;
 }
 

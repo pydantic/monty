@@ -4,6 +4,7 @@ import { MontyFileHandle, canonicalFileMode } from '../ts/types.js'
 test.each(['w+b', 'wb+', '+bw'])('binary write/update mode %s is canonicalized', (mode) => {
   expect(canonicalFileMode(mode)).toBe('wb+')
   const handle = new MontyFileHandle('/file', mode)
+  expect(handle.mode).toBe('wb+')
   expect(handle.readable && handle.writable && handle.binary).toBe(true)
 })
 

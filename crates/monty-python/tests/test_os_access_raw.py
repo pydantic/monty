@@ -308,10 +308,19 @@ def test_default_positional_write_serves_binary_file_objects(monty_run: RunMonty
         f"""
 f = open('/file', {mode!r})
 f.write(b'abcdef')
+if {mode!r} == 'w+b':
+    f.seek(0)
+    assert f.read() == b'abcdef'
 f.seek(2)
 f.write(b'XY')
+if {mode!r} == 'w+b':
+    f.seek(0)
+    assert f.read() == b'abXYef'
 f.seek(8)
 f.write(b'Z')
+if {mode!r} == 'w+b':
+    f.seek(0)
+    assert f.read() == b'abXYef\\0\\0Z'
 f.close()
 from pathlib import Path
 Path('/file').read_bytes()

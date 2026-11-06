@@ -70,7 +70,8 @@ Host construction and cloning are unbudgeted; fallible `try_push` charges any gr
 
 ## Positional writes and protocol compatibility
 
-Protocol 8 adds `OsCall.write_bytes_at` for non-append binary writes, including ordinary `wb` files.
+Protocol 8 adds `OsCall.write_bytes_at` for positional binary file-object writes, including ordinary `wb` files.
+`Path.write_bytes()` still uses the truncating `OsCall.write_bytes` operation.
 Protocol 7 parents remain supported: sequential `wb` writes use the original write/append calls.
 Binary update mode and writes away from EOF raise `NotImplementedError` before issuing filesystem calls to those parents.
 The configured parent's capabilities also apply after loading a snapshot.
