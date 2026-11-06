@@ -96,7 +96,9 @@ impl Worker {
         metadata: &[(String, String)],
     ) -> Result<Self, PoolError> {
         let worker = match &config.transport {
-            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, config.execution_clock),
+            MontyTransport::Subprocess(binary_path) => {
+                Self::subprocess(binary_path, config.execution_clock, config.prewarm_type_checker)
+            }
             MontyTransport::Remote(_) => {
                 let remote = remote.expect("a remote pool holds its channel");
                 remote
@@ -128,10 +130,17 @@ impl Worker {
     ///
     /// CPU mode records the child's CPU clock here, while the child is certainly
     /// unreaped, so later reads can detect a reused PID (see [`Clock`]).
-    fn subprocess(binary_path: &PathBuf, execution_clock: ExecutionClock) -> Result<Self, PoolError> {
+    fn subprocess(
+        binary_path: &PathBuf,
+        execution_clock: ExecutionClock,
+        prewarm_type_checker: bool,
+    ) -> Result<Self, PoolError> {
         let mut command = Command::new(binary_path);
+        command.arg("subprocess");
+        if prewarm_type_checker {
+            command.arg("--prewarm-type-checker");
+        }
         command
-            .arg("subprocess")
             // For extra safety, spawn the worker with an empty environment.
             .env_clear()
             .stdin(Stdio::piped())

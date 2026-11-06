@@ -56,6 +56,7 @@ session affordable.
 Files written by a previous `run` stay in the database and are rewritten in place when the path repeats.
 Drop the checker when the session ends to release its files, caches and interned data.
 Create a fresh checker for each unrelated session.
+`TypeChecker::warm_up` checks a snippet touching every builtin, so a checker built ahead of a session has already resolved them; it adds about 6 MiB.
 `TypeChecker` is not `Sync`; concurrent checks each need their own.
 
 ## Monty crates
