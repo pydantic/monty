@@ -229,6 +229,8 @@ message FileHandle {
   string mode = 2;
   // Char index (text mode) or byte index (binary mode).
   uint64 position = 3;
+  // Observed byte length; absent when an older or custom host cannot report it.
+  optional uint64 file_length = 4;
 }
 
 // A 16-byte UUID (uuid4). Exactly 16 bytes; validated on decode. Class and

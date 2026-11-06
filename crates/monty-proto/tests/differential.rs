@@ -383,6 +383,7 @@ fn node_to_oracle(node: &MontyNode) -> oracle::MontyNode {
             path: fh.path.clone(),
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
+            file_length: None,
         }),
         MontyNode::ClassInstance {
             class_type,
@@ -835,6 +836,7 @@ fn invalid_values_are_rejected_during_decode() {
             path: "/f".to_owned(),
             mode: "r+".to_owned(),
             position: 0,
+            file_length: None,
         })),
         "frame decode error: failed to decode Protobuf message: invalid file mode \"r+\""
     );
