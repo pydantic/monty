@@ -602,7 +602,7 @@ impl LongInt {
 
     /// Left-shifts an immediate integer, promoting only when the result requires it.
     pub(crate) fn left_shift_i64(value: i64, shift: u64, vm: &VM<'_>) -> RunResult<Value> {
-        let bits = u64::from(i64::BITS - value.unsigned_abs().leading_zeros());
+        let bits = u64::from(value.unsigned_abs().bit_width());
         check_lshift_size(bits, shift, &vm.heap.tracker)?;
         if value == 0 {
             Ok(Value::Int(0))
@@ -1171,7 +1171,7 @@ fn bigint_pow(mut base: BigInt, mut exp: u64) -> BigInt {
 
 /// Returns the significant bit count of an immediate integer.
 fn i64_bits(value: i64) -> u64 {
-    u64::from(i64::BITS - value.unsigned_abs().leading_zeros())
+    u64::from(value.unsigned_abs().bit_width())
 }
 
 /// Builds `divmod()`'s `(quotient, remainder)` tuple for arbitrary-precision operands.
