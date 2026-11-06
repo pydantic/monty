@@ -404,9 +404,11 @@ A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; 
 plain `Error`.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
-Either can also reject `checkout()` itself, while the session is being created.
-Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
-stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
+A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call.
+Against a server that stores sessions, `session.sessionId` names the session once the server accepts that configuration,
+`session.dump()` returns the ID of a stored record, and both load into a fresh session with `loadSession` /
+`loadSnapshot`.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
 unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).

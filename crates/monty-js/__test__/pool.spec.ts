@@ -54,21 +54,66 @@ test('wasm transport discards shutdown replies but preserves fatal diagnostics',
 })
 
 test('shutdown during Configure preserves the fatal diagnostic', async () => {
-  const error = await t.throwsAsync(
-    () =>
-      WorkerTransport.create(async () => ({
-        status: 'shutdown',
-        events: [{ tag: 'fatal-error', val: 'configuration failed' }],
-        feedExecutionMicros: 0n,
-        exitStatus: 'exit code: 7',
-      })),
-    { instanceOf: TransportCrashedError },
-  )
+  // the Configure reply is read by the first turn, which is where the refusal surfaces
+  const transport = await WorkerTransport.create(async () => ({
+    status: 'shutdown',
+    events: [{ tag: 'fatal-error', val: 'configuration failed' }],
+    feedExecutionMicros: 0n,
+    exitStatus: 'exit code: 7',
+  }))
+  const releases: boolean[] = []
+  transport.onFinish = (reusable) => {
+    releases.push(reusable)
+  }
+  const error = await t.throwsAsync(() => transport.feed('1', null, [], { skipTypeCheck: true }, () => {}), {
+    instanceOf: TransportCrashedError,
+  })
   t.is(error.message, 'RuntimeError: configuration failed')
   t.is(error.exitStatus, 'exit code: 7')
+  t.deepEqual(releases, [false])
 })
 
-test.each(['acquire', 'startup', 'configure'])('close cancels a checkout during %s', async (phase) => {
+test('a wasm session closed before its first turn never configures its worker', async () => {
+  const requests: string[] = []
+  const transport = await WorkerTransport.create(async (request) => {
+    requests.push(request.tag)
+    return { status: 'continue', events: [{ tag: 'ok' }], feedExecutionMicros: 0n }
+  })
+  const releases: boolean[] = []
+  transport.onFinish = (reusable) => {
+    releases.push(reusable)
+  }
+  await transport.finish()
+  t.deepEqual(requests, [])
+  t.deepEqual(releases, [true])
+})
+
+test("a load behind the opening Configure bounds the next turn by the dump's limit", async () => {
+  const sent: Array<[string, number | undefined]> = []
+  const transport = await WorkerTransport.create(
+    async (request, timeoutMs) => {
+      sent.push([request.tag, timeoutMs])
+      const events: ComponentEvent[] =
+        request.tag === 'feed'
+          ? [{ tag: 'complete', val: { values: { nodes: [{ tag: 'none' }] }, value: 0 } }]
+          : [{ tag: 'ok' }]
+      // the Configure echoes the checkout's 5s turn limit; the dump carries 50ms
+      const maxTurnDurationMicros = request.tag === 'configure' ? 5_000_000n : 50_000n
+      return { status: 'continue', events, feedExecutionMicros: 0n, maxTurnDurationMicros }
+    },
+    { limits: { maxTurnDurationSecs: 5 } },
+    { turnDurationLimitGraceMs: 0 },
+  )
+  t.deepEqual(await transport.restore(new Uint8Array([1]), [], () => {}), { kind: 'loaded' })
+  await transport.feed('1', null, [], { skipTypeCheck: true }, () => {})
+  t.deepEqual(sent, [
+    ['configure', 5000],
+    ['load', undefined],
+    ['feed', 50],
+  ])
+})
+
+test.each(['acquire', 'startup'])('close cancels a checkout during %s', async (phase) => {
   let start!: () => void
   const started = new Promise<void>((resolve) => {
     start = resolve

@@ -80,6 +80,8 @@ export class WorkerTransport {
   /** Whether a crash or channel error made this worker unreusable. */
   private dead = false
   private finished = false
+  /** The `Configure` the first turn posts ahead of itself; `null` once sent, or never needed. */
+  private pendingConfigure: ConfigureRequest | null = null
   private failure: CrashedTurn | null = null
   private exitStatus: string | undefined
   private feedBudgetMs: number | undefined
@@ -120,13 +122,20 @@ export class WorkerTransport {
     return WorkerTransport.configure(dispatcher, prepareSession(config), graces, workerId)
   }
 
-  /** Configures a worker with options captured before waiting for pool capacity. */
-  static async configure(
+  /**
+   * Configures a worker with options captured before waiting for pool capacity.
+   *
+   * The `Configure` goes out with the first turn, posted ahead of it: the
+   * worker answers in order, so opening the session costs that turn no round
+   * trip. A refused configuration is that turn's error, and a session closed
+   * before any turn never configures its worker.
+   */
+  static configure(
     dispatcher: Dispatcher,
     config: ConfigureRequest,
     graces: DurationGraces,
     workerId: number,
-  ): Promise<WorkerTransport> {
+  ): WorkerTransport {
     const limits = config.limits ?? {}
     const transport = new WorkerTransport(dispatcher, limits.maxTotalSleepMicros, graces, workerId)
     transport.suspensionLimit = limits.maxSuspensions ?? 1000n
@@ -141,7 +150,7 @@ export class WorkerTransport {
           ? Infinity
           : Number(sleep.val) / 1_000_000
         : systemSleepCapOf({})
-    await transport.control({ tag: 'configure', val: config }, 'ok', 'Configure')
+    transport.pendingConfigure = config
     return transport
   }
 
@@ -315,7 +324,8 @@ export class WorkerTransport {
   async finish(): Promise<void> {
     if (this.finished) return
     this.finished = true
-    if (!this.dead) {
+    // never configured: the worker goes back as it came, with nothing to reset
+    if (!this.dead && this.pendingConfigure === null) {
       try {
         await this.control({ tag: 'reset' }, 'ok', 'Reset')
       } catch {
@@ -402,15 +412,32 @@ export class WorkerTransport {
   /** Runs one turn, forwarding buffered prints and retaining its terminator. */
   private async run(request: ComponentRequest, onPrint: OnPrint | undefined): Promise<ComponentEvent | null> {
     if (this.dead) return null
+    const configure = this.pendingConfigure
+    this.pendingConfigure = null
+    // posted synchronously ahead of `request`, so the two are in flight together
+    const opening = configure ? this.run({ tag: 'configure', val: configure }, undefined) : null
     if (request.tag === 'feed') this.feedExecutionMs = 0
-    if (request.tag === 'load') {
-      this.feedBudgetMs = undefined
-      this.turnBudgetMs = undefined
-      this.feedExecutionMs = 0
-    }
+    if (request.tag === 'load') this.forgetBudget()
     let events: ComponentEvent[]
+    const reply = this.dispatcher(request, this.backstopMs())
+    if (opening) {
+      const opened = await opening
+      if (opened?.tag !== 'ok') {
+        // the session never opened: the worker is not returned to the pool,
+        // and the reply to this request (an error for the missing session) goes unread
+        reply.catch(() => {})
+        this.dead = true
+        if (this.onFinish) await this.finish()
+        // a refusal answers this turn as its error
+        if (opened === null || opened.tag === 'error') return opened
+        if (opened.tag === 'fatal-error') throw new MontyCrashedError(opened.val, { exitStatus: this.exitStatus })
+        throw new Error(`Configure expected event ok, got ${opened.tag}`)
+      }
+      // the `Configure` reply filled the budget a `Load` must re-adopt from its own
+      if (request.tag === 'load') this.forgetBudget()
+    }
     try {
-      const result = await this.dispatcher(request, this.backstopMs())
+      const result = await reply
       this.feedExecutionMs = Math.max(this.feedExecutionMs, Number(result.feedExecutionMicros) / 1000)
       this.feedBudgetMs ??=
         result.maxFeedDurationMicros === undefined ? undefined : Number(result.maxFeedDurationMicros) / 1000
@@ -453,6 +480,13 @@ export class WorkerTransport {
     if (this.dead && this.onFinish) await this.finish()
     // Shutdown may carry a fatal diagnostic, but must never deliver a successful turn or another suspension.
     return this.dead && terminating?.tag !== 'fatal-error' ? null : terminating
+  }
+
+  /** Forgets the duration budget ahead of a `Load`, whose reply reports the dump's. */
+  private forgetBudget(): void {
+    this.feedBudgetMs = undefined
+    this.turnBudgetMs = undefined
+    this.feedExecutionMs = 0
   }
 
   /** Retains crash metadata so subsequent requests cannot revive a dead component. */

@@ -98,15 +98,9 @@ export class WorkerPool {
       await this.discard(slot)
       throw closedError()
     }
-    let transport: WorkerTransport
-    try {
-      transport = await WorkerTransport.configure(slot.worker.dispatch, configuration, this.options, slot.id)
-    } catch (error) {
-      await this.discard(slot)
-      throw this.closed ? closedError() : error
-    } finally {
-      this.configuring.delete(slot)
-    }
+    // holds the `Configure` for the session's first turn to post ahead of itself
+    const transport = WorkerTransport.configure(slot.worker.dispatch, configuration, this.options, slot.id)
+    this.configuring.delete(slot)
     if (this.closed) {
       await this.discard(slot)
       throw closedError()

@@ -62,12 +62,12 @@ async fn legacy_workers_accept_wall_mode_and_refuse_cpu_mode_before_execution() 
                 ..limits(100)
             })
             .await;
+        // the session opens with the first feed, so that is where a worker
+        // ignoring the configured clock is caught
+        let mut child = result.unwrap();
+        let result = child.feed("complete", vec![], vec![], false, &mut no_print).await;
         if clock == ExecutionClock::Wall {
-            let mut child = result.unwrap();
-            let event = child
-                .feed("complete", vec![], vec![], false, &mut no_print)
-                .await
-                .unwrap();
+            let event = result.unwrap();
             assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
             child.finish().await.unwrap();
         } else {

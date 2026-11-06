@@ -11,7 +11,10 @@
 //! different threads, so an entered-span stack would be wrong and make
 //! [`crate::Checkout`] `!Send`.
 
-use std::fmt::{self, Write};
+use std::{
+    fmt::{self, Write},
+    mem,
+};
 
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
@@ -61,6 +64,10 @@ pub(crate) struct Recorder {
     /// Whether the current turn is a `Dump`: an `Error` reply to one leaves
     /// the feed suspended and resumable, so it closes only the dump span.
     dump_turn: bool,
+    /// Whether the session-opening `Configure` is still unanswered. The
+    /// checkout pipelines the first request behind it, so that request's
+    /// spans are already open when the `Configure` reply arrives.
+    configure_open: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
     /// Scoped dispatcher installed only while this recorder emits telemetry.
@@ -77,6 +84,7 @@ impl Recorder {
             feed: None,
             session: None,
             dump_turn: false,
+            configure_open: false,
             adapter_context: None,
             logfire: None,
         }
@@ -158,6 +166,7 @@ impl Recorder {
                     start_span(span)
                 };
                 self.session = Some(span);
+                self.configure_open = true;
             }
             Some(pb::parent_request::Kind::Load(l)) => {
                 self.turn = Some(start_span(logfire::span!(
@@ -282,6 +291,9 @@ impl Recorder {
     /// span, turn-ending events close the feed and turn spans.
     pub(crate) fn event(&mut self, event: &pb::ChildEvent) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
+        // the first reply after `Configure` answers it, not the request
+        // pipelined behind it, whose spans stay open
+        let answers_configure = mem::take(&mut self.configure_open);
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
@@ -388,12 +400,16 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::Error(e)) => {
                 record_error(e, micros, max_feed_duration, &self.context_span());
-                // an error reply to `Dump` leaves the feed suspended and
+                // a refused `Configure` ends the session before the pipelined
+                // request runs: the worker is discarded, closing every span.
+                // An error reply to `Dump` leaves the feed suspended and
                 // resumable, so it closes only the dump span
-                if self.dump_turn {
-                    self.turn = None;
-                } else {
-                    self.end_feed();
+                if !answers_configure {
+                    if self.dump_turn {
+                        self.turn = None;
+                    } else {
+                        self.end_feed();
+                    }
                 }
             }
             Some(pb::child_event::Kind::TypingError(t)) => {
@@ -434,7 +450,12 @@ impl Recorder {
             }
             // a bare acknowledgement ending a housekeeping turn; the turn
             // span itself is the record
-            Some(pb::child_event::Kind::Ok(_)) => self.turn = None,
+            Some(pb::child_event::Kind::Ok(_)) => {
+                // the `Ok` opening the session leaves the pipelined request's turn alone
+                if !answers_configure {
+                    self.turn = None;
+                }
+            }
             Some(pb::child_event::Kind::FatalError(f)) => {
                 let (message, cut) = truncate_str(&f.message);
                 logfire::error!(
