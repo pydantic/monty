@@ -1393,6 +1393,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
 
     // Bytearray growth and copied method results must fail softly before the hard ceiling.
     for code in [
+        "a = bytearray(16 * 1024 * 1024)\na.lower()",
+        "a = bytearray(16 * 1024 * 1024)\na.upper()",
+        "a = bytearray(16 * 1024 * 1024)\na.capitalize()",
+        "a = bytearray(16 * 1024 * 1024)\na.title()",
+        "a = bytearray(16 * 1024 * 1024)\na.swapcase()",
         "a = bytearray(16 * 1024 * 1024)\nb = bytearray()\nb += a",
         "a = bytearray(16 * 1024 * 1024)\nb''.find(a)",
         "a = bytearray(16 * 1024 * 1024)\nb''.split(a)",

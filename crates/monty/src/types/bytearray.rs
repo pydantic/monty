@@ -398,6 +398,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             StaticStrings::Resize => {
                 let value = args.get_one_arg("bytearray.resize", vm.heap)?;
                 defer_drop!(value, vm);
+                // `__index__` may mutate this bytearray; finish conversion before borrowing its storage.
                 let size = value.as_int(vm)?;
                 if size < 0 {
                     return Err(ExcType::value_error(format!(
@@ -407,6 +408,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 let size = usize::try_from(size).map_err(|_| ExcType::overflow_index_sized_int())?;
                 check_repeat_size(size, 1, &vm.heap.tracker)?;
                 let data = self.get_mut(vm.heap);
+                // Saturating subtraction keeps shrinking on the allocation-free path.
                 data.0
                     .try_reserve_exact(size.saturating_sub(data.0.len()))
                     .map_err(|_| ExcType::allocation_too_large())?;
@@ -417,12 +419,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                 let value = args.get_one_arg(&format!("bytearray.{name}"), vm.heap)?;
                 defer_drop!(value, vm);
                 if method == StaticStrings::Extend {
+                    // Unlike construction, extend does not interpret an integer as a zero-filled size.
                     if matches!(value.py_value(vm), PyValue::Int(_) | PyValue::Bool(_)) {
                         return Err(ExcType::type_error(format!(
                             "can't extend bytearray with {}",
                             value.py_type_name(vm)
                         )));
                     }
+                    // Collect first: an iterator failure must not leave a partially applied extension.
                     let bytes = collect_bytes(value, vm)?;
                     check_repeat_size(
                         self.get(vm.heap).0.len().saturating_add(bytes.len()),
@@ -431,6 +435,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                     )?;
                     self.get_mut(vm.heap).0.extend(bytes);
                 } else {
+                    // Byte conversion can call Python, so inspect or mutate the live buffer only afterward.
                     let byte = byte_value(value, vm)?;
                     if method == StaticStrings::Append {
                         let data = self.get(vm.heap);
@@ -460,9 +465,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
                         )));
                     }
                 };
+                // Either conversion can resize the receiver; normalize indices against its current length.
                 let len = i64::try_from(self.get(vm.heap).0.len()).expect("buffer length fits i64");
                 let index = if index < 0 { index.saturating_add(len) } else { index };
                 if let Some(byte) = byte {
+                    // Insert clamps out-of-range indices; pop instead rejects them below.
                     let data = self.get(vm.heap);
                     vm.heap.tracker.check_growth(data.0.len(), data.0.capacity(), 1)?;
                     self.get_mut(vm.heap).0.insert(

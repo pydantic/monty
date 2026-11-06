@@ -513,23 +513,23 @@ pub(crate) fn call_bytes_method_impl<'h>(
         // Simple transformations (no arguments)
         StaticStrings::Lower => {
             args.check_zero_args("bytes.lower", vm.heap)?;
-            Ok(bytes_lower(bytes, vm))
+            bytes_lower(bytes, vm)
         }
         StaticStrings::Upper => {
             args.check_zero_args("bytes.upper", vm.heap)?;
-            Ok(bytes_upper(bytes, vm))
+            bytes_upper(bytes, vm)
         }
         StaticStrings::Capitalize => {
             args.check_zero_args("bytes.capitalize", vm.heap)?;
-            Ok(bytes_capitalize(bytes, vm))
+            bytes_capitalize(bytes, vm)
         }
         StaticStrings::Title => {
             args.check_zero_args("bytes.title", vm.heap)?;
-            Ok(bytes_title(bytes, vm))
+            bytes_title(bytes, vm)
         }
         StaticStrings::Swapcase => {
             args.check_zero_args("bytes.swapcase", vm.heap)?;
-            Ok(bytes_swapcase(bytes, vm))
+            bytes_swapcase(bytes, vm)
         }
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
@@ -1015,25 +1015,30 @@ fn parse_bytes_sub_args<'h>(
 /// Implements Python's `bytes.lower()` method.
 ///
 /// Returns a copy of the bytes with all ASCII uppercase characters converted to lowercase.
-fn bytes_lower<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value {
-    let result: Vec<u8> = bytes.get(vm.heap).iter().map(|&b| b.to_ascii_lowercase()).collect();
-    allocate_bytes(result, vm.heap)
+fn bytes_lower<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+    let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
+    let result: Vec<u8> = bytes.iter().map(|&b| b.to_ascii_lowercase()).collect();
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.upper()` method.
 ///
 /// Returns a copy of the bytes with all ASCII lowercase characters converted to uppercase.
-fn bytes_upper<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value {
-    let result: Vec<u8> = bytes.get(vm.heap).iter().map(|&b| b.to_ascii_uppercase()).collect();
-    allocate_bytes(result, vm.heap)
+fn bytes_upper<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+    let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
+    let result: Vec<u8> = bytes.iter().map(|&b| b.to_ascii_uppercase()).collect();
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.capitalize()` method.
 ///
 /// Returns a copy of the bytes with the first byte capitalized (if ASCII) and
 /// the rest lowercased.
-fn bytes_capitalize<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value {
+fn bytes_capitalize<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
     let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
     let mut result = Vec::with_capacity(bytes.len());
     if let Some((&first, rest)) = bytes.split_first() {
         result.push(first.to_ascii_uppercase());
@@ -1041,15 +1046,16 @@ fn bytes_capitalize<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Val
             result.push(b.to_ascii_lowercase());
         }
     }
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.title()` method.
 ///
 /// Returns a titlecased version of the bytes where words start with an uppercase
 /// ASCII character and the remaining characters are lowercase.
-fn bytes_title<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value {
+fn bytes_title<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
     let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
     let mut result = Vec::with_capacity(bytes.len());
     let mut prev_is_cased = false;
 
@@ -1062,16 +1068,17 @@ fn bytes_title<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value {
         prev_is_cased = b.is_ascii_alphabetic();
     }
 
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 /// Implements Python's `bytes.swapcase()` method.
 ///
 /// Returns a copy of the bytes with ASCII uppercase characters converted to
 /// lowercase and vice versa.
-fn bytes_swapcase<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value {
+fn bytes_swapcase<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> RunResult<Value> {
+    let bytes = bytes.get(vm.heap);
+    vm.heap.tracker.check_allocation(bytes.len())?;
     let result: Vec<u8> = bytes
-        .get(vm.heap)
         .iter()
         .map(|&b| {
             if b.is_ascii_uppercase() {
@@ -1083,7 +1090,7 @@ fn bytes_swapcase<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value
             }
         })
         .collect();
-    allocate_bytes(result, vm.heap)
+    Ok(allocate_bytes(result, vm.heap))
 }
 
 // =============================================================================
