@@ -85,6 +85,8 @@ struct SubprocessWorker {
     send_buf: Vec<u8>,
     /// The frame [`Worker::queue`] left in `send_buf`, which `recv` writes on.
     queued: Option<QueuedWrite>,
+    /// The body length of a queued frame once fully written, for the sent-bytes metric.
+    queued_written: Option<usize>,
 }
 
 /// Progress of a queued frame: bytes of `send_buf` written, or the error that ended the write.
@@ -175,6 +177,7 @@ impl Worker {
             recv: FrameRecv::new(stdout),
             send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
             queued: None,
+            queued_written: None,
         }))))
     }
 
@@ -213,9 +216,9 @@ impl Worker {
                 // no flush
                 encode_framed_into(request, &mut w.send_buf)?;
                 w.stdin.write_all(&w.send_buf).await?;
-                Ok(w.end_frame())
+                Ok(Some(w.end_frame()))
             }
-            WorkerKind::Remote(w) => w.send(request).await,
+            WorkerKind::Remote(w) => w.send(request).await.map(Some),
         };
         self.record_sent(request, result)
     }
@@ -231,27 +234,32 @@ impl Worker {
                 w.finish_queued().await?;
                 encode_framed_into(request, &mut w.send_buf)?;
                 w.queued = Some(QueuedWrite::Writing(0));
-                Ok(w.send_buf.len() - 4)
+                // its bytes are counted once written (see `record_queued_write`)
+                Ok(None)
             }
-            WorkerKind::Remote(w) => w.send(request).await,
+            WorkerKind::Remote(w) => w.send(request).await.map(Some),
         };
         self.record_sent(request, result)
     }
 
-    /// Records a request that was written or queued. A rejected oversize frame
-    /// is not recorded, leaving the turn (and any pending suspension) where it was.
+    /// Records a request that was written, or queued (`None` bytes, counted
+    /// once written). A rejected oversize frame is not recorded, leaving the
+    /// turn (and any pending suspension) where it was.
     fn record_sent(
         &mut self,
         request: &pb::ParentRequest,
-        result: Result<usize, FrameError>,
+        result: Result<Option<usize>, FrameError>,
     ) -> Result<(), FrameError> {
+        self.record_queued_write();
         #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
             if let Some(recorder) = &mut self.recorder {
                 recorder.begin_turn(request);
             }
             if let Some(metrics) = &mut self.metrics {
-                metrics.frame("sent", len);
+                if let Some(len) = len {
+                    metrics.frame("sent", len);
+                }
                 metrics.begin_turn(request);
             }
             if matches!(
@@ -261,7 +269,23 @@ impl Worker {
                 self.recorder = None;
             }
         }
+        #[cfg(not(feature = "telemetry"))]
+        let _ = request;
         result.map(drop)
+    }
+
+    /// Counts a queued frame's bytes once [`SubprocessWorker`] has written it all.
+    fn record_queued_write(&mut self) {
+        let WorkerKind::Subprocess(w) = &mut self.kind else {
+            return;
+        };
+        let written = w.queued_written.take();
+        #[cfg(feature = "telemetry")]
+        if let (Some(len), Some(metrics)) = (written, &self.metrics) {
+            metrics.frame("sent", len);
+        }
+        #[cfg(not(feature = "telemetry"))]
+        let _ = written;
     }
 
     /// Copies the first recorded stream failure before teardown can add a
@@ -302,12 +326,14 @@ impl Worker {
     /// module docs), which is what lets `Checkout` race a turn against its
     /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
-        let (event, len) = match &mut self.kind {
+        let received = match &mut self.kind {
             WorkerKind::Subprocess(w) => w.recv_writing(self.max_decode_bytes).await,
             // events come from the reader task; a channel recv is
             // cancel-safe, preserving the deadline race
             WorkerKind::Remote(w) => w.recv().await,
-        }?;
+        };
+        self.record_queued_write();
+        let (event, len) = received?;
         // only after a complete decode, so a `recv` future dropped mid-frame
         // (deadline race) records nothing — cancel-safety intact
         #[cfg(feature = "telemetry")]
@@ -455,7 +481,7 @@ impl SubprocessWorker {
         match self.queued.take() {
             Some(QueuedWrite::Writing(written)) => {
                 self.stdin.write_all(&self.send_buf[written..]).await?;
-                self.end_frame();
+                self.queued_written = Some(self.end_frame());
                 Ok(())
             }
             Some(QueuedWrite::Failed(error)) => Err(FrameError::Io(error)),
@@ -468,7 +494,7 @@ impl SubprocessWorker {
         self.queued = match wrote {
             Ok(0) => Some(QueuedWrite::Failed(io::ErrorKind::WriteZero.into())),
             Ok(n) if written + n == self.send_buf.len() => {
-                self.end_frame();
+                self.queued_written = Some(self.end_frame());
                 None
             }
             Ok(n) => Some(QueuedWrite::Writing(written + n)),

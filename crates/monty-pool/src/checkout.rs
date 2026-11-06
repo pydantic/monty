@@ -1665,8 +1665,16 @@ impl Checkout {
             self.discard_worker();
             return Err(err);
         }
+        // CPU is charged from a sample taken once the reply is read, so under
+        // CPU supervision the request is queued only then: written sooner, the
+        // child could run part of it before that sample
+        let defer = self.supervises_cpu(request);
         // only an oversize request leaves the worker to open the session
-        let queued = self.deliver(request, true).await;
+        let queued = if defer {
+            Ok(())
+        } else {
+            self.deliver(request, true).await
+        };
         if self.worker.is_none() {
             return Err(queued.err().unwrap_or(PoolError::Finished));
         }
@@ -1693,8 +1701,9 @@ impl Checkout {
                     }
                     queued?;
                     let opened = DeadlineInstant::now();
-                    // the child starts `request` once it has answered, so its CPU is charged from here
-                    if self.supervises_cpu(request) {
+                    if defer {
+                        // queuing writes nothing: the turn's reads write it, after this sample
+                        self.deliver(request, true).await?;
                         match self.sample_cpu()? {
                             Ok(baseline) => self.cpu_baseline = Some(baseline),
                             Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
