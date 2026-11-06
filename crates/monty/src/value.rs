@@ -26,7 +26,6 @@ use crate::{
     py_value::PyValue,
     types::{
         BytesIterator, CmpOrder, Complex, LazyHeapSet, Property, PyTrait, StringIterator, Type,
-        bytearray::read_buffer,
         bytes::PyBytes,
         decimal, host_class_type,
         inline_str::InlineStr,
@@ -424,10 +423,10 @@ impl<'h> PyTrait<'h> for Value {
                 Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
             }
             // Cross-type bytes comparisons: interned vs heap-allocated
-            (Self::InternBytes(b1), Self::Ref(_)) if let Some(b2) = read_buffer(other, vm) => {
+            (Self::InternBytes(b1), Self::Ref(_)) if let Some(b2) = other.as_buffer(vm) => {
                 Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(b2)))
             }
-            (Self::Ref(_), Self::InternBytes(b2)) if let Some(b1) = read_buffer(self, vm) => {
+            (Self::Ref(_), Self::InternBytes(b2)) if let Some(b1) = self.as_buffer(vm) => {
                 Ok(CmpOrder::Ordered(b1.cmp(interns.get_bytes(*b2))))
             }
             _ => decimal_cmp_or_incomparable(self, other, vm),
@@ -1901,6 +1900,20 @@ impl Value {
             Self::InlineString(text) => Some(text.as_str()),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
                 HeapData::Str(s) => Some(s.as_str()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Borrows `bytes` or `bytearray` contents without copying or invoking Python conversion hooks.
+    /// The borrow is scoped to the VM, preventing buffer resize or release while it is in use.
+    pub(crate) fn as_buffer<'a>(&self, vm: &'a VM<'_>) -> Option<&'a [u8]> {
+        match self {
+            Self::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
+            Self::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Bytes(bytes) => Some(bytes.as_slice()),
+                HeapData::ByteArray(bytes) => Some(bytes.as_slice()),
                 _ => None,
             },
             _ => None,

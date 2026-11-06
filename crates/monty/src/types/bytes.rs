@@ -89,7 +89,7 @@ use crate::{
     py_value::PyValue,
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
-        List, bytearray,
+        List,
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range_with_len, slice_collect_iterator},
     },
@@ -470,7 +470,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
 
 /// Concatenation shared by logical bytes views and concrete heap dispatch.
 fn bytes_add(bytes: &[u8], other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
-    match bytearray::read_buffer(other, vm) {
+    match other.as_buffer(vm) {
         Some(other) => Ok(Some(concat_bytes(bytes, other, vm.heap)?)),
         None => Ok(None),
     }

@@ -28,8 +28,7 @@ use crate::{
     str_format::value_error,
     string_builder::{BytesBuilder, StringBuilder},
     types::{
-        LongInt, PyTrait, Type, bytearray::read_buffer, bytes::allocate_bytes, long_int::check_bits_str_digits_limit,
-        str::allocate_string,
+        LongInt, PyTrait, Type, bytes::allocate_bytes, long_int::check_bits_str_digits_limit, str::allocate_string,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -253,7 +252,7 @@ impl Target for BytesTarget {
 
     /// Buffer providers support `%b`; custom `__bytes__` hooks are not implemented.
     fn text_operand(value: &Value, spec: &Directive, vm: &mut VM<'_>) -> RunResult<Text<Self>> {
-        let bytes = read_buffer(value, vm).ok_or_else(|| {
+        let bytes = value.as_buffer(vm).ok_or_else(|| {
             ExcType::type_error(format!(
                 "%b requires a bytes-like object, or an object that implements __bytes__, not '{}'",
                 value.py_type_name(vm)

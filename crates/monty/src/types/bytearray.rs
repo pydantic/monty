@@ -36,6 +36,7 @@ impl ByteArray {
         &mut self.0
     }
 
+    /// Transfers an already-budgeted buffer into the heap without copying its contents.
     pub(crate) fn allocate(bytes: Vec<u8>, vm: &VM<'_>) -> Value {
         Value::Ref(vm.heap.allocate(HeapData::ByteArray(Self::new(bytes))))
     }
@@ -114,12 +115,15 @@ struct InitArgs {
     errors: Option<StrArg>,
 }
 
-/// Copies buffer providers before mutation, including self-assignment through aliases.
+/// Copies bytes/bytearray buffers or collects a synchronous iterable of integer byte values.
+/// Finishes collection before the caller mutates its destination, including when both are aliases.
 fn collect_bytes(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
-    if let Some(bytes) = read_buffer(value, vm) {
+    if let Some(bytes) = value.as_buffer(vm) {
         check_repeat_size(bytes.len(), 1, &vm.heap.tracker)?;
         return Ok(bytes.to_vec());
     }
+
+    // Iterable items can run Python through `__index__`; guard each yielded value on errors.
     let iterator = value.py_iter(vm)?.require_synchronous(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
@@ -135,22 +139,10 @@ fn collect_bytes(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Applies `__index__` and rejects values outside `0..=255`, including oversized integers.
 fn byte_value(value: &Value, vm: &mut VM<'_>) -> RunResult<u8> {
     let n = value.saturating_index(vm)?;
     u8::try_from(n).map_err(|_| SimpleException::new_msg(ExcType::ValueError, "byte must be in range(0, 256)").into())
-}
-
-/// A buffer borrow is scoped to the VM borrow, preventing resize or release while in use.
-pub(crate) fn read_buffer<'a>(value: &Value, vm: &'a VM<'_>) -> Option<&'a [u8]> {
-    match value {
-        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Bytes(bytes) => Some(bytes.as_slice()),
-            HeapData::ByteArray(bytes) => Some(bytes.as_slice()),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 impl HeapItem for ByteArray {
@@ -158,6 +150,7 @@ impl HeapItem for ByteArray {
 }
 
 impl<'h> HeapObjectRead<'h, ByteArray> {
+    /// Copies storage so mutations to the new bytearray cannot affect the source.
     pub(crate) fn allocate_copy(&self, vm: &VM<'h>) -> RunResult<Value> {
         check_repeat_size(self.get(vm.heap).0.len(), 1, &vm.heap.tracker)?;
         Ok(ByteArray::allocate(self.get(vm.heap).0.clone(), vm))
@@ -177,6 +170,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         true
     }
 
+    /// Iterates the live buffer; mutations can change which bytes remain to be visited.
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
         Ok(CallResult::Value(BytesIterator::from_heap(self.id(), vm)))
     }
@@ -191,7 +185,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         ))
     }
 
+    /// Uses bytes formatting rules but returns a mutable bytearray result.
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        // Formatting arguments can call Python and mutate this buffer; snapshot the template first.
         let template = copy_bytes_template(self.get(vm.heap).as_slice(), &vm.heap.tracker)?;
         let value = percent_format_bytes(&template, other, vm)?;
         convert_result(value, vm).map(Some)
@@ -207,6 +203,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         super::bytes::bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
     }
 
+    /// Integer indices return byte values; slices return independent bytearrays.
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         if matches!(key, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Slice(_))) {
             let field = heap_read_ref_as_field!(self, ByteArray, 0);
@@ -296,7 +293,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         Ok(())
     }
 
+    /// Extends from bytes/bytearray, preserving identity; other operands request binary fallback.
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        // CPython holds a buffer export during extension, so nonempty self-extension cannot resize.
         if matches!(other, Value::Ref(id) if *id == self.id()) && !self.get(vm.heap).0.is_empty() {
             return Err(SimpleException::new_msg(
                 ExcType::BufferError,
@@ -304,9 +303,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             )
             .into());
         }
-        let Some(bytes) = read_buffer(other, vm) else {
+
+        let Some(bytes) = other.as_buffer(vm) else {
             return Ok(false);
         };
+        // Release the source borrow before mutating the destination.
         let bytes = bytes.to_vec();
         check_repeat_size(
             self.get(vm.heap).0.len().saturating_add(bytes.len()),
@@ -317,20 +318,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         Ok(true)
     }
 
+    /// Repeats for integer or `__index__` counts without replacing the receiver.
     fn py_imul_impl(&mut self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(false);
         };
+        // `__index__` can resize the receiver; budget against its length after conversion.
         check_repeat_size(self.get(vm.heap).0.len(), count, &vm.heap.tracker)?;
         repeat_in_place(&mut self.get_mut(vm.heap).0, count)?;
         Ok(true)
     }
 
+    /// Repeats into fresh mutable storage, leaving the source unchanged after count conversion.
     fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
         check_repeat_size(self.get(vm.heap).0.len(), count, &vm.heap.tracker)?;
+        // A new result must not alias the source, but zero repetitions need no initial copy.
         let mut data = if count == 0 {
             Vec::new()
         } else {
@@ -344,8 +349,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         self.py_mul_impl(other, vm)
     }
 
+    /// Concatenates bytes/bytearray into a fresh bytearray; other operand types return `None`.
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(rhs) = read_buffer(other, vm) else {
+        let Some(rhs) = other.as_buffer(vm) else {
             return Ok(None);
         };
         let lhs = self.get(vm.heap).as_slice();
@@ -358,6 +364,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         Ok(Some(ByteArray::allocate(bytes, vm)))
     }
 
+    /// Handles mutation and bytearray-specific results; shared byte algorithms handle the rest.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         let Some(method) = attr.static_string(vm.interns) else {
             args.drop_with(vm);
@@ -472,13 +479,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
             }
             _ => {}
         }
+        // Keep a scoped view, rather than a slice, because argument conversion can resize the buffer.
         let field = heap_read_ref_as_field!(self, ByteArray, 0);
         let result = super::bytes::call_bytes_method_impl(&field.as_slice(), method, args, vm)?;
         Ok(CallResult::Value(convert_result(result, vm)?))
     }
 }
 
-/// Byte-returning operations on bytearray return fresh mutable storage.
+/// Rebuilds bytes and list/tuple method results with mutable bytearray leaves; other values pass through.
+/// Takes ownership of the result and releases all temporary references if conversion fails.
 pub(crate) fn convert_result(value: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut guard = DropGuard::new(value, vm);
     let (value, vm) = guard.as_parts_mut();
@@ -529,6 +538,7 @@ pub(crate) fn convert_result(value: Value, vm: &mut VM<'_>) -> RunResult<Value> 
     let Some((tuple, items)) = sequence else {
         return Ok(value);
     };
+    // Release the original container before allocating replacements; guard both partial and pending items.
     value.drop_with(vm);
     let iter = items.into_iter();
     defer_drop_mut!(iter, vm);
@@ -555,6 +565,7 @@ struct ExpandtabsArgs {
     tabsize: Value,
 }
 
+/// Computes the expanded size before allocating; tabs advance to tab stops and newlines reset the column.
 fn expandtabs<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
     defer_drop!(tabsize, vm);
@@ -562,6 +573,7 @@ fn expandtabs<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &m
     let tabsize = i32::try_from(tabsize).map_err(|_| ExcType::overflow_c_int())?;
     let tabsize = usize::try_from(tabsize.max(0)).expect("nonnegative tab size");
     let bytes = value.get(vm.heap).as_slice();
+    // Saturate during sizing so enormous tab widths are rejected rather than wrapping the estimate.
     let mut size = 0usize;
     let mut column = 0usize;
     for (index, byte) in bytes.iter().enumerate() {
@@ -594,6 +606,7 @@ fn expandtabs<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &m
         if *byte == b'\t' {
             let spaces = if tabsize == 0 { 0 } else { tabsize - column % tabsize };
             let end = result.len() + spaces;
+            // One tab can produce a huge fill even when the input has only one byte.
             while end - result.len() > BYTE_WORK_CHUNK {
                 result.resize(result.len() + BYTE_WORK_CHUNK, b' ');
                 vm.heap.tracker.check_time()?;
@@ -617,8 +630,9 @@ struct TranslateArgs {
     delete: Option<Value>,
 }
 
+/// Requires a bytes/bytearray buffer without accepting arbitrary iterables or conversion hooks.
 fn buffer_argument<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
-    read_buffer(value, vm).ok_or_else(|| {
+    value.as_buffer(vm).ok_or_else(|| {
         ExcType::type_error(format!(
             "a bytes-like object is required, not '{}'",
             value.py_type_name(vm)
@@ -626,10 +640,12 @@ fn buffer_argument<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> {
     })
 }
 
+/// Deletes selected byte values and maps survivors through a 256-byte table; `None` keeps their values.
 fn translate<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let TranslateArgs { table, delete } = TranslateArgs::from_args(args, vm)?;
     defer_drop!(table, vm);
     defer_drop!(delete, vm);
+
     let table = if matches!(table, Value::None) {
         None
     } else {
@@ -638,6 +654,8 @@ fn translate<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mu
     if table.is_some_and(|table| table.len() != 256) {
         return Err(ExcType::value_error("translation table must be 256 characters long"));
     }
+
+    // A lookup table avoids rescanning the delete buffer for every source byte.
     let mut deleted = [false; 256];
     if let Some(delete) = delete {
         for (index, byte) in buffer_argument(delete, vm)?.iter().enumerate() {
@@ -647,6 +665,7 @@ fn translate<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mu
             }
         }
     }
+
     let bytes = value.get(vm.heap).as_slice();
     // The source remains live, and translation can retain every byte.
     vm.heap.tracker.check_allocation(bytes.len())?;
@@ -664,6 +683,7 @@ fn translate<'h>(value: &HeapObjectRead<'h, ByteArray>, args: ArgValues, vm: &mu
     Ok(ByteArray::allocate(result, vm))
 }
 
+/// Builds an immutable 256-byte translation table, leaving unlisted byte values unchanged.
 pub(crate) fn maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let (from, to) = args.get_two_args("maketrans", vm.heap)?;
     defer_drop!(from, vm);
@@ -674,6 +694,7 @@ pub(crate) fn maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         return Err(ExcType::value_error("maketrans arguments must have same length"));
     }
     let mut table: Vec<u8> = (0..=255).collect();
+    // Later pairs overwrite earlier mappings for a repeated source byte, matching CPython.
     for (index, (from, to)) in from.iter().zip(to).enumerate() {
         table[usize::from(*from)] = *to;
         if index % BYTE_WORK_CHUNK == BYTE_WORK_CHUNK - 1 {
@@ -683,6 +704,7 @@ pub(crate) fn maketrans(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     Ok(super::bytes::allocate_bytes(table, vm.heap))
 }
 
+/// Reuses owned storage for repetition; callers must preflight the final buffer size.
 fn repeat_in_place(data: &mut Vec<u8>, count: usize) -> RunResult<()> {
     if count == 0 {
         data.clear();
@@ -697,6 +719,7 @@ fn repeat_in_place(data: &mut Vec<u8>, count: usize) -> RunResult<()> {
         .ok_or_else(ExcType::allocation_too_large)?;
     data.try_reserve_exact(target - data.len())
         .map_err(|_| ExcType::allocation_too_large())?;
+    // Copy the filled prefix each round, capping the final copy at the remaining length.
     while data.len() < target {
         let available = data.len().min(target - data.len());
         data.extend_from_within(..available);
