@@ -505,16 +505,14 @@ impl GraphExporter {
                     position: file.position(),
                 })
             }
-            HeapReadOutput::ExtFunction(function) => MontyNode::Function {
-                name: function.get(vm.heap).as_str().to_owned(),
-                docstring: None,
-                is_async: false,
-            },
-            HeapReadOutput::AsyncExtFunction(function) => MontyNode::Function {
-                name: function.get(vm.heap).as_str().to_owned(),
-                docstring: None,
-                is_async: true,
-            },
+            HeapReadOutput::ExtFunction(function) => {
+                let function = function.get(vm.heap);
+                MontyNode::Function {
+                    name: function.as_str().to_owned(),
+                    docstring: None,
+                    is_async: function.is_async(),
+                }
+            }
             _ => self.repr_node(value, vm),
         }
     }

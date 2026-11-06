@@ -51,7 +51,7 @@ pub(crate) enum CallResult {
         name: EitherStr,
         args: ArgValues,
         /// The callee is an async host function, so a supporting host may
-        /// start the call without waiting (see [`crate::types::AsyncExtFunction`]).
+        /// start the call without waiting (see [`crate::types::ExtFunction::is_async`]).
         is_async: bool,
     },
     /// OS operation call requested - VM should yield `FrameExit::OsCall` to host.

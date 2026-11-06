@@ -1704,10 +1704,7 @@ fn is_callable(value: &Value, heap: &Heap) -> bool {
         // not a function, so keep only the function-like heap variants.
         Value::Ref(id) => matches!(
             heap.get(*id),
-            HeapData::Closure(_)
-                | HeapData::FunctionDefaults(_)
-                | HeapData::ExtFunction(_)
-                | HeapData::AsyncExtFunction(_)
+            HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)
         ),
         _ => false,
     }

@@ -23,7 +23,7 @@ use serde::{de::Error as _, ser::SerializeStruct};
 use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
-    types::{AsyncExtFunction, ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
+    types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
     value::Value,
 };
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -1067,14 +1067,7 @@ fn restore_entries(entries: &mut StableHeap<HeapEntry>) -> Result<WeakIndexes, &
                     .ext_function_cache
                     .entry(function.cache_key())
                     .or_default()
-                    .slot_mut(false) = Some(id);
-            }
-            HeapData::AsyncExtFunction(function) => {
-                *indexes
-                    .ext_function_cache
-                    .entry(function.cache_key())
-                    .or_default()
-                    .slot_mut(true) = Some(id);
+                    .slot_mut(function.is_async()) = Some(id);
             }
             HeapData::Instance(instance) => {
                 indexes.index_boundary_uuid(instance.uuid(), id);
@@ -1106,7 +1099,7 @@ struct WeakIndexes {
     host_type_index: BTreeMap<MontyUuid, HeapId>,
 }
 
-/// The live `ExtFunction` and `AsyncExtFunction` sharing one name, each held
+/// The live sync and async `ExtFunction`s sharing one name, each held
 /// separately so a sync and an async host function with that name stay distinct.
 #[derive(Debug, Default)]
 struct ExtFunctionSlots {
@@ -1264,14 +1257,9 @@ impl Heap {
             self.inc_ref(id);
             Value::Ref(id)
         } else {
-            let (cache_key, data) = if is_async {
-                let function = AsyncExtFunction::new(name);
-                (function.cache_key(), HeapData::AsyncExtFunction(function))
-            } else {
-                let function = ExtFunction::new(name);
-                (function.cache_key(), HeapData::ExtFunction(function))
-            };
-            let id = self.allocate(data);
+            let function = ExtFunction::new(name, is_async);
+            let cache_key = function.cache_key();
+            let id = self.allocate(HeapData::ExtFunction(function));
             let slot = self.ext_function_cache.entry(cache_key).or_default().slot_mut(is_async);
             debug_assert!(slot.is_none());
             *slot = Some(id);
@@ -1299,11 +1287,7 @@ impl Heap {
         match data {
             HeapData::ExtFunction(function) => Some(WeakIndexKey::ExtFunction {
                 name: function.cache_key(),
-                is_async: false,
-            }),
-            HeapData::AsyncExtFunction(function) => Some(WeakIndexKey::ExtFunction {
-                name: function.cache_key(),
-                is_async: true,
+                is_async: function.is_async(),
             }),
             HeapData::Instance(instance) => instance.uuid().map(WeakIndexKey::Boundary),
             HeapData::Class(class) => class.uuid().map(WeakIndexKey::Boundary),
