@@ -183,7 +183,7 @@ impl<'h> PyStr<'h> {
     }
 
     /// Resolves Python's positive or negative character index.
-    fn character(&self, index: i64, vm: &VM<'h>) -> Option<char> {
+    fn character_at(&self, index: i64, vm: &VM<'h>) -> Option<char> {
         let text = self.as_str(vm);
         let ascii = self.is_ascii(vm);
         get_char_at_index(text, ascii, index)
@@ -531,7 +531,7 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
         Ok(allocate_string(result, vm.heap))
     } else {
         let index = key.as_index(vm, Type::Str)?;
-        let c = s.character(index, vm).ok_or_else(ExcType::str_index_error)?;
+        let c = s.character_at(index, vm).ok_or_else(ExcType::str_index_error)?;
         Ok(allocate_char(c))
     }
 }
