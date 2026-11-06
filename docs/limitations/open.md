@@ -30,8 +30,9 @@ after `open()` succeeded, unlike access through CPython's retained descriptor.
 
 ## Mode strings
 
-- Update modes other than binary `w+b` / `wb+` are rejected at
+- Update modes other than binary write/update modes are rejected at
     parse time with `ValueError: update modes ('+') are not yet supported`.
+    Accepted spellings such as `w+b`, `wb+` and `+bw` normalize to `wb+`.
 - Exclusive creation mode (`x`) is rejected with `ValueError: exclusive creation mode is not supported`; it would need a
     dedicated race-free
     mount-table operation.
@@ -124,12 +125,16 @@ Everything else raises `AttributeError`, including: `truncate()`,
 
 - All reads (bare `read()`, sized `read(N)`, `readline`, `readlines`),
     iteration and `seek()` share a single heap-resident buffer populated on
-    the first such call. The host serves only one full-file
-    `ReadText`/`ReadBytes` per file; everything after is sliced in pure
-    Monty. Memory cost: the whole file remains allocated and counts against
+    the first such call. Reads and seeks reuse that full-file
+    `ReadText`/`ReadBytes` result until a write invalidates it.
+    Memory cost: the whole file remains allocated and counts against
     the worker's allocator-backed `max_memory`.
     A write through the same file object invalidates its buffer, including when the host raises an error.
     Modifications through other handles or external tools do not invalidate it.
+- A failed binary write keeps the previous logical cursor because the host did not return a count.
+    It can still change the file on storage.
+    A subsequent seek from EOF in `wb` refreshes the file length with a host stat call;
+    readable files reload their buffer as usual.
 - Iterating a file that has not been read yet needs that host load, which
     only the `for` statement and the `next()` builtin can issue. Any other
     consumer of the iterator protocol (`list(f)`, `enumerate(f)`, `zip(f, …)`,

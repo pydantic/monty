@@ -1,6 +1,7 @@
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, MontyException, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyFileHandle, MontyObject, OsFunctionCall,
+    PrintWriter, ResourceTracker, file_stat,
 };
 
 fn run(code: &str, snapshot: bool) {
@@ -29,6 +30,7 @@ fn run(code: &str, snapshot: bool) {
         progress = match progress {
             RunProgress::Complete(_) => break,
             RunProgress::OsCall(call) => {
+                let mut partial_error = false;
                 let result = match &call.function_call {
                     OsFunctionCall::Open(args) => {
                         assert!(args.mode.truncate());
@@ -41,18 +43,32 @@ fn run(code: &str, snapshot: bool) {
                     }
                     OsFunctionCall::WriteBytesAt(args) => {
                         args.validate().unwrap();
-                        if !args.data.is_empty() {
+                        partial_error = args.data == b"XYZ";
+                        let data = if partial_error { &args.data[..1] } else { &args.data };
+                        if !data.is_empty() {
                             let offset = usize::try_from(args.offset).unwrap();
-                            let end = offset + args.data.len();
+                            let end = offset + data.len();
                             content.resize(content.len().max(end), 0);
-                            content[offset..end].copy_from_slice(&args.data);
+                            content[offset..end].copy_from_slice(data);
                         }
                         MontyObject::int(i64::try_from(args.data.len()).unwrap())
                     }
                     OsFunctionCall::ReadBytes(_) => MontyObject::bytes(content.clone()),
+                    OsFunctionCall::Stat(_) => file_stat(0o600, i64::try_from(content.len()).unwrap(), 0.0),
                     other => panic!("unexpected call: {other:?}"),
                 };
-                call.resume(result, PrintWriter::Stdout).unwrap()
+                if partial_error {
+                    call.resume(
+                        ExtFunctionResult::Error(MontyException::new(
+                            ExcType::OSError,
+                            Some("injected partial write".to_owned()),
+                        )),
+                        PrintWriter::Stdout,
+                    )
+                    .unwrap()
+                } else {
+                    call.resume(result, PrintWriter::Stdout).unwrap()
+                }
             }
             other => panic!("unexpected progress: {other:?}"),
         };
@@ -100,4 +116,24 @@ with open('/file', 'wb') as f:
 ",
         true,
     );
+}
+
+#[test]
+fn partial_write_recovery_and_eof_refresh_survive_snapshots() {
+    let code = r"
+with open('/file', 'wb') as f:
+    f.write(b'abc')
+    f.seek(8)
+    try:
+        f.write(b'XYZ')
+    except OSError:
+        pass
+    assert f.tell() == 8
+    assert f.seek(-1, 2) == 8
+    assert f.seek(0, 2) == 9
+    f.write(b'!')
+    assert f.seek(0, 2) == 10
+";
+    run(code, false);
+    run(code, true);
 }

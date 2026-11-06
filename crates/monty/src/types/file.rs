@@ -78,7 +78,10 @@ use std::{
     mem,
 };
 
-use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, WriteBytesAtArgs};
+use monty_types::{
+    MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, WriteBytesAtArgs,
+    unstable::MontyNode,
+};
 
 use super::{
     LazyHeapSet, List, PyTrait, Type,
@@ -92,7 +95,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
-    os_dispatch::PostConversionEffect,
+    os_dispatch::{PostConversionEffect, stat_result_field},
     py_value::PyValue,
     types::str::StringRepr,
     value::{EitherStr, Value},
@@ -307,6 +310,16 @@ pub(crate) struct OpenFile {
     /// buffer. For read-capable files, the loaded buffer metadata remains the
     /// source of truth for `SEEK_END`.
     file_length: u64,
+    /// A failed binary write may have extended the file without returning a count.
+    #[serde(default)]
+    length_state: FileLengthState,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+enum FileLengthState {
+    #[default]
+    Known,
+    Unknown,
 }
 
 /// Cached metadata about an [`OpenFile`]'s loaded buffer.
@@ -368,6 +381,7 @@ impl OpenFile {
             pending_read: None,
             eof: false,
             file_length: position,
+            length_state: FileLengthState::Known,
         }
     }
 
@@ -634,9 +648,19 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
         if self.get(vm.heap).mode.readable() {
             self.read_with_spec(vm, ReadSpec::Seek { offset, whence })
         } else {
+            let file = self.get(vm.heap);
+            file.ensure_open()?;
+            if whence == 2 && matches!(file.length_state, FileLengthState::Unknown) {
+                let path = MontyPath::new(file.path().to_owned());
+                let file_id = self.id();
+                inc_ref_for_pending_oscall(vm, file_id);
+                return Ok(CallResult::OsCallWithEffect {
+                    call: OsFunctionCall::Stat(path),
+                    effect: PostConversionEffect::FileSeekEnd { file_id, offset }.into(),
+                });
+            }
             let (target, file_length) = {
                 let file = self.get(vm.heap);
-                file.ensure_open()?;
                 let position = i64::try_from(file.position).map_err(|_| ExcType::overflow_c_ssize_t())?;
                 let file_length = i64::try_from(file.file_length).map_err(|_| ExcType::overflow_c_ssize_t())?;
                 (
@@ -824,7 +848,12 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
                     ExcType::not_implemented("binary update mode requires positional filesystem writes").into(),
                 );
             }
-            if previous_position != previous_length {
+            if matches!(&payload, WritePayload::Bytes(bytes) if bytes.is_empty()) {
+                return Ok(CallResult::Value(if result_none { Value::None } else { Value::Int(0) }));
+            }
+            if previous_position != previous_length
+                || matches!(self.get(vm.heap).length_state, FileLengthState::Unknown)
+            {
                 return Err(
                     ExcType::not_implemented("writing away from EOF requires positional filesystem writes").into(),
                 );
@@ -973,6 +1002,9 @@ impl OpenFile {
         self.position = previous_position;
         self.file_length = previous_length;
         self.eof = previous_position >= previous_length;
+        if self.mode.is_binary() && !self.mode.is_append() {
+            self.length_state = FileLengthState::Unknown;
+        }
     }
 }
 
@@ -1218,6 +1250,34 @@ fn unloaded_iteration_error(file_type: Type) -> RunError {
     .into()
 }
 
+/// Completes a seek from EOF after a failed write made the tracked length unknown.
+pub(crate) fn apply_file_seek_end(
+    file_id: HeapId,
+    offset: i64,
+    result: &MontyObject,
+    vm: &mut VM<'_>,
+) -> RunResult<Value> {
+    let pin = Value::Ref(file_id);
+    defer_drop!(pin, vm);
+    let Some(MontyNode::Int(length)) = stat_result_field(result, "st_size") else {
+        return Err(RunError::internal(
+            "file.seek requires a stat result with an integer st_size",
+        ));
+    };
+    let file_length =
+        u64::try_from(*length).map_err(|_| RunError::internal("file.seek received a negative st_size"))?;
+    let target = resolve_seek_target(offset, 2, 0, *length)?;
+    let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
+        return Err(RunError::internal("file seek effect does not refer to an open file"));
+    };
+    let file = file.get_mut(vm.heap);
+    file.file_length = file_length;
+    file.length_state = FileLengthState::Known;
+    file.position = u64::try_from(target).map_err(|_| ExcType::overflow_c_ssize_t())?;
+    file.eof = file.position >= file_length;
+    Ok(Value::Int(target))
+}
+
 /// Applies a successful host write result to an [`OpenFile`]'s logical
 /// position, then returns that same result to Python.
 ///
@@ -1247,11 +1307,11 @@ pub(crate) fn apply_write_position(
 
     let written = result_ref.as_int(vm)?;
     if written < 0 {
-        return Err(ExcType::value_error("write count cannot be negative"));
+        return Err(RunError::internal("write count cannot be negative"));
     }
     let written = u64::try_from(written).map_err(|_| ExcType::overflow_c_ssize_t())?;
     if payload_length.is_some_and(|length| written > length) {
-        return Err(ExcType::value_error("write count exceeds the supplied data length"));
+        return Err(RunError::internal("write count exceeds the supplied data length"));
     }
 
     let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
@@ -1610,6 +1670,7 @@ fn update_file_state<'h>(
         buffer_total,
     });
     f.file_length = buffer_total;
+    f.length_state = FileLengthState::Known;
 }
 
 /// Populates [`OpenFile::buffer_meta`] from the just-loaded buffer.

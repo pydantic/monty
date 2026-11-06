@@ -3,7 +3,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from conftest import RunMonty
 
-from pydantic_monty import CallbackFile, MemoryFile, MontyFileHandle, MountDir, OSAccess
+from pydantic_monty import CallbackFile, MemoryFile, MontyFileHandle, MontyRuntimeError, MountDir, OSAccess
 
 
 @pytest.mark.parametrize('mode', ['w+b', 'wb+', '+bw'])
@@ -93,18 +93,18 @@ f.seek(0)
 
 
 @pytest.mark.parametrize('count', [-1, 4])
-def test_invalid_host_write_counts_do_not_advance_cursor(monty_run: RunMonty, count: int):
+def test_invalid_host_write_counts_cannot_be_caught_in_the_sandbox(monty_run: RunMonty, count: int):
     class InvalidOS(OSAccess):
         def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
             return count
 
-    assert (
+    with pytest.raises(MontyRuntimeError, match='Internal error in monty: write count'):
         monty_run(
             """
 f = open('/file', 'w+b')
 try:
     f.write(b'abc')
-except ValueError:
+except Exception:
     pass
 else:
     assert False
@@ -112,5 +112,34 @@ f.tell()
 """,
             os=InvalidOS([MemoryFile('/file', b'')]),
         )
-        == 0
+
+
+@pytest.mark.parametrize('mode', ['wb', 'w+b'])
+def test_seek_end_refreshes_length_after_partial_write_error(monty_run: RunMonty, mode: str):
+    class PartialOS(OSAccess):
+        def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
+            if data == b'XYZ':
+                super().path_write_bytes_at(path, offset, data[:1])
+                raise OSError('failed after writing a prefix')
+            return super().path_write_bytes_at(path, offset, data)
+
+    result = monty_run(
+        f"""
+from pathlib import Path
+f = open('/file', {mode!r})
+f.write(b'abc')
+f.seek(8)
+try:
+    f.write(b'XYZ')
+except OSError:
+    pass
+assert f.tell() == 8
+assert f.seek(-1, 2) == 8
+assert f.seek(0, 2) == 9
+f.write(b'!')
+f.close()
+Path('/file').read_bytes()
+""",
+        os=PartialOS([MemoryFile('/file', b'')]),
     )
+    assert result == b'abc\0\0\0\0\0X!'

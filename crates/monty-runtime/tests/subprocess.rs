@@ -3198,6 +3198,8 @@ fn legacy_binary_writes_away_from_eof_are_rejected() {
             Some("writing away from EOF requires positional filesystem writes")
         );
         assert_eq!(child.feed_complete("f.tell()"), MontyObject::int(offset));
+        assert_eq!(child.feed_complete("f.write(b'')"), MontyObject::int(0));
+        assert_eq!(child.feed_complete("f.tell()"), MontyObject::int(offset));
     }
     let (_, event) = child.feed("f.seek(3)\nf.write(b'd')");
     let event = resume_legacy_append(&mut child, event, b"d");

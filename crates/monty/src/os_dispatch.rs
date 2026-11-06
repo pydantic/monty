@@ -107,6 +107,7 @@ impl PendingEffect {
             }
             // The replayed call expects its argument loaded; a future would stand in for the call's result.
             Self::Post(PostConversionEffect::LoadThenCall { .. }) => Some("file loading"),
+            Self::Post(PostConversionEffect::FileSeekEnd { .. }) => Some("file.seek"),
             // A future strands these instead: the awaited value is the raw host reply.
             Self::Post(PostConversionEffect::BufferStore { .. } | PostConversionEffect::WritePosition { .. }) => None,
             // `asyncio.sleep` wants the future: `resume_with_result` moves the
@@ -338,6 +339,8 @@ pub(crate) enum PostConversionEffect {
     /// `next(file, default)`: the first line, `default` at EOF, or
     /// `StopIteration`. Owns `default`'s reference across the yield.
     FileNext { file_id: HeapId, default: Option<Value> },
+    /// Refresh a write-only file's unknown length before seeking from EOF.
+    FileSeekEnd { file_id: HeapId, offset: i64 },
     /// Advance the file's logical position by the successful write result.
     WritePosition {
         /// File whose position is updated.
@@ -405,6 +408,7 @@ impl PostConversionEffect {
             Self::BufferStore { file_id }
             | Self::JsonLoad { file_id }
             | Self::BufferLoad { file_id }
+            | Self::FileSeekEnd { file_id, .. }
             | Self::WritePosition { file_id, .. } => {
                 heap.heap_mut().dec_ref(file_id);
             }
