@@ -34,6 +34,14 @@ check(''.join(['é', 'cd']), 'écd', False)
 check('é'.join(['ab', 'cd']), 'abécd', False)
 check('é'.join(['abc']), 'abc', True)
 check('é'.join([]), '', True)
+for separator in ['', 'é🐍', 'é🐍' * 16]:
+    for items in [[], ['ascii'], ['a', 'é', '🐍'], ['é🐍' * 32, '', 'abc' * 32]]:
+        expected_len = sum(len(item) for item in items) + max(0, len(items) - 1) * len(separator)
+        result = separator.join(item for item in items)
+        assert len(result) == expected_len
+        assert len(list(result)) == expected_len
+        assert result.isascii() == all(ord(c) < 128 for c in result)
+
 check(('éabc' + '')[0], 'é', False)
 check(('éabc' + '')[-1], 'c', True)
 long_ascii = inline('a' * 15)

@@ -655,21 +655,20 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
     // Build result string, tracking index for error messages
     let mut result = String::new();
     let mut index = 0usize;
-    let mut ascii = true;
+    let mut char_len = 0;
+    let mut separator_char_len = None;
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
         if index > 0 {
             result.push_str(separator.as_str(vm));
-            ascii &= separator.is_ascii(vm);
+            char_len += *separator_char_len.get_or_insert_with(|| separator.char_len(vm));
         }
 
-        if let Some(text) = item.as_str(vm) {
-            result.push_str(text);
-            if ascii {
-                let text = PyStr::from_value(item, vm).expect("string checked above");
-                ascii = text.is_ascii(vm);
-            }
+        if let Some(text) = PyStr::from_value(item, vm) {
+            result.push_str(text.as_str(vm));
+            // Counts cannot exceed the byte length of the successfully appended text.
+            char_len += text.char_len(vm);
         } else {
             let t = item.py_type_name(vm);
             return Err(ExcType::type_error_join_item(index, &t));
@@ -677,8 +676,15 @@ fn str_join<'h>(separator: &PyStr<'h>, iterable: Value, vm: &mut VM<'h>) -> RunR
         index += 1;
     }
 
-    // Allocate result (uses interned empty string if result is empty)
-    Ok(allocate_string_with_ascii(result, Some(ascii), vm.heap))
+    if result.len() <= 15 {
+        let ascii = char_len == result.len();
+        Ok(allocate_string_with_ascii(result, Some(ascii), vm.heap))
+    } else {
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Str(HeapStr::with_char_len(
+            result.into_boxed_str(),
+            char_len,
+        )))))
+    }
 }
 
 // =============================================================================
