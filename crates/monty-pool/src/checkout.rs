@@ -351,8 +351,8 @@ pub struct StreamedCall {
     pub call_id: u32,
     /// Where the call expression is in the source.
     pub position: SourceRange,
-    /// The telemetry context for the host callback running this call, as
-    /// [`Checkout::callback_context`] reported it when the call arrived.
+    /// The telemetry context for the host callback running this call: the
+    /// call's own span, open until the `ResumeFutures` carrying its result.
     #[cfg(feature = "telemetry")]
     pub callback_context: opentelemetry::Context,
 }
@@ -2111,7 +2111,9 @@ impl Checkout {
                             call_id,
                             position,
                             #[cfg(feature = "telemetry")]
-                            callback_context: self.callback_context(),
+                            callback_context: self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
+                                worker.streamed_call_context(call_id)
+                            }),
                         };
                         self.deliver_streamed_call(call);
                     }

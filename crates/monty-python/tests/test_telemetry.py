@@ -374,11 +374,13 @@ async def test_deferred_coroutine_keeps_future_resolution_telemetry():
     assert log.log_record.span_id == waiting.context.span_id
 
 
-async def test_streamed_call_logs_its_start_without_a_call_span():
-    """With `stream_async_calls`, a stored awaitable logs its start instead of opening a call span."""
+async def test_streamed_call_runs_under_its_own_span():
+    """With `stream_async_calls`, a stored awaitable gets a call span the host coroutine runs under, closed by its result."""
     install_telemetry()
+    seen: list[int] = []
 
     async def fetch() -> int:
+        seen.append(trace.get_current_span().get_span_context().span_id)
         return 42
 
     async with AsyncMonty(stream_async_calls=True) as pool:
@@ -386,17 +388,18 @@ async def test_streamed_call_logs_its_start_without_a_call_span():
             assert await session.feed_run('pending = fetch()\nawait pending', external_lookup={'fetch': fetch}) == 42
 
     spans = _span_exporter.get_finished_spans()
-    assert [span.name for span in spans] == ['resolve futures', 'run code', 'session {script_name}']
-    waiting, run, _session = spans
-    started, results = _log_exporter.get_finished_logs()
-    assert started.log_record.body == 'start call fetch'
-    assert started.log_record.attributes is not None
-    assert started.log_record.attributes['function_name'] == 'fetch'
-    assert run.context is not None
-    assert started.log_record.span_id == run.context.span_id
-    assert results.log_record.body == 'future results'
-    assert waiting.context is not None
-    assert results.log_record.span_id == waiting.context.span_id
+    assert [span.name for span in spans] == snapshot(
+        ['call {function_name}', 'resolve futures', 'run code', 'session {script_name}']
+    )
+    call, _waiting, run, _session = spans
+    assert call.attributes is not None
+    assert call.attributes['function_name'] == 'fetch'
+    assert call.attributes['return_value'] == snapshot(42)
+    assert call.parent is not None and run.context is not None
+    assert call.parent.span_id == run.context.span_id
+    assert call.context is not None
+    assert seen == [call.context.span_id]
+    assert _log_exporter.get_finished_logs() == ()
 
 
 @pytest.mark.parametrize('kind', ['function', 'os', 'name', 'future'])

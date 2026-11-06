@@ -191,6 +191,16 @@ impl Worker {
             .map_or_else(opentelemetry::Context::new, |recorder| recorder.callback_context())
     }
 
+    /// The span a streamed call's host callback runs under; see `Recorder::streamed_call_context`.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn streamed_call_context(&self, call_id: u32) -> opentelemetry::Context {
+        self.recorder
+            .as_ref()
+            .map_or_else(opentelemetry::Context::new, |recorder| {
+                recorder.streamed_call_context(call_id)
+            })
+    }
+
     /// Sends one request, flushed to the wire — a reply is only ever read
     /// after a request, so an unflushed frame would deadlock both sides. An
     /// oversize frame is rejected *before* any I/O so the stream stays synced
