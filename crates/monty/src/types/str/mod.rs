@@ -1,12 +1,20 @@
-use std::{cell::Cell, fmt::Write, ops, str};
+//! Python string views, operations and allocation.
 
+mod heap_str;
+mod inline_str;
+mod iterator;
+
+use std::{fmt::Write, str};
+
+pub(crate) use heap_str::HeapStr;
+pub(crate) use inline_str::InlineStr;
+pub(crate) use iterator::StringIterator;
 use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{StringRepr, string_repr_fmt};
 use smallvec::smallvec;
 
 use super::{
     Bytes, CmpOrder, PyTrait,
-    inline_str::InlineStr,
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
@@ -17,7 +25,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapObjectRead},
     identity::Identity,
     intern::{Interns, StaticStrings, StringId},
     percent_format::percent_format,
@@ -32,110 +40,6 @@ use crate::{
     value::{EitherStr, VALUE_SIZE, Value, eq_str},
 };
 
-/// Heap-backed Python string with cached hash and ASCII status.
-/// `len()` returns the number of Unicode codepoints (characters), matching Python semantics.
-///
-/// Caches its Python hash and whether it is ASCII, both computed on first use and
-/// never serialized. ASCII text has one byte per character, so `len()` and
-/// indexing are O(1) instead of a UTF-8 walk. Both caches assume the text never changes.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub(crate) struct Str(
-    Box<str>,
-    #[serde(skip)] Cell<Option<HashValue>>,
-    #[serde(skip)] Cell<Option<bool>>,
-);
-
-impl PartialEq for Str {
-    /// Compares only the string content — the cached fields are pure
-    /// optimisations and must not affect equality.
-    fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Str {
-    /// Creates a new Str from anything convertible into a `Box<str>`.
-    ///
-    /// Private — use [`allocate_string`] or [`allocate_string_no_interning`] instead.
-    #[must_use]
-    fn new(s: impl Into<Box<str>>) -> Self {
-        Self(s.into(), Cell::new(None), Cell::new(None))
-    }
-
-    /// Returns a reference to the inner string.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Whether every character is ASCII, scanning the text only on the first call.
-    pub fn is_ascii(&self) -> bool {
-        if let Some(ascii) = self.2.get() {
-            ascii
-        } else {
-            let ascii = self.0.is_ascii();
-            self.2.set(Some(ascii));
-            ascii
-        }
-    }
-
-    /// The length in Unicode code points, as Python's `len()` reports it.
-    pub fn char_len(&self) -> usize {
-        if self.is_ascii() {
-            self.0.len()
-        } else {
-            self.0.chars().count()
-        }
-    }
-
-    /// Creates a string from the `str()` constructor call.
-    ///
-    /// - `str()` with no args returns an empty string (even with `encoding=`)
-    /// - `str(x)` converts x to its string representation using `py_str`
-    /// - `str(b, encoding, errors)` decodes a bytes object via the codec registry
-    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let StrInitArgs {
-            object,
-            encoding,
-            errors,
-        } = StrInitArgs::from_args(args, vm)?;
-        defer_drop!(object, vm);
-        defer_drop!(encoding, vm);
-        defer_drop!(errors, vm);
-        if encoding.is_none() && errors.is_none() {
-            return match object {
-                None => Ok(Value::InternString(StringId::EMPTY)),
-                Some(v) => v.py_str(vm),
-            };
-        }
-        // Decoding mode. Type-check `encoding` then `errors` first — CPython's
-        // clinic converters run before the constructor body sees the object.
-        str_ctor_arg_check(encoding.as_ref(), "encoding", vm)?;
-        str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
-        let Some(object) = object else {
-            // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
-            return Ok(Value::InternString(StringId::EMPTY));
-        };
-        if object.is_str(vm.heap) {
-            return Err(ExcType::type_error_decoding_str_not_supported());
-        }
-        let bytes: &[u8] = match object {
-            Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
-            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                HeapData::Bytes(b) => b.as_slice(),
-                _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
-            },
-            _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
-        };
-        let encoding = ctor_str_arg(encoding.as_ref(), "utf-8", vm)?;
-        let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
-        let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
-        let s = codec.decode(bytes, errors)?;
-        Ok(allocate_string(s, vm.heap))
-    }
-}
-
 /// A string view that preserves Python identity.
 ///
 /// Heap reads keep the receiver available across calls such as `__index__` without
@@ -143,7 +47,7 @@ impl Str {
 pub(crate) enum PyStr<'h> {
     Interned(StringId),
     Inline(InlineStr),
-    Heap(HeapObjectRead<'h, Str>),
+    Heap(HeapObjectRead<'h, HeapStr>),
 }
 
 impl<'h> PyStr<'h> {
@@ -410,7 +314,7 @@ pub fn allocate_string_no_interning(s: impl AsRef<str> + Into<Box<str>>, heap: &
 
 /// Forces heap storage even for short strings.
 pub fn allocate_string_on_heap(s: impl Into<Box<str>>, heap: &Heap) -> Value {
-    Value::Ref(heap.allocate(HeapData::Str(Str::new(s.into()))))
+    Value::Ref(heap.allocate(HeapData::Str(HeapStr::new(s.into()))))
 }
 
 /// Preflights the repeated string allocation.
@@ -486,14 +390,6 @@ pub fn get_char_at_index(s: &str, ascii: bool, index: i64) -> Option<char> {
     }
 }
 
-impl ops::Deref for Str {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// Concatenation shared by logical string views and concrete heap dispatch.
 fn str_add(s: &str, other: &Value, vm: &VM<'_>) -> RunResult<Option<Value>> {
     match PyStr::from_value(other, vm) {
@@ -535,12 +431,6 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
         let index = key.as_index(vm, Type::Str)?;
         let c = s.character_at(index, vm).ok_or_else(ExcType::str_index_error)?;
         Ok(allocate_char(c))
-    }
-}
-
-impl HeapItem for Str {
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No-op: strings don't hold Value references
     }
 }
 
@@ -2019,135 +1909,6 @@ fn str_istitle(s: &str) -> bool {
     has_cased
 }
 
-/// Source representation retained by a string iterator.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-enum StringIteratorSource {
-    Intern(StringId),
-    Inline(InlineStr),
-    Heap(HeapId),
-}
-
-/// Iterator over Unicode code points with CPython's ASCII/non-ASCII type split.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StringIterator {
-    source: StringIteratorSource,
-    byte_offset: usize,
-    ascii: bool,
-}
-
-impl StringIterator {
-    /// Allocates an iterator over an interned string.
-    pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> Value {
-        let ascii = vm.interns.str_is_ascii(id);
-        Self::allocate(StringIteratorSource::Intern(id), ascii, vm)
-    }
-
-    /// Allocates an iterator over a string stored inside its `Value`.
-    pub(crate) fn from_inline(text: InlineStr, vm: &mut VM<'_>) -> Value {
-        Self::allocate(StringIteratorSource::Inline(text), text.as_bytes().is_ascii(), vm)
-    }
-
-    /// Allocates an iterator retaining a heap string.
-    fn from_heap(id: HeapId, ascii: bool, vm: &mut VM<'_>) -> Value {
-        Self::allocate(StringIteratorSource::Heap(id), ascii, vm)
-    }
-
-    /// Returns the Python-visible iterator type for this string representation.
-    pub(crate) fn py_type(&self) -> Type {
-        if self.ascii {
-            Type::StrAsciiIterator
-        } else {
-            Type::StrIterator
-        }
-    }
-
-    /// Returns the heap source when the iterator retains one.
-    pub(crate) fn source_id(&self) -> Option<HeapId> {
-        match self.source {
-            StringIteratorSource::Intern(_) => None,
-            StringIteratorSource::Inline(_) => None,
-            StringIteratorSource::Heap(id) => Some(id),
-        }
-    }
-
-    /// Returns the number of Unicode code points not yet yielded.
-    pub(crate) fn size_hint(&self, vm: &VM<'_>) -> usize {
-        self.as_str(vm).chars().count()
-    }
-
-    /// Borrows the unconsumed string suffix.
-    fn as_str<'a>(&'a self, vm: &'a VM<'_>) -> &'a str {
-        let string = match &self.source {
-            StringIteratorSource::Intern(id) => vm.interns.get_str(*id),
-            StringIteratorSource::Inline(text) => text.as_str(),
-            StringIteratorSource::Heap(id) => match vm.heap.get(*id) {
-                HeapData::Str(string) => string.as_str(),
-                _ => unreachable!("string iterator must retain a string"),
-            },
-        };
-        &string[self.byte_offset..]
-    }
-
-    /// Allocates an iterator and retains a heap source when present.
-    fn allocate(source: StringIteratorSource, ascii: bool, vm: &mut VM<'_>) -> Value {
-        let source_id = match source {
-            StringIteratorSource::Heap(id) => Some(id),
-            StringIteratorSource::Intern(_) => None,
-            StringIteratorSource::Inline(_) => None,
-        };
-        let id = vm.heap.allocate(HeapData::StringIterator(Self {
-            source,
-            byte_offset: 0,
-            ascii,
-        }));
-        if let Some(source_id) = source_id {
-            vm.heap.inc_ref(source_id);
-        }
-        Value::Ref(id)
-    }
-}
-
-impl HeapItem for StringIterator {
-    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        if let Some(id) = self.source_id() {
-            stack.push(id);
-        }
-    }
-}
-
-impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
-    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
-        true
-    }
-
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
-    }
-
-    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
-        None
-    }
-
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
-        Ok(None)
-    }
-
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        Ok(CallResult::Value(self.clone_value(vm.heap)))
-    }
-
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let next = self.get(vm.heap).as_str(vm).chars().next();
-        if let Some(character) = next {
-            let value = allocate_char(character);
-            self.get_mut(vm.heap).byte_offset += character.len_utf8();
-            Ok(Some(value))
-        } else {
-            Ok(None)
-        }
-    }
-}
-
 /// Helper for substring containment check in strings.
 ///
 /// Shared by logical string views and concrete heap dispatch.
@@ -2353,5 +2114,5 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/format_template.rs"]
+#[path = "../../../tests/unit/format_template.rs"]
 mod format_template_tests;
