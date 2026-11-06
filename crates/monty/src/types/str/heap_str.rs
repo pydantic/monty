@@ -85,3 +85,23 @@ impl HeapItem for HeapStr {
         // No-op: strings don't hold Value references
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equality_and_text_access_ignore_cached_hashes() {
+        let text = "aé🐍b";
+        let hashed = HeapStr::new(Box::<str>::from(text));
+        let unhashed = HeapStr::new(Box::<str>::from(text));
+        assert_eq!(hashed.hash(), hash_python_str(text));
+        assert_eq!(hashed, unhashed);
+        assert_ne!(hashed, HeapStr::new(Box::<str>::from("different")));
+
+        let borrowed: &str = &hashed;
+        assert_eq!(borrowed, text);
+        assert_eq!(hashed.char_len(), 4);
+        assert!(!hashed.is_ascii());
+    }
+}

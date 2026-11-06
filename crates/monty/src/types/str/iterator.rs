@@ -138,3 +138,67 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, StringIterator> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{PrintWriter, ResourceTracker};
+
+    use super::*;
+    use crate::{
+        defer_drop,
+        heap::{Heap, HeapReader},
+        identity::Identity,
+        intern::CompileInterns,
+        run::{Program, SessionTables},
+        types::str::allocate_string_on_heap,
+    };
+
+    #[test]
+    fn iterator_protocol_and_size_hints_across_storage_kinds() {
+        let texts = ["", "ascii", "aé🐍b"];
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        let ids: Vec<_> = {
+            let mut interns = CompileInterns::direct(&mut tables.interns);
+            texts.iter().map(|text| interns.intern(text)).collect()
+        };
+
+        HeapReader::with(&mut heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let vm = &mut VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            for (text, id) in texts.into_iter().zip(ids) {
+                let source = allocate_string_on_heap(text, vm.heap);
+                defer_drop!(source, vm);
+                let source_id = source.ref_id().unwrap();
+                let iterators = vec![
+                    StringIterator::from_intern(id, vm),
+                    StringIterator::from_inline(InlineStr::new(text).unwrap(), vm),
+                    StringIterator::from_heap(source_id, text.is_ascii(), vm),
+                ];
+                defer_drop!(iterators, vm);
+
+                for iterator in iterators {
+                    let mut read = vm.heap.read_as::<StringIterator>(iterator.ref_id().unwrap()).unwrap();
+                    assert!(read.py_is_iterable(vm));
+                    assert_eq!(read.py_len(vm), None);
+                    assert_eq!(read.py_eq_impl(&Value::None, vm).unwrap(), None);
+                    let same = read.py_iter(vm).unwrap().require_synchronous(vm).unwrap();
+                    defer_drop!(same, vm);
+                    assert!(Identity::new(same) == Identity::new(iterator));
+
+                    let mut remaining = text.chars().count();
+                    assert_eq!(read.get(vm.heap).size_hint(vm), remaining);
+                    for expected in text.chars() {
+                        let item = read.py_next(vm).unwrap().unwrap();
+                        defer_drop!(item, vm);
+                        assert_eq!(item.as_str(vm).unwrap(), expected.to_string());
+                        remaining -= 1;
+                        assert_eq!(read.get(vm.heap).size_hint(vm), remaining);
+                    }
+                    assert!(read.py_next(vm).unwrap().is_none());
+                    assert_eq!(read.get(vm.heap).size_hint(vm), 0);
+                }
+            }
+        });
+    }
+}
