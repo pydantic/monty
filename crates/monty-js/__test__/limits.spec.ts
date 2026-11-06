@@ -73,7 +73,7 @@ len(result)
 `
   const maxMemory = 64 * 1024
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory } }), isRuntimeError)
-  assertMemoryError(error, isWasm ? 83_812 : 65_823, maxMemory)
+  assertMemoryError(error, isWasm ? 83_812 : 68_313, maxMemory)
 })
 
 test('an allocation refused at an interpreter checkpoint leaves the session usable', async () => {

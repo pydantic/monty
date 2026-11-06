@@ -162,7 +162,7 @@ impl<'h> PyStr<'h> {
             return byte_offset;
         }
         let text = self.as_str(vm);
-        bytecount::num_chars(text[..byte_offset].as_bytes())
+        bytecount::num_chars(&text.as_bytes()[..byte_offset])
     }
 
     /// Borrows the text only for the duration of the heap borrow.
@@ -1989,6 +1989,8 @@ pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, inter
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use monty_types::PrintWriter;
 
     use super::*;
@@ -2102,11 +2104,7 @@ mod tests {
     fn heap_string_metadata_is_eager_and_rebuilt_from_text() {
         assert_eq!(
             size_of::<HeapStr>(),
-            size_of::<(
-                Box<str>,
-                std::cell::Cell<Option<HashValue>>,
-                std::cell::Cell<Option<bool>>
-            )>()
+            size_of::<(Box<str>, Cell<Option<HashValue>>, Cell<Option<bool>>)>()
         );
         for text in ["", "abcdefghijklmnop", "aé🐍e\u{301}", "éééééééééééééééé"] {
             let value = HeapStr::new(text.into());
