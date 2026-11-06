@@ -1936,9 +1936,10 @@ impl Checkout {
                             .request_timeout
                             .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
                     {
-                        return Err(
-                            self.protocol_violation("CPU execution clock requires a finite client request_timeout")
-                        );
+                        self.discard_worker();
+                        return Err(PoolError::Configuration(
+                            "CPU execution clock requires a finite client request_timeout".to_owned(),
+                        ));
                     }
                     self.budget.execution_clock = clock;
                 } else if clock != self.pool.config.execution_clock {
@@ -2455,17 +2456,19 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
 /// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
 /// (no pool capacity), `disconnected` (the new connection failed), `refused`
 /// (the relay rejected the load), `shutdown` (the new relay is shutting down
-/// too), `mismatch` (the reloaded state is not the one shut down) or `timeout`.
+/// too), `mismatch` (the reloaded state is not the one shut down), `configuration`
+/// (the new server is incompatible with the client settings) or `timeout`.
 #[cfg(feature = "telemetry")]
 fn resume_failure(err: &PoolError) -> &'static str {
     match err {
         PoolError::Exhausted => "exhausted",
-        PoolError::Disconnected { .. } | PoolError::Spawn(_) => "disconnected",
+        PoolError::Disconnected { .. } | PoolError::Spawn(_) | PoolError::Connect { .. } => "disconnected",
         PoolError::Refused { .. } | PoolError::Crashed { .. } | PoolError::Runtime(_) | PoolError::Typing(_) => {
             "refused"
         }
         PoolError::Shutdown { .. } => "shutdown",
         PoolError::Protocol(_) => "mismatch",
+        PoolError::Configuration(_) => "configuration",
         PoolError::Timeout { .. } => "timeout",
         PoolError::CpuLimit { .. } => "cpu_limit",
         PoolError::Finished => "error",
@@ -2565,3 +2568,7 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
 fn suspension_position(position: Option<impl Into<SourceRange>>) -> SourceRange {
     position.map_or_else(SourceRange::unknown, Into::into)
 }
+
+#[cfg(all(test, feature = "telemetry"))]
+#[path = "../tests/unit/checkout.rs"]
+mod tests;

@@ -10,7 +10,7 @@ test('a hard allocator limit traps the component and the pool recovers', async (
   const error = await t.throwsAsync(() => session.feedRun('# ' + 'a'.repeat(16 * 1024 * 1024)), {
     instanceOf: MontyCrashedError,
   })
-  t.is(error.message, 'RuntimeError: worker exited without a turn-ending event')
+  t.is(error.message, 'worker exited without a turn-ending event')
   await using next = await pool.checkout()
   t.is(await next.feedRun('3 + 3'), 6)
 })

@@ -226,16 +226,18 @@ This instrumentation is native-only; WASM still preserves caller context through
 import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } from '@pydantic/monty'
 ```
 
-| Class                  | Raised when                                                                           | Session survives |
-| ---------------------- | ------------------------------------------------------------------------------------- | ---------------- |
-| `MontySyntaxError`     | The snippet does not parse                                                            | yes              |
-| `MontyTypingError`     | Type checking rejected the snippet                                                    | yes              |
-| `MontyRuntimeError`    | The code raised at runtime                                                            | yes              |
-| `MontyCrashedError`    | The worker died, or the watchdog killed it                                            | no               |
-| `MontyDisconnectError` | A [remote worker's](#remote-workers) connection closed                                | no               |
-| `MontyRefusedError`    | A [remote worker's](#remote-workers) server refused to open the session's stream      | no               |
-| `MontyShutdown`        | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
-| `ProtocolError`        | The worker, or a caller misusing the session, violated the wire protocol              | no               |
+| Class                     | Raised when                                                                           | Session survives |
+| ------------------------- | ------------------------------------------------------------------------------------- | ---------------- |
+| `MontySyntaxError`        | The snippet does not parse                                                            | yes              |
+| `MontyTypingError`        | Type checking rejected the snippet                                                    | yes              |
+| `MontyRuntimeError`       | The code raised at runtime                                                            | yes              |
+| `MontyCrashedError`       | The worker died, or the watchdog killed it                                            | no               |
+| `MontyDisconnectError`    | A [remote worker's](#remote-workers) connection closed                                | no               |
+| `MontyRefusedError`       | A [remote worker's](#remote-workers) server refused to open the session's stream      | no               |
+| `MontyConnectError`       | A remote connection failed before a session opened                                    | no               |
+| `MontyConfigurationError` | The client settings are incompatible with the remote server                           | no               |
+| `MontyShutdown`           | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
+| `ProtocolError`           | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
 `MontyError` is the base class of everything above except `ProtocolError`, which extends `Error`.
 `err.exception` carries `{ typeName, message }`, and `err.display(format)` renders the error.
@@ -248,14 +250,23 @@ which ignores any argument:
 | `MontySyntaxError`                                                                              | `'msg'` (default), `'type-msg'`, `'traceback'` |
 | `MontyRuntimeError`                                                                             | `'traceback'` (default), `'type-msg'`, `'msg'` |
 | `MontyTypingError`                                                                              | takes no argument; returns the diagnostics     |
+| `MontyConnectError`, `MontyConfigurationError`                                                  | `'msg'` (default), `'type-msg'`                |
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
-`statusCode`, `statusMessage` and `cause`.
+`statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
+`retryAfter` is the server's suggested delay in seconds, or `null` if absent or invalid.
+`retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
 `checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
 rejecting the session's configuration.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
-that fails to spawn or a server that cannot be reached rejects with a plain `Error`, and a remote server that refuses
-the session's stream with `MontyRefusedError`, whose `statusCode`, `statusMessage` and `cause` say why.
+that fails to spawn rejects with a plain `Error`.
+A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
+`MontyConfigurationError` identifies settings incompatible with the server, such as no finite CPU-mode `requestTimeout`.
+Invalid gRPC header names or string values also raise `MontyConfigurationError`.
+If `metadata` returns a non-object, `null`, an array, or an object with non-string values, checkout raises `TypeError` instead.
+Host-side error messages do not have a `RuntimeError:` prefix.
+Remote policy reasons use `remoteCause`, leaving the standard `Error.cause` available for error chains.
+The deprecated `cause` constructor option is accepted as an alias for `remoteCause`.
 
 ## Limits and type checking
 
@@ -401,9 +412,13 @@ console.log(await session.feedRun('1 + 1')) // 2
 `requestTimeout` defaults to 10 seconds rather than no deadline; `null` disables it.
 `checkout()` also takes `ephemeral` and `profile`, which the server interprets.
 A server that refuses the stream rejects `checkout()` with `MontyRefusedError`; one that cannot be reached, with a
-plain `Error`.
+`MontyConnectError`.
+Use `MontyRefusedError.retryable` and `MontyRefusedError.retryAfter` to decide whether and when to try a new checkout.
+No automatic retry is performed for these errors.
 
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
+Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
+It does not establish whether the request ran, so do not replay a disconnected request automatically.
 Either can also reject `checkout()` itself, while the session is being created.
 Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
 stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
