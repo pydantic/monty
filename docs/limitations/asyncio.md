@@ -151,6 +151,8 @@ Whatever the host reports about the call is raised where the awaitable is awaite
 arguments the host function does not accept and a `NameError` for a name the host cannot resolve.
 CPython raises both at the call.
 An awaitable that is never awaited still runs on the host, where an un-awaited CPython coroutine never runs its body.
+The arguments cross to the host at the call, so mutating a mutable argument between the call and the `await` is
+invisible to the host function; a CPython coroutine would see the mutation.
 
 ### `gather` does not start its children until it is awaited
 
