@@ -98,11 +98,10 @@ impl PyObjectIdentity for Value {
     }
 }
 
-/// Common operations for Python values, with `'h` tying heap handles to their VM.
+/// Common Python operations, with `'h` tying heap handles to their VM.
 ///
-/// [`PyValue`](crate::py_value::PyValue) unifies storage representations
-/// for migrated protocols; other operations still dispatch through [`Value`].
-/// [`HeapReadOutput`] retains exhaustive forwarding for unmigrated heap protocols.
+/// [`PyValue`](crate::py_value::PyValue) normalizes representations for generic dispatch.
+/// [`Value`] retains fast paths, pairwise comparisons, and operation coordination.
 pub(crate) trait PyTrait<'h>: PyObjectIdentity {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
