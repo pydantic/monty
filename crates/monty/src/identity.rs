@@ -10,7 +10,7 @@ use crate::{
     builtins::Builtins,
     heap::{Heap, HeapId},
     modules::ModuleFunctions,
-    types::{LongInt, Property, inline_str::InlineStr},
+    types::{LongInt, Property, str::InlineStr},
     value::{Marker, Value},
 };
 

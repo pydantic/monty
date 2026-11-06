@@ -855,7 +855,11 @@ mod tests {
         intern::{BytesId, CompileInterns, LongIntId, StringId},
         modules::math::MathFunctions,
         run::Executor,
-        types::{Bytes, List, inline_str::InlineStr, property::ZeroArgOsProperty, str::allocate_string_on_heap},
+        types::{
+            Bytes, List,
+            property::ZeroArgOsProperty,
+            str::{InlineStr, allocate_string_on_heap},
+        },
     };
 
     struct TestIds {
