@@ -5,8 +5,8 @@
 # `stop` is the heap-allocated sentinel, so its count is observable: it ends at
 # 2, the global binding plus its slot in `data`. Were the exhausted iterator
 # still holding it, `stop` would be 3. `src` ends at 1 (its global binding
-# alone) and `data` at 2 (the global plus `src`'s slot). The lambda `f` is not
-# heap allocated, so it does not appear in the map.
+# alone) and `data` at 2 (the global plus `src`'s slot). The heap-allocated
+# lambda `f` ends at 1: only its global binding remains after exhaustion.
 stop = [9]
 data = [7, 8, stop]
 src = iter(data)
@@ -14,4 +14,4 @@ f = lambda: next(src)
 it = iter(f, stop)
 out = list(it)
 out
-# ref-counts={'stop': 2, 'data': 2, 'src': 1, 'it': 1, 'out': 2}
+# ref-counts={'stop': 2, 'data': 2, 'src': 1, 'it': 1, 'out': 2, 'f': 1}

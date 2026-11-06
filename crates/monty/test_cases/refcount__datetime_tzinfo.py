@@ -79,4 +79,4 @@ for _ in range(3):
     assert via_timetz_and_combine() == 12
     assert via_fromisoformat() == 12
     assert via_tzinfo_methods() == 12
-# ref-counts={'tz': 1}
+# ref-counts={'tz': 1, 'make_and_drop': 1, 'via_replace': 1, 'via_naive_temporary': 1, 'via_tzinfo_methods': 1, 'via_timetz_and_combine': 1, 'via_fromisoformat': 1, 'via_replace_errors': 1}
