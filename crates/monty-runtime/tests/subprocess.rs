@@ -1393,6 +1393,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
 
     // Bytearray growth and copied method results must fail softly before the hard ceiling.
     for code in [
+        "a = bytearray(16 * 1024 * 1024)\nb = bytearray()\nb += a",
+        "a = bytearray(16 * 1024 * 1024)\nb''.find(a)",
+        "a = bytearray(16 * 1024 * 1024)\nb''.split(a)",
+        "a = bytearray(16 * 1024 * 1024)\nb''.rsplit(a)",
+        "a = bytearray(16 * 1024 * 1024)\nb''.replace(a, b'x')",
+        "a = bytearray(16 * 1024 * 1024)\nb''.replace(b'x', a)",
         "a = bytearray(16 * 1024 * 1024)\nbytes(a)",
         "import json\na = bytearray(b' ') * (16 * 1024 * 1024)\na[0] = 49\njson.loads(a)",
         "a = bytearray(16 * 1024 * 1024)\na.translate(None)",
@@ -1434,14 +1440,20 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     child.shutdown();
 
     // A one-byte suffix must reserve the logical result, not double the eight-MiB prefix.
-    let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
-    assert_eq!(
-        child.feed_complete("padding = bytearray(7 * 1024 * 1024)\na = bytearray(8 * 1024 * 1024)\nlen(a + b'x')"),
-        MontyObject::int(8 * 1024 * 1024 + 1),
-    );
-    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
-    child.shutdown();
+    for code in [
+        "padding = bytearray(7 * 1024 * 1024)\na = bytearray(8 * 1024 * 1024)\nlen(a + b'x')",
+        "padding = bytearray(7 * 1024 * 1024)\na = bytearray(8 * 1024 * 1024)\na += b'x'\nlen(a)",
+    ] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+        assert_eq!(
+            child.feed_complete(code),
+            MontyObject::int(8 * 1024 * 1024 + 1),
+            "{code}"
+        );
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
+        child.shutdown();
+    }
 }
 
 /// `DictWriter.writerows()` on a file keeps one list per row until its single

@@ -973,6 +973,13 @@ fn extract_bytes_only<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a [u8]> 
     }
 }
 
+/// Snapshots a bytes-like argument while its owner remains live, budgeting the extra buffer first.
+fn copy_bytes_argument(value: &Value, vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    let bytes = extract_bytes_only(value, vm)?;
+    vm.heap.tracker.check_allocation(bytes.len())?;
+    Ok(bytes.to_vec())
+}
+
 /// Parses arguments for bytes.find/count/index methods.
 ///
 /// Returns the subsequence and the `(start, end)` range to search, or `None`
@@ -997,7 +1004,7 @@ fn parse_bytes_sub_args<'h>(
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => return Err(ExcType::type_error_at_most(method, 3, pos.len())),
     };
-    let sub = extract_bytes_only(sub_value, vm)?.to_owned();
+    let sub = copy_bytes_argument(sub_value, vm)?;
     Ok((sub, range))
 }
 
@@ -1459,7 +1466,7 @@ fn coerce_bytes_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunR
     let maxsplit_int = maxsplit.as_int(vm)?;
     let sep = match sep {
         Value::None => None,
-        _ => Some(extract_bytes_only(sep, vm)?.to_owned()),
+        _ => Some(copy_bytes_argument(sep, vm)?),
     };
     Ok((sep, maxsplit_int))
 }
@@ -1814,8 +1821,8 @@ fn parse_bytes_replace_args(_method: &str, args: ArgValues, vm: &mut VM<'_>) -> 
     defer_drop!(new, vm);
     defer_drop!(count, vm);
 
-    let old_b = extract_bytes_only(old, vm)?.to_owned();
-    let new_b = extract_bytes_only(new, vm)?.to_owned();
+    let old_b = copy_bytes_argument(old, vm)?;
+    let new_b = copy_bytes_argument(new, vm)?;
     let count_i = count.as_int(vm)?;
     Ok((old_b, new_b, count_i))
 }

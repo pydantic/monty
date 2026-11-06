@@ -307,13 +307,19 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ByteArray> {
         let Some(bytes) = other.as_buffer(vm) else {
             return Ok(false);
         };
-        // Release the source borrow before mutating the destination.
+        // Budget the temporary copy while the source is live; copying ends the borrow before mutation.
+        vm.heap.tracker.check_allocation(bytes.len())?;
         let bytes = bytes.to_vec();
         check_repeat_size(
             self.get(vm.heap).0.len().saturating_add(bytes.len()),
             1,
             &vm.heap.tracker,
         )?;
+        // Match the preflight instead of doubling capacity for a small extension.
+        self.get_mut(vm.heap)
+            .0
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| ExcType::allocation_too_large())?;
         self.get_mut(vm.heap).0.extend(bytes);
         Ok(true)
     }
