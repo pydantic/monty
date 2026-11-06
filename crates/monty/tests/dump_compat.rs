@@ -561,6 +561,121 @@ assert F.__delattr__ is deleter",
     .unwrap();
 }
 
+/// Type objects as the pre-refactor build stored them: dict and set keys hashed
+/// by type name, a generic alias, a chained exception, types held in class
+/// bodies and constants, and `id(int)`. Written once by the build before the
+/// native type table and never regenerated, so it checks those shims.
+const TYPES_FIXTURE_STATE: &str = r"
+import datetime
+import json
+from collections import Counter
+
+by_type = {int: 'int', datetime.date: 'date', Counter: 'counter', ValueError: 'value', json.JSONDecodeError: 'json'}
+type_set = {int, datetime.date, Counter, ValueError, json.JSONDecodeError}
+alias = list[int]
+
+try:
+    try:
+        raise KeyError('inner')
+    except KeyError as inner:
+        raise ValueError('outer') from inner
+except ValueError as exc:
+    chained = exc
+
+
+class Holder:
+    kind = int
+    err = ValueError
+
+
+Dynamic = type('Dynamic', (), {'x': 1})
+int_id = id(int)
+type_tuple = (int, str, ValueError, KeyError)
+
+
+def suspended(n):
+    got = host_call(n)
+    t = type(got)
+    if t is int:
+        raise ValueError(f'got {got}')
+    return t
+";
+
+/// The call the types fixture is suspended on.
+const TYPES_FIXTURE_CALL: &str = "suspended(1)";
+
+/// Fed after restoring the types fixture and resuming it into its `ValueError`.
+const TYPES_FIXTURE_CHECK: &str = r"
+assert by_type[int] == 'int' and by_type[datetime.date] == 'date' and by_type[Counter] == 'counter'
+assert by_type[ValueError] == 'value' and by_type[json.JSONDecodeError] == 'json'
+assert int in type_set and ValueError in type_set and json.JSONDecodeError in type_set
+assert datetime.date in type_set and Counter in type_set and str not in type_set
+assert alias == list[int] and repr(alias) == 'list[int]'
+assert isinstance(chained, ValueError) and isinstance(chained, Exception)
+assert repr(chained) == 'ValueError(\'outer\')'
+assert isinstance(chained.__cause__, KeyError) and isinstance(chained.__cause__, LookupError)
+assert Holder.kind is int and Holder.err is ValueError and Holder.kind(3) == 3
+assert repr(Holder.err) == '<class \'ValueError\'>' and repr(Holder.kind) == '<class \'int\'>'
+assert Dynamic.x == 1 and Dynamic().x == 1 and Dynamic.__name__ == 'Dynamic'
+assert int_id == id(int)
+assert type_tuple == (int, str, ValueError, KeyError)
+try:
+    raise json.JSONDecodeError
+except ValueError:
+    pass
+caught = []
+for t in type_tuple[2:]:
+    try:
+        raise t('x')
+    except LookupError:
+        caught.append('lookup')
+    except Exception:
+        caught.append('exception')
+assert caught == ['exception', 'lookup']
+'done'
+";
+
+/// The pre-refactor types fixture loads, resumes into the `ValueError` its
+/// function raises, and every type-keyed value behaves as before.
+#[test]
+fn types_fixture_loads_and_resumes() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/types_v15.bin");
+    if !path.exists() && env::var_os(UPDATE_FIXTURE).is_some() {
+        let mut repl = MontyRepl::new("types.py", ResourceTracker::default(), CompileOptions::default());
+        repl.feed_run(TYPES_FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
+        let mut progress = repl
+            .feed_start(TYPES_FIXTURE_CALL, vec![], PrintWriter::Stdout)
+            .unwrap();
+        while let ReplProgress::NameLookup(lookup) = progress {
+            let host = MontyObject::function(lookup.name.clone(), None);
+            progress = lookup
+                .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
+                .unwrap();
+        }
+        let ReplProgress::FunctionCall(call) = &progress else {
+            panic!("the types fixture must suspend on host_call, got {progress:?}");
+        };
+        assert_eq!(call.function_name, "host_call");
+        let bytes = dump("types.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
+        fs::write(&path, bytes).unwrap();
+        eprintln!("wrote {}", path.display());
+    }
+    let bytes = fs::read(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let loaded = Dump::load(&bytes).expect("the pre-refactor types fixture loads");
+    let Session::Suspended(progress) = loaded.state else {
+        panic!("the types fixture was dumped suspended on a host call");
+    };
+    let call = progress.into_function_call().expect("suspended on host_call");
+    assert_eq!(call.function_name, "host_call");
+    let err = call
+        .resume(MontyObject::int(7), PrintWriter::Stdout)
+        .expect_err("the suspended function raises after calling type()");
+    assert_snapshot!(err.error.summary(), @"ValueError: got 7");
+    let mut repl = err.repl;
+    let checked = repl.feed_run(TYPES_FIXTURE_CHECK, vec![], PrintWriter::Stdout).unwrap();
+    assert_eq!(checked, MontyObject::string("done"));
+}
+
 /// Dict and set entries persist their hash, so the hash of every kind of key
 /// without a heap identity is part of the dump contract: a change here needs a
 /// `DUMP_VERSION` bump.
