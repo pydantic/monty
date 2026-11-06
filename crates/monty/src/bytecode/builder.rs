@@ -463,14 +463,17 @@ impl CodeBuilder {
     /// unreachable, but `LocationEntry`'s offset is `u32` so we surface the
     /// limit cleanly rather than panic.
     fn record_location(&mut self) -> Result<(), CompileError> {
+        let Some(range) = self.current_location else {
+            return Ok(());
+        };
+        // checked for every located instruction, including one that repeats the last location
+        let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
         // an entry covers every instruction up to the next one, so repeating the last location adds nothing
-        if let Some(range) = self.current_location
-            && !self
-                .location_table
-                .last()
-                .is_some_and(|last| last.has_location(range, self.current_focus))
+        if !self
+            .location_table
+            .last()
+            .is_some_and(|last| last.has_location(range, self.current_focus))
         {
-            let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
             self.location_table
                 .push(LocationEntry::new(offset, range, self.current_focus));
         }
