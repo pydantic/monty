@@ -193,7 +193,7 @@ impl<'h> PyStr<'h> {
     /// For `"aé🐍b"`, character range `1..3` becomes byte range `1..7`, covering `"é🐍"`.
     /// ASCII indices are already byte offsets; Unicode conversion scans character boundaries.
     /// Indices past the character count clamp to the byte length; `usize::MAX` denotes an omitted end.
-    fn byte_offset_at(&self, char_index: usize, vm: &VM<'h>) -> usize {
+    fn byte_offset_of(&self, char_index: usize, vm: &VM<'h>) -> usize {
         let text = self.as_str(vm);
         if char_index == 0 {
             return 0;
@@ -211,7 +211,7 @@ impl<'h> PyStr<'h> {
     /// Rust's search for `"🐍"` in `"aé🐍b"` returns byte offset 3; Python must return character index 2.
     /// ASCII offsets are already character indices; Unicode conversion counts the preceding characters.
     /// The offset must be in bounds and on a UTF-8 boundary, as returned by a successful string search.
-    fn char_index_at(&self, byte_offset: usize, vm: &VM<'h>) -> usize {
+    fn char_index_of(&self, byte_offset: usize, vm: &VM<'h>) -> usize {
         if byte_offset == 0 {
             return 0;
         }
@@ -518,8 +518,8 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
-            let start = s.byte_offset_at(start, vm);
-            let stop = s.byte_offset_at(stop, vm);
+            let start = s.byte_offset_of(start, vm);
+            let stop = s.byte_offset_of(stop, vm);
             let result = &text[start..stop];
             // Contiguous slices copy UTF-8 directly, without collecting characters.
             return Ok(allocate_string(result, vm.heap));
@@ -921,12 +921,12 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
         return Ok(Value::Int(-1));
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset_at(start, vm);
-    let end_byte = s.byte_offset_at(end, vm);
+    let start_byte = s.byte_offset_of(start, vm);
+    let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
     let result = match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = s.char_index_at(start_byte + pos, vm);
+            let char_pos = s.char_index_of(start_byte + pos, vm);
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -945,12 +945,12 @@ fn str_rfind<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         return Ok(Value::Int(-1));
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset_at(start, vm);
-    let end_byte = s.byte_offset_at(end, vm);
+    let start_byte = s.byte_offset_of(start, vm);
+    let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
     let result = match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = s.char_index_at(start_byte + pos, vm);
+            let char_pos = s.char_index_of(start_byte + pos, vm);
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -968,12 +968,12 @@ fn str_index<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         return Err(ExcType::value_error_substring_not_found());
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset_at(start, vm);
-    let end_byte = s.byte_offset_at(end, vm);
+    let start_byte = s.byte_offset_of(start, vm);
+    let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
     match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = s.char_index_at(start_byte + pos, vm);
+            let char_pos = s.char_index_of(start_byte + pos, vm);
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -991,12 +991,12 @@ fn str_rindex<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
         return Err(ExcType::value_error_substring_not_found());
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset_at(start, vm);
-    let end_byte = s.byte_offset_at(end, vm);
+    let start_byte = s.byte_offset_of(start, vm);
+    let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
     match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = s.char_index_at(start_byte + pos, vm);
+            let char_pos = s.char_index_of(start_byte + pos, vm);
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -1015,8 +1015,8 @@ fn str_count<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         return Ok(Value::Int(0));
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset_at(start, vm);
-    let end_byte = s.byte_offset_at(end, vm);
+    let start_byte = s.byte_offset_of(start, vm);
+    let end_byte = s.byte_offset_of(end, vm);
     let slice = &text[start_byte..end_byte];
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
@@ -1073,8 +1073,8 @@ fn str_starts_ends_with<'h>(
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
     let text = s.as_str(vm);
-    let start = s.byte_offset_at(start, vm);
-    let end = s.byte_offset_at(end, vm);
+    let start = s.byte_offset_of(start, vm);
+    let end = s.byte_offset_of(end, vm);
     Ok(Value::Bool(affix_matches(
         affix,
         &text[start..end],
