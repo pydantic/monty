@@ -520,7 +520,10 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
-        """Overwrite a byte range in an existing file, preserving bytes outside the range."""
+        """Overwrite bytes in an existing file; required for `wb` and `w+b` writes.
+
+        Preserve bytes outside the range and return the number of bytes written.
+        """
         raise NotImplementedError
 
     @abstractmethod

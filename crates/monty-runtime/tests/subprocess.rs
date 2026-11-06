@@ -3149,9 +3149,19 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     );
 }
 
-/// The oldest served version still works: the point of a bump is to refuse a
-/// peer that would silently drop a field, not to close the migration window on
-/// parents that never send one.
+#[test]
+fn legacy_binary_write_protocol_is_refused_before_execution() {
+    let mut child = ChildProc::spawn();
+    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+        7,
+        env!("CARGO_PKG_VERSION"),
+    )));
+    let message = expect_fatal_exit(child);
+    assert!(message.contains("unsupported protocol version 7"), "{message}");
+    assert!(message.contains("try updating to a newer client version"), "{message}");
+}
+
+/// The lower bound is included in the range accepted at configuration.
 #[test]
 fn oldest_supported_protocol_version_is_accepted() {
     let mut child = ChildProc::spawn();
@@ -3161,7 +3171,7 @@ fn oldest_supported_protocol_version_is_accepted() {
     )));
     assert!(
         matches!(child.recv(), pb::child_event::Kind::Ok(_)),
-        "a parent one version behind must still be served"
+        "the oldest supported protocol version must be served"
     );
     child.shutdown();
 }

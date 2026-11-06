@@ -39,7 +39,8 @@ pub mod worker;
 /// `import_stubs` OS calls, which version 5 parents cannot answer. Version 7
 /// moved the remote transport from one WebSocket per session to one gRPC
 /// stream per session, with `Ping`/`Pong` liveness and status-ended streams.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// Version 8 requires `WriteBytesAt` for binary writes, including existing `wb` code.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Oldest [`PROTOCOL_VERSION`] this build still serves.
 ///
@@ -51,7 +52,8 @@ pub const PROTOCOL_VERSION: u32 = 7;
 /// Version 6 and below are not served: their remote transport was a WebSocket
 /// per session, which no version 7 server speaks, and a version 6 parent would
 /// neither answer `Ping` nor read the status a dropped stream ends with.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 7;
+/// Version 7 parents cannot answer positional binary writes and are refused before execution.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 8;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

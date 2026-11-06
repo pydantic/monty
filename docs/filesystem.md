@@ -445,6 +445,13 @@ A write past it raises `OSError` in the sandbox, and `None` removes the cap; see
 That is the point of it, but it means an `OSAccess` containing a `CallbackFile` is exactly as sandboxed as the callback
 you wrote.
 
+Binary writes in `wb` and `w+b` mode call
+[`AbstractOS.path_write_bytes_at(path, offset, data)`][pydantic_monty.AbstractOS.path_write_bytes_at].
+Custom filesystem handlers must implement this method to support those modes.
+It overwrites an existing file at the byte offset, preserves surrounding content, and returns the number of bytes written.
+An implementation that only handles append requests cannot service these writes.
+`OSAccess` implements the method for its registered files.
+
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every
 abstract method of `AbstractOS` yourself; the optional hooks (`path_open`, the append methods, `date_today`,
 `datetime_now`, `time`, `sleep`, `async_sleep`) report [`NOT_HANDLED`][pydantic_monty.NOT_HANDLED] to Monty if you make

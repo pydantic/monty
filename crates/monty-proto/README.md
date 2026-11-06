@@ -68,6 +68,16 @@ Repeated fields and byte buffers in protocol messages use `BudgetVec<T>`.
 Construct them from standard vectors with `.into()` or collect an iterator directly; use `.into_inner()` to recover a standard vector without copying.
 Host construction and cloning are unbudgeted; fallible `try_push` charges any growth to the active decode budget.
 
+## Positional writes and protocol compatibility
+
+Protocol 8 requires `OsCall.write_bytes_at` for non-append binary writes, including ordinary `wb` files.
+Parents declaring protocol 7 are rejected during configuration, before any sandbox code executes.
+Raising the minimum supported version requires a major package release.
+Upgrade relays and filesystem handlers before workers; the client/worker version check does not negotiate
+capabilities with an intermediary relay.
+Custom handlers must implement the positional operation rather than substituting append or truncating writes.
+The built-in mounts and Python `OSAccess` implement it.
+
 ## Values are special-cased for performance
 
 Values cross as one flat `monty.v1.Arena` per message: a post-order node arena in which containers hold child indexes.
