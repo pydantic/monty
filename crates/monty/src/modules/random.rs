@@ -105,15 +105,6 @@ const RANDOM_FUNCTIONS: &[(StaticStrings, RandomFunctions)] = &[
     (StaticStrings::Binomialvariate, RandomFunctions::Binomialvariate),
 ];
 
-impl RandomFunctions {
-    /// The function a `random.Random` attribute name refers to, if any.
-    pub(crate) fn from_static_string(name: StaticStrings) -> Option<Self> {
-        RANDOM_FUNCTIONS
-            .iter()
-            .find_map(|(attr, function)| (*attr == name).then_some(*function))
-    }
-}
-
 /// Creates the `random` module on the heap.
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Random, vm.interns);
@@ -1643,5 +1634,22 @@ fn to_float(value: &Value, vm: &VM<'_>) -> RunResult<f64> {
                 value.py_type_name(vm)
             ))),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::RANDOM_FUNCTIONS;
+    use crate::{py_attrs::PyAttrs, types::random::PyRandomImpl};
+
+    #[test]
+    fn module_and_instance_method_names_match() {
+        let module_names: HashSet<_> = RANDOM_FUNCTIONS.iter().map(|(name, _)| *name).collect();
+        let methods = <PyRandomImpl as PyAttrs<'static>>::ATTRS;
+        let method_names: HashSet<_> = methods.iter().map(|(name, _)| *name).collect();
+        assert_eq!(RANDOM_FUNCTIONS.len(), methods.len());
+        assert_eq!(module_names, method_names);
     }
 }

@@ -11,6 +11,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use monty_macros::pyattrs;
 use monty_types::MontyPath;
 use smallvec::SmallVec;
 
@@ -23,7 +24,9 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
+    os_dispatch::{build_path_os_call, value_as_path_str},
+    py_attrs::PyAttrs,
+    py_class::PyClass,
     types::{
         LazyHeapSet, List, PyTrait, Type, allocate_tuple,
         dir_scan::{glob_call, walk_call},
@@ -583,118 +586,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         Ok(write!(f, "PosixPath('{}')", self.get(vm.heap).path)?)
     }
 
-    /// Handles attribute calls on Path objects, including both pure methods (no I/O)
-    /// and OS methods that require host system access.
-    ///
-    /// OS methods yield calls to the host; `iterdir` retains the receiver's spelling
-    /// so the resume path can restore it on each returned entry.
-    /// Pure methods (is_absolute, joinpath, etc.) are handled directly.
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
-        };
-
-        if is_path_os_method(method) {
-            let path = MontyPath::new(self.get(vm.heap).as_str().to_owned());
-            return build_path_os_call(method, path, args, vm);
-        }
-
-        // Pure methods (no I/O)
-        let value = match method {
-            StaticStrings::Cwd => class_cwd(vm, args),
-            StaticStrings::Glob => {
-                let PathGlobArgs {
-                    pattern,
-                    case_sensitive,
-                    recurse_symlinks,
-                } = PathGlobArgs::from_args(args, vm)?;
-                let base = self.get(vm.heap).as_str().to_owned();
-                return path_glob(&base, pattern, false, case_sensitive, recurse_symlinks, vm);
-            }
-            StaticStrings::Rglob => {
-                let PathRglobArgs {
-                    pattern,
-                    case_sensitive,
-                    recurse_symlinks,
-                } = PathRglobArgs::from_args(args, vm)?;
-                let base = self.get(vm.heap).as_str().to_owned();
-                return path_glob(&base, pattern, true, case_sensitive, recurse_symlinks, vm);
-            }
-            StaticStrings::Walk => {
-                let PathWalkArgs {
-                    top_down,
-                    on_error,
-                    follow_symlinks,
-                } = PathWalkArgs::from_args(args, vm)?;
-                let top = self.get(vm.heap).as_str().to_owned();
-                return walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm);
-            }
-            StaticStrings::IsAbsolute => {
-                args.check_zero_args("is_absolute", vm.heap)?;
-                Ok(Value::Bool(self.get(vm.heap).is_absolute()))
-            }
-            StaticStrings::Joinpath => {
-                let pos_args = args.into_pos_only("joinpath", vm.heap)?;
-                defer_drop!(pos_args, vm);
-                let path = fold_joinpath(self.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
-            }
-            StaticStrings::WithName => {
-                let name_val = args.get_one_arg("with_name", vm.heap)?;
-                defer_drop!(name_val, vm);
-                let name = extract_path_string(name_val, vm)?.to_owned();
-                let result = self
-                    .get(vm.heap)
-                    .with_name(&name)
-                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
-            }
-            StaticStrings::WithStem => {
-                let stem_val = args.get_one_arg("with_stem", vm.heap)?;
-                defer_drop!(stem_val, vm);
-                let stem = extract_path_string(stem_val, vm)?.to_owned();
-                let result = self
-                    .get(vm.heap)
-                    .with_stem(&stem)
-                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
-            }
-            StaticStrings::WithSuffix => {
-                let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
-                defer_drop!(suffix_val, vm);
-                let suffix = extract_path_string(suffix_val, vm)?.to_owned();
-                let result = self
-                    .get(vm.heap)
-                    .with_suffix(&suffix)
-                    .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
-            }
-            StaticStrings::AsPosix | StaticStrings::Fspath => {
-                args.check_zero_args(method.into(), vm.heap)?;
-                Ok(allocate_string(self.get(vm.heap).as_posix(), vm.heap))
-            }
-            StaticStrings::Open => {
-                // `Path.open(mode='r', ...)` is `open(self, mode, ...)` with
-                // `self` prepended as the implicit `file` argument. Reuses
-                // `builtin_open`'s mode/kwarg validation (including rejection
-                // of `+`/`x` modes and non-default `buffering`/`encoding`/
-                // `errors`/`newline`) so the two entry points stay in sync.
-                //
-                // The `inc_ref` is required because the prepended `Value::Ref`
-                // is dropped by `builtin_open` via `defer_drop!` once the path
-                // string has been extracted, balancing the refcount.
-                let args = args.prepend(self.clone_value(vm.heap));
-                return builtin_open(vm, args);
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
-            }
-        };
-        value.map(CallResult::Value)
-    }
-
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string(vm.interns) {
@@ -725,5 +616,276 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
 impl HeapItem for Path {
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Path doesn't contain heap references, nothing to do
+    }
+}
+
+pub(crate) struct PyPathImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyPathImpl {
+    type Receiver = HeapObjectRead<'heap, Path>;
+
+    #[pymethod]
+    fn glob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        {
+            let PathGlobArgs {
+                pattern,
+                case_sensitive,
+                recurse_symlinks,
+            } = PathGlobArgs::from_args(args, vm)?;
+            let base = this.get(vm.heap).as_str().to_owned();
+            path_glob(&base, pattern, false, case_sensitive, recurse_symlinks, vm)
+        }
+    }
+
+    #[pymethod]
+    fn rglob<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        {
+            let PathRglobArgs {
+                pattern,
+                case_sensitive,
+                recurse_symlinks,
+            } = PathRglobArgs::from_args(args, vm)?;
+            let base = this.get(vm.heap).as_str().to_owned();
+            path_glob(&base, pattern, true, case_sensitive, recurse_symlinks, vm)
+        }
+    }
+
+    #[pymethod]
+    fn walk<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        {
+            let PathWalkArgs {
+                top_down,
+                on_error,
+                follow_symlinks,
+            } = PathWalkArgs::from_args(args, vm)?;
+            let top = this.get(vm.heap).as_str().to_owned();
+            walk_call(top, true, top_down.bool(), on_error, follow_symlinks.bool(), vm)
+        }
+    }
+
+    #[pymethod]
+    fn is_absolute<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        ({
+            args.check_zero_args("is_absolute", vm.heap)?;
+            Ok(Value::Bool(this.get(vm.heap).is_absolute()))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn joinpath<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        ({
+            let pos_args = args.into_pos_only("joinpath", vm.heap)?;
+            defer_drop!(pos_args, vm);
+            let path = fold_joinpath(this.get(vm.heap).clone(), pos_args.as_slice(), vm)?;
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn with_name<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        ({
+            let name_val = args.get_one_arg("with_name", vm.heap)?;
+            defer_drop!(name_val, vm);
+            let name = extract_path_string(name_val, vm)?.to_owned();
+            let result = this
+                .get(vm.heap)
+                .with_name(&name)
+                .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn with_stem<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        ({
+            let stem_val = args.get_one_arg("with_stem", vm.heap)?;
+            defer_drop!(stem_val, vm);
+            let stem = extract_path_string(stem_val, vm)?.to_owned();
+            let result = this
+                .get(vm.heap)
+                .with_stem(&stem)
+                .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn with_suffix<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        ({
+            let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
+            defer_drop!(suffix_val, vm);
+            let suffix = extract_path_string(suffix_val, vm)?.to_owned();
+            let result = this
+                .get(vm.heap)
+                .with_suffix(&suffix)
+                .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
+            Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn as_posix<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let method = StaticStrings::AsPosix;
+        ({
+            args.check_zero_args(method.into(), vm.heap)?;
+            Ok(allocate_string(this.get(vm.heap).as_posix(), vm.heap))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn fspath<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let method = StaticStrings::Fspath;
+        ({
+            args.check_zero_args(method.into(), vm.heap)?;
+            Ok(allocate_string(this.get(vm.heap).as_posix(), vm.heap))
+        })
+        .map(CallResult::Value)
+    }
+
+    #[pymethod]
+    fn open<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        {
+            // `Path.open(mode='r', ...)` is `open(self, mode, ...)` with
+            // `self` prepended as the implicit `file` argument. Reuses
+            // `builtin_open`'s mode/kwarg validation (including rejection
+            // of `+`/`x` modes and non-default `buffering`/`encoding`/
+            // `errors`/`newline`) so the two entry points stay in sync.
+            //
+            // The `inc_ref` is required because the prepended `Value::Ref`
+            // is dropped by `builtin_open` via `defer_drop!` once the path
+            // string has been extracted, balancing the refcount.
+            let args = args.prepend(this.clone_value(vm.heap));
+            builtin_open(vm, args)
+        }
+    }
+
+    #[pymethod]
+    fn exists<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Exists, path, args, vm)
+    }
+
+    #[pymethod]
+    fn is_file<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::IsFile, path, args, vm)
+    }
+
+    #[pymethod]
+    fn is_dir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::IsDir, path, args, vm)
+    }
+
+    #[pymethod]
+    fn is_symlink<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::IsSymlink, path, args, vm)
+    }
+
+    #[pymethod]
+    fn read_text<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::ReadText, path, args, vm)
+    }
+
+    #[pymethod]
+    fn read_bytes<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::ReadBytes, path, args, vm)
+    }
+
+    #[pymethod]
+    fn stat_method<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::StatMethod, path, args, vm)
+    }
+
+    #[pymethod]
+    fn iterdir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Iterdir, path, args, vm)
+    }
+
+    #[pymethod]
+    fn resolve<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Resolve, path, args, vm)
+    }
+
+    #[pymethod]
+    fn absolute<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Absolute, path, args, vm)
+    }
+
+    #[pymethod]
+    fn unlink<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Unlink, path, args, vm)
+    }
+
+    #[pymethod]
+    fn rmdir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Rmdir, path, args, vm)
+    }
+
+    #[pymethod]
+    fn write_text<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::WriteText, path, args, vm)
+    }
+
+    #[pymethod]
+    fn append_text<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::AppendText, path, args, vm)
+    }
+
+    #[pymethod]
+    fn write_bytes<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::WriteBytes, path, args, vm)
+    }
+
+    #[pymethod]
+    fn append_bytes<'h>(
+        this: &mut HeapObjectRead<'h, Path>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::AppendBytes, path, args, vm)
+    }
+
+    #[pymethod]
+    fn mkdir<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Mkdir, path, args, vm)
+    }
+
+    #[pymethod]
+    fn rename<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Rename, path, args, vm)
+    }
+
+    #[pymethod]
+    fn replace<'h>(this: &mut HeapObjectRead<'h, Path>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let path = MontyPath::new(this.get(vm.heap).as_str().to_owned());
+        build_path_os_call(StaticStrings::Replace, path, args, vm)
+    }
+
+    #[pyclassmethod]
+    fn cwd(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_cwd(vm, args).map(CallResult::Value)
     }
 }

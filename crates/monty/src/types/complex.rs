@@ -9,6 +9,7 @@
 
 use std::fmt::Write;
 
+use monty_macros::pyattrs;
 use monty_types::FormatComplex;
 
 use crate::{
@@ -19,6 +20,8 @@ use crate::{
     hash::{HashValue, hash_f64},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
+    py_class::PyClass,
     py_value::PyValue,
     types::{
         LazyHeapSet, PyTrait, Type,
@@ -737,15 +740,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
         Ok(Some(widen(base).pow(c)?.into_value(vm.heap)))
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Conjugate) {
-            let c = *self.get(vm.heap);
-            args.check_zero_args("complex.conjugate", vm.heap)?;
-            return Ok(CallResult::Value(c.conjugate().into_value(vm.heap)));
-        }
-        Err(ExcType::attribute_error_method(Type::Complex, attr, args, vm))
-    }
-
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let c = *self.get(vm.heap);
         Ok(match attr.static_string(vm.interns) {
@@ -763,5 +757,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Complex> {
             Some(StaticStrings::Real | StaticStrings::Imag) => ExcType::attribute_error_readonly(),
             _ => ExcType::attribute_error_no_setattr(&self.py_type_name(vm), name.as_str(vm.interns)),
         })
+    }
+}
+
+pub(crate) struct PyComplexImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyComplexImpl {
+    type Receiver = HeapObjectRead<'heap, Complex>;
+
+    #[pymethod]
+    fn conjugate<'h>(value: &mut HeapObjectRead<'h, Complex>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let c = *value.get(vm.heap);
+        args.check_zero_args("complex.conjugate", vm.heap)?;
+        Ok(c.conjugate().into_value(vm.heap))
+    }
+
+    #[pyclassmethod]
+    fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_from_number(vm, args).map(CallResult::Value)
     }
 }

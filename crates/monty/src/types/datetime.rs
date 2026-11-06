@@ -13,6 +13,7 @@ use chrono::{
     Datelike, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike,
     format::{Parsed, StrftimeItems, parse as chrono_parse, parse_and_remainder},
 };
+use monty_macros::pyattrs;
 use monty_types::{
     DateTimeSource, MontyDateTime, MontyTimeZone, OsFunctionCall, ResourceTracker, SandboxTimeZone, local_wall_clock,
 };
@@ -25,6 +26,8 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    py_attrs::PyAttrs,
+    py_class::PyClass,
     py_value::PyValue,
     types::{
         CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
@@ -1482,100 +1485,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
         }
     }
 
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let dt = self.get(vm.heap).clone();
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isoformat) => {
-                let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
-                defer_drop!(sep, vm);
-                defer_drop!(timespec, vm);
-                let separator = isoformat_separator(sep.as_ref(), vm)?;
-                let spec = match timespec {
-                    Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
-                    None => TimeSpec::Auto,
-                };
-                let s = format_isoformat(&dt, separator, spec);
-                Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
-            }
-            Some(StaticStrings::Strftime) => {
-                let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                defer_drop!(format, vm);
-                let formatted = format_datetime_strftime(&dt, format.as_str(vm), &vm.heap.tracker)?;
-                Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
-            }
-            Some(StaticStrings::Replace) => Ok(CallResult::Value(self.replace(vm, args)?)),
-            Some(StaticStrings::Weekday) => {
-                args.check_zero_args("datetime.weekday", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(
-                    dt.naive.date().weekday().num_days_from_monday(),
-                ))))
-            }
-            Some(StaticStrings::Isoweekday) => {
-                args.check_zero_args("datetime.isoweekday", vm.heap)?;
-                Ok(CallResult::Value(Value::Int(i64::from(
-                    dt.naive.date().weekday().number_from_monday(),
-                ))))
-            }
-            Some(StaticStrings::Date) => {
-                args.check_zero_args("datetime.date", vm.heap)?;
-                let d = date::from_ymd(
-                    dt.naive.date().year(),
-                    i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
-                    i32::try_from(dt.naive.date().day()).expect("day in 1..31"),
-                )?;
-                Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
-            }
-            Some(method @ (StaticStrings::Time | StaticStrings::Timetz)) => {
-                // `time()` drops the timezone, `timetz()` keeps it — the only
-                // difference between the two in CPython.
-                let keep_tz = method == StaticStrings::Timetz;
-                args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
-                // Owned, so it must be released whether or not the time attaches it.
-                let tzinfo = if keep_tz { self.tzinfo_value(vm) } else { Value::None };
-                defer_drop!(tzinfo, vm);
-                let naive = dt.naive.time();
-                let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
-                    .expect("microsecond is always in 0..=999_999");
-                Ok(CallResult::Value(time::allocate(
-                    vm,
-                    i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
-                    i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
-                    i32::try_from(naive.second()).expect("second is always in 0..=59"),
-                    micros,
-                    // `DateTime` does not store `fold`, so the time is always unfolded.
-                    0,
-                    tzinfo,
-                )?))
-            }
-            Some(StaticStrings::Timestamp) => {
-                args.check_zero_args("datetime.timestamp", vm.heap)?;
-                let ts = compute_timestamp(&dt, &vm.env.os_policy.timezone)?;
-                Ok(CallResult::Value(Value::Float(ts)))
-            }
-            Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
-            // A classmethod, so CPython also reaches it through an instance.
-            Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
-            Some(StaticStrings::Utcoffset) => {
-                args.check_zero_args("datetime.utcoffset", vm.heap)?;
-                Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
-            }
-            Some(StaticStrings::Tzname) => {
-                args.check_zero_args("datetime.tzname", vm.heap)?;
-                let Some(offset_seconds) = dt.offset_seconds else {
-                    return Ok(CallResult::Value(Value::None));
-                };
-                let name = timezone::tzname_string(offset_seconds, dt.timezone_name.as_deref());
-                Ok(CallResult::Value(allocate_string(name, vm.heap)))
-            }
-            Some(StaticStrings::Dst) => {
-                args.check_zero_args("datetime.dst", vm.heap)?;
-                // Only fixed-offset zones exist, and none of them observes DST.
-                Ok(CallResult::Value(Value::None))
-            }
-            _ => Err(ExcType::attribute_error_method(Type::DateTime, attr, args, vm)),
-        }
-    }
-
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Read only the field being asked for: cloning the whole `DateTime` would
         // copy the timezone name's `String` on every `dt.year`.
@@ -1700,4 +1609,232 @@ struct DatetimeReplaceArgs {
     microsecond: Option<i32>,
     #[from_args(kw_only, default)]
     tzinfo: Option<Value>,
+}
+
+pub(crate) struct PyDateTimeImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDateTimeImpl {
+    type Receiver = HeapObjectRead<'heap, DateTime>;
+
+    fn time_value<'h>(
+        this: &HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+        keep_tz: bool,
+    ) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            // `time()` drops the timezone, `timetz()` keeps it — the only
+            // difference between the two in CPython.
+            args.check_zero_args(if keep_tz { "datetime.timetz" } else { "datetime.time" }, vm.heap)?;
+            // Owned, so it must be released whether or not the time attaches it.
+            let tzinfo = if keep_tz { this.tzinfo_value(vm) } else { Value::None };
+            defer_drop!(tzinfo, vm);
+            let naive = dt.naive.time();
+            let micros = i32::try_from(dt.naive.and_utc().timestamp_subsec_micros())
+                .expect("microsecond is always in 0..=999_999");
+            Ok(CallResult::Value(time::allocate(
+                vm,
+                i32::try_from(naive.hour()).expect("hour is always in 0..=23"),
+                i32::try_from(naive.minute()).expect("minute is always in 0..=59"),
+                i32::try_from(naive.second()).expect("second is always in 0..=59"),
+                micros,
+                // `DateTime` does not store `fold`, so the time is always unfolded.
+                0,
+                tzinfo,
+            )?))
+        }
+    }
+
+    #[pymethod]
+    fn isoformat<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            let IsoformatArgs { sep, timespec } = IsoformatArgs::from_args(args, vm)?;
+            defer_drop!(sep, vm);
+            defer_drop!(timespec, vm);
+            let separator = isoformat_separator(sep.as_ref(), vm)?;
+            let spec = match timespec {
+                Some(timespec) => TimeSpec::parse(timespec.as_str(vm))?,
+                None => TimeSpec::Auto,
+            };
+            let s = format_isoformat(&dt, separator, spec);
+            Ok(CallResult::Value(allocate_string_no_interning(s, vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn strftime<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
+            defer_drop!(format, vm);
+            let formatted = format_datetime_strftime(&dt, format.as_str(vm), &vm.heap.tracker)?;
+            Ok(CallResult::Value(allocate_string(formatted, vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn replace<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Ok(CallResult::Value(this.replace(vm, args)?))
+    }
+
+    #[pymethod]
+    fn weekday<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            args.check_zero_args("datetime.weekday", vm.heap)?;
+            Ok(CallResult::Value(Value::Int(i64::from(
+                dt.naive.date().weekday().num_days_from_monday(),
+            ))))
+        }
+    }
+
+    #[pymethod]
+    fn isoweekday<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            args.check_zero_args("datetime.isoweekday", vm.heap)?;
+            Ok(CallResult::Value(Value::Int(i64::from(
+                dt.naive.date().weekday().number_from_monday(),
+            ))))
+        }
+    }
+
+    #[pymethod]
+    fn date<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            args.check_zero_args("datetime.date", vm.heap)?;
+            let d = date::from_ymd(
+                dt.naive.date().year(),
+                i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
+                i32::try_from(dt.naive.date().day()).expect("day in 1..31"),
+            )?;
+            Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d)))))
+        }
+    }
+
+    #[pymethod]
+    fn time<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Self::time_value(this, args, vm, false)
+    }
+
+    #[pymethod]
+    fn timetz<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        Self::time_value(this, args, vm, true)
+    }
+
+    #[pymethod]
+    fn timestamp<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            args.check_zero_args("datetime.timestamp", vm.heap)?;
+            let ts = compute_timestamp(&dt, &vm.env.os_policy.timezone)?;
+            Ok(CallResult::Value(Value::Float(ts)))
+        }
+    }
+
+    #[pymethod]
+    fn astimezone<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let dt = this.get(vm.heap).clone();
+            astimezone(&dt, vm, args)
+        }
+    }
+
+    #[pymethod]
+    fn utcoffset<'h>(
+        this: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            args.check_zero_args("datetime.utcoffset", vm.heap)?;
+            Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn tzname<'h>(this: &mut HeapObjectRead<'h, DateTime>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        let dt = this.get(vm.heap).clone();
+        {
+            args.check_zero_args("datetime.tzname", vm.heap)?;
+            let Some(offset_seconds) = dt.offset_seconds else {
+                return Ok(CallResult::Value(Value::None));
+            };
+            let name = timezone::tzname_string(offset_seconds, dt.timezone_name.as_deref());
+            Ok(CallResult::Value(allocate_string(name, vm.heap)))
+        }
+    }
+
+    #[pymethod]
+    fn dst<'h>(
+        _receiver: &mut HeapObjectRead<'h, DateTime>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            args.check_zero_args("datetime.dst", vm.heap)?;
+            // Only fixed-offset zones exist, and none of them observes DST.
+            Ok(CallResult::Value(Value::None))
+        }
+    }
+
+    #[pyclassmethod]
+    fn fromtimestamp(
+        _name: StaticStrings,
+        _class: PyClass<'_>,
+        args: ArgValues,
+        vm: &mut VM<'_>,
+    ) -> RunResult<CallResult> {
+        class_fromtimestamp(vm, args).map(CallResult::Value)
+    }
+
+    #[pyclassmethod]
+    fn now(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_now(vm, args)
+    }
+
+    #[pyclassmethod]
+    fn strptime(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
+    }
+
+    #[pyclassmethod]
+    fn fromisoformat(
+        _name: StaticStrings,
+        _class: PyClass<'_>,
+        args: ArgValues,
+        vm: &mut VM<'_>,
+    ) -> RunResult<CallResult> {
+        class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
+    }
+
+    #[pyclassmethod]
+    fn combine(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        class_combine(vm, args).map(CallResult::Value)
+    }
 }

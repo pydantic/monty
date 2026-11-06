@@ -14,6 +14,7 @@ use std::{fmt::Write, mem};
 
 pub(crate) use dialect::{DIALECT_NAMES, Dialect, FmtParams, Quoting};
 pub(crate) use dict::{DictReader, DictWriter};
+use monty_macros::pyattrs;
 pub(crate) use reader::{FIELD_SIZE_LIMIT, Reader};
 use serde::{Deserialize, Serialize};
 pub(crate) use writer::{Writer, write_method};
@@ -25,6 +26,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
@@ -232,20 +234,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
         mem::replace(slot, value).drop_with(vm);
         Ok(())
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match (self.get(vm.heap).kind(), attr.static_string(vm.interns)) {
-            (Kind::Writer, Some(StaticStrings::Writerow)) => writer::writerow(self, args, vm),
-            (Kind::Writer, Some(StaticStrings::Writerows)) => writer::writerows(self, args, vm),
-            (Kind::DictWriter, Some(StaticStrings::Writerow)) => dict::writer_writerow(self, args, vm),
-            (Kind::DictWriter, Some(StaticStrings::Writerows)) => dict::writer_writerows(self, args, vm),
-            (Kind::DictWriter, Some(StaticStrings::Writeheader)) => dict::writer_writeheader(self, args, vm),
-            _ => {
-                let type_name = self.py_type_name(vm);
-                Err(ExcType::attribute_error_method(type_name, attr, args, vm))
-            }
-        }
-    }
 }
 
 /// `line_num` as a Python `int`.
@@ -253,4 +241,63 @@ fn line_num_value(line_num: u64) -> RunResult<Value> {
     i64::try_from(line_num)
         .map(Value::Int)
         .map_err(|_| ExcType::overflow_c_ssize_t())
+}
+
+pub(crate) struct PyCsvWriterImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyCsvWriterImpl {
+    type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pymethod]
+    fn writerow<'h>(
+        this: &mut HeapObjectRead<'h, CsvObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        writer::writerow(this, args, vm)
+    }
+
+    #[pymethod]
+    fn writerows<'h>(
+        this: &mut HeapObjectRead<'h, CsvObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        writer::writerows(this, args, vm)
+    }
+}
+
+pub(crate) struct PyCsvDictWriterImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyCsvDictWriterImpl {
+    type Receiver = HeapObjectRead<'heap, CsvObject>;
+
+    #[pymethod]
+    fn writerow<'h>(
+        this: &mut HeapObjectRead<'h, CsvObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        dict::writer_writerow(this, args, vm)
+    }
+
+    #[pymethod]
+    fn writerows<'h>(
+        this: &mut HeapObjectRead<'h, CsvObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        dict::writer_writerows(this, args, vm)
+    }
+
+    #[pymethod]
+    fn writeheader<'h>(
+        this: &mut HeapObjectRead<'h, CsvObject>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        dict::writer_writeheader(this, args, vm)
+    }
 }
