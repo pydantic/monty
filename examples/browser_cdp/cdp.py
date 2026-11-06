@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -87,7 +87,7 @@ async def launch_chrome(*, headless: bool = True) -> AsyncGenerator[CDPSession]:
         process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             ws_url = await _read_devtools_url(Path(profile))
-            async with connect(ws_url, max_size=None) as ws:
+            async with connect(ws_url, max_size=MAX_MESSAGE_SIZE) as ws:
                 client = CDPClient(ws)
                 async with client.run():
                     # downloads would write to the host filesystem
@@ -105,7 +105,8 @@ def _find_chrome() -> str:
     if sys.platform == 'darwin':
         candidates = ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
     elif sys.platform == 'win32':
-        candidates = [r'C:\Program Files\Google\Chrome\Application\chrome.exe']
+        roots = [os.environ.get(var) for var in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA')]
+        candidates = [rf'{root}\Google\Chrome\Application\chrome.exe' for root in roots if root]
     else:
         candidates = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
     for candidate in candidates:
@@ -143,6 +144,8 @@ class CDPClient:
             yield
         finally:
             reader.cancel()
+            with suppress(asyncio.CancelledError):
+                await reader
 
     async def send(self, method: str, params: dict[str, Any] | None = None, session_id: str | None = None) -> Any:
         """Send one CDP command and return its `result`, raising `RuntimeError` on a protocol error."""
@@ -173,13 +176,27 @@ class CDPClient:
         return session
 
     async def _read_loop(self) -> None:
-        async for raw in self._ws:
-            message = json.loads(raw)
-            if 'id' in message:
-                if future := self._pending.pop(message['id'], None):
-                    future.set_result(message)
-            else:
-                self._dispatch_event(message)
+        try:
+            async for raw in self._ws:
+                message = json.loads(raw)
+                if 'id' in message:
+                    # a cancelled `send()` leaves its future here, already done
+                    if (future := self._pending.pop(message['id'], None)) and not future.done():
+                        future.set_result(message)
+                else:
+                    self._dispatch_event(message)
+        finally:
+            self._fail_waiters()
+
+    def _fail_waiters(self) -> None:
+        """Fail every outstanding request and event waiter once the connection is gone, so none hangs."""
+        error = ConnectionError('Chrome DevTools connection closed')
+        waiters = [*self._pending.values(), *(future for _, _, future in self._event_waiters)]
+        self._pending.clear()
+        self._event_waiters.clear()
+        for future in waiters:
+            if not future.done():
+                future.set_exception(error)
 
     def _dispatch_event(self, message: dict[str, Any]) -> None:
         remaining: list[tuple[str | None, str, asyncio.Future[dict[str, Any]]]] = []
@@ -204,6 +221,9 @@ class CDPSession:
     def wait_for_event(self, method: str) -> asyncio.Future[dict[str, Any]]:
         return self._client.wait_for_event(method, self._session_id)
 
+
+# Largest CDP message accepted, in bytes; full-page screenshots arrive base64-encoded in one message.
+MAX_MESSAGE_SIZE = 64 * 1024 * 1024
 
 # Commands the sandbox may send. Anything else, e.g. `DOM.setFileInputFiles` or
 # `Input.dispatchDragEvent` (both take host file paths) or `Browser.*`, is refused.

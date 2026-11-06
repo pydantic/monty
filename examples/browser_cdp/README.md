@@ -13,10 +13,12 @@ A Pydantic AI agent drives Chrome by writing Python, which Monty runs in a sandb
 The sandbox reaches the browser only through `browser_cdp`, which accepts only the commands in `ALLOWED_METHODS`.
 That list leaves out commands that take host file paths (`DOM.setFileInputFiles`, `Input.dispatchDragEvent`),
 `Page.navigate` only opens `http(s)` URLs, downloads are denied, and Chrome runs with a throwaway profile.
-The browser itself has network access.
+The browser itself has network access, including to loopback and private addresses: page JavaScript can reach
+cloud metadata endpoints and unauthenticated local services, so don't run this on a host that has them.
 
 ## To run
 
+This needs Python 3.11 or later, since `pydantic-ai-harness` does.
 Set `CHROME_PATH` if Chrome is not in its usual location, then:
 
 ```bash
