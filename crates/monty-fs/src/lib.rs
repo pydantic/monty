@@ -36,6 +36,9 @@ pub use error::MountError;
 pub use mount_mode::MountMode;
 pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountRoot, MountTable};
 pub use overlay_state::OverlayState;
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod test_util;
 
 mod common;
 mod direct;

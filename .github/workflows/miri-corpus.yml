@@ -1,0 +1,50 @@
+name: miri-corpus
+
+# The whole Python corpus is impractical under Miri (it interprets every
+# instruction), so the nightly job walks it in filtered slices. A new subsystem
+# needs its filter added to the matrix when it lands.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  corpus:
+    name: miri corpus ${{ matrix.filter }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    strategy:
+      fail-fast: false
+      matrix:
+        filter:
+          - async__
+          - refcount__
+          - pyobject__cycle
+          - list__
+        include:
+          # Slow under miri (many awaits), not hanging; the 10-minute watchdog
+          # still catches real hangs in the rest of the slice.
+          - filter: async__
+            skip: async__ext_exc
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f
+        with:
+          toolchain: nightly
+          components: miri
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
+
+      - name: Run the ${{ matrix.filter }} corpus under miri
+        run: make miri-test-cases-filtered FILTER='${{ matrix.filter }}' SKIP='${{ matrix.skip }}'

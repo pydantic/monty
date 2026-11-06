@@ -556,7 +556,21 @@ jobs:
       - run: make dev-bench
 
   miri:
+    name: miri ${{ matrix.target }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The heap comments reason about both borrow models, so check both.
+          - target: miri
+          - target: miri-tree
+          # Refcount/reachability model, seeds under Miri with both models.
+          - target: miri-heap-model
+          # Bounded asyncio integration tests: allocation, gather/task/wait
+          # transitions and a host sleep through the public API.
+          - target: miri-integration
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -575,8 +589,8 @@ jobs:
           cache-on-failure: true
           save-if: ${{ env.SAVE_CI_CACHE }}
 
-      - name: Run miri tests
-        run: make miri
+      - name: Run ${{ matrix.target }}
+        run: make ${{ matrix.target }}
 
   fuzz:
     name: fuzz ${{ matrix.target }}
@@ -585,9 +599,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - tokens_input_panic
-          - string_input_panic
+        include:
+          - target: tokens_input_panic
+          - target: string_input_panic
+          - target: proto_frame_decode
+          - target: fs_path_policy
+          # `heap-model` turns on the refcount oracle and the panicking
+          # `Value` drop; the other targets build without it.
+          - target: heap_ops
+            features: --features heap-model
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -611,12 +631,28 @@ jobs:
       - if: steps.cache-rust.outputs.cache-hit != 'true'
         run: cargo install cargo-fuzz --version 0.13.2 --locked
 
+      # Keep the explored corpus between runs so each target resumes from what
+      # the last one learned instead of rediscovering coverage from scratch.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: corpus-cache
+        with:
+          path: crates/fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ runner.os }}-${{ matrix.target }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-${{ matrix.target }}-
+
       - name: Run ${{ matrix.target }} fuzzer
         run: |
           # Use --sanitizer none to avoid ASAN/SanitizerCoverage linking issues on CI
           # (undefined __sancov_gen_.* symbols). For short CI runs, we're mainly
           # catching panics, not memory bugs.
-          cargo fuzz run --fuzz-dir crates/fuzz --sanitizer none ${{ matrix.target }} -- -max_total_time=60
+          cargo fuzz run --fuzz-dir crates/fuzz --sanitizer none ${{ matrix.features }} ${{ matrix.target }} -- -max_total_time=60
+
+      - uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        if: env.SAVE_CI_CACHE == 'true' && steps.corpus-cache.outputs.cache-hit != 'true'
+        with:
+          path: crates/fuzz/corpus/${{ matrix.target }}
+          key: ${{ steps.corpus-cache.outputs.cache-primary-key }}
 
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
