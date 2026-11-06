@@ -447,9 +447,11 @@ you wrote.
 
 Binary writes in `wb` and `w+b` mode call
 [`AbstractOS.path_write_bytes_at(path, offset, data)`][pydantic_monty.AbstractOS.path_write_bytes_at].
-Custom filesystem handlers must implement this method to support those modes.
 It overwrites an existing file at the byte offset, preserves surrounding content, and returns the number of bytes written.
-An implementation that only handles append requests cannot service these writes.
+The default uses `path_stat`, `path_read_bytes` and `path_write_bytes` to reconstruct the whole file, capped at 50 MB.
+It requires read access and can overwrite concurrent changes between reading and writing.
+An incomplete replacement write raises `OSError` and may leave the file partially replaced.
+Override it for native positional writes, stronger concurrency guarantees, or larger files.
 `OSAccess` implements the method for its registered files.
 
 For anything more specific, subclass `OSAccess` and override the methods you want to change, or implement every

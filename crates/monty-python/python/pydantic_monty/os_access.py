@@ -184,6 +184,9 @@ _MAX_SCAN_ENTRIES = 100_000
 _MAX_SCAN_PATH_BYTES = 100_000_000
 """Maximum accumulated scan path data, estimated at four bytes per character for absolute and relative paths."""
 
+_MAX_POSITIONAL_WRITE_BYTES = MAX_TOTAL_FILE_BYTES_DEFAULT
+"""Largest replacement constructed by the default positional-write fallback."""
+
 
 class ScanEntry(NamedTuple):
     """One entry of a `Path.scan` reply: what `os.DirEntry` would report for it.
@@ -520,11 +523,30 @@ class AbstractOS(ABC):
         raise NotImplementedError
 
     def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
-        """Overwrite bytes in an existing file; required for `wb` and `w+b` writes.
+        """Overwrite bytes in an existing file and return the number of input bytes written.
 
-        Preserve bytes outside the range and return the number of bytes written.
+        The default reads and rewrites the whole file, capped at 50 MB, and requires read access.
+        It is not atomic with concurrent changes; override for native positional I/O or larger files.
         """
-        raise NotImplementedError
+        if offset < 0 or offset + len(data) > 2**63 - 1:
+            raise ValueError('write range exceeds the supported file-position range')
+        file_path = path_from_arg(path)
+        metadata = self.path_stat(file_path)
+        if stat.S_ISDIR(metadata.st_mode):
+            raise IsADirectoryError(errno.EISDIR, 'Is a directory', str(file_path))
+        if not data:
+            return 0
+        end = offset + len(data)
+        if max(metadata.st_size, end) > _MAX_POSITIONAL_WRITE_BYTES:
+            raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
+        content = self.path_read_bytes(path)
+        # A file can grow between the metadata lookup and the read.
+        if len(content) > _MAX_POSITIONAL_WRITE_BYTES:
+            raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
+        replacement = content[:offset] + b'\0' * max(0, offset - len(content)) + data + content[end:]
+        if self.path_write_bytes(path, replacement) != len(replacement):
+            raise OSError(errno.EIO, 'Incomplete file write', str(file_path))
+        return len(data)
 
     @abstractmethod
     def path_mkdir(self, path: PurePosixPath, parents: bool, exist_ok: bool) -> None:
