@@ -180,6 +180,40 @@ fn stdlib_datetime_resolves() {
     assert!(result.is_none(), "Expected no type errors, got: {result:#?}");
 }
 
+/// The narrowed tempfile stub distinguishes text and binary file writes.
+#[test]
+fn stdlib_tempfile_resolves() {
+    let code = "import tempfile\nwith tempfile.NamedTemporaryFile(mode='w', delete_on_close=False) as f:\n    f.write('text')\nwith tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:\n    f.write(b'bytes')\ntempfile.gettempdir()";
+    assert!(check(code, "main.py").is_none());
+    let errors = check(
+        "import tempfile\ntempfile.NamedTemporaryFile(mode='wb', delete=False).write('text')",
+        "main.py",
+    );
+    assert!(errors.is_some(), "binary file writes must reject text");
+    assert!(check(
+        "import tempfile\nwith tempfile.NamedTemporaryFile(delete_on_close=False) as f:\n    f.write(b'bytes')\n    f.seek(0)\n    content: bytes = f.read()",
+        "main.py",
+    ).is_none());
+    assert!(
+        check(
+            "import tempfile\ntempfile.NamedTemporaryFile(delete=False).write('text')",
+            "main.py",
+        )
+        .is_some(),
+        "the default binary mode must reject text"
+    );
+}
+
+/// Runtime and stubs must agree on the keyword-only errors option.
+#[test]
+fn tempfile_errors_is_keyword_only() {
+    let positional = "import tempfile\ntempfile.NamedTemporaryFile('w', -1, None, None, None, None, None, False, None)";
+    assert!(check(positional, "main.py").is_some());
+    let keyword =
+        "import tempfile\ntempfile.NamedTemporaryFile('w', -1, None, None, None, None, None, False, errors=None)";
+    assert!(check(keyword, "main.py").is_none());
+}
+
 /// Test that good_types.py type-checks without errors.
 ///
 /// This file uses `assert_type` from typing to verify that inferred types match expected types.

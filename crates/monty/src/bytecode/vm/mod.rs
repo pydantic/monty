@@ -2233,9 +2233,11 @@ impl<'h> VM<'h> {
                 callable,
                 args,
             })) => return self.resume_load_then_call(file_id, callable, args, value),
-            Some(PendingEffect::Post(PostConversionEffect::OpenName { name, newline })) => {
-                apply_open_name(name, newline, value, self).map(Some)
-            }
+            Some(PendingEffect::Post(PostConversionEffect::OpenName {
+                name,
+                newline,
+                delete_on_exit,
+            })) => apply_open_name(name, newline, delete_on_exit, value, self).map(Some),
             Some(PendingEffect::Post(PostConversionEffect::SeedRandom { target, retry })) => {
                 apply_seed_random(target, retry, value, self).map(Some)
             }

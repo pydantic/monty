@@ -39,6 +39,7 @@ pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
 pub(crate) mod sys;
+pub(crate) mod tempfile;
 pub(crate) mod time;
 pub(crate) mod tomllib;
 pub(crate) mod typing;
@@ -105,6 +106,8 @@ pub(crate) enum StandardLib {
     Decimal,
     /// The `fnmatch` module: shell-style pattern matching.
     Fnmatch,
+    /// Named temporary files in host-supplied storage.
+    Tempfile,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
     /// The `gc` module exposing a single `collect()` for tests. Only present
@@ -144,6 +147,7 @@ impl StandardLib {
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Tempfile => Some(Self::Tempfile),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
@@ -188,6 +192,7 @@ impl StandardLib {
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Tempfile => tempfile::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
@@ -225,6 +230,7 @@ pub(crate) enum ModuleFunctions {
     Tomllib(tomllib::TomllibFunctions),
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
+    Tempfile(tempfile::TempfileFunctions),
     Typing(typing::TypingFunctions),
     Annotationlib(annotationlib::AnnotationlibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
@@ -266,6 +272,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Tomllib(func) => write!(f, "{func}"),
             Self::Decimal(func) => write!(f, "{func}"),
             Self::Fnmatch(func) => write!(f, "{func}"),
+            Self::Tempfile(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -306,6 +313,7 @@ impl ModuleFunctions {
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
+            Self::Tempfile(functions) => tempfile::call(vm, functions, args),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]

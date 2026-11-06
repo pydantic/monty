@@ -99,6 +99,7 @@ The following modules are present:
 | `random`        | [random.md](random.md)               |
 | `re`            | [re.md](re.md)                       |
 | `sys`           | [sys.md](sys.md)                     |
+| `tempfile`      | [tempfile.md](tempfile.md)           |
 | `time`          | [time.md](time.md)                   |
 | `tomllib`       | [tomllib.md](tomllib.md)             |
 | `typing`        | [typing.md](typing.md)               |

@@ -1181,12 +1181,12 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_551),
         ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_534),
         // `math.factorial`, `comb` and `perm` preflight their product's size.
-        ("import math\nmath.factorial(2_000_000)", 10_547_092),
+        ("import math\nmath.factorial(2_000_000)", 10_548_122),
         // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
-        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_109),
-        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_109),
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_298_136),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_048_136),
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
-        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_298_483),
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
         // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
         // capacity doubling like the formatter cases above: fixed-size pushes
@@ -3169,6 +3169,17 @@ fn legacy_binary_update_is_rejected_before_open() {
     child.create_repl_with(configure_with_protocol_version(7, env!("CARGO_PKG_VERSION")));
     for mode in ["w+b", "wb+"] {
         let (_, event) = child.feed(&format!("open('/file', '{mode}')"));
+        let error = expect_error(event);
+        assert_eq!(error.exc_type, "NotImplementedError");
+        assert_eq!(
+            error.message.as_deref(),
+            Some("binary update mode requires positional filesystem writes")
+        );
+    }
+    for options in ["", "mode='w+b', ", "mode='wb+', "] {
+        let (_, event) = child.feed(&format!(
+            "import tempfile\ntempfile.NamedTemporaryFile({options}delete=False)"
+        ));
         let error = expect_error(event);
         assert_eq!(error.exc_type, "NotImplementedError");
         assert_eq!(

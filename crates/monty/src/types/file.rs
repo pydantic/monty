@@ -95,7 +95,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
-    os_dispatch::{PostConversionEffect, stat_result_field},
+    os_dispatch::{PostConversionEffect, PreConversionEffect, stat_result_field},
     py_value::PyValue,
     types::str::StringRepr,
     value::{EitherStr, Value},
@@ -177,7 +177,7 @@ pub(crate) enum Newline {
 
 impl Newline {
     /// Parses the str form of the argument; `None` for a value CPython rejects.
-    fn parse(value: &str) -> Option<Self> {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
             "" => Some(Self::Passthrough),
             "\n" => Some(Self::Lf),
@@ -270,6 +270,9 @@ pub(crate) struct OpenFile {
     /// Whether `close()` has been called. Operations on a closed file raise
     /// `ValueError`.
     closed: bool,
+    /// Named temporary files unlink on context exit, independently of explicit close.
+    #[serde(default)]
+    cleanup: FileCleanup,
     /// Position for sized/line/seek operations. Char index in text mode (so
     /// `read(5)` advances by 5 chars regardless of byte width), byte index in
     /// binary mode. Starts at 0; advanced by bare `read()` (by the length of
@@ -320,6 +323,14 @@ enum FileLengthState {
     #[default]
     Known,
     Unknown,
+}
+
+/// Cleanup applies only to context exit; close and garbage collection leave the path alone.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+enum FileCleanup {
+    #[default]
+    None,
+    OnExit,
 }
 
 /// Cached metadata about an [`OpenFile`]'s loaded buffer.
@@ -375,6 +386,7 @@ impl OpenFile {
             newline: Newline::default(),
             first_write_done: mode.truncate(),
             closed: false,
+            cleanup: FileCleanup::None,
             position,
             buffer: None,
             buffer_meta: None,
@@ -548,7 +560,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OpenFile> {
         //
         // `close()` on an already-closed file is idempotent (a no-op), matching
         // CPython.
-        self.get_mut(vm.heap).closed = true;
+        let file = self.get_mut(vm.heap);
+        file.closed = true;
+        if matches!(mem::take(&mut file.cleanup), FileCleanup::OnExit) {
+            return Ok(CallResult::OsCallWithEffect {
+                call: OsFunctionCall::Unlink(MontyPath::new(file.path.clone())),
+                effect: PreConversionEffect::Unlink { missing_ok: false }.into(),
+            });
+        }
         Ok(CallResult::Value(Value::None))
     }
 
@@ -1032,6 +1051,7 @@ fn inc_ref_for_pending_oscall(vm: &VM<'_>, file_id: HeapId) {
 pub(crate) fn apply_open_name(
     name: FileName,
     newline: Option<String>,
+    delete_on_exit: bool,
     value: Value,
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
@@ -1046,6 +1066,11 @@ pub(crate) fn apply_open_name(
         }
         file.name = Some(name);
         file.newline = parsed;
+        file.cleanup = if delete_on_exit {
+            FileCleanup::OnExit
+        } else {
+            FileCleanup::None
+        };
         Ok(value)
     } else {
         value.drop_with(vm);

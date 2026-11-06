@@ -90,7 +90,12 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
             path: MontyPath::new(path),
             mode: file_mode,
         }),
-        effect: PostConversionEffect::OpenName { name, newline }.into(),
+        effect: PostConversionEffect::OpenName {
+            name,
+            newline,
+            delete_on_exit: false,
+        }
+        .into(),
     })
 }
 
@@ -180,7 +185,7 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
 /// Extracts `newline` as the raw string CPython sees: `None` stays `None` and
 /// a non-str raises the clinic `TypeError`. The value itself is validated
 /// after the open, in `apply_open_name`, where CPython validates it.
-fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
+pub(crate) fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
     if matches!(value, Value::None) {
         Ok(None)
     } else {
@@ -202,7 +207,7 @@ fn newline_argument(value: &Value, vm: &VM<'_>) -> RunResult<Option<String>> {
 /// Non-default values raise `TypeError` ("'<name>' argument is not yet
 /// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
 /// dedicated type error so it remains diagnosable.
-fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
+pub(crate) fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
     let is_default = match name {
         // CPython default is -1 (sentinel for "interpreter picks the
         // buffer size"). Monty has no buffering layer to tune.

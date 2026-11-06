@@ -33,9 +33,8 @@ after `open()` succeeded, unlike access through CPython's retained descriptor.
 - Update modes other than binary write/update modes are rejected at
     parse time with `ValueError: update modes ('+') are not yet supported`.
     Accepted spellings such as `w+b`, `wb+` and `+bw` normalize to `wb+`.
-- Exclusive creation mode (`x`) is rejected with `ValueError: exclusive creation mode is not supported`; it would need a
-    dedicated race-free
-    mount-table operation.
+- Exclusive creation mode (`x`) is rejected with `ValueError: exclusive creation mode is not supported`; the exclusive host operation is currently used only by
+    [`tempfile.NamedTemporaryFile`](tempfile.md).
 - The mode string is normalized to a canonical form at parse time
     (`'rt'` → `'r'`, `'br'` → `'rb'`); the original raw input is not
     preserved, and `file.mode` reports the canonical form. For *text* modes

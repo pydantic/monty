@@ -14,7 +14,7 @@ use crate::{
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
-    modules::{functools, typing},
+    modules::{functools, tempfile, typing},
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
@@ -28,6 +28,9 @@ pub(crate) enum FrozenFunction {
     /// Suspendable fold loop behind `functools.reduce`.
     #[serde(rename = "functools.reduce")]
     FunctoolsReduce,
+    /// Collision retries for named temporary files.
+    #[serde(rename = "tempfile.NamedTemporaryFile")]
+    NamedTemporaryFile,
     /// Validate the result of a suspendable user `__iter__` method.
     #[serde(rename = "builtins.iter")]
     Iter,
@@ -81,6 +84,7 @@ impl FrozenFunction {
     fn source(self) -> &'static str {
         match self {
             Self::FunctoolsReduce => functools::REDUCE_SOURCE,
+            Self::NamedTemporaryFile => tempfile::CREATE_SOURCE,
             Self::Iter => iter::ITER_SOURCE,
             Self::LruCacheMiss => lru_cache::CACHE_MISS_SOURCE,
             Self::NextDefault => next::NEXT_DEFAULT_SOURCE,
@@ -98,6 +102,10 @@ impl FrozenFunction {
 pub(crate) enum FrozenFunctions {
     /// Rebuild a generic alias around resolved arguments (see `generic_alias::call_alias_with`).
     AliasWith,
+    /// Draw from the private temporary-name generator.
+    TemporaryBits,
+    /// Reserve one temporary-file candidate.
+    CreateTemporaryFile,
     /// Cache a class's evaluated `__annotations__` under `__annotations_cache__`.
     CacheClassAnnotations,
     /// Call an `__annotate__` function in an `annotationlib.Format` (see `annotations::call_annotate_helper`).
@@ -117,6 +125,8 @@ pub(crate) enum FrozenFunctions {
 /// Dispatches private helpers using the same argument ownership rules as public natives.
 pub(crate) fn call_helper(function: FrozenFunctions, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     match function {
+        FrozenFunctions::TemporaryBits => tempfile::call_bits(args, vm),
+        FrozenFunctions::CreateTemporaryFile => tempfile::call_create(args, vm),
         FrozenFunctions::AliasWith => generic_alias::call_alias_with(args, vm).map(CallResult::Value),
         FrozenFunctions::CacheClassAnnotations => {
             annotations::cache_class_annotations_helper(args, vm).map(CallResult::Value)

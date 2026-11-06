@@ -918,6 +918,10 @@ pub enum StaticStrings {
     Degrees,
     /// `delay` parameter of `asyncio.sleep()`.
     Delay,
+    /// Temporary file cleanup option.
+    Delete,
+    /// Temporary file close-time cleanup option.
+    DeleteOnClose,
     /// `delimiter` dialect attribute and `csv` format parameter.
     Delimiter,
     /// `depth` parameter of `hashlib.blake2b()`.
@@ -955,6 +959,8 @@ pub enum StaticStrings {
     DigestSize,
     /// `DecimalTuple.digits` field.
     Digits,
+    /// Temporary file parent directory.
+    Dir,
     /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
     DirFd,
     /// `os.path.dirname()` function.
@@ -1361,6 +1367,10 @@ pub enum StaticStrings {
     Getsize,
     /// `random.getstate()` function.
     Getstate,
+    /// Default virtual temporary directory.
+    Gettempdir,
+    /// Default temporary filename prefix.
+    Gettempprefix,
     /// `Path.glob()` method — yields a host scan.
     Glob,
     /// `globalns` parameter of `typing.get_type_hints()`.
@@ -1818,6 +1828,9 @@ pub enum StaticStrings {
     MultilineFlag,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
+    /// Named temporary file constructor.
+    #[strum(serialize = "NamedTemporaryFile")]
+    NamedTemporaryFile,
     /// The `collections.namedtuple` factory function.
     Namedtuple,
     /// `names` parameter of `fnmatch.filter()`.
@@ -2437,6 +2450,8 @@ pub enum StaticStrings {
     TeeType,
     /// `file.tell()` method.
     Tell,
+    /// Temporary storage module.
+    Tempfile,
     /// Kwarg name `third` — `Decimal.fma()`.
     Third,
     /// `time.thread_time()` function.
