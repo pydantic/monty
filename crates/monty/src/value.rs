@@ -840,7 +840,9 @@ fn cmp_heap_pair(id1: HeapId, id2: HeapId, vm: &mut VM<'_>) -> RunResult<CmpOrde
         (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
             Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
         }
-        (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => PyStr::Heap(a).py_cmp(&PyStr::Heap(b), vm),
+        (HeapReadOutput::Str(lhs_heap_string), HeapReadOutput::Str(rhs_heap_string)) => {
+            PyStr::Heap(lhs_heap_string).py_cmp(&PyStr::Heap(rhs_heap_string), vm)
+        }
         (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(CmpOrder::Ordered(
             a.get(vm.heap).as_slice().cmp(b.get(vm.heap).as_slice()),
         )),
