@@ -253,10 +253,21 @@ pub(super) fn host_write_bytes_at(
     check_write_limit(charge, ctx)?;
     if !content.is_empty() {
         file.seek(SeekFrom::Start(offset)).map_err(|err| map_io(err, vpath))?;
-        file.write_all(content).map_err(|err| map_io(err, vpath))?;
+        write_with_charge(&mut file, content, charge, ctx, vpath)?;
     }
-    commit_write_bytes(charge, ctx);
     Ok(MontyObject::int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+}
+
+/// Retains the full reservation if a write fails after mutating a prefix.
+fn write_with_charge(
+    file: &mut impl Write,
+    content: &[u8],
+    charge: usize,
+    ctx: &mut MountContext<'_>,
+    vpath: &str,
+) -> Result<(), MountError> {
+    commit_write_bytes(charge, ctx);
+    file.write_all(content).map_err(|err| map_io(err, vpath))
 }
 
 /// Opens `rel` and rejects it unless the *handle* is a regular file — the
@@ -426,7 +437,7 @@ pub(super) fn check_write_limit(bytes: usize, ctx: &MountContext<'_>) -> Result<
     Ok(())
 }
 
-/// Records a successful write against the mount's cumulative quota counter.
+/// Charges bytes against the mount's cumulative quota counter.
 pub(super) fn commit_write_bytes(bytes: usize, ctx: &mut MountContext<'_>) {
     if ctx.write_bytes_limit.is_some() {
         *ctx.write_bytes_used = (*ctx.write_bytes_used).saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
@@ -653,5 +664,63 @@ pub(super) fn format_child_path(parent: &str, child: &str) -> String {
         format!("{parent}{child}")
     } else {
         format!("{parent}/{child}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Cursor, Write};
+
+    use cap_std::{ambient_authority, fs::Dir};
+    use tempfile::TempDir;
+
+    use super::{MountContext, MountError, check_write_limit, positional_write_charge, write_with_charge};
+
+    struct PartialWriter {
+        data: Cursor<Vec<u8>>,
+        remaining: usize,
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::Error::other("injected write failure"));
+            }
+            let count = bytes.len().min(self.remaining);
+            self.remaining -= count;
+            self.data.write(&bytes[..count])
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn partial_positional_write_retains_its_quota_reservation() {
+        let temp = TempDir::new().unwrap();
+        let dir = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let mut used = 0;
+        let mut ctx = MountContext {
+            mount_virtual: "/mnt",
+            mount_dir: &dir,
+            write_bytes_used: &mut used,
+            write_bytes_limit: Some(11),
+            memory_usage_limit: 1024,
+        };
+        let mut file = PartialWriter {
+            data: Cursor::new(Vec::new()),
+            remaining: 1,
+        };
+        file.data.set_position(8);
+        let charge = positional_write_charge(8, 0, 3).unwrap();
+        check_write_limit(charge, &ctx).unwrap();
+        assert!(write_with_charge(&mut file, b"abc", charge, &mut ctx, "/mnt/file").is_err());
+        assert_eq!(file.data.into_inner(), b"\0\0\0\0\0\0\0\0a");
+        assert_eq!(*ctx.write_bytes_used, 11);
+        assert!(matches!(
+            check_write_limit(1, &ctx),
+            Err(MountError::WriteLimitExceeded(11))
+        ));
     }
 }

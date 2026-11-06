@@ -132,6 +132,7 @@ nothing.
 Native positional writes use a cumulative fallback budget of 256 MB (256,000,000 bytes) when
 `write_bytes_limit` is `None`.
 Payloads and zero-filled gaps count against this budget, including repeated overwrites.
+The full charge is reserved before writing and remains charged if a partial write fails.
 An explicit `write_bytes_limit` replaces the fallback, so hosts can choose a smaller or larger budget.
 The fallback applies only to native positional writes; other write operations retain their configured behavior.
 
