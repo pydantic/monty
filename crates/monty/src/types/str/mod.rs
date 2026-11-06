@@ -51,6 +51,52 @@ pub(crate) enum PyStr<'h> {
 }
 
 impl<'h> PyStr<'h> {
+    /// Creates a string from the `str()` constructor call.
+    ///
+    /// - `str()` with no args returns an empty string (even with `encoding=`)
+    /// - `str(x)` converts x to its string representation using `py_str`
+    /// - `str(b, encoding, errors)` decodes a bytes object via the codec registry
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+        let StrInitArgs {
+            object,
+            encoding,
+            errors,
+        } = StrInitArgs::from_args(args, vm)?;
+        defer_drop!(object, vm);
+        defer_drop!(encoding, vm);
+        defer_drop!(errors, vm);
+        if encoding.is_none() && errors.is_none() {
+            return match object {
+                None => Ok(Value::InternString(StringId::EMPTY)),
+                Some(v) => v.py_str(vm),
+            };
+        }
+        // Decoding mode. Type-check `encoding` then `errors` first — CPython's
+        // clinic converters run before the constructor body sees the object.
+        str_ctor_arg_check(encoding.as_ref(), "encoding", vm)?;
+        str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
+        let Some(object) = object else {
+            // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
+            return Ok(Value::InternString(StringId::EMPTY));
+        };
+        if object.is_str(vm.heap) {
+            return Err(ExcType::type_error_decoding_str_not_supported());
+        }
+        let bytes: &[u8] = match object {
+            Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
+            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                HeapData::Bytes(b) => b.as_slice(),
+                _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
+            },
+            _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
+        };
+        let encoding = ctor_str_arg(encoding.as_ref(), "utf-8", vm)?;
+        let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
+        let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+        let s = codec.decode(bytes, errors)?;
+        Ok(allocate_string(s, vm.heap))
+    }
+
     /// Extracts a string without copying its contents.
     pub(crate) fn from_value(value: &Value, vm: &VM<'h>) -> Option<Self> {
         match value {
