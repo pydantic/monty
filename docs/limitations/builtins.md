@@ -25,13 +25,13 @@ These raise `NameError`:
 - **Code objects and imports**: `compile`, `__import__`.
 - **Namespace introspection**: `globals`, `vars`, `dir`.
 - **Interactive**: `input`, `breakpoint`, `help`.
-- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
-    `super`. (`@property` on functions is not recognized; use a method.)
+- **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
+    (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
-- **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
+- **Other**: `callable`, `delattr`, `aiter`, `anext`.
 
-`super()` is the biggest practical omission: with no class inheritance either
-(see [classes.md](classes.md)), there is no inheritance mechanism at all.
+`object` exists as the root class but cannot be instantiated, and `super()` and
+`issubclass()` work on classes; see [classes.md](classes.md#inheritance).
 
 ## Behavioural divergences
 

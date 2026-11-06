@@ -371,7 +371,8 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DataclassField(_)
         | HeapReadOutput::DataclassParams(_)
         | HeapReadOutput::DecimalSignalDict(_)
-        | HeapReadOutput::DecimalContextManager(_) => Copyability::Refused,
+        | HeapReadOutput::DecimalContextManager(_)
+        | HeapReadOutput::Super(_) => Copyability::Refused,
     }
 }
 

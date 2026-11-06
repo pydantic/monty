@@ -176,6 +176,25 @@ pub(crate) trait ExcTypeExt: Sized {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
     }
 
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises when its first argument is not a class.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for an invalid second argument.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
+    }
+
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
     /// is neither annotated nor callable: `5 does not have annotations`.
     fn no_annotations(obj: &Value, vm: &mut VM<'_>) -> RunError {
@@ -1481,6 +1500,12 @@ pub(crate) trait ExcTypeExt: Sized {
             "slice indices must be integers or None or have an __index__ method",
         )
         .into()
+    }
+
+    /// Creates a RuntimeError with the given message.
+    #[must_use]
+    fn runtime_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, msg).into()
     }
 
     /// Creates a RuntimeError for dict mutation during iteration.

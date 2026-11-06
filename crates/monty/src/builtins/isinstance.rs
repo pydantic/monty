@@ -5,8 +5,8 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
-    types::{PyTrait, Tuple, TypeRef},
+    heap::{HeapData, HeapRead, HeapReadOutput},
+    types::{Tuple, TypeRef},
     value::Value,
 };
 
@@ -50,25 +50,8 @@ pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) 
 }
 
 /// Whether `obj` is an instance of `class` or of a subclass of it.
-///
-/// A named tuple instance reports the native `namedtuple` type, so a named
-/// tuple class matches by the `class_id` its instances carry.
 fn instance_of(obj: &Value, class: TypeRef, vm: &VM<'_>) -> bool {
-    if let TypeRef::Class(class_id) = class
-        && matches!(vm.heap.get(class_id), HeapData::NamedTupleClass(_))
-    {
-        instance_of_namedtuple_class(obj, class_id, vm)
-    } else {
-        obj.py_type(vm).is_subclass_of(class, vm.heap)
-    }
-}
-
-/// Whether `obj` is a namedtuple instance built from the class `class_id`.
-///
-/// Instances created by Monty internally (`sys.version_info`, host imports)
-/// carry no `class_id`, so they never match a factory class.
-fn instance_of_namedtuple_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
-    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::NamedTuple(nt) if nt.class_id() == Some(class_id)))
+    obj.py_class(vm).is_subclass_of(class, vm.heap)
 }
 
 /// Recursively walks a tuple of classinfo entries.
@@ -86,6 +69,9 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
         }
         match item {
             Value::Ref(nested_id) if let HeapReadOutput::Tuple(nested) = vm.heap.read(*nested_id) => {
+                // A tuple can hold itself many times over, so walking nested
+                // tuples is exponential in their depth: bound it by time.
+                vm.heap.tracker.check_time()?;
                 if isinstance_check_tuple(obj, &nested, vm)? {
                     return Ok(true);
                 }

@@ -21,8 +21,9 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        GenericAlias, LongInt, PyTrait,
+        GenericAlias, LongInt, PyTrait, allocate_tuple,
         bytes::bytes_repr,
+        instance::BoundMethod,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string},
     },
@@ -114,27 +115,43 @@ impl Type {
     }
 
     /// Resolves an attribute read on a type object itself — `list.__name__`,
-    /// `date.max`, `chain.from_iterable` — returning `None` when there is no such
-    /// member so the caller raises [`Self::attribute_error`].
+    /// `bool.__mro__`, `date.max`, `chain.from_iterable` — returning `None` when
+    /// there is no such member so the caller raises [`Self::attribute_error`].
     pub(crate) fn class_getattr(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
         let is_dunder_name = attr.static_string(vm.interns).map_or_else(
             || attr.as_str(vm.interns) == "__name__",
             |ss| ss == StaticStrings::DunderName,
         );
         if is_dunder_name {
-            Some(allocate_string(self.dunder_name(), vm.heap))
-        } else {
-            self.class_constant(attr, vm)
+            return Some(allocate_string(self.dunder_name(), vm.heap));
         }
+        let type_value = |ty: Self| Value::Builtin(Builtins::Type(ty));
+        Some(match attr.as_str(vm.interns) {
+            "__bases__" => allocate_tuple(self.def().bases.iter().copied().map(type_value).collect(), vm.heap),
+            "__mro__" => allocate_tuple(self.mro().map(type_value).collect(), vm.heap),
+            // `type.mro` is the method itself; any other type's is bound to that type.
+            "__class__" => type_value(Self::Type),
+            "mro" if self == Self::Type => Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+            "mro" => BoundMethod::allocate(
+                type_value(self),
+                Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
+                vm.heap,
+            ),
+            "__init_subclass__" => bind_init_subclass(type_value(self), self.class_constant(attr, vm)?, vm.heap),
+            _ => self.class_constant(attr, vm)?,
+        })
     }
 
-    /// The type's own class-level members (`time.max`, `timezone.utc`), which
-    /// instances also see; `None` when the type defines no such member.
+    /// The class-level members of the type or a native ancestor (`time.max`,
+    /// `timezone.utc`, `object.__init__`), which instances also see; `None`
+    /// when no such member exists.
     ///
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        self.def().class_attr.and_then(|class_attr| class_attr(attr, vm))
+        // Native ancestors' members are inherited too: `int.__init__` is `object`'s.
+        self.mro()
+            .find_map(|ty| ty.def().class_attr.and_then(|class_attr| class_attr(attr, vm)))
     }
 
     /// The `AttributeError` for a name missing from this type object.
@@ -159,6 +176,11 @@ impl Type {
             }
         }
     }
+}
+
+/// `cls.__init_subclass__` is an implicit classmethod, so reading it binds the class.
+pub(crate) fn bind_init_subclass(class: Value, hook: Value, heap: &Heap) -> Value {
+    BoundMethod::allocate(class, hook, heap)
 }
 
 /// The types the `CallBuiltinType` opcode can name, indexed by operand.
@@ -212,14 +234,6 @@ pub(crate) fn bool_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 pub(crate) fn union_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     args.drop_with(vm);
     Err(ExcType::type_error("cannot create 'typing.Union' instances"))
-}
-
-/// `object.__setattr__`, the only member `object` carries: it exists so a class
-/// that hooks attribute writes has a way to perform one (see `limitations/classes.md`).
-pub(crate) fn object_class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    (attr.as_str(vm.interns) == "__setattr__").then_some(Value::Builtin(Builtins::Function(
-        BuiltinsFunctions::ObjectSetattr,
-    )))
 }
 
 /// Parses a Python `float()` string argument into an `f64`.

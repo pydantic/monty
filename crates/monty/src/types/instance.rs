@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Write};
+use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
@@ -95,6 +95,13 @@ pub(crate) struct BoundMethod {
     pub func: Value,
 }
 
+impl BoundMethod {
+    /// Allocates `func` bound to `instance`, taking both references.
+    pub(crate) fn allocate(instance: Value, func: Value, heap: &Heap) -> Value {
+        Value::Ref(heap.allocate(HeapData::BoundMethod(Self { instance, func })))
+    }
+}
+
 impl<'h> HeapObjectRead<'h, Instance> {
     /// Dispatches class-only `__iter__` for the frozen wrapper to validate after any suspension.
     pub(crate) fn call_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -170,7 +177,48 @@ impl<'h> HeapReadMut<'h, Instance> {
     /// Whatever `set_attr` grows must stay above this line (see
     /// `limitations/classes.md`).
     pub fn set_attr_unchecked(&self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.attrs_mut().set(name, value, vm)
+        if name
+            .as_either_str(vm.heap)
+            .is_some_and(|name| name.as_str(vm.interns) == "__class__")
+        {
+            name.drop_with(vm);
+            self.assign_class(value, vm).map(|()| None)
+        } else {
+            self.attrs_mut().set(name, value, vm)
+        }
+    }
+
+    /// `obj.__class__ = cls`: every class shares the instance layout, so any
+    /// class is compatible; the instance takes `value`'s reference to it.
+    fn assign_class(&self, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        match value {
+            Value::Ref(id) if matches!(vm.heap.get(id), HeapData::Class(_)) => {
+                // The instance takes over `value`'s reference to the new class.
+                let class_id = value.into_ref_id().expect("matched a reference");
+                let previous = mem::replace(&mut self.get_mut(vm.heap).class, class_id);
+                Value::Ref(previous).drop_with(vm);
+                Ok(())
+            }
+            other => {
+                defer_drop!(other, vm);
+                Err(match TypeRef::from_value(other, vm.heap) {
+                    Some(TypeRef::Native(_)) => ExcType::type_error(
+                        "__class__ assignment only supported for mutable types or ModuleType subclasses",
+                    ),
+                    Some(class) => {
+                        let new = class.name(vm.heap, vm.interns);
+                        let old = class_name(self.get(vm.heap).class, vm.heap, vm.interns);
+                        ExcType::type_error(format!(
+                            "__class__ assignment: '{new}' object layout differs from '{old}'"
+                        ))
+                    }
+                    None => ExcType::type_error(format!(
+                        "__class__ must be set to a class, not '{}' object",
+                        other.py_type_name(vm)
+                    )),
+                })
+            }
+        }
     }
 }
 
@@ -427,11 +475,14 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return vm.call_function(callable, args);
         }
 
-        // 2. A class member: bind `self` for methods, call data attributes as-is.
+        // 2. A class member: bind the receiver for methods, call data attributes as-is.
         let class_id = self.get(vm.heap).class;
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return call_member_bound(member, self.id(), args, vm);
+            return match implicit_receiver(attr_str, self.id(), class_id) {
+                Some(receiver) => call_member_bound(member, receiver, args, vm),
+                None => vm.call_function(member, args),
+            };
         }
 
         // 3. `obj.__class__(...)` constructs a new instance — the callable form of
@@ -447,7 +498,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
             return vm.call_function(class_val, args);
         }
 
-        // 4. No such attribute.
+        // 4. A member `object` provides, such as `__init__`.
+        if let Some(member) = object_member(self.id(), attr, vm) {
+            defer_drop!(member, vm);
+            return vm.call_function(member, args);
+        }
+
+        // 5. No such attribute.
         args.drop_with(vm);
         Err(ExcType::attribute_error(
             class_name(class_id, vm.heap, vm.interns),
@@ -546,7 +603,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                     unreachable!("Instance py_exit called with a non-exception heap id");
                 };
                 vm.heap.inc_ref(exc_id);
-                (Value::Builtin(Builtins::Type(Type::from(e.exc_type()))), Value::Ref(exc_id))
+                (
+                    Value::Builtin(Builtins::Type(Type::from(e.exc_type()))),
+                    Value::Ref(exc_id),
+                )
             }
             None => (Value::None, Value::None),
         };
@@ -650,7 +710,7 @@ impl HeapItem for BoundMethod {
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
-    if let Some(value) = instance_attr(self_id, attr_str, vm) {
+    if let Some(value) = instance_attr(self_id, attr_str, vm).or_else(|| object_member(self_id, attr, vm)) {
         Ok(CallResult::Value(value))
     } else {
         let class_id = instance_class(self_id, vm);
@@ -659,6 +719,25 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
             attr_str,
         ))
     }
+}
+
+/// A member `object` provides (`obj.__init__`), bound as CPython's slot
+/// wrappers bind: `__new__` stays a plain function, `__init_subclass__`
+/// binds the class and the rest bind the instance.
+fn object_member(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    let member = Type::Object.class_constant(attr, vm)?;
+    Some(match attr.as_str(vm.interns) {
+        "__new__" => member,
+        "__init_subclass__" => {
+            let class_id = instance_class(self_id, vm);
+            vm.heap.inc_ref(class_id);
+            BoundMethod::allocate(Value::Ref(class_id), member, vm.heap)
+        }
+        _ => {
+            vm.heap.inc_ref(self_id);
+            BoundMethod::allocate(Value::Ref(self_id), member, vm.heap)
+        }
+    })
 }
 
 /// The lookup half of [`instance_getattr`]: the instance `__dict__`, then the
@@ -680,15 +759,14 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
     }
     let class_id = instance_class(self_id, vm);
     match class_member(class_id, attr, vm) {
-        // A class variable is returned as-is; a function binds `self`.
-        Some(member) if is_method_value(&member, vm) => {
-            vm.heap.inc_ref(self_id);
-            let bound = BoundMethod {
-                instance: Value::Ref(self_id),
-                func: member,
-            };
-            Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))))
-        }
+        // A class variable is returned as-is; a function binds its receiver.
+        Some(member) if is_method_value(&member, vm) => match implicit_receiver(attr, self_id, class_id) {
+            Some(receiver) => {
+                vm.heap.inc_ref(receiver);
+                Some(BoundMethod::allocate(Value::Ref(receiver), member, vm.heap))
+            }
+            None => Some(member),
+        },
         Some(member) => Some(member),
         // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
         // Last, so an explicit member of the same name wins, mirroring the
@@ -876,7 +954,7 @@ pub(crate) fn instance_defines_iter(self_id: HeapId, vm: &VM<'_>) -> bool {
     }
 }
 
-/// Whether `class_id`'s namespace defines `dunder`, without cloning it out.
+/// Whether `class_id` or a class it inherits from defines `dunder`, without cloning it out.
 ///
 /// Special-method lookup goes through the class only, never the instance
 /// `__dict__`, matching CPython's lookup for implicit invocations. A slot whose
@@ -897,18 +975,20 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
     matches!(class_dunder(class_id, dunder, vm), Some(member) if !matches!(member, Value::None))
 }
 
-/// Borrows a dunder out of `class_id`'s namespace, or `None` if absent.
+/// Borrows a dunder from `class_id`'s namespace or its ancestors', or `None` if absent.
 ///
 /// Backs the existence checks above without the `clone_with_heap` that
 /// [`class_member`] pays to hand out an owned value. Callers needing to tell a
 /// `None` member apart from an absent one — CPython's `has_explicit_hash` does
 /// — want this rather than either check.
 pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
-    namespace_member(class_id, dunder, vm.heap, vm.interns)
+    class_lookup(class_id, dunder, vm.heap, vm.interns)
 }
 
-/// [`class_dunder`] from a bare heap and interns, for a dump upgrade that runs
-/// before any VM exists.
+/// Borrows `name` from `class_id`'s own namespace, ignoring inherited members.
+///
+/// What the dataclass installer checks before generating a method, and what a
+/// dump upgrade reads before any VM exists.
 pub(crate) fn namespace_member<'v>(
     class_id: HeapId,
     name: &str,
@@ -918,6 +998,41 @@ pub(crate) fn namespace_member<'v>(
     match heap.get(class_id) {
         HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
         _ => None,
+    }
+}
+
+/// Borrows `name` from `class_id`'s namespace or, failing that, from the
+/// classes it inherits from in MRO order: CPython's `_PyType_Lookup`.
+pub(crate) fn class_lookup<'v>(class_id: HeapId, name: &str, heap: &'v Heap, interns: &Interns) -> Option<&'v Value> {
+    match heap.get(class_id) {
+        HeapData::Class(class) => class.lookup(name, heap, interns),
+        _ => None,
+    }
+}
+
+/// Whether `rhs` is an instance of a strict subclass of `lhs`'s class, so its
+/// side of an operator runs first, as in CPython. With a `dunder`, the subclass
+/// must also resolve it to a different member than `lhs`'s class does
+/// (CPython's `method_is_overloaded`), the rule for reflected binary operators.
+pub(crate) fn subclass_overrides(lhs: &Value, rhs: &Value, dunder: Option<&str>, vm: &VM<'_>) -> bool {
+    let (Value::Ref(lhs_id), Value::Ref(rhs_id)) = (lhs, rhs) else {
+        return false;
+    };
+    let (HeapData::Instance(lhs), HeapData::Instance(rhs)) = (vm.heap.get(*lhs_id), vm.heap.get(*rhs_id)) else {
+        return false;
+    };
+    let (lhs_class, rhs_class) = (lhs.class, rhs.class);
+    if lhs_class == rhs_class || !TypeRef::Class(rhs_class).is_subclass_of(TypeRef::Class(lhs_class), vm.heap) {
+        return false;
+    }
+    match dunder {
+        None => true,
+        Some(dunder) => match class_lookup(rhs_class, dunder, vm.heap, vm.interns) {
+            Some(rhs_member) => {
+                class_lookup(lhs_class, dunder, vm.heap, vm.interns).is_none_or(|lhs_member| !lhs_member.is(rhs_member))
+            }
+            None => false,
+        },
     }
 }
 
@@ -972,15 +1087,9 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
     }
 }
 
-/// Looks up a member in a class namespace and clones it out, or `None` if absent.
+/// Looks up a member through the class's MRO and clones it out, or `None` if absent.
 fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
-    match vm.heap.get(class_id) {
-        HeapData::Class(class) => class
-            .namespace()
-            .get_by_str(name, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap)),
-        _ => None,
-    }
+    class_lookup(class_id, name, vm.heap, vm.interns).map(|v| v.clone_with_heap(vm.heap))
 }
 
 /// Returns a class object's name for error messages / repr.
@@ -1016,10 +1125,21 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
     }
 }
 
+/// What a function found on an instance's class binds to: the instance, except
+/// for the implicit staticmethod `__new__` (nothing) and the implicit
+/// classmethod `__init_subclass__` (the class).
+fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
+    match attr {
+        "__new__" => None,
+        "__init_subclass__" => Some(class_id),
+        _ => Some(self_id),
+    }
+}
+
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
+pub(crate) fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
         Value::Ref(id) => matches!(

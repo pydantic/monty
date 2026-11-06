@@ -29,7 +29,7 @@ use crate::{
         bytes::PyBytes,
         decimal,
         inline_str::InlineStr,
-        instance::{class_defines, instance_getattr, instance_str, instance_user_eq},
+        instance::{class_defines, instance_getattr, instance_str, instance_user_eq, subclass_overrides},
         long_int::{
             PyInt, bigint_cmp_f64, bigint_cmp_i64, bigint_divmod_tuple, bigint_eq_f64, bigint_eq_i64, i64_cmp_f64,
         },
@@ -932,6 +932,22 @@ impl Value {
         Some(text.as_str())
     }
 
+    /// The class `type(self)` returns: [`py_type`](PyTrait::py_type), except
+    /// that a factory-made named tuple, which dispatches as the native
+    /// `namedtuple` type, belongs to its class object.
+    #[must_use]
+    pub(crate) fn py_class(&self, vm: &VM<'_>) -> TypeRef {
+        match self {
+            Self::Ref(id)
+                if let HeapData::NamedTuple(nt) = vm.heap.get(*id)
+                    && let Some(class_id) = nt.class_id() =>
+            {
+                TypeRef::Class(class_id)
+            }
+            _ => self.py_type(vm),
+        }
+    }
+
     /// Whether this is an instance of a user-defined class (`HeapData::Instance`).
     #[must_use]
     pub(crate) fn is_instance(&self, heap: &Heap) -> bool {
@@ -1090,9 +1106,15 @@ impl Value {
     /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
     ///
     /// Tries the left operand, then reflected equality when it returns
-    /// `NotImplemented`; identity is only the final fallback after both decline.
+    /// `NotImplemented`, or the right operand first when its class is a strict
+    /// subclass of the left's; identity is the final fallback after both decline.
     pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
-        let lhs_result = self.py_rich_eq_impl(other, vm)?;
+        if subclass_overrides(self, other, None, vm) {
+            let rhs_result = other.py_rich_eq_impl(self, vm)?;
+            if !rhs_result.is_not_implemented() {
+                return Ok(rhs_result);
+            }
+            let lhs_result = self.py_rich_eq_impl(other, vm)?;
             return Ok(if lhs_result.is_not_implemented() {
                 Self::Bool(self.is(other))
             } else {
@@ -1521,6 +1543,7 @@ impl Value {
             vm,
             |vm| self.py_add_impl(other, vm),
             |vm| other.py_radd_impl(self, vm),
+            "__radd__",
         )
     }
 
@@ -1531,6 +1554,7 @@ impl Value {
             vm,
             |vm| self.py_sub_impl(other, vm),
             |vm| other.py_rsub_impl(self, vm),
+            "__rsub__",
             "-",
         )
     }
@@ -1558,6 +1582,7 @@ impl Value {
             vm,
             |vm| self.py_mul_impl(other, vm),
             |vm| other.py_rmul_impl(self, vm),
+            "__rmul__",
             "*",
         )
     }
@@ -1569,6 +1594,7 @@ impl Value {
             vm,
             |vm| self.py_matmul_impl(other, vm),
             |vm| other.py_rmatmul_impl(self, vm),
+            "__rmatmul__",
             "@",
         )
     }
@@ -1580,6 +1606,7 @@ impl Value {
             vm,
             |vm| self.py_truediv_impl(other, vm),
             |vm| other.py_rtruediv_impl(self, vm),
+            "__rtruediv__",
             "/",
         )
     }
@@ -1591,6 +1618,7 @@ impl Value {
             vm,
             |vm| self.py_floordiv_impl(other, vm),
             |vm| other.py_rfloordiv_impl(self, vm),
+            "__rfloordiv__",
             "//",
         )
     }
@@ -1602,6 +1630,7 @@ impl Value {
             vm,
             |vm| self.py_mod_impl(other, vm),
             |vm| other.py_rmod_impl(self, vm),
+            "__rmod__",
             "%",
         )
     }
@@ -1616,6 +1645,7 @@ impl Value {
             vm,
             |vm| self.py_divmod_impl(other, vm),
             |vm| other.py_rdivmod_impl(self, vm),
+            "__rdivmod__",
             "divmod()",
         )
     }
@@ -1628,6 +1658,7 @@ impl Value {
             vm,
             |vm| self.py_pow_impl(other, modulus, vm),
             |vm| other.py_rpow_impl(self, modulus, vm),
+            "__rpow__",
         )?;
         if let Some(result) = result {
             Ok(result)
@@ -1669,6 +1700,7 @@ impl Value {
             vm,
             |vm| self.py_and_impl(other, vm),
             |vm| other.py_rand_impl(self, vm),
+            "__rand__",
             "&",
         )
     }
@@ -1680,6 +1712,7 @@ impl Value {
             vm,
             |vm| self.py_or_impl(other, vm),
             |vm| other.py_ror_impl(self, vm),
+            "__ror__",
             "|",
         )
     }
@@ -1691,6 +1724,7 @@ impl Value {
             vm,
             |vm| self.py_xor_impl(other, vm),
             |vm| other.py_rxor_impl(self, vm),
+            "__rxor__",
             "^",
         )
     }
@@ -1702,6 +1736,7 @@ impl Value {
             vm,
             |vm| self.py_lshift_impl(other, vm),
             |vm| other.py_rlshift_impl(self, vm),
+            "__rlshift__",
             "<<",
         )
     }
@@ -1713,6 +1748,7 @@ impl Value {
             vm,
             |vm| self.py_rshift_impl(other, vm),
             |vm| other.py_rrshift_impl(self, vm),
+            "__rrshift__",
             ">>",
         )
     }
@@ -1724,9 +1760,10 @@ impl Value {
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
         operator: &'static str,
     ) -> RunResult<Self> {
-        if let Some(result) = self.binary_op_result(other, vm, direct, reflected)? {
+        if let Some(result) = self.binary_op_result(other, vm, direct, reflected, reflected_dunder)? {
             Ok(result)
         } else {
             let lhs_type = self.py_type(vm);
@@ -1746,7 +1783,9 @@ impl Value {
         }
     }
 
-    /// Tries numeric slots, suppressing reflected dispatch between instances of the same class.
+    /// Tries numeric slots, suppressing reflected dispatch between instances of
+    /// the same class, and trying the reflected slot first when the right
+    /// operand's class is a subclass overriding it, as CPython does.
     /// Builtin representations still need both sides: an immediate `int` can
     /// delegate to a heap `LongInt` even though both have Python type `int`.
     fn binary_op_result(
@@ -1755,8 +1794,14 @@ impl Value {
         vm: &mut VM<'_>,
         direct: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
         reflected: impl FnOnce(&mut VM<'_>) -> RunResult<Option<Self>>,
+        reflected_dunder: &'static str,
     ) -> RunResult<Option<Self>> {
-        if let Some(result) = direct(vm)? {
+        if subclass_overrides(self, other, Some(reflected_dunder), vm) {
+            match reflected(vm)? {
+                Some(result) => Ok(Some(result)),
+                None => direct(vm),
+            }
+        } else if let Some(result) = direct(vm)? {
             Ok(Some(result))
         } else if self.is_instance(vm.heap) && self.py_type(vm) == other.py_type(vm) {
             Ok(None)

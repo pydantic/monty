@@ -44,7 +44,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Rejected at parse time**, with `NotImplementedError` before any code runs:
 
-- Class inheritance and metaclasses (`class Foo(Bar):`)
+- Metaclasses (`class Foo(metaclass=M):`)
 - Decorators on methods — so no `@classmethod`, `@staticmethod`, `@property`
 - `yield` / `yield from` — there are no generator functions.
     Generator *expressions* parse, but currently materialise to a `list`
@@ -57,8 +57,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Missing in other ways:**
 
-- User-defined exception classes.
-    The built-in exception types are a fixed set, and without inheritance you cannot add to it.
+- User-defined exception classes, and subclasses of other native types.
+    Classes inherit only from classes and `object`, so the built-in exception types are a fixed set.
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.

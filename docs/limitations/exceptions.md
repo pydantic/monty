@@ -1,9 +1,9 @@
 # Exceptions
 
 Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes**: the `class` statement exists
-(see [classes.md](classes.md)) but classes cannot inherit, so there is no way
-to subclass `BaseException`/`Exception`. `raise` must therefore use one of
+code **cannot define new exception classes**: classes can inherit only from
+other classes and `object` (see [classes.md](classes.md#inheritance)), so there
+is no way to subclass `BaseException`/`Exception`. `raise` must therefore use one of
 these built-ins; `raise MyClass()` on a plain user class raises
 `TypeError: exceptions must derive from BaseException`, as in CPython.
 
@@ -85,10 +85,9 @@ not supported; passing more than one argument raises an internal error.
 
 ## Custom subclasses
 
-User `class` definitions are supported, but classes cannot inherit
-(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance and metaclasses`), so there is no way to
-create a new exception class inside
-the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
+User `class` definitions are supported, but a class cannot derive from an
+exception type (`class Foo(Exception):` raises `TypeError: Monty does not support subclassing 'Exception': ...`),
+so there is no way to create a new exception class inside the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
 with `TypeError: exceptions must derive from BaseException`. Define custom
 exception types on the host side if needed, or use the built-in subclass
 that best fits.

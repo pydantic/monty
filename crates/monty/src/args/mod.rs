@@ -70,6 +70,23 @@ impl ArgValues {
         }
     }
 
+    /// A copy of these arguments holding its own references, for passing the
+    /// same arguments to two calls (`__new__` then `__init__`).
+    ///
+    /// Bounded by the arguments already built, so it needs no memory preflight.
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        match self {
+            Self::Empty => Self::Empty,
+            Self::One(v) => Self::One(v.clone_with_heap(heap)),
+            Self::Two(a, b) => Self::Two(a.clone_with_heap(heap), b.clone_with_heap(heap)),
+            Self::Kwargs(kwargs) => Self::Kwargs(kwargs.clone_with_heap(heap)),
+            Self::ArgsKargs { args, kwargs } => Self::ArgsKargs {
+                args: args.iter().map(|v| v.clone_with_heap(heap)).collect(),
+                kwargs: kwargs.clone_with_heap(heap),
+            },
+        }
+    }
+
     /// Rejects keywords before a positional-only function's arity or conversion checks.
     pub(crate) fn reject_kwargs(self, name: &str, heap: &mut Heap) -> RunResult<Self> {
         if self.has_kwargs() {
@@ -394,6 +411,21 @@ pub(crate) enum KwargsValues {
 }
 
 impl KwargsValues {
+    /// A copy holding its own references; a dict becomes key/value pairs.
+    pub(crate) fn clone_with_heap(&self, heap: &Heap) -> Self {
+        let clone_pairs = |pairs: &mut dyn Iterator<Item = (&Value, &Value)>| {
+            pairs
+                .map(|(k, v)| (k.clone_with_heap(heap), v.clone_with_heap(heap)))
+                .collect()
+        };
+        match self {
+            Self::Empty => Self::Empty,
+            Self::Inline(items) => Self::Inline(items.iter().map(|(k, v)| (*k, v.clone_with_heap(heap))).collect()),
+            Self::Pairs(items) => Self::Pairs(clone_pairs(&mut items.iter().map(|(k, v)| (k, v)))),
+            Self::Dict(dict) => Self::Pairs(clone_pairs(&mut dict.iter())),
+        }
+    }
+
     /// Returns the number of keyword arguments.
     #[must_use]
     pub fn len(&self) -> usize {
