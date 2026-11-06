@@ -7,7 +7,10 @@ use std::{
 
 use monty_fs::{Mount, MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, WriteBytesAtArgs};
-use proptest::{prelude::*, test_runner::FileFailurePersistence};
+use proptest::{
+    prelude::*,
+    test_runner::{FileFailurePersistence, TestCaseResult},
+};
 use tempfile::TempDir;
 
 #[expect(dead_code, reason = "shared helpers; these tests only create file symlinks")]
@@ -202,49 +205,86 @@ proptest! {
     })]
 
     #[test]
-    fn positional_write_sequences_match_a_reference_file(
+    fn native_positional_writes_match_a_reference_file(
         initial in prop::collection::vec(any::<u8>(), 0..129),
         writes in prop::collection::vec(write_operation(), 1..33),
     ) {
-        for overlay in [false, true] {
-            let dir = TempDir::new()?;
-            fs::write(dir.path().join("file"), &initial)?;
-            let mut table = table(&dir, overlay, None);
-            let mut reference = tempfile::tempfile()?;
-            reference.write_all(&initial)?;
+        assert_positional_writes_match_reference(&initial, &writes, false)?;
+    }
 
-            for (index, (position, data)) in writes.iter().enumerate() {
-                let length = reference.metadata()?.len();
-                let offset = match position {
-                    WriteOffset::Absolute(offset) => u64::from(*offset),
-                    WriteOffset::BeforeEnd => length.saturating_sub(1),
-                    WriteOffset::End => length,
-                    WriteOffset::BeyondEnd(gap) => length + u64::from(*gap),
-                };
-                reference.seek(SeekFrom::Start(offset))?;
-                reference.write_all(data)?;
-                let count = dispatch(&mut table, write(offset, data))?;
-                prop_assert_eq!(count, MontyObject::int(i64::try_from(data.len())?),
-                    "overlay={} step={} offset={}", overlay, index, offset);
+    #[test]
+    fn overlay_positional_writes_match_a_reference_file(
+        initial in prop::collection::vec(any::<u8>(), 0..129),
+        writes in prop::collection::vec(write_operation(), 1..33),
+    ) {
+        assert_positional_writes_match_reference(&initial, &writes, true)?;
+    }
+}
 
-                reference.rewind()?;
-                let mut expected = Vec::new();
-                reference.read_to_end(&mut expected)?;
-                let content = dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into()))?;
-                prop_assert_eq!(content, MontyObject::bytes(expected),
-                    "overlay={} step={} offset={}", overlay, index, offset);
-                let stat = dispatch(&mut table, OsFunctionCall::Stat("/mnt/file".into()))?;
-                let fields = stat.as_ref().items().expect("stat returns a namedtuple");
-                prop_assert_eq!(fields[6].as_int(), Some(i64::try_from(reference.metadata()?.len())?),
-                    "overlay={} step={}", overlay, index);
+/// Checks one backend against a reference file after every write in a generated history.
+fn assert_positional_writes_match_reference(
+    initial: &[u8],
+    writes: &[(WriteOffset, Vec<u8>)],
+    overlay: bool,
+) -> TestCaseResult {
+    let dir = TempDir::new()?;
+    fs::write(dir.path().join("file"), initial)?;
+    let mut table = table(&dir, overlay, None);
+    let mut reference = tempfile::tempfile()?;
+    reference.write_all(initial)?;
 
-                if overlay {
-                    prop_assert_eq!(fs::read(dir.path().join("file"))?, initial.as_slice(),
-                        "overlay wrote through to backing file at step={}", index);
-                }
-            }
+    for (index, (position, data)) in writes.iter().enumerate() {
+        let length = reference.metadata()?.len();
+        let offset = match position {
+            WriteOffset::Absolute(offset) => u64::from(*offset),
+            WriteOffset::BeforeEnd => length.saturating_sub(1),
+            WriteOffset::End => length,
+            WriteOffset::BeyondEnd(gap) => length + u64::from(*gap),
+        };
+        reference.seek(SeekFrom::Start(offset))?;
+        reference.write_all(data)?;
+        let count = dispatch(&mut table, write(offset, data))?;
+        prop_assert_eq!(
+            count,
+            MontyObject::int(i64::try_from(data.len())?),
+            "overlay={} step={} offset={}",
+            overlay,
+            index,
+            offset
+        );
+
+        reference.rewind()?;
+        let mut expected = Vec::new();
+        reference.read_to_end(&mut expected)?;
+        let content = dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into()))?;
+        prop_assert_eq!(
+            content,
+            MontyObject::bytes(expected),
+            "overlay={} step={} offset={}",
+            overlay,
+            index,
+            offset
+        );
+        let stat = dispatch(&mut table, OsFunctionCall::Stat("/mnt/file".into()))?;
+        let fields = stat.as_ref().items().expect("stat returns a namedtuple");
+        prop_assert_eq!(
+            fields[6].as_int(),
+            Some(i64::try_from(reference.metadata()?.len())?),
+            "overlay={} step={}",
+            overlay,
+            index
+        );
+
+        if overlay {
+            prop_assert_eq!(
+                fs::read(dir.path().join("file"))?,
+                initial,
+                "overlay wrote through to backing file at step={}",
+                index
+            );
         }
     }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
