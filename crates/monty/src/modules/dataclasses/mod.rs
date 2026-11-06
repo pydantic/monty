@@ -39,7 +39,7 @@ use crate::{
         typing::{self, HintFormat, HintsRequest, HintsTask},
     },
     types::{
-        Class, Dict, Module, PyTrait, TupleVec, Type, allocate_tuple,
+        Class, Dict, Module, PyTrait, TupleVec, Type, TypeRef, allocate_tuple,
         generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
@@ -272,6 +272,7 @@ fn decorate_class(cls: &Value, class_id: HeapId, options: DataclassOptions, vm: 
     let HeapReadOutput::Class(class) = vm.heap.read(class_id) else {
         unreachable!("the caller checked the class")
     };
+    check_frozen_inheritance(class.get(vm.heap), options, vm)?;
     let fields = build_dataclass_fields(&class, annotations, vm)?;
     let Value::Ref(fields_id) = fields else {
         unreachable!("the fields mapping is a dict")
@@ -285,6 +286,33 @@ fn decorate_class(cls: &Value, class_id: HeapId, options: DataclassOptions, vm: 
     store_dataclass_params(&class, options, vm)?;
     install_generated_methods(class_id, &class, fields_id, options, &mut Installer::Decorate(vm))?;
     store_match_args(&class, fields_id, vm)
+}
+
+/// CPython's rule that a dataclass matches the frozenness of every dataclass it inherits from.
+fn check_frozen_inheritance(class: &Class, options: DataclassOptions, vm: &VM<'_>) -> RunResult<()> {
+    let base_params = class.ancestors().iter().filter_map(|ancestor| match ancestor {
+        TypeRef::Class(id) => match vm.heap.get(*id) {
+            HeapData::Class(base) => match base.namespace().get_by_str("__dataclass_params__", vm.heap, vm.interns) {
+                Some(Value::Ref(params_id)) => match vm.heap.get(*params_id) {
+                    HeapData::DataclassParams(params) => Some(params.options()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        },
+        TypeRef::Native(_) => None,
+    });
+    for base in base_params {
+        if base.frozen != options.frozen {
+            return Err(ExcType::type_error(if options.frozen {
+                "cannot inherit frozen dataclass from a non-frozen one"
+            } else {
+                "cannot inherit non-frozen dataclass from a frozen one"
+            }));
+        }
+    }
+    Ok(())
 }
 
 /// `dataclass()` applied to something that is not a class.

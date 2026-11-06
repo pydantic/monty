@@ -19,15 +19,16 @@ use strum::VariantNames;
 
 use crate::{
     args::ArgValues,
-    builtins::{iter::builtin_iter, type_::builtin_type},
+    builtins::{iter::builtin_iter, object::object_class_attr, type_::builtin_type},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, exc_new},
     modules::{collections, csv, hashlib, itertools},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, Str, TimeZone,
         Tuple, bytes, complex, date, datetime, decimal, dict, path,
+        super_::builtin_super,
         time, timedelta, timezone,
-        r#type::{bool_init, float_init, int_init, object_class_attr, union_init},
+        r#type::{bool_init, float_init, int_init, union_init},
     },
     value::{EitherStr, Value},
 };
@@ -606,9 +607,9 @@ native_types! {
     ItertoolsStarMap("itertools.starmap")
         .iterator()
         .ctor(Constructor::Typed(itertools::construct)),
-    /// `object` — the builtin name only, not a base class: Monty has no
-    /// inheritance, so it exists to carry `object.__setattr__`, the write that
-    /// bypasses a class's attribute hooks. Constructing it is unsupported.
+    /// `object`, the root of every class. Its members (`__init__`, `__new__`,
+    /// `__init_subclass__`, `__setattr__`) are inherited by every class, but
+    /// `object()` itself cannot be built (see `limitations/classes.md`).
     Object("object")
         .root()
         .builtin()
@@ -723,6 +724,10 @@ native_types! {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     ForwardRef("annotationlib.ForwardRef")
         .ctor(Constructor::Value(ForwardRef::init)),
+    /// `super`, the proxy that looks attributes up past a class in an MRO.
+    Super("super")
+        .builtin()
+        .ctor(Constructor::Value(builtin_super)),
     /// The base of every ordinary exception.
     Exception("Exception", BaseException)
         .builtin()

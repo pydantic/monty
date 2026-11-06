@@ -19,8 +19,8 @@ both.
 - **Only builtin containers match.** Sequence patterns accept `list`, `tuple`,
     namedtuples, `range` and `deque`; mapping patterns accept `dict`, `defaultdict`
     and `Counter`.
-    Monty has no inheritance and no `collections.abc`, so no user or host class can
-    be a `Sequence` or `Mapping`, and its instances never match these patterns.
+    Monty has no native-type subclassing and no `collections.abc`, so no user or
+    host class can be a `Sequence` or `Mapping`, and its instances never match these patterns.
 
 ## Class patterns
 

@@ -131,8 +131,8 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
     discards the `fold` of the `time` it is given, where CPython carries it
     over.
 
-Subclassing `datetime` is not possible, since there is no class inheritance
-(see [classes.md](classes.md)).
+Subclassing `datetime` is not possible, since classes inherit only from
+classes and `object` (see [classes.md](classes.md#inheritance)).
 
 `datetime.replace()`, `date.replace()` and `time.replace()` accept **only
 keyword arguments** in Monty. CPython accepts positional args too

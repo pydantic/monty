@@ -19,6 +19,7 @@ mod hash;
 mod hex;
 mod id;
 pub(crate) mod isinstance;
+pub(crate) mod issubclass;
 pub(crate) mod iter;
 mod len;
 mod locals;
@@ -26,6 +27,7 @@ mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
 pub(crate) mod next;
+pub(crate) mod object;
 pub(crate) mod object_setattr;
 mod oct;
 pub(crate) mod open;
@@ -186,6 +188,7 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Hex => hex::builtin_hex(vm, args),
             Self::Id => id::builtin_id(vm, args),
             Self::Isinstance => isinstance::builtin_isinstance(vm, args),
+            Self::Issubclass => issubclass::builtin_issubclass(vm, args),
             Self::Len => len::builtin_len(vm, args),
             Self::Map => map::builtin_map(vm, args),
             Self::Max => min_max::builtin_max(vm, args),
@@ -203,6 +206,10 @@ impl BuiltinsFunctionsExt for BuiltinsFunctions {
             Self::Round => round::builtin_round(vm, args),
             Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::ObjectSetattr => object_setattr::builtin_object_setattr(vm, args),
+            Self::ObjectNew => object::builtin_object_new(vm, args),
+            Self::ObjectInit => object::builtin_object_init(vm, args),
+            Self::ObjectInitSubclass => object::builtin_object_init_subclass(vm, args),
+            Self::TypeMro => type_::builtin_type_mro(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),
