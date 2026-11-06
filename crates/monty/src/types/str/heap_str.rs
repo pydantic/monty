@@ -61,10 +61,16 @@ impl HeapStr {
         } else {
             bytecount::num_chars(text.as_bytes())
         };
+        Self::with_char_len(text, length)
+    }
+
+    /// Uses a character count accumulated by the producing operation.
+    pub(super) fn with_char_len(text: Box<str>, char_len: usize) -> Self {
+        debug_assert_eq!(char_len, text.chars().count());
         Self {
             text,
             cached_hash: Cell::new(None),
-            char_len: length,
+            char_len,
         }
     }
 
