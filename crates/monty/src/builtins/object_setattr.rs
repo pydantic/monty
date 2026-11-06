@@ -50,9 +50,6 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
     };
 
     let name_str = name.as_str(vm.interns);
-    if name_str == "__class__" {
-        return Err(ExcType::type_error("__class__ assignment not supported"));
-    }
 
     // Only an instance has a `__dict__` to write into. Everything else gets the
     // error CPython's own `object.__setattr__` produces for a type whose
@@ -63,6 +60,10 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Val
     let HeapReadOutput::Instance(instance) = vm.heap.read(*heap_id) else {
         return Err(no_dict_error(object, &name, vm));
     };
+
+    if name_str == "__class__" {
+        return Err(ExcType::type_error("__class__ assignment not supported"));
+    }
 
     let value = if name_str == "args" {
         let class_id = instance.get(vm.heap).class();

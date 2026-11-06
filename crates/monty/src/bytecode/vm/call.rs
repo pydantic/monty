@@ -1211,7 +1211,14 @@ impl<'h> VM<'h> {
                         Value::Ref(instance_id).drop_with(this);
                         return Err(ExcType::type_error(format!("{name}() takes no keyword arguments")));
                     }
-                    let args_tuple = args_for_init.positional_tuple(this.heap)?;
+                    let args_tuple = match args_for_init.positional_tuple(this.heap) {
+                        Ok(tuple) => tuple,
+                        Err(err) => {
+                            args_for_init.drop_with(this);
+                            Value::Ref(instance_id).drop_with(this);
+                            return Err(err);
+                        }
+                    };
                     args_for_init.drop_with(this);
                     let key = Value::InternString(this.interns.intern_static(StaticStrings::Args));
                     let HeapReadOutput::Instance(inst) = this.heap.read(instance_id) else {

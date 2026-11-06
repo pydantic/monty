@@ -1,6 +1,6 @@
 # Exceptions
 
-Monty implements a set of built-in exception classes, listed below. Sandboxed code can define **custom exception classes** by subclassing `Exception`, `BaseException`, or any supported built-in exception type (listed below, e.g. `class MyError(Exception): pass`), matching CPython semantics for `raise`, `try/except`, `issubclass`, `isinstance`, and `.args`. Plain user classes that do not derive from `BaseException` cannot be raised; `raise MyClass()` raises `TypeError: exceptions must derive from BaseException`, as in CPython.
+Monty implements a set of built-in exception classes, listed below. Sandboxed code can define **custom exception classes** by subclassing `Exception`, `BaseException`, or any supported built-in exception type (listed below, e.g. `class MyError(Exception): pass`). Plain user classes that do not derive from `BaseException` cannot be raised.
 
 ## Implemented exception classes
 
@@ -48,7 +48,7 @@ arguments, so `MyError(1, 2, 3)` sets `exc.args == (1, 2, 3)`.
     Always a `tuple`, even when empty.
 
 - `str(exc)` — returns the single message string, `""` if none, or the tuple repr when two
-    or more arguments are present (matching CPython's default `BaseException.__str__`).
+    or more arguments are present.
 
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:

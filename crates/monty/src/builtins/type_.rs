@@ -1,6 +1,6 @@
 //! Implementation of the type() builtin function.
 
-use std::mem;
+use std::mem::{self, size_of};
 
 use monty_types::ResourceTracker;
 
@@ -429,6 +429,28 @@ fn create_class(
 
 /// Computes Python's C3 method resolution order for the given base classes.
 fn compute_c3_mro(bases: &[ClassBase], base_names: &[&str], heap: &Heap) -> RunResult<Vec<ClassBase>> {
+    let total_elements: usize = bases
+        .iter()
+        .map(|&base| match base {
+            ClassBase::Class(base_id) => {
+                if let HeapData::Class(base_cls) = heap.get(base_id) {
+                    1 + base_cls.mro().len()
+                } else {
+                    1
+                }
+            }
+            ClassBase::BuiltinExc(exc) => exc.mro().len() + 1,
+            ClassBase::Object => 1,
+        })
+        .sum::<usize>()
+        + bases.len();
+
+    let scratch_bytes = (bases.len() + 1)
+        .saturating_mul(size_of::<Vec<ClassBase>>())
+        .saturating_add(total_elements.saturating_mul(size_of::<ClassBase>()))
+        .saturating_add(total_elements.saturating_mul(size_of::<ClassBase>()));
+    heap.tracker.check_allocation(scratch_bytes)?;
+
     let mut sequences: Vec<Vec<ClassBase>> = Vec::with_capacity(bases.len() + 1);
     for &base in bases {
         match base {
@@ -452,7 +474,7 @@ fn compute_c3_mro(bases: &[ClassBase], base_names: &[&str], heap: &Heap) -> RunR
     }
     sequences.push(bases.to_vec());
 
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(total_elements.min(bases.len() + 10));
     let mut step: usize = 0;
     loop {
         sequences.retain(|seq| !seq.is_empty());

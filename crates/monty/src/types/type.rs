@@ -720,8 +720,11 @@ impl Type {
                 )))
             }
             _ if attr.as_str(vm.interns) == "mro" => {
-                let self_builtin: BuiltinType = self.try_into().expect("builtin type");
-                builtin_type_mro(vm, args.prepend(Value::Builtin(Builtins::Type(self_builtin)))).map(CallResult::Value)
+                let self_value = match self {
+                    Self::Exception(exc_type) => Value::Builtin(Builtins::ExcType(exc_type)),
+                    other => Value::Builtin(Builtins::Type(other.try_into().expect("builtin type"))),
+                };
+                builtin_type_mro(vm, args.prepend(self_value)).map(CallResult::Value)
             }
             _ if attr.as_str(vm.interns) == "__init_subclass__" => {
                 let self_builtin: BuiltinType = self.try_into().expect("builtin type");
@@ -763,6 +766,17 @@ impl Type {
         } else if attr.as_str(vm.interns) == "__bases__" {
             let items = if self == Self::Object {
                 vec![]
+            } else if let Self::Exception(exc_type) = self {
+                let bases = exc_type.direct_bases();
+                if bases.is_empty() {
+                    vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
+                } else {
+                    bases
+                        .iter()
+                        .copied()
+                        .map(|b| Value::Builtin(Builtins::ExcType(b)))
+                        .collect()
+                }
             } else if self == Self::Bool {
                 vec![Value::Builtin(Builtins::Type(BuiltinType::Int))]
             } else if self == Self::DateTime {
@@ -774,9 +788,16 @@ impl Type {
             };
             Some(allocate_tuple(items.into(), vm.heap))
         } else if attr.as_str(vm.interns) == "__mro__" {
-            let self_builtin: BuiltinType = self.try_into().expect("builtin type");
             let items = if self == Self::Object {
                 vec![Value::Builtin(Builtins::Type(BuiltinType::Object))]
+            } else if let Self::Exception(exc_type) = self {
+                let mut items: Vec<Value> = exc_type
+                    .mro()
+                    .into_iter()
+                    .map(|b| Value::Builtin(Builtins::ExcType(b)))
+                    .collect();
+                items.push(Value::Builtin(Builtins::Type(BuiltinType::Object)));
+                items
             } else if self == Self::Bool {
                 vec![
                     Value::Builtin(Builtins::Type(BuiltinType::Bool)),
@@ -790,12 +811,14 @@ impl Type {
                     Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             } else if matches!(self, Self::DefaultDict | Self::Counter) {
+                let self_builtin: BuiltinType = self.try_into().expect("builtin type");
                 vec![
                     Value::Builtin(Builtins::Type(self_builtin)),
                     Value::Builtin(Builtins::Type(BuiltinType::Dict)),
                     Value::Builtin(Builtins::Type(BuiltinType::Object)),
                 ]
             } else {
+                let self_builtin: BuiltinType = self.try_into().expect("builtin type");
                 vec![
                     Value::Builtin(Builtins::Type(self_builtin)),
                     Value::Builtin(Builtins::Type(BuiltinType::Object)),
@@ -818,9 +841,12 @@ impl Type {
         } else if self == Self::Object && attr.as_str(vm.interns) == "__init__" {
             Some(Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInit)))
         } else if attr.as_str(vm.interns) == "mro" {
-            let self_builtin: BuiltinType = self.try_into().ok()?;
+            let self_val = match self {
+                Self::Exception(exc_type) => Value::Builtin(Builtins::ExcType(exc_type)),
+                other => Value::Builtin(Builtins::Type(other.try_into().ok()?)),
+            };
             Some(BoundMethod::allocate(
-                Value::Builtin(Builtins::Type(self_builtin)),
+                self_val,
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
                 vm.heap,
             ))

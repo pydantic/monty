@@ -1229,7 +1229,7 @@ mod tests {
                 message: None,
                 traceback: vec![].into(),
                 data: None,
-                custom_type_name: None,
+                custom_type_name: Some("MyCustomError".to_owned()),
             }),
             pb::ext_function_result::Kind::ReturnValue(0),
         ];
@@ -1370,11 +1370,11 @@ mod tests {
         metrics.begin_turn(&feed());
         metrics.event(&event(pb::child_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
-                exc_type: "MyCustomError".to_owned(),
+                exc_type: "Exception".to_owned(),
                 message: None,
                 traceback: vec![].into(),
                 data: None,
-                custom_type_name: None,
+                custom_type_name: Some("MyCustomError".to_owned()),
             }),
         })));
 
@@ -1545,7 +1545,7 @@ mod tests {
                 message: None,
                 traceback: vec![].into(),
                 data: None,
-                custom_type_name: None,
+                custom_type_name: Some("MyCustomError".to_owned()),
             }),
         })));
 

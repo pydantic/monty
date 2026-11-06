@@ -156,7 +156,7 @@ field after a defaulted one
 ## Inheritance
 
 - **Field inheritance across dataclasses is not supported.** Monty constructs dataclass
-    instances by binding fields directly off `__dataclass_fields__` without synthesizing
+    instances from a native `__init__` built from the field list captured at decoration, without synthesizing
     bytecode `__init__` methods:
     - Subclassing with `@dataclass` (e.g. `@dataclass class Child(Parent): y: int`) only
         includes fields declared directly on the child class; parent fields are omitted from

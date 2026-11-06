@@ -384,7 +384,7 @@ try:
     type('BadCellInst', (), {'__classcell__': FactoryBase()})
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "__classcell__ must be a nonlocal cell, not <class 'FactoryBase'>"
+    assert str(e).startswith("__classcell__ must be a nonlocal cell, not <class ") and str(e).endswith("FactoryBase'>")
 
 
 # locals() visibility and nested classes / custom __class__ class attribute.

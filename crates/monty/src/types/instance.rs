@@ -9,6 +9,7 @@ use crate::{
     builtins::{
         Builtins, BuiltinsFunctions,
         object_init::{builtin_exception_init, builtin_object_init},
+        object_init_subclass::builtin_object_init_subclass,
         object_new::{builtin_exception_new, builtin_object_new},
     },
     bytecode::{CallResult, RunReentryGuard, VM},
@@ -516,7 +517,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                 return vm.call_function(member, args);
             }
             if attr_str == "__init_subclass__" {
-                return call_member_bound(member, class_id, args, vm);
+                vm.heap.inc_ref(class_id);
+                return vm.call_function(member, args.prepend(Value::Ref(class_id)));
             }
             return call_member_bound(member, self.id(), args, vm);
         }
@@ -534,8 +536,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         }
 
         if attr_str == "__init_subclass__" {
-            let func = Value::Builtin(Builtins::Function(BuiltinsFunctions::ObjectInitSubclass));
-            return call_member_bound(&func, class_id, args, vm);
+            vm.heap.inc_ref(class_id);
+            return builtin_object_init_subclass(vm, args.prepend(Value::Ref(class_id))).map(CallResult::Value);
         }
 
         if attr_str == "__init__" {
@@ -845,6 +847,9 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                     Value::Builtin(Builtins::Function(func)),
                     vm.heap,
                 ))
+            } else if attr == "__class__" {
+                vm.heap.inc_ref(class_id);
+                Some(Value::Ref(class_id))
             } else if let HeapData::Class(cls) = vm.heap.get(class_id)
                 && cls.base_exception().is_some()
             {
@@ -853,9 +858,6 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &VM<'_>) -> Option<
                     "__suppress_context__" => Some(Value::Bool(false)),
                     _ => None,
                 }
-            } else if attr == "__class__" {
-                vm.heap.inc_ref(class_id);
-                Some(Value::Ref(class_id))
             } else {
                 None
             }

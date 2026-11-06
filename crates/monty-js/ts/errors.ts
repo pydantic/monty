@@ -104,8 +104,8 @@ export class MontyError extends Error {
 export class MontySyntaxError extends MontyError {
   private readonly tracebackText: string
 
-  constructor(message: string, tracebackText = '') {
-    super('SyntaxError', message)
+  constructor(message: string, tracebackText = '', customTypeName?: string | null) {
+    super('SyntaxError', message, customTypeName)
     this.name = 'MontySyntaxError'
     this.tracebackText = tracebackText
   }
@@ -427,7 +427,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
  */
 export function montyErrorFromNative(exc: NativeException): MontySyntaxError | MontyRuntimeError {
   if (exc.excType === 'SyntaxError') {
-    return new MontySyntaxError(exc.message, exc.traceback)
+    return new MontySyntaxError(exc.message, exc.traceback, exc.customTypeName)
   }
   return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback, exc.customTypeName)
 }

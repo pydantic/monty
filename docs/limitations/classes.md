@@ -81,9 +81,8 @@ order and error wording, but with these divergences:
     `Foo.__init__() missing ...`.
 - **`type(obj)`** returns the class object (so identity works), but its own
     `repr` is `<class 'Foo'>` with the bare name; CPython qualifies it.
-- **Metaclasses are not supported.** `type(Foo) is type` and `isinstance(Foo, type)`
-    return `True`, matching CPython, but custom metaclasses (`class Foo(metaclass=Meta):`)
-    are not supported.
+- **Metaclasses are not supported.** Custom metaclasses (`class Foo(metaclass=Meta):`)
+    are rejected at parse time as not-implemented.
 - **Bound methods report `function`, not `method`.** `type(obj.method)` is
     `<class 'function'>` where CPython says `<class 'method'>`; Monty has no
     dedicated `method` type.
@@ -123,12 +122,8 @@ order and error wording, but with these divergences:
     `__init__`, `__new__`, `__init_subclass__`, and `__setattr__` dispatch to `object`. Built-in
     protocol methods (`__repr__`, `__str__`, `__eq__`, `__hash__`) raise
     `AttributeError` rather than falling back to `object`'s implementations.
-- **Dataclass inheritance does not inherit fields**: subclassing a `@dataclass`
-    only discovers fields declared directly on the subclass body; ancestor fields
-    are not included in the synthesized `__init__` or `__dataclass_fields__`.
-- **Base-class annotations are not merged by `typing.get_type_hints`**:
-    `get_type_hints(Sub)` evaluates only `Sub`'s own annotations rather than walking
-    `Sub.__mro__`, so annotations declared on base classes are omitted.
+- **Dataclass inheritance**: see [dataclasses.md](dataclasses.md#inheritance).
+- **Base-class annotations**: see [typing.md](typing.md#annotations).
 - **Instances never inherit class `__annotations__`**: `inst.__annotations__` raises
     `AttributeError` unless assigned on the instance itself, even when `__annotations__`
     is stored directly in the class namespace (such as via `type()` or
@@ -384,7 +379,7 @@ every construction request. Divergences:
 
 - Metaclasses (and metaclass keyword arguments in class definitions) are
     rejected at parse time as not-implemented.
-- Metaclasses, `__set_name__`, and other metaclass-driven namespace customization.
+- `__set_name__` and other metaclass-driven namespace customization.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
 - Method decorators — `@classmethod`, `@staticmethod`, `@property`, and any

@@ -113,7 +113,18 @@ impl JsMontyException {
         let format = format.as_deref().unwrap_or("traceback");
         match format {
             "traceback" => Ok(self.0.to_string()),
-            "type-msg" => Ok(self.0.summary()),
+            "type-msg" => {
+                let type_name = self
+                    .0
+                    .custom_type_name()
+                    .map_or_else(|| self.0.exc_type().to_string(), ToOwned::to_owned);
+                let message = self.0.message().unwrap_or_default();
+                if message.is_empty() {
+                    Ok(type_name)
+                } else {
+                    Ok(format!("{type_name}: {message}"))
+                }
+            }
             "msg" => Ok(self.0.message().unwrap_or_default().to_string()),
             _ => Err(Error::from_reason(format!(
                 "Invalid display format: '{format}'. Expected 'traceback', 'type-msg', or 'msg'"

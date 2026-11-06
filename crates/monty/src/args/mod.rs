@@ -101,7 +101,15 @@ impl ArgValues {
             Self::Kwargs(kw) => Ok(Self::Kwargs(kw.clone_with_preflight(heap)?)),
             Self::ArgsKargs { args, kwargs } => {
                 let slots = args.len().saturating_add(1);
-                check_estimated_size(slots.saturating_mul(VALUE_SIZE), &heap.tracker)?;
+                let kw_bytes = match kwargs {
+                    KwargsValues::Empty => 0,
+                    KwargsValues::Inline(items) => items.len().saturating_mul(size_of::<(StringId, Value)>()),
+                    KwargsValues::Pairs(items) => items.len().saturating_mul(size_of::<(Value, Value)>()),
+                    KwargsValues::Dict(dict) => dict.len().saturating_mul(size_of::<(Value, Value)>()),
+                };
+                let pos_bytes = slots.saturating_mul(VALUE_SIZE);
+                let total_bytes = pos_bytes.saturating_add(kw_bytes);
+                check_estimated_size(total_bytes, &heap.tracker)?;
                 let new_kwargs = kwargs.clone_with_preflight(heap)?;
                 let mut new_args = Vec::with_capacity(slots);
                 new_args.extend(args.iter().map(|v| v.clone_with_heap(heap)));

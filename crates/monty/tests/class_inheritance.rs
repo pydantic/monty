@@ -3265,3 +3265,40 @@ Base(*args)
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
+
+#[test]
+fn review_feedback_regressions() {
+    run(r#"
+class MyError(Exception):
+    pass
+
+err = MyError('boom')
+assert err.__class__ is MyError
+assert type(err) is MyError
+assert type(err).mro() == [MyError, Exception, BaseException, object]
+assert type(ValueError('x')).mro() == [ValueError, Exception, BaseException, object]
+assert type(ValueError('x')).__bases__ == (Exception,)
+assert type(ValueError('x')).__mro__ == (ValueError, Exception, BaseException, object)
+
+class SuperProbe:
+    def probe(self):
+        return super().__class__
+
+assert SuperProbe().probe() is super
+
+class SubclassTarget:
+    pass
+
+try:
+    SubclassTarget().__init_subclass__(1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'SubclassTarget.__init_subclass__() takes no arguments (1 given)' in str(e)
+
+try:
+    object.__setattr__(1, '__class__', int)
+    assert False, 'expected AttributeError'
+except AttributeError as e:
+    assert "'int' object has no attribute '__class__'" in str(e)
+"#);
+}

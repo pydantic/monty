@@ -59,7 +59,10 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
                 value.drop_with(vm);
                 true
             }
-            Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
+            Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => {
+                vm.clear_unwinding_exception();
+                false
+            }
             Err(e) => return Err(e),
         },
         Ok(CallResult::AttrLookup {
@@ -87,7 +90,10 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
                 SimpleException::new_msg(ExcType::TypeError, "hasattr(): attribute is not a simple value").into(),
             );
         }
-        Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => false,
+        Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => {
+            vm.clear_unwinding_exception();
+            false
+        }
         Err(e) => return Err(e),
     };
 

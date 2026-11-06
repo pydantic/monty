@@ -43,6 +43,8 @@ def create_temporary_cycles():
 
     except ValueError:
         pass
+    else:
+        assert False, 'expected __init_subclass__ to raise ValueError'
 
 
 create_temporary_cycles()

@@ -136,6 +136,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Super> {
         let attr_str = attr.as_str(vm.interns);
         let s = self.get(vm.heap);
 
+        if attr_str == "__class__" {
+            return Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(
+                BuiltinType::Super,
+            )))));
+        }
         if attr_str == "__thisclass__" {
             let val = s.type_arg.clone_with_heap(vm.heap);
             return Ok(Some(CallResult::Value(val)));

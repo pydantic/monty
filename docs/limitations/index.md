@@ -58,6 +58,7 @@ They exist for development and for agents debugging code that runs on Monty; mos
 
 **Missing in other ways:**
 
+- Subclassing built-in types other than exceptions and `object` raises `TypeError`, and dataclass subclasses do not inherit fields; see [classes.md](classes.md).
 - Function attributes.
     `fn.__name__`, `fn.__doc__` and friends raise `AttributeError`, and new attributes cannot be set — so
     `functools.wraps`-style metadata copying and registries keyed on `fn.__name__` have no equivalent.

@@ -510,12 +510,6 @@ impl<'h> PyTrait<'h> for Value {
         }
 
         if let Self::Ref(id) = self {
-            if matches!(
-                vm.heap.get(*id),
-                HeapData::Str(_) | HeapData::Tuple(_) | HeapData::Bytes(_) | HeapData::LongInt(_)
-            ) {
-                return Ok(false);
-            }
             vm.heap.read(*id).py_iadd_impl(other, vm)
         } else {
             Ok(false)
@@ -1365,10 +1359,11 @@ impl Value {
                         );
                         Ok(CallResult::Value(bound))
                     }
-                    _ => Err(ExcType::attribute_error_type(
-                        (*exc_type).into(),
-                        attr.as_str(vm.interns),
-                    )),
+                    _ => {
+                        let name: &'static str = (*exc_type).into();
+                        let bare_name = name.rsplit_once('.').map_or(name, |(_, bare)| bare);
+                        Err(ExcType::attribute_error_type(bare_name, attr.as_str(vm.interns)))
+                    }
                 };
             }
             Self::Builtin(Builtins::Function(BuiltinsFunctions::Type)) => {

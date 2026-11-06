@@ -281,8 +281,8 @@ class MontyConversionError(MontyError):
 
     A value Monty cannot represent — an `external_lookup` entry or an `inputs`
     value of an unsupported type — rejects the feed with this error rather than
-    crossing into the sandbox. Inherits `exception()` (a native `TypeError`) and
-    `__str__()` (the conversion message) from `MontyError`.
+    crossing into the sandbox. Inherits `exception()` (a native `TypeError`),
+    `custom_type_name`, and `__str__()` (the conversion message) from `MontyError`.
     """
 
 @final

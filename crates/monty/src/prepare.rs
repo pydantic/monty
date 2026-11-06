@@ -2574,6 +2574,19 @@ fn build_cell_slots(
     (slots, param_indices)
 }
 
+/// Marks `__class__` as referenced whenever a function or lambda body references `super`,
+/// matching CPython's `ste_needs_class_closure` rule so zero-argument `super()` receives the
+/// enclosing class's implicit `__class__` cell.
+fn add_implicit_super_class_ref(referenced: &mut AHashSet<StringId>, interner: &CompileInterns<'_>) {
+    if interner
+        .get_string_id_by_name("super")
+        .is_some_and(|id| referenced.contains(&id))
+        && let Some(dunder_class_id) = interner.get_string_id_by_name("__class__")
+    {
+        referenced.insert(dunder_class_id);
+    }
+}
+
 /// Scans a function body to collect scope information (first phase of preparation).
 ///
 /// This function performs three passes over the AST:
@@ -2590,19 +2603,6 @@ fn build_cell_slots(
 ///
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
-/// Marks `__class__` as referenced whenever a function or lambda body references `super`,
-/// matching CPython's `ste_needs_class_closure` rule so zero-argument `super()` receives the
-/// enclosing class's implicit `__class__` cell.
-fn add_implicit_super_class_ref(referenced: &mut AHashSet<StringId>, interner: &CompileInterns<'_>) {
-    if interner
-        .get_string_id_by_name("super")
-        .is_some_and(|id| referenced.contains(&id))
-        && let Some(dunder_class_id) = interner.get_string_id_by_name("__class__")
-    {
-        referenced.insert(dunder_class_id);
-    }
-}
-
 fn collect_function_scope_info(
     nodes: &[ParseNode],
     params: &[StringId],
