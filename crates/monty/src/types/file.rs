@@ -818,12 +818,25 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
             )
         };
 
+        if positional && vm.env.legacy_binary_writes {
+            if self.get(vm.heap).mode.readable() {
+                return Err(
+                    ExcType::not_implemented("binary update mode requires positional filesystem writes").into(),
+                );
+            }
+            if previous_position != previous_length {
+                return Err(
+                    ExcType::not_implemented("writing away from EOF requires positional filesystem writes").into(),
+                );
+            }
+        }
+
         let mut text_length = None;
         let mut payload_length = None;
         let call = match payload {
             WritePayload::Bytes(bytes) => {
                 payload_length = Some(bytes.len() as u64);
-                if positional {
+                if positional && !vm.env.legacy_binary_writes {
                     let args = WriteBytesAtArgs {
                         path,
                         offset: previous_position,
@@ -831,8 +844,10 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
                     };
                     args.validate().map_err(ExcType::value_error)?;
                     OsFunctionCall::WriteBytesAt(args)
-                } else {
+                } else if append {
                     OsFunctionCall::AppendBytes(PathBytesDataArgs { path, data: bytes })
+                } else {
+                    OsFunctionCall::WriteBytes(PathBytesDataArgs { path, data: bytes })
                 }
             }
             WritePayload::Text(text) => {

@@ -53,7 +53,7 @@ pub const PROTOCOL_VERSION: u32 = 8;
 /// per session, which no version 7 server speaks, and a version 6 parent would
 /// neither answer `Ping` nor read the status a dropped stream ends with.
 /// Version 7 parents cannot answer positional binary writes and are refused before execution.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 8;
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 7;
 
 /// How long the child holds buffered `print()` output before emitting it as a
 /// `Print` event, when [`pb::Configure::print_flush_interval_ms`] says nothing.

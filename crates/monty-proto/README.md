@@ -70,12 +70,14 @@ Host construction and cloning are unbudgeted; fallible `try_push` charges any gr
 
 ## Positional writes and protocol compatibility
 
-Protocol 8 requires `OsCall.write_bytes_at` for non-append binary writes, including ordinary `wb` files.
-Parents declaring protocol 7 are rejected during configuration, before any sandbox code executes.
-Raising the minimum supported version requires a major package release.
-Upgrade relays and filesystem handlers before workers; the client/worker version check does not negotiate
+Protocol 8 adds `OsCall.write_bytes_at` for non-append binary writes, including ordinary `wb` files.
+Protocol 7 parents remain supported: sequential `wb` writes use the original write/append calls.
+Binary update mode and writes away from EOF raise `NotImplementedError` before issuing filesystem calls to those parents.
+The configured parent's capabilities also apply after loading a snapshot.
+A snapshot suspended on an unsupported operation is refused.
+Upgrade relays and filesystem handlers before enabling protocol 8 workers; the client/worker version check does not negotiate
 capabilities with an intermediary relay.
-Custom handlers must implement the positional operation rather than substituting append or truncating writes.
+Custom handlers serving protocol 8 must implement positional writes rather than substituting append or truncating writes.
 The built-in mounts and Python `OSAccess` implement it.
 
 ## Values are special-cased for performance
