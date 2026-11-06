@@ -23,6 +23,7 @@ from pathlib import Path
 from types import MappingProxyType, ModuleType
 from typing import Any
 
+import anyio
 import grpc
 import pytest
 from grpc import aio
@@ -112,6 +113,61 @@ async def storing_url() -> AsyncIterator[str]:
         server, url = await storing.relay.start_server(storing.relay.SessionHandler(storing.handle), '127.0.0.1', 0)
         try:
             yield url
+        finally:
+            await server.stop(None)
+
+
+async def test_pool_exit_keeps_credentials_alive_until_server_close():
+    """Pool exit preserves a temporary grant while the server finishes a departed stream."""
+    relay = _load_relay_script()
+    credential_live = True
+    parking_started = anyio.Event()
+    allow_validation = anyio.Event()
+    lifetime_ended = anyio.Event()
+    authorized: list[bool] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        """Hold the server's final credential check behind an explicit gate."""
+
+        async def until_close() -> AsyncIterator[bytes]:
+            """Read the request EOF before checking the synthetic grant."""
+            async for request in requests:
+                yield request
+            parking_started.set()
+            await allow_validation.wait()
+            authorized.append(credential_live)
+
+        async with aclosing(relay.relay_behaviour(find_monty_binary())(until_close(), context)) as events:
+            async for event in events:
+                yield event
+
+    async def session_lifetime(url: str) -> None:
+        """Revoke the grant after both SDK contexts have exited."""
+        nonlocal credential_live
+        try:
+            async with AsyncMontyRemote(url, max_processes=1) as pool, pool.checkout() as session:
+                assert await session.feed_run('6 * 7') == snapshot(42)
+        finally:
+            credential_live = False
+            lifetime_ended.set()
+
+    async with _reaping_children(relay):
+        server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
+        try:
+            with anyio.fail_after(5):
+                async with anyio.create_task_group() as tasks:
+                    tasks.start_soon(session_lifetime, url)
+                    await parking_started.wait()
+                    try:
+                        with anyio.move_on_after(0.05):
+                            await lifetime_ended.wait()
+                        assert lifetime_ended.is_set() == snapshot(False)
+                    finally:
+                        allow_validation.set()
+                assert authorized == snapshot([True])
+                assert credential_live == snapshot(False)
         finally:
             await server.stop(None)
 
