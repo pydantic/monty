@@ -126,41 +126,49 @@ impl TypeDef {
         self
     }
 
+    /// Subclassable, as CPython's `Py_TPFLAGS_BASETYPE` marks it.
     const fn basetype(mut self) -> Self {
         self.basetype = true;
         self
     }
 
+    /// Subscripting the type builds a `types.GenericAlias`.
     const fn class_getitem(mut self) -> Self {
         self.class_getitem = true;
         self
     }
 
+    /// Multiplication may fall back to sequence repetition.
     const fn sequence_repeat(mut self) -> Self {
         self.sequence_repeat = true;
         self
     }
 
+    /// One of CPython's concrete iterator types.
     const fn iterator(mut self) -> Self {
         self.iterator = true;
         self
     }
 
+    /// Calling the type builds an instance with `ctor`.
     const fn ctor(mut self, ctor: Constructor) -> Self {
         self.ctor = ctor;
         self
     }
 
+    /// Class-level attributes resolve through `f`.
     const fn class_attr(mut self, f: ClassAttrFn) -> Self {
         self.class_attr = Some(f);
         self
     }
 
+    /// Class methods called in place dispatch through `f`.
     const fn class_method(mut self, f: ClassMethodFn) -> Self {
         self.class_method = Some(f);
         self
     }
 
+    /// The written C3 linearisation, for a type with several bases.
     const fn mro(mut self, mro: &'static [Type]) -> Self {
         self.mro = Some(mro);
         self
