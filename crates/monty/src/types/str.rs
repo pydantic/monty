@@ -193,33 +193,33 @@ impl<'h> PyStr<'h> {
     /// For `"aé🐍b"`, character range `1..3` becomes byte range `1..7`, covering `"é🐍"`.
     /// ASCII indices are already byte offsets; Unicode conversion scans character boundaries.
     /// Indices past the character count clamp to the byte length; `usize::MAX` denotes an omitted end.
-    fn byte_offset(&self, target: usize, vm: &VM<'h>) -> usize {
+    fn byte_offset_at(&self, char_index: usize, vm: &VM<'h>) -> usize {
         let text = self.as_str(vm);
-        if target == 0 {
+        if char_index == 0 {
             return 0;
         }
-        if target == usize::MAX {
+        if char_index == usize::MAX {
             return text.len();
         }
         if self.is_ascii(vm) {
-            return target.min(text.len());
+            return char_index.min(text.len());
         }
-        text.char_indices().nth(target).map_or(text.len(), |(byte, _)| byte)
+        text.char_indices().nth(char_index).map_or(text.len(), |(byte, _)| byte)
     }
 
     /// Converts a UTF-8 byte offset into the Python character index returned by find/rfind/index/rindex.
     /// Rust's search for `"🐍"` in `"aé🐍b"` returns byte offset 3; Python must return character index 2.
     /// ASCII offsets are already character indices; Unicode conversion counts the preceding characters.
     /// The offset must be in bounds and on a UTF-8 boundary, as returned by a successful string search.
-    fn char_offset(&self, byte: usize, vm: &VM<'h>) -> usize {
-        if byte == 0 {
+    fn char_index_at(&self, byte_offset: usize, vm: &VM<'h>) -> usize {
+        if byte_offset == 0 {
             return 0;
         }
         if self.is_ascii(vm) {
-            return byte;
+            return byte_offset;
         }
         let text = self.as_str(vm);
-        text[..byte].chars().count()
+        text[..byte_offset].chars().count()
     }
 
     /// Borrows the text only for the duration of the heap borrow.
@@ -243,48 +243,46 @@ impl PyObjectIdentity for PyStr<'_> {
 }
 
 impl<'h> PyTrait<'h> for PyStr<'h> {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+            Self::Inline(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
+            Self::Heap(value) => Ok(CallResult::Value(StringIterator::from_heap(
+                value.id(),
+                self.is_ascii(vm),
+                vm,
+            ))),
+        }
+    }
+
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Interned(id) => Ok(Some(vm.interns.str_hash(*id))),
+            Self::Inline(text) => Ok(Some(hash_python_str(text.as_str()))),
+            Self::Heap(value) => {
+                let string = value.get(vm.heap);
+                if let Some(hash) = string.1.get() {
+                    Ok(Some(hash))
+                } else {
+                    // Equal strings must hash identically across all storage representations.
+                    let hash = hash_python_str(string.as_str());
+                    string.1.set(Some(hash));
+                    Ok(Some(hash))
+                }
+            }
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Str
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(eq_str(self.as_str(vm), other, vm))
-    }
-
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
-        Ok(CmpOrder::Ordered(self.as_str(vm).cmp(other.as_str(vm))))
-    }
-
-    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let hash = match self {
-            Self::Interned(id) => vm.interns.str_hash(*id),
-            Self::Inline(text) => hash_python_str(text.as_str()),
-            Self::Heap(value) => {
-                let string = value.get(vm.heap);
-                if let Some(hash) = string.1.get() {
-                    hash
-                } else {
-                    // Equal strings must hash identically across all storage representations.
-                    let hash = hash_python_str(string.as_str());
-                    string.1.set(Some(hash));
-                    hash
-                }
-            }
-        };
-        Ok(Some(hash))
-    }
-
-    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
-        true
-    }
-
-    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let iterator = match self {
-            Self::Interned(id) => StringIterator::from_intern(*id, vm),
-            Self::Inline(text) => StringIterator::from_inline(*text, vm),
-            Self::Heap(value) => StringIterator::from_heap(value.id(), self.is_ascii(vm), vm),
-        };
-        Ok(CallResult::Value(iterator))
     }
 
     fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
@@ -341,6 +339,10 @@ impl<'h> PyTrait<'h> for PyStr<'h> {
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
         call_str_method_impl(self, method, args, vm).map(CallResult::Value)
+    }
+
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(self.as_str(vm).cmp(other.as_str(vm))))
     }
 }
 
@@ -516,8 +518,8 @@ fn str_getitem<'h>(s: &PyStr<'h>, key: &Value, vm: &mut VM<'h>) -> RunResult<Val
             }
             let start = usize::try_from(start).expect("normalized slice start");
             let stop = usize::try_from(stop).expect("normalized slice stop");
-            let start = s.byte_offset(start, vm);
-            let stop = s.byte_offset(stop, vm);
+            let start = s.byte_offset_at(start, vm);
+            let stop = s.byte_offset_at(stop, vm);
             let result = &text[start..stop];
             // Contiguous slices copy UTF-8 directly, without collecting characters.
             return Ok(allocate_string(result, vm.heap));
@@ -919,12 +921,12 @@ fn str_find<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Va
         return Ok(Value::Int(-1));
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset_at(start, vm);
+    let end_byte = s.byte_offset_at(end, vm);
     let slice = &text[start_byte..end_byte];
     let result = match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_index_at(start_byte + pos, vm);
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -943,12 +945,12 @@ fn str_rfind<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         return Ok(Value::Int(-1));
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset_at(start, vm);
+    let end_byte = s.byte_offset_at(end, vm);
     let slice = &text[start_byte..end_byte];
     let result = match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_index_at(start_byte + pos, vm);
             i64::try_from(char_pos).unwrap_or(i64::MAX)
         }
         None => -1,
@@ -966,12 +968,12 @@ fn str_index<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         return Err(ExcType::value_error_substring_not_found());
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset_at(start, vm);
+    let end_byte = s.byte_offset_at(end, vm);
     let slice = &text[start_byte..end_byte];
     match slice.find(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_index_at(start_byte + pos, vm);
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -989,12 +991,12 @@ fn str_rindex<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<
         return Err(ExcType::value_error_substring_not_found());
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset_at(start, vm);
+    let end_byte = s.byte_offset_at(end, vm);
     let slice = &text[start_byte..end_byte];
     match slice.rfind(&sub) {
         Some(pos) => {
-            let char_pos = s.char_offset(start_byte + pos, vm);
+            let char_pos = s.char_index_at(start_byte + pos, vm);
             let result = i64::try_from(char_pos).unwrap_or(i64::MAX);
             Ok(Value::Int(result))
         }
@@ -1013,8 +1015,8 @@ fn str_count<'h>(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<V
         return Ok(Value::Int(0));
     };
     let text = s.as_str(vm);
-    let start_byte = s.byte_offset(start, vm);
-    let end_byte = s.byte_offset(end, vm);
+    let start_byte = s.byte_offset_at(start, vm);
+    let end_byte = s.byte_offset_at(end, vm);
     let slice = &text[start_byte..end_byte];
     let count = if sub.is_empty() {
         // Empty needles match at every character boundary, including the end.
@@ -1071,8 +1073,8 @@ fn str_starts_ends_with<'h>(
         return Ok(Value::Bool(affix_matches(affix, "", method, |_, _| false, vm)?));
     };
     let text = s.as_str(vm);
-    let start = s.byte_offset(start, vm);
-    let end = s.byte_offset(end, vm);
+    let start = s.byte_offset_at(start, vm);
+    let end = s.byte_offset_at(end, vm);
     Ok(Value::Bool(affix_matches(
         affix,
         &text[start..end],
