@@ -2677,13 +2677,13 @@ pub enum StaticStrings {
 }
 
 /// One immutable interned string with directly accessible dispatch metadata.
-/// Snapshots store only text; loading reconstructs the tag and cached hash.
+/// Snapshots store only text; loading reconstructs the tag, character length and cached hash.
 #[derive(Debug, Clone)]
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
-    // Immutable text needs only one ASCII scan, including after snapshot loading.
-    ascii: bool,
+    /// Unicode code-point count; equality with byte length also identifies ASCII text.
+    char_len: usize,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2707,11 +2707,19 @@ impl AsRef<str> for InternedText {
 }
 
 impl InternedString {
+    fn count_chars(text: &str) -> usize {
+        if text.is_ascii() {
+            text.len()
+        } else {
+            bytecount::num_chars(text.as_bytes())
+        }
+    }
+
     /// Creates an entry for compile-time-known text.
     fn static_string(value: StaticStrings) -> Self {
         Self {
             static_tag: Some(value),
-            ascii: <&str>::from(value).is_ascii(),
+            char_len: Self::count_chars(value.into()),
             text: WithHash::for_str(InternedText::Static(value.into())),
         }
     }
@@ -2720,7 +2728,7 @@ impl InternedString {
     fn owned(value: String) -> Self {
         Self {
             static_tag: None,
-            ascii: value.is_ascii(),
+            char_len: Self::count_chars(&value),
             text: WithHash::for_str(InternedText::Owned(value.into_boxed_str())),
         }
     }
@@ -3120,7 +3128,17 @@ impl Interns {
     /// Returns ASCII status without rescanning immutable literal text.
     #[inline]
     pub fn str_is_ascii(&self, id: StringId) -> bool {
-        id.index() < RESERVED_STRS.len() || self.strings[id.index() - INTERN_STRING_ID_OFFSET].ascii
+        self.str_char_len(id) == self.get_str(id).len()
+    }
+
+    /// Returns the Unicode code-point count without rescanning interned text.
+    #[inline]
+    pub fn str_char_len(&self, id: StringId) -> usize {
+        if id.index() < RESERVED_STRS.len() {
+            RESERVED_STRS[id.index()].len()
+        } else {
+            self.strings[id.index() - INTERN_STRING_ID_OFFSET].char_len
+        }
     }
 
     /// Returns the same hash as an equal heap string.
@@ -3173,5 +3191,41 @@ impl Interns {
     /// Finds canonical text already interned, excluding snippet filename IDs.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
         get_string_id_by_name(&self.string_id_by_name.borrow(), &self.static_string_ids, s)
+    }
+}
+
+#[cfg(test)]
+mod string_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn character_lengths_survive_text_only_serialization() {
+        for text in ["", "a", "ascii literal", "é", "aé🦀", "e\u{301}"] {
+            let entry = InternedString::owned(text.to_owned());
+            assert_eq!(entry.char_len, text.chars().count());
+            assert_eq!(entry.char_len == text.len(), text.is_ascii());
+            assert_eq!(entry.clone().char_len, entry.char_len);
+
+            let serialized = serde_json::to_string(&entry).unwrap();
+            assert_eq!(serialized, serde_json::to_string(text).unwrap());
+            let restored: InternedString = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(restored.as_str(), text);
+            assert_eq!(restored.char_len, entry.char_len);
+        }
+
+        let interns = Interns::new("");
+        for (index, text) in RESERVED_STRS.iter().enumerate() {
+            let id = StringId(index.try_into().unwrap());
+            assert_eq!(interns.str_char_len(id), text.chars().count());
+            assert!(interns.str_is_ascii(id));
+        }
+
+        for &value in CORE_STATIC_STRINGS {
+            let entry = InternedString::static_string(value);
+            assert_eq!(entry.char_len, entry.as_str().chars().count());
+            let id = interns.intern_static(value);
+            assert_eq!(interns.str_char_len(id), entry.char_len);
+            assert_eq!(interns.str_is_ascii(id), entry.as_str().is_ascii());
+        }
     }
 }
