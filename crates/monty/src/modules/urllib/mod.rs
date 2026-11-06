@@ -206,6 +206,10 @@ pub(super) fn call(vm: &mut VM<'_>, function: UrllibFunctions, args: ArgValues) 
             let Some(bytes) = value_to_owned_bytes(bs, vm.heap, vm.interns) else {
                 return Err(ExcType::type_error("quote_from_bytes() expected bytes"));
             };
+            // CPython returns before it reads `safe`.
+            if bytes.is_empty() {
+                return Ok(allocate_string(String::new(), vm.heap));
+            }
             let safe = safe_bytes(safe, vm)?;
             Ok(allocate_string(parse::quote_bytes(&bytes, &safe), vm.heap))
         }
@@ -769,15 +773,16 @@ fn quote(
     plus: bool,
     vm: &mut VM<'_>,
 ) -> RunResult<String> {
-    let bytes = match Text::extract(string, vm)? {
+    let (bytes, has_space) = match Text::extract(string, vm)? {
         Some(Text::Str(s)) => {
             if s.is_empty() {
                 return Ok(String::new());
             }
+            let has_space = s.contains(' ');
             let encoding = codec_arg(encoding, Some("utf-8"), "encode", "encoding", vm)?;
             let errors = codec_arg(errors, Some("strict"), "encode", "errors", vm)?;
             let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
-            codec.encode(&s, &errors, &vm.heap.tracker)?
+            (codec.encode(&s, &errors, &vm.heap.tracker)?, has_space)
         }
         other => {
             // Anything but a `str` takes the bytes path, whose codec checks come first.
@@ -788,14 +793,20 @@ fn quote(
                 return Err(ExcType::type_error("quote() doesn't support 'errors' for bytes"));
             }
             match other {
-                Some(Text::Bytes(bytes)) => bytes,
+                // `quote_from_bytes` returns before it reads `safe`.
+                Some(Text::Bytes(bytes)) if bytes.is_empty() => return Ok(String::new()),
+                Some(Text::Bytes(bytes)) => {
+                    let has_space = bytes.contains(&b' ');
+                    (bytes, has_space)
+                }
                 _ => return Err(ExcType::type_error("quote_from_bytes() expected bytes")),
             }
         }
     };
     let mut safe = safe_bytes(safe, vm)?;
-    // `quote_plus` lets spaces through quoting so it can turn them into `+`.
-    let plus = plus && bytes.contains(&b' ');
+    // `quote_plus` lets spaces through quoting so it can turn them into `+`; it
+    // looks for them before encoding, so a multi-byte codec cannot produce one.
+    let plus = plus && has_space;
     if plus {
         safe.push(b' ');
     }
@@ -885,6 +896,15 @@ fn unquote(
             Ok(allocate_string(decoded, vm.heap))
         }
         Some(Text::Str(s)) => {
+            let s = if plus { s.replace('+', " ") } else { s };
+            // Without an escape CPython returns before it reads `encoding` / `errors`.
+            if !s.contains('%') {
+                return Ok(if plus {
+                    allocate_string(s, vm.heap)
+                } else {
+                    string.clone_with_heap(vm)
+                });
+            }
             let encoding = codec_arg(
                 encoding.unwrap_or(&Value::None),
                 Some("utf-8"),
@@ -894,14 +914,6 @@ fn unquote(
             )?;
             let errors = codec_arg(errors.unwrap_or(&Value::None), Some("replace"), "decode", "errors", vm)?;
             let codec = Codec::find(&encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(&encoding))?;
-            let s = if plus { s.replace('+', " ") } else { s };
-            if !s.contains('%') {
-                return Ok(if plus {
-                    allocate_string(s, vm.heap)
-                } else {
-                    string.clone_with_heap(vm)
-                });
-            }
             Ok(allocate_string(unquote_str(&s, codec, &errors)?, vm.heap))
         }
         // CPython fails its `'%' not in string` test.
@@ -943,6 +955,7 @@ fn parse_qsl(args: &ParseQsArgs, vm: &mut VM<'_>) -> RunResult<Vec<(Text, Text)>
             )));
         }
     };
+    let separator = separator_like(separator, &qs, vm)?;
     if qs.is_empty() {
         return Ok(Vec::new());
     }
@@ -960,7 +973,6 @@ fn parse_qsl(args: &ParseQsArgs, vm: &mut VM<'_>) -> RunResult<Vec<(Text, Text)>
     };
 
     let qs = qs.into_bytes();
-    let separator = separator.into_bytes();
     let fields: Vec<&[u8]> = split_bytes(&qs, &separator);
     if !matches!(args.max_num_fields, Value::None)
         && args.max_num_fields.as_int(vm)? < i64::try_from(fields.len()).unwrap_or(i64::MAX)
@@ -990,7 +1002,7 @@ fn parse_qsl(args: &ParseQsArgs, vm: &mut VM<'_>) -> RunResult<Vec<(Text, Text)>
             let plus_replaced: Vec<u8> = part.iter().map(|&b| if b == b'+' { b' ' } else { b }).collect();
             match &codec {
                 None => Ok(Text::Bytes(parse::unquote_bytes(&plus_replaced))),
-                // The split points are ASCII, so the field is still valid UTF-8.
+                // The separator is whole characters, so the field is still valid UTF-8.
                 Some((codec, errors)) => Ok(Text::Str(unquote_str(
                     &String::from_utf8_lossy(&plus_replaced),
                     *codec,
@@ -1001,6 +1013,16 @@ fn parse_qsl(args: &ParseQsArgs, vm: &mut VM<'_>) -> RunResult<Vec<(Text, Text)>
         pairs.push((decode(name)?, decode(value)?));
     }
     Ok(pairs)
+}
+
+/// The separator as bytes in the query's type, converted with the `ascii` codec as
+/// CPython converts it, so a split never lands inside a multi-byte character.
+fn separator_like(separator: Text, qs: &Text, vm: &VM<'_>) -> RunResult<Vec<u8>> {
+    match (separator, qs) {
+        (Text::Bytes(sep), Text::Str(_)) => Ok(Codec::Ascii.decode(&sep, "strict")?.into_bytes()),
+        (Text::Str(sep), Text::Bytes(_)) => Codec::Ascii.encode(&sep, "strict", &vm.heap.tracker),
+        (sep, _) => Ok(sep.into_bytes()),
+    }
 }
 
 /// Splits `bytes` on every occurrence of `separator`, like `bytes.split(sep)`.

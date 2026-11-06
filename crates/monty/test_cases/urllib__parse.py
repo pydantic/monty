@@ -273,6 +273,13 @@ assert quote('ä', encoding='ascii', errors='ignore') == ''
 assert quote_from_bytes(b'a b') == 'a%20b'
 assert quote_from_bytes(b'') == ''
 assert quote_from_bytes(b'a/b', safe='') == 'a%2Fb'
+# empty input returns before `safe` is read
+assert quote_from_bytes(b'', safe=None) == ''
+assert quote(b'', 5) == ''
+assert quote_plus(b'', safe=5) == ''
+# `quote_plus` looks for spaces before encoding: UTF-16 '†' is b' \x20'
+assert quote_plus('†', encoding='utf-16-le') == '%20%20'
+assert quote_plus('† a', encoding='utf-16-le') == '+++%00a%00'
 
 for _call, _exc, _msg in [
     (lambda: quote(b'a b', encoding='utf-8'), TypeError, "quote() doesn't support 'encoding' for bytes"),
@@ -314,6 +321,10 @@ assert unquote_to_bytes(b'%C3%BC') == b'\xc3\xbc'
 assert unquote_to_bytes('ä%20') == b'\xc3\xa4 '
 _plain = 'abc'
 assert unquote(_plain) is _plain
+# without an escape `encoding` / `errors` are never read
+assert unquote('abc', encoding=123) == 'abc'
+assert unquote('abc', errors=123) == 'abc'
+assert unquote_plus('a+b', encoding=123) == 'a b'
 
 for _call, _exc, _msg in [
     (
@@ -326,6 +337,7 @@ for _call, _exc, _msg in [
     (lambda: unquote(None), TypeError, "argument of type 'NoneType' is not a container or iterable"),
     (lambda: unquote_plus(b'a+b'), TypeError, "a bytes-like object is required, not 'str'"),
     (lambda: unquote_to_bytes(5), AttributeError, "'int' object has no attribute 'split'"),
+    (lambda: unquote('a%20', encoding=123), TypeError, "decode() argument 'encoding' must be str, not int"),
 ]:
     try:
         _call()
@@ -353,6 +365,11 @@ assert parse_qsl(b'a=%C3%BC+x&b=2') == [(b'a', b'\xc3\xbc x'), (b'b', b'2')]
 assert parse_qs(b'a=1&a=2') == {b'a': [b'1', b'2']}
 assert parse_qsl('a=1&b=2', max_num_fields=2) == [('a', '1'), ('b', '2')]
 assert parse_qsl('a=1&b', strict_parsing=False) == [('a', '1')]
+# the separator converts to the query's type with the `ascii` codec
+assert parse_qsl(b'a=1;b=2', separator=';') == [(b'a', b'1'), (b'b', b'2')]
+assert parse_qsl('a=1;b=2', separator=b';') == [('a', '1'), ('b', '2')]
+assert parse_qsl('a=1éb=2', separator='é') == [('a', '1'), ('b', '2')]
+assert parse_qsl(b'a=1\xa9b=2', separator=b'\xa9') == [(b'a', b'1'), (b'b', b'2')]
 
 for _call, _exc, _msg in [
     (lambda: parse_qsl('a&b=2', strict_parsing=True), ValueError, "bad query field: 'a'"),
@@ -361,6 +378,21 @@ for _call, _exc, _msg in [
     (lambda: parse_qsl('a=1', separator=''), ValueError, 'Separator must be of type string or bytes.'),
     (lambda: parse_qsl('a=1', separator=5), ValueError, 'Separator must be of type string or bytes.'),
     (lambda: parse_qsl(5), TypeError, "memoryview: a bytes-like object is required, not 'int'"),
+    (
+        lambda: parse_qsl('a=é&b=1', separator=b'\xa9'),
+        UnicodeDecodeError,
+        "'ascii' codec can't decode byte 0xa9 in position 0: ordinal not in range(128)",
+    ),
+    (
+        lambda: parse_qs('', separator=b'\xa9'),
+        UnicodeDecodeError,
+        "'ascii' codec can't decode byte 0xa9 in position 0: ordinal not in range(128)",
+    ),
+    (
+        lambda: parse_qsl(b'a=1;b=2', separator='é'),
+        UnicodeEncodeError,
+        "'ascii' codec can't encode character '\\xe9' in position 0: ordinal not in range(128)",
+    ),
     (
         lambda: parse_qsl('x=%ff', errors='strict'),
         UnicodeDecodeError,
