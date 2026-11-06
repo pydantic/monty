@@ -242,7 +242,7 @@ discriminating operand would cost measurable dispatch time.
 
 ### Code owns its instruction and constant buffers
 
-Each `Code` (`crates/monty/src/bytecode/code.rs`) owns its bytecode, constants and metadata.
+Each `Code` (`crates/monty/src/bytecode/code/mod.rs`) owns its bytecode, constants and metadata.
 A `CallFrame` borrows the `Code` and caches its bytecode slice so instruction fetches avoid an extra dereference.
 Its `usize` instruction pointer, source locations and exception handlers all use body-relative offsets.
 
@@ -261,10 +261,13 @@ loading, while tuple structs and tuple variants are positional and may only grow
 persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
 Types written many times (`Value`, `HeapEntry`, `CcColor`, the hot `HeapData` variants, `List`, `Tuple`, `Dict`,
-`DictEntry`, `SetEntry`, `CodeRange`, `LocationEntry`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
+`DictEntry`, `SetEntry`, `CodeRange`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
 `SerializedFrame`) or once per function (`Function`, `Signature`, `Identifier`, `NameScope`, `Code`, `ExceptionEntry`)
 rename every field and variant to one upper-case letter, since key strings otherwise dominate the dump; a new field
 or variant on them takes an unused letter.
+`Code`'s location table is the exception: `bytecode/code/location_table.rs` writes it as one byte string of
+delta-encoded varints led by a format byte, which serde attributes cannot evolve. A layout change takes a new format
+byte and keeps the old decoder; `LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a

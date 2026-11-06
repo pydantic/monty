@@ -455,14 +455,21 @@ impl CodeBuilder {
         )
     }
 
-    /// Records the current location in the location table if set.
+    /// Records the current location in the location table if set and not
+    /// already the last entry's.
     ///
     /// Returns a `CompileError` if the bytecode offset has grown past
     /// `u32::MAX` — the i16 jump-offset cap means this is practically
     /// unreachable, but `LocationEntry`'s offset is `u32` so we surface the
     /// limit cleanly rather than panic.
     fn record_location(&mut self) -> Result<(), CompileError> {
-        if let Some(range) = self.current_location {
+        // an entry covers every instruction up to the next one, so repeating the last location adds nothing
+        if let Some(range) = self.current_location
+            && !self
+                .location_table
+                .last()
+                .is_some_and(|last| last.has_location(range, self.current_focus))
+        {
             let offset = u32::try_from(self.bytecode.len()).map_err(|_| self.bytecode_too_large())?;
             self.location_table
                 .push(LocationEntry::new(offset, range, self.current_focus));
