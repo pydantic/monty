@@ -1,7 +1,11 @@
-use std::fs;
+use std::{
+    fs,
+    io::{Read, Seek, SeekFrom, Write},
+};
 
 use monty_fs::{Mount, MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{ExcType, MontyObject, OsFunctionCall, WriteBytesAtArgs};
+use proptest::{prelude::*, test_runner::FileFailurePersistence};
 use tempfile::TempDir;
 
 #[expect(dead_code, reason = "shared helpers; these tests only create file symlinks")]
@@ -132,4 +136,80 @@ fn nested_overlay_routes_writes_without_touching_either_backing_directory() {
     );
     assert_eq!(fs::read(parent.path().join("nested/file")).unwrap(), b"parent");
     assert_eq!(fs::read(child.path().join("file")).unwrap(), b"child");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 128,
+        failure_persistence: Some(Box::new(FileFailurePersistence::WithSource("proptest-regressions"))),
+        ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn positional_write_sequences_match_a_reference_file(
+        initial in prop::collection::vec(any::<u8>(), 0..129),
+        writes in prop::collection::vec(write_operation(), 1..33),
+    ) {
+        for overlay in [false, true] {
+            let dir = TempDir::new()?;
+            fs::write(dir.path().join("file"), &initial)?;
+            let mut table = table(&dir, overlay, None);
+            let mut reference = tempfile::tempfile()?;
+            reference.write_all(&initial)?;
+
+            for (index, (position, data)) in writes.iter().enumerate() {
+                let length = reference.metadata()?.len();
+                let offset = match position {
+                    WriteOffset::Absolute(offset) => u64::from(*offset),
+                    WriteOffset::BeforeEnd => length.saturating_sub(1),
+                    WriteOffset::End => length,
+                    WriteOffset::BeyondEnd(gap) => length + u64::from(*gap),
+                };
+                reference.seek(SeekFrom::Start(offset))?;
+                reference.write_all(data)?;
+                let count = dispatch(&mut table, write(offset, data))?;
+                prop_assert_eq!(count, MontyObject::int(i64::try_from(data.len())?),
+                    "overlay={} step={} offset={}", overlay, index, offset);
+
+                reference.rewind()?;
+                let mut expected = Vec::new();
+                reference.read_to_end(&mut expected)?;
+                let content = dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into()))?;
+                prop_assert_eq!(content, MontyObject::bytes(expected),
+                    "overlay={} step={} offset={}", overlay, index, offset);
+                let stat = dispatch(&mut table, OsFunctionCall::Stat("/mnt/file".into()))?;
+                let fields = stat.as_ref().items().expect("stat returns a namedtuple");
+                prop_assert_eq!(fields[6].as_int(), Some(i64::try_from(reference.metadata()?.len())?),
+                    "overlay={} step={}", overlay, index);
+
+                if overlay {
+                    prop_assert_eq!(fs::read(dir.path().join("file"))?, initial.as_slice(),
+                        "overlay wrote through to backing file at step={}", index);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum WriteOffset {
+    Absolute(u16),
+    BeforeEnd,
+    End,
+    BeyondEnd(u16),
+}
+
+fn write_operation() -> impl Strategy<Value = (WriteOffset, Vec<u8>)> {
+    let offset = prop_oneof![
+        Just(WriteOffset::Absolute(0)),
+        (0_u16..257).prop_map(WriteOffset::Absolute),
+        Just(WriteOffset::BeforeEnd),
+        Just(WriteOffset::End),
+        (1_u16..65).prop_map(WriteOffset::BeyondEnd),
+    ];
+    let data = prop_oneof![
+        1 => Just(Vec::new()),
+        3 => prop::collection::vec(any::<u8>(), 1..65),
+    ];
+    (offset, data)
 }
