@@ -39,7 +39,7 @@ use crate::{
         typing::{self, HintFormat, HintsRequest, HintsTask},
     },
     types::{
-        Class, Dict, Module, PyTrait, TupleVec, allocate_tuple,
+        Class, Dict, Module, PyTrait, TupleVec, Type, allocate_tuple,
         generic_alias::AliasOrigin,
         host_class::host_class_type,
         instance::{class_defines, namespace_member},
@@ -80,7 +80,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     );
     module.set_attr(
         StaticStrings::FrozenInstanceError,
-        Value::Builtin(Builtins::ExcType(ExcType::FrozenInstanceError)),
+        Value::Builtin(Builtins::Type(Type::FrozenInstanceError)),
         vm,
     );
     module.set_attr(

@@ -25,7 +25,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     os_dispatch::{build_path_os_call, is_path_os_method, value_as_path_str},
     types::{
-        LazyHeapSet, List, PyTrait, Type, allocate_tuple,
+        LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_tuple,
         dir_scan::{glob_call, walk_call},
         str::allocate_string,
     },
@@ -310,6 +310,19 @@ impl Path {
     }
 }
 
+/// `Path.cwd()`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Cwd) {
+        Ok(class_cwd(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// Classmethod `Path.cwd()`, also callable through instances: returns the VM's
 /// virtual working directory without a host round-trip.
 ///
@@ -533,8 +546,8 @@ impl Path {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Path
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Path.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

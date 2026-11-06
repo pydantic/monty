@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::{
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -24,7 +24,7 @@ use crate::{
     },
     intern::StaticStrings,
     types::{
-        BuiltinType, LazyHeapSet, PyTrait, Type, generic_alias::repr_type_arg, list::repr_should_truncate,
+        LazyHeapSet, PyTrait, Type, TypeRef, generic_alias::repr_type_arg, list::repr_should_truncate,
         tuple::allocate_tuple,
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -193,7 +193,7 @@ impl Union {
 /// `None` is stored as `NoneType`, which is what `__args__` reports.
 fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunResult<()> {
     let member = match member {
-        Value::None => Value::Builtin(Builtins::Type(BuiltinType::NoneType)),
+        Value::None => Value::Builtin(Builtins::Type(Type::NoneType)),
         other => other.clone_with_heap(vm),
     };
     defer_drop!(member, vm);
@@ -214,9 +214,7 @@ fn push_unique(flat: &mut Vec<Value>, member: &Value, vm: &mut VM<'_>) -> RunRes
 fn operand_kind(value: &Value, vm: &VM<'_>) -> Option<Operand> {
     match value {
         Value::None => Some(Operand::NoneValue),
-        Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_) | Builtins::Function(BuiltinsFunctions::Type)) => {
-            Some(Operand::TypeLike)
-        }
+        Value::Builtin(Builtins::Type(_)) => Some(Operand::TypeLike),
         // `typing.Any`, `typing.List` and the other forms all define `__or__`.
         Value::Marker(marker) if marker.py_type() == Type::SpecialForm => Some(Operand::TypeLike),
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -281,8 +279,8 @@ impl<'h> HeapObjectRead<'h, Union> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Union
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Union.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -372,7 +370,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
             }
             let member = args.clone_item(index, vm);
             defer_drop!(member, vm);
-            if matches!(member, Value::Builtin(Builtins::Type(BuiltinType::NoneType))) {
+            if matches!(member, Value::Builtin(Builtins::Type(Type::NoneType))) {
                 f.write_str("None")?;
             } else {
                 repr_type_arg(member, f, vm, heap_ids)?;
@@ -387,9 +385,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Union> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         match attr.static_string(vm.interns) {
             Some(StaticStrings::DunderArgs) => Ok(Some(CallResult::Value(self.get(vm.heap).args(vm.heap)))),
-            Some(StaticStrings::DunderOrigin) => Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(
-                BuiltinType::Union,
-            ))))),
+            Some(StaticStrings::DunderOrigin) => {
+                Ok(Some(CallResult::Value(Value::Builtin(Builtins::Type(Type::Union)))))
+            }
             Some(StaticStrings::DunderParameters) => Ok(Some(CallResult::Value(vm.heap.get_empty_tuple()))),
             _ => Ok(None),
         }

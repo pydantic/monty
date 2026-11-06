@@ -25,7 +25,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -103,8 +103,8 @@ impl HeapItem for CsvObject {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, CsvObject> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

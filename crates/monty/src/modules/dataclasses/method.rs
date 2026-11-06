@@ -25,7 +25,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings, StringId},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, TypeRef,
         host_class::write_dataclass_repr,
         instance::{class_dunder, class_name, instance_attr},
         py_trait::PyObjectIdentity,
@@ -257,8 +257,8 @@ impl HeapItem for DataclassMethod {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DataclassMethod> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Function
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Function.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

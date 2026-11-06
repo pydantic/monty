@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, OwnedTypeRef, PyTrait, Type, TypeRef};
 use crate::{
     annotations,
     args::ArgValues,
@@ -40,6 +40,14 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    /// Direct bases in declaration order (`__bases__`), owning their class
+    /// references. Empty for a class written before inheritance, read as `(object,)`.
+    #[serde(default)]
+    bases: Box<[OwnedTypeRef]>,
+    /// The C3 linearisation after this class (`__mro__[1:]`), ending at `object`.
+    /// Borrowed: each base owns its own ancestors and `__bases__` never changes.
+    #[serde(default)]
+    mro: Box<[TypeRef]>,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
     /// stable across restores.
@@ -53,6 +61,8 @@ impl Class {
         Self {
             name,
             namespace,
+            bases: Box::default(),
+            mro: Box::default(),
             uuid: None,
         }
     }
@@ -80,6 +90,20 @@ impl Class {
     #[must_use]
     pub fn namespace(&self) -> &Dict {
         &self.namespace
+    }
+
+    /// The direct bases (`__bases__`); empty means `(object,)`.
+    #[must_use]
+    pub(crate) fn bases(&self) -> &[OwnedTypeRef] {
+        &self.bases
+    }
+
+    /// The ancestors after this class in method resolution order, ending at `object`.
+    #[must_use]
+    pub(crate) fn ancestors(&self) -> &[TypeRef] {
+        /// The MRO tail of a class with no explicit bases.
+        const OBJECT_ONLY: &[TypeRef] = &[TypeRef::Native(Type::Object)];
+        if self.mro.is_empty() { OBJECT_ONLY } else { &self.mro }
     }
 }
 
@@ -128,9 +152,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         vm.instantiate_class(self.id(), args)
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
         // The type of a class object is `type` (matching `type(Foo) is type`).
-        Type::Type
+        Type::Type.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -239,6 +263,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.extend(self.bases.iter().filter_map(|base| base.class_id()));
         self.namespace.py_dec_ref_ids(stack);
     }
 }

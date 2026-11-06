@@ -38,7 +38,7 @@ mod round;
 mod setattr;
 mod sorted;
 mod sum;
-mod type_;
+pub(crate) mod type_;
 mod zip;
 
 use std::{fmt, fmt::Write, str::FromStr};
@@ -46,24 +46,43 @@ use std::{fmt, fmt::Write, str::FromStr};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    modules::csv,
-    types::{BuiltinType, Type},
+    exception_private::{ExcType, RunResult},
+    types::Type,
     value::Value,
 };
 
-/// Enumerates every interpreter-native Python builtins
+/// A builtin callable stored inline in a [`Value`]: a function or a native type.
 ///
-/// Uses strum derives for automatic `Display`, `FromStr`, and `AsRef<str>` implementations.
-/// All variants serialize to lowercase (e.g., `Print` -> "print").
+/// Dumps name the variants, so `Function` and `Type` are the persistence
+/// contract; [`DumpedBuiltins`] reads the shapes older builds wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(from = "DumpedBuiltins")]
 pub(crate) enum Builtins {
-    /// A builtin function like `print`, `len`, `type`, etc.
+    /// A builtin function like `print` or `len`.
     Function(BuiltinsFunctions),
-    /// An exception type constructor like `ValueError`, `TypeError`, etc.
+    /// A native type like `list`, `int` or `ValueError`, which is also its constructor.
+    Type(Type),
+}
+
+/// Every shape a stored [`Builtins`] has had: exception classes were a separate
+/// `ExcType` variant, and `type` was a builtin function, before both joined the
+/// native type table.
+#[derive(serde::Deserialize)]
+enum DumpedBuiltins {
+    Function(BuiltinsFunctions),
     ExcType(ExcType),
-    /// A type constructor like `list`, `dict`, `int`, etc.
-    Type(BuiltinType),
+    Type(Type),
+}
+
+impl From<DumpedBuiltins> for Builtins {
+    fn from(dumped: DumpedBuiltins) -> Self {
+        match dumped {
+            DumpedBuiltins::Function(BuiltinsFunctions::Type) => Self::Type(Type::Type),
+            DumpedBuiltins::Function(function) => Self::Function(function),
+            DumpedBuiltins::ExcType(exc) => Self::Type(Type::from(exc)),
+            DumpedBuiltins::Type(ty) => Self::Type(ty),
+        }
+    }
 }
 
 impl Builtins {
@@ -85,10 +104,7 @@ impl Builtins {
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Function(b) => b.call(vm, args),
-            Self::ExcType(exc) => exc.call(vm, args).map(CallResult::Value),
-            // `DictReader(f)` on an unread file yields the read that loads it.
-            Self::Type(BuiltinType::CsvDictReader) => csv::dict_reader_call(vm, args),
-            Self::Type(t) => Type::from(t).call(vm, args),
+            Self::Type(t) => t.call(vm, args),
         }
     }
 
@@ -96,7 +112,6 @@ impl Builtins {
     pub fn py_repr_fmt<W: Write>(self, f: &mut W) -> fmt::Result {
         match self {
             Self::Function(b) => write!(f, "<built-in function {b}>"),
-            Self::ExcType(e) => write!(f, "<class '{e}'>"),
             Self::Type(t) => write!(f, "<class '{t}'>"),
         }
     }
@@ -105,24 +120,40 @@ impl Builtins {
     pub fn py_type(self) -> Type {
         match self {
             Self::Function(_) => Type::BuiltinFunction,
-            Self::ExcType(_) => Type::Type,
             Self::Type(_) => Type::Type,
         }
     }
+
+    /// The bytes `id()` encodes: the postcard form of the pre-table enum, which
+    /// had `Function`, `ExcType` and `Type` variants, so `id(len)` and `id(int)`
+    /// survive a restore. Exception classes take the `Type` form now.
+    pub(crate) fn identity_key(self) -> (u32, IdentityPayload) {
+        match self {
+            Self::Function(function) => (0, IdentityPayload::Function(function)),
+            Self::Type(ty) => (2, IdentityPayload::Type(ty)),
+        }
+    }
+}
+
+/// The payload half of [`Builtins::identity_key`].
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum IdentityPayload {
+    Function(BuiltinsFunctions),
+    Type(Type),
 }
 
 impl FromStr for Builtins {
     type Err = ();
 
+    /// Resolves a name in the builtins namespace. Types win over functions so
+    /// `type` is the type object; `BuiltinsFunctions::Type` survives only as the
+    /// bytecode operand class bodies call.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Priority: BuiltinsFunctions > ExcType > Type
-        // Only matches names that are true Python builtins (accessible without imports).
-        if let Ok(b) = BuiltinsFunctions::from_str(s) {
+        if let Some(t) = Type::from_builtin_name(s) {
+            Ok(Self::Type(t))
+        } else if let Ok(b) = BuiltinsFunctions::from_str(s) {
             Ok(Self::Function(b))
-        } else if let Ok(exc) = ExcType::from_str(s) {
-            Ok(Self::ExcType(exc))
-        } else if let Some(t) = Type::from_builtin_name(s) {
-            Ok(Self::Type(t.try_into().expect("builtin names have static types")))
         } else {
             Err(())
         }

@@ -22,7 +22,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{
-        Dict, LazyHeapSet, NamedTuple, PyTrait, Type,
+        Dict, LazyHeapSet, NamedTuple, PyTrait, Type, TypeRef,
         hash_table::{PyHashTable, Slot, TableEntry, TableProbe, TableSource},
         tuple::{TupleVec, allocate_tuple},
     },
@@ -323,7 +323,7 @@ fn make_key(positional: &[Value], keywords: &[(Value, Value)], typed: bool, vm: 
     if !typed
         && keywords.is_empty()
         && let [only] = positional
-        && matches!(only.py_type(vm), Type::Int | Type::Str)
+        && matches!(only.py_type(vm).native(), Some(Type::Int | Type::Str))
     {
         return Ok(only.clone_with_heap(vm));
     }
@@ -386,8 +386,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, LruCache> {
         call(self.id(), args, vm)
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::LruCacheWrapper
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::LruCacheWrapper.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -352,8 +352,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         call_int_dunder(self.id(), "__index__", vm)
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Instance(self.get(vm.heap).class)
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        TypeRef::Class(self.get(vm.heap).class)
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -532,8 +532,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
         };
         defer_drop!(exit, vm);
         // Build CPython's `(exc_type, exc_value, traceback)` triple. The type
-        // is constructed as `Builtins::ExcType` — the same value the bare
-        // exception name resolves to — so the idiomatic `if typ is ValueError:`
+        // is the same value the bare exception name resolves to, so the
+        // idiomatic `if typ is ValueError:`
         // works inside a user `__exit__`. Monty has no traceback objects, so
         // the third slot is always `None` (see limitations/with.md).
         let (typ, val) = match exc {
@@ -546,7 +546,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Instance> {
                     unreachable!("Instance py_exit called with a non-exception heap id");
                 };
                 vm.heap.inc_ref(exc_id);
-                (Value::Builtin(Builtins::ExcType(e.exc_type())), Value::Ref(exc_id))
+                (Value::Builtin(Builtins::Type(Type::from(e.exc_type()))), Value::Ref(exc_id))
             }
             None => (Value::None, Value::None),
         };
@@ -588,9 +588,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BoundMethod> {
         vm.call_function(func, args.prepend(instance))
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
         // Monty has no dedicated `method` type; bound methods report `function`.
-        Type::Function
+        Type::Function.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -962,7 +962,7 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
     defer_drop!(result, vm);
     // CPython accepts any int (bool included, as an int subclass) and rejects
     // everything else before the value is ever used as a hash.
-    if matches!(result.py_type(vm), Type::Int | Type::Bool) {
+    if matches!(result.py_type(vm).native(), Some(Type::Int | Type::Bool)) {
         result.py_hash(vm)
     } else {
         Err(ExcType::type_error(format!(

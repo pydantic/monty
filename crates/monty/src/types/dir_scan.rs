@@ -32,7 +32,7 @@ use crate::{
     intern::StaticStrings,
     os_dispatch::value_as_path_str,
     types::{
-        LazyHeapSet, List, Path, PyTrait, Type, allocate_tuple,
+        LazyHeapSet, List, Path, PyTrait, Type, TypeRef, allocate_tuple,
         list::ListIterator,
         str::{allocate_string, string_repr_fmt},
     },
@@ -180,8 +180,8 @@ struct PendingDirnames {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DirScan> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).py_type().into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -760,7 +760,7 @@ impl ScanEffect {
     /// CPython does for its `scandir` failures. `os.scandir` raises.
     pub(crate) fn absorbs(&self, error: &RunError) -> bool {
         !matches!(self, Self::Scandir { .. })
-            && matches!(error, RunError::Exc(raise) if raise.exc.exc_type().is_subclass_of(ExcType::OSError))
+            && matches!(error, RunError::Exc(raise) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::OSError))
     }
 
     /// Builds the result from the host's reply, or from an error [`Self::absorbs`] accepted.

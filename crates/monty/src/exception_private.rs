@@ -18,7 +18,7 @@ use crate::{
     py_value::PyValue,
     source_map::{SourceMap, StackFrameExt},
     types::{
-        PyTrait, Type, allocate_tuple,
+        PyTrait, Type, TypeRef, allocate_tuple,
         long_int::INT_MAX_STR_DIGITS,
         str::{StringRepr, allocate_string, string_repr_fmt},
     },
@@ -1963,12 +1963,12 @@ pub(crate) trait ExcTypeExt: Sized {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
-        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
+    fn binary_type_error(op: &str, lhs_type: TypeRef, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
+        let message = if (op == "+" || op == "+=") && lhs_type == Type::Deque {
             // CPython hardcodes the bare "deque" here even though tp_name is the
             // qualified "collections.deque", so this can't share the branch below.
             format!("can only concatenate deque (not \"{rhs_name}\") to deque")
-        } else if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+        } else if (op == "+" || op == "+=") && matches!(lhs_type.native(), Some(Type::Str | Type::List)) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
@@ -2648,6 +2648,13 @@ pub(crate) trait ExcTypeExt: Sized {
     }
 }
 
+/// The constructor of every native exception class, for the native type table.
+pub(crate) fn exc_new(ty: Type, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    ty.exc_type()
+        .expect("exception types carry their ExcType")
+        .call(vm, args)
+}
+
 impl ExcTypeExt for ExcType {
     /// Allocates an exception for constructors like `ValueError('message')`.
     /// Currently supports zero or one string argument.
@@ -2869,8 +2876,8 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        Type::from(self.get(vm.heap).exc_type).into()
     }
 
     /// Gets an attribute from this exception: `args` (a tuple of the message, if
