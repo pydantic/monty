@@ -196,20 +196,12 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
 pub(crate) fn ordereddict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's own arity message carries no type name (`dict(1, 2)` says
     // `dict expected at most 1 argument`).
-    let (pos, kwargs) = args.into_parts();
-    let total = pos.len();
+    let total = args.count();
     if total > 1 {
-        pos.drop_with(vm);
-        kwargs.drop_with(vm);
+        args.drop_with(vm);
         return Err(ExcType::type_error(format!("expected at most 1 argument, got {total}")));
     }
-    let rest: Vec<Value> = pos.collect();
-    let dict_args = if rest.is_empty() && kwargs.is_empty() {
-        ArgValues::Empty
-    } else {
-        ArgValues::ArgsKargs { args: rest, kwargs }
-    };
-    let dict_value = Dict::init(vm, dict_args)?;
+    let dict_value = Dict::init(vm, args)?;
     let Value::Ref(dict_id) = dict_value else {
         unreachable!("Dict::init returns a dict ref");
     };

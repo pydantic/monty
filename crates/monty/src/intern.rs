@@ -1616,6 +1616,8 @@ pub enum StaticStrings {
     KwOnly,
     /// `lambd` parameter of `random.expovariate()`.
     Lambd,
+    /// The `last` keyword of `OrderedDict.popitem()` / `move_to_end()`.
+    Last,
     /// `last_node` parameter of `hashlib.blake2b()`.
     LastNode,
     /// `math.lcm()` function.
@@ -1823,6 +1825,8 @@ pub enum StaticStrings {
     /// `Counter.most_common()` method.
     #[strum(serialize = "most_common")]
     MostCommon,
+    /// `OrderedDict.move_to_end()` method.
+    MoveToEnd,
     /// `mu` parameter of `random.gauss()` and the other normal variates.
     Mu,
     /// `re.MULTILINE` flag
@@ -1909,6 +1913,9 @@ pub enum StaticStrings {
     Optional,
     /// `@dataclass(order=...)`.
     Order,
+    /// The `collections.OrderedDict` type.
+    #[strum(serialize = "OrderedDict")]
+    OrderedDict,
     /// Module name for `import os`.
     Os,
     /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
@@ -2004,13 +2011,6 @@ pub enum StaticStrings {
     Pop,
     /// `dict.popitem()` method.
     Popitem,
-    /// `OrderedDict.move_to_end()` method.
-    MoveToEnd,
-    /// The `last` keyword of `OrderedDict.popitem()` / `move_to_end()`.
-    Last,
-    /// The `collections.OrderedDict` type.
-    #[strum(serialize = "OrderedDict")]
-    OrderedDict,
     /// `deque.popleft()` method.
     Popleft,
     /// `population` parameter of `random.choices()` and `random.sample()`.

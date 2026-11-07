@@ -79,7 +79,11 @@ the kind.
 
 - **The views are `dict_keys` / `dict_values` / `dict_items`**, where CPython's
     are `odict_keys` / `odict_values` / `odict_items`. Contents and order match.
-- **Reordering during iteration raises `RuntimeError: dictionary keys changed   during iteration`**, where CPython says `OrderedDict mutated during   iteration`.
+- **Reordering during iteration is only caught when the iterator would revisit an entry**, as for a
+    `dict` that has a key deleted and re-inserted. Then it raises
+    `RuntimeError: dictionary keys changed during iteration`, where CPython always raises
+    `RuntimeError: OrderedDict mutated during iteration`. A reorder that revisits nothing
+    goes unnoticed.
 - **Argument-count errors from `popitem` and `move_to_end` use Monty's wording**,
     such as `move_to_end() missing 1 required positional argument: 'key'` where
     CPython says `move_to_end() missing required argument 'key' (pos 1)`, and
@@ -87,7 +91,7 @@ the kind.
     but `move_to_end('a', last=1, x=2)` reports the unexpected keyword.
 - **A self-referencing `OrderedDict` prints its inner reference as `{...}`**,
     where CPython prints `...`.
-- **`move_to_end(key, last=False)` is O(n)**, since it rebuilds the table to put
+- **`move_to_end(key, last=False)` is O(n)**, since it compacts the table to put
     the entry first; `move_to_end(key)` and `popitem()` are O(1).
 - **Crosses the host boundary as a plain `dict`** (insertion order is kept).
 

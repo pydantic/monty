@@ -124,7 +124,8 @@ o.clear()
 assert repr(o) == 'OrderedDict()' and not o, 'clear'
 assert {**OrderedDict(a=1)} == {'a': 1}, 'unpack'
 
-# Reordering while iterating is an error (the message differs from CPython).
+# Reordering while iterating raises when an entry would be revisited (the message
+# differs from CPython).
 o = OrderedDict(a=1, b=2, c=3)
 try:
     for k in o:

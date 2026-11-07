@@ -17,9 +17,10 @@ od.move_to_end('c', last=False)
 od.popitem()
 od.popitem(last=False)
 
-# A missing key fails after the key and `last` are bound.
+# A missing key fails after the key and `last` are bound; the tuple key is a
+# heap value, so a leaked argument clone would show in the counts.
 try:
-    od.move_to_end('missing', False)
+    od.move_to_end(('missing', 1), False)
     assert False, 'expected KeyError'
 except KeyError:
     pass

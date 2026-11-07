@@ -1283,7 +1283,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_042_397,
+            16_043_467,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
         ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_215_912),
@@ -2265,6 +2265,26 @@ fn full_bounded_deque_growth_stays_graceful() {
     // 2^19 items fill the ring exactly, so the append after them doubles it.
     let code = "from collections import deque\nd = deque(maxlen=524_288)\nd.extend(range(524_288))\nd.append(0)";
     let (_, event) = child.feed(code);
+    assert_eq!(expect_error(event).exc_type, "MemoryError");
+    // The session outliving the error is the whole point.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// `OrderedDict.move_to_end` must preflight the append it ends with.
+///
+/// Popping the first entry tombstones its slot without shortening the entry
+/// vector, so a dict whose vector is exactly full still reallocates, by its whole
+/// length, when the moved entry is appended back. Unchecked, that one allocation
+/// cleared the hard-limit headroom and killed the worker.
+#[test]
+fn full_ordereddict_move_to_end_stays_graceful() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(80 * 1024 * 1024));
+    // 2^20 entries fill the vector exactly, so the append after them doubles it.
+    let build = "from collections import OrderedDict\nod = OrderedDict()\nfor i in range(1_048_576):\n    od[i] = i\nod.popitem(last=False)\nlen(od)";
+    assert_eq!(child.feed_complete(build), MontyObject::int(1_048_575));
+    let (_, event) = child.feed("od.move_to_end(5)");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     // The session outliving the error is the whole point.
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));

@@ -2067,6 +2067,11 @@ fn ordered_move_to_end<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &m
     let Some(slot) = found else {
         return Err(ExcType::key_error(key, vm));
     };
+    if last {
+        // The tombstone left by the move keeps the entry vector at its length, so
+        // appending can still double it; preflight that before the hard limit.
+        dict.get(vm.heap).table.check_growth(&vm.heap.tracker)?;
+    }
     let table = &mut dict.get_mut(vm.heap).table;
     if last {
         table.move_to_back(slot);

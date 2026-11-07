@@ -355,12 +355,16 @@ impl<E: TableEntry> PyHashTable<E> {
     /// Slots are renumbered, so this compacts: it is the one reordering a
     /// table supports besides tombstone-and-[`push`](Self::push), which can
     /// only move to the back.
+    ///
+    /// Allocates nothing, so it needs no preflight: the tombstone just left
+    /// frees a slot that the insertion at the front takes back, and the
+    /// bucket table is cleared and refilled to the size it already had.
     #[expect(clippy::needless_pass_by_value, reason = "taking the slot spends it")]
     pub(crate) fn move_to_front(&mut self, slot: Slot) {
         let entry = self.tombstone_at(slot.0);
-        let mut entries = self.take_entries();
-        entries.insert(0, entry);
-        *self = Self::from_entries(entries);
+        self.entries.retain(E::is_live);
+        self.entries.insert(0, entry);
+        self.reindex();
     }
 
     /// Moves the live entry a probe found to the back of the iteration order.
