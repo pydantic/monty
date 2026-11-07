@@ -10,6 +10,30 @@ assert len(fs) == 3
 fs = frozenset([1, 2, 3])
 fs2 = fs.copy()
 assert fs == fs2
+assert fs2 is fs
+
+for original in [frozenset(), frozenset(range(1000))]:
+    original_hash = hash(original)
+    for _ in range(100):
+        assert original.copy() is original
+        assert hash(original.copy()) == original_hash
+
+original = frozenset([1, 2, 3])
+alias = original.copy()
+original = None
+assert alias == frozenset([1, 2, 3])
+
+try:
+    fs.copy(1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'frozenset.copy() takes no arguments (1 given)'
+
+try:
+    fs.copy(unused=1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'frozenset.copy() takes no keyword arguments'
 
 # === Union ===
 fs1 = frozenset([1, 2])
