@@ -173,6 +173,10 @@ pub(crate) fn counter_update<'h>(
     subtract: bool,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
+    // Copying or folding the source can fail before keyword counts are applied.
+    let mut kwargs_guard = DropGuard::new(kwargs, vm);
+    let vm = kwargs_guard.ctx();
+
     // An explicit `None` source is a no-op (CPython skips it before dispatch), so
     // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
     if let Some(source) = source
@@ -180,21 +184,29 @@ pub(crate) fn counter_update<'h>(
     {
         let is_mapping = matches!(&source, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Dict(_)));
         if is_mapping {
+            defer_drop!(source, vm);
             let Value::Ref(src_id) = source else {
                 unreachable!("mapping is a ref");
             };
-            // Snapshot (key, delta) pairs first so `c.update(c)` is well-defined.
-            let pairs: Vec<(Value, Value)> = {
-                let Some(src) = vm.heap.read_as::<Dict>(src_id) else {
+            // Only an empty additive update can copy counts verbatim; other updates
+            // must add to existing counts, and subtract must negate incoming counts.
+            if !subtract && counter.get(vm.heap).is_empty() {
+                let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
                     unreachable!("mapping is a dict");
                 };
-                let src = src.get(vm.heap);
-                src.iter()
-                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                    .collect()
-            };
-            source.drop_with(vm);
-            counter_merge_mapping(counter, pairs, subtract, vm)?;
+                let mut copy = src.copy_entries(vm)?;
+                copy.set_kind(counter.get(vm.heap).cloned_kind(vm.heap));
+                mem::replace(counter.get_mut(vm.heap), copy).drop_with(vm);
+            } else {
+                // Snapshot first so `c.update(c)` is well-defined, then release the read guard before callbacks.
+                let pairs = {
+                    let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
+                        unreachable!("mapping is a dict");
+                    };
+                    src.clone_all_pairs(vm)?
+                };
+                counter_merge_mapping(counter, pairs, subtract, vm)?;
+            }
         } else {
             // `_count_elements`: `self[elem] = self_get(elem, 0) + 1`, so the
             // existing count is the left operand here.
@@ -211,6 +223,7 @@ pub(crate) fn counter_update<'h>(
     // Keyword counts, e.g. `Counter(a=2)` / `c.update(a=5)`. CPython recurses
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
+    let (kwargs, vm) = kwargs_guard.into_parts();
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())

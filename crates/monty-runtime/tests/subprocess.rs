@@ -1128,12 +1128,19 @@ fn committing_a_deep_gather_nest_reaches_the_soft_limit() {
 fn copy_of_a_near_limit_dict_raises_rather_than_dying() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
-    let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
+    let (_, event) =
+        child.feed("import copy\nfrom collections import Counter, defaultdict\nd = {i: i for i in range(100_000)}");
     assert!(
         !matches!(event, pb::child_event::Kind::Error(_)),
         "the source must fit for this to test the copy, got {event:?}"
     );
-    for code in ["copy.deepcopy(d)", "d.copy()"] {
+    for code in [
+        "copy.deepcopy(d)",
+        "d.copy()",
+        "dict(d)",
+        "Counter(d)",
+        "defaultdict(None, d)",
+    ] {
         let (_, event) = child.feed(code);
         assert_eq!(expect_error(event).exc_type, "MemoryError", "{code}");
         assert_eq!(child.feed_complete("len(d)"), MontyObject::int(100_000));

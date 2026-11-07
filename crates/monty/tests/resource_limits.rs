@@ -1563,28 +1563,30 @@ fn timeout_in_shallow_copy_fill_loop() {
 fn timeout_in_dict_copy_releases_partial_entries() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(
-        "shared = []\nd = {i: shared for i in range(4_000_000)}",
+        "from collections import Counter\nshared = []\nd = {i: shared for i in range(4_000_000)}",
         vec![],
         PrintWriter::Stdout,
     )
     .unwrap();
-    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
-    let start = ThreadTime::now();
-    let exc = repl
-        .feed_run("d.copy()", vec![], PrintWriter::Stdout)
-        .expect_err("the copy must hit the time limit");
-    let elapsed = start.elapsed();
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "should stop promptly, took {elapsed:?}"
-    );
-    // The next feed's GC scans the retained source under memory-model-checks.
-    repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
-    assert_eq!(
-        repl.feed_run("len(d)", vec![], PrintWriter::Stdout).unwrap(),
-        MontyObject::int(4_000_000)
-    );
+    for code in ["d.copy()", "dict(d)", "Counter(d)"] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Stdout)
+            .expect_err("the copy must hit the time limit");
+        let elapsed = start.elapsed();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "{code}: should stop promptly, took {elapsed:?}"
+        );
+        // The next feed's GC scans the retained source under memory-model-checks.
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(d)", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::int(4_000_000)
+        );
+    }
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside

@@ -410,6 +410,35 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 }
 
 impl<'h> HeapRead<'h, Dict> {
+    /// Copies entries into a plain dict, leaving type/factory selection to the caller.
+    /// `dict(special)` must discard that metadata, while `.copy()` preserves it.
+    pub(crate) fn copy_entries(&self, vm: &mut VM<'h>) -> RunResult<Dict> {
+        let len = self.get(vm.heap).len();
+        // Bucket rounding and control bytes fit within three words per entry,
+        // plus 32 bytes of alignment/padding for the rebuilt index.
+        let entry_bytes = mem::size_of::<DictEntry>() + 3 * mem::size_of::<usize>();
+        vm.heap
+            .tracker
+            .check_allocation(len.saturating_mul(entry_bytes).saturating_add(32))?;
+
+        // Copy entries with cached hashes directly into the new table, avoiding
+        // a temporary pair buffer, rehashing and Python __eq__ callbacks.
+        let mut copy = Dict::with_capacity(len);
+        copy.contains_refs = self.get(vm.heap).contains_refs;
+        // A timeout must release every key/value reference retained so far.
+        let mut copy_guard = DropGuard::new(copy, vm);
+        let (copy, vm) = copy_guard.as_parts_mut();
+        for (index, entry) in self.get(vm.heap).table.live().enumerate() {
+            vm.heap.tracker.check_time_every(index)?;
+            copy.table.push(DictEntry {
+                key: entry.key.clone_with_heap(vm.heap),
+                value: entry.value.clone_with_heap(vm.heap),
+                hash: entry.hash,
+            });
+        }
+        Ok(copy_guard.into_inner())
+    }
+
     /// Allocates an empty dict carrying this one's flavour — plain,
     /// `defaultdict` (with a counted reference to the same factory) or
     /// `Counter`.
@@ -752,9 +781,15 @@ impl Dict {
             let mut kwargs_guard = DropGuard::new(extras, vm);
 
             if let Some(other_value) = source {
-                let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
-                let other_value = other_value_guard.into_inner();
-                dict_merge_from_value(dict, other_value, kwargs_guard.ctx())?;
+                let mut source_guard = DropGuard::new(other_value, kwargs_guard.ctx());
+                let (source, vm) = source_guard.as_parts();
+                if let Some(HeapReadOutput::Dict(source)) = source.read_heap(vm) {
+                    let copy = source.copy_entries(vm)?;
+                    mem::replace(dict, copy).drop_with(vm);
+                } else {
+                    let (source, vm) = source_guard.into_parts();
+                    dict_merge_from_value(dict, source, vm)?;
+                }
             }
 
             let kwargs = kwargs_guard.into_inner();
@@ -1705,31 +1740,8 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    let len = dict.get(vm.heap).len();
-    // Bucket rounding and control bytes fit within three words per entry,
-    // plus 32 bytes of alignment/padding for the rebuilt index.
-    let entry_bytes = mem::size_of::<DictEntry>() + 3 * mem::size_of::<usize>();
-    vm.heap
-        .tracker
-        .check_allocation(len.saturating_mul(entry_bytes).saturating_add(32))?;
-
-    // Copy entries with cached hashes directly into the new table, avoiding
-    // a temporary pair buffer, rehashing and Python __eq__ callbacks.
-    let mut copy = Dict::with_capacity(len);
-    copy.contains_refs = dict.get(vm.heap).contains_refs;
-    let mut copy_guard = DropGuard::new(copy, vm);
-    let (copy, vm) = copy_guard.as_parts_mut();
-    for (index, entry) in dict.get(vm.heap).table.live().enumerate() {
-        vm.heap.tracker.check_time_every(index)?;
-        copy.table.push(DictEntry {
-            key: entry.key.clone_with_heap(vm.heap),
-            value: entry.value.clone_with_heap(vm.heap),
-            hash: entry.hash,
-        });
-    }
+    let mut copy = dict.copy_entries(vm)?;
     copy.set_kind(dict.get(vm.heap).cloned_kind(vm.heap));
-
-    let (copy, vm) = copy_guard.into_parts();
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(copy))))
 }
 

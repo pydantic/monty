@@ -70,12 +70,18 @@ These raise `NameError`:
     compare identical and return the same `id()`, where CPython gives those
     results distinct identities.
 - **Some dict copies re-hash the keys** — CPython copies the hash table for
-    `dict(d)`, `{**d}` and `copy.copy(d)` without calling a key's `__hash__`.
+    `{**d}` and `copy.copy(d)` without calling a key's `__hash__`.
     Monty re-inserts each pair, so a key with a custom `__hash__` sees it
     called again — observable through a counter or other side effect, and a
     `__hash__` that raises makes the copy fail where CPython's succeeds.
-    `d.copy()`, `defaultdict.copy()` and `Counter.copy()` reuse stored hashes
-    and run no key callbacks. See [copy.md](copy.md) for `copy.copy`.
+    `dict(d)`, `defaultdict(factory, d)`, `d.copy()` and `Counter.copy()` reuse
+    stored hashes and run no key callbacks while copying entries.
+    An empty Counter receiving a dict's counts also uses this path; keyword
+    arguments are applied afterward. See [copy.md](copy.md) for `copy.copy`.
+- **Equality callbacks while copying dicts** — Monty's cached-hash copies
+    preserve live entries without calling key `__eq__` methods.
+    CPython may compare keys when rebuilding a sparse table after deletions;
+    such a callback can raise or change which keys survive in the copy there.
 - **dict/set lookups under a mutating `__eq__`** — like CPython, a lookup
     (`in`, `d[k]`, `set.remove`, …) whose user `__eq__` mutates the container
     keeps probing rather than raising, and a mutation that only *adds* colliding

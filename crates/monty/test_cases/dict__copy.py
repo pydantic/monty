@@ -26,6 +26,8 @@ values = [[i] for i in range(8)]
 source = {key: value for key, value in zip(keys, values)}
 source.pop(keys[1])
 source.pop(keys[3])
+# CPython clones compact constructor inputs without comparing colliding keys.
+constructor_source = {key: value for key, value in source.items()}
 events.clear()
 forbidden = True
 copied = source.copy()
@@ -36,7 +38,24 @@ for left, right in zip(copied, source):
     assert left is right
 for left, right in zip(copied.values(), source.values()):
     assert left is right
+for constructed in [dict(constructor_source), Counter(constructor_source), defaultdict(None, constructor_source)]:
+    assert constructed is not source
+    assert len(constructed) == 6
+    for left, right in zip(constructed, source):
+        assert left is right
+    for left, right in zip(constructed.values(), source.values()):
+        assert left is right
+empty_counter = Counter()
+empty_counter.update(constructor_source)
+assert list(empty_counter.values()) == list(source.values())
+assert events == []
 forbidden = False
+# Sparse inputs can compare keys in CPython, but never hash them again.
+for constructor in [dict, Counter]:
+    events.clear()
+    constructed = constructor(source)
+    assert list(constructed.values()) == list(source.values())
+    assert all(event[0] != 'hash' for event in events)
 copied[keys[0]].append(99)
 assert source[keys[0]][-1] == 99
 source.clear()
@@ -66,13 +85,34 @@ assert copied.default_factory is factory
 assert copied['a'] is source['a']
 assert copied['b'] == []
 assert 'b' not in source
+assert type(dict(source)) is dict
+assert type(source.copy()) is defaultdict
 assert defaultdict(factory).copy().default_factory is factory
 assert defaultdict(None).copy().default_factory is None
 source = Counter({'a': 2, 'b': -3})
 copied = source.copy()
 assert copied['absent'] == 0
 assert list(copied.items()) == list(source.items())
+assert type(dict(source)) is dict
+assert type(source.copy()) is Counter
 assert Counter().copy()['absent'] == 0
+
+# Dict keyword arguments overwrite values; Counter keyword arguments add counts.
+assert dict({'a': 2}, a=3) == {'a': 3}
+assert Counter({'a': 2}, a=3) == {'a': 5}
+assert Counter({'a': True})['a'] is True
+assert dict([('a', 2)]) == {'a': 2}
+assert Counter(['a', 'a']) == {'a': 2}
+nonempty_counter = Counter(a=2)
+nonempty_counter.update({'a': 3, 'b': 4})
+assert nonempty_counter == {'a': 5, 'b': 4}
+empty_counter = Counter()
+empty_counter.update(empty_counter)
+assert empty_counter == {}
+nonempty_counter.update(nonempty_counter)
+assert nonempty_counter == {'a': 10, 'b': 8}
+empty_counter.subtract({'a': 2})
+assert empty_counter == {'a': -2}
 
 # A shallow copy keeps references to the source, including self-cycles.
 source = {}
@@ -82,6 +122,7 @@ assert copied['self'] is source
 source.clear()
 assert copied['self'] == {}
 assert {}.copy() == {}
+assert dict() == {}
 
 
 class ChangingKey:
@@ -97,8 +138,8 @@ equal_now = False
 left, right = ChangingKey(), ChangingKey()
 source = {left: 1, right: 2}
 equal_now = True
-copied = source.copy()
-assert len(copied) == 2
-assert list(copied)[0] is left
-assert list(copied)[1] is right
-assert list(copied.values()) == [1, 2]
+for copied in [source.copy(), dict(source), Counter(source)]:
+    assert len(copied) == 2
+    assert list(copied)[0] is left
+    assert list(copied)[1] is right
+    assert list(copied.values()) == [1, 2]
