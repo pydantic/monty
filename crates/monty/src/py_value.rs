@@ -848,6 +848,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        builtins::BuiltinsFunctions,
         defer_drop_mut,
         heap::{DropGuard, HeapReader},
         heap_data::CellValue,
@@ -905,8 +906,9 @@ mod tests {
                 Value::Bool(true),
                 Value::Float(1.25),
                 Value::Builtin(Builtins::Function(BuiltinsFunctions::Len)),
-                Value::Builtin(Builtins::ExcType(ExcType::ValueError)),
-                Value::Builtin(Builtins::Type(BuiltinType::List)),
+                Value::Builtin(Builtins::Type(Type::ValueError)),
+                Value::Builtin(Builtins::Type(Type::List)),
+                Value::Builtin(Builtins::Type(Type::Type)),
                 Value::ModuleFunction(ModuleFunctions::Math(MathFunctions::Sqrt)),
                 Value::DefFunction(ids.function),
                 Value::Marker(Marker(StaticStrings::Optional)),
