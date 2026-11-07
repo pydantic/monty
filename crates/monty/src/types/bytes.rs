@@ -2533,14 +2533,14 @@ impl<'h> PyBytes<'h> {
 impl<'h> PyAttrs<'h> for PyBytes<'h> {
     type Receiver = PyBytes<'h>;
 
-    #[pymethod]
+    #[pymethod(Decode)]
     fn decode(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_decode(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Lower)]
     fn lower(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2550,7 +2550,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Upper)]
     fn upper(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2560,7 +2560,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Capitalize)]
     fn capitalize(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2570,7 +2570,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Title)]
     fn title(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2580,7 +2580,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Swapcase)]
     fn swapcase(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2590,7 +2590,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isalpha)]
     fn isalpha(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2600,7 +2600,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isdigit)]
     fn isdigit(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2610,7 +2610,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isalnum)]
     fn isalnum(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2620,7 +2620,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isspace)]
     fn isspace(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2630,7 +2630,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Islower)]
     fn islower(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2640,7 +2640,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isupper)]
     fn isupper(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2650,7 +2650,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isascii)]
     fn isascii(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2660,7 +2660,7 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Istitle)]
     fn istitle(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2670,161 +2670,161 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Count)]
     fn count(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_count(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Find)]
     fn find(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_find(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rfind)]
     fn rfind(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rfind(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Index)]
     fn index(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_index(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rindex)]
     fn rindex(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rindex(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Startswith)]
     fn startswith(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_startswith(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Endswith)]
     fn endswith(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_endswith(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Strip)]
     fn strip(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_strip(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Lstrip)]
     fn lstrip(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_lstrip(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rstrip)]
     fn rstrip(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rstrip(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Removeprefix)]
     fn removeprefix(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_removeprefix(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Removesuffix)]
     fn removesuffix(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_removesuffix(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Split)]
     fn split(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_split(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rsplit)]
     fn rsplit(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rsplit(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Splitlines)]
     fn splitlines(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_splitlines(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Partition)]
     fn partition(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_partition(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rpartition)]
     fn rpartition(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rpartition(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Replace)]
     fn replace(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_replace(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Center)]
     fn center(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_center(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Ljust)]
     fn ljust(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_ljust(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rjust)]
     fn rjust(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_rjust(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Zfill)]
     fn zfill(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_zfill(bytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Join)]
     fn join(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
@@ -2834,14 +2834,14 @@ impl<'h> PyAttrs<'h> for PyBytes<'h> {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Hex)]
     fn hex(this: &PyBytes<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let bytes = this.view(vm);
         let bytes = &bytes;
         bytes_hex(bytes, args, vm)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromhex)]
     fn fromhex(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         bytes_fromhex(args, vm).map(CallResult::Value)
     }

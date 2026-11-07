@@ -952,7 +952,7 @@ pub(crate) struct PyForwardRefImpl;
 impl<'heap> PyAttrs<'heap> for PyForwardRefImpl {
     type Receiver = HeapObjectRead<'heap, ForwardRef>;
 
-    #[pymethod]
+    #[pymethod(Evaluate)]
     fn evaluate<'h>(value: &HeapObjectRead<'h, ForwardRef>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         value.evaluate(args, vm)
     }

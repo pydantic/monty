@@ -945,3 +945,10 @@ fn host_class_repr_formats_non_string_attribute_keys() {
         MontyObject::string("Odd(42=7)")
     );
 }
+
+#[test]
+fn builtin_method_values_are_not_exposed() {
+    let code = "for owner, name in [(str, 'upper'), (list, 'append'), (tuple, 'count')]:\n    try:\n        getattr(owner, name)\n    except AttributeError:\n        pass\n    else:\n        assert False, 'method unexpectedly exposed as a value'\nTrue";
+    let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    assert_eq!(run.run_no_limits(vec![]).unwrap(), MontyObject::bool(true));
+}

@@ -668,27 +668,27 @@ pub(crate) struct PyRandomImpl;
 impl<'heap> PyAttrs<'heap> for PyRandomImpl {
     type Receiver = HeapObjectRead<'heap, Random>;
 
-    #[pymethod]
+    #[pymethod(Random)]
     fn random<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Random, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Seed)]
     fn seed<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Seed, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Getstate)]
     fn getstate<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Getstate, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Setstate)]
     fn setstate<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Setstate, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Getrandbits)]
     fn getrandbits<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -702,47 +702,47 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Randbytes)]
     fn randbytes<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Randbytes, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Randrange)]
     fn randrange<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Randrange, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Randint)]
     fn randint<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Randint, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Choice)]
     fn choice<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Choice, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Choices)]
     fn choices<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Choices, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Shuffle)]
     fn shuffle<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Shuffle, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Sample)]
     fn sample<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Sample, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Uniform)]
     fn uniform<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Uniform, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Triangular)]
     fn triangular<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -751,7 +751,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Triangular, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Normalvariate)]
     fn normalvariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -765,12 +765,12 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Gauss)]
     fn gauss<'h>(this: &mut HeapObjectRead<'h, Random>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         random_dispatch(RandomTarget::Instance(this.id()), RandomFunctions::Gauss, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Lognormvariate)]
     fn lognormvariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -784,7 +784,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Expovariate)]
     fn expovariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -798,7 +798,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Vonmisesvariate)]
     fn vonmisesvariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -812,7 +812,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Gammavariate)]
     fn gammavariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -826,7 +826,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Betavariate)]
     fn betavariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -840,7 +840,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Paretovariate)]
     fn paretovariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -854,7 +854,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Weibullvariate)]
     fn weibullvariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,
@@ -868,7 +868,7 @@ impl<'heap> PyAttrs<'heap> for PyRandomImpl {
         )
     }
 
-    #[pymethod]
+    #[pymethod(Binomialvariate)]
     fn binomialvariate<'h>(
         this: &mut HeapObjectRead<'h, Random>,
         args: ArgValues,

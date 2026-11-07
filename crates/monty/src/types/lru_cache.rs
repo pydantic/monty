@@ -544,7 +544,7 @@ pub(crate) struct PyLruCacheImpl;
 impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
     type Receiver = HeapObjectRead<'heap, LruCache>;
 
-    #[pymethod]
+    #[pymethod(CacheInfo)]
     fn cache_info<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok({
             args.check_zero_args("_lru_cache_wrapper.cache_info", vm.heap)?;
@@ -552,7 +552,7 @@ impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
         })
     }
 
-    #[pymethod]
+    #[pymethod(CacheClear)]
     fn cache_clear<'h>(this: &mut HeapObjectRead<'h, LruCache>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         Ok({
             args.check_zero_args("_lru_cache_wrapper.cache_clear", vm.heap)?;
@@ -561,7 +561,7 @@ impl<'heap> PyAttrs<'heap> for PyLruCacheImpl {
         })
     }
 
-    #[pymethod]
+    #[pymethod(CacheParameters)]
     fn cache_parameters<'h>(
         this: &mut HeapObjectRead<'h, LruCache>,
         args: ArgValues,

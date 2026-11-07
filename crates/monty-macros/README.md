@@ -127,58 +127,36 @@ Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from
 
 ## `#[pyattrs]`
 
-Collects Python-visible functions on a zero-sized namespace implementing `PyAttrs` inside `monty`.
-The macro moves the functions into an inherent implementation and generates `PyAttrs::ATTRS` and a const
-`lookup_attr(StaticStrings)` match that returns entries from that table.
-Native object structs, method bodies, and serialization stay unchanged.
+Collects Python-visible functions on a namespace implementing `PyAttrs` inside `monty`.
+The macro keeps their native bodies in an inherent implementation and generates `PyAttrs::TABLE`.
+The table contains enumerable entries and a lookup function generated from the same declarations.
+`Type::attr_table` registers each native namespace once.
 
-```rust,ignore
-use monty_macros::pyattrs;
+Each annotation names its `StaticStrings` key explicitly:
 
-pub(crate) struct PyListImpl;
+- `#[pymethod(Sort)]` registers an instance method with a native receiver, `ArgValues`, and `&mut VM`.
+  Methods return `RunResult<Value>` or `RunResult<CallResult>`; the adapter converts values and preserves suspension.
+  An inherited native descriptor can specify its defining base, e.g. `#[pymethod(Get, Dict)]`,
+  so unbound calls validate against `dict` even when reached through a subclass.
+- `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, PyClass, ArgValues, &mut VM) -> RunResult<CallResult>`.
+  The adapter supplies the registered key and bound class, including calls through instances.
+- `#[pyvalue(Min)]` registers `(&mut VM) -> Value`.
 
-#[pyattrs]
-impl<'heap> PyAttrs<'heap> for PyListImpl {
-    type Receiver = HeapReadMut<'heap, List>;
+`Receiver` declares the view borrowed from `PyValue`:
+`HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`,
+`PyStr<'heap>`, `PyBytes<'heap>`, `PyInt<'heap>`, `f64`, or `bool`.
+Heap methods can take `&HeapRead`, `&HeapReadMut`, or `&HeapObjectRead`; existing handlers may also take
+`&mut HeapObjectRead` when they need the guard itself mutably.
+String, bytes, and integer handlers take shared references to their logical views.
+In particular, integer handlers use `PyInt` to cover both small and heap integers; an `i64` receiver is unsupported.
+Immediate float and bool receivers are passed by value.
+An incompatible native view raises `TypeError` and releases the arguments.
 
-    #[pymethod]
-    fn sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-        todo!()
-    }
-}
-```
-
-`#[pymethod]` registers `AttrDef::Method`; it takes a native receiver, `ArgValues`, and `&mut VM`, returning
-`RunResult<Value>` or `RunResult<CallResult>`.
-The adapter wraps plain values and propagates call results, including suspended VM execution.
-`Receiver` names the native view: `HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`, `PyStr<'heap>`, `PyBytes<'heap>`, or an
-immediate `f64`, `i64`, or `bool`.
-Capability receivers take shared references: `&HeapRead` for reads and `&HeapReadMut` for mutation.
-Object guards can also supply Python identity through `&HeapObjectRead`.
-Adapters borrow the existing native view from `&mut PyValue`, reusing its heap handle.
-Typed heap projections are generated from the payload registry, so native payload names need not match heap enum variants.
-Immediate receivers are passed by value.
-String methods take `&PyStr`, covering interned, inline, and heap strings without projecting their storage.
-Bytes methods take `&PyBytes`, covering interned and heap bytes.
-
-`#[pyclassmethod]` registers `AttrDef::ClassMethod` with the signature
-`(StaticStrings, PyClass, ArgValues, &mut VM) -> RunResult<CallResult>`.
-Its generated adapter supplies the registered static name, so callers only pass the class object, arguments, and VM.
-`PyClass` is the bound class object, represented as a builtin class or a borrowed native class handle.
-`#[pyvalue]` registers `AttrDef::Value` with `(&mut VM) -> Value`.
-Names map from Rust snake case to `StaticStrings` variants: `sort` becomes `Sort`, `total_seconds` becomes
-`TotalSeconds`, and `r#match` becomes `Match`.
-Declaration order determines table order.
-
-Functions keep their visibility, lifetime parameters, documentation, and bodies.
+Rust checks handler parameter and return types when compiling the generated calls.
+The macro checks the receiver shape needed for projection, duplicate attribute keys, and unsupported annotations.
+Conditional registrations are rejected because a table entry and its handler must have the same availability.
+Functions retain their visibility, lifetime parameters, documentation, and bodies.
 Unannotated helper functions are preserved without registration.
-Annotations take no arguments; conditional attributes, `self` parameters, async functions, and type or const
-parameters on registered functions are rejected.
-Implementation types may have lifetime parameters; Rust rejects overlapping `PyAttrs` implementations.
-
-String methods are defined directly in `impl<'h> PyAttrs<'h> for PyStr<'h>` with `type Receiver = PyStr<'h>`.
-The generated callable borrows the `PyStr` view already held by `PyValue` before invoking the method.
-Bytes methods likewise use `PyBytes` directly. Both views take shared references.
 
 ## Not a standalone crate
 
