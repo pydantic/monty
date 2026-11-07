@@ -2,7 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
-    mem, vec,
+    mem, ptr, vec,
 };
 
 use serde::ser::SerializeStruct;
@@ -885,6 +885,11 @@ impl<'h> HeapReadMut<'h, Dict> {
         if let Value::Ref(id) = other_value {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
+                // Self-merges preserve all entries; only later keyword overrides can change them.
+                if ptr::eq(self.get(vm.heap), src.get(vm.heap)) {
+                    return Ok(());
+                }
+
                 let iter = src.iter(vm)?;
                 defer_drop_mut!(iter, vm);
                 while let Some((key, value)) = iter.next_owned(vm)? {
@@ -1705,12 +1710,15 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    // Copy all key-value pairs (incrementing refcounts)
-    let pairs: Vec<(Value, Value)> = dict
-        .get(vm.heap)
-        .iter()
-        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
-        .collect();
+    // Removing every item can leave tombstones; an empty copy need not scan them.
+    let pairs: Vec<(Value, Value)> = if dict.get(vm.heap).is_empty() {
+        Vec::new()
+    } else {
+        dict.get(vm.heap)
+            .iter()
+            .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
+            .collect()
+    };
 
     // `copy()` preserves the subclass: a defaultdict keeps its factory, a
     // Counter stays a Counter. `cloned_kind` clones that factory reference, so
@@ -1928,22 +1936,25 @@ fn dict_merge_from_kwargs(dict: &mut Dict, kwargs: KwargsValues, vm: &mut VM<'_>
 /// If not, insert key with a value of default (or None) and return default.
 fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
-    let default = default.unwrap_or(Value::None);
-    let mut key_guard = DropGuard::new(key, vm);
-    let (key, vm) = key_guard.as_parts();
-
-    if let Some(existing) = dict.dict_get(key, vm)? {
-        default.drop_with(vm);
-        Ok(existing)
+    // Hashing/equality can raise before either argument is stored.
+    let mut pending = DropGuard::new((key, default.unwrap_or(Value::None)), vm);
+    let ((key, _), vm) = pending.as_parts();
+    let (found, hash) = dict.find_index_hash(key, vm)?;
+    if let Some(slot) = found {
+        Ok(dict.get(vm.heap).table.entry(&slot).value.clone_with_heap(vm.heap))
     } else {
-        // Key doesn't exist - insert default and return it (cloned before insertion)
-        let return_value = default.clone_with_heap(vm);
-        let (key, vm) = key_guard.into_parts();
-        if let Some(old_value) = dict.set(key, default, vm)? {
-            // This shouldn't happen since we checked, but handle it anyway
-            old_value.drop_with(vm);
-        }
-        Ok(return_value)
+        // No Python code runs after the probe, so insertion can reuse its hash without another lookup.
+        dict.get(vm.heap).table.check_growth(&vm.heap.tracker)?;
+        let ((key, default), vm) = pending.into_parts();
+        let result = default.clone_with_heap(vm.heap);
+        let dict = dict.get_mut(vm.heap);
+        dict.contains_refs |= matches!(key, Value::Ref(_)) || matches!(default, Value::Ref(_));
+        dict.table.push(DictEntry {
+            key,
+            value: default,
+            hash,
+        });
+        Ok(result)
     }
 }
 
