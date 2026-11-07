@@ -680,6 +680,9 @@ impl Type {
             (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
                 date::class_fromtimestamp(vm, args).map(CallResult::Value)
             }
+            (Self::DateTime, Some(StaticStrings::Fromordinal)) => {
+                datetime::class_fromordinal(vm, args).map(CallResult::Value)
+            }
             (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
                 datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
             }

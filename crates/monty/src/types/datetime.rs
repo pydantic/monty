@@ -321,6 +321,20 @@ pub(crate) fn class_now(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResul
     Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt)))))
 }
 
+/// Classmethod `datetime.fromordinal(ordinal)`: construct a `datetime` at midnight from an ordinal.
+pub(crate) fn class_fromordinal(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
+    let date::FromOrdinalArgs { ordinal } = date::FromOrdinalArgs::from_args(args, vm)?;
+    let date = date::date_from_ordinal(ordinal)?;
+    let naive = date.0.and_hms_opt(0, 0, 0).expect("midnight is valid");
+    let dt = DateTime {
+        naive,
+        offset_seconds: None,
+        timezone_name: None,
+        tzinfo_ref: None,
+    };
+    Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))))
+}
+
 /// `datetime.fromtimestamp(timestamp, tz=None)`: the instant `timestamp` seconds
 /// after the Unix epoch, as wall-clock time in `tz`, or in the session zone when
 /// `tz` is `None` (CPython reads the host's zone there).
@@ -1554,7 +1568,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
             }
             Some(StaticStrings::Astimezone) => astimezone(&dt, vm, args),
             // A classmethod, so CPython also reaches it through an instance.
+            Some(StaticStrings::Fromordinal) => class_fromordinal(vm, args).map(CallResult::Value),
             Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
+            Some(StaticStrings::Toordinal) => {
+                args.check_zero_args("date.toordinal", vm.heap)?;
+                let date = dt.naive.date();
+                Ok(CallResult::Value(Value::Int(i64::from(date.num_days_from_ce()))))
+            }
             Some(StaticStrings::Utcoffset) => {
                 args.check_zero_args("datetime.utcoffset", vm.heap)?;
                 Ok(CallResult::Value(timezone::utcoffset_value(dt.offset_seconds, vm.heap)))
