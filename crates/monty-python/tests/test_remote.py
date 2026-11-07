@@ -844,14 +844,15 @@ async def test_cpu_server_requires_a_finite_request_timeout():
             extra_requests.append(request)
 
     async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=None) as pool:
-        with pytest.raises(MontyConfigurationError) as caught:
-            async with pool.checkout():
-                pass
+        async with pool.checkout() as session:
+            with pytest.raises(MontyConfigurationError) as caught:
+                await session.feed_run('1 + 1')
     assert str(caught.value) == snapshot('CPU execution clock requires a finite client request_timeout')
     assert repr(caught.value) == snapshot(
         'MontyConfigurationError(CPU execution clock requires a finite client request_timeout)'
     )
-    assert extra_requests == snapshot([])
+    # the feed was pipelined behind the Configure, but nothing follows it
+    assert len(extra_requests) == 1
 
 
 async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):

@@ -412,9 +412,11 @@ test('a CPU-mode server requires a finite requestTimeout', async () => {
     for await (const request of requests) extraRequests.push(request)
   })
   await using pool = await MontyRemote.create(url, { requestTimeout: null })
-  const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConfigurationError })
+  const session = await pool.checkout()
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyConfigurationError })
   t.is(error.message, 'CPU execution clock requires a finite client request_timeout')
-  t.deepEqual(extraRequests, [])
+  // the feed was pipelined behind the Configure, but nothing follows it
+  t.is(extraRequests.length, 1)
 })
 
 test('a status ending the stream is reported with its code, message and cause', async () => {

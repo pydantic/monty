@@ -3514,7 +3514,6 @@ async fn closing_a_pool_waits_for_departed_streams() {
         let (release, wait_for_release) = mpsc::channel::<()>();
         let server = thread::spawn(move || {
             let mut socket = mock.accept();
-            expect_configure(&mut socket);
             expect_end(&mut socket);
             ended.send(()).unwrap();
             wait_for_release.recv().unwrap();
@@ -3545,7 +3544,6 @@ async fn closing_a_pool_keeps_the_remote_close_bounded() {
     let (release, wait_for_release) = mpsc::channel::<()>();
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
-        expect_configure(&mut socket);
         expect_end(&mut socket);
         ended.send(()).unwrap();
         wait_for_release.recv().unwrap();
@@ -3958,8 +3956,10 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
             })
             .await
             .expect("checkout");
-        let result = checkout.feed("1 + 1", vec![], vec![], false, &mut no_print).await;
-        let err = result.err().expect("invalid configuration must fail");
+        let err = checkout
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect_err("invalid configuration must fail");
         if clock == Some(42) {
             assert!(matches!(err, PoolError::Protocol(_)));
             insta::assert_snapshot!(err.to_string(), @"monty worker protocol error: worker reported an unknown execution clock");

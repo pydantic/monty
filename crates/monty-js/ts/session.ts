@@ -250,6 +250,8 @@ export class MontySession {
           throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
       }
       // Print failures take precedence. On a suspension the worker is waiting
       // for a resume we will never send — poison so the next feed fails cleanly
@@ -338,6 +340,8 @@ export class MontySession {
         throw await this.failedLoad(lostSessionError(turn))
       case 'protocol':
         throw await this.failedLoad(new ProtocolError(turn.message))
+      case 'configuration':
+        throw await this.failedLoad(new MontyConfigurationError(turn.message))
       case 'error':
         throw await this.failedLoad(montyErrorFromNative(turn.exception))
       default:
@@ -457,6 +461,8 @@ export class MontySession {
         throw this.poison(lostSessionError(turn))
       case 'protocol':
         throw this.poison(new ProtocolError(turn.message))
+      case 'configuration':
+        throw this.poison(new MontyConfigurationError(turn.message))
       default:
         throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
     }
@@ -1110,6 +1116,8 @@ class SnapshotDriver {
           throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
         case 'osCall':
           // Every OS call surfaces; mounts and the `os` callback are consulted
           // only by `resumeAuto`.
@@ -1791,6 +1799,8 @@ async function dumpSession(
       throw poison(lostSessionError(turn))
     case 'protocol':
       throw poison(new ProtocolError(turn.message))
+    case 'configuration':
+      throw poison(new MontyConfigurationError(turn.message))
     default:
       throw poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
   }
