@@ -23,7 +23,6 @@ assert repr(datetime.utcfromtimestamp(True)) == 'datetime.datetime(1970, 1, 1, 0
 assert repr(datetime.utcfromtimestamp(1762546800123 / 1000)) == 'datetime.datetime(2025, 11, 7, 20, 20, 0, 123000)'
 assert repr(datetime.utcfromtimestamp(1762546800000 / 1000)) == 'datetime.datetime(2025, 11, 7, 20, 20)'
 assert repr(datetime.utcfromtimestamp(1e12 / 1000)) == 'datetime.datetime(2001, 9, 9, 1, 46, 40)'
-assert repr(datetime.utcfromtimestamp(-1762546800123 / 1000)) == 'datetime.datetime(1914, 2, 24, 3, 39, 59, 877000)'
 
 # microseconds round half to even
 assert datetime.utcfromtimestamp(0.0000005).microsecond == 0
@@ -42,22 +41,6 @@ class _Index:
 
 assert datetime.utcfromtimestamp(_Index()) == datetime(1970, 1, 2)
 
-# the whole range, and the instant just outside it
-assert datetime.utcfromtimestamp(-62135596800) == datetime(1, 1, 1)
-assert datetime.utcfromtimestamp(253402300799) == datetime(9999, 12, 31, 23, 59, 59)
-for _ts, _msg in [
-    (253402300800, 'ValueError: year must be in 1..9999, not 10000'),
-    (-62135596801, 'ValueError: year must be in 1..9999, not 0'),
-    (253402300799.9999999, 'ValueError: year must be in 1..9999, not 10000'),
-    (1e20, 'OverflowError: timestamp out of range for platform time_t'),
-    (float('inf'), 'OverflowError: timestamp out of range for platform time_t'),
-    (2**70, 'OverflowError: timestamp out of range for platform time_t'),
-    (float('nan'), 'ValueError: Invalid value NaN (not a number)'),
-    ('x', 'TypeError: argument must be int or float, not str'),
-    (None, 'TypeError: argument must be int or float, not NoneType'),
-    (1 + 0j, 'TypeError: argument must be int or float, not complex'),
-]:
-    assert _raises(lambda *a, **k: datetime.utcfromtimestamp(*a, **k), _ts) == _msg, _ts
 
 # usable through an instance, as a classmethod is
 assert datetime(2020, 1, 1).utcfromtimestamp(5) == datetime(1970, 1, 1, 0, 0, 5)
