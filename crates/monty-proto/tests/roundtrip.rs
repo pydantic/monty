@@ -7,8 +7,8 @@ use monty_proto::{
     named_values_to_proto, os_call_from_proto, os_call_to_proto, pb,
 };
 use monty_types::{
-    CodeLoc, CompileOptions, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs, ImportArgs,
-    JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, ModuleFile, MontyDate, MontyDateTime, MontyException,
+    CodeLoc, CompileOptions, CreateExclusiveCallArgs, DateTimeSource, ExcData, ExcType, ExtFunctionResult, GetenvArgs,
+    ImportArgs, JsonErrorData, MAX_SLEEP_SECONDS, MkdirCallArgs, ModuleFile, MontyDate, MontyDateTime, MontyException,
     MontyFileHandle, MontyObject, MontyPath, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid,
     NameLookupResult, NamedValues, OpenCallArgs, OsFunctionCall, OsPolicy, PathBytesDataArgs, PathStringDataArgs,
     ProcessTime, RandomSeed, RandomStart, RenameCallArgs, ResourceLimits, SandboxTimeZone, ScanArgs, SleepMode,
@@ -1140,6 +1140,58 @@ fn os_call_open_round_trips_all_modes() {
             mode: mode.parse().unwrap(),
         }));
     }
+}
+
+#[test]
+fn os_call_create_exclusive_round_trips_modes_and_permissions() {
+    for mode in ["r", "rb", "w", "wb", "a", "ab"] {
+        for permissions in [0, 0o600, 0o666] {
+            assert_os_call_round_trip(OsFunctionCall::CreateExclusive(CreateExclusiveCallArgs {
+                path: "/mnt/new".into(),
+                mode: mode.parse().unwrap(),
+                permissions,
+            }));
+        }
+    }
+}
+
+#[test]
+fn os_call_create_exclusive_rejects_malformed_arguments() {
+    for mode in ["x", "w+", "", "invalid"] {
+        let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
+            path: "/mnt/new".to_owned(),
+            mode: mode.to_owned(),
+            permissions: 0o600,
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidFileMode(_))
+        ));
+    }
+    for permissions in [0o001, 0o010, 0o100, 0o777, 0o1000, 0o7777, u32::MAX] {
+        let call = pb::os_call::Call::CreateExclusive(pb::os_call::CreateExclusive {
+            path: "/mnt/new".to_owned(),
+            mode: "w".to_owned(),
+            permissions,
+        });
+        assert!(matches!(
+            OsFunctionCall::try_from(call),
+            Err(ProtoConvertError::InvalidValue {
+                field: "CreateExclusive.permissions",
+                ..
+            })
+        ));
+    }
+    // An older schema discards the unknown arm. Conversion must reject a missing call,
+    // never reinterpret it as an ordinary open that could truncate an existing file.
+    let missing = pb::OsCall {
+        call: None,
+        ..Default::default()
+    };
+    assert!(matches!(
+        os_call_from_proto(missing),
+        Err(ProtoConvertError::MissingField("OsCall.call"))
+    ));
 }
 
 #[test]

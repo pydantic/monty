@@ -30,7 +30,7 @@ use rustls_platform_verifier::Verifier;
 use tokio::{
     runtime::Handle,
     sync::{
-        Semaphore,
+        Notify, Semaphore,
         mpsc::{self, WeakSender},
     },
     task::JoinHandle,
@@ -67,9 +67,23 @@ pub(crate) struct Remote {
     /// at `max_processes`: past it a close resets the stream, so what peers
     /// can buffer on retired streams tracks the pool's size, not its churn.
     closing: Arc<Semaphore>,
+    closing_complete: Arc<Notify>,
 }
 
 impl Remote {
+    /// Wait for departed streams, without waiting for checkouts that are still live.
+    pub(crate) async fn wait_closed(&self, max_processes: usize) {
+        loop {
+            let changed = self.closing_complete.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.closing.available_permits() == max_processes.max(1) {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     /// Prepares the channel for `url` without connecting; the first stream
     /// dials. A URL tonic cannot parse fails here, so a pool with a bad URL
     /// fails at `Pool::new` rather than at its first checkout.
@@ -116,6 +130,7 @@ impl Remote {
             dial_timeout,
             decode_permits: Arc::new(Semaphore::new(max_processes.max(1))),
             closing: Arc::new(Semaphore::new(max_processes.max(1))),
+            closing_complete: Arc::new(Notify::new()),
         })
     }
 
@@ -216,6 +231,7 @@ impl Remote {
             reader: Some(reader),
             runtime: Handle::current(),
             closing: Arc::clone(&self.closing),
+            closing_complete: Arc::clone(&self.closing_complete),
         })
     }
 }
@@ -296,6 +312,7 @@ pub(crate) struct RemoteWorker {
     runtime: Handle,
     /// See [`Remote::closing`].
     closing: Arc<Semaphore>,
+    closing_complete: Arc<Notify>,
 }
 
 impl RemoteWorker {
@@ -341,8 +358,8 @@ impl RemoteWorker {
     /// Ends the stream: half-close the request side and leave the detached
     /// reader holding the response stream open until the server ends its side
     /// (bounded by [`CLOSE_GRACE`]), then call `on_closed`. Returns at once:
-    /// what the server does before ending — a relay parks the session — is not
-    /// the host's wait.
+    /// the checkout does not wait for the server's final work, such as parking.
+    /// [`crate::Pool::close`] waits for these detached readers.
     ///
     /// The half-close is what a *proxied* server sees: a bare stream reset may
     /// stop at a load balancer, leaving the session (and its capacity slot)
@@ -352,7 +369,11 @@ impl RemoteWorker {
         self.requests = None;
         // runs `on_closed` however this ends, including a runtime shut down
         // under the detached task
-        let closed = OnDrop(Some(on_closed));
+        let closing_complete = Arc::clone(&self.closing_complete);
+        let closed = OnDrop(Some(move || {
+            on_closed();
+            closing_complete.notify_waiters();
+        }));
         if let Some(reader) = self.reader.take() {
             let abort = reader.abort_handle();
             match Arc::clone(&self.closing).try_acquire_owned() {

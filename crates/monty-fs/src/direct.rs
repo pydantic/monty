@@ -11,9 +11,9 @@ use monty_types::{FileMode, MontyObject, normalize_virtual_path, scan::EntryInfo
 use super::{
     common::{
         DIRECTORY_WRITE_BYTES, MemoryBudget, MountContext, PathInfo, check_write_limit, commit_write_bytes,
-        host_append_bytes, host_append_text, host_is_dir, host_is_file, host_iterdir, host_list_visible_dir_entries,
-        host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink, host_write_bytes,
-        host_write_text, map_io, reject_non_regular,
+        host_append_bytes, host_append_text, host_create_exclusive, host_is_dir, host_is_file, host_iterdir,
+        host_list_visible_dir_entries, host_mkdir, host_read_bytes, host_read_text, host_rmdir, host_stat, host_unlink,
+        host_write_bytes, host_write_text, map_io, reject_non_regular,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -84,6 +84,16 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
+        }
+        FsRequest::CreateExclusive {
+            path,
+            mode,
+            permissions,
+        } => {
+            let target = resolve_virtual_path(&path, ctx.mount_virtual)?;
+            check_write_limit(0, ctx)?;
+            host_create_exclusive(ctx.mount_dir, target.for_dir_op(), permissions, &path)?;
+            Ok(file_handle_result(&path, mode))
         }
         FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }

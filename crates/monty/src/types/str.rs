@@ -187,6 +187,26 @@ impl PyObjectIdentity for PyStr<'_> {
 }
 
 impl<'h> PyTrait<'h> for PyStr<'h> {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => Ok(CallResult::Value(StringIterator::from_intern(*id, vm))),
+            Self::Inline(text) => Ok(CallResult::Value(StringIterator::from_inline(*text, vm))),
+            Self::Heap(value) => value.py_iter(vm),
+        }
+    }
+
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Interned(id) => Ok(Some(vm.interns.str_hash(*id))),
+            Self::Inline(text) => Ok(Some(hash_python_str(text.as_str()))),
+            Self::Heap(value) => value.py_hash(vm),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Str
     }

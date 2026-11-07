@@ -28,10 +28,10 @@ examples = [
     "openpyxl>=3.1.5",
     "pillow>=11.0.0",
     "types-openpyxl>=3.1.5",
-    "playwright>=1.58.0",
-    "beautifulsoup4>=4.14.3",
     "logfire>=4.25.0",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
+    "pydantic-ai-harness[code-mode]>=0.60.0; python_version >= '3.11'",
+    "websockets>=15.0",
 ]
 build = [
     "twine>=6.1.0",
@@ -237,7 +237,6 @@ exclude = [
     "crates/monty/test_cases/typing__union.py",
     "crates/monty/test_cases/refcount__typing_union.py",
     "scripts/startup_performance.py",
-    "examples/web_scraper/example_code.py",
     # two starred targets in one assignment is the SyntaxError under test
     "crates/monty/test_cases/unpack__err_multiple_starred.py",
 ]

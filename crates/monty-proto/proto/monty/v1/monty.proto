@@ -986,6 +986,8 @@ message OsCall {
     // typing.get_type_hints() of a host function or class. Answer with a dict
     // of hints, which the call returns as is; `not_handled` means `{}`.
     GetTypeHints get_type_hints = 34;
+    // Create a new empty file; an existing entry must never be opened or replaced.
+    CreateExclusive create_exclusive = 35;
   }
 
   // The arena any value-typed argument (`Getenv.default`) indexes.
@@ -1009,6 +1011,13 @@ message OsCall {
     string path = 1;
     // Canonical open() mode string, same set as `FileHandle.mode`.
     string mode = 2;
+  }
+  message CreateExclusive {
+    string path = 1;
+    // Access mode of the returned handle; creation is exclusive for every mode.
+    string mode = 2;
+    // Access bits only (0..0777); native backends apply the host umask.
+    uint32 permissions = 3;
   }
   message Mkdir {
     string path = 1;

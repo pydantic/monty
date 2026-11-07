@@ -290,6 +290,35 @@ test('a closed pool rejects checkouts', async () => {
   })
 })
 
+test('every close() call waits for a finished session stream to end', async () => {
+  let ended!: () => void
+  const endSeen = new Promise<void>((resolve) => (ended = resolve))
+  let release!: () => void
+  const released = new Promise<void>((resolve) => (release = resolve))
+  const { url } = await server(async (stream) => {
+    admit(stream)
+    const requests = messages(stream)
+    await requests.next() // Configure
+    stream.write(OK_EVENT)
+    // drain until the half-close, then hold the response side open
+    for await (const _ of requests);
+    ended()
+    await released
+    stream.end()
+  })
+  const pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  const session = await pool.checkout()
+  await session.close()
+  await endSeen
+  let settled = 0
+  const closes = [pool.close(), pool.close()].map((close) => close.then(() => (settled += 1)))
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  t.is(settled, 0)
+  release()
+  await Promise.all(closes)
+  t.is(settled, 2)
+})
+
 test('MontyWebsocket is an alias of MontyRemote that still accepts ws:// URLs', async () => {
   t.is(MontyWebsocket, MontyRemote)
   const options: MontyWebsocketOptions = { requestTimeout: 30 }
