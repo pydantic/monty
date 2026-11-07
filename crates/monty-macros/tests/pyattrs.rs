@@ -110,7 +110,7 @@ impl<'h> NativeAttrs<'h> for IntegerMethods {
 }
 struct FloatMethods;
 #[pyattrs]
-impl<'h> PyAttrs<'h> for FloatMethods {
+impl PyAttrs<'_> for FloatMethods {
     type Receiver = f64;
 
     #[pymethod(Count, Dict)]

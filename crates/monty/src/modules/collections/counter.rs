@@ -63,7 +63,7 @@ pub(crate) fn call_unbound(
         }
     };
     let mut pending = DropGuard::new((receiver, args), vm);
-    let ((receiver, _), vm) = pending.as_parts_mut();
+    let ((receiver, args), vm) = pending.as_parts_mut();
     let receiver_type = receiver.py_type(vm);
     if name == Some(StaticStrings::Copy) {
         let ((receiver, args), vm) = pending.into_parts();
@@ -74,6 +74,12 @@ pub(crate) fn call_unbound(
         return receiver_type.call(vm, ArgValues::One(copy));
     }
     if !receiver_type.is_instance_of(Type::Dict) {
+        // Without a source or keyword counts, these Python methods never access self.
+        if matches!(name, Some(StaticStrings::Update | StaticStrings::Subtract))
+            && matches!(args, ArgValues::Empty | ArgValues::One(Value::None))
+        {
+            return Ok(Value::None.into());
+        }
         let missing = match name {
             Some(StaticStrings::Total) => "values",
             Some(StaticStrings::Update | StaticStrings::Subtract) => "get",

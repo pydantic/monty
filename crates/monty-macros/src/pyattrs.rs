@@ -1,161 +1,8 @@
 use std::{collections::HashSet, mem};
 
-use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
-use syn::{GenericArgument, ImplItem, ImplItemFn, ItemImpl, PathArguments, Type, punctuated::Punctuated};
-
-#[derive(Clone, Copy)]
-enum Mode {
-    HeapHandle,
-    NativeView,
-    Immediate,
-}
-
-#[derive(Clone, Copy)]
-enum Kind {
-    Method,
-    ClassMethod,
-    Value,
-}
-
-fn type_path(ty: &Type) -> syn::Result<&syn::PathSegment> {
-    match ty {
-        Type::Path(path) if path.qself.is_none() => Ok(path.path.segments.last().unwrap()),
-        _ => Err(syn::Error::new_spanned(ty, "expected a named type")),
-    }
-}
-
-fn receiver(ty: &Type) -> syn::Result<(Mode, Type, syn::Ident)> {
-    let view = type_path(ty)?;
-    match view.ident.to_string().as_str() {
-        "f64" | "bool" if matches!(view.arguments, PathArguments::None) => {
-            let variant = match view.ident.to_string().as_str() {
-                "f64" => "Float",
-                _ => "Bool",
-            };
-            Ok((Mode::Immediate, ty.clone(), format_ident!("{variant}")))
-        }
-        "PyStr" | "PyBytes" | "PyInt" => {
-            if !matches!(&view.arguments, PathArguments::AngleBracketed(args)
-                if args.args.len() == 1 && matches!(args.args.first(), Some(GenericArgument::Lifetime(_))))
-            {
-                return Err(syn::Error::new_spanned(
-                    ty,
-                    format!("{} requires one heap lifetime", view.ident),
-                ));
-            }
-            Ok((Mode::NativeView, ty.clone(), view.ident.clone()))
-        }
-        "HeapRead" | "HeapReadMut" | "HeapObjectRead" => {
-            let PathArguments::AngleBracketed(args) = &view.arguments else {
-                return Err(syn::Error::new_spanned(
-                    ty,
-                    "heap view requires a lifetime and native type",
-                ));
-            };
-            if args.args.len() != 2 || !matches!(args.args.first(), Some(GenericArgument::Lifetime(_))) {
-                return Err(syn::Error::new_spanned(
-                    ty,
-                    "heap view requires a lifetime and native type",
-                ));
-            }
-            let Some(GenericArgument::Type(native)) = args.args.last() else {
-                return Err(syn::Error::new_spanned(ty, "heap view requires a native type"));
-            };
-            let variant = type_path(native)?.ident.clone();
-            Ok((Mode::HeapHandle, native.clone(), variant))
-        }
-        _ => Err(syn::Error::new_spanned(
-            ty,
-            "Receiver must be HeapRead<'h, T>, HeapReadMut<'h, T>, HeapObjectRead<'h, T>, PyStr<'h>, PyBytes<'h>, PyInt<'h>, f64, or bool",
-        )),
-    }
-}
-
-fn erase_path_lifetimes(path: &mut syn::Path) {
-    for segment in &mut path.segments {
-        if let PathArguments::AngleBracketed(args) = &mut segment.arguments {
-            for arg in &mut args.args {
-                if let GenericArgument::Lifetime(lifetime) = arg {
-                    *lifetime = syn::Lifetime::new("'_", lifetime.apostrophe);
-                }
-            }
-        }
-    }
-}
-
-fn definition(
-    owner: &Type,
-    method: &ImplItemFn,
-    kind: Kind,
-    receiver: &(Mode, Type, syn::Ident),
-    attr_name: &syn::Ident,
-    defining_owner: Option<&syn::Ident>,
-) -> TokenStream {
-    let name = &method.sig.ident;
-    let (mode, native, variant) = receiver;
-    // Callable adapters must work for every VM lifetime, independently of the table's lifetime.
-    let mut owner = owner.clone();
-    if let Type::Path(owner) = &mut owner {
-        erase_path_lifetimes(&mut owner.path);
-    }
-    let handler = quote!(<#owner>::#name);
-    match kind {
-        Kind::ClassMethod => quote! {
-            crate::py_attrs::AttrDef::ClassMethod({
-                fn call<'h>(this: crate::py_class::PyClass<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
-                    #handler(crate::intern::StaticStrings::#attr_name, this, args, vm)
-                }
-                call
-            })
-        },
-        Kind::Value => quote!(crate::py_attrs::AttrDef::Value(#handler)),
-        Kind::Method => {
-            let defining_owner =
-                defining_owner.map_or_else(|| quote!(None), |owner| quote!(Some(crate::types::Type::#owner)));
-            let body = match mode {
-                Mode::Immediate => {
-                    let pattern = quote!(crate::py_value::PyValue::#variant(value));
-                    quote! {
-                        let #pattern = this else {
-                            return crate::py_attrs::invalid_receiver(crate::intern::StaticStrings::#attr_name, args, vm)
-                        };
-                        #handler(*value, args, vm)
-                    }
-                }
-                Mode::NativeView => {
-                    let variant = if variant == "PyBytes" {
-                        format_ident!("Bytes")
-                    } else if variant == "PyInt" {
-                        format_ident!("Int")
-                    } else {
-                        format_ident!("Str")
-                    };
-                    quote! {
-                        let crate::py_value::PyValue::#variant(value) = this else {
-                            return crate::py_attrs::invalid_receiver(crate::intern::StaticStrings::#attr_name, args, vm)
-                        };
-                        #handler(value, args, vm)
-                    }
-                }
-                Mode::HeapHandle => quote! {
-                    let Some(value) = <#native as crate::py_value::PyValuePayload>::from_py_value(this) else {
-                        return crate::py_attrs::invalid_receiver(crate::intern::StaticStrings::#attr_name, args, vm)
-                    };
-                    #handler(value, args, vm)
-                },
-            };
-            quote! {
-                crate::py_attrs::AttrDef::Method { owner: #defining_owner, call: {
-                    fn call<'h>(this: &mut crate::py_value::PyValue<'h>, args: crate::args::ArgValues, vm: &mut crate::bytecode::VM<'h>) -> crate::exception_private::RunResult<crate::bytecode::CallResult> {
-                        ({ #body }).map(Into::into)
-                    }
-                    call
-                }}
-            }
-        }
-    }
-}
+use proc_macro2::{Span, TokenStream};
+use quote::quote;
+use syn::{Attribute, GenericArgument, ImplItem, ItemImpl, PathArguments, Type, punctuated::Punctuated};
 
 pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
     if input.trait_.is_none() {
@@ -164,106 +11,98 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
             "#[pyattrs] requires a trait implementation",
         ));
     }
-    if input.unsafety.is_some() || input.trait_.as_ref().is_some_and(|(negation, _, _)| negation.is_some()) {
-        return Err(syn::Error::new_spanned(
-            &input,
-            "#[pyattrs] requires a safe positive trait implementation",
-        ));
+    let receiver = input.items.iter().find_map(|item| match item {
+        ImplItem::Type(item) if item.ident == "Receiver" => Some(&item.ty),
+        _ => None,
+    });
+    let projection =
+        project_receiver(receiver.ok_or_else(|| syn::Error::new_spanned(&input, "declare type Receiver"))?)?;
+    // Both impls are generated, even though their bodies retain the source's spans.
+    input.impl_token = syn::Token![impl](Span::call_site());
+    let mut table_impl = input.clone();
+    table_impl.items.retain(|item| matches!(item, ImplItem::Type(_)));
+    input.trait_ = None;
+    if let Type::Path(owner) = &*input.self_ty
+        && owner.path.segments.iter().all(|segment| segment.arguments.is_empty())
+    {
+        input.generics = syn::Generics::default();
     }
-    let receiver_items = input
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ImplItem::Type(item) if item.ident == "Receiver" => Some(item),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if receiver_items.len() != 1 {
-        return Err(syn::Error::new_spanned(&input, "declare exactly one type Receiver"));
-    }
-    let receiver_item = receiver_items[0].clone();
-    let receiver = receiver(&receiver_item.ty)?;
-    let mut methods = Vec::new();
-    let mut entries = Vec::new();
+    let owner = inferred_lifetimes((*input.self_ty).clone());
     let mut names = HashSet::new();
+    let mut entries = Vec::new();
+    let mut arms = Vec::new();
+
     for item in &mut input.items {
         match item {
             ImplItem::Type(item) if item.ident == "Receiver" => {}
             ImplItem::Fn(method) => {
                 let mut annotation = None;
-                let mut kept = Vec::new();
+                let mut remaining = Vec::new();
                 for attr in mem::take(&mut method.attrs) {
-                    let kind = if attr.path().is_ident("pymethod") {
-                        Some(Kind::Method)
-                    } else if attr.path().is_ident("pyclassmethod") {
-                        Some(Kind::ClassMethod)
-                    } else if attr.path().is_ident("pyvalue") {
-                        Some(Kind::Value)
-                    } else {
-                        None
-                    };
-                    if let Some(kind) = kind {
+                    if let Some(kind) = Kind::from_attr(&attr) {
                         if annotation.is_some() {
                             return Err(syn::Error::new_spanned(
                                 attr,
-                                "use exactly one Python attribute annotation per function",
+                                "use one Python attribute annotation per function",
                             ));
                         }
-                        let mut arguments = attr
-                            .parse_args_with(Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated)?
-                            .into_iter();
-                        let name = arguments
+                        let args = attr.parse_args_with(Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated)?;
+                        let mut args = args.into_iter();
+                        let name = args
                             .next()
                             .ok_or_else(|| syn::Error::new_spanned(&attr, "expected a StaticStrings key"))?;
-                        let owner = arguments.next();
-                        if arguments.next().is_some() || (owner.is_some() && !matches!(kind, Kind::Method)) {
+                        let owner = args.next();
+                        if args.next().is_some() || (owner.is_some() && !matches!(kind, Kind::Method)) {
                             return Err(syn::Error::new_spanned(
-                                &attr,
+                                attr,
                                 "only methods accept an optional defining native type",
                             ));
                         }
                         annotation = Some((kind, name, owner));
                     } else {
-                        if attr
-                            .path()
-                            .segments
-                            .last()
-                            .is_some_and(|segment| segment.ident.to_string().starts_with("py"))
-                        {
-                            return Err(syn::Error::new_spanned(
-                                attr,
-                                "expected #[pymethod], #[pyclassmethod], or #[pyvalue]",
-                            ));
-                        }
-                        kept.push(attr);
+                        remaining.push(attr);
                     }
                 }
-                method.attrs = kept;
-                if let Some((kind, static_name, defining_owner)) = annotation {
-                    if method
-                        .attrs
-                        .iter()
-                        .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
-                    {
-                        return Err(syn::Error::new_spanned(
-                            method,
-                            "conditional Python attributes are not supported",
-                        ));
-                    }
-                    if !names.insert(static_name.to_string()) {
-                        return Err(syn::Error::new_spanned(static_name, "duplicate Python attribute name"));
-                    }
-                    let def = definition(
-                        &input.self_ty,
+                method.attrs = remaining;
+                let Some((kind, name, defining_owner)) = annotation else {
+                    continue;
+                };
+                if method
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
+                {
+                    return Err(syn::Error::new_spanned(
                         method,
-                        kind,
-                        &receiver,
-                        &static_name,
-                        defining_owner.as_ref(),
-                    );
-                    entries.push((static_name, def));
+                        "conditional Python attributes are not supported",
+                    ));
                 }
-                methods.push(method.clone());
+                if !names.insert(name.to_string()) {
+                    return Err(syn::Error::new_spanned(name, "duplicate Python attribute name"));
+                }
+                let handler = &method.sig.ident;
+                let key = quote!(crate::intern::StaticStrings::#name);
+                let definition = match kind {
+                    Kind::Method => {
+                        let defining_owner = defining_owner
+                            .map_or_else(|| quote!(None), |owner| quote!(Some(crate::types::Type::#owner)));
+                        quote! {
+                            crate::py_attrs::AttrDef::Method { owner: #defining_owner, call: |this, args, vm| {
+                                let Some(receiver) = (#projection) else {
+                                    return crate::py_attrs::invalid_receiver(#key, args, vm);
+                                };
+                                <#owner>::#handler(receiver, args, vm).map(Into::into)
+                            }}
+                        }
+                    }
+                    Kind::ClassMethod => quote! {
+                        crate::py_attrs::AttrDef::ClassMethod(|this, args, vm| <#owner>::#handler(#key, this, args, vm))
+                    },
+                    Kind::Value => quote!(crate::py_attrs::AttrDef::Value(<#owner>::#handler)),
+                };
+                let index = entries.len();
+                entries.push(quote!((#key, #definition)));
+                arms.push(quote!(#key => Some(Self::TABLE.entries[#index].1)));
             }
             _ => {
                 return Err(syn::Error::new_spanned(
@@ -273,44 +112,88 @@ pub(crate) fn expand(mut input: ItemImpl) -> syn::Result<TokenStream> {
             }
         }
     }
-    let owner = &input.self_ty;
-    let attrs = &input.attrs;
-    let trait_path = &input.trait_.as_ref().unwrap().1;
-    let generics = &input.generics;
-    let inherent_generics = if matches!(type_path(owner)?.arguments, PathArguments::None) {
-        syn::Generics::default()
-    } else {
-        input.generics.clone()
-    };
-    let mut lookup_trait = trait_path.clone();
-    erase_path_lifetimes(&mut lookup_trait);
-    let table = entries
-        .iter()
-        .map(|(name, def)| quote!((crate::intern::StaticStrings::#name, #def)));
-    // Lookup and enumeration share the table's function pointers.
-    let arms = entries.iter().enumerate().map(|(index, (name, _))| {
-        quote!(crate::intern::StaticStrings::#name => Some(<Self as #lookup_trait>::TABLE.entries[#index].1))
+    input.items.retain(|item| matches!(item, ImplItem::Fn(_)));
+    table_impl.items.push(syn::parse_quote! {
+        const TABLE: crate::py_attrs::AttrTable = crate::py_attrs::AttrTable {
+            entries: &[#(#entries,)*],
+            lookup: |name| match name {
+                #(#arms,)*
+                _ => None,
+            },
+        };
     });
-    Ok(quote! {
-        #(#attrs)*
-        impl #inherent_generics #owner {
-            #(#methods)*
+    Ok(quote!(#input #table_impl))
+}
 
-            pub(crate) const fn lookup_attr(name: crate::intern::StaticStrings) -> Option<crate::py_attrs::AttrDef> {
-                match name {
-                    #(#arms,)*
+#[derive(Clone, Copy)]
+enum Kind {
+    Method,
+    ClassMethod,
+    Value,
+}
+
+impl Kind {
+    fn from_attr(attr: &Attribute) -> Option<Self> {
+        if attr.path().is_ident("pymethod") {
+            Some(Self::Method)
+        } else if attr.path().is_ident("pyclassmethod") {
+            Some(Self::ClassMethod)
+        } else if attr.path().is_ident("pyvalue") {
+            Some(Self::Value)
+        } else {
+            None
+        }
+    }
+}
+
+/// Projects a native view; rustc checks the receiver's generic arguments and handler signature.
+fn project_receiver(ty: &Type) -> syn::Result<TokenStream> {
+    let Type::Path(path) = ty else {
+        return Err(syn::Error::new_spanned(ty, "expected a named receiver type"));
+    };
+    let segment = path.path.segments.last().expect("type paths are nonempty");
+    let (variant, value) = match segment.ident.to_string().as_str() {
+        "PyStr" => (quote!(Str), quote!(value)),
+        "PyBytes" => (quote!(Bytes), quote!(value)),
+        "PyInt" => (quote!(Int), quote!(value)),
+        "f64" => (quote!(Float), quote!(*value)),
+        "bool" => (quote!(Bool), quote!(*value)),
+        "HeapRead" | "HeapReadMut" | "HeapObjectRead" => {
+            let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return Err(syn::Error::new_spanned(ty, "expected a heap payload type"));
+            };
+            let native = args
+                .args
+                .iter()
+                .find_map(|arg| match arg {
+                    GenericArgument::Type(ty) => Some(ty),
                     _ => None,
+                })
+                .ok_or_else(|| syn::Error::new_spanned(ty, "expected a heap payload type"))?;
+            return Ok(quote!(<#native as crate::py_value::PyValuePayload>::from_py_value(this)));
+        }
+        _ => return Err(syn::Error::new_spanned(ty, "unsupported native receiver type")),
+    };
+    Ok(quote! {
+        match this {
+            crate::py_value::PyValue::#variant(value) => Some(#value),
+            _ => None,
+        }
+    })
+}
+
+/// Adapters must accept every VM lifetime, independently of the namespace impl's lifetime.
+fn inferred_lifetimes(mut owner: Type) -> Type {
+    if let Type::Path(path) = &mut owner {
+        for segment in &mut path.path.segments {
+            if let PathArguments::AngleBracketed(args) = &mut segment.arguments {
+                for arg in &mut args.args {
+                    if let GenericArgument::Lifetime(lifetime) = arg {
+                        *lifetime = syn::Lifetime::new("'_", lifetime.apostrophe);
+                    }
                 }
             }
         }
-
-        #(#attrs)*
-        impl #generics #trait_path for #owner {
-            #receiver_item
-            const TABLE: crate::py_attrs::AttrTable = crate::py_attrs::AttrTable {
-                entries: &[#(#table,)*],
-                lookup: Self::lookup_attr,
-            };
-        }
-    })
+    }
+    owner
 }

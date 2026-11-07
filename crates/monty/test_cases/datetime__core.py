@@ -1238,7 +1238,7 @@ except TypeError as e:
 # replace(); that divergence pre-dates the FromArgs migration and is not
 # regression-tested here because it is CPython-incompatible.
 
-# date.replace: kw_only day as wrong type
+# date.replace: day as wrong type
 base_date = datetime.date(2024, 6, 15)
 try:
     base_date.replace(day='last')

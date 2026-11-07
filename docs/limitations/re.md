@@ -76,7 +76,7 @@ mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 A non-str subject passed to a Pattern *method* raises `expected string, not {type}` rather than CPython's
 `expected string or bytes-like object, got '{type}'`. The module-level functions match CPython's wording.
 
-Missing Pattern method arguments use Monty's native arity wording, e.g.
+Missing arguments to `Pattern.search`, `match`, `fullmatch`, `findall`, and `finditer` use Monty's native arity wording, e.g.
 `Pattern.search() takes exactly one argument (0 given)`, rather than CPython's
 `search() missing required argument 'string' (pos 1)`.
 

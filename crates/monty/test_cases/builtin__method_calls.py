@@ -326,6 +326,13 @@ assert Counter.total({'a': 2, 'b': 3}) == 5
 assert list(Counter.elements({'a': 2})) == ['a', 'a']
 assert Counter.copy([1, 2]) == [1, 2]
 assert Counter.copy(42) == 42
+for receiver in [[], [1], 42, None]:
+    assert Counter.update(receiver) is None
+    assert Counter.subtract(receiver) is None
+    assert Counter.update(receiver, None) is None
+    assert Counter.subtract(receiver, None) is None
+    assert Counter.update(receiver, **{}) is None
+    assert Counter.subtract(receiver, None, **{}) is None
 original_counter = Counter(a=[1])
 copied_counter = Counter.copy(original_counter)
 assert type(copied_counter) is Counter
@@ -390,6 +397,27 @@ for invalid, expected_error in [
         assert False, 'expected invalid receiver error'
 assert datetime.min == datetime(1, 1, 1)
 assert datetime.max == datetime(9999, 12, 31, 23, 59, 59, 999999)
+
+# === Positional date.replace arguments ===
+for receiver in [date(2024, 6, 15), datetime(2024, 6, 15, 10, 20, 30, 123, tzinfo=timezone.utc)]:
+    result_type = type(receiver)
+    assert date.replace(receiver, 2025) == result_type(2025, 6, 15)
+    assert date.replace(receiver, 2025, 3) == result_type(2025, 3, 15)
+    assert date.replace(receiver, 2025, 3, 4) == result_type(2025, 3, 4)
+    assert date.replace(receiver, 2025, month=3, day=4) == result_type(2025, 3, 4)
+    try:
+        date.replace(receiver, 2025, year=2026)
+    except TypeError as exc:
+        assert str(exc) == "argument for replace() given by name ('year') and position (1)"
+    else:
+        assert False, 'replace accepted a duplicate year'
+    try:
+        date.replace(receiver, 2025, 3, 4, 5)
+    except TypeError as exc:
+        assert str(exc) == 'replace() takes at most 3 arguments (4 given)'
+    else:
+        assert False, 'replace accepted four positional arguments'
+assert date(2024, 6, 15).replace(2025, 3, day=4) == date(2025, 3, 4)
 
 # === Argument validation ===
 try:
