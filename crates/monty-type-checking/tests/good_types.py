@@ -833,5 +833,5 @@ assert_type(annotationlib.get_annotations(annotated), dict[str, Any])
 assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), dict[str, Any])
 
 # === typing.cast ===
-assert_type(cast(int, "x"), int)
-assert_type(cast("list[int]", get_type_hints(annotated)), list[int])
+assert_type(cast(int, 'x'), int)
+assert_type(cast('list[int]', get_type_hints(annotated)), list[int])

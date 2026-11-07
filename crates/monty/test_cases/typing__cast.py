@@ -2,15 +2,17 @@ from typing import assert_never, assert_type, cast
 
 # === cast returns its value untouched, whatever the type argument is ===
 assert cast(int, 'x') == 'x', 'cast ignores the type'
-items = [1]
+items: list[object] = [1]
 assert cast('list[int]', items) is items, 'string forward reference'
 assert cast(list[int], items) is items, 'generic alias'
 assert cast(None, 3) == 3, 'None as the type'
 assert cast(typ=int, val=5) == 5, 'keyword arguments'
 
 # === assert_type returns its value ===
-assert assert_type(items, list[int]) is items, 'assert_type returns val'
-assert assert_type(1, 'int') == 1, 'assert_type string type'
+ints = [1]
+assert assert_type(ints, list[int]) is ints, 'assert_type returns val'
+number = int('1')
+assert assert_type(number, 'int') == 1, 'assert_type string type'
 
 # === argument errors match CPython ===
 try:
