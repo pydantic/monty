@@ -1,9 +1,12 @@
 # Python language / parser
 
 Monty parses Python source with Ruff's parser but rejects several constructs
-at parse time. Anything listed below raises `NotImplementedError` (prefixed
+at parse time. Unless stated otherwise, constructs listed below raise `NotImplementedError` (prefixed
 with "The monty syntax parser does not yet support ") at compile time, before
 any code runs.
+
+Python 3.15 lazy imports (`lazy import ...` and `lazy from ... import ...`) raise `SyntaxError: invalid syntax`,
+matching Monty's Python 3.14 target.
 
 ## Statements rejected at parse time
 

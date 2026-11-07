@@ -943,6 +943,15 @@ impl<'a, 'i> Parser<'a, 'i> {
                 };
                 Ok(Node::Assert { test, msg })
             }
+            Stmt::Import(ast::StmtImport {
+                is_lazy: true, range, ..
+            })
+            | Stmt::ImportFrom(ast::StmtImportFrom {
+                is_lazy: true, range, ..
+            }) => {
+                // Ruff accepts Python 3.15 lazy imports; Monty targets Python 3.14.
+                Err(ParseError::syntax("invalid syntax", self.convert_range(range)))
+            }
             Stmt::Import(ast::StmtImport { names, range, .. }) => {
                 let position = self.convert_range(range);
                 let import_names = names

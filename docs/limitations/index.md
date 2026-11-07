@@ -55,6 +55,8 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Wildcard imports (`from m import *`)
 - t-strings
 
+Python 3.15 lazy imports raise `SyntaxError`; see [language.md](language.md).
+
 **Missing in other ways:**
 
 - User-defined exception classes.
