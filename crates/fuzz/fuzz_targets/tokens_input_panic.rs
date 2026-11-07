@@ -28,6 +28,7 @@ enum Token {
     // === Identifiers ===
     Var(VarName),
     Attr(AttrName),
+    Module(ModuleName),
 
     // === Operators ===
     BinOp(BinOp),
@@ -150,6 +151,28 @@ enum AttrName {
     Update,
     Add,
     Remove,
+    Gather,
+    CreateTask,
+    Sleep,
+    WaitFor,
+    Run,
+    Collect,
+}
+
+/// Standard-library modules the sandbox can import, including the async and GC
+/// paths the token stream otherwise cannot reach.
+#[derive(Debug, Clone, Arbitrary)]
+enum ModuleName {
+    Asyncio,
+    Gc,
+    Math,
+    Json,
+    Re,
+    Collections,
+    Datetime,
+    Itertools,
+    Os,
+    Sys,
 }
 
 /// Binary operators.
@@ -262,6 +285,7 @@ impl Display for Token {
             Self::None => write!(f, "None"),
             Self::Var(v) => write!(f, "{v}"),
             Self::Attr(a) => write!(f, "{a}"),
+            Self::Module(m) => write!(f, "import {m}"),
             Self::BinOp(op) => write!(f, "{op}"),
             Self::UnaryOp(op) => write!(f, "{op}"),
             Self::CompareOp(op) => write!(f, "{op}"),
@@ -386,6 +410,29 @@ impl Display for AttrName {
             Self::Update => write!(f, "update"),
             Self::Add => write!(f, "add"),
             Self::Remove => write!(f, "remove"),
+            Self::Gather => write!(f, "gather"),
+            Self::CreateTask => write!(f, "create_task"),
+            Self::Sleep => write!(f, "sleep"),
+            Self::WaitFor => write!(f, "wait_for"),
+            Self::Run => write!(f, "run"),
+            Self::Collect => write!(f, "collect"),
+        }
+    }
+}
+
+impl Display for ModuleName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Asyncio => write!(f, "asyncio"),
+            Self::Gc => write!(f, "gc"),
+            Self::Math => write!(f, "math"),
+            Self::Json => write!(f, "json"),
+            Self::Re => write!(f, "re"),
+            Self::Collections => write!(f, "collections"),
+            Self::Datetime => write!(f, "datetime"),
+            Self::Itertools => write!(f, "itertools"),
+            Self::Os => write!(f, "os"),
+            Self::Sys => write!(f, "sys"),
         }
     }
 }

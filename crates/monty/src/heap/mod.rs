@@ -35,7 +35,7 @@ pub(crate) use crate::{
 
 mod free_list;
 mod stable_heap;
-pub(crate) use stable_heap::StableHeap;
+pub(crate) use stable_heap::{HeapSlot, StableHeap};
 
 /// Unique identifier for values stored inside the heap arena.
 ///
@@ -148,11 +148,13 @@ impl<'a> HeapReader<'a> {
     ///
     /// Panics if `id` is out of bounds.
     pub(crate) fn read_ptr(&self, id: HeapId) -> HeapPtr<'a> {
-        // SAFETY: [DH] - `HeapPtr` prevents holding reference to freed slots across calls to allocate; it
-        // always hands out either live `&HeapData` or `None`, never `&Option<HeapData>`.
+        // SAFETY: [DH] - the pointer stays inside the page for the slot's whole life: slots never
+        // move, and `try_entry` hands out either a live `&HeapData` or `None`, never `&Option<HeapData>`.
+        // It must not be dereferenced after an arena write, which pops its borrow tag (see `HeapPtr`).
         let slot = unsafe { self.heap.entries.slot_at(id) }.expect("HeapReader::read_ptr - id out of bounds");
         HeapPtr {
             inner: NonNull::from(slot),
+            generation: slot.generation,
             brand: PhantomData,
         }
     }
@@ -184,6 +186,7 @@ impl<'a> HeapReader<'a> {
             id,
             ptr: HeapPtr {
                 inner: NonNull::from(slot),
+                generation: slot.generation,
                 brand: PhantomData,
             },
             read: None,
@@ -634,31 +637,36 @@ macro_rules! heap_read_ref_as_field_mut {
 
 pub(crate) use heap_read_ref_as_field_mut;
 
-/// Stable, branded pointer to a heap slot's `Option<HeapEntry>`.
+/// Stable, branded pointer to a heap slot, with the generation it was minted in.
 ///
 /// `HeapPtr<'a>` carries the same invariant lifetime `'a` as the [`HeapReader<'a>`]
-/// that produced it (via [`HeapReader::entry_ptr`]). The brand mechanism is identical
+/// that produced it (via [`HeapReader::read_ptr`]). The brand mechanism is identical
 /// to the one on [`HeapRead`]: pointers minted by one reader cannot be dereferenced
 /// via a reader from a different `HeapReader::with` scope (or, looking ahead, a
 /// different [`Heap`]), so same-heap origin is checked at compile time rather than
 /// trusted by convention.
 ///
-/// The pointer addresses the *slot's `Option<HeapEntry>`*, not the inner `HeapEntry`
-/// directly. This makes it well-defined across the full lifetime of the slot — even
-/// across `dec_ref`-driven frees and subsequent reuse by `allocate` — because the
-/// slot's memory location never moves; only its `Some`/`None` state changes.
+/// The pointer addresses the *slot*, not the inner `HeapEntry` directly, so it stays
+/// well-defined across `dec_ref`-driven frees and reuse by `allocate`: the slot's
+/// memory never moves, only its `entry`/`generation` fields change. The recorded
+/// generation is what makes reuse detectable — [`Self::try_entry`] returns `None`
+/// for a freed slot but panics if the slot was freed *and* reused, instead of
+/// silently resolving to a different object.
 ///
-/// This mirrors the semantics of [`Heap::get`]/[`StableHeap::entry`] where the outer
-/// `Option` is the live/freed signal.
+/// That check is a release-build diagnostic, not a license to cache pointers
+/// across mutations: a write to the pointer's page pops the borrow tag `slot_at`
+/// handed out, so dereferencing after a free-and-reuse is UB to Miri whatever the
+/// generation says. A pointer stays valid only until the next arena mutation.
 ///
 /// Used as a fast handle inside paths that would otherwise re-index into paged storage
 /// per access — currently the cycle collector, which converts `HeapId → HeapPtr` once
 /// at push-time and uses the pointer directly on every subsequent pop, avoiding the
 /// `pages[page_idx][slot_idx]` lookup chain.
 #[derive(Copy, Clone)]
-#[repr(transparent)]
 pub(crate) struct HeapPtr<'a> {
-    inner: NonNull<Option<HeapEntry>>,
+    inner: NonNull<HeapSlot<HeapEntry>>,
+    /// The slot generation at mint time; compared on every dereference.
+    generation: u32,
     /// Makes `'a` invariant. Matches the brand on [`HeapReader<'a>`] / [`HeapRead<'a, T>`]
     /// so a `HeapPtr` cannot be reborrowed under a different reader scope.
     brand: PhantomData<fn(&'a ()) -> &'a ()>,
@@ -684,10 +692,18 @@ impl<'a> HeapPtr<'a> {
     /// Returns the [`HeapEntry`] this pointer refers to, or `None` if the slot is
     /// currently freed.
     ///
-    /// Use where a freed slot is part of the expected state (linear scans, root
-    /// reseeds, etc.). Mutation paths (cycle collector mark/scan inner loops) should
-    /// prefer [`Self::entry`] so that an unexpectedly-freed entry surfaces as a
-    /// loud panic rather than a silent skip.
+    /// # Panics
+    ///
+    /// If the slot was freed and reused since this pointer was minted. The page
+    /// memory stays valid across reuse, so without the generation check this
+    /// would silently resolve to a different object. Miri instead reports the
+    /// reuse as a borrow-tag violation at the dereference, so only release
+    /// builds reach the panic.
+    ///
+    /// `None` covers freshly minted pointers to a slot that is already free, which
+    /// linear scans and root reseeds legitimately meet. Mutation paths (cycle
+    /// collector mark/scan inner loops) should prefer [`Self::entry`] so that an
+    /// unexpectedly-freed entry surfaces as a loud panic rather than a silent skip.
     pub(crate) fn try_entry<'r>(self, _reader: &'r HeapReader<'a>) -> Option<&'r HeapEntry> {
         // SAFETY:
         //  - The invariant `'a` on `_reader` matches this pointer's brand, which is
@@ -695,10 +711,16 @@ impl<'a> HeapPtr<'a> {
         //    origin: a `HeapPtr<'a>` from a different reader scope cannot satisfy
         //    this signature.
         //  - `StableHeap::entry_ptr` only returns pointers to initialized slots, so
-        //    the `Option<HeapEntry>` behind the pointer is always a valid place.
+        //    the `HeapSlot` behind the pointer is always a valid place.
         //  - The `&HeapReader` borrow excludes any `&mut HeapReader` op that could
         //    free the slot during the returned reference's lifetime.
-        unsafe { self.inner.as_ref() }.as_ref()
+        let slot = unsafe { self.inner.as_ref() };
+        let entry = slot.entry.as_ref()?;
+        assert!(
+            slot.generation == self.generation,
+            "HeapPtr::try_entry: slot was freed and reused after this pointer was minted"
+        );
+        Some(entry)
     }
 
     /// Returns the entry's [`HeapData`] payload via the `UnsafeHeapData` interior-
@@ -725,7 +747,8 @@ impl<'a> HeapPtr<'a> {
     fn read(self, id: HeapId, reader: &HeapReader<'a>) -> HeapReadOutput<'a> {
         /// Computes a `HeapObjectRead` from the raw `UnsafeCell` pointer and a shared reference
         /// to the variant field. The `&T` is only used to compute the field's byte offset
-        /// within the `HeapData` enum; the returned `NonNull` is derived from the original
+        /// within the `HeapData` enum; the offset comes from `ptr::addr()` values so no
+        /// provenance is exposed, and the returned `NonNull` is derived from the original
         /// `*mut HeapData` pointer so it inherits the `SharedReadWrite` permission from
         /// the `UnsafeCell`, allowing both reads and writes.
         #[inline]
@@ -735,8 +758,8 @@ impl<'a> HeapPtr<'a> {
             field: &T,
             readers: NonNull<Cell<usize>>,
         ) -> HeapObjectRead<'a, T> {
-            let base_addr = base as usize;
-            let field_addr = ptr::from_ref(field) as usize;
+            let base_addr = base.addr();
+            let field_addr = ptr::from_ref(field).addr();
             let offset = field_addr - base_addr;
             HeapObjectRead {
                 id,
@@ -771,8 +794,8 @@ impl<'a> HeapPtr<'a> {
             boxed: &Box<T>,
             readers: NonNull<Cell<usize>>,
         ) -> HeapObjectRead<'a, T> {
-            let base_addr = base as usize;
-            let field_addr = ptr::from_ref(boxed) as usize;
+            let base_addr = base.addr();
+            let field_addr = ptr::from_ref(boxed).addr();
             let offset = field_addr - base_addr;
             // SAFETY: `offset` locates the live `Box<T>` field within the enum, and the
             // pointer to it is derived from the `UnsafeCell`'s `*mut` (not from `&Box<T>`),
@@ -1283,14 +1306,16 @@ impl Heap {
     /// indexed on its first crossing to the host so the host can hand the
     /// object back by id (see [`Heap::resolve_boundary_uuid`]).
     ///
+    /// Reads and generates the id through shared access only: the caller usually
+    /// holds a `HeapRead` guard on the same entry, and `entries.entry`'s `&mut`
+    /// would invalidate that guard's borrow tag.
+    ///
     /// # Panics
     /// If `id` is not a live `Instance` or `Class` entry.
     pub(crate) fn boundary_uuid(&mut self, id: HeapId) -> MontyUuid {
-        let mut entry = self
-            .entries
-            .entry(id)
-            .expect("Heap::boundary_uuid: entry already freed");
-        let uuid = match entry.get_mut().data.0.get_mut() {
+        // SAFETY: the `UnsafeCell`-backed payload is read through shared access, and
+        // both branches only mutate interior-mutable fields, so no live tag is popped.
+        let uuid = match unsafe { &*self.entries.get(id).data.0.get() } {
             HeapData::Instance(instance) => instance.boundary_uuid(),
             HeapData::Class(class) => class.boundary_uuid(),
             _ => unreachable!("Heap::boundary_uuid: only classes and instances carry a boundary uuid"),
@@ -1489,6 +1514,15 @@ impl Heap {
     pub fn entry_count(&self) -> usize {
         // Skip index 0 which is the empty tuple singleton
         self.entries.iter().skip(1).count()
+    }
+
+    /// Iterates the live entry ids, excluding the empty-tuple singleton.
+    ///
+    /// Used by the refcount model oracle ([`crate::test_util::heap`]) to compare
+    /// the heap's live set against a shadow graph; `entry_count` only counts.
+    #[cfg(feature = "ref-count-return")]
+    pub fn live_ids(&self) -> impl Iterator<Item = HeapId> + '_ {
+        self.entries.iter().map(|(id, _)| id).filter(|id| *id != EMPTY_TUPLE_ID)
     }
 
     /// Returns whether cycle collection should run.
@@ -1851,7 +1885,10 @@ impl Drop for Heap {
 /// child-id iteration with a `HeapId → HeapPtr` conversion in the closure
 /// body — that's why this is closure-shaped rather than producing a `Vec`.
 /// [`py_dec_ref_ids_for_data`] mirrors the same match arms for the
-/// freeing/decref paths; the two must stay in sync.
+/// freeing/decref paths; the two must stay in sync. Both matches are
+/// exhaustive (no wildcard), so a new [`HeapData`] variant fails to compile
+/// until it is classified in each — the shape [`HeapData::is_gc_tracked`]
+/// already uses.
 fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
     match data {
         HeapData::List(list) => {
@@ -2185,15 +2222,30 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DecimalContextManager(manager) => manager.context_ids().for_each(on_child),
         // The owned `__cause__` / `__context__`; exceptions are still not GC-tracked.
         HeapData::Exception(exc) => exc.owned_chain_ids().for_each(on_child),
-        // Leaf types with no heap references
-        _ => {}
+        // Leaf payloads with no heap references. Matched exhaustively (no `_`
+        // arm) so a new `HeapData` variant fails to compile until classified.
+        HeapData::Str(_)
+        | HeapData::Bytes(_)
+        | HeapData::Range(_)
+        | HeapData::Slice(_)
+        | HeapData::LongInt(_)
+        | HeapData::Complex(_)
+        | HeapData::Path(_)
+        | HeapData::RePattern(_)
+        | HeapData::ExtFunction(_)
+        | HeapData::Date(_)
+        | HeapData::TimeDelta(_)
+        | HeapData::TimeZone(_)
+        | HeapData::DataclassParams(_)
+        | HeapData::Random(_)
+        | HeapData::HashObject(_)
+        | HeapData::Decimal(_)
+        | HeapData::DecimalContext(_) => {}
     }
 }
 
 fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
     match data {
-        HeapData::Str(s) => s.py_dec_ref_ids(stack),
-        HeapData::Bytes(b) => b.py_dec_ref_ids(stack),
         HeapData::List(l) => l.py_dec_ref_ids(stack),
         HeapData::Deque(d) => d.py_dec_ref_ids(stack),
         HeapData::Tuple(t) => t.py_dec_ref_ids(stack),
@@ -2229,7 +2281,6 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
         HeapData::DataclassMethod(method) => method.py_dec_ref_ids(stack),
-        HeapData::DataclassParams(params) => params.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::DequeIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),
@@ -2321,8 +2372,27 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::DecimalContextManager(manager) => manager.py_dec_ref_ids(stack),
         // Release the owned `__cause__` / `__context__` references (mirrors `for_each_child_id`).
         HeapData::Exception(exc) => exc.py_dec_ref_ids(stack),
-        // other types have no nested heap references
-        _ => {}
+        // Leaf payloads that own no heap references. Matched exhaustively (no
+        // `_` arm) so a new `HeapData` variant fails to compile until
+        // classified; `Str`, `Bytes` and `DataclassParams` reach this arm
+        // through their otherwise-empty `HeapItem` impls.
+        HeapData::Str(_)
+        | HeapData::Bytes(_)
+        | HeapData::Range(_)
+        | HeapData::Slice(_)
+        | HeapData::LongInt(_)
+        | HeapData::Complex(_)
+        | HeapData::Path(_)
+        | HeapData::RePattern(_)
+        | HeapData::ExtFunction(_)
+        | HeapData::Date(_)
+        | HeapData::TimeDelta(_)
+        | HeapData::TimeZone(_)
+        | HeapData::DataclassParams(_)
+        | HeapData::Random(_)
+        | HeapData::HashObject(_)
+        | HeapData::Decimal(_)
+        | HeapData::DecimalContext(_) => {}
     }
 }
 
@@ -2359,6 +2429,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        asyncio::GatherFuture,
         types::{List, callable_iterator::CallableIterator},
         value::Value,
     };
@@ -2541,6 +2612,55 @@ mod tests {
             // Read through the now-invalidated `SharedReadWrite` raw pointer.
             // Miri's aliasing model fails here.
             let _ = list.get(heap).as_slice().len();
+        });
+    }
+
+    /// A pointer minted before its slot was freed and reused carries the old
+    /// generation, and the reused slot reports the new one.
+    ///
+    /// Asserting on the generations rather than dereferencing the stale pointer
+    /// keeps this test free of the borrow-tag violation that reuse itself is.
+    #[test]
+    fn reused_slot_reports_a_new_generation_to_stale_pointers() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let first = reader.allocate(HeapData::List(List::new(Vec::new())));
+            let stale = reader.read_ptr(first);
+            reader.dec_ref(first);
+            let second = reader.allocate(HeapData::List(List::new(Vec::new())));
+            assert_eq!(second, first, "the free list must reuse the freed slot");
+            // SAFETY: [DH] - `second` was just allocated, so its slot is initialized and in bounds.
+            let slot = unsafe { reader.heap.entries.slot_at(second) }.expect("reused slot is live");
+            assert_ne!(slot.generation, stale.generation);
+        });
+    }
+
+    /// A pointer whose recorded generation does not match its slot panics
+    /// instead of resolving to the new payload.
+    #[test]
+    #[should_panic(expected = "slot was freed and reused")]
+    fn try_entry_panics_on_generation_mismatch() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let id = reader.allocate(HeapData::List(List::new(Vec::new())));
+            let live = reader.read_ptr(id);
+            let forged = HeapPtr {
+                generation: live.generation.wrapping_add(1),
+                ..live
+            };
+            let _ = forged.entry(reader);
+        });
+    }
+
+    /// A freshly minted pointer to a freed slot reports `None` rather than
+    /// panicking: linear scans legitimately observe freed slots.
+    #[test]
+    fn fresh_heap_ptr_to_freed_slot_is_none() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let id = reader.allocate(HeapData::List(List::new(Vec::new())));
+            reader.dec_ref(id);
+            assert!(reader.read_ptr(id).try_entry(reader).is_none());
         });
     }
 
@@ -2754,5 +2874,59 @@ mod tests {
             !is_alive(&heap, sentinel),
             "sentinel held only by the freed iterator must be released"
         );
+    }
+
+    /// Exercises `heap_read_boxed`: the payload pointer is loaded out of the
+    /// `Box` field with the box's stored provenance, so a mutation through
+    /// `HeapReadMut::get_mut` must be visible on the same handle.
+    #[test]
+    fn boxed_payload_read_and_mutate() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let child = heap.allocate(HeapData::List(List::new(vec![])));
+        let gather = heap.allocate(HeapData::GatherFuture(Box::new(GatherFuture::new(Vec::new()))));
+        // The gather takes ownership of one reference to `child`.
+        heap.inc_ref(child);
+
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let handle = reader
+                .read_as::<GatherFuture>(gather)
+                .expect("just allocated a GatherFuture");
+            handle.get_mut(reader).items.push(child);
+            assert_eq!(handle.get(reader).items, vec![child]);
+        });
+
+        heap.dec_ref(gather);
+        heap.dec_ref(child);
+    }
+
+    /// Exercises every `DropGuard` outcome: `into_inner`, `into_parts`, and the
+    /// implicit `Drop` cleanup that must release the held reference.
+    #[test]
+    fn drop_guard_into_inner_and_into_parts() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+
+        let id = heap.allocate(HeapData::List(List::new(vec![])));
+        let guard = DropGuard::new(Value::Ref(id), &mut heap);
+
+        let value = guard.into_inner();
+        assert!(is_alive(&heap, id), "into_inner must keep the entry alive");
+
+        value.drop_with(&mut heap);
+        assert!(!is_alive(&heap, id), "dropping the reclaimed value frees the entry");
+
+        let id = heap.allocate(HeapData::List(List::new(vec![])));
+        let guard = DropGuard::new(Value::Ref(id), &mut heap);
+
+        let (value, heap_ref) = guard.into_parts();
+        assert!(is_alive(heap_ref, id), "into_parts must keep the entry alive");
+
+        value.drop_with(heap_ref);
+        assert!(!is_alive(heap_ref, id), "dropping the reclaimed value frees the entry");
+
+        let id = heap.allocate(HeapData::List(List::new(vec![])));
+        {
+            let _guard = DropGuard::new(Value::Ref(id), &mut heap);
+        }
+        assert!(!is_alive(&heap, id), "dropping the guard releases its reference");
     }
 }

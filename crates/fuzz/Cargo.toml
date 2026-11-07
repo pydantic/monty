@@ -11,7 +11,15 @@ cargo-fuzz = true
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
 monty = { workspace = true }
+monty-fs = { workspace = true, features = ["test-util"] }
+monty-proto = { workspace = true, features = ["test-util"] }
 monty-types = { workspace = true }
+prost = { workspace = true }
+
+[features]
+# Enables `monty::test_util::heap` (needs the refcount oracle) and the
+# panicking `Value` drop plus per-allocation GC that catch missed cleanup.
+heap-model = ["monty/ref-count-return", "monty/memory-model-checks"]
 
 [[bin]]
 name = "string_input_panic"
@@ -21,8 +29,30 @@ doc = false
 bench = false
 
 [[bin]]
+name = "heap_ops"
+path = "fuzz_targets/heap_ops.rs"
+required-features = ["heap-model"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tokens_input_panic"
 path = "fuzz_targets/tokens_input_panic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_frame_decode"
+path = "fuzz_targets/proto_frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fs_path_policy"
+path = "fuzz_targets/fs_path_policy.rs"
 test = false
 doc = false
 bench = false

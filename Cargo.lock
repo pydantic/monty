@@ -2811,7 +2811,10 @@ dependencies = [
  "arbitrary",
  "libfuzzer-sys",
  "monty",
+ "monty-fs",
+ "monty-proto",
  "monty-types",
+ "prost",
 ]
 
 [[package]]

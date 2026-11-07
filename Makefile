@@ -178,11 +178,33 @@ test-cases: ## Run tests cases only
 	cargo run -p monty-datatest
 
 .PHONY: miri
-miri: ## Run library inline tests under miri (particularly relevant for heap.rs)
-	cargo +nightly miri test -p monty --lib
+miri: ## Run library inline tests under miri (Stacked Borrows, strict provenance)
+	MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p monty --lib
+
+.PHONY: miri-tree
+miri-tree: ## Run library inline tests under miri (Tree Borrows, strict provenance)
+	MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly miri test -p monty --lib
+
+.PHONY: miri-heap-model
+miri-heap-model: ## Run the heap refcount model under miri (both borrow models)
+	MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p monty --features "ref-count-return memory-model-checks" --test heap_model
+	MIRIFLAGS="-Zmiri-tree-borrows -Zmiri-strict-provenance" cargo +nightly miri test -p monty --features "ref-count-return memory-model-checks" --test heap_model
+
+.PHONY: miri-integration
+miri-integration: ## Run the bounded asyncio integration tests under miri
+	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test -p monty --features test-hooks --test asyncio -- --exact suspended_task_stack_survives_forced_gc
+	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test -p monty --features test-hooks --test asyncio -- --exact nested_gather_with_spawned_tasks_and_external_futures
+	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri test -p monty --features test-hooks --test asyncio -- --exact resume_with_partial_results
+
+FILTER ?=
+.PHONY: miri-test-cases-filtered
+miri-test-cases-filtered: ## Run a filtered slice of the Python corpus under miri (FILTER=async__, optional SKIP=)
+	@test -n "$(FILTER)" || (echo "FILTER is required, e.g. FILTER=async__" >&2; exit 1)
+	# `SKIP` drops cases that are merely slow under miri, not hanging.
+	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri run -p monty-datatest --features ref-count-return -- "run_test_cases_monty::$(FILTER)" $(if $(SKIP),--skip "$(SKIP)")
 
 .PHONY: miri-test-cases
-miri-test-cases: ## Run library inline tests under miri (particularly relevant for heap.rs)
+miri-test-cases: ## Run the whole Python corpus under miri
 	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri run -p monty-datatest -- run_test_cases_monty
 
 .PHONY: test-type-checking
@@ -311,6 +333,18 @@ fuzz-string_input_panic: ## Run the `string_input_panic` fuzz target
 .PHONY: fuzz-tokens_input_panic
 fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured token input)
 	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
+
+.PHONY: fuzz-heap_ops
+fuzz-heap_ops: ## Run the `heap_ops` fuzz target (heap refcount/reachability model)
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz --features heap-model heap_ops
+
+.PHONY: fuzz-proto_frame_decode
+fuzz-proto_frame_decode: ## Run the `proto_frame_decode` fuzz target (untrusted wire frames)
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz proto_frame_decode
+
+.PHONY: fuzz-fs_path_policy
+fuzz-fs_path_policy: ## Run the `fs_path_policy` fuzz target (virtual path confinement)
+	cargo +nightly fuzz run --fuzz-dir crates/fuzz fs_path_policy
 
 .PHONY: main
 main: lint test-memory-model-checks test-subprocess test-py ## run linting and the most important tests
