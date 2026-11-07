@@ -415,11 +415,12 @@ impl<'h> HeapRead<'h, Dict> {
     pub(crate) fn copy_entries(&self, vm: &mut VM<'h>) -> RunResult<Dict> {
         let len = self.get(vm.heap).len();
         // Bucket rounding and control bytes fit within three words per entry,
-        // plus 32 bytes of alignment/padding for the rebuilt index.
+        // plus 32 bytes of padding for a non-empty index. Empty tables allocate neither buffer.
         let entry_bytes = mem::size_of::<DictEntry>() + 3 * mem::size_of::<usize>();
+        let index_padding = if len == 0 { 0 } else { 32 };
         vm.heap
             .tracker
-            .check_allocation(len.saturating_mul(entry_bytes).saturating_add(32))?;
+            .check_allocation(len.saturating_mul(entry_bytes).saturating_add(index_padding))?;
 
         // Copy entries with cached hashes directly into the new table, avoiding
         // a temporary pair buffer, rehashing and Python __eq__ callbacks.

@@ -1558,6 +1558,24 @@ fn timeout_in_shallow_copy_fill_loop() {
     }
 }
 
+/// Empty copies reserve no entry/index buffers, so their preflight must charge zero bytes.
+#[test]
+fn empty_dict_copies_do_not_charge_entry_storage() {
+    for code in [
+        "len({}.copy())",
+        "len(dict({}))",
+        "from collections import Counter\nlen(Counter({}))",
+        "from collections import defaultdict\nlen(defaultdict(None, {}))",
+        "from collections import Counter\nc = Counter()\nc.update({})\nlen(c)",
+    ] {
+        let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        // This binary has no allocator probe; a zero limit isolates bulk-allocation preflights.
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let result = run.run(vec![], tracker, PrintWriter::Stdout).unwrap();
+        assert_eq!(result, MontyObject::int(0), "{code}");
+    }
+}
+
 /// A direct dict copy polls while retaining entries and releases a partial copy on timeout.
 #[test]
 fn timeout_in_dict_copy_releases_partial_entries() {
