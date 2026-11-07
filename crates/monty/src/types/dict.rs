@@ -1713,13 +1713,14 @@ fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value>
         .tracker
         .check_allocation(len.saturating_mul(entry_bytes).saturating_add(32))?;
 
+    // Copy entries with cached hashes directly into the new table, avoiding
+    // a temporary pair buffer, rehashing and Python __eq__ callbacks.
     let mut copy = Dict::with_capacity(len);
     copy.contains_refs = dict.get(vm.heap).contains_refs;
     let mut copy_guard = DropGuard::new(copy, vm);
     let (copy, vm) = copy_guard.as_parts_mut();
     for (index, entry) in dict.get(vm.heap).table.live().enumerate() {
         vm.heap.tracker.check_time_every(index)?;
-        // Preserve the source entries without invoking key __hash__ or __eq__.
         copy.table.push(DictEntry {
             key: entry.key.clone_with_heap(vm.heap),
             value: entry.value.clone_with_heap(vm.heap),
