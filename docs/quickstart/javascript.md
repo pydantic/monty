@@ -254,7 +254,7 @@ which ignores any argument:
 
 `MontyCrashedError` adds `timedOut` and `exitStatus`; `MontyShutdown` adds `dump`; `MontyRefusedError` adds
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
-`retryAfter` is the server's suggested delay in seconds, or `null` if absent or invalid.
+`retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
 `checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
 rejecting the session's configuration.
@@ -262,11 +262,11 @@ When no worker becomes free within `checkoutTimeout` it rejects with a `DOMExcep
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
 `MontyConfigurationError` identifies settings incompatible with the server, such as no finite CPU-mode `requestTimeout`.
+`Monty.create()` raises it for a CPU `executionClock` without a finite `requestTimeout`, or off Linux.
 Invalid gRPC header names or string values also raise `MontyConfigurationError`.
 If `metadata` returns a non-object, `null`, an array, or an object with non-string values, checkout raises `TypeError` instead.
 Host-side error messages do not have a `RuntimeError:` prefix.
 Remote policy reasons use `remoteCause`, leaving the standard `Error.cause` available for error chains.
-The deprecated `cause` constructor option is accepted as an alias for `remoteCause`.
 
 ## Limits and type checking
 

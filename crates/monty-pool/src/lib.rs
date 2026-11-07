@@ -220,7 +220,7 @@ pub enum PoolError {
     Typing(String),
     /// No worker became available within `checkout_timeout`.
     Exhausted,
-    /// A worker process could not be spawned, or the pool configuration is invalid.
+    /// A worker process could not be spawned.
     Spawn(String),
     /// A remote connection or session stream could not be opened.
     Connect {
@@ -229,7 +229,7 @@ pub enum PoolError {
         /// The status or transport failure that prevented the connection.
         details: Box<RemoteDisconnect>,
     },
-    /// The client configuration is incompatible with the server.
+    /// The pool or request configuration is invalid, or incompatible with the server.
     Configuration(String),
     /// The remote server refused to open the session stream (remote transport
     /// only) with an admission code: `RESOURCE_EXHAUSTED`, `UNAVAILABLE`,
@@ -372,12 +372,7 @@ impl fmt::Display for PoolError {
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
             Self::Connect { url, details } => write!(f, "{url}: {details}"),
             Self::Configuration(message) => f.write_str(message),
-            Self::Refused { url, refusal } => write!(
-                f,
-                "{url} refused the session: {}: {}",
-                refusal.status_code.unwrap_or("UNKNOWN"),
-                refusal.status_message.as_deref().unwrap_or_default()
-            ),
+            Self::Refused { url, refusal } => write!(f, "{url} refused the session: {refusal}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
             Self::Disconnected { context, remote } => {
                 write!(f, "monty worker connection closed while {context}")?;

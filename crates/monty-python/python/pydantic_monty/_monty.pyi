@@ -602,9 +602,9 @@ class MontyConnectError(MontyError):
 
 @final
 class MontyConfigurationError(MontyError):
-    """Raised for malformed request metadata or settings incompatible with the remote server.
+    """Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
 
-    CPU-mode servers require a finite client `request_timeout`.
+    CPU-mode pools and servers require a finite client `request_timeout`.
     Cannot be constructed directly from Python.
     """
 
@@ -652,7 +652,8 @@ class MontyRefusedError(MontyError):
     def retry_after(self) -> float | None:
         """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
 
-        Both delay-seconds and HTTP dates are accepted. Past dates give zero.
+        Both delay-seconds and HTTP dates are accepted. Past dates give zero;
+        delays are capped at one hour.
         A retry delay does not make a permanent refusal retryable.
         """
 

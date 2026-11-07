@@ -340,16 +340,25 @@ impl NativePool {
         Self::from_config(config, "MontyRemote")
     }
 
-    /// Spawns the prewarmed workers off the event loop.
+    /// Spawns the prewarmed workers off the event loop. Resolves to an `ok`
+    /// turn, or a `connect` / `configuration` / `protocol` turn saying why not.
     #[napi]
-    pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
+    pub fn start<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, Object<'env>>> {
         let config = self.config.clone();
         let slot = Arc::clone(&self.pool);
-        env.spawn_future(async move {
-            let pool = Pool::new(config).await.map_err(pool_error)?;
-            *lock(&slot) = Some(Arc::new(pool));
-            Ok(())
-        })
+        env.spawn_future_with_callback(
+            async move {
+                let outcome = match Pool::new(config).await {
+                    Ok(pool) => {
+                        *lock(&slot) = Some(Arc::new(pool));
+                        TurnOutcome::Ok
+                    }
+                    Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                };
+                Ok((outcome, None))
+            },
+            turn_to_js,
+        )
     }
 
     /// Prepares a session; its worker is checked out by `NativeSession.enter`.
@@ -1053,7 +1062,7 @@ enum TurnOutcome {
         message: String,
         details: Box<RemoteDisconnect>,
     },
-    /// The client configuration cannot be used with this server.
+    /// The pool or request configuration is invalid or incompatible with the server.
     Configuration(String),
     /// A remote worker's stream ended mid-session; the session is lost.
     /// `details` is the status or transport failure that ended it, when known.
@@ -1079,7 +1088,8 @@ enum TurnOutcome {
     /// [`NativeSession::resume_from_mounts`].
     NotMounted,
     /// A non-feed request succeeded with no value or suspension. Produced by
-    /// [`NativeSession::install_dependencies`] and [`NativeSession::enter`].
+    /// [`NativePool::start`], [`NativeSession::install_dependencies`] and
+    /// [`NativeSession::enter`].
     Ok,
     /// No worker became available within the checkout timeout. Only produced
     /// by [`NativeSession::enter`].
@@ -1098,58 +1108,35 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
             Ok(event) => Self::Event(event),
             Err(PoolError::Runtime(exc)) => Self::Runtime(exc),
             Err(PoolError::Typing(diagnostics)) => Self::Typing(diagnostics),
-            Err(err @ (PoolError::Timeout { .. } | PoolError::CpuLimit { .. })) => Self::Crashed {
-                message: err.to_string(),
-                timed_out: true,
-                exit_status: None,
-            },
-            // `status` is `Copy`, so it can be reported *and* handed back to
-            // the error, whose own Display picks between "while <doing X>"
-            // and the worker's stated reason — don't re-derive that here.
-            Err(PoolError::Crashed { status, cause }) => Self::Crashed {
-                exit_status: status.map(|status| status.to_string()),
-                message: PoolError::Crashed { status, cause }.to_string(),
-                timed_out: false,
-            },
-            Err(err @ PoolError::Disconnected { .. }) => {
-                let message = err.to_string();
-                let PoolError::Disconnected { remote, .. } = err else {
-                    unreachable!("matched as Disconnected above")
-                };
-                Self::Disconnected {
-                    message,
-                    details: remote,
-                }
-            }
-            Err(err @ PoolError::Connect { .. }) => {
-                let message = err.to_string();
-                let PoolError::Connect { details, .. } = err else {
-                    unreachable!("matched as Connect above")
-                };
-                Self::Connect { message, details }
-            }
             Err(PoolError::Configuration(message)) => Self::Configuration(message),
-            // rendered before the status is taken back out, as for `Shutdown`
-            Err(err @ PoolError::Refused { .. }) => {
+            // rendered before the match: these variants' Display reads fields
+            // (status, dump, remote details) that the outcome then takes back out
+            Err(err) => {
                 let message = err.to_string();
-                let PoolError::Refused { refusal, .. } = err else {
-                    unreachable!("matched as Refused above")
-                };
-                Self::Refused {
-                    message,
-                    details: refusal,
+                match err {
+                    PoolError::Timeout { .. } | PoolError::CpuLimit { .. } => Self::Crashed {
+                        message,
+                        timed_out: true,
+                        exit_status: None,
+                    },
+                    PoolError::Crashed { status, .. } => Self::Crashed {
+                        message,
+                        timed_out: false,
+                        exit_status: status.map(|status| status.to_string()),
+                    },
+                    PoolError::Disconnected { remote, .. } => Self::Disconnected {
+                        message,
+                        details: remote,
+                    },
+                    PoolError::Connect { details, .. } => Self::Connect { message, details },
+                    PoolError::Refused { refusal, .. } => Self::Refused {
+                        message,
+                        details: refusal,
+                    },
+                    PoolError::Shutdown { dump } => Self::Shutdown { message, dump },
+                    _ => Self::Protocol(message),
                 }
             }
-            // the error's Display notes whether a dump came with it, so render
-            // it before taking the dump back out
-            Err(err @ PoolError::Shutdown { .. }) => {
-                let message = err.to_string();
-                let PoolError::Shutdown { dump } = err else {
-                    unreachable!("matched as Shutdown above")
-                };
-                Self::Shutdown { message, dump }
-            }
-            Err(other) => Self::Protocol(other.to_string()),
         }
     }
 }
@@ -1157,10 +1144,6 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
 /// Writes a remote status's fields — its code,
 /// message and cause, or the transport error — onto a turn object.
 fn set_remote_details(obj: &mut Object, details: RemoteDisconnect) -> Result<()> {
-    obj.set("retryable", details.retryable())?;
-    if let Some(delay) = details.retry_after {
-        obj.set("retryAfter", delay.as_secs_f64())?;
-    }
     if let Some(code) = details.status_code {
         obj.set("statusCode", code)?;
     }
@@ -1294,6 +1277,11 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         TurnOutcome::Refused { message, details } => {
             obj.set("kind", "refused")?;
             obj.set("message", message)?;
+            // retry hints only mean something before a session exists
+            obj.set("retryable", details.retryable())?;
+            if let Some(delay) = details.retry_after {
+                obj.set("retryAfter", delay.as_secs_f64())?;
+            }
             set_remote_details(&mut obj, *details)?;
         }
         TurnOutcome::Shutdown { message, dump } => {

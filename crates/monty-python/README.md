@@ -45,13 +45,15 @@ the request did or did not run.
 The client does not automatically replay a disconnected request.
 Disconnect messages include the server's status, cause and message, or the transport error.
 `MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
-nothing ran, so retrying is safe.
+nothing ran.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
 Its `retryable` attribute identifies temporary refusals, and `retry_after` gives the server's suggested delay in seconds, when present.
 Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
 `status_message`, `cause` and `transport_error` attributes.
 A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
 Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
+Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
+off Linux or without a finite `request_timeout`.
 
 ## Host decode budget
 

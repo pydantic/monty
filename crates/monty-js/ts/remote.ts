@@ -6,8 +6,7 @@
 // `MontySession` a local pool hands out.
 
 import { NativePool } from '../native-addon.js'
-import { MontyConnectError } from './errors.js'
-import { type CheckoutOptions, graceMs, nativeCheckoutOptions } from './pool.js'
+import { type CheckoutOptions, graceMs, nativeCheckoutOptions, startPool } from './pool.js'
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -126,12 +125,7 @@ export class MontyRemote {
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,
     })
-    try {
-      await native.start()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new MontyConnectError(message)
-    }
+    await startPool(native)
     return new MontyRemote(native, metadata)
   }
 

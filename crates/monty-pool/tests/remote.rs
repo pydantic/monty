@@ -504,7 +504,7 @@ async fn a_refused_stream_fails_the_checkout() {
     assert_eq!(
         err.to_string(),
         format!(
-            "{} refused the session: RESOURCE_EXHAUSTED: caller holds 10 sessions already",
+            "{} refused the session: RESOURCE_EXHAUSTED (caller_cap): caller holds 10 sessions already",
             mock.url()
         )
     );

@@ -190,7 +190,7 @@ export interface LoadedTurn {
 }
 
 /** A non-feed request succeeded with no value or suspension. Only produced by
- *  `NativeSession.installDependencies` and `NativeSession.enter`. */
+ *  `NativePool.start`, `NativeSession.installDependencies` and `NativeSession.enter`. */
 export interface OkTurn {
   kind: 'ok'
 }
@@ -201,6 +201,9 @@ export interface ExhaustedTurn {
   kind: 'exhausted'
   message: string
 }
+
+/** What `NativePool.start` resolves to: started, or why not. */
+export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn
 
 /** What `NativeSession.enter` resolves to: entered, or why not. */
 export type EnterTurn =

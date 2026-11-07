@@ -768,12 +768,14 @@ async def test_refused_stream_fails_the_checkout():
             with pytest.raises(MontyRefusedError) as exc_info:
                 async with pool.checkout():
                     pass
-    assert str(exc_info.value) == snapshot(f'{url} refused the session: RESOURCE_EXHAUSTED: server at capacity')
+    assert str(exc_info.value) == snapshot(
+        f'{url} refused the session: RESOURCE_EXHAUSTED (capacity): server at capacity'
+    )
     assert exc_info.value.status_code == snapshot('RESOURCE_EXHAUSTED')
     assert exc_info.value.status_message == snapshot('server at capacity')
     assert exc_info.value.cause == snapshot('capacity')
     assert repr(exc_info.value) == snapshot(
-        f'MontyRefusedError({url} refused the session: RESOURCE_EXHAUSTED: server at capacity)'
+        f'MontyRefusedError({url} refused the session: RESOURCE_EXHAUSTED (capacity): server at capacity)'
     )
 
 

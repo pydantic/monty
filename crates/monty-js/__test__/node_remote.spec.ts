@@ -190,13 +190,14 @@ test('a refused connection rejects the checkout', async () => {
   t.is(error.message, `http://127.0.0.1:9: ${error.transportError}`)
 })
 
-test('a URL validation error has no transport failure', async () => {
+test('a URL validation error carries its reason as the transport failure', async () => {
   const error = await t.throwsAsync(() => MontyRemote.create('http://localhost/sandbox'), {
     instanceOf: MontyConnectError,
   })
+  const reason = 'a URL path, query or fragment is not supported; use only the scheme and host, with an optional port'
   t.is(error.statusCode, null)
-  t.is(error.transportError, null)
-  t.true(error.message.includes('use only the scheme and host, with an optional port'))
+  t.is(error.transportError, reason)
+  t.is(error.message, `http://localhost/sandbox: ${reason}`)
 })
 
 test('a session the server refuses rejects the checkout with MontyRuntimeError', async () => {
@@ -354,7 +355,7 @@ test('a stream the server refuses before admitting it rejects the checkout with 
   const { url } = await server((stream) => endWithStatus(stream, status.RESOURCE_EXHAUSTED, 'at capacity', 'capacity'))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyRefusedError })
-  t.is(error.message, `${url} refused the session: RESOURCE_EXHAUSTED: at capacity`)
+  t.is(error.message, `${url} refused the session: RESOURCE_EXHAUSTED (capacity): at capacity`)
   t.is(error.statusCode, 'RESOURCE_EXHAUSTED')
   t.is(error.statusMessage, 'at capacity')
   t.is(error.remoteCause, 'capacity')

@@ -26,7 +26,7 @@ ignores it.
 capacity, with no worker to serve it, or rejecting the caller; its `status_code`, `status_message` and `cause` say
 why, and no session existed.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
-`retry_after` is the suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+`retry_after` is the suggested delay in seconds from `Retry-After`, capped at one hour, or `None` if absent or invalid.
 The client accepts delay-seconds and HTTP dates but does not retry automatically.
 A server that cannot be reached, that answers with any other status (such as `UNIMPLEMENTED` from a URL that is
 no Monty server), or that is no gRPC server at all (such as a web server's page), raises

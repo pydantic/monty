@@ -143,7 +143,7 @@ async fn cpu_mode_requires_a_finite_wall_deadline() {
     for deadline in [None, Some(Duration::MAX)] {
         let mut config = supervised(monty_binary());
         config.request_timeout = deadline;
-        assert!(matches!(Pool::new(config).await, Err(PoolError::Spawn(_))));
+        assert!(matches!(Pool::new(config).await, Err(PoolError::Configuration(_))));
     }
 }
 

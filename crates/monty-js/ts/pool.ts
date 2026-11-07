@@ -7,6 +7,8 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
+import { MontyConfigurationError, MontyConnectError } from './errors.js'
+import type { StartTurn } from './native.js'
 import {
   type AssertMessageAnnotations,
   type OsPolicy,
@@ -188,7 +190,7 @@ export class Monty {
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       ...(maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker } : {}),
     })
-    await native.start()
+    await startPool(native)
     return new Monty(native)
   }
 
@@ -222,6 +224,25 @@ export class Monty {
 
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close()
+  }
+}
+
+/**
+ * Starts a native pool: `MontyConnectError` when a remote URL cannot be used,
+ * `MontyConfigurationError` for invalid pool settings, and a plain `Error`
+ * when a worker cannot be spawned.
+ */
+export async function startPool(native: NativePool): Promise<void> {
+  const turn = (await native.start()) as StartTurn
+  switch (turn.kind) {
+    case 'ok':
+      return
+    case 'connect':
+      throw new MontyConnectError(turn.message, turn)
+    case 'configuration':
+      throw new MontyConfigurationError(turn.message)
+    case 'protocol':
+      throw new Error(turn.message)
   }
 }
 

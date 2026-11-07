@@ -397,7 +397,7 @@ test('WASM pool validates unknown execution clocks before spawning workers', () 
 })
 
 test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', async () => {
-  const { Monty } = await import('@pydantic/monty')
+  const { Monty, MontyConfigurationError } = await import('@pydantic/monty')
   const invalid = await t.throwsAsync(() =>
     Monty.create({
       // @ts-expect-error Verify the runtime boundary for untyped callers.
@@ -405,7 +405,9 @@ test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', asy
     }),
   )
   t.true(String(invalid).includes("executionClock must be 'wall' or 'cpu'"))
-  const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }))
+  const unbounded = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu' }), {
+    instanceOf: MontyConfigurationError,
+  })
   t.true(
     String(unbounded).includes(
       supportsCpuClock

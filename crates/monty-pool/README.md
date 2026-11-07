@@ -310,12 +310,13 @@ A server refusing a stream before admitting it — at capacity, or rejecting the
 `PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
 fails or times out is `PoolError::Connect`, with a status code when the server sent one.
 Disconnect messages include the server's status, `RemoteCause` and message, or the transport error.
-Refusal messages include the server's status and message; structured details also retain `RemoteCause`.
-Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date.
+Refusal messages include the server's status, `RemoteCause` and message.
+Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date and capped at one hour.
 `retryable()` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not credential errors.
 No automatic retry is performed.
 An incompatible CPU-mode server configuration returns `PoolError::Configuration`, naming `request_timeout`.
-Malformed request metadata names or values also return `PoolError::Configuration` before any connection attempt.
+Malformed request metadata names or values also return `PoolError::Configuration` before any connection attempt,
+as does `Pool::new` for an invalid pool size or an unusable local CPU-clock setting.
 A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one
 whose cause is `server_shutdown` as `PoolError::Shutdown` with nothing to load.
 The status message is unverified text, and a disconnect does not establish whether the request ran.

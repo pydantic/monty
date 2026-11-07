@@ -47,7 +47,10 @@ fn retry_after_accepts_delay_seconds_and_http_dates() {
         ("-1", None),
         ("+1", None),
         ("1.5", None),
-        ("18446744073709551616", None),
+        ("3600", Some(3600)),
+        ("3601", Some(3600)),
+        ("18446744073709551616", Some(3600)),
+        ("Wed, 21 Oct 2099 07:28:00 GMT", Some(3600)),
         ("not a date", None),
     ] {
         assert_eq!(retry_after(value, now), expected.map(Duration::from_secs));

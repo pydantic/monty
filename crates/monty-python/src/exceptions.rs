@@ -497,7 +497,7 @@ impl MontyConnectError {
     }
 }
 
-/// Raised for malformed request metadata or settings incompatible with the remote server.
+/// Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyConfigurationError;
 

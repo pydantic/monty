@@ -230,8 +230,6 @@ export interface DisconnectDetails {
    * client knows.
    */
   remoteCause?: string
-  /** @deprecated Use `remoteCause`. Accepted only as constructor input. */
-  cause?: string
   /** The transport or protocol error, when the server sent no status. */
   transportError?: string
 }
@@ -260,7 +258,7 @@ export class MontyDisconnectError extends MontyError {
     this.name = 'MontyDisconnectError'
     this.statusCode = details.statusCode ?? null
     this.statusMessage = details.statusMessage ?? null
-    this.remoteCause = details.remoteCause ?? details.cause ?? null
+    this.remoteCause = details.remoteCause ?? null
     this.transportError = details.transportError ?? null
   }
 }
@@ -273,8 +271,6 @@ export interface RefusalDetails {
   statusMessage?: string
   /** The policy reason the server named, in `snake_case`. */
   remoteCause?: string
-  /** @deprecated Use `remoteCause`. Accepted only as constructor input. */
-  cause?: string
   /** Suggested retry delay in seconds, parsed from `Retry-After`. */
   retryAfter?: number
   /** Whether the server returned `RESOURCE_EXHAUSTED` or `UNAVAILABLE`. */
@@ -314,8 +310,8 @@ export class MontyRefusedError extends MontyError {
     this.name = 'MontyRefusedError'
     this.statusCode = details.statusCode ?? null
     this.statusMessage = details.statusMessage ?? null
-    this.remoteCause = details.remoteCause ?? details.cause ?? null
-    this.retryable = details.retryable ?? ['RESOURCE_EXHAUSTED', 'UNAVAILABLE'].includes(details.statusCode ?? '')
+    this.remoteCause = details.remoteCause ?? null
+    this.retryable = details.retryable ?? false
     this.retryAfter = details.retryAfter ?? null
   }
 }
@@ -337,12 +333,12 @@ export class MontyConnectError extends MontyError {
     this.name = 'MontyConnectError'
     this.statusCode = details.statusCode ?? null
     this.statusMessage = details.statusMessage ?? null
-    this.remoteCause = details.remoteCause ?? details.cause ?? null
+    this.remoteCause = details.remoteCause ?? null
     this.transportError = details.transportError ?? null
   }
 }
 
-/** Raised for malformed request metadata or settings incompatible with the remote server. */
+/** Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server. */
 export class MontyConfigurationError extends MontyError {
   constructor(message: string) {
     super('ValueError', message)

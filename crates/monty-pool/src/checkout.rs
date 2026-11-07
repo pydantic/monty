@@ -2568,7 +2568,3 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
 fn suspension_position(position: Option<impl Into<SourceRange>>) -> SourceRange {
     position.map_or_else(SourceRange::unknown, Into::into)
 }
-
-#[cfg(all(test, feature = "telemetry"))]
-#[path = "../tests/unit/checkout.rs"]
-mod tests;

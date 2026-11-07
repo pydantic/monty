@@ -79,14 +79,14 @@ impl Pool {
     /// runtime (worker process and pipe I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
         if config.min_processes > config.max_processes || config.max_processes == 0 {
-            return Err(PoolError::Spawn(format!(
+            return Err(PoolError::Configuration(format!(
                 "invalid pool size: min_processes={} max_processes={}",
                 config.min_processes, config.max_processes
             )));
         }
         if config.execution_clock == ExecutionClock::Cpu && !config.transport.is_remote() {
             if !cfg!(target_os = "linux") {
-                return Err(PoolError::Spawn(
+                return Err(PoolError::Configuration(
                     "CPU execution clock is only supported for subprocess workers on Linux".to_owned(),
                 ));
             }
@@ -94,7 +94,7 @@ impl Pool {
                 .request_timeout
                 .is_none_or(|limit| Instant::now().checked_add(limit).is_none())
             {
-                return Err(PoolError::Spawn(
+                return Err(PoolError::Configuration(
                     "CPU execution clock requires a finite request_timeout".to_owned(),
                 ));
             }

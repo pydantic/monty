@@ -196,7 +196,7 @@ impl Remote {
                             response
                                 .extensions()
                                 .get::<StatusCode>()
-                                .expect("HTTP status is recorded above"),
+                                .map_or_else(|| "status unknown".to_owned(), ToString::to_string),
                             describe_content_type(response.metadata())
                         ),
                     ));
@@ -717,16 +717,23 @@ impl RemoteDisconnect {
     }
 }
 
-/// Parses an HTTP delay or date without retaining invalid server metadata.
+/// Parses an HTTP delay or date without retaining invalid server metadata,
+/// capped at [`MAX_RETRY_AFTER`] so a host timer cannot overflow.
 fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
-    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        value.parse().ok().map(Duration::from_secs)
+    let delay = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        // all digits but too long for a `u64` is still a valid, huge delay
+        Duration::from_secs(value.parse().unwrap_or(u64::MAX))
     } else {
         httpdate::parse_http_date(value)
-            .ok()
-            .map(|date| date.duration_since(now).unwrap_or_default())
-    }
+            .ok()?
+            .duration_since(now)
+            .unwrap_or_default()
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
 }
+
+/// The longest `Retry-After` delay reported; a server asking for more gets this.
+const MAX_RETRY_AFTER: Duration = Duration::from_hours(1);
 
 /// Records a connection failure for which the server sent no gRPC status.
 fn connection_failure(url: &str, message: impl Into<String>) -> PoolError {
