@@ -6,8 +6,11 @@
 
 use std::{borrow::Cow, iter::FusedIterator, slice};
 
+use monty_types::ResourceTracker;
+
 use crate::{
     builtins::Builtins,
+    exception_private::RunResult,
     heap::{Heap, HeapData, HeapId},
     intern::Interns,
     types::{Type, native::NativeMro},
@@ -237,22 +240,32 @@ fn class_like_name<'i>(id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i,
 }
 
 /// CPython's C3 merge: linearises `sequences` (each base's MRO, then the list
-/// of bases) into one order, or returns `Err` with the heads still pending
+/// of bases) into one order, or returns `Ok(Err)` with the heads still pending
 /// when no consistent order exists.
 ///
-/// Quadratic in the hierarchy size, which class statements keep small.
-pub(crate) fn c3_merge(mut sequences: Vec<Vec<TypeRef>>) -> Result<Vec<TypeRef>, Vec<TypeRef>> {
+/// Cubic in the number of bases at worst, so it polls `tracker`'s time limit.
+pub(crate) fn c3_merge(
+    mut sequences: Vec<Vec<TypeRef>>,
+    tracker: &ResourceTracker,
+) -> RunResult<Result<Vec<TypeRef>, Vec<TypeRef>>> {
     let mut merged = Vec::new();
+    let mut heads_tested = 0;
     loop {
         sequences.retain(|sequence| !sequence.is_empty());
         if sequences.is_empty() {
-            return Ok(merged);
+            return Ok(Ok(merged));
         }
         // The first head that appears in no sequence's tail comes next.
-        let next = sequences
-            .iter()
-            .map(|sequence| sequence[0])
-            .find(|head| !sequences.iter().any(|sequence| sequence[1..].contains(head)));
+        let mut next = None;
+        for sequence in &sequences {
+            tracker.check_time_every(heads_tested)?;
+            heads_tested += 1;
+            let head = sequence[0];
+            if !sequences.iter().any(|sequence| sequence[1..].contains(&head)) {
+                next = Some(head);
+                break;
+            }
+        }
         let Some(next) = next else {
             let mut pending: Vec<TypeRef> = Vec::new();
             for sequence in &sequences {
@@ -260,7 +273,7 @@ pub(crate) fn c3_merge(mut sequences: Vec<Vec<TypeRef>>) -> Result<Vec<TypeRef>,
                     pending.push(sequence[0]);
                 }
             }
-            return Err(pending);
+            return Ok(Err(pending));
         };
         merged.push(next);
         for sequence in &mut sequences {

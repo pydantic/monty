@@ -10,7 +10,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
+    modules::copy::{Memo, PyDeepCopy, deep_copy},
     types::instance::is_method_value,
     value::{EitherStr, Value},
 };
@@ -249,5 +250,28 @@ impl Super {
             .class_id()
             .into_iter()
             .chain(self.obj.as_ref().and_then(Value::ref_id))
+    }
+}
+
+impl<'h> PyDeepCopy<'h> for HeapRead<'h, Super> {
+    /// A new proxy over the same class and a deep copy of the receiver, as
+    /// CPython's reduce-based copy builds.
+    fn py_deep_copy(&self, _source: &Value, memo: &mut Memo, vm: &mut VM<'h>) -> RunResult<Value> {
+        let proxy = self.get(vm.heap);
+        let this_class = proxy.this_class;
+        let obj = proxy.obj.as_ref().map(|obj| obj.clone_with_heap(vm.heap));
+        let obj = match obj {
+            Some(obj) => {
+                let copied = deep_copy(&obj, memo, vm);
+                obj.drop_with(vm);
+                Some(copied?)
+            }
+            None => None,
+        };
+        if let Some(id) = this_class.class_id() {
+            vm.heap.inc_ref(id);
+        }
+        let copy = Super { this_class, obj };
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Super(copy))))
     }
 }

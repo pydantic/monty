@@ -239,9 +239,7 @@ fn linearize(bases: &[TypeRef], vm: &VM<'_>) -> RunResult<Vec<TypeRef>> {
     }
     let mut sequences: Vec<Vec<TypeRef>> = bases.iter().map(|base| base.mro(vm.heap).collect()).collect();
     sequences.push(bases.to_vec());
-    let total: usize = sequences.iter().map(Vec::len).sum();
-    vm.heap.tracker.check_time_every(total)?;
-    c3_merge(sequences).map_err(|pending| {
+    c3_merge(sequences, &vm.heap.tracker)?.map_err(|pending| {
         let names: Vec<String> = pending
             .iter()
             .map(|ty| ty.dunder_name(vm.heap, vm.interns).into_owned())

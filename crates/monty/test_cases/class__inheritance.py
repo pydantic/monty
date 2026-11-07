@@ -998,6 +998,17 @@ try:
 except TypeError as exc:
     assert str(exc) == 'cannot inherit non-frozen dataclass from a frozen one'
 
+# a bad field is reported before the frozen mismatch
+try:
+
+    @dataclass
+    class MutableDefaultChildDC(FrozenDC):
+        y: list[int] = []
+
+    assert False, 'expected ValueError for the mutable default'
+except ValueError as exc:
+    assert str(exc) == "mutable default <class 'list'> for field y is not allowed: use default_factory"
+
 
 @dataclass
 class MutableDC:

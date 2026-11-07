@@ -89,6 +89,14 @@ for bad_call, expected_msg in [
         "descriptor '__init__' of 'object' object needs an argument",
     ),
     (
+        lambda: object.__init__(decimal.Context(), 1),
+        'object.__init__() takes exactly one argument (the instance to initialize)',
+    ),
+    (
+        lambda: object.__init__(int, 1),
+        'object.__init__() takes exactly one argument (the instance to initialize)',
+    ),
+    (
         lambda: Bare.__init__(Bare(), 1),
         'Bare.__init__() takes exactly one argument (the instance to initialize)',
     ),
@@ -144,3 +152,7 @@ class DcWithNew:
 
 dwn = DcWithNew(7)
 assert dwn.a == 7 and dwn.b == 'ok' and dwn.from_new is True
+
+# === object.__init__ ignores extra arguments for types built in __new__ ===
+for immutable in (1, 'a', (1,), decimal.Decimal(1), frozenset()):
+    assert object.__init__(immutable, 1) is None

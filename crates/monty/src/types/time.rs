@@ -234,7 +234,9 @@ pub(crate) fn class_method(
 /// so the accepted grammar (and the rejection message) stays consistent across
 /// the three classes.
 pub(crate) fn class_fromisoformat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("time.fromisoformat", vm.heap)?;
+    let value = args
+        .reject_kwargs("time.fromisoformat", vm.heap)?
+        .get_one_arg("time.fromisoformat", vm.heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", vm.heap, vm.interns);
     value.drop_with(vm.heap);
     let s = s?;

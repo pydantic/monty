@@ -968,7 +968,7 @@ native_types! {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{BuiltinsFunctions, MontyType};
+    use monty_types::{BuiltinsFunctions, MontyType, ResourceTracker};
     use strum::{IntoEnumIterator, VariantNames};
 
     use super::{ExcType, Type};
@@ -1047,7 +1047,7 @@ mod tests {
                     .collect();
                 sequences.push(def.bases.iter().copied().map(TypeRef::Native).collect());
                 let mut expected = vec![TypeRef::Native(ty)];
-                expected.extend(c3_merge(sequences).unwrap());
+                expected.extend(c3_merge(sequences, &ResourceTracker::default()).unwrap().unwrap());
                 let written: Vec<TypeRef> = ty.mro().map(TypeRef::Native).collect();
                 assert_eq!(written, expected, "{ty:?}");
             } else {

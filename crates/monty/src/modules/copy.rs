@@ -234,6 +234,7 @@ pub(crate) fn deep_copy(source: &Value, memo: &mut Memo, vm: &mut VM<'_>) -> Run
             HeapReadOutput::Tuple(tuple) => tuple.py_deep_copy(source, memo, vm),
             HeapReadOutput::NamedTuple(named) => named.py_deep_copy(source, memo, vm),
             HeapReadOutput::BoundMethod(bound) => bound.py_deep_copy(source, memo, vm),
+            HeapReadOutput::Super(proxy) => proxy.py_deep_copy(source, memo, vm),
             HeapReadOutput::Partial(partial) => partial.py_deep_copy(source, memo, vm),
             HeapReadOutput::Random(random) => random.py_deep_copy(source, memo, vm),
             // A context holds no references, so its deep copy is its shallow one.
@@ -296,7 +297,10 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
-        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => Copyability::ImmutableContainer,
+        // `super` too: `copy` returns the proxy, `deepcopy` copies its receiver.
+        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) | HeapReadOutput::Super(_) => {
+            Copyability::ImmutableContainer
+        }
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
         // Leaves and immutable containers Monty can never mutate, so a copy
@@ -371,8 +375,7 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DataclassField(_)
         | HeapReadOutput::DataclassParams(_)
         | HeapReadOutput::DecimalSignalDict(_)
-        | HeapReadOutput::DecimalContextManager(_)
-        | HeapReadOutput::Super(_) => Copyability::Refused,
+        | HeapReadOutput::DecimalContextManager(_) => Copyability::Refused,
     }
 }
 

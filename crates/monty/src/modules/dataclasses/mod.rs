@@ -272,8 +272,12 @@ fn decorate_class(cls: &Value, class_id: HeapId, options: DataclassOptions, vm: 
     let HeapReadOutput::Class(class) = vm.heap.read(class_id) else {
         unreachable!("the caller checked the class")
     };
-    check_frozen_inheritance(class.get(vm.heap), options, vm)?;
     let fields = build_dataclass_fields(&class, annotations, vm)?;
+    // After the fields, as CPython rejects a bad field before a frozen mismatch.
+    if let Err(err) = check_frozen_inheritance(class.get(vm.heap), options, vm) {
+        fields.drop_with(vm);
+        return Err(err);
+    }
     let Value::Ref(fields_id) = fields else {
         unreachable!("the fields mapping is a dict")
     };
