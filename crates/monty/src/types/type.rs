@@ -18,7 +18,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap},
-    intern::StaticStrings,
+    intern::{Interns, StaticStrings},
+    modules::collections,
+    py_attrs::{self, AttrDef, AttrTable, PyAttrs},
+    py_class::PyClass,
     py_value::PyValue,
     types::{
         GenericAlias, LongInt, PyTrait, allocate_tuple,
@@ -86,12 +89,101 @@ impl Type {
         CALLABLE_TYPES.get(usize::from(id)).copied()
     }
 
+    /// Returns the generated attribute definitions for this builtin type.
+    ///
+    /// Types without a registered table return `None`.
+    pub(crate) const fn attr_table(self) -> Option<AttrTable> {
+        match self {
+            Self::LruCacheWrapper => Some(<super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::TABLE),
+            Self::NamedTuple => Some(<super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::TABLE),
+            Self::Bytes => Some(<super::bytes::PyBytes<'static> as PyAttrs<'static>>::TABLE),
+            Self::Path => Some(<super::path::PyPathImpl as PyAttrs<'static>>::TABLE),
+            Self::Random => Some(<super::random::PyRandomImpl as PyAttrs<'static>>::TABLE),
+            Self::HashlibHash | Self::Blake2b | Self::Blake2s => {
+                Some(<super::hashlib::PyHashImpl as PyAttrs<'static>>::TABLE)
+            }
+            Self::HashlibHashXof => Some(<super::hashlib::PyHashXofImpl as PyAttrs<'static>>::TABLE),
+            Self::CsvWriter => Some(<super::csv::PyCsvWriterImpl as PyAttrs<'static>>::TABLE),
+            Self::CsvDictWriter => Some(<super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::TABLE),
+            Self::DirEntry => Some(<super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::TABLE),
+            Self::ScandirIterator => Some(<super::dir_scan::PyScandirImpl as PyAttrs<'static>>::TABLE),
+            Self::Dict => Some(<super::dict::PyDictImpl as PyAttrs<'static>>::TABLE),
+            Self::DefaultDict => Some(<super::dict::PyDefaultDictImpl as PyAttrs<'static>>::TABLE),
+            Self::Counter => Some(<super::dict::PyCounterImpl as PyAttrs<'static>>::TABLE),
+            Self::Set => Some(<super::set::PySetImpl as PyAttrs<'static>>::TABLE),
+            Self::FrozenSet => Some(<super::set::PyFrozenSetImpl as PyAttrs<'static>>::TABLE),
+            Self::DictKeys => Some(<super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::TABLE),
+            Self::DictItems => Some(<super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::TABLE),
+            Self::DateTime => Some(<super::datetime::PyDateTimeImpl as PyAttrs<'static>>::TABLE),
+            Self::Deque => Some(<super::deque::PyDequeImpl as PyAttrs<'static>>::TABLE),
+            Self::TextIOWrapper | Self::BufferedReader | Self::BufferedWriter | Self::BufferedRandom => {
+                Some(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE)
+            }
+            Self::Decimal => Some(<super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::TABLE),
+            Self::DecimalContext => Some(<super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::TABLE),
+            Self::DecimalSignalDict => Some(<super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::TABLE),
+            Self::ForwardRef => Some(<super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::TABLE),
+            Self::Str => Some(<super::str::PyStr<'static> as PyAttrs<'static>>::TABLE),
+            Self::List => Some(<super::list::PyListImpl as PyAttrs<'static>>::TABLE),
+            Self::Tuple => Some(<super::tuple::PyTupleImpl as PyAttrs<'static>>::TABLE),
+            Self::Complex => Some(<super::complex::PyComplexImpl as PyAttrs<'static>>::TABLE),
+            Self::Date => Some(<super::date::PyDateImpl as PyAttrs<'static>>::TABLE),
+            Self::Time => Some(<super::time::PyTimeImpl as PyAttrs<'static>>::TABLE),
+            Self::TimeDelta => Some(<super::timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::TABLE),
+            Self::TimeZone => Some(<super::timezone::PyTimeZoneImpl as PyAttrs<'static>>::TABLE),
+            Self::RePattern => Some(<super::re_pattern::PyRePatternImpl as PyAttrs<'static>>::TABLE),
+            Self::ReMatch => Some(<super::re_match::PyReMatchImpl as PyAttrs<'static>>::TABLE),
+            _ => None,
+        }
+    }
+
+    /// Looks up a name in this builtin type's generated attribute table.
+    ///
+    /// Returns the definition without binding a receiver or evaluating a value factory.
+    /// Names absent from the table return `None`; dynamic namespaces are handled separately.
+    pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
+        let name = attr.static_string(interns)?;
+        (self.attr_table()?.lookup)(name)
+    }
+
+    /// Calls registered methods on existing native views, binding class methods to their owner.
+    pub(crate) fn call_attr<'h>(
+        self,
+        obj: &mut PyValue<'h>,
+        attr: &EitherStr,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm.interns) {
+            Some(AttrDef::Method { call, .. }) => call(obj, args, vm),
+            Some(AttrDef::ClassMethod(classmethod)) => classmethod(PyClass::Builtin(self), args, vm),
+            _ => obj.call_dynamic_attr(vm, attr, args),
+        }
+    }
+
     /// Dispatches calls on a type object's attribute (`dict.fromkeys(...)`).
     ///
     /// A type's own class methods run first, then `__class_getitem__`; any
     /// other name is looked up as a plain attribute and the result called, so
     /// `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm.interns) {
+            Some(AttrDef::ClassMethod(classmethod)) => {
+                return classmethod(PyClass::Builtin(self), args, vm);
+            }
+            Some(AttrDef::Method {
+                call: method,
+                owner: Some(owner),
+            }) => return py_attrs::call_unbound(owner, attr, method, args, vm),
+            Some(AttrDef::Method {
+                call: method,
+                owner: None,
+            }) if self == Self::Counter => {
+                return collections::counter::call_unbound(attr, method, args, vm);
+            }
+            Some(AttrDef::Method { call: method, .. }) => return py_attrs::call_unbound(self, attr, method, args, vm),
+            _ => {}
+        }
         let args = match self.def().class_method {
             Some(class_method) => match class_method(attr, args, vm) {
                 Ok(result) => return result,
@@ -150,8 +242,13 @@ impl Type {
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
         // Native ancestors' members are inherited too: `int.__init__` is `object`'s.
-        self.mro()
-            .find_map(|ty| ty.def().class_attr.and_then(|class_attr| class_attr(attr, vm)))
+        self.mro().find_map(|ty| {
+            if let Some(AttrDef::Value(get)) = ty.lookup_attr(attr, vm.interns) {
+                Some(get(vm))
+            } else {
+                ty.def().class_attr.and_then(|class_attr| class_attr(attr, vm))
+            }
+        })
     }
 
     /// The `AttributeError` for a name missing from this type object.

@@ -18,7 +18,6 @@ use super::{
     py::{self, ContextMethod},
 };
 use crate::{
-    py_attrs::PyAttrs,
     args::{ArgValues, FromArgs, is_long_int},
     builtins::Builtins,
     bytecode::{CallResult, VM},
@@ -26,6 +25,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    py_attrs::PyAttrs,
     types::{
         Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
     },

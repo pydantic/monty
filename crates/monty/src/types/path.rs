@@ -682,7 +682,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         ({
             let name_val = args.get_one_arg("with_name", vm.heap)?;
             defer_drop!(name_val, vm);
-            let name = extract_path_string(name_val, vm)?.to_owned();
+            let name = name_val.try_to_str(vm)?.to_owned();
             let result = this
                 .get(vm.heap)
                 .with_name(&name)
@@ -697,7 +697,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         ({
             let stem_val = args.get_one_arg("with_stem", vm.heap)?;
             defer_drop!(stem_val, vm);
-            let stem = extract_path_string(stem_val, vm)?.to_owned();
+            let stem = stem_val.try_to_str(vm)?.to_owned();
             let result = this
                 .get(vm.heap)
                 .with_stem(&stem)
@@ -712,7 +712,7 @@ impl<'heap> PyAttrs<'heap> for PyPathImpl {
         ({
             let suffix_val = args.get_one_arg("with_suffix", vm.heap)?;
             defer_drop!(suffix_val, vm);
-            let suffix = extract_path_string(suffix_val, vm)?.to_owned();
+            let suffix = suffix_val.try_to_str(vm)?.to_owned();
             let result = this
                 .get(vm.heap)
                 .with_suffix(&suffix)

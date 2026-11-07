@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
-    intern::Interns,
+    intern::{Interns, StaticStrings},
     py_attrs::PyAttrs,
     types::{
         LazyHeapSet, PyTrait, Type, TypeRef,
@@ -28,7 +28,7 @@ use crate::{
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Magnitude of the `timezone.min` / `timezone.max` class constants: 23:59.

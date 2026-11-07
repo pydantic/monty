@@ -97,10 +97,11 @@ use crate::{
         py_trait::PyObjectIdentity,
         slice::{SearchRange, search_range, slice_collect_iterator},
     },
-    value::{VALUE_SIZE, Value, eq_bytes},
+    value::{EitherStr, VALUE_SIZE, Value, eq_bytes},
 };
 
-// ======================================================================// ASCII byte helper functions
+// =============================================================================
+// ASCII byte helper functions
 // ======================================================================
 /// Returns true if the byte is Python ASCII whitespace.
 ///
@@ -606,7 +607,8 @@ struct BytesDecodeArgs {
     errors: Option<StrArg>,
 }
 
-// ======================================================================// Substring scanning
+// =============================================================================
+// Substring scanning
 // ======================================================================//
 // Every `bytes` substring operation funnels through the scanners below. A scan
 // runs inside one bytecode instruction, so the VM's per-instruction
@@ -965,7 +967,8 @@ fn parse_bytes_sub_args(
     Ok((sub, range))
 }
 
-// ======================================================================// Simple transformations (no arguments)
+// =============================================================================
+// Simple transformations (no arguments)
 // ======================================================================
 /// Implements Python's `bytes.lower()` method.
 ///
@@ -1041,7 +1044,8 @@ fn bytes_swapcase<'h>(bytes: &impl HeapView<'h, [u8]>, vm: &mut VM<'h>) -> Value
     allocate_bytes(result, vm.heap)
 }
 
-// ======================================================================// Predicate methods (no arguments, return bool)
+// =============================================================================
+// Predicate methods (no arguments, return bool)
 // ======================================================================
 /// Implements Python's `bytes.isalpha()` method.
 ///
@@ -1136,7 +1140,8 @@ fn bytes_istitle(bytes: &[u8]) -> bool {
     has_cased
 }
 
-// ======================================================================// Search methods
+// =============================================================================
+// Search methods
 // ======================================================================
 /// Implements Python's `bytes.rfind(sub[, start[, end]])` method.
 ///
@@ -1191,7 +1196,8 @@ fn bytes_rindex<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut V
     }
 }
 
-// ======================================================================// Strip/trim methods
+// =============================================================================
+// Strip/trim methods
 // ======================================================================
 /// Implements Python's `bytes.strip([chars])` method.
 ///
@@ -1316,7 +1322,8 @@ fn bytes_removesuffix<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: 
     Ok(allocate_bytes(result, vm.heap))
 }
 
-// ======================================================================// Split methods
+// =============================================================================
+// Split methods
 // ======================================================================
 /// Implements Python's `bytes.split([sep[, maxsplit]])` method.
 ///
@@ -1764,7 +1771,8 @@ fn bytes_rpartition<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &m
     ))
 }
 
-// ======================================================================// Replace/padding methods
+// =============================================================================
+// Replace/padding methods
 // ======================================================================
 /// Implements Python's `bytes.replace(old, new[, count])` method.
 ///
@@ -2063,7 +2071,8 @@ fn bytes_zfill<'h>(bytes: &impl HeapView<'h, [u8]>, args: ArgValues, vm: &mut VM
     Ok(allocate_bytes(result, vm.heap))
 }
 
-// ======================================================================// Join method
+// =============================================================================
+// Join method
 // ======================================================================
 /// Implements Python's `bytes.join(iterable)` method.
 ///
@@ -2117,7 +2126,8 @@ fn bytes_join<'h>(separator: &impl HeapView<'h, [u8]>, iterable: Value, vm: &mut
     Ok(allocate_bytes(result, vm.heap))
 }
 
-// ======================================================================// Hex method
+// =============================================================================
+// Hex method
 // ======================================================================
 /// Implements Python's `bytes.hex([sep[, bytes_per_sep]])` method.
 ///
@@ -2362,7 +2372,8 @@ fn hex_char_to_value(c: char) -> Option<u8> {
     }
 }
 
-// ======================================================================// Helper function for bytes allocation
+// =============================================================================
+// Helper function for bytes allocation
 // ======================================================================
 /// Allocates bytes on the heap.
 pub(crate) fn allocate_bytes(bytes: Vec<u8>, heap: &Heap) -> Value {

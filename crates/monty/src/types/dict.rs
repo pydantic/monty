@@ -2221,16 +2221,16 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
     #[pymethod(Get)]
     fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
-            // dict.get() accepts 1 or 2 arguments
             let (key, default) = args.get_one_two_args("get", vm.heap)?;
-            defer_drop!(key, vm);
-            let default = default.unwrap_or(Value::None);
-            let mut default_guard = DropGuard::new(default, vm);
-            let vm = default_guard.ctx();
-            // Handle the lookup - may fail for unhashable keys
-            match this.dict_get(key, vm)? {
-                Some(v) => Ok(v),
-                None => Ok(default_guard.into_inner()),
+            // Release both arguments if hashing or equality raises.
+            let mut pending = DropGuard::new((key, default), vm);
+            let ((key, _), vm) = pending.as_parts();
+            if let Some(value) = this.dict_get(key, vm)? {
+                Ok(value)
+            } else {
+                let ((key, default), vm) = pending.into_parts();
+                key.drop_with(vm);
+                Ok(default.unwrap_or(Value::None))
             }
         }
     }

@@ -90,7 +90,6 @@ use super::{
     str::{allocate_string, allocate_string_on_heap},
 };
 use crate::{
-    py_attrs::PyAttrs,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -98,6 +97,7 @@ use crate::{
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::{PostConversionEffect, stat_result_field},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     types::str::StringRepr,
     value::{EitherStr, Value},

@@ -57,7 +57,7 @@ pub(crate) fn call_unbound(
             args.drop_with(vm);
             return Err(ExcType::type_error(format!(
                 "unbound method {}.{}() needs an argument",
-                owner.dunder_name(vm.heap, vm.interns),
+                owner.dunder_name(),
                 attr.as_str(vm.interns),
             )));
         }
@@ -65,11 +65,11 @@ pub(crate) fn call_unbound(
     let mut pending = DropGuard::new((receiver, args), vm);
     let ((receiver, _), vm) = pending.as_parts_mut();
     let receiver_type = receiver.py_type(vm);
-    if !receiver_type.is_instance_of(owner) {
+    if !receiver_type.is_subclass_of(owner.into(), vm.heap) {
         return Err(ExcType::type_error(format!(
             "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
             attr.as_str(vm.interns),
-            owner.name(vm.heap, vm.interns),
+            owner.name(),
             receiver.py_type_name(vm),
         )));
     }
@@ -102,7 +102,7 @@ fn call_unbound_subtype(
             Err(ExcType::type_error(format!(
                 "descriptor '{}' for '{}' objects doesn't apply to a '{}' object",
                 attr.as_str(vm.interns),
-                owner.name(vm.heap, vm.interns),
+                owner.name(),
                 this.py_type_name(vm),
             )))
         }

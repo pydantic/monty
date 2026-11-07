@@ -278,7 +278,23 @@ impl<'h> PyValue<'h> {
     ) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
-            Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
+            Self::Builtin(Builtins::Type(ty)) => ty.call_class_method(attr, args, vm),
+            Self::Bool(value) => {
+                match attr.static_string(vm.interns) {
+                    Some(StaticStrings::BitLength) => {
+                        args.check_zero_args("int.bit_length", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    Some(StaticStrings::BitCount) => {
+                        args.check_zero_args("int.bit_count", vm.heap)?;
+                        Ok(CallResult::Value(Value::Int(i64::from(*value))))
+                    }
+                    _ => {
+                        args.drop_with(vm);
+                        Err(ExcType::attribute_error("bool", attr.as_str(vm.interns)))
+                    }
+                }
+            }
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
                     Some(result) => result,
@@ -823,8 +839,16 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // Forward the attribute call to the value's type, passing this view as the receiver.
-        self.py_type(vm).call_attr(self, attr, args, vm)
+        // Namedtuple instances report their class in TypeRef but share native tuple storage.
+        let ty = match self {
+            Self::NamedTuple(_) => Some(Type::NamedTuple),
+            _ => self.py_type(vm).native(),
+        };
+        if let Some(ty) = ty {
+            ty.call_attr(self, attr, args, vm)
+        } else {
+            self.call_dynamic_attr(vm, attr, args)
+        }
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

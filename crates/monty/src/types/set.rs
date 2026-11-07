@@ -1143,69 +1143,6 @@ impl<'h> HeapRead<'h, FrozenSet> {
         let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(result)));
         Ok(Value::Ref(heap_id))
     }
-
-    /// Keeps allocating storage methods out of the identity-copy dispatch frame.
-    /// The out-of-line helper also prevents folding `.copy()` back into the general method match.
-    #[inline(never)]
-    fn call_storage_attr(
-        &self,
-        vm: &mut VM<'h>,
-        attr: &EitherStr,
-        method: Option<StaticStrings>,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
-        let value = match method {
-            Some(StaticStrings::Union) => {
-                let other = args.get_one_arg("frozenset.union", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::Union, vm)
-            }
-            Some(StaticStrings::Intersection) => {
-                let other = args.get_one_arg("frozenset.intersection", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::Intersection, vm)
-            }
-            Some(StaticStrings::Difference) => {
-                let other = args.get_one_arg("frozenset.difference", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::Difference, vm)
-            }
-            Some(StaticStrings::SymmetricDifference) => {
-                let other = args.get_one_arg("frozenset.symmetric_difference", vm.heap)?;
-                self.set_algebra(other, SetAlgebra::SymmetricDifference, vm)
-            }
-            Some(StaticStrings::Issubset) => {
-                let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(Value::Bool(self.storage().comparison_op(
-                    other,
-                    SetComparison::Subset,
-                    vm,
-                )?))
-            }
-            Some(StaticStrings::Issuperset) => {
-                let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(Value::Bool(self.storage().comparison_op(
-                    other,
-                    SetComparison::Superset,
-                    vm,
-                )?))
-            }
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(Value::Bool(self.storage().comparison_op(
-                    other,
-                    SetComparison::Disjoint,
-                    vm,
-                )?))
-            }
-            _ => {
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm.interns)));
-            }
-        };
-        value.map(CallResult::Value)
-    }
-
     fn storage(&self) -> BorrowedHeapRead<'_, 'h, SetStorage> {
         heap_read_ref_as_field!(self, FrozenSet, storage)
     }
@@ -1795,9 +1732,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
     fn copy<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("frozenset.copy", vm.heap)?;
-            let cloned = this.get(vm.heap).storage.clone_with_heap(vm.heap);
-            let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
-            Ok(Value::Ref(heap_id))
+            Ok(this.clone_value(vm.heap))
         }
     }
 
@@ -1846,7 +1781,11 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         {
             let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(this.comparison_op(other, SetComparison::Subset, vm)?))
+            Ok(Value::Bool(this.storage().comparison_op(
+                other,
+                SetComparison::Subset,
+                vm,
+            )?))
         }
     }
 
@@ -1855,7 +1794,11 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         {
             let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(this.comparison_op(other, SetComparison::Superset, vm)?))
+            Ok(Value::Bool(this.storage().comparison_op(
+                other,
+                SetComparison::Superset,
+                vm,
+            )?))
         }
     }
 
@@ -1864,7 +1807,11 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         {
             let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(this.comparison_op(other, SetComparison::Disjoint, vm)?))
+            Ok(Value::Bool(this.storage().comparison_op(
+                other,
+                SetComparison::Disjoint,
+                vm,
+            )?))
         }
     }
 }
@@ -1925,7 +1872,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
     fn copy<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.copy", vm.heap)?;
-            let copy = this.copy(vm);
+            let copy = this.copy(vm)?;
             let heap_id = vm.heap.allocate(HeapData::Set(copy));
             Ok(Value::Ref(heap_id))
         }
@@ -1981,7 +1928,11 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         {
             let other = args.get_one_arg("set.issubset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(this.comparison_op(other, SetComparison::Subset, vm)?))
+            Ok(Value::Bool(this.storage().comparison_op(
+                other,
+                SetComparison::Subset,
+                vm,
+            )?))
         }
     }
 
@@ -1990,7 +1941,11 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         {
             let other = args.get_one_arg("set.issuperset", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(this.comparison_op(other, SetComparison::Superset, vm)?))
+            Ok(Value::Bool(this.storage().comparison_op(
+                other,
+                SetComparison::Superset,
+                vm,
+            )?))
         }
     }
 
@@ -1999,7 +1954,11 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         {
             let other = args.get_one_arg("set.isdisjoint", vm.heap)?;
             defer_drop!(other, vm);
-            Ok(Value::Bool(this.comparison_op(other, SetComparison::Disjoint, vm)?))
+            Ok(Value::Bool(this.storage().comparison_op(
+                other,
+                SetComparison::Disjoint,
+                vm,
+            )?))
         }
     }
 }

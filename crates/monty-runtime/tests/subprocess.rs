@@ -1284,10 +1284,10 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         ("('a' * 1000).replace('a', 'b' * 2000)", 2_047_539),
         // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
         // capacity doubling like the formatter cases above: fixed-size pushes
-        // make that step deterministic.
+        // make that step deterministic. Formatting borrows the receiver's zone name.
         (
             "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
-            1_255_965,
+            1_155_965,
         ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.

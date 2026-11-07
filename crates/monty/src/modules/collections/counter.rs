@@ -71,9 +71,11 @@ pub(crate) fn call_unbound(
         args.check_zero_args("Counter.copy", vm.heap)?;
         // copy() constructs self.__class__(self), even for a native non-mapping receiver.
         let copy = receiver.clone_with_heap(vm);
-        return receiver_type.call(vm, ArgValues::One(copy));
+        let class = receiver_type.to_value(vm.heap);
+        defer_drop!(class, vm);
+        return vm.call_function(class, ArgValues::One(copy));
     }
-    if !receiver_type.is_instance_of(Type::Dict) {
+    if !receiver_type.is_subclass_of(Type::Dict.into(), vm.heap) {
         // Without a source or keyword counts, these Python methods never access self.
         if matches!(name, Some(StaticStrings::Update | StaticStrings::Subtract))
             && matches!(args, ArgValues::Empty | ArgValues::One(Value::None))
@@ -395,7 +397,7 @@ pub(crate) fn counter_update_method<'h>(
         && counter.get(vm.heap).is_empty()
         && source
             .as_ref()
-            .is_some_and(|source| source.py_type(vm).is_instance_of(Type::Dict))
+            .is_some_and(|source| source.py_type(vm).is_subclass_of(Type::Dict.into(), vm.heap))
     {
         return Err(ExcType::type_error(format!(
             "super(type, obj): obj (instance of {}) is not an instance or subtype of type (Counter).",

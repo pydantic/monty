@@ -80,6 +80,7 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 - **Counting from a mapping into an empty `Counter` hashes each key.** `Counter(mapping)`, and `update(mapping)` on an
     empty `Counter`, call each key's `__hash__` once more than CPython, whose `dict.update` reuses the hashes the
     mapping already stores.
+
 - **Crosses the host boundary as a plain `dict`.**
 
 ## Qualified vs bare type names
