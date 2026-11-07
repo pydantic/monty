@@ -152,8 +152,8 @@ In particular, integer handlers use `PyInt` to cover both small and heap integer
 Immediate float and bool receivers are passed by value.
 An incompatible native view raises `TypeError` and releases the arguments.
 
-Rust checks handler parameter and return types when compiling the generated calls.
-The macro checks the receiver shape needed for projection, duplicate attribute keys, and unsupported annotations.
+Rust resolves the trait path, including aliases, and checks handler signatures and receiver type arguments.
+The macro selects the receiver projection and checks duplicate attribute keys.
 Conditional registrations are rejected because a table entry and its handler must have the same availability.
 Functions retain their visibility, lifetime parameters, documentation, and bodies.
 Unannotated helper functions are preserved without registration.

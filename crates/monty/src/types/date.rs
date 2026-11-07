@@ -478,16 +478,15 @@ pub(crate) struct StrftimeArgs {
     pub(crate) format: StrArg,
 }
 
-/// Keyword arguments for `date.replace()`. All keyword-only; absent fields
-/// inherit the original date's component via `unwrap_or` at the call site.
+/// Optional positional-or-keyword date components; omitted fields keep their original values.
 #[derive(FromArgs)]
-#[from_args(name = "replace")]
+#[from_args(name = "replace", style = c_named, at_most_total)]
 struct DateReplaceArgs {
-    #[from_args(kw_only, default)]
+    #[from_args(default)]
     year: Option<i32>,
-    #[from_args(kw_only, default)]
+    #[from_args(default)]
     month: Option<i32>,
-    #[from_args(kw_only, default)]
+    #[from_args(default)]
     day: Option<i32>,
 }
 

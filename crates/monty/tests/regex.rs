@@ -108,7 +108,7 @@ assert re.findall('a{5000}', 'a' * 5000) == ['a' * 5000], 'oversize pattern find
 }
 
 #[test]
-fn pattern_method_errors_release_arguments() {
+fn pattern_method_type_error_messages() {
     // Pattern methods have a documented subject-type error wording difference.
     let result = run(r"
 import re

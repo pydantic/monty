@@ -44,7 +44,7 @@ These raise `NameError`:
     reached through `getattr`.
     Direct calls with an explicit first positional receiver, such as `str.upper('foo')` and `list.append(items, value)`,
     are supported for registered builtin instance methods.
-    Date descriptors accept datetime receivers, but only the implemented date methods are exposed
+    Date methods called directly accept datetime receivers, but only the implemented date methods are available
     (see [datetime.md](datetime.md)).
     Counter's Python-defined methods have additional receiver restrictions (see [collections.md](collections.md#counter)).
 - **Large integer literal identity** — separate occurrences of the same literal outside the `i64` range are not

@@ -1742,13 +1742,9 @@ fn parse_strip_arg(method: &str, args: ArgValues, vm: &mut VM<'_>) -> RunResult<
 // Split methods
 // =============================================================================
 
-/// Coerces extracted `sep` / `maxsplit` `Value`s into the runtime shape used
-/// by the actual `split`/`rsplit` implementations.
-///
-/// `sep = None` is documented as "split on whitespace", so it is mapped to
-/// `Option::None`; any other value is run through `extract_string_arg`.
-/// `maxsplit` is always coerced to `i64` via `extract_int_arg`. Each argument
-/// is dropped on every path so refcounts stay balanced.
+/// Converts split/rsplit arguments, accepting a string or None for the separator.
+/// Invalid separators raise `must be str or None`; maxsplit is converted to i64.
+/// Both owned arguments are released on success and error.
 fn coerce_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<(Option<String>, i64)> {
     defer_drop!(sep, vm);
     defer_drop!(maxsplit, vm);
