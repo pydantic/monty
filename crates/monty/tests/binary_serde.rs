@@ -491,6 +491,43 @@ ext_fn(0)
     assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
+/// A live `collections.OrderedDict` survives a round-trip with its kind tag and
+/// its (moved) key order intact — `OrderedDict` is a `DictKind` on `HeapData::Dict`,
+/// so this is the coverage for the new `DictSpecial::Ordered` variant.
+#[test]
+fn run_progress_round_trip_preserves_ordereddict() {
+    let code = r"
+from collections import OrderedDict
+
+od = OrderedDict([('a', 1), ('b', 2), ('c', 3)])
+od.move_to_end('a')
+ext_fn(0)
+[repr(od), type(od) is OrderedDict, od == OrderedDict(b=2, c=3, a=1), od == OrderedDict(a=1, b=2, c=3), od.popitem(last=False)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded: RunProgress = round_trip_progress(&progress);
+
+    let expected = MontyObject::list([
+        MontyObject::string("OrderedDict({'b': 2, 'c': 3, 'a': 1})".to_owned()),
+        MontyObject::bool(true),
+        MontyObject::bool(true),
+        MontyObject::bool(false),
+        MontyObject::tuple([MontyObject::string("b".to_owned()), MontyObject::int(2)]),
+    ]);
+
+    // Both are resumed: an unresumed `RunProgress` leaves its globals' refs unreleased.
+    for progress in [progress, loaded] {
+        let call = progress.into_function_call().expect("should be at function call");
+        let result = call.resume(MontyObject::int(0), PrintWriter::Stdout).unwrap();
+        assert_eq!(result.into_complete().unwrap(), expected);
+    }
+}
+
 /// A live `functools.partial` on the heap survives a round-trip with its bound
 /// callable, positionals and keywords intact — the only coverage that carries
 /// `HeapData::Partial` through the dump codec.

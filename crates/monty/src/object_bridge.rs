@@ -842,7 +842,7 @@ impl MontyTypeExt for MontyType {
             Type::Dict => Self::Dict,
             // No host-side defaultdict/Counter type; both degrade to `dict`,
             // consistent with their values crossing as `MontyNode::Dict`.
-            Type::DefaultDict | Type::Counter => Self::Dict,
+            Type::DefaultDict | Type::Counter | Type::OrderedDict => Self::Dict,
             Type::DictKeys => Self::DictKeys,
             Type::DictItems => Self::DictItems,
             Type::DictValues => Self::DictValues,

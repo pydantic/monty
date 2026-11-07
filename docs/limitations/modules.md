@@ -51,7 +51,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `unicodedata`   | [unicodedata.md](unicodedata.md)     |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
-and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
+`OrderedDict` and `namedtuple`; `ChainMap` and the `UserDict` / `UserList`
 / `UserString` wrappers are missing (see [collections.md](collections.md)).
 
 A `gc` module exposing `collect()` / `enable()` / `disable()` is compiled

@@ -453,7 +453,7 @@ impl Arguments {
             _ => smallvec![args.clone_with_heap(vm.heap)],
         };
         let mapping = match args.py_type(vm) {
-            Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Range => true,
+            Type::Dict | Type::DefaultDict | Type::Counter | Type::OrderedDict | Type::List | Type::Range => true,
             Type::Bytes => !bytes_template,
             _ => false,
         }

@@ -327,52 +327,46 @@ bad = change.field_diffs
 }
 
 /// The narrowed `collections` stub must expose exactly what Monty implements at
-/// runtime — importing the four implemented names type-checks clean.
+/// runtime — importing the five implemented names type-checks clean.
 #[test]
 fn collections_implemented_names_type_check() {
-    let code = "from collections import deque, Counter, defaultdict, namedtuple\n";
+    let code = "from collections import deque, Counter, defaultdict, OrderedDict, namedtuple\n";
     let result = check(code, "main.py");
     assert!(result.is_none(), "expected no type errors, got: {result:?}");
 }
 
-/// Conversely, names Monty does not implement (`OrderedDict`, `ChainMap`, the
+/// Conversely, names Monty does not implement (`ChainMap`, the
 /// `User*` wrappers) are removed from the stub, so importing them is a type
 /// error rather than passing the checker and then failing at runtime with
 /// `ImportError`.
 #[test]
 fn collections_unimplemented_names_are_unresolved() {
-    let code = "from collections import OrderedDict, ChainMap, UserDict, UserList, UserString\n";
+    let code = "from collections import ChainMap, UserDict, UserList, UserString\n";
     let diagnostics = check(code, "main.py").expect("expected unresolved-import errors");
     assert_snapshot!(diagnostics, @"
-    error[unresolved-import]: Module `collections` has no member `OrderedDict`
+    error[unresolved-import]: Module `collections` has no member `ChainMap`
      --> main.py:1:25
       |
-    1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
-      |                         ^^^^^^^^^^^
-
-    error[unresolved-import]: Module `collections` has no member `ChainMap`
-     --> main.py:1:38
-      |
-    1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
-      |                                      ^^^^^^^^
+    1 | from collections import ChainMap, UserDict, UserList, UserString
+      |                         ^^^^^^^^
 
     error[unresolved-import]: Module `collections` has no member `UserDict`
-     --> main.py:1:48
+     --> main.py:1:35
       |
-    1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
-      |                                                ^^^^^^^^
+    1 | from collections import ChainMap, UserDict, UserList, UserString
+      |                                   ^^^^^^^^
 
     error[unresolved-import]: Module `collections` has no member `UserList`
-     --> main.py:1:58
+     --> main.py:1:45
       |
-    1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
-      |                                                          ^^^^^^^^
+    1 | from collections import ChainMap, UserDict, UserList, UserString
+      |                                             ^^^^^^^^
 
     error[unresolved-import]: Module `collections` has no member `UserString`
-     --> main.py:1:68
+     --> main.py:1:55
       |
-    1 | from collections import OrderedDict, ChainMap, UserDict, UserList, UserString
-      |                                                                    ^^^^^^^^^^
+    1 | from collections import ChainMap, UserDict, UserList, UserString
+      |                                                       ^^^^^^^^^^
     ");
 }
 

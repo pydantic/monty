@@ -22,8 +22,8 @@ use crate::{
 
 /// Builtin types whose class pattern with one positional sub-pattern matches
 /// the subject itself (`case int(x)`), CPython's `_Py_TPFLAGS_MATCH_SELF`.
-/// Subclasses inherit the flag, hence `defaultdict` and `Counter`.
-const SELF_MATCHING_TYPES: [Type; 12] = [
+/// Subclasses inherit the flag, hence `defaultdict`, `Counter` and `OrderedDict`.
+const SELF_MATCHING_TYPES: [Type; 13] = [
     Type::Bool,
     Type::Bytes,
     Type::Counter,
@@ -33,6 +33,7 @@ const SELF_MATCHING_TYPES: [Type; 12] = [
     Type::FrozenSet,
     Type::Int,
     Type::List,
+    Type::OrderedDict,
     Type::Set,
     Type::Str,
     Type::Tuple,
@@ -57,7 +58,7 @@ impl VM<'_> {
         let subject = self.peek();
         let ty = subject.py_type(self);
         let shape_ok = if flags & MATCH_SHAPE_MAPPING != 0 {
-            matches!(ty, Type::Dict | Type::DefaultDict | Type::Counter)
+            matches!(ty, Type::Dict | Type::DefaultDict | Type::Counter | Type::OrderedDict)
         } else {
             matches!(
                 ty,

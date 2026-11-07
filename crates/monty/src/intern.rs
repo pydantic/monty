@@ -1992,6 +1992,13 @@ pub enum StaticStrings {
     Pop,
     /// `dict.popitem()` method.
     Popitem,
+    /// `OrderedDict.move_to_end()` method.
+    MoveToEnd,
+    /// The `last` keyword of `OrderedDict.popitem()` / `move_to_end()`.
+    Last,
+    /// The `collections.OrderedDict` type.
+    #[strum(serialize = "OrderedDict")]
+    OrderedDict,
     /// `deque.popleft()` method.
     Popleft,
     /// `population` parameter of `random.choices()` and `random.sample()`.

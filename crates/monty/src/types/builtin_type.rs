@@ -210,6 +210,9 @@ pub(crate) enum BuiltinType {
     DecimalContextManager,
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    // New variants go last: the postcard index is part of the dump format and id().
+    #[strum(serialize = "collections.OrderedDict")]
+    OrderedDict,
 }
 
 impl From<BuiltinType> for Type {
@@ -237,6 +240,7 @@ impl From<BuiltinType> for Type {
             BuiltinType::Dict => Self::Dict,
             BuiltinType::DefaultDict => Self::DefaultDict,
             BuiltinType::Counter => Self::Counter,
+            BuiltinType::OrderedDict => Self::OrderedDict,
             BuiltinType::DictKeys => Self::DictKeys,
             BuiltinType::DictItems => Self::DictItems,
             BuiltinType::DictValues => Self::DictValues,
@@ -352,6 +356,7 @@ impl TryFrom<Type> for BuiltinType {
             Type::Dict => Self::Dict,
             Type::DefaultDict => Self::DefaultDict,
             Type::Counter => Self::Counter,
+            Type::OrderedDict => Self::OrderedDict,
             Type::DictKeys => Self::DictKeys,
             Type::DictItems => Self::DictItems,
             Type::DictValues => Self::DictValues,

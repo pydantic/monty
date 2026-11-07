@@ -2,9 +2,9 @@
 //!
 //! These cannot be datatest `test_cases` (which dual-run against CPython): the
 //! whole point is that Monty *diverges* from CPython here — CPython imports
-//! `OrderedDict` / `ChainMap` / `UserDict` fine, whereas Monty raises
+//! `ChainMap` / `UserDict` fine, whereas Monty raises
 //! `ImportError` because it implements only `deque`, `Counter`, `defaultdict`,
-//! and `namedtuple`. The narrowed typeshed stub
+//! `OrderedDict` and `namedtuple`. The narrowed typeshed stub
 //! (`crates/monty-typeshed/custom/collections/__init__.pyi`) makes the same
 //! names a type error; these tests pin the matching *runtime* behaviour so the
 //! two stay in agreement.
@@ -24,11 +24,11 @@ fn import_err(name: &str) -> monty_types::MontyException {
     run.run_no_limits(vec![]).expect_err("expected ImportError")
 }
 
-/// The four members Monty implements import cleanly.
+/// The five members Monty implements import cleanly.
 #[test]
 fn implemented_names_import() {
     let mut run = MontyRun::new(
-        "from collections import deque, Counter, defaultdict, namedtuple".to_owned(),
+        "from collections import deque, Counter, defaultdict, OrderedDict, namedtuple".to_owned(),
         "test.py",
         vec![],
         CompileOptions::default(),
@@ -40,19 +40,8 @@ fn implemented_names_import() {
     );
 }
 
-/// `OrderedDict` is not implemented, so importing it raises `ImportError` with a
+/// `ChainMap` is not implemented, so importing it raises `ImportError` with a
 /// CPython-shaped message (Monty diverges here — CPython would import it).
-#[test]
-fn ordereddict_import_raises() {
-    let err = import_err("OrderedDict");
-    assert_eq!(err.exc_type(), ExcType::ImportError);
-    assert_snapshot!(
-        err.message().unwrap(),
-        @"cannot import name 'OrderedDict' from 'collections' (unknown location)"
-    );
-}
-
-/// `ChainMap` is likewise unimplemented.
 #[test]
 fn chainmap_import_raises() {
     let err = import_err("ChainMap");
