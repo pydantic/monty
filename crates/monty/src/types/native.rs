@@ -11,7 +11,6 @@
 
 use std::{fmt, iter::FusedIterator, slice, sync::LazyLock};
 
-use ahash::AHashMap;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
@@ -261,7 +260,7 @@ impl Type {
     /// Module types such as `datetime.date` or `FrozenInstanceError` need an import.
     #[must_use]
     pub fn from_builtin_name(name: &str) -> Option<Self> {
-        BUILTIN_TYPES.get(name).copied()
+        BUILTIN_TYPES.get(name)
     }
 
     /// The name this type is bound to in the builtins namespace, if any.
@@ -296,14 +295,42 @@ impl Type {
     }
 }
 
-/// Builtin-namespace names to their types, built once: global loads of `range`,
-/// `list` and the like resolve through it on every miss in the module globals.
-static BUILTIN_TYPES: LazyLock<AHashMap<&'static str, Type>> = LazyLock::new(|| {
-    Type::ALL
-        .iter()
-        .filter_map(|&ty| ty.builtin_name().map(|name| (name, ty)))
-        .collect()
+/// Builtin-namespace names to their types, sorted by name for binary search.
+///
+/// Global loads of `range`, `list` and the like resolve through this on every
+/// miss in the module globals. Stored inline rather than in a heap map, so the
+/// first lookup inside a session allocates nothing that `max_memory` would count.
+static BUILTIN_TYPES: LazyLock<BuiltinTypeTable> = LazyLock::new(|| {
+    let mut table = BuiltinTypeTable {
+        entries: [("", Type::Object); Type::ALL.len()],
+        len: 0,
+    };
+    for ty in Type::ALL {
+        if let Some(name) = ty.builtin_name() {
+            table.entries[table.len] = (name, ty);
+            table.len += 1;
+        }
+    }
+    table.entries[..table.len].sort_unstable_by_key(|&(name, _)| name);
+    table
 });
+
+/// Fixed-capacity storage for [`BUILTIN_TYPES`]; only the first `len` entries are used.
+struct BuiltinTypeTable {
+    entries: [(&'static str, Type); Type::ALL.len()],
+    len: usize,
+}
+
+impl BuiltinTypeTable {
+    /// Binary-searches the populated, name-sorted entries.
+    fn get(&self, name: &str) -> Option<Type> {
+        let entries = &self.entries[..self.len];
+        entries
+            .binary_search_by_key(&name, |&(entry, _)| entry)
+            .ok()
+            .map(|index| entries[index].1)
+    }
+}
 
 /// Iterator over a native type's MRO, from [`Type::mro`].
 pub(crate) enum NativeMro {
