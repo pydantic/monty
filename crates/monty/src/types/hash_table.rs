@@ -183,10 +183,8 @@ impl<E: TableEntry> PyHashTable<E> {
     /// it is held, so the entries it hands out are the table's current ones.
     #[inline]
     pub(crate) fn live(&self) -> Live<'_, E> {
-        // An emptied table may retain many tombstones; there is nothing left to scan.
-        let entries = if self.is_empty() { &[][..] } else { &self.entries[..] };
         Live {
-            slots: entries.iter(),
+            slots: self.entries.iter(),
             remaining: self.len(),
         }
     }
