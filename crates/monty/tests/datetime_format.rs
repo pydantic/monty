@@ -193,3 +193,45 @@ fn strptime_rejects_a_colon_before_the_seconds_only() {
     "#
     );
 }
+
+#[test]
+fn standard_strftime_fast_paths() {
+    assert_eq!(
+        run_str("from datetime import date\ndate(2024, 6, 15).strftime('%Y-%m')"),
+        "2024-06"
+    );
+    assert_eq!(
+        run_str("from datetime import date\ndate(2024, 6, 15).strftime('%Y-%m-%d')"),
+        "2024-06-15"
+    );
+    assert_eq!(
+        run_str("from datetime import date\ndate(2024, 6, 15).strftime(format='%Y-%m-%d')"),
+        "2024-06-15"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\ndatetime(2024, 6, 15, 12, 30, 45).strftime('%Y-%m')"),
+        "2024-06"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\ndatetime(2024, 6, 15, 12, 30, 45).strftime('%Y-%m-%d')"),
+        "2024-06-15"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\ndatetime(2024, 6, 15, 12, 30, 45).strftime('%H:%M:%S')"),
+        "12:30:45"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\ndatetime(2024, 6, 15, 12, 30, 45).strftime('%Y-%m-%d %H:%M:%S')"),
+        "2024-06-15 12:30:45"
+    );
+    assert_eq!(
+        run_str("from datetime import datetime\ndatetime(2024, 6, 15, 12, 30, 45).strftime('%Y-%m-%dT%H:%M:%S')"),
+        "2024-06-15T12:30:45"
+    );
+    assert_eq!(
+        run_str(
+            "from datetime import datetime\ndatetime(2024, 6, 15, 12, 30, 45).strftime(format='%Y-%m-%d %H:%M:%S')"
+        ),
+        "2024-06-15 12:30:45"
+    );
+}

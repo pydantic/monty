@@ -65,6 +65,16 @@ impl VM<'_> {
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
     fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        if let (Value::Int(a), Value::Int(b)) = (lhs, rhs) {
+            return Ok(match op {
+                CmpOperator::Lt => a < b,
+                CmpOperator::LtE => a <= b,
+                CmpOperator::Gt => a > b,
+                CmpOperator::GtE => a >= b,
+                _ => unreachable!("cmp_ordering reached with a non-ordering operator"),
+            });
+        }
+
         // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
         // a multiset) answers the operator itself. Hooked in here rather than at
         // the opcode so the fused-assert path, which calls `cmp_values` directly,
