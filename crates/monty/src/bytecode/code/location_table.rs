@@ -234,3 +234,7 @@ impl Reader<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/location_table.rs"]
+mod tests;
