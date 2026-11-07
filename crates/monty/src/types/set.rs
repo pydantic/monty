@@ -1617,9 +1617,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FrozenSet> {
         let value = match attr.static_string(vm.interns) {
             Some(StaticStrings::Copy) => {
                 args.check_zero_args("frozenset.copy", vm.heap)?;
-                let cloned = self.get(vm.heap).storage.clone_with_heap(vm.heap);
-                let heap_id = vm.heap.allocate(HeapData::FrozenSet(FrozenSet::wrap(cloned)));
-                Ok(Value::Ref(heap_id))
+                // Immutable copies can share the receiver, including its cached hash.
+                Ok(self.clone_value(vm.heap))
             }
             Some(StaticStrings::Union) => {
                 let other = args.get_one_arg("frozenset.union", vm.heap)?;

@@ -1507,7 +1507,7 @@ fn timeout_in_deepcopy_fill_loop() {
     );
 }
 
-/// `copy.copy` reaches no dispatch checkpoint either, and a dict copy has two
+/// `copy.copy` reaches no dispatch checkpoint either, and its dict path has two
 /// Rust loops to get past: the snapshot of every pair, then the re-hashing
 /// fill. Both poll, so the copy stops a budget in whatever the dict costs per
 /// entry — the claim the tests above make, and what makes a fixed threshold
@@ -1554,6 +1554,55 @@ fn timeout_in_shallow_copy_fill_loop() {
         assert!(
             elapsed < Duration::from_millis(budget + slack),
             "budget {budget}ms: should stop promptly, took {elapsed:?}"
+        );
+    }
+}
+
+/// Empty copies reserve no entry/index buffers, so their preflight must charge zero bytes.
+#[test]
+fn empty_dict_copies_do_not_charge_entry_storage() {
+    for code in [
+        "len({}.copy())",
+        "len(dict({}))",
+        "from collections import Counter\nlen(Counter({}))",
+        "from collections import defaultdict\nlen(defaultdict(None, {}))",
+        "from collections import Counter\nc = Counter()\nc.update({})\nlen(c)",
+    ] {
+        let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        // This binary has no allocator probe; a zero limit isolates bulk-allocation preflights.
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_memory(0));
+        let result = run.run(vec![], tracker, PrintWriter::Stdout).unwrap();
+        assert_eq!(result, MontyObject::int(0), "{code}");
+    }
+}
+
+/// A direct dict copy polls while retaining entries and releases a partial copy on timeout.
+#[test]
+fn timeout_in_dict_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import Counter\nshared = []\nd = {i: shared for i in range(4_000_000)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    for code in ["d.copy()", "dict(d)", "Counter(d)"] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Stdout)
+            .expect_err("the copy must hit the time limit");
+        let elapsed = start.elapsed();
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "{code}: should stop promptly, took {elapsed:?}"
+        );
+        // The next feed's GC scans the retained source under memory-model-checks.
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(d)", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::int(4_000_000)
         );
     }
 }
