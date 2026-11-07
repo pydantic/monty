@@ -64,7 +64,7 @@ test('shutdown during Configure preserves the fatal diagnostic', async () => {
       })),
     { instanceOf: TransportCrashedError },
   )
-  t.is(error.message, 'RuntimeError: configuration failed')
+  t.is(error.message, 'configuration failed')
   t.is(error.exitStatus, 'exit code: 7')
 })
 
@@ -404,7 +404,7 @@ test('requestTimeout kills a wedged worker', async () => {
   clearTimeout(timer)
   t.true(hostResponsive)
   t.true(error.timedOut)
-  t.is(error.message, 'RuntimeError: monty worker killed after exceeding request timeout of 500ms')
+  t.is(error.message, 'monty worker killed after exceeding request timeout of 500ms')
   await t.throwsAsync(() => session.feedRun('1'), { instanceOf: MontyCrashedError })
   await using fresh = await pool.checkout()
   t.is(await fresh.feedRun('6 * 7'), 42)

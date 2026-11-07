@@ -6,7 +6,7 @@
 // `MontySession` a local pool hands out.
 
 import { NativePool } from '../native-addon.js'
-import { type CheckoutOptions, graceMs, nativeCheckoutOptions } from './pool.js'
+import { type CheckoutOptions, graceMs, nativeCheckoutOptions, startPool } from './pool.js'
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -26,7 +26,13 @@ export interface MontyRemoteOptions {
    * the stream but never answers blocks the turn until the far end ends it.
    * It also bounds opening the stream, including the server's admission (30s
    * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
-   * CPU-mode servers require a finite `requestTimeout`.
+   * CPU-mode servers require a finite `requestTimeout`, otherwise checkout
+   * throws `MontyConfigurationError`.
+   * This deadline does not set the sleep cap. System sleeps return normally
+   * after at most `sleepSystemMax` (default ten seconds), even when sandbox
+   * code asks for longer, unless the capped delay would exceed `maxTotalSleepSecs`.
+   * Set `osPolicy.sleepSystemMax: Infinity` on checkout
+   * to request uncapped sleeps, subject to the server's policy.
    */
   requestTimeout?: number | null
   /**
@@ -119,13 +125,13 @@ export class MontyRemote {
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,
     })
-    await native.start()
+    await startPool(native)
     return new MontyRemote(native, metadata)
   }
 
   /**
    * Opens a session stream to the server and creates a REPL session there.
-   * Rejects with a plain `Error` when the connection fails;
+   * Rejects with `MontyConnectError` when the connection fails;
    * `MontyRefusedError` when the server refuses the stream, e.g. one at
    * capacity; `MontyRuntimeError` when the server refuses the session; and
    * `MontyDisconnectError` / `MontyShutdown` when it is lost while being

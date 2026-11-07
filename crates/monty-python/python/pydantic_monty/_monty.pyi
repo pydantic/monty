@@ -42,6 +42,8 @@ __all__ = [
     'MontyError',
     'MontyFileHandle',
     'MontyRefusedError',
+    'MontyConfigurationError',
+    'MontyConnectError',
     'MontySession',
     'MontyShutdown',
     'MontySyntaxError',
@@ -574,6 +576,39 @@ class MontyDisconnectError(MontyError):
         """The recorded transport or protocol error, or `None` when the server sent a status."""
 
 @final
+class MontyConnectError(MontyError):
+    """Raised when a remote connection fails before a session opens.
+
+    This includes invalid URLs, DNS and TLS failures, timeouts, HTTP responses
+    that are not gRPC, and unexpected gRPC statuses. Nothing ran.
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def status_code(self) -> str | None:
+        """The canonical gRPC code, or `None` when the server sent no status."""
+
+    @property
+    def status_message(self) -> str | None:
+        """The server's status message, or `None`."""
+
+    @property
+    def cause(self) -> str | None:
+        """The recognized policy reason in `monty-cause`, in `snake_case`, or `None`."""
+
+    @property
+    def transport_error(self) -> str | None:
+        """The underlying transport error, or `None` when the server sent a status."""
+
+@final
+class MontyConfigurationError(MontyError):
+    """Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
+
+    CPU-mode pools and servers require a finite client `request_timeout`.
+    Cannot be constructed directly from Python.
+    """
+
+@final
 class MontyRefusedError(MontyError):
     """Raised when the remote server refused to open a session's stream (remote transport only).
 
@@ -582,10 +617,10 @@ class MontyRefusedError(MontyError):
     the caller's credentials (`unauthenticated`) or what a valid credential
     asked for (`permission_denied`); it says which in `status_code`,
     `status_message` and `cause`. No session existed,
-    so nothing ran, and unlike `MontyDisconnectError` retrying is safe. A
+    so nothing ran. `retryable` identifies temporary refusals. A
     server that could not be reached, that answered with any other status
     (such as `UNIMPLEMENTED` from a URL that is no Monty server), or that is
-    no gRPC server at all (such as a web server's page), raises `RuntimeError`
+    no gRPC server at all (such as a web server's page), raises `MontyConnectError`
     instead.
 
     Cannot be constructed directly from Python.
@@ -605,6 +640,22 @@ class MontyRefusedError(MontyError):
         """The policy reason the server attached to the status, in `snake_case`
         (`capacity`, `caller_cap`, `unauthenticated`, `permission_denied`,
         `worker_unavailable`, ...), or `None` when it attached none this client knows."""
+
+    @property
+    def retryable(self) -> bool:
+        """`True` for `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, not for credential errors.
+
+        No automatic retry is performed. A disconnected request must not be replayed.
+        """
+
+    @property
+    def retry_after(self) -> float | None:
+        """Suggested delay in seconds from `Retry-After`, or `None` if absent or invalid.
+
+        Both delay-seconds and HTTP dates are accepted. Past dates give zero;
+        delays are capped at one hour.
+        A retry delay does not make a permanent refusal retryable.
+        """
 
 @final
 class MontyShutdown(MontyError):
@@ -1127,10 +1178,17 @@ class AsyncMontyRemote:
                 worker that exceeds it has its connection killed and the call
                 raises `MontyCrashedError` with `timed_out=True`. It also bounds
                 opening the stream, including the server's admission (30
-                seconds when `None`). CPU-mode servers require a finite value.
+                seconds when `None`). CPU-mode servers require a finite value;
+                otherwise checkout raises `MontyConfigurationError`.
                 Pass `None` to wait indefinitely with wall-mode servers.
                 Under contention, this wall deadline can expire before a server
                 CPU budget. Choose it for the expected budgets and scheduling delays.
+
+                This deadline does not set the sleep cap. System sleeps return
+                normally after at most `sleep_system_max` (default ten seconds),
+                even if sandbox code asks for longer, unless `max_total_sleep_secs`
+                would be exceeded. Use `os_policy` with
+                `sleep='call_host'` and `OSAccess(max_sleep=None)` to handle full sleeps.
 
                 Note that `install_dependencies` is a turn too, so the default
                 10.0 is often too low for it — a real `uv pip install` can exceed
@@ -1153,7 +1211,7 @@ class AsyncMontyRemote:
                 are lowercase ASCII and values ASCII, duplicate names are
                 last-wins, also over the `traceparent` the Logfire integration
                 adds, a `user-agent` entry is put in front of the default one,
-                and a malformed name or value raises `RuntimeError` as the
+                and a malformed name or value raises `MontyConfigurationError` as the
                 session is entered.
             feed_duration_limit_grace: Client wall-time grace beyond
                 `max_feed_duration_secs` when the server uses wall time.

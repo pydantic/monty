@@ -29,7 +29,7 @@ export declare class NativeMountDir {
 export declare class NativePool {
   constructor(options?: unknown)
   static remote(options?: unknown): NativePool
-  start(): Promise<void>
+  start(): Promise<object>
   checkout(options?: unknown): NativeSession
   close(): Promise<void>
 }

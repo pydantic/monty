@@ -3549,7 +3549,7 @@ async fn cpu_clock_is_rejected_off_linux() {
     };
     assert_eq!(
         error.to_string(),
-        "failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux"
+        "CPU execution clock is only supported for subprocess workers on Linux"
     );
 }
 

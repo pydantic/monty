@@ -21,12 +21,12 @@ use std::{
 use bytes::Bytes;
 use grpc_mock::{MockServer, MockStream};
 use h2::server::handshake;
-use http::Response as HttpResponse;
+use http::{Response as HttpResponse, StatusCode};
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
     Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
-    RemoteCause, ReplConfig, ResumeValue, TurnEvent,
+    RemoteCause, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, grpc::Cause, pb, resume_call_from_proto,
@@ -40,7 +40,7 @@ use opentelemetry::trace::{SpanId, TraceId};
 #[cfg(feature = "telemetry")]
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use tokio::{net::TcpListener, runtime::Builder, sync::oneshot, task::spawn_blocking, time::timeout};
-use tonic::Status;
+use tonic::{Code, Status};
 
 /// Closing a remote transport cannot prove that the remote subprocess has exited.
 #[tokio::test]
@@ -338,10 +338,10 @@ async fn telemetry_context_is_propagated_on_the_dial() {
 }
 
 /// A malformed header name or value is validated before any I/O, so no server
-/// is needed: the checkout fails loudly with the promised dial error instead
+/// is needed: the checkout fails with a configuration error instead
 /// of the pair being silently dropped.
 #[tokio::test]
-async fn malformed_metadata_fail_the_dial() {
+async fn malformed_metadata_are_configuration_errors() {
     let cases = [
         (
             ("bad name", "v"),
@@ -356,10 +356,10 @@ async fn malformed_metadata_fail_the_dial() {
     for ((name, value), expected) in cases {
         let options = CheckoutOptions::default().with_metadata(vec![(name.to_owned(), value.to_owned())]);
         let Err(err) = pool.checkout_with(&ReplConfig::default(), options).await else {
-            panic!("malformed header must fail the dial");
+            panic!("malformed header must fail the checkout");
         };
-        let PoolError::Spawn(msg) = err else {
-            panic!("expected Spawn error, got {err:?}");
+        let PoolError::Configuration(msg) = err else {
+            panic!("expected a configuration error, got {err:?}");
         };
         assert_eq!(msg, expected);
     }
@@ -386,10 +386,11 @@ async fn request_timeout_bounds_opening_the_stream() {
         panic!("a server that never answers cannot admit a stream");
     };
     assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
-    let PoolError::Spawn(message) = err else {
-        panic!("got {err:?}");
-    };
-    assert_eq!(message, format!("{url}: connect timed out after 200ms"));
+    let message = connect_message(&err);
+    assert_eq!(
+        message,
+        format!("{url}: the server did not accept the session within 200ms (request_timeout)")
+    );
     silent.abort();
 }
 
@@ -404,9 +405,7 @@ async fn an_untrusted_server_certificate_fails_the_dial() {
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
         panic!("a self-signed certificate must not be trusted");
     };
-    let PoolError::Spawn(message) = err else {
-        panic!("got {err:?}");
-    };
+    let message = connect_message(&err);
     // Each platform's verifier words the refusal in its own way; tonic's chain
     // then repeats the cause at every layer of the transport error.
     let cause = if cfg!(target_vendor = "apple") {
@@ -428,9 +427,7 @@ async fn an_unparsable_url_fails_the_pool() {
     let Err(err) = Pool::new(PoolConfig::remote("not a url")).await else {
         panic!("unparsable URL must fail pool creation");
     };
-    let PoolError::Spawn(msg) = err else {
-        panic!("expected Spawn error, got {err:?}");
-    };
+    let msg = connect_message(&err);
     assert_eq!(msg, "not a url: invalid URI");
 }
 
@@ -457,9 +454,7 @@ async fn url_schemes_are_normalised_and_unknown_ones_refused() {
         let Err(err) = Pool::new(PoolConfig::remote(url)).await else {
             panic!("{url} must fail pool creation");
         };
-        let PoolError::Spawn(msg) = err else {
-            panic!("expected Spawn error, got {err:?}");
-        };
+        let msg = connect_message(&err);
         let scheme = url.split_once("://").unwrap().0;
         assert_eq!(
             msg,
@@ -481,12 +476,12 @@ async fn url_paths_are_refused() {
         let Err(err) = Pool::new(PoolConfig::remote(url)).await else {
             panic!("{url} must fail pool creation");
         };
-        let PoolError::Spawn(msg) = err else {
-            panic!("expected Spawn error, got {err:?}");
-        };
+        let msg = connect_message(&err);
         assert_eq!(
             msg,
-            format!("{url}: a URL path, query or fragment is not supported; the session path is fixed")
+            format!(
+                "{url}: a URL path, query or fragment is not supported; use only the scheme and host, with an optional port"
+            )
         );
     }
     for url in ["http://127.0.0.1:9", "http://127.0.0.1:9/"] {
@@ -509,7 +504,7 @@ async fn a_refused_stream_fails_the_checkout() {
     assert_eq!(
         err.to_string(),
         format!(
-            "failed to spawn monty worker: {}: RESOURCE_EXHAUSTED: caller holds 10 sessions already",
+            "{} refused the session: RESOURCE_EXHAUSTED (caller_cap): caller holds 10 sessions already",
             mock.url()
         )
     );
@@ -531,28 +526,87 @@ async fn a_refused_stream_fails_the_checkout() {
     join_server(server).await;
 }
 
+/// Retry hints are independent of the text and never make credential errors retryable.
+#[tokio::test]
+async fn refusal_retry_details_are_preserved() {
+    for (code, retryable) in [
+        (Code::ResourceExhausted, true),
+        (Code::Unavailable, true),
+        (Code::Unauthenticated, false),
+        (Code::PermissionDenied, false),
+        (Code::FailedPrecondition, false),
+    ] {
+        for (header, delay) in [
+            (Some("12"), Some(Duration::from_secs(12))),
+            (Some("invalid"), None),
+            (None, None),
+        ] {
+            let (mock, config) = mock_pool_config().await;
+            let mut status = Status::new(code, "session unavailable");
+            if let Some(header) = header {
+                status.metadata_mut().insert("retry-after", header.parse().unwrap());
+            }
+            mock.refuse_next(status);
+            let pool = Pool::new(config).await.unwrap();
+            let err = pool.checkout(&ReplConfig::default()).await.err().unwrap();
+            let PoolError::Refused { refusal, .. } = err else {
+                panic!("expected refusal, got {err:?}");
+            };
+            assert_eq!(refusal.retry_after, delay);
+            assert_eq!(refusal.retryable(), retryable);
+            pool.close().await;
+        }
+    }
+}
+
+#[test]
+fn disconnect_messages_include_the_recorded_reason() {
+    let status = RemoteDisconnect {
+        status_code: Some("DEADLINE_EXCEEDED"),
+        status_message: Some("the turn exceeded its limit".to_owned()),
+        cause: Some(RemoteCause::TurnTimeout),
+        transport_error: None,
+        retry_after: None,
+    };
+    insta::assert_snapshot!(PoolError::Disconnected {
+        context: "waiting for a reply".to_owned(), remote: Some(Box::new(status))
+    }.to_string(), @"monty worker connection closed while waiting for a reply: DEADLINE_EXCEEDED (turn_timeout): the turn exceeded its limit");
+    let transport = RemoteDisconnect {
+        status_code: None,
+        status_message: None,
+        cause: None,
+        transport_error: Some("connection reset by peer".to_owned()),
+        retry_after: None,
+    };
+    insta::assert_snapshot!(PoolError::Disconnected {
+        context: "waiting for a reply".to_owned(), remote: Some(Box::new(transport))
+    }.to_string(), @"monty worker connection closed while waiting for a reply: connection reset by peer");
+}
+
 /// Only an admission code is a refusal: a status such as `UNIMPLEMENTED`, from
-/// a URL that is no Monty server, is a misconfiguration, so it fails as `Spawn`
+/// a URL that is no Monty server, is a misconfiguration, so it fails as `Connect`
 /// and a retry loop on `Refused` does not spin on it.
 #[tokio::test]
-async fn a_non_admission_status_is_a_spawn_failure() {
+async fn an_unexpected_status_is_a_connect_failure() {
     let (mock, config) = mock_pool_config().await;
     mock.refuse_next(Status::unimplemented("unknown service"));
     let pool = Pool::new(config).await.expect("pool");
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
         panic!("an unimplemented session RPC must fail the checkout");
     };
-    let PoolError::Spawn(message) = err else {
-        panic!("expected Spawn error, got {err:?}");
+    let PoolError::Connect { ref details, .. } = err else {
+        panic!("expected Connect error, got {err:?}");
     };
+    assert_eq!(details.status_code, Some("UNIMPLEMENTED"));
+    let message = err.to_string();
     assert_eq!(message, format!("{}: UNIMPLEMENTED: unknown service", mock.url()));
 }
 
-/// A URL that is an HTTP/2 server but no gRPC one — a web server's error
-/// page — fails the checkout as `Spawn`, rather than opening a session whose
+/// An HTTP/2 server without gRPC support, such as a web server's error page,
+/// fails the checkout as `Connect`, rather than opening a session whose
 /// first turn then dies decoding the page as a message.
 #[tokio::test]
-async fn a_non_grpc_server_is_a_spawn_failure() {
+async fn a_non_grpc_server_is_a_connect_failure() {
     for (status, content_type, described) in [
         (405, Some("text/html"), "\"text/html\""),
         (200, Some("application/grpc-web"), "\"application/grpc-web\""),
@@ -565,12 +619,13 @@ async fn a_non_grpc_server_is_a_spawn_failure() {
         let Err(err) = pool.checkout(&ReplConfig::default()).await else {
             panic!("a {status} {content_type:?} response must fail the checkout");
         };
-        let PoolError::Spawn(message) = err else {
-            panic!("expected Spawn error, got {err:?}");
-        };
+        let message = connect_message(&err);
         assert_eq!(
             message,
-            format!("{url}: not a gRPC server, the response's content-type is {described}")
+            format!(
+                "{url}: not a gRPC server: HTTP {}, the response's content-type is {described}",
+                StatusCode::from_u16(status).unwrap()
+            )
         );
     }
 }
@@ -2939,7 +2994,9 @@ async fn disconnect_preserves_peer_close_details() {
         let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
-        socket.close(Some(Cause::Capacity.status("session capacity exhausted")));
+        let mut status = Cause::Capacity.status("session capacity exhausted");
+        status.metadata_mut().insert("retry-after", "12".parse().unwrap());
+        socket.close(Some(status));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
@@ -2956,6 +3013,8 @@ async fn disconnect_preserves_peer_close_details() {
     assert_eq!(details.status_message.as_deref(), Some("session capacity exhausted"));
     assert_eq!(details.cause, Some(RemoteCause::Capacity));
     assert_eq!(details.transport_error, None);
+    // retry hints belong to refusals: the session may already have run
+    assert_eq!(details.retry_after, None);
     join_server(server).await;
 }
 
@@ -3770,18 +3829,10 @@ async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
 
 #[tokio::test]
 async fn invalid_server_clock_configuration_is_rejected_before_execution() {
-    for (clock, deadline, expected) in [
-        (Some(42), Some(Duration::from_secs(2)), "unknown execution clock"),
-        (
-            Some(pb::ExecutionClock::Cpu as i32),
-            None,
-            "finite client request_timeout",
-        ),
-        (
-            Some(pb::ExecutionClock::Cpu as i32),
-            Some(Duration::MAX),
-            "finite client request_timeout",
-        ),
+    for (clock, deadline) in [
+        (Some(42), Some(Duration::from_secs(2))),
+        (Some(pb::ExecutionClock::Cpu as i32), None),
+        (Some(pb::ExecutionClock::Cpu as i32), Some(Duration::MAX)),
     ] {
         let (mock, mut config) = mock_pool_config().await;
         let server = thread::spawn(move || {
@@ -3810,10 +3861,25 @@ async fn invalid_server_clock_configuration_is_rejected_before_execution() {
                 ..ReplConfig::default()
             })
             .await;
-        assert!(matches!(result, Err(PoolError::Protocol(ref message)) if message.contains(expected)));
+        let err = result.err().expect("invalid configuration must fail");
+        if clock == Some(42) {
+            assert!(matches!(err, PoolError::Protocol(_)));
+            insta::assert_snapshot!(err.to_string(), @"monty worker protocol error: worker reported an unknown execution clock");
+        } else {
+            assert!(matches!(err, PoolError::Configuration(_)));
+            insta::allow_duplicates! {
+                insta::assert_snapshot!(err.to_string(), @"CPU execution clock requires a finite client request_timeout");
+            }
+        }
         pool.close().await;
         join_server(server).await;
     }
+}
+
+/// Checks that a remote dial failure is typed and returns its full message.
+fn connect_message(err: &PoolError) -> String {
+    assert!(matches!(err, PoolError::Connect { .. }), "got {err:?}");
+    err.to_string()
 }
 
 #[tokio::test]

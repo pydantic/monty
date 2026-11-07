@@ -449,6 +449,86 @@ impl MontyDisconnectError {
     }
 }
 
+/// Raised when the remote server cannot be reached or cannot open the session RPC.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyConnectError {
+    /// The gRPC status code, or `None` for a transport failure.
+    #[pyo3(get)]
+    status_code: Option<String>,
+    /// The server's status message, when present.
+    #[pyo3(get)]
+    status_message: Option<String>,
+    /// The policy reason the server attached, in `snake_case`.
+    #[pyo3(get)]
+    cause: Option<String>,
+    /// The underlying transport error, when present.
+    #[pyo3(get)]
+    transport_error: Option<String>,
+}
+
+impl MontyConnectError {
+    /// Creates a connection error without losing the server's status.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, details: RemoteDisconnect) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self {
+            status_code: details.status_code.map(str::to_owned),
+            status_message: details.status_message,
+            cause: details.cause.map(|cause| cause.as_str().to_owned()),
+            transport_error: details.transport_error,
+        });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(err) => err,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyConnectError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyConnectError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyConfigurationError;
+
+impl MontyConfigurationError {
+    /// Creates a configuration error that callers can distinguish from protocol failures.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::ValueError, Some(message)));
+        match Py::new(py, PyClassInitializer::from(base).add_subclass(Self)) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(err) => err,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyConfigurationError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!(
+            "MontyConfigurationError({})",
+            slf.as_super().message().unwrap_or_default()
+        )
+    }
+}
+
 /// Raised when the remote server refused to open a session's stream (remote
 /// transport only): at capacity, with no worker to serve it, or rejecting
 /// the caller's credentials or what they asked for. The server says which in
@@ -465,6 +545,12 @@ pub struct MontyRefusedError {
     /// The policy reason the server attached, in `snake_case`.
     #[pyo3(get)]
     cause: Option<String>,
+    /// Whether the server's status indicates a temporary refusal.
+    #[pyo3(get)]
+    retryable: bool,
+    /// The server's suggested retry delay in seconds, when valid.
+    #[pyo3(get)]
+    retry_after: Option<f64>,
 }
 
 impl MontyRefusedError {
@@ -474,6 +560,8 @@ impl MontyRefusedError {
     pub fn new_err(py: Python<'_>, message: String, refusal: RemoteDisconnect) -> PyErr {
         let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
         let init = PyClassInitializer::from(base).add_subclass(Self {
+            retryable: refusal.retryable(),
+            retry_after: refusal.retry_after.map(|delay| delay.as_secs_f64()),
             status_code: refusal.status_code.map(str::to_owned),
             status_message: refusal.status_message,
             cause: refusal.cause.map(|cause| cause.as_str().to_owned()),

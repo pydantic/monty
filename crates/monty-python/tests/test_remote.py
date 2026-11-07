@@ -33,7 +33,10 @@ from pydantic_monty import (
     AsyncMontyRemote,
     AsyncMontyWebsocket,  # pyright: ignore[reportDeprecated]
     ExternalModule,
+    MontyConfigurationError,
+    MontyConnectError,
     MontyDisconnectError,
+    MontyError,
     MontyRefusedError,
     MontyRuntimeError,
     MontyShutdown,
@@ -524,17 +527,13 @@ def raise_no_token() -> dict[str, str]:
         ),
         (
             lambda: {'bad header': 't'},
-            RuntimeError,
-            snapshot(
-                'failed to spawn monty worker: http://127.0.0.1:9: metadata entry "bad header": invalid gRPC metadata key name'
-            ),
+            MontyConfigurationError,
+            snapshot('http://127.0.0.1:9: metadata entry "bad header": invalid gRPC metadata key name'),
         ),
         (
             lambda: {'x-token': 'a\nb'},
-            RuntimeError,
-            snapshot(
-                'failed to spawn monty worker: http://127.0.0.1:9: metadata entry "x-token" value: failed to parse metadata value'
-            ),
+            MontyConfigurationError,
+            snapshot('http://127.0.0.1:9: metadata entry "x-token" value: failed to parse metadata value'),
         ),
         (raise_no_token, ValueError, snapshot('no token available')),
         # a `str` that is not encodable — a lone surrogate — cannot become a header
@@ -568,21 +567,23 @@ async def test_checkout_rejects_unknown_limits():
 async def test_an_unknown_url_scheme_is_refused():
     """Only `http`/`https` (and `ws`/`wss` as their aliases) are dialed; anything
     else would go out in plaintext, metadata included, so it is refused."""
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(MontyConnectError) as exc_info:
         async with AsyncMontyRemote('grpc://127.0.0.1:9'):
             pass
-    assert str(exc_info.value) == snapshot(
-        'failed to spawn monty worker: grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https'
-    )
+    assert str(exc_info.value) == snapshot('grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https')
 
 
 async def test_unreachable_server_fails_the_checkout():
     """Nothing is dialed until a checkout, which then reports the dial failure."""
     async with AsyncMontyRemote('http://127.0.0.1:9') as pool:
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(MontyError) as exc_info:
             async with pool.checkout():
                 pass
-    assert exc_info.value.args[0].startswith('failed to spawn monty worker: http://127.0.0.1:9: ')
+    err = exc_info.value
+    assert isinstance(err, MontyConnectError)
+    assert err.status_code == snapshot(None)
+    assert err.status_message == snapshot(None)
+    assert str(err) == f'http://127.0.0.1:9: {err.transport_error}'
 
 
 async def test_plain_relay_names_no_session(relay_url: str):
@@ -744,7 +745,8 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
                 assert err.status_message == message
                 assert err.cause == cause
                 assert err.transport_error is None
-                assert str(err) == 'monty worker connection closed while waiting for a reply'
+                reason = 'OK' if status is None else f'{status.name}{f" ({cause})" if cause else ""}: {message}'
+                assert str(err) == f'monty worker connection closed while waiting for a reply: {reason}'
                 with pytest.raises(AttributeError):
                     setattr(err, 'status_code', 'OK')
 
@@ -767,14 +769,87 @@ async def test_refused_stream_fails_the_checkout():
                 async with pool.checkout():
                     pass
     assert str(exc_info.value) == snapshot(
-        f'failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity'
+        f'{url} refused the session: RESOURCE_EXHAUSTED (capacity): server at capacity'
     )
     assert exc_info.value.status_code == snapshot('RESOURCE_EXHAUSTED')
     assert exc_info.value.status_message == snapshot('server at capacity')
     assert exc_info.value.cause == snapshot('capacity')
     assert repr(exc_info.value) == snapshot(
-        f'MontyRefusedError(failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity)'
+        f'MontyRefusedError({url} refused the session: RESOURCE_EXHAUSTED (capacity): server at capacity)'
     )
+
+
+@pytest.mark.parametrize(
+    'code,retryable',
+    [
+        (grpc.StatusCode.RESOURCE_EXHAUSTED, True),
+        (grpc.StatusCode.UNAVAILABLE, True),
+        (grpc.StatusCode.UNAUTHENTICATED, False),
+        (grpc.StatusCode.PERMISSION_DENIED, False),
+    ],
+)
+@pytest.mark.parametrize('header,delay', [('12', 12.0), ('invalid', None), (None, None)])
+async def test_refusal_retry_details(code: grpc.StatusCode, retryable: bool, header: str | None, delay: float | None):
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        trailers = () if header is None else (('retry-after', header),)
+        await context.abort(code, 'session unavailable', trailing_metadata=trailers)
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        with pytest.raises(MontyRefusedError) as caught:
+            async with pool.checkout():
+                pass
+    assert caught.value.retryable == retryable
+    assert caught.value.retry_after == delay
+    assert caught.value.status_code == code.name
+
+
+async def test_unexpected_server_status_is_a_connect_error():
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            'unknown service',
+            trailing_metadata=(('monty-cause', 'protocol_violation'),),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        with pytest.raises(MontyConnectError) as caught:
+            async with pool.checkout():
+                pass
+    assert caught.value.status_code == snapshot('UNIMPLEMENTED')
+    assert caught.value.status_message == snapshot('unknown service')
+    assert caught.value.cause == snapshot('protocol_violation')
+    assert caught.value.transport_error == snapshot(None)
+    assert str(caught.value) == f'{url}: UNIMPLEMENTED (protocol_violation): unknown service'
+    assert repr(caught.value) == f'MontyConnectError({url}: UNIMPLEMENTED (protocol_violation): unknown service)'
+
+
+async def test_cpu_server_requires_a_finite_request_timeout():
+    extra_requests: list[bytes] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.send_initial_metadata(())
+        await anext(requests)
+        yield _bytes_field(_EVENT_OK, b'') + b'\xf0\x01\x01'
+        async for request in requests:
+            extra_requests.append(request)
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=None) as pool:
+        with pytest.raises(MontyConfigurationError) as caught:
+            async with pool.checkout():
+                pass
+    assert str(caught.value) == snapshot('CPU execution clock requires a finite client request_timeout')
+    assert repr(caught.value) == snapshot(
+        'MontyConfigurationError(CPU execution clock requires a finite client request_timeout)'
+    )
+    assert extra_requests == snapshot([])
 
 
 async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
@@ -788,7 +863,7 @@ async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
                 async with pool.checkout():
                     pass
         assert str(exc_info.value).startswith(
-            f'failed to spawn monty worker: {url}: UNAVAILABLE: cannot start the monty subprocess: '
+            f'{url} refused the session: UNAVAILABLE: cannot start the monty subprocess: '
         )
         assert exc_info.value.status_code == snapshot('UNAVAILABLE')
         assert exc_info.value.cause is None
