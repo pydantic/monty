@@ -68,6 +68,18 @@ impl StringId {
         self.0 as usize
     }
 
+    /// The raw ID, for compact encodings that persist it (the dumped location table).
+    #[inline]
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Rebuilds an ID persisted with [`Self::raw`].
+    #[inline]
+    pub(crate) fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
     /// Returns the StringId for an ASCII byte.
     #[must_use]
     pub const fn from_ascii(byte: u8) -> Self {
