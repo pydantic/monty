@@ -25,7 +25,7 @@ use crate::{
         time::{HostSleep, host_sleep},
     },
     os_dispatch::PostConversionEffect,
-    types::Module,
+    types::{Module, py_trait::PyTrait},
     value::Value,
 };
 
@@ -154,7 +154,9 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 /// 2. External futures are tracked for resolution by the host
 /// 3. The current task blocks until all items complete
 /// 4. Results are collected in order and returned as a list
-/// 5. On any task failure, sibling tasks are cancelled and the exception propagates
+/// 5. On any task failure, sibling tasks are cancelled and the exception propagates,
+///    unless `return_exceptions` is true: the exception is then stored in the result
+///    list at that position and every other awaitable still completes
 ///
 /// # Arguments
 /// * `heap` - The heap for allocating the GatherFuture
@@ -163,12 +165,13 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
 pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    // TODO: support keyword arguments (e.g. return_exceptions); for now any
-    // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
-    // flag with a `NotImplementedError: gather() does not yet support keyword
-    // arguments` (CPython would have given a TypeError naming the bad kwarg).
-    let GatherArgs { awaitables } = GatherArgs::from_args(args, vm)?;
+    let GatherArgs {
+        awaitables,
+        return_exceptions,
+    } = GatherArgs::from_args(args, vm)?;
+    defer_drop!(return_exceptions, vm);
     defer_drop_mut!(awaitables, vm);
+    let return_exceptions = return_exceptions.py_bool(vm)?;
 
     // Validate every argument before transferring any references to the gather,
     // so an invalid later argument needs no raw-HeapId rollback.
@@ -191,21 +194,20 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .drain(..)
         .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
         .collect();
-    let gather_future = GatherFuture::new(items);
+    let gather_future = GatherFuture::new(items, return_exceptions);
     let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)));
     Ok(Value::Ref(id))
 }
 
-/// `asyncio.gather(*awaitables)` — variadic positional, no kwargs accepted.
+/// Arguments of `asyncio.gather(*awaitables, return_exceptions=False)`.
 ///
-/// `kwargs_not_supported_yet` rejects any kwarg with the macro's
-/// "not yet implemented" `NotImplementedError`, replacing the previous
-/// `TypeError: gather() takes no keyword arguments` from `into_pos_only`.
-/// When CPython's `return_exceptions=False` is wired up this becomes a
-/// regular `kw_only` slot and the flag goes away.
+/// `gather` is a pure-Python `def` in CPython, so an unknown keyword reports
+/// `gather() got an unexpected keyword argument 'x'`.
 #[derive(FromArgs)]
-#[from_args(name = "gather", kwargs_not_supported_yet)]
+#[from_args(name = "gather", style = def)]
 struct GatherArgs {
     #[from_args(varargs)]
     awaitables: Vec<Value>,
+    #[from_args(kw_only, default = Value::Bool(false))]
+    return_exceptions: Value,
 }

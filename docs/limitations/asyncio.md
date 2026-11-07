@@ -9,13 +9,12 @@ The `asyncio` module exposes exactly three functions:
 
 - `asyncio.run(coro)` — runs a coroutine to completion. Returns the value
     the coroutine `return`s, or re-raises an exception from it.
-- `asyncio.gather(*awaitables)` — runs awaitables concurrently and returns
-    a list of results. Always behaves as `return_exceptions=False`.
-    Any keyword argument is rejected with
-    `NotImplementedError: gather() does not yet support keyword arguments`,
-    where CPython raises
-    `TypeError: gather() got an unexpected keyword argument 'X'` because
-    `return_exceptions` is a real kwarg there.
+- `asyncio.gather(*awaitables, return_exceptions=False)` — runs awaitables
+    concurrently and returns a list of results. With `return_exceptions=True`
+    an exception raised by a coroutine or a host function is stored in the
+    list at its position and every other awaitable still completes. Only
+    exceptions are collected this way: a resource-limit error still ends the run.
+    Any other keyword raises `TypeError`, as in CPython.
 - `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
     says, then produces `result`. See
     [below](#asynciosleep-waits-at-the-call-not-at-the-await).

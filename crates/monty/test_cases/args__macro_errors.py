@@ -564,16 +564,11 @@ try:
 except TypeError as e:
     assert str(e) == "print() got multiple values for keyword argument 'sep'", f'cross-dup-kw-only: {e}'
 
-if is_monty:
-
-    async def foo():
-        return 1
-
-    try:
-        asyncio.gather(foo(), foo(), xxx=True)
-        assert False, 'gather with kwarg should raise'
-    except NotImplementedError as e:
-        assert str(e) == 'gather() does not yet support keyword arguments'
+try:
+    asyncio.gather(xxx=True)
+    assert False, 'gather with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "gather() got an unexpected keyword argument 'xxx'", f'gather-kwarg: {e}'
 
 # =====================================================================
 # === Binding vs conversion ordering (per style family)              ===

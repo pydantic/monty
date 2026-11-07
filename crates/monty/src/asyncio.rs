@@ -255,6 +255,10 @@ pub(crate) struct GatherFuture {
     /// id and is the owner until drop, so GC must always walk this vector
     /// regardless of `state`.
     pub items: Vec<HeapId>,
+    /// `return_exceptions=True`: a failing item contributes its exception to
+    /// the result list instead of failing the gather.
+    #[serde(default)]
+    pub return_exceptions: bool,
     /// Phase of the gather lifecycle. See [`GatherState`].
     pub state: GatherState,
 }
@@ -318,9 +322,10 @@ impl GatherFuture {
     ///
     /// # Arguments
     /// * `items` - Heap ids of awaitables (coroutines or external futures)
-    pub fn new(items: Vec<HeapId>) -> Self {
+    pub fn new(items: Vec<HeapId>, return_exceptions: bool) -> Self {
         Self {
             items,
+            return_exceptions,
             state: GatherState::Pending,
         }
     }
