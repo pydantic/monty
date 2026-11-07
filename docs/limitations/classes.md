@@ -142,6 +142,7 @@ order and error wording, but with these divergences:
     evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
     `min()`/`max(key=...)`, arithmetic and subscript dunders, and exotic `__init__` recursion.
     A chain of callable instances stored as class-level `__call__` members also has this cap;
+    descriptor-mediated chains instead use the separate internal-frame cap, and
     ordinary Python-function `__call__` recursion uses the normal frame limit
     (see the "Recursion" section of [resource_limits.md](resource_limits.md)).
 - **Comprehensions in the class body** can see class variables, because Monty

@@ -830,7 +830,7 @@ impl<'h> VM<'h> {
     }
 
     /// Calls an internal function, compiling it on first use.
-    /// Arguments transfer into ordinary frame locals; implementation frames do not charge recursion depth.
+    /// Implementation frames use a separate depth cap rather than the user's Python recursion budget.
     pub(crate) fn call_frozen_exact<const N: usize>(
         &mut self,
         function: FrozenFunction,
@@ -845,6 +845,7 @@ impl<'h> VM<'h> {
             let (id, overlay) = function.compile(interns)?;
             (id, Some(overlay))
         };
+        vm.enter_frozen_frame()?;
         // No fallible operation or Python execution may intervene between publication and frame installation.
         if let Some(overlay) = overlay {
             overlay.commit();

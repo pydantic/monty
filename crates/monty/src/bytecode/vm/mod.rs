@@ -29,8 +29,8 @@ pub(crate) use module_cache::ModuleCache;
 pub(crate) use module_finder::PendingImport;
 use monty_types::{InvalidInputError, MontyObject, MontyUuid, OsFunctionCall, PrintWriter, SourceRange};
 pub(crate) use namespace::{FrameGlobals, FrameNamespace, MissingNames, function_namespace};
-use recursion::frame_recursion_depth;
 pub(crate) use recursion::{ContainsVM, RecursionToken, RunReentryGuard};
+use recursion::{frame_recursion_depth, frozen_frame_depth};
 use scheduler::Scheduler;
 
 use crate::{
@@ -888,6 +888,8 @@ pub struct VM<'h> {
     /// maintain it. Not serialized: it is reconstructed from the active frame
     /// count, excluding root and frozen frames, on `restore` and async switches.
     recursion_depth: usize,
+    /// Active implementation frames, independently bounded and reconstructed on restore/task switches.
+    frozen_frame_depth: usize,
 
     /// Reusable scratch buffer for building a sync call's locals, avoiding a
     /// `malloc`/`free` per call. Only held transiently within
@@ -947,6 +949,7 @@ impl<'h> VM<'h> {
             pending_effect: None,
             pending_lookup_effect: None,
             recursion_depth: 0,
+            frozen_frame_depth: 0,
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
@@ -996,6 +999,7 @@ impl<'h> VM<'h> {
             .collect();
 
         let current_frame_depth = frame_recursion_depth(frames.iter().map(|f| f.function_id), interns);
+        let current_frozen_depth = frozen_frame_depth(frames.iter().map(|f| f.function_id), interns);
         let mut frames = frames;
         let current_frame = frames
             .pop()
@@ -1019,6 +1023,7 @@ impl<'h> VM<'h> {
             pending_effect: snapshot.pending_effect,
             pending_lookup_effect: snapshot.pending_lookup_effect,
             recursion_depth: current_frame_depth,
+            frozen_frame_depth: current_frozen_depth,
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
@@ -2517,7 +2522,10 @@ impl<'h> VM<'h> {
         // Sync instruction_ip to the restored caller so exception table lookups
         // target the correct frame after returning from a nested run() call.
         self.instruction_ip = self.current_frame.ip;
-        if !self.current_frame.is_parked && !is_frozen {
+        if is_frozen {
+            debug_assert!(self.frozen_frame_depth > 0, "frozen frame must own a depth reservation");
+            self.frozen_frame_depth -= 1;
+        } else if !self.current_frame.is_parked {
             self.decr_recursion();
         }
         should_return
@@ -2553,6 +2561,7 @@ impl<'h> VM<'h> {
         }
         self.current_frame.namespace.take().drop_with(self.heap);
         self.current_frame.park(self.module_code);
+        self.frozen_frame_depth = 0;
     }
 
     /// Runs the trial-deletion cycle collector.

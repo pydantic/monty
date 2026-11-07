@@ -1,8 +1,12 @@
 //! Descriptor binding, suspension and persistence regressions.
 
+use std::time::Duration;
+
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty_types::{
+    CompileOptions, ExcType, MontyObject, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
+};
 
 /// Start an independent session for suspension and persistence checks.
 fn repl() -> MontyRepl {
@@ -27,6 +31,105 @@ fn restore_idle(repl: MontyRepl) -> MontyRepl {
         panic!("expected idle state")
     };
     *repl
+}
+
+/// Native descriptor cycles must hit recursion accounting before the time-limit backstop.
+#[test]
+fn descriptor_call_cycles_are_bounded() {
+    let limits = ResourceLimits::default()
+        .max_recursion_depth(8)
+        .max_feed_duration(Duration::from_secs(5));
+    let mut repl = MontyRepl::new(
+        "descriptors.py",
+        ResourceTracker::new(limits),
+        CompileOptions::default(),
+    );
+    let error = repl
+        .feed_run(
+            "class C: pass\nc = C()\nC.__call__ = staticmethod(c)\nc()",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::RecursionError);
+    assert_snapshot!(error.message().unwrap(), @"maximum recursion depth exceeded");
+    assert_eq!(
+        repl.feed_run("1 + 1", vec![], PrintWriter::Disabled).unwrap(),
+        MontyObject::int(2)
+    );
+    let mut repl = restore_idle(repl);
+    repl.feed_run(
+        r"
+for wrapper in (staticmethod(c), classmethod(c), property(lambda self: c)):
+    for _ in range(2):
+        C.__call__ = wrapper
+        try:
+            c()
+            assert False, 'expected RecursionError'
+        except RecursionError as error:
+            assert str(error) == 'maximum recursion depth exceeded'
+        C.__call__ = staticmethod(lambda: 42)
+        assert c() == 42
+assert property(len).__get__([1, 2]) == 2
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+}
+
+/// Host turns and dump/restore must not reset an implementation-only cycle's frame budget.
+#[test]
+fn descriptor_cycle_budget_survives_suspension_and_restore() {
+    let limits = ResourceLimits::default()
+        .max_recursion_depth(1)
+        .max_feed_duration(Duration::from_secs(5));
+    let repl = MontyRepl::new(
+        "descriptors.py",
+        ResourceTracker::new(limits),
+        CompileOptions::default(),
+    );
+    let mut progress = repl
+        .feed_start(
+            "class Gate: pass\nGate.__get__ = hook\nclass C:\n    __call__ = Gate()\nc = C()\nc()",
+            vec![],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let mut calls = 0;
+    loop {
+        if matches!(calls, 4 | 512) {
+            progress = restore(progress);
+        }
+        progress = match progress {
+            ReplProgress::NameLookup(lookup) => {
+                let function = MontyObject::function(lookup.name.clone(), None);
+                lookup
+                    .resume(NameLookupResult::Value(function), PrintWriter::Disabled)
+                    .unwrap()
+            }
+            ReplProgress::FunctionCall(call) => {
+                calls += 1;
+                assert!(calls <= 1024, "suspension must not reset the internal-frame cap");
+                let receiver = call
+                    .args
+                    .args()
+                    .nth(1)
+                    .expect("getter received its instance")
+                    .to_owned();
+                match call.resume(receiver, PrintWriter::Disabled) {
+                    Ok(progress) => progress,
+                    Err(error) => {
+                        assert_eq!(error.error.exc_type(), ExcType::RecursionError);
+                        assert_snapshot!(error.error.message().unwrap(), @"maximum recursion depth exceeded");
+                        break;
+                    }
+                }
+            }
+            _ => panic!("descriptor call cycle completed without a recursion error"),
+        };
+    }
+    assert_eq!(calls, 1024);
 }
 
 #[test]
