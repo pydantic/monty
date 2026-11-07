@@ -91,6 +91,8 @@ macro_rules! heap_payloads {
             /// A method bound to an instance.
             #[serde(rename = "M")]
             BoundMethod(inline $crate::types::BoundMethod),
+            /// A `super` proxy object created by `super(...)`.
+            Super(inline $crate::types::Super),
             /// One `dataclasses.Field` held by a class's `__dataclass_fields__` dictionary.
             /// Boxed: a name, an annotation and a default or factory are already
             /// wider than the 32-bit ceiling, and `Field` has attributes left to gain.
@@ -256,6 +258,7 @@ impl HeapData {
             | Self::Class(_)
             | Self::Instance(_)
             | Self::BoundMethod(_)
+            | Self::Super(_)
             | Self::DataclassField(_)
             | Self::DataclassMethod(_)
             | Self::ListIterator(_)
@@ -370,6 +373,7 @@ impl HeapData {
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
             Self::BoundMethod(_) => Type::Function,
+            Self::Super(_) => Type::Super,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,
             Self::DataclassParams(_) => Type::DataclassParams,

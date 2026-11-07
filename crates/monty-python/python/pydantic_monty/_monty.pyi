@@ -215,6 +215,10 @@ class MontyError(Exception):
     def exception(self) -> BaseException:
         """Returns the inner exception as a Python exception object."""
 
+    @property
+    def custom_type_name(self) -> str | None:
+        """Returns the custom type name for user-defined exception subclasses, if any."""
+
     def __str__(self) -> str:
         """Returns the exception message."""
 
@@ -222,7 +226,7 @@ class MontyError(Exception):
 class MontySyntaxError(MontyError):
     """Raised when Python code has syntax errors or cannot be parsed by Monty.
 
-    Inherits exception(), __str__() from MontyError.
+    Inherits exception(), custom_type_name, __str__() from MontyError.
     """
 
     def traceback(self) -> list[Frame]:
@@ -244,7 +248,7 @@ class MontyTypingError(MontyError):
     Type checking runs inside the worker subprocess; the diagnostics arrive
     pre-rendered as text, in the `type_check_format` chosen at checkout.
 
-    Inherits exception(), __str__() from MontyError.
+    Inherits exception(), custom_type_name, __str__() from MontyError.
     Cannot be constructed directly from Python.
     """
 
@@ -255,7 +259,7 @@ class MontyTypingError(MontyError):
 class MontyRuntimeError(MontyError):
     """Raised when Monty code fails during execution.
 
-    Inherits exception(), __str__() from MontyError.
+    Inherits exception(), custom_type_name, __str__() from MontyError.
     Additionally provides traceback() and display() methods.
     """
 
@@ -277,8 +281,8 @@ class MontyConversionError(MontyError):
 
     A value Monty cannot represent — an `external_lookup` entry or an `inputs`
     value of an unsupported type — rejects the feed with this error rather than
-    crossing into the sandbox. Inherits `exception()` (a native `TypeError`) and
-    `__str__()` (the conversion message) from `MontyError`.
+    crossing into the sandbox. Inherits `exception()` (a native `TypeError`),
+    `custom_type_name`, and `__str__()` (the conversion message) from `MontyError`.
     """
 
 @final

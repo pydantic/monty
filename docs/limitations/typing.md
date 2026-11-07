@@ -78,6 +78,7 @@ Under `from __future__ import annotations` every annotation is such a string, so
 `format=` takes the [`annotationlib.Format`](annotationlib.md#format) members: `VALUE` (the default), `FORWARDREF`, which returns an unresolved name as an [`annotationlib.ForwardRef`](annotationlib.md#forwardref), and `STRING`, which returns the source text.
 Divergences:
 
+- **Base-class annotations are not merged.** `get_type_hints(Sub)` reads only `Sub`'s own annotations; see [classes.md](classes.md).
 - **Name resolution follows [Annotations](#annotations)**: enclosing-function locals, and class-body names in a method's annotations, are not visible.
 - **`globalns` / `localns` must be a dict or `None`.**
     Anything else raises `TypeError: get_type_hints() globalns must be a dict, not int`, where CPython fails later with an unrelated message.

@@ -1334,6 +1334,9 @@ fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<
     obj.set("excType", exc.exc_type().to_string())?;
     obj.set("message", exc.message().unwrap_or(""))?;
     obj.set("traceback", exc.to_string())?;
+    if let Some(custom) = exc.custom_type_name() {
+        obj.set("customTypeName", custom)?;
+    }
     let frames = exc.traceback();
     let mut array = env.create_array(u32::try_from(frames.len()).map_err(|_| invalid("traceback too deep"))?)?;
     for (i, frame) in (0u32..).zip(frames.iter()) {

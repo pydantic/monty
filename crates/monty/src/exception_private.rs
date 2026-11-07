@@ -55,6 +55,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -87,6 +88,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -123,6 +125,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
+            origin_heap_id: None,
         })
     }
 
@@ -174,6 +177,25 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn isinstance_parameterized_generic() -> RunError {
         Self::type_error("isinstance() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates the TypeError `issubclass()` raises for a `types.GenericAlias`
+    /// second argument.
+    #[must_use]
+    fn issubclass_parameterized_generic() -> RunError {
+        Self::type_error("issubclass() argument 2 cannot be a parameterized generic")
+    }
+
+    /// Creates a TypeError for issubclass() arg 1.
+    #[must_use]
+    fn issubclass_arg1_error() -> RunError {
+        Self::type_error("issubclass() arg 1 must be a class")
+    }
+
+    /// Creates a TypeError for issubclass() arg 2.
+    #[must_use]
+    fn issubclass_arg2_error() -> RunError {
+        Self::type_error("issubclass() arg 2 must be a class, a tuple of classes, or a union")
     }
 
     /// Creates the TypeError `typing.get_type_hints()` raises for an object that
@@ -1431,6 +1453,11 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, "precision too big").into()
     }
 
+    #[must_use]
+    fn runtime_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, msg).into()
+    }
+
     /// Creates a TypeError for isinstance() arg 2.
     ///
     /// Matches CPython's format: `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a union`
@@ -1729,6 +1756,7 @@ pub(crate) trait ExcTypeExt: Sized {
             frame: None,
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for module not found errors
+            origin_heap_id: None,
         })
     }
 
@@ -2678,6 +2706,8 @@ impl ExcTypeExt for ExcType {
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
+    #[serde(default)]
+    custom_type_name: Option<Box<str>>,
     /// Structured payload (e.g. unicode-error constructor fields), carried
     /// through catch/re-raise so it reaches the public `MontyException` when
     /// the exception escapes the sandbox.
@@ -2697,6 +2727,7 @@ impl Clone for SimpleException {
         Self {
             exc_type: self.exc_type,
             arg: self.arg.clone(),
+            custom_type_name: self.custom_type_name.clone(),
             data: self.data.clone(),
             chain: None,
         }
@@ -2729,6 +2760,7 @@ impl From<MontyException> for SimpleException {
         Self {
             exc_type: exc.exc_type(),
             data: exc.take_data(),
+            custom_type_name: exc.custom_type_name().map(Into::into),
             arg: exc.into_message(),
             chain: None,
         }
@@ -2742,6 +2774,7 @@ impl SimpleException {
         Self {
             exc_type,
             arg,
+            custom_type_name: None,
             data: ExcData::None,
             chain: None,
         }
@@ -2753,6 +2786,7 @@ impl SimpleException {
         Self {
             exc_type,
             arg: Some(arg.to_string()),
+            custom_type_name: None,
             data: ExcData::None,
             chain: None,
         }
@@ -2764,9 +2798,26 @@ impl SimpleException {
         Self {
             exc_type,
             arg: None,
+            custom_type_name: None,
             data: ExcData::None,
             chain: None,
         }
+    }
+
+    /// Attaches a custom type name for user-defined exception subclasses.
+    #[must_use]
+    pub fn with_custom_type_name(mut self, name: Option<String>) -> Self {
+        self.custom_type_name = name.map(String::into_boxed_str);
+        self
+    }
+
+    #[must_use]
+    pub fn custom_type_name(&self) -> Option<&str> {
+        self.custom_type_name.as_deref()
+    }
+
+    pub fn set_arg(&mut self, arg: Option<String>) {
+        self.arg = arg;
     }
 
     /// Attaches a structured payload — see [`ExcData`].
@@ -2835,7 +2886,7 @@ impl SimpleException {
 
     /// Returns the exception formatted as Python would repr it.
     pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
-        let type_str: &'static str = self.exc_type.into();
+        let type_str: &str = self.custom_type_name.as_deref().unwrap_or_else(|| self.exc_type.into());
         write!(f, "{type_str}(")?;
 
         if let Some(arg) = &self.arg {
@@ -2849,9 +2900,10 @@ impl SimpleException {
     pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
         ExceptionRaise {
             exc: self,
-            frame: Some(RawStackFrame::from_position(position)),
+            frame: Some(Box::new(RawStackFrame::from_position(position))),
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 
@@ -2917,7 +2969,7 @@ fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
 pub struct ExceptionRaise {
     pub exc: SimpleException,
     /// Innermost executed frame, with callers linked as parents.
-    pub frame: Option<RawStackFrame>,
+    pub frame: Option<Box<RawStackFrame>>,
     /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
     pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
@@ -2926,6 +2978,9 @@ pub struct ExceptionRaise {
     /// for attribute SET errors. This flag allows error creators to specify
     /// whether the caret should be hidden.
     pub hide_caret: bool,
+    /// Originating heap ID if the exception was instantiated on the heap.
+    #[serde(default)]
+    pub origin_heap_id: Option<HeapId>,
 }
 
 impl From<SimpleException> for ExceptionRaise {
@@ -2935,6 +2990,7 @@ impl From<SimpleException> for ExceptionRaise {
             frame: None,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 }
@@ -2946,6 +3002,7 @@ impl From<MontyException> for ExceptionRaise {
             frame: None,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         }
     }
 }
@@ -2984,7 +3041,7 @@ impl ExceptionRaise {
             // No frame yet - create one
             let mut new_frame = RawStackFrame::new(position, name, None);
             new_frame.hide_caret = hide_caret;
-            self.frame = Some(new_frame);
+            self.frame = Some(Box::new(new_frame));
         }
     }
 
@@ -3019,7 +3076,7 @@ impl ExceptionRaise {
             .frame
             .map(|frame| {
                 let mut frames = Vec::new();
-                let mut current = Some(&frame);
+                let mut current = Some(frame.as_ref());
                 while let Some(f) = current {
                     let fname_id = f.position.filename;
                     // An `eval()` / `exec()` snippet resolves against its own
@@ -3052,7 +3109,9 @@ impl ExceptionRaise {
             traceback.push(*frame);
         }
 
-        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
+        MontyException::with_traceback(self.exc.exc_type, self.exc.arg, traceback)
+            .with_data(self.exc.data)
+            .with_custom_type_name(self.exc.custom_type_name.map(Into::into))
     }
 }
 
@@ -3223,6 +3282,7 @@ fn import_error_without_caret(msg: String) -> RunError {
         frame: None,
         snippet_frame: None,
         hide_caret: true,
+        origin_heap_id: None,
     })
 }
 

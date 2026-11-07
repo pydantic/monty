@@ -1,11 +1,6 @@
 # Exceptions
 
-Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes**: the `class` statement exists
-(see [classes.md](classes.md)) but classes cannot inherit, so there is no way
-to subclass `BaseException`/`Exception`. `raise` must therefore use one of
-these built-ins; `raise MyClass()` on a plain user class raises
-`TypeError: exceptions must derive from BaseException`, as in CPython.
+Monty implements a set of built-in exception classes, listed below. Sandboxed code can define **custom exception classes** by subclassing `Exception`, `BaseException`, or any supported built-in exception type (listed below, e.g. `class MyError(Exception): pass`). Plain user classes that do not derive from `BaseException` cannot be raised.
 
 ## Implemented exception classes
 
@@ -38,17 +33,22 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 
 ## Constructor signature
 
-All exception constructors accept **zero or one string argument** only.
+Built-in exception constructors accept **zero or one string argument** only.
 Multi-argument forms used in CPython (e.g. `OSError(errno, strerror, filename)`,
 `UnicodeDecodeError(encoding, obj, start, end, reason)`) are
 not supported; passing more than one argument raises an internal error.
+User-defined exception subclasses (`class MyError(Exception): pass`) accept arbitrary positional
+arguments, so `MyError(1, 2, 3)` sets `exc.args == (1, 2, 3)`.
 
 ## Attributes
 
-- `exc.args` — a tuple with 0 or 1 elements. Always a `tuple`, even when
-    empty.
+- `exc.args` — for built-in exceptions, a tuple with 0 or 1 elements. For user-defined
+    exception subclasses, a tuple reflecting the arguments forwarded to `BaseException.__init__`
+    (by default, all positional arguments when `__init__` is not overridden).
+    Always a `tuple`, even when empty.
 
-- `str(exc)` — returns the single message string, or `""` if none.
+- `str(exc)` — returns the single message string, `""` if none, or the tuple repr when two
+    or more arguments are present.
 
 - `KeyError` always carries the missing key's `str()` text rather than the key
     itself, so `str(exc)` and `repr(exc)` quote non-string keys:
@@ -85,13 +85,20 @@ not supported; passing more than one argument raises an internal error.
 
 ## Custom subclasses
 
-User `class` definitions are supported, but classes cannot inherit
-(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance and metaclasses`), so there is no way to
-create a new exception class inside
-the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
-with `TypeError: exceptions must derive from BaseException`. Define custom
-exception types on the host side if needed, or use the built-in subclass
-that best fits.
+Sandboxed code can define custom exception classes by subclassing `Exception`,
+`BaseException`, or any supported built-in exception type:
+
+```python test="skip"
+class AppError(Exception):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+```
+
+- Custom exception instances are user `Instance` objects rather than native `Exception` heap objects, and lack native
+    exception attributes and methods such as `add_note()`, `with_traceback()`, `.errno`, and `.value`.
+    `__cause__`, `__context__`, and `__suppress_context__` are supported and read-only, as on built-in exceptions.
+- Returning (rather than raising) a user-defined exception instance exports it across the host boundary as a `MontyClassProxy` (`ClassInstance`) rather than an `Exception`.
 
 ## Control flow in `finally`
 

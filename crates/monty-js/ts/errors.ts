@@ -39,6 +39,7 @@ export interface SourceRange {
 export interface ExceptionInfo {
   typeName: string
   message: string
+  customTypeName?: string | null
 }
 
 /**
@@ -48,20 +49,34 @@ export interface ExceptionInfo {
 export class MontyError extends Error {
   protected readonly typeName: string
   protected readonly innerMessage: string
+  protected readonly innerCustomTypeName?: string | null
 
-  constructor(typeName: string, message: string) {
-    super(message ? `${typeName}: ${message}` : typeName)
+  constructor(typeName: string, message: string, customTypeName?: string | null) {
+    const displayName = customTypeName ?? typeName
+    super(message ? `${displayName}: ${message}` : displayName)
     this.name = 'MontyError'
     this.typeName = typeName
     this.innerMessage = message
+    this.innerCustomTypeName = customTypeName ?? null
     if (Error.captureStackTrace) {
       Error.captureStackTrace(this, new.target)
     }
   }
 
+  /** The custom type name for user-defined exception subclasses, if any. */
+  get customTypeName(): string | null {
+    return this.innerCustomTypeName ?? null
+  }
+
   /** Information about the inner Python exception. */
   get exception(): ExceptionInfo {
-    return { typeName: this.typeName, message: this.innerMessage }
+    return {
+      typeName: this.typeName,
+      message: this.innerMessage,
+      ...(this.innerCustomTypeName !== undefined && this.innerCustomTypeName !== null
+        ? { customTypeName: this.innerCustomTypeName }
+        : {}),
+    }
   }
 
   /**
@@ -72,8 +87,10 @@ export class MontyError extends Error {
     switch (format) {
       case 'msg':
         return this.innerMessage
-      case 'type-msg':
-        return this.innerMessage ? `${this.typeName}: ${this.innerMessage}` : this.typeName
+      case 'type-msg': {
+        const name = this.innerCustomTypeName ?? this.typeName
+        return this.innerMessage ? `${name}: ${this.innerMessage}` : name
+      }
       default:
         throw new Error(`Invalid display format: '${format}'. Expected 'type-msg' or 'msg'`)
     }
@@ -87,8 +104,8 @@ export class MontyError extends Error {
 export class MontySyntaxError extends MontyError {
   private readonly tracebackText: string
 
-  constructor(message: string, tracebackText = '') {
-    super('SyntaxError', message)
+  constructor(message: string, tracebackText = '', customTypeName?: string | null) {
+    super('SyntaxError', message, customTypeName)
     this.name = 'MontySyntaxError'
     this.tracebackText = tracebackText
   }
@@ -114,8 +131,14 @@ export class MontyRuntimeError extends MontyError {
   private readonly frames: NativeFrame[]
   private readonly tracebackText: string
 
-  constructor(typeName: string, message: string, frames: NativeFrame[] = [], tracebackText = '') {
-    super(typeName, message)
+  constructor(
+    typeName: string,
+    message: string,
+    frames: NativeFrame[] = [],
+    tracebackText = '',
+    customTypeName?: string | null,
+  ) {
+    super(typeName, message, customTypeName)
     this.name = 'MontyRuntimeError'
     this.frames = frames
     this.tracebackText = tracebackText
@@ -404,9 +427,9 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
  */
 export function montyErrorFromNative(exc: NativeException): MontySyntaxError | MontyRuntimeError {
   if (exc.excType === 'SyntaxError') {
-    return new MontySyntaxError(exc.message, exc.traceback)
+    return new MontySyntaxError(exc.message, exc.traceback, exc.customTypeName)
   }
-  return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback)
+  return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback, exc.customTypeName)
 }
 
 /**

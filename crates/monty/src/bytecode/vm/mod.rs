@@ -554,8 +554,14 @@ impl CallFrame<'_> {
 
     /// Start of this frame's locals region on the VM stack.
     #[inline]
-    pub(super) fn stack_base(&self) -> usize {
+    pub(crate) fn stack_base(&self) -> usize {
         self.stack_base as usize
+    }
+
+    #[inline]
+    #[must_use]
+    pub(crate) fn function_id(&self) -> Option<FunctionId> {
+        self.function_id
     }
 
     /// Start of this frame's entries in the VM-wide `exception_stack`.
@@ -812,6 +818,10 @@ pub struct VM<'h> {
     /// This allows us to find the correct exception handler when an error occurs.
     instruction_ip: usize,
 
+    /// In-flight exception value currently unwinding across a synchronous
+    /// frame boundary (such as `evaluate_function`).
+    unwinding_exception: Option<Value>,
+
     /// Scheduler for task management and call ID allocation.
     ///
     /// Always present — owns `next_call_id` (used by both sync and async paths)
@@ -918,6 +928,7 @@ impl<'h> VM<'h> {
             print_writer,
             exception_stack: Vec::new(),
             instruction_ip: 0,
+            unwinding_exception: None,
             scheduler: Scheduler::new(),
             ext_function_load_ip: None, // Set by LoadGlobalCallable
             module_code: &program.module_code,
@@ -989,6 +1000,7 @@ impl<'h> VM<'h> {
             print_writer,
             exception_stack: snapshot.exception_stack,
             instruction_ip: snapshot.instruction_ip,
+            unwinding_exception: None,
             scheduler: snapshot.scheduler,
             module_code: &program.module_code,
             ext_function_load_ip: None,
@@ -1892,12 +1904,27 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    let exc = match self.instantiate_if_user_class(exc) {
+                        Ok(v) => v,
+                        Err(error) => {
+                            catch!(self, error);
+                            continue;
+                        }
+                    };
                     let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
                     // identity, like CPython. A bare type or non-exception has
                     // nothing to reuse and rebuilds from the error.
                     let raised = match &exc {
                         Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
+                        Value::Ref(id)
+                            if matches!(
+                                self.heap.get(*id),
+                                HeapData::Instance(inst) if matches!(self.heap.get(inst.class()), HeapData::Class(cls) if cls.base_exception().is_some())
+                            ) =>
+                        {
+                            Some(exc)
+                        }
                         _ => {
                             exc.drop_with(self);
                             None
@@ -2494,9 +2521,19 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Drops any in-flight unwinding exception preserved across synchronous boundaries.
+    pub(crate) fn clear_unwinding_exception(&mut self) {
+        if let Some(exc) = self.unwinding_exception.take() {
+            exc.drop_with(self.heap);
+        }
+    }
+
     /// Drops the current task's operand and exception stacks and discards its frames.
     /// Leaves a parked frame until another task is activated, or the VM is dropped.
     pub(super) fn cleanup_current_task(&mut self) {
+        if let Some(exc) = self.unwinding_exception.take() {
+            exc.drop_with(self.heap);
+        }
         self.stack.drain(..).drop_with(self.heap);
         self.exception_stack.drain(..).drop_with(self.heap);
         for frame in self.suspended_frames.drain(..) {
@@ -2956,6 +2993,9 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
+        if let Some(exc) = self.unwinding_exception.take() {
+            exc.drop_with(self.heap);
+        }
         release_pending_effect(self.pending_effect.take(), self.heap);
         self.pending_lookup_effect.take().drop_with(self.heap);
         self.cleanup_current_task();

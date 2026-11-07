@@ -17,6 +17,7 @@ impl From<&MontyException> for pb::RaisedException {
             message: exc.message().map(ToOwned::to_owned),
             traceback: exc.traceback().iter().map(pb::StackFrame::from).collect(),
             data: pb_exc_data(exc.data()),
+            custom_type_name: exc.custom_type_name().map(ToOwned::to_owned),
         }
     }
 }
@@ -47,7 +48,11 @@ impl TryFrom<pb::RaisedException> for MontyException {
             }
             None => ExcData::None,
         };
-        Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
+        let mut exc = Self::with_traceback(exc_type, err.message, traceback).with_data(data);
+        if let Some(custom_name) = err.custom_type_name {
+            exc = exc.with_custom_type_name(Some(custom_name));
+        }
+        Ok(exc)
     }
 }
 

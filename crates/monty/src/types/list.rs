@@ -150,6 +150,7 @@ impl<'h> HeapReadMut<'h, List> {
                     .and_then(|call| call.require_synchronous(vm))
                     .map_err(|error| {
                         if matches!(&error, RunError::Exc(raise) if raise.exc.exc_type() == ExcType::TypeError) {
+                            vm.clear_unwinding_exception();
                             ExcType::type_error("must assign iterable to extended slice")
                         } else {
                             error
@@ -1103,41 +1104,17 @@ fn do_list_sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'
     }
 }
 
-/// Writes a formatted sequence of values to a formatter.
+/// Writes comma-separated reprs of dynamically fetched items to a formatter.
 ///
-/// This helper function is used to implement `__repr__` for sequence types like
-/// lists and tuples. It writes items as comma-separated repr interns.
-///
-/// There is no length parameter: `get_item` is asked for indices from 0 until
-/// it returns `None`. For an immutable sequence (tuple) that is simply its
-/// fixed end; for a mutable one (list) it means a user `__repr__` growing or
-/// shrinking the sequence mid-format is observed rather than panicking on a
-/// stale bound — CPython's list repr re-checks the live length the same way.
-///
-/// # Arguments
-/// * `start` - The opening character (e.g., '[' for lists, '(' for tuples)
-/// * `end` - The closing character (e.g., ']' for lists, ')' for tuples)
-/// * `get_item` - Returns an owned clone of the i-th value via brief heap access,
-///   or `None` once `i` is out of range. The clone keeps the item alive across
-///   user `__repr__` calls that may remove it from the container.
-/// * `f` - The formatter to write to
-/// * `vm` - The VM for resolving value references and looking up interned strings
-/// * `heap_ids` - Set of heap IDs being repr'd (for cycle detection)
-pub(crate) fn repr_sequence_fmt<'h>(
-    start: char,
-    end: char,
+/// There is no length parameter: `get_item` is polled from index 0 until it returns
+/// `None`, so mid-format mutations by a user `__repr__` are observed safely without
+/// stale-length bounds.
+pub(crate) fn repr_stream_items_fmt<'h>(
     get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
     f: &mut impl Write,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
-    // Check depth limit before recursing
-    let Ok(mut guard) = vm.recursion_guard() else {
-        return Ok(f.write_str("...")?);
-    };
-    let vm = &mut *guard;
-
-    f.write_char(start)?;
     // The item is fetched before the separator is written so nothing is emitted
     // for an index that turned out to be out of range. `repr_should_truncate` bounds
     // reprs that keep growing the sequence from inside a user `__repr__`.
@@ -1153,6 +1130,28 @@ pub(crate) fn repr_sequence_fmt<'h>(
         }
         item.py_repr_fmt(f, vm, heap_ids)?;
     }
+    Ok(())
+}
+
+/// Formats a sequence enclosed in `start` and `end` delimiters (e.g. `[` and `]`).
+///
+/// Recurses with recursion limit protection; writes `"..."` when recursed too deeply.
+pub(crate) fn repr_sequence_fmt<'h>(
+    start: char,
+    end: char,
+    get_item: impl Fn(&HeapReader<'h>, usize) -> Option<Value>,
+    f: &mut impl Write,
+    vm: &mut VM<'h>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
+    // Check depth limit before recursing
+    let Ok(mut guard) = vm.recursion_guard() else {
+        return Ok(f.write_str("...")?);
+    };
+    let vm = &mut *guard;
+
+    f.write_char(start)?;
+    repr_stream_items_fmt(get_item, f, vm, heap_ids)?;
     f.write_char(end)?;
 
     Ok(())

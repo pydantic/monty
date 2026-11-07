@@ -455,6 +455,15 @@ fn exception_without_traceback_round_trips() {
     assert_eq!(back, exc);
 }
 
+#[test]
+fn custom_exception_with_type_name_round_trips() {
+    let exc = MontyException::new(ExcType::Exception, Some("custom failure".to_owned()))
+        .with_custom_type_name(Some("MyCustomError".to_owned()));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+    assert_eq!(back.custom_type_name(), Some("MyCustomError"));
+}
+
 /// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine child
 /// controls, for probing the receive-side sanitizer.
 fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, reason: String) -> pb::RaisedException {
@@ -471,6 +480,7 @@ fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, re
                 reason,
             })),
         }),
+        custom_type_name: None,
     }
 }
 
@@ -554,6 +564,7 @@ fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno
                 colno,
             })),
         }),
+        custom_type_name: None,
     }
 }
 
@@ -850,6 +861,7 @@ fn name_lookup_results_convert() {
             message: None,
             traceback: vec![].into(),
             data: None,
+            custom_type_name: None,
         })),
     };
     assert!(matches!(

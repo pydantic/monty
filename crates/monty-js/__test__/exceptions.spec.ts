@@ -489,3 +489,18 @@ test('display() works polymorphically on MontyTypingError', async () => {
     'TypeError: error[invalid-assignment]: Object of type `Literal["str"]` is not assignable to `int`',
   )
 })
+
+test('custom exception type name is preserved in ExceptionInfo and display', async () => {
+  const code = `
+class MyCustomError(ValueError):
+    pass
+
+raise MyCustomError('custom failure')
+`
+  const error = await t.throwsAsync(() => run(code), isRuntimeError)
+  t.is(error.exception.typeName, 'ValueError')
+  t.is(error.exception.customTypeName, 'MyCustomError')
+  t.is(error.customTypeName, 'MyCustomError')
+  t.is(error.display('type-msg'), 'MyCustomError: custom failure')
+  t.is(error.display('msg'), 'custom failure')
+})

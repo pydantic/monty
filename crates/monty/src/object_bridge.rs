@@ -832,6 +832,7 @@ impl MontyTypeExt for MontyType {
             | Type::CsvDictReader
             | Type::CsvDictWriter
             | Type::CsvDialect
+            | Type::Super
             | Type::DecimalContext
             | Type::DecimalSignalDict
             | Type::DecimalContextManager

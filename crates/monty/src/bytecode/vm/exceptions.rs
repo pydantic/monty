@@ -2,17 +2,16 @@
 
 use std::fmt::{self, Write};
 
-use monty_types::ResourceError;
-
 use super::VM;
 use crate::{
+    args::ArgValues,
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::{StaticStrings, StringId},
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, class::ClassBase},
     value::Value,
 };
 
@@ -92,7 +91,7 @@ impl VM<'_> {
                     let mut frame = self.make_stack_frame();
                     // Use the hide_caret flag from the error (set by error creators)
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(frame);
+                    exc.frame = Some(Box::new(frame));
                 }
                 RunError::Exc(exc)
             }
@@ -100,7 +99,7 @@ impl VM<'_> {
                 if exc.frame.is_none() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(frame);
+                    exc.frame = Some(Box::new(frame));
                 }
                 RunError::UncatchableExc(exc)
             }
@@ -114,29 +113,44 @@ impl VM<'_> {
     /// `raise`/`Reraise` paths reuse it as the raised object itself.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
     pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
-        let simple_exc = match exc_value {
+        let (simple_exc, origin_heap_id) = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
                 if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
-                    exc.clone()
+                    (exc.clone(), Some(*heap_id))
+                } else if let HeapData::Instance(inst) = self.heap.get(*heap_id)
+                    && let HeapData::Class(cls) = self.heap.get(inst.class())
+                    && let Some(base_exc) = cls.base_exception()
+                {
+                    let custom_name = cls.name().as_str(self.interns).to_owned();
+                    (
+                        SimpleException::new_none(base_exc).with_custom_type_name(Some(custom_name)),
+                        Some(*heap_id),
+                    )
                 } else {
                     // Not an exception type
-                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
+                    (
+                        SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+                        None,
+                    )
                 }
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
-            Value::Builtin(Builtins::ExcType(exc_type)) => SimpleException::new_none(*exc_type),
+            Value::Builtin(Builtins::ExcType(exc_type)) => (SimpleException::new_none(*exc_type), None),
             // Invalid exception value
-            _ => SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+            _ => (
+                SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException"),
+                None,
+            ),
         };
 
         let frame = (!self.current_frame_is_frozen()).then(|| {
-            if is_raise {
+            Box::new(if is_raise {
                 RawStackFrame::from_raise(self.current_position(), self.current_frame_name())
             } else {
                 self.make_stack_frame()
-            }
+            })
         });
 
         RunError::Exc(ExceptionRaise {
@@ -144,6 +158,7 @@ impl VM<'_> {
             frame,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id,
         })
     }
 
@@ -154,6 +169,13 @@ impl VM<'_> {
     /// raised object records the cause and suppresses its context; a bare class
     /// is instantiated here so there is an object to record it on.
     pub(super) fn raise_with_cause(&mut self, exc: Value, cause: Value) -> Option<RunError> {
+        let exc = match self.instantiate_if_user_class(exc) {
+            Ok(v) => v,
+            Err(error) => {
+                cause.drop_with(self);
+                return self.handle_exception_with_value(error, None);
+            }
+        };
         let error = self.make_exception(&exc, true);
         let raised = match self.exception_object(exc) {
             Ok(raised) => raised,
@@ -166,21 +188,53 @@ impl VM<'_> {
         };
         let cause = match cause {
             Value::None => None,
-            other => match self.exception_object(other) {
-                Ok(cause) => cause.into_ref_id(),
-                Err(other) => {
-                    other.drop_with(self);
-                    raised.drop_with(self);
-                    let error = ExcType::type_error("exception causes must derive from BaseException");
-                    return self.handle_exception_with_value(error, None);
+            other => {
+                let cause_obj = match self.instantiate_if_user_class(other) {
+                    Ok(v) => v,
+                    Err(error) => {
+                        raised.drop_with(self);
+                        return self.handle_exception_with_value(error, None);
+                    }
+                };
+                match self.exception_object(cause_obj) {
+                    Ok(cause) => cause.into_ref_id(),
+                    Err(other) => {
+                        other.drop_with(self);
+                        raised.drop_with(self);
+                        let error = ExcType::type_error("exception causes must derive from BaseException");
+                        return self.handle_exception_with_value(error, None);
+                    }
                 }
-            },
+            }
         };
         let Value::Ref(raised_id) = &raised else {
             unreachable!("exceptions are heap values")
         };
-        self.set_exception_cause(*raised_id, cause);
+        if let Err(err) = self.set_exception_cause(*raised_id, cause) {
+            raised.drop_with(self);
+            return self.handle_exception_with_value(err, None);
+        }
         self.handle_exception_with_value(error, Some(raised))
+    }
+
+    /// Returns the instantiated exception if `value` is a user-defined exception class,
+    /// or `value` unchanged.
+    pub(crate) fn instantiate_if_user_class(&mut self, value: Value) -> RunResult<Value> {
+        if let Value::Ref(id) = &value
+            && let HeapData::Class(cls) = self.heap.get(*id)
+            && cls.base_exception().is_some()
+        {
+            let saved_ip = self.instruction_ip;
+            let result = {
+                let this = &mut *self;
+                defer_drop!(value, this);
+                this.evaluate_function(value, ArgValues::Empty)
+            };
+            self.instruction_ip = saved_ip;
+            result
+        } else {
+            Ok(value)
+        }
     }
 
     /// The exception object `value` denotes: itself for an exception, a fresh
@@ -189,6 +243,12 @@ impl VM<'_> {
     fn exception_object(&mut self, value: Value) -> Result<Value, Value> {
         match value {
             Value::Ref(id) if matches!(self.heap.get(id), HeapData::Exception(_)) => Ok(value),
+            Value::Ref(id)
+                if matches!(self.heap.get(id), HeapData::Instance(inst)
+                    if matches!(self.heap.get(inst.class()), HeapData::Class(cls) if cls.base_exception().is_some())) =>
+            {
+                Ok(value)
+            }
             Value::Builtin(Builtins::ExcType(exc_type)) => Ok(self.allocate_exception(exc_type)),
             other => Err(other),
         }
@@ -204,12 +264,33 @@ impl VM<'_> {
 
     /// Stores `cause` (an owned reference) as `__cause__` of the exception `id`,
     /// releasing any previous cause, and sets `__suppress_context__`.
-    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) {
-        let previous = match self.heap.read(id) {
-            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_cause(cause),
+    fn set_exception_cause(&mut self, id: HeapId, cause: Option<HeapId>) -> RunResult<()> {
+        match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => {
+                let previous = exc.get_mut(self.heap).set_cause(cause);
+                previous.map(Value::Ref).drop_with(self);
+                Ok(())
+            }
+            HeapReadOutput::Instance(inst) => {
+                let key = Value::InternString(self.interns.intern_static(StaticStrings::DunderCause));
+                let value = match cause {
+                    Some(cause_id) => Value::Ref(cause_id),
+                    None => Value::None,
+                };
+                let previous = inst.set_attr_unchecked(key, value, self)?;
+                if let Some(prev) = previous {
+                    prev.drop_with(self);
+                }
+                let suppress_key =
+                    Value::InternString(self.interns.intern_static(StaticStrings::DunderSuppressContext));
+                let previous_suppress = inst.set_attr_unchecked(suppress_key, Value::Bool(true), self)?;
+                if let Some(prev) = previous_suppress {
+                    prev.drop_with(self);
+                }
+                Ok(())
+            }
             _ => unreachable!("set_exception_cause is only called on exceptions"),
-        };
-        previous.map(Value::Ref).drop_with(self);
+        }
     }
 
     /// Records the exception being handled as `__context__` of the newly raised
@@ -217,7 +298,7 @@ impl VM<'_> {
     /// exception itself gets none, and a link that would make the chain circular is
     /// cut first. An internal (frozen) handler's exception is skipped, since the
     /// equivalent CPython code is C and leaves the user's handled exception in place.
-    fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
+    fn attach_context(&mut self, raised: &Value) -> RunResult<()> {
         let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
             CaughtException::Value(Value::Ref(id)) => Some(*id),
             _ => None,
@@ -239,33 +320,51 @@ impl VM<'_> {
                 break;
             };
             if next == *raised_id {
-                self.set_exception_context(cursor, None);
+                self.set_exception_context(cursor, None)?;
                 break;
             }
             self.heap.tracker.check_time_every(step)?;
             cursor = next;
         }
         self.heap.inc_ref(handled_id);
-        self.set_exception_context(*raised_id, Some(handled_id));
-        Ok(())
+        self.set_exception_context(*raised_id, Some(handled_id))
     }
 
     /// The `__context__` of the exception `id`, borrowed.
     fn exception_context(&self, id: HeapId) -> Option<HeapId> {
         match self.heap.get(id) {
             HeapData::Exception(exc) => exc.context(),
+            HeapData::Instance(inst) => match inst.attrs().get_by_str("__context__", self.heap, self.interns) {
+                Some(Value::Ref(ctx_id)) => Some(*ctx_id),
+                _ => None,
+            },
             _ => None,
         }
     }
 
     /// Stores `context` (an owned reference) as `__context__` of the exception
     /// `id`, releasing any previous context.
-    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) {
-        let previous = match self.heap.read(id) {
-            HeapReadOutput::Exception(exc) => exc.get_mut(self.heap).set_context(context),
+    fn set_exception_context(&mut self, id: HeapId, context: Option<HeapId>) -> RunResult<()> {
+        match self.heap.read(id) {
+            HeapReadOutput::Exception(exc) => {
+                let previous = exc.get_mut(self.heap).set_context(context);
+                previous.map(Value::Ref).drop_with(self);
+                Ok(())
+            }
+            HeapReadOutput::Instance(inst) => {
+                let key = Value::InternString(self.interns.intern_static(StaticStrings::DunderContext));
+                let value = match context {
+                    Some(ctx_id) => Value::Ref(ctx_id),
+                    None => Value::None,
+                };
+                let previous = inst.set_attr_unchecked(key, value, self)?;
+                if let Some(prev) = previous {
+                    prev.drop_with(self);
+                }
+                Ok(())
+            }
             _ => unreachable!("set_exception_context is only called on exceptions"),
-        };
-        previous.map(Value::Ref).drop_with(self);
+        }
     }
 
     /// Re-raises the active exception without replacing a user traceback with an internal handler.
@@ -331,10 +430,14 @@ impl VM<'_> {
 
     /// Converts best-effort detail into an `AssertionError` message.
     /// Catchable formatting errors fall back to no detail; terminal errors propagate.
-    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+    fn assert_failure(&mut self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
-            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(None) => self.assertion_error(None),
+            Err(RunError::Exc(_)) => {
+                self.clear_unwinding_exception();
+                self.assertion_error(None)
+            }
             Err(e) => e,
         }
     }
@@ -351,7 +454,10 @@ impl VM<'_> {
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
             Ok(detail) => detail,
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+                None
+            }
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
@@ -359,7 +465,10 @@ impl VM<'_> {
             // show only the detail — avoids a stray leading `\n` before `assert`.
             Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
-            Err(RunError::Exc(_)) => None,
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+                None
+            }
             Err(e) => return e,
         };
         let full = match (msg, detail) {
@@ -398,13 +507,18 @@ impl VM<'_> {
 
     /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
-        let frame = (!self.current_frame_is_frozen())
-            .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
+        let frame = (!self.current_frame_is_frozen()).then(|| {
+            Box::new(RawStackFrame::from_raise(
+                self.current_position(),
+                self.current_frame_name(),
+            ))
+        });
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
             frame,
             snippet_frame: None,
             hide_caret: false,
+            origin_heap_id: None,
         })
     }
 
@@ -451,11 +565,27 @@ impl VM<'_> {
             if let Some(raised) = raised {
                 raised.drop_with(self);
             }
+            if let Some(exc) = self.unwinding_exception.take() {
+                exc.drop_with(self);
+            }
             return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error));
         }
 
         let exc_value = if let Some(raised) = raised {
+            if let Some(old) = self.unwinding_exception.take() {
+                old.drop_with(self);
+            }
             raised
+        } else if let Some(unwinding) = self.unwinding_exception.take() {
+            if exception_value_matches_error(&unwinding, &error, self) {
+                unwinding
+            } else {
+                unwinding.drop_with(self);
+                let RunError::Exc(exc) = &error else {
+                    unreachable!("terminal errors returned above")
+                };
+                self.create_exception_value(exc)
+            }
         } else {
             // Nothing to reuse: build it from `error`, borrowed rather than
             // cloned since it is a local and so cannot alias `self`.
@@ -466,7 +596,7 @@ impl VM<'_> {
         };
         if let Err(error) = self.attach_context(&exc_value) {
             exc_value.drop_with(self);
-            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error.into()));
+            return ExceptionHandlingResult::Unhandled(self.unwind_for_traceback(error));
         }
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
@@ -539,6 +669,15 @@ impl VM<'_> {
                 // No more frames - exception is unhandled
                 let is_spawned = this.is_spawned_task();
 
+                if let Err(terminal) = format_unhandled_custom_exception(&mut error, &mut exc_guard) {
+                    let (exc_value, this) = exc_guard.into_parts();
+                    exc_value.drop_with(this);
+                    if let Some(exc) = this.unwinding_exception.take() {
+                        exc.drop_with(this);
+                    }
+                    return ExceptionHandlingResult::Unhandled(this.unwind_for_traceback(terminal));
+                }
+
                 // Drop exc_value before potentially switching tasks
                 drop(exc_guard);
 
@@ -583,6 +722,10 @@ impl VM<'_> {
                 }
             }
             if should_return {
+                let (exc_value, this) = exc_guard.into_parts();
+                if let Some(old) = this.unwinding_exception.replace(exc_value) {
+                    old.drop_with(this);
+                }
                 return ExceptionHandlingResult::Unhandled(error);
             }
         }
@@ -644,58 +787,120 @@ impl VM<'_> {
     /// `CHECK_EXC_MATCH` opcode), only one level of tuple is accepted: a nested
     /// tuple element — or any non-exception value — raises
     /// `TypeError: catching classes that do not inherit from BaseException is not
-    /// allowed`. Removing the recursion both keeps parity with CPython and
-    /// eliminates the unbounded-recursion footgun entirely, so no recursion-depth
-    /// or time bound is needed here.
+    /// allowed`.
     ///
-    /// Like CPython, the *whole* tuple is validated rather than short-circuiting
-    /// on the first match: an invalid element raises the `TypeError` even when an
-    /// earlier element already matched (e.g. `except (TypeError, (ValueError,))`
-    /// raising `TypeError` still raises the `TypeError` about catching classes).
+    /// If `exc_type` is a tuple, each element is checked with amortized deadline
+    /// checks. Mirroring CPython, the entire tuple is validated rather than
+    /// short-circuiting on the first match (so non-exception types still raise
+    /// `TypeError`), but once matched, expensive subclass ancestry scans are
+    /// skipped in favor of O(1) handler validation using cached class exception
+    /// ancestry. Repeated consecutive handlers are also cached to avoid redundant
+    /// ancestry traversal.
     pub(super) fn check_exc_match(&self, exception: &Value, exc_type: &Value) -> Result<bool, RunError> {
-        let exc_type_enum = exception.py_type(self);
-        match exc_type {
-            // Single exception class.
-            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                Ok(Self::exc_matches_handler(exc_type_enum, *handler_type))
-            }
-            // Flat tuple of exception classes. CPython does not descend into
-            // nested tuples in this position, so neither do we.
-            Value::Ref(id) => {
-                if let HeapData::Tuple(tuple) = self.heap.get(*id) {
-                    let mut matched = false;
-                    for v in tuple.as_slice() {
-                        match v {
-                            Value::Builtin(Builtins::ExcType(handler_type)) => {
-                                if !matched && Self::exc_matches_handler(exc_type_enum, *handler_type) {
-                                    matched = true;
-                                }
-                            }
-                            // A nested tuple or any non-exception value is
-                            // rejected exactly as CPython rejects it, even if a
-                            // previous element already matched.
-                            _ => return Err(ExcType::except_invalid_type_error()),
-                        }
+        if let Value::Ref(id) = exc_type
+            && let HeapData::Tuple(tuple) = self.heap.get(*id)
+        {
+            let mut matched = false;
+            let mut last_handler: Option<(HandlerKey, bool)> = None;
+            for (i, v) in tuple.as_slice().iter().enumerate() {
+                self.heap.tracker.check_time_every(i)?;
+                if matched {
+                    self.validate_handler(v)?;
+                } else if let Some(key) = parse_handler_key(v)
+                    && let Some((prev_key, prev_match)) = last_handler
+                    && prev_key == key
+                {
+                    if prev_match {
+                        matched = true;
                     }
-                    Ok(matched)
                 } else {
-                    // A non-tuple heap value (e.g. an exception instance) is not
-                    // a valid exception type for an `except` clause.
+                    let this_match = self.check_single_handler(exception, v)?;
+                    if let Some(key) = parse_handler_key(v) {
+                        last_handler = Some((key, this_match));
+                    }
+                    if this_match {
+                        matched = true;
+                    }
+                }
+            }
+            return Ok(matched);
+        }
+        self.check_single_handler(exception, exc_type)
+    }
+
+    fn validate_handler(&self, handler: &Value) -> Result<(), RunError> {
+        match handler {
+            Value::Builtin(Builtins::ExcType(_)) => Ok(()),
+            Value::Ref(class_id) => {
+                if let HeapData::Class(handler_cls) = self.heap.get(*class_id)
+                    && handler_cls.base_exception().is_some()
+                {
+                    Ok(())
+                } else {
                     Err(ExcType::except_invalid_type_error())
                 }
             }
-            // Any other value is invalid for an `except` clause.
             _ => Err(ExcType::except_invalid_type_error()),
         }
     }
 
-    /// Returns whether a raised exception's type is caught by `handler_type`.
-    ///
-    /// Helper shared by the single-class and flat-tuple arms of
-    /// [`check_exc_match`]; the raised value only matches when its type is an
-    /// exception that is a subclass of the handler's class.
-    fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
-        matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
+    fn check_single_handler(&self, exception: &Value, handler: &Value) -> Result<bool, RunError> {
+        self.validate_handler(handler)?;
+        match handler {
+            Value::Builtin(Builtins::ExcType(handler_type)) => {
+                let matched = match exception {
+                    Value::Ref(id) => match self.heap.get(*id) {
+                        HeapData::Exception(e) => e.exc_type().is_subclass_of(*handler_type),
+                        HeapData::Instance(inst) => {
+                            if let HeapData::Class(cls) = self.heap.get(inst.class()) {
+                                cls.mro().iter().any(
+                                    |b| matches!(b, ClassBase::BuiltinExc(exc) if exc.is_subclass_of(*handler_type)),
+                                )
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                Ok(matched)
+            }
+            Value::Ref(class_id) => {
+                let matched = match exception {
+                    Value::Ref(id) => match self.heap.get(*id) {
+                        HeapData::Instance(inst) => {
+                            let inst_cls_id = inst.class();
+                            if inst_cls_id == *class_id {
+                                true
+                            } else if let HeapData::Class(inst_cls) = self.heap.get(inst_cls_id) {
+                                inst_cls.is_subclass_of(*class_id)
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                Ok(matched)
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandlerKey {
+    Builtin(ExcType),
+    Class(HeapId),
+}
+
+fn parse_handler_key(handler: &Value) -> Option<HandlerKey> {
+    match handler {
+        Value::Builtin(Builtins::ExcType(t)) => Some(HandlerKey::Builtin(*t)),
+        Value::Ref(id) => Some(HandlerKey::Class(*id)),
+        _ => None,
     }
 }
 
@@ -768,5 +973,66 @@ impl Write for TruncatingWriter {
             self.truncated = true;
             Err(fmt::Error)
         }
+    }
+}
+
+fn format_unhandled_custom_exception(
+    error: &mut RunError,
+    exc_guard: &mut DropGuard<'_, VM<'_>, Value>,
+) -> RunResult<()> {
+    if let RunError::Exc(raise) = error
+        && raise.exc.arg().is_none()
+        && raise.exc.custom_type_name().is_some()
+    {
+        let (exc_val, this) = exc_guard.as_parts();
+        match exc_val.py_str(this) {
+            Ok(text) => {
+                defer_drop!(text, this);
+                if let Some(s) = text.as_str(this)
+                    && !s.is_empty()
+                {
+                    raise.exc.set_arg(Some(s.to_owned()));
+                }
+            }
+            Err(RunError::Exc(_)) => {
+                this.clear_unwinding_exception();
+                raise.exc.set_arg(Some("<exception str() failed>".to_owned()));
+            }
+            Err(terminal) => {
+                this.clear_unwinding_exception();
+                return Err(terminal);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn exception_value_matches_error(exc_val: &Value, error: &RunError, vm: &VM<'_>) -> bool {
+    let RunError::Exc(raise) = error else {
+        return false;
+    };
+    if let (Some(origin_id), Value::Ref(id)) = (raise.origin_heap_id, exc_val) {
+        return origin_id == *id;
+    }
+    match exc_val {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Exception(e) => {
+                e.exc_type() == raise.exc.exc_type()
+                    && e.custom_type_name() == raise.exc.custom_type_name()
+                    && e.arg() == raise.exc.arg()
+            }
+            HeapData::Instance(inst) => {
+                if let HeapData::Class(cls) = vm.heap.get(inst.class()) {
+                    cls.mro()
+                        .iter()
+                        .any(|b| matches!(b, ClassBase::BuiltinExc(exc) if *exc == raise.exc.exc_type()))
+                        && raise.exc.custom_type_name() == Some(cls.name().as_str(vm.interns))
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }

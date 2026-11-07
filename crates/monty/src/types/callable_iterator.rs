@@ -142,7 +142,10 @@ fn callable_next(callable: Value, sentinel: Value, vm: &mut VM<'_>) -> RunResult
         Ok(result) => result,
         // CPython's `calliter_iternext` swallows `StopIteration` from the
         // callable and reports exhaustion, exactly as for a `__next__`.
-        Err(e) if e.is_stop_iteration() => return Ok(None),
+        Err(e) if e.is_stop_iteration() => {
+            vm.clear_unwinding_exception();
+            return Ok(None);
+        }
         Err(e) => return Err(e),
     };
     let mut result = DropGuard::new(result, vm);
