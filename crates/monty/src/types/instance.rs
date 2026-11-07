@@ -1014,11 +1014,21 @@ pub(crate) fn class_lookup<'v>(class_id: HeapId, name: &str, heap: &'v Heap, int
 /// side of an operator runs first, as in CPython. With a `dunder`, the subclass
 /// must also resolve it to a different member than `lhs`'s class does
 /// (CPython's `method_is_overloaded`), the rule for reflected binary operators.
+///
+/// Runs on every binary operator, so the immediate-operand case is an inlined
+/// tag check and the class lookup stays out of line.
+#[inline]
 pub(crate) fn subclass_overrides(lhs: &Value, rhs: &Value, dunder: Option<&str>, vm: &VM<'_>) -> bool {
-    let (Value::Ref(lhs_id), Value::Ref(rhs_id)) = (lhs, rhs) else {
-        return false;
-    };
-    let (HeapData::Instance(lhs), HeapData::Instance(rhs)) = (vm.heap.get(*lhs_id), vm.heap.get(*rhs_id)) else {
+    match (lhs, rhs) {
+        (Value::Ref(lhs_id), Value::Ref(rhs_id)) => heap_subclass_overrides(*lhs_id, *rhs_id, dunder, vm),
+        _ => false,
+    }
+}
+
+/// The heap half of [`subclass_overrides`]: both operands must be instances.
+#[inline(never)]
+fn heap_subclass_overrides(lhs_id: HeapId, rhs_id: HeapId, dunder: Option<&str>, vm: &VM<'_>) -> bool {
+    let (HeapData::Instance(lhs), HeapData::Instance(rhs)) = (vm.heap.get(lhs_id), vm.heap.get(rhs_id)) else {
         return false;
     };
     let (lhs_class, rhs_class) = (lhs.class, rhs.class);

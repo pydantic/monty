@@ -9,8 +9,9 @@
 //! order is the `id()` contract: [`Type::legacy_index`] maps it onto the indices
 //! the pre-table enum gave postcard. Append new types at the end of their group.
 
-use std::{fmt, iter::FusedIterator, slice};
+use std::{fmt, iter::FusedIterator, slice, sync::LazyLock};
 
+use ahash::AHashMap;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor},
@@ -260,7 +261,7 @@ impl Type {
     /// Module types such as `datetime.date` or `FrozenInstanceError` need an import.
     #[must_use]
     pub fn from_builtin_name(name: &str) -> Option<Self> {
-        Self::ALL.iter().copied().find(|ty| ty.def().builtin == Some(name))
+        BUILTIN_TYPES.get(name).copied()
     }
 
     /// The name this type is bound to in the builtins namespace, if any.
@@ -294,6 +295,15 @@ impl Type {
         self == other || other == Self::Object || self.mro().skip(1).any(|ty| ty == other)
     }
 }
+
+/// Builtin-namespace names to their types, built once: global loads of `range`,
+/// `list` and the like resolve through it on every miss in the module globals.
+static BUILTIN_TYPES: LazyLock<AHashMap<&'static str, Type>> = LazyLock::new(|| {
+    Type::ALL
+        .iter()
+        .filter_map(|&ty| ty.builtin_name().map(|name| (name, ty)))
+        .collect()
+});
 
 /// Iterator over a native type's MRO, from [`Type::mro`].
 pub(crate) enum NativeMro {
