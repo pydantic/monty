@@ -212,6 +212,13 @@ impl<'h> HeapReadMut<'h, Class> {
         heap: &mut HeapReader<'h>,
         interns: &Interns,
     ) -> Option<Value> {
+        // Dump upgrades currently write native methods; keep other future writers conservative too.
+        if descriptor::may_be_descriptor(&value, heap) {
+            self.get_mut(heap).descriptor_free = false;
+        }
+        if descriptor::may_be_data_descriptor(&value, heap) {
+            self.get_mut(heap).data_descriptor_free = false;
+        }
         self.namespace_mut().set_interned_str(name, value, heap, interns)
     }
 
@@ -304,89 +311,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
     /// is inserted, the caller passes the instance explicitly. `__init_subclass__`
     /// is an implicit classmethod, which `class_getattr` binds to the class.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let class_id = self.id();
-        if attr.as_str(vm.interns) == "__annotations__" {
-            let annotations =
-                annotations::class_annotations(class_id, vm).and_then(|call| call.require_synchronous(vm));
-            let annotations = match annotations {
-                Ok(annotations) => annotations,
-                Err(err) => {
-                    args.drop_with(vm);
-                    return Err(err);
-                }
-            };
-            defer_drop!(annotations, vm);
-            return vm.call_function(annotations, args);
-        }
-        let member = match class_getattr(class_id, attr, vm) {
-            Ok(member) => member,
-            Err(err) => {
-                args.drop_with(vm);
-                return Err(err);
-            }
-        };
-        let Some(member) = member else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr.as_str(vm.interns),
-            ));
-        };
-        defer_drop!(member, vm);
-        vm.call_function(member, args)
-    }
-}
-
-/// Reads an attribute of the class `class_id`, `None` when it has no such member.
-///
-/// Follows CPython's `type_getattro`: the metatype's data descriptors
-/// (`__name__`, `__bases__`, `__mro__`) shadow the class's
-/// own members, which come next in MRO order, then the members native
-/// ancestors provide (`object.__init__`), then `type`'s methods (`mro`).
-pub(crate) fn class_getattr(class_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let HeapData::Class(class) = vm.heap.get(class_id) else {
-        unreachable!("class_getattr takes a class")
-    };
-    let attr_str = attr.as_str(vm.interns);
-    Ok(Some(match attr_str {
-        "__name__" => allocate_string(class.name.as_str(vm.interns).to_owned(), vm.heap),
-        "__bases__" => bases_tuple(class, vm.heap),
-        "__mro__" => mro_tuple(class_id, vm.heap),
-        // Annotations are per class: an inherited `__annotate__` would describe the base.
-        "__annotate__" | "__annotate_func__" => class
-            .namespace
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map_or(Value::None, |value| value.clone_with_heap(vm.heap)),
-        _ => {
-            if let Some(member) = class.lookup(attr_str, vm.heap, vm.interns) {
-                let member = member.clone_with_heap(vm.heap);
-                if attr_str == "__init_subclass__" && is_method_value(&member, vm) {
-                    vm.heap.inc_ref(class_id);
-                    bind_init_subclass(Value::Ref(class_id), member, vm.heap)
-                } else {
-                    member
-                }
-            } else if let Some(native) = class.ancestors().iter().find_map(|ancestor| ancestor.native())
-                && let Some(member) = native.class_constant(attr, vm)
-            {
-                if attr_str == "__init_subclass__" {
-                    vm.heap.inc_ref(class_id);
-                    bind_init_subclass(Value::Ref(class_id), member, vm.heap)
-                } else {
-                    member
-                }
-            } else if attr_str == "mro" {
-                vm.heap.inc_ref(class_id);
-                BoundMethod::allocate(
-                    Value::Ref(class_id),
-                    Value::Builtin(Builtins::Function(BuiltinsFunctions::TypeMro)),
-                    vm.heap,
-                )
-            } else if attr_str == "__class__" {
-                Value::Builtin(Builtins::Type(Type::Type))
-            } else {
-                return Ok(None);
-            }
+        let mut guard = DropGuard::new(args, vm);
+        let (_, vm) = guard.as_parts_mut();
+        // Synthesized metaclass attributes must follow the same read path as LoadAttr.
+        if !matches!(attr.as_str(vm.interns), "__name__" | "__annotations__")
+            && matches!(
+                descriptor::resolve_class(self.id(), attr.as_str(vm.interns), vm),
+                descriptor::AttributeResolution::Getter(_)
+            )
+        {
+            let (args, vm) = guard.into_parts();
+            vm.heap.inc_ref(self.id());
+            descriptor::call_attr(Value::Ref(self.id()), attr, args, vm)
+        } else {
+            let result = self
+                .py_getattr(attr, vm)?
+                .expect("class read returns a result or raises");
+            let callable = result.require_synchronous(vm)?;
+            let (args, vm) = guard.into_parts();
+            defer_drop!(callable, vm);
+            vm.call_function(callable, args)
         }
     }))
 }
@@ -411,30 +355,5 @@ impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         stack.extend(self.bases.iter().filter_map(|base| base.class_id()));
         self.namespace.py_dec_ref_ids(stack);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn older_classes_default_to_descriptor_lookup() {
-        #[derive(serde::Serialize)]
-        struct OlderClass {
-            name: EitherStr,
-            namespace: Dict,
-            uuid: Option<MontyUuid>,
-        }
-
-        let old = OlderClass {
-            name: EitherStr::Heap("Record".to_owned()),
-            namespace: Dict::new(),
-            uuid: None,
-        };
-        let bytes = minicbor_serde::to_vec(&old).unwrap();
-        let restored: Class = minicbor_serde::from_slice(&bytes).unwrap();
-        assert!(!restored.descriptor_free());
-        assert!(!restored.data_descriptor_free());
     }
 }

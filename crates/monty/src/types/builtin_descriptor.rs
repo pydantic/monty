@@ -1,17 +1,14 @@
 //! The builtin property, classmethod and staticmethod wrappers.
 
-use std::{
-    fmt::{self, Write},
-    mem,
-};
+use std::fmt::{self, Write};
 
-use super::{BoundMethod, LazyHeapSet, PyTrait, Type, descriptor, instance::bind_method, str::allocate_string};
+use super::{LazyHeapSet, PyTrait, Type, instance::bind_method};
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::type_of_ref,
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::FrozenFunctions,
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
@@ -19,15 +16,59 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+/// Builtin descriptor state; each wrapper stores only the values its protocol needs.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct BuiltinDescriptor {
-    pub kind: Type,
-    // Property: fget, fset, fdel, doc. Other wrappers use only the first slot.
-    pub values: [Value; 4],
-    #[serde(default)]
-    pub name: Option<String>,
+pub(crate) enum BuiltinDescriptor {
+    Property {
+        fget: Value,
+        fset: Value,
+        fdel: Value,
+        doc: Value,
+        /// __set_name__ accepts any Python value, including a non-string name.
+        name: Option<Value>,
+    },
+    ClassMethod(Value),
+    StaticMethod(Value),
 }
 
+impl BuiltinDescriptor {
+    /// Include every owned edge, including names installed by __set_name__, in cycle collection.
+    pub(crate) fn visit_children(&self, on_child: &mut impl FnMut(HeapId)) {
+        let mut visit = |value: &Value| {
+            if let Value::Ref(id) = value {
+                on_child(*id);
+            }
+        };
+        match self {
+            Self::Property {
+                fget,
+                fset,
+                fdel,
+                doc,
+                name,
+            } => {
+                for value in [fget, fset, fdel, doc] {
+                    visit(value);
+                }
+                if let Some(name) = name {
+                    visit(name);
+                }
+            }
+            Self::ClassMethod(function) | Self::StaticMethod(function) => visit(function),
+        }
+    }
+
+    /// Python type of the wrapper, independent of its wrapped callable.
+    pub(crate) fn kind(&self) -> Type {
+        match self {
+            Self::Property { .. } => Type::Property,
+            Self::ClassMethod(_) => Type::ClassMethod,
+            Self::StaticMethod(_) => Type::StaticMethod,
+        }
+    }
+}
+
+/// Optional property accessors; None leaves the corresponding operation unavailable.
 #[derive(FromArgs)]
 #[from_args(name = "property")]
 struct PropertyArgs {
@@ -41,6 +82,7 @@ struct PropertyArgs {
     doc: Option<Value>,
 }
 
+/// The callable to bind to the eventual owner class.
 #[derive(FromArgs)]
 #[from_args(name = "classmethod")]
 struct ClassMethodArgs {
@@ -48,6 +90,7 @@ struct ClassMethodArgs {
     function: Value,
 }
 
+/// The callable returned unchanged by staticmethod.__get__.
 #[derive(FromArgs)]
 #[from_args(name = "staticmethod")]
 struct StaticMethodArgs {
@@ -55,6 +98,7 @@ struct StaticMethodArgs {
     function: Value,
 }
 
+/// Receiver and replacement callable after the accessor-specific arity check.
 #[derive(FromArgs)]
 #[from_args(name = "property accessor")]
 struct AccessorArgs {
@@ -64,51 +108,41 @@ struct AccessorArgs {
     function: Value,
 }
 
+/// Construct a property and initialize its name from the getter, when available.
 pub(crate) fn property_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PropertyArgs { fget, fset, fdel, doc } = PropertyArgs::from_args(args, vm)?;
+    let name = fget.as_ref().and_then(|f| function_name(f, vm));
+    let name = name.map(|name| super::str::allocate_string(name, vm.heap));
     Ok(allocate(
-        BuiltinDescriptor {
-            kind: Type::Property,
-            name: fget.as_ref().and_then(|f| function_name(f, vm)),
-            values: [
-                fget.unwrap_or(Value::None),
-                fset.unwrap_or(Value::None),
-                fdel.unwrap_or(Value::None),
-                doc.unwrap_or(Value::None),
-            ],
+        BuiltinDescriptor::Property {
+            fget: fget.unwrap_or(Value::None),
+            fset: fset.unwrap_or(Value::None),
+            fdel: fdel.unwrap_or(Value::None),
+            doc: doc.unwrap_or(Value::None),
+            name,
         },
         vm,
     ))
 }
 
+/// Construct a descriptor that binds its callable to the owner class.
 pub(crate) fn classmethod_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ClassMethodArgs { function } = ClassMethodArgs::from_args(args, vm)?;
-    Ok(allocate(
-        BuiltinDescriptor {
-            kind: Type::ClassMethod,
-            name: function_name(&function, vm),
-            values: [function, Value::None, Value::None, Value::None],
-        },
-        vm,
-    ))
+    Ok(allocate(BuiltinDescriptor::ClassMethod(function), vm))
 }
 
+/// Construct a descriptor that returns its callable without binding.
 pub(crate) fn staticmethod_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let StaticMethodArgs { function } = StaticMethodArgs::from_args(args, vm)?;
-    Ok(allocate(
-        BuiltinDescriptor {
-            kind: Type::StaticMethod,
-            name: function_name(&function, vm),
-            values: [function, Value::None, Value::None, Value::None],
-        },
-        vm,
-    ))
+    Ok(allocate(BuiltinDescriptor::StaticMethod(function), vm))
 }
 
+/// Transfer the wrapper's owned values into the heap.
 fn allocate(descriptor: BuiltinDescriptor, vm: &mut VM<'_>) -> Value {
     Value::Ref(vm.heap.allocate(HeapData::BuiltinDescriptor(Box::new(descriptor))))
 }
 
+/// Bind an implicit attribute read using its instance and owning sandbox class.
 pub(crate) fn get(id: HeapId, instance: Option<HeapId>, owner: HeapId, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let instance = instance.map_or(Value::None, |id| {
         vm.heap.inc_ref(id);
@@ -121,64 +155,97 @@ pub(crate) fn get(id: HeapId, instance: Option<HeapId>, owner: HeapId, vm: &mut 
     protocol_get(id, instance, Some(owner), vm)
 }
 
+/// Bind explicit __get__ calls too, including builtin receivers such as property(len).__get__([]).
 fn protocol_get(id: HeapId, instance: &Value, owner: Option<&Value>, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if matches!(instance, Value::None) && owner.is_none_or(|v| matches!(v, Value::None)) {
         return Err(ExcType::type_error("__get__(None, None) is invalid"));
     }
     let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(id) else {
-        unreachable!()
+        return Err(ExcType::type_error("invalid descriptor receiver"));
     };
-    match descriptor.kind {
-        Type::StaticMethod => Ok(CallResult::Value(descriptor.values[0].clone_with_heap(vm))),
-        Type::ClassMethod => {
-            let func = descriptor.values[0].clone_with_heap(vm.heap);
+    match &**descriptor {
+        BuiltinDescriptor::StaticMethod(function) => Ok(CallResult::Value(function.clone_with_heap(vm))),
+        BuiltinDescriptor::ClassMethod(function) => {
+            let func = function.clone_with_heap(vm.heap);
             let instance = match owner {
                 Some(owner) if !matches!(owner, Value::None) => owner.clone_with_heap(vm.heap),
                 _ => type_of_ref(vm, instance),
             };
-            Ok(CallResult::Value(Value::Ref(
-                vm.heap.allocate(HeapData::BoundMethod(BoundMethod { instance, func })),
-            )))
+            Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(
+                super::BoundMethod { instance, func },
+            )))))
         }
-        Type::Property => {
-            if matches!(instance, Value::None) {
-                vm.heap.inc_ref(id);
-                return Ok(CallResult::Value(Value::Ref(id)));
-            }
-            let function = descriptor.values[0].clone_with_heap(vm);
+        BuiltinDescriptor::Property { .. } if matches!(instance, Value::None) => {
+            vm.heap.inc_ref(id);
+            Ok(CallResult::Value(Value::Ref(id)))
+        }
+        BuiltinDescriptor::Property { fget, .. } => {
+            let function = fget.clone_with_heap(vm);
             defer_drop!(function, vm);
             if matches!(function, Value::None) {
-                return Err(missing_accessor("getter"));
+                Err(missing_accessor(id, instance, "getter", vm)?)
+            } else {
+                // Native getter chains can recurse without installing a Python frame.
+                vm.enter_run_reentry()?;
+                let mut reentry = RunReentryGuard::new(vm);
+                let vm = &mut *reentry;
+                vm.call_function(function, ArgValues::One(instance.clone_with_heap(vm.heap)))
             }
-            // Native getter chains can recurse without installing a Python frame.
-            vm.enter_run_reentry()?;
-            let mut reentry = RunReentryGuard::new(vm);
-            let vm = &mut *reentry;
-            vm.call_function(function, ArgValues::One(instance.clone_with_heap(vm.heap)))
         }
-        _ => unreachable!("descriptor constructor selects its kind"),
     }
 }
 
+/// Run a property's setter or deleter, discarding its return value even across suspension.
 pub(crate) fn mutate(id: HeapId, object: &Value, value: Option<Value>, vm: &mut VM<'_>) -> RunResult<CallResult> {
     defer_drop!(value, vm);
     let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(id) else {
-        unreachable!()
+        return Err(ExcType::type_error("invalid descriptor receiver"));
     };
-    let index = if value.is_some() { 1 } else { 2 };
-    let function = descriptor.values[index].clone_with_heap(vm.heap);
+    let BuiltinDescriptor::Property { fset, fdel, .. } = &**descriptor else {
+        return Err(ExcType::type_error("descriptor does not support mutation"));
+    };
+    let (function, accessor) = if value.is_some() {
+        (fset, "setter")
+    } else {
+        (fdel, "deleter")
+    };
+    let function = function.clone_with_heap(vm.heap);
+    defer_drop!(function, vm);
     if matches!(function, Value::None) {
-        return Err(missing_accessor(if index == 1 { "setter" } else { "deleter" }));
+        Err(missing_accessor(id, object, accessor, vm)?)
+    } else {
+        let mut args = vec![object.clone_with_heap(vm.heap)];
+        args.extend(value.as_ref().map(|v| v.clone_with_heap(vm.heap)));
+        super::descriptor::discard_call(function.clone_with_heap(vm.heap), args, vm)
     }
-    let mut args = vec![object.clone_with_heap(vm.heap)];
-    args.extend(value.as_ref().map(|v| v.clone_with_heap(vm.heap)));
-    descriptor::discard_call(function, args, vm)
 }
 
-fn missing_accessor(accessor: &str) -> RunError {
-    SimpleException::new_msg(ExcType::AttributeError, format!("property has no {accessor}")).into()
+/// Include the property's current name and the receiver's class in missing-accessor errors.
+fn missing_accessor(id: HeapId, object: &Value, accessor: &str, vm: &mut VM<'_>) -> RunResult<RunError> {
+    let name = match vm.heap.get(id) {
+        HeapData::BuiltinDescriptor(descriptor) => match &**descriptor {
+            BuiltinDescriptor::Property { name, .. } => name.as_ref().map(|name| name.clone_with_heap(vm.heap)),
+            _ => None,
+        },
+        _ => None,
+    };
+    defer_drop!(name, vm);
+    let name = name
+        .as_ref()
+        .map(|name| {
+            let repr = name.py_repr(vm)?;
+            defer_drop!(repr, vm);
+            Ok::<_, RunError>(repr.as_str(vm).expect("repr is a string").to_owned())
+        })
+        .transpose()?;
+    Ok(ExcType::attribute_error_property(
+        name.as_deref(),
+        &object.py_type_name(vm),
+        accessor,
+    ))
 }
 
+/// Builtin property accessors and descriptor protocol methods exposed as bound callables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DescriptorMethod {
     Getter,
@@ -205,61 +272,62 @@ impl fmt::Display for DescriptorMethod {
 }
 
 impl DescriptorMethod {
+    /// Parse the bound receiver and Python-visible arguments before dispatching a wrapper method.
     pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         if matches!(self, Self::Get | Self::Set | Self::Delete | Self::SetName) {
-            return self.protocol_call(vm, args);
+            self.protocol_call(vm, args)
+        } else {
+            let method = self.to_string();
+            let args = args.reject_kwargs(&method, vm.heap)?;
+            let given = args.count().saturating_sub(1);
+            let guard = DropGuard::new(args, vm);
+            if given != 1 {
+                return Err(ExcType::type_error_arg_count(&method, 1, given));
+            }
+            let (args, vm) = guard.into_parts();
+            let AccessorArgs { receiver, function } = AccessorArgs::from_args(args, vm)?;
+            defer_drop!(receiver, vm);
+            defer_drop!(function, vm);
+            if let Value::Ref(id) = receiver
+                && let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(*id)
+                && let BuiltinDescriptor::Property {
+                    fget,
+                    fset,
+                    fdel,
+                    doc,
+                    name,
+                } = &**descriptor
+            {
+                let property = BuiltinDescriptor::Property {
+                    fget: if self == Self::Getter { function } else { fget }.clone_with_heap(vm.heap),
+                    fset: if self == Self::Setter { function } else { fset }.clone_with_heap(vm.heap),
+                    fdel: if self == Self::Deleter { function } else { fdel }.clone_with_heap(vm.heap),
+                    doc: doc.clone_with_heap(vm.heap),
+                    name: name.as_ref().map(|name| name.clone_with_heap(vm.heap)),
+                };
+                Ok(CallResult::Value(allocate(property, vm)))
+            } else {
+                Err(ExcType::type_error("invalid property receiver"))
+            }
         }
-        let AccessorArgs { receiver, function } = AccessorArgs::from_args(args, vm)?;
-        let mut guard = DropGuard::new((receiver, function), vm);
-        let ((receiver, _), vm) = guard.as_parts_mut();
-        let mut values = if let Value::Ref(id) = receiver
-            && let HeapData::BuiltinDescriptor(descriptor) = vm.heap.get(*id)
-            && descriptor.kind == Type::Property
-        {
-            descriptor.values.each_ref().map(|v| v.clone_with_heap(vm))
-        } else {
-            return Err(ExcType::type_error("property accessor requires a property"));
-        };
-        let name = if let Value::Ref(id) = receiver {
-            let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id) else {
-                unreachable!()
-            };
-            d.name.clone()
-        } else {
-            unreachable!()
-        };
-        let ((receiver, function), vm) = guard.into_parts();
-        receiver.drop_with(vm);
-        let index = match self {
-            Self::Getter => 0,
-            Self::Setter => 1,
-            Self::Deleter => 2,
-            _ => unreachable!(),
-        };
-        mem::replace(&mut values[index], function).drop_with(vm);
-        Ok(CallResult::Value(Value::Ref(vm.heap.allocate(
-            HeapData::BuiltinDescriptor(Box::new(BuiltinDescriptor {
-                kind: Type::Property,
-                values,
-                name,
-            })),
-        ))))
     }
-}
 
-impl DescriptorMethod {
+    /// Check the overloaded slot-wrapper signatures, counting arguments after the bound receiver.
     fn protocol_call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
-        let args = args.into_pos_only("descriptor", vm.heap)?;
+        let keyword_name = if self == Self::Get {
+            "wrapper __get__"
+        } else {
+            "descriptor"
+        };
+        let args = args.into_pos_only(keyword_name, vm.heap)?;
         defer_drop!(args, vm);
         let Some(Value::Ref(id)) = args.as_slice().first() else {
-            return Err(ExcType::type_error("descriptor receiver required"));
+            return Err(ExcType::type_error("invalid descriptor receiver"));
         };
-
-        // A caller-supplied deepcopy memo can replace a bound method's receiver.
         if !matches!(vm.heap.get(*id), HeapData::BuiltinDescriptor(_)) {
-            return Err(ExcType::type_error("descriptor receiver required"));
+            return Err(ExcType::type_error("invalid descriptor receiver"));
         }
-
+        let given = args.len() - 1;
         match (self, args.as_slice()) {
             (Self::Get, [_, instance, owner]) => protocol_get(*id, instance, Some(owner), vm),
             (Self::Get, [_, instance]) => protocol_get(*id, instance, None, vm),
@@ -269,22 +337,43 @@ impl DescriptorMethod {
                 set_name(*id, name, vm)?;
                 Ok(CallResult::Value(Value::None))
             }
-            _ => Err(ExcType::type_error("invalid descriptor arguments")),
+            _ => Err(match self {
+                Self::Get if given < 1 => ExcType::type_error_at_least("__get__", 1, given),
+                Self::Get => ExcType::type_error_at_most("__get__", 2, given),
+                Self::Set => ExcType::type_error_arg_count("__set__", 2, given),
+                Self::Delete => ExcType::type_error(format!("expected 1 argument, got {given}")),
+                Self::SetName => ExcType::type_error_too_many_positional_range("__set_name__", 2, 2, given, 0),
+                _ => ExcType::type_error("invalid descriptor method"),
+            }),
         }
     }
 }
 
 impl HeapItem for BuiltinDescriptor {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        for value in &mut self.values {
-            value.py_dec_ref_ids(stack);
+        match self {
+            Self::Property {
+                fget,
+                fset,
+                fdel,
+                doc,
+                name,
+            } => {
+                for value in [fget, fset, fdel, doc] {
+                    value.py_dec_ref_ids(stack);
+                }
+                if let Some(name) = name {
+                    name.py_dec_ref_ids(stack);
+                }
+            }
+            Self::ClassMethod(function) | Self::StaticMethod(function) => function.py_dec_ref_ids(stack),
         }
     }
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
     fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).kind
+        self.get(vm.heap).kind()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -300,30 +389,32 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _: &mut LazyHeapSet) -> RunResult<()> {
-        Ok(write!(f, "<{} object>", self.get(vm.heap).kind)?)
+        Ok(write!(f, "<{} object>", self.get(vm.heap).kind())?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let descriptor = self.get(vm.heap);
         let name = attr.as_str(vm.interns);
-        if name == "__name__" {
-            return Ok(descriptor
-                .name
-                .as_ref()
-                .map(|name| CallResult::Value(allocate_string(name.clone(), vm.heap))));
-        }
-        let value = if descriptor.kind == Type::Property {
-            let index = match name {
-                "fget" => Some(0),
-                "fset" => Some(1),
-                "fdel" => Some(2),
-                "__doc__" => Some(3),
-                _ => None,
-            };
-            if let Some(index) = index {
-                descriptor.values[index].clone_with_heap(vm)
-            } else {
-                let method = match name {
+        let method = match descriptor {
+            BuiltinDescriptor::Property {
+                fget,
+                fset,
+                fdel,
+                doc,
+                name: property_name,
+            } => {
+                let value = match name {
+                    "fget" => Some(fget),
+                    "fset" => Some(fset),
+                    "fdel" => Some(fdel),
+                    "__doc__" => Some(doc),
+                    "__name__" => property_name.as_ref(),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    return Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))));
+                }
+                match name {
                     "getter" => DescriptorMethod::Getter,
                     "setter" => DescriptorMethod::Setter,
                     "deleter" => DescriptorMethod::Deleter,
@@ -332,31 +423,26 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
                     "__delete__" => DescriptorMethod::Delete,
                     "__set_name__" => DescriptorMethod::SetName,
                     _ => return Ok(None),
-                };
-                bind_method(
-                    &Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Descriptor(method))),
-                    self.id(),
-                    vm,
-                )
+                }
             }
-        } else if name == "__get__" {
-            bind_method(
-                &Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Descriptor(
-                    DescriptorMethod::Get,
-                ))),
-                self.id(),
-                vm,
-            )
-        } else if matches!(name, "__func__" | "__wrapped__") {
-            descriptor.values[0].clone_with_heap(vm)
-        } else {
-            return Ok(None);
+            BuiltinDescriptor::ClassMethod(function) | BuiltinDescriptor::StaticMethod(function) => match name {
+                "__get__" => DescriptorMethod::Get,
+                "__func__" | "__wrapped__" => return Ok(Some(CallResult::Value(function.clone_with_heap(vm.heap)))),
+                "__name__" => {
+                    return Ok(function_name(function, vm)
+                        .map(|name| CallResult::Value(super::str::allocate_string(name, vm.heap))));
+                }
+                _ => return Ok(None),
+            },
         };
-        Ok(Some(CallResult::Value(value)))
+        Ok(Some(CallResult::Value(bind_method(
+            &Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Descriptor(method))),
+            self.id(),
+            vm,
+        ))))
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        // Attribute resolution can fail before the argument bundle is consumed.
         let mut guard = DropGuard::new(args, vm);
         let (_, vm) = guard.as_parts_mut();
         let Some(CallResult::Value(callable)) = self.py_getattr(attr, vm)? else {
@@ -368,23 +454,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
     }
 
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
-        let descriptor = self.get(vm.heap);
-        if descriptor.kind != Type::StaticMethod {
+        if let BuiltinDescriptor::StaticMethod(function) = self.get(vm.heap) {
+            let function = function.clone_with_heap(vm);
+            let mut guard = DropGuard::new((function, args), vm);
+            let (_, vm) = guard.as_parts_mut();
+            vm.enter_run_reentry()?;
+            let ((function, args), vm) = guard.into_parts();
+            let mut reentry = RunReentryGuard::new(vm);
+            let vm = &mut *reentry;
+            defer_drop!(function, vm);
+            vm.call_function(function, args)
+        } else {
             args.drop_with(vm);
-            return Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)));
+            Err(ExcType::type_error_not_callable_object(&self.py_type_name(vm)))
         }
-        let function = descriptor.values[0].clone_with_heap(vm);
-        let mut guard = DropGuard::new((function, args), vm);
-        let (_, vm) = guard.as_parts_mut();
-        vm.enter_run_reentry()?;
-        let ((function, args), vm) = guard.into_parts();
-        let mut reentry = RunReentryGuard::new(vm);
-        let vm = &mut *reentry;
-        defer_drop!(function, vm);
-        vm.call_function(function, args)
     }
 }
 
+/// Names available without executing an arbitrary callable's attribute hooks.
 fn function_name(function: &Value, vm: &VM<'_>) -> Option<String> {
     let id = match function {
         Value::DefFunction(id) => *id,
@@ -398,14 +485,18 @@ fn function_name(function: &Value, vm: &VM<'_>) -> Option<String> {
     Some(vm.interns.get_str(vm.interns.get_function(id).name.name_id).to_owned())
 }
 
+/// Store the name passed to property.__set_name__; CPython permits non-string values too.
 pub(crate) fn set_name(id: HeapId, name: &Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let Some(name) = name.as_either_str(vm.heap) else {
-        return Err(ExcType::type_error("property name must be a string"));
+    let HeapReadOutput::BuiltinDescriptor(descriptor) = vm.heap.read(id) else {
+        return Err(ExcType::type_error("invalid property receiver"));
     };
-    let name = name.as_str(vm.interns).to_owned();
-    let HeapReadOutput::BuiltinDescriptor(d) = vm.heap.read(id) else {
-        unreachable!()
+    let name = name.clone_with_heap(vm.heap);
+    let old = if let BuiltinDescriptor::Property { name: current, .. } = descriptor.get_mut(vm.heap) {
+        current.replace(name)
+    } else {
+        name.drop_with(vm);
+        return Err(ExcType::type_error("invalid property receiver"));
     };
-    d.get_mut(vm.heap).name = Some(name);
+    old.drop_with(vm);
     Ok(())
 }

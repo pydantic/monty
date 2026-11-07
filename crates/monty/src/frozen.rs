@@ -61,22 +61,31 @@ pub(crate) enum FrozenFunction {
     /// Evaluate and cache a class's `__annotations__` from its `__annotate__`.
     #[serde(rename = "type.__annotations__")]
     ClassAnnotations,
+    /// Resolve an attribute before calling it, preserving arguments across suspension.
     #[serde(rename = "descriptors.call")]
     DescriptorCall,
+    /// Bind a selected descriptor and call its result.
     #[serde(rename = "descriptors.bind_call")]
     DescriptorBindCall,
+    /// Discard the return value of a suspendable hook.
     #[serde(rename = "descriptors.discard")]
     DescriptorDiscard,
+    /// Bind and run a descriptor setter or deleter.
     #[serde(rename = "descriptors.mutation")]
     DescriptorMutation,
+    /// Call namespace descriptors' name hooks in definition order.
     #[serde(rename = "descriptors.set_names")]
     DescriptorNames,
+    /// Apply a getattr default after a suspendable getter.
     #[serde(rename = "descriptors.getattr")]
     DescriptorGetattr,
+    /// Catch AttributeError from a suspendable getter.
     #[serde(rename = "descriptors.hasattr")]
     DescriptorHasattr,
+    /// Return an attribute value and its pattern-match flag.
     #[serde(rename = "descriptors.match")]
     DescriptorMatch,
+    /// Resolve and validate descriptor-backed class pattern names.
     #[serde(rename = "descriptors.match_class")]
     DescriptorMatchClass,
 }
@@ -179,10 +188,15 @@ pub(crate) enum FrozenFunctions {
     MapLengthError = 10,
     /// Exit the loop beneath a deferred advancement's catcher, without pushing an item.
     EndForIter = 11,
+    /// Resolve an attribute for a frozen continuation.
     GetAttribute = 12,
+    /// Bind a descriptor to a checked instance and owner.
     BindDescriptor = 13,
+    /// Resolve the next __set_name__ hook.
     SetNameLookup = 14,
+    /// Validate descriptor-provided pattern metadata.
     MatchClassNames = 15,
+    /// Expose one builtin descriptor protocol method.
     Descriptor(DescriptorMethod) = 16,
 }
 

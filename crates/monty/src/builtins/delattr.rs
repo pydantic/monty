@@ -4,16 +4,14 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapReadOutput},
     modules::dataclasses,
-    types::{
-        descriptor,
-        instance::{class_member, class_name},
-    },
+    types::{descriptor, instance::class_name},
     value::Value,
 };
 
+/// Delete instance storage or dispatch its type's data-descriptor hook.
 pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let args = args.into_pos_only("delattr", vm.heap)?;
     defer_drop!(args, vm);
@@ -32,12 +30,10 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
         return Err(error);
     }
     if let Some(class) = descriptor::descriptor_class(object, vm)
-        && let Some(member) = class_member(class, attr.as_str(vm.interns), vm)
+        && let Some(member) = descriptor::data_member(class, attr.as_str(vm.interns), vm)
     {
         defer_drop!(member, vm);
-        if descriptor::is_data(member, vm) {
-            return descriptor::mutate(member, object, None, vm);
-        }
+        return descriptor::mutate(member, object, None, vm);
     }
     let key = attr.as_value(vm.heap);
     defer_drop!(key, vm);
@@ -58,14 +54,22 @@ pub(crate) fn builtin_delattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
     } else if let Value::Ref(id) = object
         && matches!(vm.heap.get(*id), HeapData::Class(_))
     {
-        Err(ExcType::attribute_error_type(
+        Err(deletion_error(ExcType::attribute_error_type(
             &class_name(*id, vm.heap, vm.interns),
             attr.as_str(vm.interns),
-        ))
+        )))
     } else {
-        Err(ExcType::attribute_error(
+        Err(deletion_error(ExcType::attribute_error(
             object.py_type_name(vm),
             attr.as_str(vm.interns),
-        ))
+        )))
     }
+}
+
+/// Attribute deletion displays carets, unlike attribute reads with the same message.
+fn deletion_error(mut error: RunError) -> RunError {
+    if let RunError::Exc(raised) = &mut error {
+        raised.hide_caret = false;
+    }
+    error
 }
