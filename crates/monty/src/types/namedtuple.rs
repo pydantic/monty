@@ -1302,17 +1302,17 @@ pub(crate) struct PyNamedTupleImpl;
 impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
     type Receiver = HeapObjectRead<'heap, NamedTuple>;
 
-    #[pymethod]
+    #[pymethod(Count)]
     fn count<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         this.method_count(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Index)]
     fn index<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         this.method_index(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(DunderGetnewargs)]
     fn dunder_getnewargs<'h>(
         this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
@@ -1321,7 +1321,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
         this.method_getnewargs(vm, args, this.get(vm.heap).class_id().is_some())
     }
 
-    #[pymethod]
+    #[pymethod(UnderAsdict)]
     fn under_asdict<'h>(
         this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
@@ -1334,7 +1334,7 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
         this.method_asdict(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(UnderReplace)]
     fn under_replace<'h>(
         this: &mut HeapObjectRead<'h, NamedTuple>,
         args: ArgValues,
@@ -1347,12 +1347,29 @@ impl<'heap> PyAttrs<'heap> for PyNamedTupleImpl {
         this.method_replace(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(UnderMake)]
     fn under_make<'h>(this: &mut HeapObjectRead<'h, NamedTuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         if this.get(vm.heap).class_id().is_none() {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(this.get(vm.heap).name(vm.interns), "_make"));
         }
         this.method_make(vm, args)
+    }
+}
+
+/// Tuple descriptors use the namedtuple's existing item storage.
+pub(crate) fn call_tuple_descriptor<'h>(
+    tuple: &HeapObjectRead<'h, NamedTuple>,
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    match attr.static_string(vm.interns) {
+        Some(StaticStrings::Count) => tuple.method_count(vm, args).map(CallResult::Value),
+        Some(StaticStrings::Index) => tuple.method_index(vm, args).map(CallResult::Value),
+        _ => {
+            args.drop_with(vm);
+            Err(ExcType::attribute_error("tuple", attr.as_str(vm.interns)))
+        }
     }
 }

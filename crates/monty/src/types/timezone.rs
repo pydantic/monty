@@ -358,14 +358,14 @@ pub(crate) struct PyTimeZoneImpl;
 impl<'heap> PyAttrs<'heap> for PyTimeZoneImpl {
     type Receiver = HeapObjectRead<'heap, TimeZone>;
 
-    #[pymethod]
+    #[pymethod(Utcoffset)]
     fn utcoffset<'h>(value: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         take_dt_arg("timezone.utcoffset", args, vm)?;
         let offset_seconds = value.get(vm.heap).offset_seconds;
         Ok(utcoffset_value(Some(offset_seconds), vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Tzname)]
     fn tzname<'h>(value: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         take_dt_arg("timezone.tzname", args, vm)?;
         let tz = value.get(vm.heap);
@@ -373,23 +373,23 @@ impl<'heap> PyAttrs<'heap> for PyTimeZoneImpl {
         Ok(allocate_string(name, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Dst)]
     fn dst<'h>(_: &mut HeapObjectRead<'h, TimeZone>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         take_dt_arg("timezone.dst", args, vm)?;
         Ok(Value::None)
     }
 
-    #[pyvalue]
+    #[pyvalue(Utc)]
     fn utc(vm: &mut VM<'_>) -> Value {
         vm.heap.get_timezone_utc()
     }
 
-    #[pyvalue]
+    #[pyvalue(Min)]
     fn min(vm: &mut VM<'_>) -> Value {
         allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Max)]
     fn max(vm: &mut VM<'_>) -> Value {
         allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap)
     }

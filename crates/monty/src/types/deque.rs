@@ -960,7 +960,7 @@ pub(crate) struct PyDequeImpl;
 impl<'heap> PyAttrs<'heap> for PyDequeImpl {
     type Receiver = HeapObjectRead<'heap, Deque>;
 
-    #[pymethod]
+    #[pymethod(Append)]
     fn append<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let item = args.get_one_arg("deque.append", vm.heap)?;
@@ -969,7 +969,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Appendleft)]
     fn appendleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let item = args.get_one_arg("deque.appendleft", vm.heap)?;
@@ -978,7 +978,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Pop)]
     fn pop<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.pop", vm.heap)?;
@@ -993,7 +993,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Popleft)]
     fn popleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.popleft", vm.heap)?;
@@ -1007,7 +1007,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Clear)]
     fn clear<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.clear", vm.heap)?;
@@ -1023,7 +1023,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.copy", vm.heap)?;
@@ -1036,7 +1036,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Reverse)]
     fn reverse<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("deque.reverse", vm.heap)?;
@@ -1045,7 +1045,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Extend)]
     fn extend<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let iterable = args.get_one_arg("deque.extend", vm.heap)?;
@@ -1054,7 +1054,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Extendleft)]
     fn extendleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let iterable = args.get_one_arg("deque.extendleft", vm.heap)?;
@@ -1064,7 +1064,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Rotate)]
     /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
     fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
@@ -1091,7 +1091,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Ok(Value::None)
     }
 
-    #[pymethod]
+    #[pymethod(Insert)]
     /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
     fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let InsertArgs {
@@ -1135,7 +1135,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Ok(Value::None)
     }
 
-    #[pymethod]
+    #[pymethod(Remove)]
     /// `deque.remove(x)` — removes the first item equal to `x`.
     fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let target = args.get_one_arg("deque.remove", vm.heap)?;
@@ -1167,7 +1167,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Err(ExcType::value_error_deque_remove())
     }
 
-    #[pymethod]
+    #[pymethod(Index)]
     /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
     fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let IndexArgs {
@@ -1206,7 +1206,7 @@ impl<'heap> PyAttrs<'heap> for PyDequeImpl {
         Err(ExcType::value_error_deque_index())
     }
 
-    #[pymethod]
+    #[pymethod(Count)]
     /// `deque.count(x)` — number of items equal to `x`.
     fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let target = args.get_one_arg("deque.count", vm.heap)?;

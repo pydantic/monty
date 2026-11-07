@@ -872,7 +872,7 @@ pub(crate) struct PyDictItemsViewImpl;
 impl<'heap> PyAttrs<'heap> for PyDictItemsViewImpl {
     type Receiver = HeapObjectRead<'heap, DictItemsView>;
 
-    #[pymethod]
+    #[pymethod(Isdisjoint)]
     fn isdisjoint<'h>(
         this: &mut HeapObjectRead<'h, DictItemsView>,
         args: ArgValues,
@@ -892,7 +892,7 @@ pub(crate) struct PyDictKeysViewImpl;
 impl<'heap> PyAttrs<'heap> for PyDictKeysViewImpl {
     type Receiver = HeapObjectRead<'heap, DictKeysView>;
 
-    #[pymethod]
+    #[pymethod(Isdisjoint)]
     fn isdisjoint<'h>(
         this: &mut HeapObjectRead<'h, DictKeysView>,
         args: ArgValues,

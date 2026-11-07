@@ -14,17 +14,77 @@ use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
-    bytecode::VM,
+    bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
+    intern::StaticStrings,
+    py_attrs::{self, MethodCall},
     py_value::PyValue,
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
-    value::{VALUE_SIZE, Value},
+    types::{
+        Dict, List, PyTrait, Type, allocate_tuple, dict::dict_update, iter::collect_owned_iterable, py_trait::CmpOrder,
+    },
+    value::{EitherStr, VALUE_SIZE, Value},
 };
+
+/// Counter's Python-defined methods accept native mappings without a Counter descriptor check.
+pub(crate) fn call_unbound(
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
+    let name = attr.static_string(vm.interns);
+    if !matches!(
+        name,
+        Some(
+            StaticStrings::MostCommon
+                | StaticStrings::Elements
+                | StaticStrings::Total
+                | StaticStrings::Copy
+                | StaticStrings::Update
+                | StaticStrings::Subtract
+        )
+    ) {
+        // These methods come from dict and keep dict's receiver validation and error name.
+        return py_attrs::call_unbound(Type::Dict, attr, call, args, vm);
+    }
+    let (receiver, args) = match py_attrs::take_receiver(args) {
+        Ok(parts) => parts,
+        Err(args) => {
+            args.drop_with(vm);
+            return Err(ExcType::type_error(format!(
+                "Counter.{}() missing 1 required positional argument: 'self'",
+                attr.as_str(vm.interns)
+            )));
+        }
+    };
+    let mut pending = DropGuard::new((receiver, args), vm);
+    let ((receiver, _), vm) = pending.as_parts_mut();
+    let receiver_type = receiver.py_type(vm);
+    if name == Some(StaticStrings::Copy) {
+        let ((receiver, args), vm) = pending.into_parts();
+        defer_drop!(receiver, vm);
+        args.check_zero_args("Counter.copy", vm.heap)?;
+        // copy() constructs self.__class__(self), even for a native non-mapping receiver.
+        let copy = receiver.clone_with_heap(vm);
+        return receiver_type.call(vm, ArgValues::One(copy));
+    }
+    if !receiver_type.is_instance_of(Type::Dict) {
+        let missing = match name {
+            Some(StaticStrings::Total) => "values",
+            Some(StaticStrings::Update | StaticStrings::Subtract) => "get",
+            _ => "items",
+        };
+        return Err(ExcType::attribute_error(receiver.py_type_name(vm), missing));
+    }
+    let ((receiver, args), vm) = pending.into_parts();
+    defer_drop!(receiver, vm);
+    call(&mut receiver.py_value(vm), args, vm)
+}
 
 /// Adds (or subtracts) `delta` from two counts, with CPython's operator wording
 /// when the operand types have no numeric `+`/`-`.
@@ -286,8 +346,38 @@ pub(crate) fn counter_update_method<'h>(
         kwargs.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(name, 1, 2, total + 1, 0));
     }
-    counter_update(counter, source, kwargs, subtract, vm)?;
-    Ok(Value::None)
+    let mut pending = DropGuard::new((source, kwargs), vm);
+    let ((source, _), vm) = pending.as_parts_mut();
+    let is_counter = counter.get(vm.heap).is_counter();
+    if !is_counter
+        && !subtract
+        && counter.get(vm.heap).is_empty()
+        && source
+            .as_ref()
+            .is_some_and(|source| source.py_type(vm).is_instance_of(Type::Dict))
+    {
+        return Err(ExcType::type_error(format!(
+            "super(type, obj): obj (instance of {}) is not an instance or subtype of type (Counter).",
+            counter.py_type_name(vm),
+        )));
+    }
+    let ((source, kwargs), vm) = pending.into_parts();
+    if is_counter || kwargs.is_empty() {
+        counter_update(counter, source, kwargs, subtract, vm)?;
+        return Ok(Value::None);
+    }
+    // CPython processes keyword counts by calling self.update/self.subtract.
+    // A plain dict's update replaces values, and it has no subtract method.
+    let mut pending = DropGuard::new(kwargs, vm);
+    let (_, vm) = pending.as_parts_mut();
+    counter_update(counter, source, KwargsValues::Empty, subtract, vm)?;
+    let (kwargs, vm) = pending.into_parts();
+    if subtract {
+        kwargs.drop_with(vm);
+        Err(ExcType::attribute_error(counter.py_type_name(vm), "subtract"))
+    } else {
+        dict_update(counter, ArgValues::Kwargs(kwargs), vm)
+    }
 }
 
 /// `Counter.total()` — the sum of all counts.

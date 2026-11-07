@@ -766,14 +766,14 @@ pub(crate) struct PyComplexImpl;
 impl<'heap> PyAttrs<'heap> for PyComplexImpl {
     type Receiver = HeapObjectRead<'heap, Complex>;
 
-    #[pymethod]
+    #[pymethod(Conjugate)]
     fn conjugate<'h>(value: &mut HeapObjectRead<'h, Complex>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let c = *value.get(vm.heap);
         args.check_zero_args("complex.conjugate", vm.heap)?;
         Ok(c.conjugate().into_value(vm.heap))
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(FromNumber)]
     fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }

@@ -678,7 +678,7 @@ impl<'heap> PyAttrs<'heap> for PyTupleImpl {
     ///
     /// Returns the index of the first occurrence of value.
     /// Raises ValueError if the value is not found.
-    #[pymethod]
+    #[pymethod(Index)]
     fn index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
         defer_drop!(pos_args, vm);
@@ -718,7 +718,7 @@ impl<'heap> PyAttrs<'heap> for PyTupleImpl {
     /// Implements Python's `tuple.count(value)` method.
     ///
     /// Returns the number of occurrences of value in the tuple.
-    #[pymethod]
+    #[pymethod(Count)]
     fn count<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = args.get_one_arg("tuple.count", vm.heap)?;
         defer_drop!(value, vm);

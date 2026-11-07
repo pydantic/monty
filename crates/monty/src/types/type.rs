@@ -16,7 +16,7 @@ use crate::{
         itertools,
         itertools::ItertoolsFunctions,
     },
-    py_attrs::{self, AttrDef, PyAttrs},
+    py_attrs::{self, AttrDef, AttrTable, PyAttrs},
     py_class::PyClass,
     py_value::PyValue,
     types::{
@@ -643,50 +643,49 @@ impl Type {
 
     /// Returns the generated attribute definitions for this builtin type.
     ///
-    /// Types without a registered table return an empty slice.
-    #[cfg_attr(not(test), expect(dead_code, reason = "retained for builtin attribute enumeration"))]
-    pub(crate) const fn attrs(self) -> &'static [(StaticStrings, AttrDef)] {
+    /// Types without a registered table return `None`.
+    pub(crate) const fn attr_table(self) -> Option<AttrTable> {
         match self {
-            Self::LruCacheWrapper => <super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::ATTRS,
-            Self::NamedTuple => <super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::ATTRS,
-            Self::Bytes => <super::bytes::PyBytes<'static> as PyAttrs<'static>>::ATTRS,
-            Self::Path => <super::path::PyPathImpl as PyAttrs<'static>>::ATTRS,
-            Self::Random => <super::random::PyRandomImpl as PyAttrs<'static>>::ATTRS,
+            Self::LruCacheWrapper => Some(<super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::TABLE),
+            Self::NamedTuple => Some(<super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::TABLE),
+            Self::Bytes => Some(<super::bytes::PyBytes<'static> as PyAttrs<'static>>::TABLE),
+            Self::Path => Some(<super::path::PyPathImpl as PyAttrs<'static>>::TABLE),
+            Self::Random => Some(<super::random::PyRandomImpl as PyAttrs<'static>>::TABLE),
             Self::HashlibHash | Self::Blake2b | Self::Blake2s => {
-                <super::hashlib::PyHashImpl as PyAttrs<'static>>::ATTRS
+                Some(<super::hashlib::PyHashImpl as PyAttrs<'static>>::TABLE)
             }
-            Self::HashlibHashXof => <super::hashlib::PyHashXofImpl as PyAttrs<'static>>::ATTRS,
-            Self::CsvWriter => <super::csv::PyCsvWriterImpl as PyAttrs<'static>>::ATTRS,
-            Self::CsvDictWriter => <super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::ATTRS,
-            Self::DirEntry => <super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::ATTRS,
-            Self::ScandirIterator => <super::dir_scan::PyScandirImpl as PyAttrs<'static>>::ATTRS,
-            Self::Dict => <super::dict::PyDictImpl as PyAttrs<'static>>::ATTRS,
-            Self::DefaultDict => <super::dict::PyDefaultDictImpl as PyAttrs<'static>>::ATTRS,
-            Self::Counter => <super::dict::PyCounterImpl as PyAttrs<'static>>::ATTRS,
-            Self::Set => <super::set::PySetImpl as PyAttrs<'static>>::ATTRS,
-            Self::FrozenSet => <super::set::PyFrozenSetImpl as PyAttrs<'static>>::ATTRS,
-            Self::DictKeys => <super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::ATTRS,
-            Self::DictItems => <super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::ATTRS,
-            Self::DateTime => <super::datetime::PyDateTimeImpl as PyAttrs<'static>>::ATTRS,
-            Self::Deque => <super::deque::PyDequeImpl as PyAttrs<'static>>::ATTRS,
+            Self::HashlibHashXof => Some(<super::hashlib::PyHashXofImpl as PyAttrs<'static>>::TABLE),
+            Self::CsvWriter => Some(<super::csv::PyCsvWriterImpl as PyAttrs<'static>>::TABLE),
+            Self::CsvDictWriter => Some(<super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::TABLE),
+            Self::DirEntry => Some(<super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::TABLE),
+            Self::ScandirIterator => Some(<super::dir_scan::PyScandirImpl as PyAttrs<'static>>::TABLE),
+            Self::Dict => Some(<super::dict::PyDictImpl as PyAttrs<'static>>::TABLE),
+            Self::DefaultDict => Some(<super::dict::PyDefaultDictImpl as PyAttrs<'static>>::TABLE),
+            Self::Counter => Some(<super::dict::PyCounterImpl as PyAttrs<'static>>::TABLE),
+            Self::Set => Some(<super::set::PySetImpl as PyAttrs<'static>>::TABLE),
+            Self::FrozenSet => Some(<super::set::PyFrozenSetImpl as PyAttrs<'static>>::TABLE),
+            Self::DictKeys => Some(<super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::TABLE),
+            Self::DictItems => Some(<super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::TABLE),
+            Self::DateTime => Some(<super::datetime::PyDateTimeImpl as PyAttrs<'static>>::TABLE),
+            Self::Deque => Some(<super::deque::PyDequeImpl as PyAttrs<'static>>::TABLE),
             Self::TextIOWrapper | Self::BufferedReader | Self::BufferedWriter | Self::BufferedRandom => {
-                <super::file::PyFileImpl as PyAttrs<'static>>::ATTRS
+                Some(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE)
             }
-            Self::Decimal => <super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::ATTRS,
-            Self::DecimalContext => <super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::ATTRS,
-            Self::DecimalSignalDict => <super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::ATTRS,
-            Self::ForwardRef => <super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::ATTRS,
-            Self::Str => <super::str::PyStr<'static> as PyAttrs<'static>>::ATTRS,
-            Self::List => <super::list::PyListImpl as PyAttrs<'static>>::ATTRS,
-            Self::Tuple => <super::tuple::PyTupleImpl as PyAttrs<'static>>::ATTRS,
-            Self::Complex => <super::complex::PyComplexImpl as PyAttrs<'static>>::ATTRS,
-            Self::Date => <super::date::PyDateImpl as PyAttrs<'static>>::ATTRS,
-            Self::Time => <super::time::PyTimeImpl as PyAttrs<'static>>::ATTRS,
-            Self::TimeDelta => <super::timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::ATTRS,
-            Self::TimeZone => <super::timezone::PyTimeZoneImpl as PyAttrs<'static>>::ATTRS,
-            Self::RePattern => <super::re_pattern::PyRePatternImpl as PyAttrs<'static>>::ATTRS,
-            Self::ReMatch => <super::re_match::PyReMatchImpl as PyAttrs<'static>>::ATTRS,
-            _ => &[],
+            Self::Decimal => Some(<super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::TABLE),
+            Self::DecimalContext => Some(<super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::TABLE),
+            Self::DecimalSignalDict => Some(<super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::TABLE),
+            Self::ForwardRef => Some(<super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::TABLE),
+            Self::Str => Some(<super::str::PyStr<'static> as PyAttrs<'static>>::TABLE),
+            Self::List => Some(<super::list::PyListImpl as PyAttrs<'static>>::TABLE),
+            Self::Tuple => Some(<super::tuple::PyTupleImpl as PyAttrs<'static>>::TABLE),
+            Self::Complex => Some(<super::complex::PyComplexImpl as PyAttrs<'static>>::TABLE),
+            Self::Date => Some(<super::date::PyDateImpl as PyAttrs<'static>>::TABLE),
+            Self::Time => Some(<super::time::PyTimeImpl as PyAttrs<'static>>::TABLE),
+            Self::TimeDelta => Some(<super::timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::TABLE),
+            Self::TimeZone => Some(<super::timezone::PyTimeZoneImpl as PyAttrs<'static>>::TABLE),
+            Self::RePattern => Some(<super::re_pattern::PyRePatternImpl as PyAttrs<'static>>::TABLE),
+            Self::ReMatch => Some(<super::re_match::PyReMatchImpl as PyAttrs<'static>>::TABLE),
+            _ => None,
         }
     }
 
@@ -696,46 +695,7 @@ impl Type {
     /// Names absent from the table return `None`; dynamic namespaces are handled separately.
     pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
         let name = attr.static_string(interns)?;
-        match self {
-            Self::Set => super::set::PySetImpl::lookup_attr(name),
-            Self::FrozenSet => super::set::PyFrozenSetImpl::lookup_attr(name),
-            Self::DictKeys => super::dict_view::PyDictKeysViewImpl::lookup_attr(name),
-            Self::DictItems => super::dict_view::PyDictItemsViewImpl::lookup_attr(name),
-            Self::DateTime => super::datetime::PyDateTimeImpl::lookup_attr(name),
-            Self::Deque => super::deque::PyDequeImpl::lookup_attr(name),
-            Self::TextIOWrapper | Self::BufferedReader | Self::BufferedWriter | Self::BufferedRandom => {
-                super::file::PyFileImpl::lookup_attr(name)
-            }
-            Self::Dict => super::dict::PyDictImpl::lookup_attr(name),
-            Self::DefaultDict => super::dict::PyDefaultDictImpl::lookup_attr(name),
-            Self::Counter => super::dict::PyCounterImpl::lookup_attr(name),
-            Self::Bytes => super::bytes::PyBytes::lookup_attr(name),
-            Self::Path => super::path::PyPathImpl::lookup_attr(name),
-            Self::Random => super::random::PyRandomImpl::lookup_attr(name),
-            Self::HashlibHash | Self::Blake2b | Self::Blake2s => super::hashlib::PyHashImpl::lookup_attr(name),
-            Self::HashlibHashXof => super::hashlib::PyHashXofImpl::lookup_attr(name),
-            Self::CsvWriter => super::csv::PyCsvWriterImpl::lookup_attr(name),
-            Self::CsvDictWriter => super::csv::PyCsvDictWriterImpl::lookup_attr(name),
-            Self::DirEntry => super::dir_scan::PyDirEntryImpl::lookup_attr(name),
-            Self::ScandirIterator => super::dir_scan::PyScandirImpl::lookup_attr(name),
-            Self::LruCacheWrapper => super::lru_cache::PyLruCacheImpl::lookup_attr(name),
-            Self::NamedTuple => super::namedtuple::PyNamedTupleImpl::lookup_attr(name),
-            Self::Decimal => super::decimal::py::PyDecimalImpl::lookup_attr(name),
-            Self::DecimalContext => super::decimal::py_context::PyContextImpl::lookup_attr(name),
-            Self::DecimalSignalDict => super::decimal::py_context::PySignalDictImpl::lookup_attr(name),
-            Self::ForwardRef => super::forward_ref::PyForwardRefImpl::lookup_attr(name),
-            Self::Str => super::str::PyStr::lookup_attr(name),
-            Self::List => super::list::PyListImpl::lookup_attr(name),
-            Self::Tuple => super::tuple::PyTupleImpl::lookup_attr(name),
-            Self::Complex => super::complex::PyComplexImpl::lookup_attr(name),
-            Self::Date => super::date::PyDateImpl::lookup_attr(name),
-            Self::Time => super::time::PyTimeImpl::lookup_attr(name),
-            Self::TimeDelta => super::timedelta::PyTimeDeltaImpl::lookup_attr(name),
-            Self::TimeZone => super::timezone::PyTimeZoneImpl::lookup_attr(name),
-            Self::RePattern => super::re_pattern::PyRePatternImpl::lookup_attr(name),
-            Self::ReMatch => super::re_match::PyReMatchImpl::lookup_attr(name),
-            _ => None,
-        }
+        (self.attr_table()?.lookup)(name)
     }
 
     /// Calls registered methods on existing native views, binding class methods to their owner.
@@ -747,7 +707,7 @@ impl Type {
         vm: &mut VM<'h>,
     ) -> RunResult<CallResult> {
         match self.lookup_attr(attr, vm.interns) {
-            Some(AttrDef::Method(method)) => method(obj, args, vm),
+            Some(AttrDef::Method { call, .. }) => call(obj, args, vm),
             Some(AttrDef::ClassMethod(classmethod)) => classmethod(self.py_class(), args, vm),
             _ => obj.call_dynamic_attr(vm, attr, args),
         }
@@ -763,7 +723,17 @@ impl Type {
             Some(AttrDef::ClassMethod(classmethod)) => {
                 return classmethod(self.py_class(), args, vm);
             }
-            Some(AttrDef::Method(method)) => return py_attrs::call_unbound(self, attr, method, args, vm),
+            Some(AttrDef::Method {
+                call: method,
+                owner: Some(owner),
+            }) => return py_attrs::call_unbound(owner, attr, method, args, vm),
+            Some(AttrDef::Method {
+                call: method,
+                owner: None,
+            }) if self == Self::Counter => {
+                return collections::counter::call_unbound(attr, method, args, vm);
+            }
+            Some(AttrDef::Method { call: method, .. }) => return py_attrs::call_unbound(self, attr, method, args, vm),
             _ => {}
         }
         match (self, attr.static_string(vm.interns)) {
@@ -853,11 +823,6 @@ impl Type {
         }
 
         Some(match (self, attr.static_string(vm.interns)?) {
-            (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
-            (Self::DateTime, StaticStrings::Max) => {
-                datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
-            }
-            (Self::DateTime, StaticStrings::Resolution) => timedelta::allocate_micros(1, vm.heap),
             // The `_blake2` size limits, on the class and so on its instances.
             (Self::Blake2b, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(64),
             (Self::Blake2b, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(16),

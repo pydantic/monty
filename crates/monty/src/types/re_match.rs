@@ -460,7 +460,7 @@ impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
     /// - `m.group()` → equivalent to `m.group(0)`, returns full match string
     /// - `m.group(n)` → returns the nth group (integer or named string)
     /// - `m.group(n1, n2, ...)` → returns a tuple of groups
-    #[pymethod]
+    #[pymethod(Group)]
     fn group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         match args {
             ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
@@ -483,13 +483,13 @@ impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Groups)]
     fn groups<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("re.Match.groups", vm.heap)?;
         Ok(m.get(vm.heap).get_groups(vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Groupdict)]
     fn groupdict<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
         let default = default.unwrap_or(Value::None);
@@ -498,19 +498,19 @@ impl<'heap> PyAttrs<'heap> for PyReMatchImpl {
         Ok(result)
     }
 
-    #[pymethod]
+    #[pymethod(Start)]
     fn start<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
         m.get(vm.heap).get_start(n, vm)
     }
 
-    #[pymethod]
+    #[pymethod(End)]
     fn end<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
         m.get(vm.heap).get_end(n, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Span)]
     fn span<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
         m.get(vm.heap).get_span(n, vm)

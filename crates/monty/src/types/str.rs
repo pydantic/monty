@@ -590,21 +590,21 @@ pub(crate) fn copy_format_template(template: &str, tracker: &ResourceTracker) ->
 impl<'h> PyAttrs<'h> for PyStr<'h> {
     type Receiver = PyStr<'h>;
 
-    #[pymethod]
+    #[pymethod(Lower)]
     fn lower(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.lower", vm.heap)?;
         let s = s.as_str(vm);
         Ok(allocate_string(lowercase(s), vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Upper)]
     fn upper(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.upper", vm.heap)?;
         let s = s.as_str(vm);
         Ok(allocate_string(uppercase(s), vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Capitalize)]
     fn capitalize(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.capitalize", vm.heap)?;
         let s = s.as_str(vm);
@@ -619,7 +619,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(allocate_string(result, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Title)]
     fn title(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.title", vm.heap)?;
         let s = s.as_str(vm);
@@ -639,7 +639,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(allocate_string(result, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Swapcase)]
     fn swapcase(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.swapcase", vm.heap)?;
         let s = s.as_str(vm);
@@ -659,28 +659,28 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(allocate_string(result, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Casefold)]
     fn casefold(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.casefold", vm.heap)?;
         let s = s.as_str(vm);
         Ok(allocate_string(casefold(s), vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Isalpha)]
     fn isalpha(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isalpha", vm.heap)?;
         let s = s.as_str(vm);
         Ok(Value::Bool(all_chars(s, TypeRecord::is_alpha)))
     }
 
-    #[pymethod]
+    #[pymethod(Isdigit)]
     fn isdigit(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isdigit", vm.heap)?;
         let s = s.as_str(vm);
         Ok(Value::Bool(all_chars(s, TypeRecord::is_digit)))
     }
 
-    #[pymethod]
+    #[pymethod(Isalnum)]
     fn isalnum(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isalnum", vm.heap)?;
         let s = s.as_str(vm);
@@ -689,21 +689,21 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         })))
     }
 
-    #[pymethod]
+    #[pymethod(Isnumeric)]
     fn isnumeric(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isnumeric", vm.heap)?;
         let s = s.as_str(vm);
         Ok(Value::Bool(all_chars(s, TypeRecord::is_numeric)))
     }
 
-    #[pymethod]
+    #[pymethod(Isspace)]
     fn isspace(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isspace", vm.heap)?;
         let s = s.as_str(vm);
         Ok(Value::Bool(all_chars(s, TypeRecord::is_space)))
     }
 
-    #[pymethod]
+    #[pymethod(Islower)]
     fn islower(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.islower", vm.heap)?;
         let s = s.as_str(vm);
@@ -718,7 +718,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(Value::Bool(has_cased))
     }
 
-    #[pymethod]
+    #[pymethod(Isupper)]
     fn isupper(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isupper", vm.heap)?;
         let s = s.as_str(vm);
@@ -733,13 +733,13 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(Value::Bool(has_cased))
     }
 
-    #[pymethod]
+    #[pymethod(Isascii)]
     fn isascii(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isascii", vm.heap)?;
         Ok(Value::Bool(s.as_str(vm).is_ascii()))
     }
 
-    #[pymethod]
+    #[pymethod(Isdecimal)]
     fn isdecimal(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isdecimal", vm.heap)?;
         let s = s.as_str(vm);
@@ -750,7 +750,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns the lowest index in the string where substring sub is found within
     /// the slice s[start:end]. Returns -1 if sub is not found.
-    #[pymethod]
+    #[pymethod(Find)]
     fn find(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sub, range) = parse_search_args("str.find", s, args, vm)?;
         let Some((start, end)) = range else {
@@ -774,7 +774,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns the highest index in the string where substring sub is found within
     /// the slice s[start:end]. Returns -1 if sub is not found.
-    #[pymethod]
+    #[pymethod(Rfind)]
     fn rfind(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sub, range) = parse_search_args("str.rfind", s, args, vm)?;
         let Some((start, end)) = range else {
@@ -797,7 +797,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.index(sub, start?, end?)` method.
     ///
     /// Like find(), but raises ValueError when the substring is not found.
-    #[pymethod]
+    #[pymethod(Index)]
     fn index(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sub, range) = parse_search_args("str.index", s, args, vm)?;
         let Some((start, end)) = range else {
@@ -819,7 +819,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.rindex(sub, start?, end?)` method.
     ///
     /// Like rfind(), but raises ValueError when the substring is not found.
-    #[pymethod]
+    #[pymethod(Rindex)]
     fn rindex(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sub, range) = parse_search_args("str.rindex", s, args, vm)?;
         let Some((start, end)) = range else {
@@ -842,7 +842,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns the number of non-overlapping occurrences of substring sub in
     /// the string s[start:end].
-    #[pymethod]
+    #[pymethod(Count)]
     fn count(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (sub, range) = parse_search_args("str.count", s, args, vm)?;
         let Some((start, end)) = range else {
@@ -865,7 +865,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns True if the string starts with the prefix, otherwise returns False.
     /// The prefix argument can be a string or a tuple of strings.
-    #[pymethod]
+    #[pymethod(Startswith)]
     fn startswith(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         Self::starts_ends_with(s, "str.startswith", |hay, prefix| hay.starts_with(prefix), args, vm)
     }
@@ -874,7 +874,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns True if the string ends with the suffix, otherwise returns False.
     /// The suffix argument can be a string or a tuple of strings.
-    #[pymethod]
+    #[pymethod(Endswith)]
     fn endswith(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         Self::starts_ends_with(s, "str.endswith", |hay, suffix| hay.ends_with(suffix), args, vm)
     }
@@ -883,7 +883,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy of the string with leading and trailing characters removed.
     /// If chars is not specified, whitespace characters are removed.
-    #[pymethod]
+    #[pymethod(Strip)]
     fn strip(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let chars = parse_strip_arg("str.strip", args, vm)?;
         let s = s.as_str(vm);
@@ -897,7 +897,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.lstrip(chars?)` method.
     ///
     /// Returns a copy of the string with leading characters removed.
-    #[pymethod]
+    #[pymethod(Lstrip)]
     fn lstrip(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let chars = parse_strip_arg("str.lstrip", args, vm)?;
         let s = s.as_str(vm);
@@ -911,7 +911,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.rstrip(chars?)` method.
     ///
     /// Returns a copy of the string with trailing characters removed.
-    #[pymethod]
+    #[pymethod(Rstrip)]
     fn rstrip(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let chars = parse_strip_arg("str.rstrip", args, vm)?;
         let s = s.as_str(vm);
@@ -926,7 +926,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// If the string starts with the prefix string, return string[len(prefix):].
     /// Otherwise, return a copy of the original string.
-    #[pymethod]
+    #[pymethod(Removeprefix)]
     fn removeprefix(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let prefix_value = args.get_one_arg("str.removeprefix", vm.heap)?;
         defer_drop!(prefix_value, vm);
@@ -941,7 +941,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// If the string ends with the suffix string, return string[:-len(suffix)].
     /// Otherwise, return a copy of the original string.
-    #[pymethod]
+    #[pymethod(Removesuffix)]
     fn removesuffix(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let suffix_value = args.get_one_arg("str.removesuffix", vm.heap)?;
         defer_drop!(suffix_value, vm);
@@ -955,7 +955,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.split(sep?, maxsplit?)` method.
     ///
     /// Returns a list of the words in the string, using sep as the delimiter string.
-    #[pymethod]
+    #[pymethod(Split)]
     fn split(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let SplitArgs { sep, maxsplit } = SplitArgs::from_args(args, vm)?;
         let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
@@ -1011,7 +1011,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a list of the words in the string, using sep as the delimiter string,
     /// splitting from the right.
-    #[pymethod]
+    #[pymethod(Rsplit)]
     fn rsplit(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let RsplitArgs { sep, maxsplit } = RsplitArgs::from_args(args, vm)?;
         let (sep, maxsplit) = coerce_split_args(sep, maxsplit, vm)?;
@@ -1071,7 +1071,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a list of the lines in the string, breaking at line boundaries.
     /// Accepts keepends as either positional or keyword argument.
-    #[pymethod]
+    #[pymethod(Splitlines)]
     fn splitlines(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         // Skip ordinary bytes with one lookup; Unicode boundaries start with 0xc2 or 0xe2.
         const LINE_BOUNDARY_START: [bool; 256] = {
@@ -1150,7 +1150,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Splits the string at the first occurrence of sep, and returns a 3-tuple
     /// containing the part before the separator, the separator itself, and the part after.
-    #[pymethod]
+    #[pymethod(Partition)]
     fn partition(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let sep_value = args.get_one_arg("str.partition", vm.heap)?;
         defer_drop!(sep_value, vm);
@@ -1180,7 +1180,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Splits the string at the last occurrence of sep, and returns a 3-tuple
     /// containing the part before the separator, the separator itself, and the part after.
-    #[pymethod]
+    #[pymethod(Rpartition)]
     fn rpartition(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let sep_value = args.get_one_arg("str.rpartition", vm.heap)?;
         defer_drop!(sep_value, vm);
@@ -1210,7 +1210,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy with all occurrences of substring old replaced by new.
     /// If count is given, only the first count occurrences are replaced.
-    #[pymethod]
+    #[pymethod(Replace)]
     fn replace(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (old, new, count) = parse_replace_args("str.replace", args, vm)?;
         let s = s.as_str(vm);
@@ -1232,7 +1232,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns centered in a string of length width. Padding is done using the
     /// specified fill character (default is a space).
-    #[pymethod]
+    #[pymethod(Center)]
     fn center(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (width, fillchar) = parse_justify_args("str.center", args, vm)?;
         let s = s.as_str(vm);
@@ -1264,7 +1264,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.ljust(width, fillchar?)` method.
     ///
     /// Returns left-justified in a string of length width.
-    #[pymethod]
+    #[pymethod(Ljust)]
     fn ljust(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (width, fillchar) = parse_justify_args("str.ljust", args, vm)?;
         let s = s.as_str(vm);
@@ -1287,7 +1287,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// Implements Python's `str.rjust(width, fillchar?)` method.
     ///
     /// Returns right-justified in a string of length width.
-    #[pymethod]
+    #[pymethod(Rjust)]
     fn rjust(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (width, fillchar) = parse_justify_args("str.rjust", args, vm)?;
         let s = s.as_str(vm);
@@ -1311,7 +1311,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy of the string left filled with ASCII '0' digits to make a
     /// string of length width. A sign prefix is handled correctly.
-    #[pymethod]
+    #[pymethod(Zfill)]
     fn zfill(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let width_value = args.get_one_arg("str.zfill", vm.heap)?;
         defer_drop!(width_value, vm);
@@ -1360,7 +1360,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     ///
     /// Returns a copy of the string where all tab characters are replaced by one or
     /// more spaces, depending on the current column and the given tab size.
-    #[pymethod]
+    #[pymethod(Expandtabs)]
     fn expandtabs(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let ExpandtabsArgs { tabsize } = ExpandtabsArgs::from_args(args, vm)?;
 
@@ -1407,7 +1407,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         builder.finish(vm.heap)
     }
 
-    #[pymethod]
+    #[pymethod(Format)]
     fn format(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let template = match copy_format_template(s.as_str(vm), &vm.heap.tracker) {
             Ok(template) => template,
@@ -1427,7 +1427,7 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
     /// is only looked up (and validated) when an actual encoding error occurs —
     /// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
     /// the handler to do.
-    #[pymethod]
+    #[pymethod(Encode)]
     fn encode(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
         defer_drop!(encoding, vm);
@@ -1441,13 +1441,13 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(Value::Ref(heap_id))
     }
 
-    #[pymethod]
+    #[pymethod(Isidentifier)]
     fn isidentifier(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isidentifier", vm.heap)?;
         Ok(Value::Bool(str_isidentifier(s.as_str(vm))))
     }
 
-    #[pymethod]
+    #[pymethod(Istitle)]
     fn istitle(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.istitle", vm.heap)?;
         let s = s.as_str(vm);
@@ -1483,14 +1483,14 @@ impl<'h> PyAttrs<'h> for PyStr<'h> {
         Ok(Value::Bool(has_cased))
     }
 
-    #[pymethod]
+    #[pymethod(Isprintable)]
     fn isprintable(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("str.isprintable", vm.heap)?;
         let s = s.as_str(vm);
         Ok(Value::Bool(s.chars().all(|c| type_record(c).is_printable())))
     }
 
-    #[pymethod]
+    #[pymethod(Join)]
     fn join(s: &PyStr<'h>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let iterable = args.get_one_arg("str.join", vm.heap)?;
         // Checked up front: a user `__iter__` can raise anything, and rewriting that
@@ -1754,7 +1754,11 @@ fn coerce_split_args(sep: Value, maxsplit: Value, vm: &mut VM<'_>) -> RunResult<
     defer_drop!(maxsplit, vm);
     let sep = match sep {
         Value::None => None,
-        _ => Some(extract_string_arg(sep, vm)?),
+        _ => Some(
+            sep.as_str(vm)
+                .ok_or_else(|| ExcType::type_error(format!("must be str or None, not {}", sep.py_type_name(vm))))?
+                .to_owned(),
+        ),
     };
     let maxsplit = extract_int_arg(maxsplit, vm)?;
     Ok((sep, maxsplit))

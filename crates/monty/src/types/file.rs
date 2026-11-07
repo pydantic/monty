@@ -1723,12 +1723,12 @@ pub(crate) struct PyFileImpl;
 impl<'heap> PyAttrs<'heap> for PyFileImpl {
     type Receiver = HeapObjectRead<'heap, OpenFile>;
 
-    #[pymethod]
+    #[pymethod(Read)]
     fn read<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         this.read(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Readline)]
     fn readline<'h>(
         this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
@@ -1737,7 +1737,7 @@ impl<'heap> PyAttrs<'heap> for PyFileImpl {
         this.readline(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Readlines)]
     fn readlines<'h>(
         this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
@@ -1746,32 +1746,32 @@ impl<'heap> PyAttrs<'heap> for PyFileImpl {
         this.readlines(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Tell)]
     fn tell<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         this.tell(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Seek)]
     fn seek<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         this.seek(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Write)]
     fn write<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         this.write(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Close)]
     fn close<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         this.close(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Flush)]
     fn flush<'h>(this: &mut HeapObjectRead<'h, OpenFile>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         this.flush(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Readable)]
     fn readable<'h>(
         this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
@@ -1780,7 +1780,7 @@ impl<'heap> PyAttrs<'heap> for PyFileImpl {
         this.readable(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Writable)]
     fn writable<'h>(
         this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,
@@ -1789,7 +1789,7 @@ impl<'heap> PyAttrs<'heap> for PyFileImpl {
         this.writable(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Seekable)]
     fn seekable<'h>(
         this: &mut HeapObjectRead<'h, OpenFile>,
         args: ArgValues,

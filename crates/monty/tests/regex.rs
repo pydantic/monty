@@ -106,3 +106,98 @@ assert re.findall('a{5000}', 'a' * 5000) == ['a' * 5000], 'oversize pattern find
 ");
     assert_eq!(result, "ok");
 }
+
+#[test]
+fn pattern_method_errors_release_arguments() {
+    // Pattern methods have a documented subject-type error wording difference.
+    let result = run(r"
+import re
+pattern = re.compile('(a)')
+try:
+    pattern.search(1)
+except TypeError as exc:
+    assert str(exc) == 'expected string, not int'
+else:
+    assert False, 'search should require a string'
+try:
+    re.compile('a').search([1])
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'expected string, not list'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').match([1])
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'expected string, not list'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').fullmatch([1])
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'expected string, not list'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').findall([1])
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'expected string, not list'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').finditer([1])
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'expected string, not list'
+else:
+    assert False, 'expected argument error'
+assert pattern.search('a').group() == 'a'
+try:
+    re.search('(a)', 'a').groups([1])
+except TypeError as exc:
+    assert str(exc) == 're.Match.groups() takes no arguments (1 given)'
+else:
+    assert False, 'Match.groups does not implement default'
+assert re.search('(a)', 'a').groups() == ('a',)
+'ok'
+
+");
+    assert_eq!(result, "ok");
+}
+
+#[test]
+fn pattern_method_arity_errors() {
+    let result = run(r"
+import re
+try:
+    re.compile('a').search()
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'Pattern.search() takes exactly one argument (0 given)'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').match()
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'Pattern.match() takes exactly one argument (0 given)'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').fullmatch()
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'Pattern.fullmatch() takes exactly one argument (0 given)'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').findall()
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'Pattern.findall() takes exactly one argument (0 given)'
+else:
+    assert False, 'expected argument error'
+try:
+    re.compile('a').finditer()
+except (TypeError, ValueError) as exc:
+    assert str(exc) == 'Pattern.finditer() takes exactly one argument (0 given)'
+else:
+    assert False, 'expected argument error'
+'ok'
+");
+    assert_eq!(result, "ok");
+}

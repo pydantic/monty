@@ -1638,7 +1638,7 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
 /// If `other` is a dict, copies its key-value pairs.
 /// If `other` is an iterable, expects pairs of (key, value).
 /// Keyword arguments are also added to the dict.
-fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(crate) fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
     let mut kwargs_guard = DropGuard::new(extras, vm);
 
@@ -2120,7 +2120,7 @@ pub(crate) struct PyDictImpl;
 impl<'heap> PyAttrs<'heap> for PyDictImpl {
     type Receiver = HeapObjectRead<'heap, Dict>;
 
-    #[pymethod]
+    #[pymethod(Get)]
     fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             // dict.get() accepts 1 or 2 arguments
@@ -2137,7 +2137,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Keys)]
     fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.keys", vm.heap)?;
@@ -2147,7 +2147,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Values)]
     fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.values", vm.heap)?;
@@ -2159,7 +2159,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Items)]
     fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.items", vm.heap)?;
@@ -2169,7 +2169,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Pop)]
     fn pop<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             // dict.pop() accepts 1 or 2 arguments (key, optional default)
@@ -2193,7 +2193,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Clear)]
     fn clear<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.clear", vm.heap)?;
@@ -2202,7 +2202,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.copy", vm.heap)?;
@@ -2210,17 +2210,17 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Update)]
     fn update<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         dict_update(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Setdefault)]
     fn setdefault<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         dict_setdefault(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Popitem)]
     fn popitem<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("dict.popitem", vm.heap)?;
@@ -2228,7 +2228,7 @@ impl<'heap> PyAttrs<'heap> for PyDictImpl {
         }
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromkeys)]
     fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
     }
@@ -2240,59 +2240,59 @@ pub(crate) struct PyDefaultDictImpl;
 impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
     type Receiver = HeapObjectRead<'heap, Dict>;
 
-    #[pymethod]
+    #[pymethod(Get, Dict)]
     fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::get(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Keys, Dict)]
     fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::keys(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Values, Dict)]
     fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::values(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Items, Dict)]
     fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::items(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Pop, Dict)]
     fn pop<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::pop(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Clear, Dict)]
     fn clear<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::clear(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("dict.copy", vm.heap)?;
         let kind = this.get(vm.heap).cloned_kind(vm.heap);
         dict_copy(this, kind, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Update, Dict)]
     fn update<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::update(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Setdefault, Dict)]
     fn setdefault<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::setdefault(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Popitem, Dict)]
     fn popitem<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::popitem(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderMissing)]
     fn dunder_missing<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let key = args.get_one_arg("__missing__", vm.heap)?;
@@ -2301,7 +2301,7 @@ impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
         }
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromkeys)]
     fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
     }
@@ -2313,69 +2313,69 @@ pub(crate) struct PyCounterImpl;
 impl<'heap> PyAttrs<'heap> for PyCounterImpl {
     type Receiver = HeapObjectRead<'heap, Dict>;
 
-    #[pymethod]
+    #[pymethod(Get, Dict)]
     fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::get(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Keys, Dict)]
     fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::keys(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Values, Dict)]
     fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::values(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Items, Dict)]
     fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::items(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Pop, Dict)]
     fn pop<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::pop(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Clear, Dict)]
     fn clear<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::clear(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("dict.copy", vm.heap)?;
         let kind = this.get(vm.heap).cloned_kind(vm.heap);
         dict_copy(this, kind, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Update)]
     fn update<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         counter_update_method(this, args, false, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Setdefault, Dict)]
     fn setdefault<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::setdefault(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Popitem, Dict)]
     fn popitem<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         PyDictImpl::popitem(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(MostCommon)]
     fn most_common<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         counter_most_common(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Elements)]
     fn elements<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         counter_elements(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Total)]
     fn total<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("total", vm.heap)?;
@@ -2383,12 +2383,12 @@ impl<'heap> PyAttrs<'heap> for PyCounterImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Subtract)]
     fn subtract<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         counter_update_method(this, args, true, vm)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromkeys)]
     fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         args.drop_with(vm);
         Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())

@@ -659,7 +659,7 @@ pub(crate) struct PyTimeImpl;
 impl<'heap> PyAttrs<'heap> for PyTimeImpl {
     type Receiver = HeapObjectRead<'heap, Time>;
 
-    #[pymethod]
+    #[pymethod(Isoformat)]
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let IsoformatArgs { timespec } = IsoformatArgs::from_args(args, vm)?;
         defer_drop!(timespec, vm);
@@ -672,7 +672,7 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
         Ok(allocate_string_no_interning(s, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Strftime)]
     fn strftime<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
         defer_drop!(format, vm);
@@ -682,19 +682,19 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
         Ok(allocate_string(formatted, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Replace)]
     fn replace<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.replace(vm, args)
     }
 
-    #[pymethod]
+    #[pymethod(Utcoffset)]
     fn utcoffset<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("time.utcoffset", vm.heap)?;
         let offset_seconds = attached_offset(value.get(vm.heap), vm.heap);
         Ok(timezone::utcoffset_value(offset_seconds, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Tzname)]
     fn tzname<'h>(value: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("time.tzname", vm.heap)?;
         let Some(tz) = attached_timezone(value.get(vm.heap), vm.heap) else {
@@ -704,28 +704,28 @@ impl<'heap> PyAttrs<'heap> for PyTimeImpl {
         Ok(allocate_string(name, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Dst)]
     fn dst<'h>(_: &mut HeapObjectRead<'h, Time>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("time.dst", vm.heap)?;
         Ok(Value::None)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromisoformat)]
     fn fromisoformat(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm, args).map(CallResult::Value)
     }
 
-    #[pyvalue]
+    #[pyvalue(Min)]
     fn min(vm: &mut VM<'_>) -> Value {
         allocate_naive(0, 0, 0, 0, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Max)]
     fn max(vm: &mut VM<'_>) -> Value {
         allocate_naive(23, 59, 59, 999_999, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Resolution)]
     fn resolution(vm: &mut VM<'_>) -> Value {
         timedelta::allocate_micros(1, vm.heap)
     }

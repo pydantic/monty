@@ -555,7 +555,7 @@ pub(crate) struct PyTimeDeltaImpl;
 impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
     type Receiver = HeapObjectRead<'heap, TimeDelta>;
 
-    #[pymethod]
+    #[pymethod(TotalSeconds)]
     fn total_seconds<'h>(
         value: &mut HeapObjectRead<'h, TimeDelta>,
         args: ArgValues,
@@ -566,17 +566,17 @@ impl<'heap> PyAttrs<'heap> for PyTimeDeltaImpl {
         Ok(Value::Float(total_seconds(&td)))
     }
 
-    #[pyvalue]
+    #[pyvalue(Min)]
     fn min(vm: &mut VM<'_>) -> Value {
         allocate_micros(i128::from(MIN_TIMEDELTA_DAYS) * DAY_MICROSECONDS, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Max)]
     fn max(vm: &mut VM<'_>) -> Value {
         allocate_micros((i128::from(MAX_TIMEDELTA_DAYS) + 1) * DAY_MICROSECONDS - 1, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Resolution)]
     fn resolution(vm: &mut VM<'_>) -> Value {
         allocate_micros(1, vm.heap)
     }

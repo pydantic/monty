@@ -1,12 +1,6 @@
-mod builtin_type;
+//! Runtime value types and their Python operations.
 
-/// Type definitions for Python runtime values.
-///
-/// This module contains structured types that wrap heap-allocated data
-/// and provide Python-like semantics for operations like append, insert, etc.
-///
-/// The `AbstractValue` trait provides a common interface for all heap-allocated
-/// types, enabling efficient dispatch via `enum_dispatch`.
+mod builtin_type;
 pub mod bytes;
 pub mod callable_iterator;
 pub mod class;

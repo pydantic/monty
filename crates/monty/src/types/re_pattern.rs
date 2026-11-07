@@ -878,7 +878,7 @@ pub(crate) struct PyRePatternImpl;
 impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     type Receiver = HeapRead<'heap, RePattern>;
 
-    #[pymethod]
+    #[pymethod(Search)]
     fn search<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.search", vm.heap)?;
         defer_drop!(arg, vm);
@@ -886,7 +886,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         value.get(vm.heap).search(arg, text, vm.heap)
     }
 
-    #[pymethod]
+    #[pymethod(Match)]
     fn r#match<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.match", vm.heap)?;
         defer_drop!(arg, vm);
@@ -894,7 +894,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         value.get(vm.heap).match_start(arg, text, vm.heap)
     }
 
-    #[pymethod]
+    #[pymethod(Fullmatch)]
     fn fullmatch<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
         defer_drop!(arg, vm);
@@ -902,7 +902,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         value.get(vm.heap).fullmatch(arg, text, vm.heap)
     }
 
-    #[pymethod]
+    #[pymethod(Findall)]
     fn findall<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
         defer_drop!(arg, vm);
@@ -913,7 +913,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     /// Handles `pattern.sub(repl, string, count=0)` argument extraction and dispatch.
     ///
     /// Supports `count` as either positional or keyword argument.
-    #[pymethod]
+    #[pymethod(Sub)]
     fn sub<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let PatternSubArgs {
             repl: repl_val,
@@ -952,7 +952,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
     /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
     ///
     /// Supports `maxsplit` as either positional or keyword argument.
-    #[pymethod]
+    #[pymethod(Split)]
     fn split<'h>(pattern: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let PatternSplitArgs {
             string: string_val,
@@ -965,7 +965,7 @@ impl<'heap> PyAttrs<'heap> for PyRePatternImpl {
         pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
     }
 
-    #[pymethod]
+    #[pymethod(Finditer)]
     fn finditer<'h>(value: &HeapRead<'h, RePattern>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
         defer_drop!(arg, vm);

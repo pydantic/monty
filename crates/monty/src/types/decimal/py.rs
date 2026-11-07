@@ -1550,42 +1550,42 @@ pub(crate) struct PyDecimalImpl;
 impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
     type Receiver = HeapObjectRead<'heap, Decimal>;
 
-    #[pymethod]
+    #[pymethod(Adjusted)]
     fn adjusted<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Adjusted, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(AsIntegerRatio)]
     fn as_integer_ratio<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::AsIntegerRatio, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(AsTuple)]
     fn as_tuple<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::AsTuple, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Canonical)]
     fn canonical<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Canonical, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Compare)]
     fn compare<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Compare, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(CompareSignal)]
     fn compare_signal<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::CompareSignal, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(CompareTotal)]
     fn compare_total<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::CompareTotal, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(CompareTotalMag)]
     fn compare_total_mag<'h>(
         value: &HeapObjectRead<'h, Decimal>,
         args: ArgValues,
@@ -1594,217 +1594,217 @@ impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
         value.call_method(DecimalMethod::CompareTotalMag, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Conjugate)]
     fn conjugate<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Conjugate, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(CopyAbs)]
     fn copy_abs<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::CopyAbs, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(CopyNegate)]
     fn copy_negate<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::CopyNegate, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(CopySign)]
     fn copy_sign<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::CopySign, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Exp)]
     fn exp<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Exp, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Fma)]
     fn fma<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Fma, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsCanonical)]
     fn is_canonical<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsCanonical, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsFinite)]
     fn is_finite<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsFinite, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsInfinite)]
     fn is_infinite<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsInfinite, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsNan)]
     fn is_nan<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsNan, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsNormal)]
     fn is_normal<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsNormal, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsQnan)]
     fn is_qnan<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsQnan, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsSigned)]
     fn is_signed<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsSigned, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsSnan)]
     fn is_snan<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsSnan, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsSubnormal)]
     fn is_subnormal<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsSubnormal, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(IsZero)]
     fn is_zero<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::IsZero, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Ln)]
     fn ln<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Ln, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Log10)]
     fn log10<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Log10, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Logb)]
     fn logb<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Logb, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(LogicalAnd)]
     fn logical_and<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::LogicalAnd, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(LogicalInvert)]
     fn logical_invert<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::LogicalInvert, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(LogicalOr)]
     fn logical_or<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::LogicalOr, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(LogicalXor)]
     fn logical_xor<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::LogicalXor, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Max)]
     fn max<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Max, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(MaxMag)]
     fn max_mag<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::MaxMag, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Min)]
     fn min<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Min, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(MinMag)]
     fn min_mag<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::MinMag, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(NextMinus)]
     fn next_minus<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::NextMinus, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(NextPlus)]
     fn next_plus<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::NextPlus, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(NextToward)]
     fn next_toward<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::NextToward, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Normalize)]
     fn normalize<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Normalize, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(NumberClass)]
     fn number_class<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::NumberClass, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Quantize)]
     fn quantize<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Quantize, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Radix)]
     fn radix<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Radix, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(RemainderNear)]
     fn remainder_near<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::RemainderNear, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Rotate)]
     fn rotate<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Rotate, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(SameQuantum)]
     fn same_quantum<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::SameQuantum, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Scaleb)]
     fn scaleb<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Scaleb, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Shift)]
     fn shift<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Shift, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Sqrt)]
     fn sqrt<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::Sqrt, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(ToEngString)]
     fn to_eng_string<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::ToEngString, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(ToIntegral)]
     fn to_integral<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::ToIntegral, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(ToIntegralExact)]
     fn to_integral_exact<'h>(
         value: &HeapObjectRead<'h, Decimal>,
         args: ArgValues,
@@ -1813,7 +1813,7 @@ impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
         value.call_method(DecimalMethod::ToIntegralExact, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(ToIntegralValue)]
     fn to_integral_value<'h>(
         value: &HeapObjectRead<'h, Decimal>,
         args: ArgValues,
@@ -1822,67 +1822,67 @@ impl<'heap> PyAttrs<'heap> for PyDecimalImpl {
         value.call_method(DecimalMethod::ToIntegralValue, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderCopy)]
     fn dunder_copy<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderCopy, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderDeepcopy)]
     fn dunder_deepcopy<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderDeepcopy, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderReduce)]
     fn dunder_reduce<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderReduce, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderFormat)]
     fn dunder_format<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderFormat, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderRound)]
     fn dunder_round<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderRound, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderComplex)]
     fn dunder_complex<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderComplex, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderFloat)]
     fn dunder_float<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderFloat, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderInt)]
     fn dunder_int<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderInt, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderTrunc)]
     fn dunder_trunc<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderTrunc, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderFloor)]
     fn dunder_floor<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderFloor, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(DunderCeil)]
     fn dunder_ceil<'h>(value: &HeapObjectRead<'h, Decimal>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         value.call_method(DecimalMethod::DunderCeil, args, vm)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(FromFloat)]
     fn from_float(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_float(vm, args).map(CallResult::Value)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(FromNumber)]
     fn from_number(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_from_number(vm, args).map(CallResult::Value)
     }

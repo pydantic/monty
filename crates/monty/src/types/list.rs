@@ -1015,7 +1015,7 @@ pub(crate) struct PyListImpl;
 impl<'heap> PyAttrs<'heap> for PyListImpl {
     type Receiver = HeapReadMut<'heap, List>;
 
-    #[pymethod]
+    #[pymethod(Append)]
     fn append<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let item = args.get_one_arg("list.append", vm.heap)?;
         list.append(vm, item)?;
@@ -1023,7 +1023,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     }
 
     /// Implements Python's `list.insert(index, item)` method.
-    #[pymethod]
+    #[pymethod(Insert)]
     fn insert<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
         defer_drop!(index_obj, vm);
@@ -1052,7 +1052,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     ///
     /// Removes the item at the given index (default: -1) and returns it.
     /// Raises IndexError if the list is empty or the index is out of range.
-    #[pymethod]
+    #[pymethod(Pop)]
     fn pop<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let index_arg = args.get_zero_one_arg("list.pop", vm.heap)?;
 
@@ -1089,7 +1089,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     /// Implements Python's `list.remove(value)` method.
     ///
     /// Removes the first occurrence of value. Raises ValueError if not found.
-    #[pymethod]
+    #[pymethod(Remove)]
     fn remove<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = args.get_one_arg("list.remove", vm.heap)?;
         defer_drop!(value, vm);
@@ -1125,7 +1125,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     /// Implements Python's `list.clear()` method.
     ///
     /// Removes all items from the list.
-    #[pymethod]
+    #[pymethod(Clear)]
     fn clear<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("list.clear", vm.heap)?;
         mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
@@ -1137,7 +1137,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     ///
     /// Returns a shallow copy of the list, preflighting the slot bytes like
     /// `clone_all_items` so a huge copy fails with a graceful `MemoryError`.
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("list.copy", vm.heap)?;
         let heap = &*vm.heap;
@@ -1152,7 +1152,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     /// Implements Python's `list.extend(iterable)` method.
     ///
     /// Extends the list by appending all items from the iterable.
-    #[pymethod]
+    #[pymethod(Extend)]
     fn extend<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let iterable = args.get_one_arg("list.extend", vm.heap)?;
         let items: SmallVec<[_; 2]> = collect_owned_iterable(iterable, vm)?;
@@ -1170,7 +1170,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     ///
     /// Returns the index of the first occurrence of value.
     /// Raises ValueError if the value is not found.
-    #[pymethod]
+    #[pymethod(Index)]
     fn index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let pos_args = args.into_pos_only("list.index", vm.heap)?;
         defer_drop!(pos_args, vm);
@@ -1214,7 +1214,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     /// Implements Python's `list.count(value)` method.
     ///
     /// Returns the number of occurrences of value in the list.
-    #[pymethod]
+    #[pymethod(Count)]
     fn count<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let value = args.get_one_arg("list.count", vm.heap)?;
         defer_drop!(value, vm);
@@ -1232,7 +1232,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
         Ok(Value::Int(count_i64))
     }
 
-    #[pymethod]
+    #[pymethod(Reverse)]
     fn reverse<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("list.reverse", vm.heap)?;
         list.get_mut(vm.heap).items.reverse();
@@ -1249,7 +1249,7 @@ impl<'heap> PyAttrs<'heap> for PyListImpl {
     /// list afterwards. If the user mutated the live (empty) list during the
     /// sort, we additionally raise `ValueError: list modified during sort`,
     /// matching CPython exactly.
-    #[pymethod]
+    #[pymethod(Sort)]
     fn sort<'h>(list: &HeapReadMut<'h, List>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         // Detach the list's items so reentrant access via the list's heap id sees
         // an empty list. The detached buffer is always swapped back into the list

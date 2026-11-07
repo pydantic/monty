@@ -20,9 +20,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    py_attrs::PyAttrs,
+    py_attrs::{MethodCall, PyAttrs},
     py_class::PyClass,
     string_builder::StringBuilder,
     types::{
@@ -491,13 +491,54 @@ struct DateReplaceArgs {
     day: Option<i32>,
 }
 
+/// `date` descriptors read the date portion of a datetime unless the method uses its time fields.
+pub(crate) fn call_datetime_descriptor<'h>(
+    value: &mut HeapObjectRead<'h, datetime::DateTime>,
+    attr: &EitherStr,
+    call: MethodCall,
+    args: ArgValues,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    let name = attr.static_string(vm.interns);
+    if name == Some(StaticStrings::Strftime) {
+        return datetime::PyDateTimeImpl::strftime(value, args, vm).map(CallResult::Value);
+    }
+    let (year, month, day, ..) = datetime::to_components(value.get(vm.heap)).expect("valid datetime components");
+    let date = from_ymd(year, i32::from(month), i32::from(day)).expect("valid datetime date");
+    let receiver = Value::Ref(vm.heap.allocate(HeapData::Date(date)));
+    defer_drop!(receiver, vm);
+    let result = call(&mut receiver.py_value(vm), args, vm)?;
+    if name != Some(StaticStrings::Replace) {
+        return Ok(result);
+    }
+    let CallResult::Value(Value::Ref(id)) = &result else {
+        return Ok(result);
+    };
+    let HeapData::Date(date) = vm.heap.get(*id) else {
+        return Ok(result);
+    };
+    let (year, month, day) = to_ymd(*date);
+    result.drop_with(vm);
+    // The inherited date descriptor constructs the receiver's type from date components only.
+    Ok(CallResult::Value(datetime::allocate_naive(
+        year,
+        i32::try_from(month).expect("month in 1..=12"),
+        i32::try_from(day).expect("day in 1..=31"),
+        0,
+        0,
+        0,
+        0,
+        vm.heap,
+    )))
+}
+
 pub(crate) struct PyDateImpl;
 
 #[pyattrs]
 impl<'heap> PyAttrs<'heap> for PyDateImpl {
     type Receiver = HeapObjectRead<'heap, Date>;
 
-    #[pymethod]
+    #[pymethod(Isoformat)]
     fn isoformat<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("date.isoformat", vm.heap)?;
         let (year, month, day) = to_ymd(*value.get(vm.heap));
@@ -507,7 +548,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
         ))
     }
 
-    #[pymethod]
+    #[pymethod(Strftime)]
     fn strftime<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let date = *value.get(vm.heap);
         let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
@@ -516,7 +557,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
         Ok(allocate_string(formatted, vm.heap))
     }
 
-    #[pymethod]
+    #[pymethod(Replace)]
     fn replace<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         let (year, month, day) = to_ymd(*value.get(vm.heap));
         let DateReplaceArgs {
@@ -532,7 +573,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
         Ok(Value::Ref(vm.heap.allocate(HeapData::Date(new_date))))
     }
 
-    #[pymethod]
+    #[pymethod(Weekday)]
     fn weekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("date.weekday", vm.heap)?;
         Ok(Value::Int(i64::from(
@@ -540,7 +581,7 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
         )))
     }
 
-    #[pymethod]
+    #[pymethod(Isoweekday)]
     fn isoweekday<'h>(value: &mut HeapObjectRead<'h, Date>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         args.check_zero_args("date.isoweekday", vm.heap)?;
         Ok(Value::Int(i64::from(
@@ -548,32 +589,32 @@ impl<'heap> PyAttrs<'heap> for PyDateImpl {
         )))
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Today)]
     fn today(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_today(vm, args)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromisoformat)]
     fn fromisoformat(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
     }
 
-    #[pyclassmethod]
+    #[pyclassmethod(Fromtimestamp)]
     fn fromtimestamp(_: StaticStrings, _: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
         class_fromtimestamp(vm, args).map(CallResult::Value)
     }
 
-    #[pyvalue]
+    #[pyvalue(Min)]
     fn min(vm: &mut VM<'_>) -> Value {
         allocate_ymd(1, 1, 1, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Max)]
     fn max(vm: &mut VM<'_>) -> Value {
         allocate_ymd(9999, 12, 31, vm.heap)
     }
 
-    #[pyvalue]
+    #[pyvalue(Resolution)]
     fn resolution(vm: &mut VM<'_>) -> Value {
         timedelta::allocate_micros(timedelta::DAY_MICROSECONDS, vm.heap)
     }

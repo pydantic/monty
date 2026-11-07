@@ -544,7 +544,7 @@ pub(crate) struct PyHashImpl;
 impl<'heap> PyAttrs<'heap> for PyHashImpl {
     type Receiver = HeapObjectRead<'heap, HashObject>;
 
-    #[pymethod]
+    #[pymethod(Update)]
     fn update<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
         args: ArgValues,
@@ -569,7 +569,7 @@ impl<'heap> PyAttrs<'heap> for PyHashImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Digest)]
     fn digest<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
         args: ArgValues,
@@ -584,7 +584,7 @@ impl<'heap> PyAttrs<'heap> for PyHashImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Hexdigest)]
     fn hexdigest<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
         args: ArgValues,
@@ -599,7 +599,7 @@ impl<'heap> PyAttrs<'heap> for PyHashImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, HashObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let algorithm = this.get(vm.heap).algorithm;
         let method = |name: &str| format!("{}.{name}", algorithm.method_prefix());
@@ -616,7 +616,7 @@ pub(crate) struct PyHashXofImpl;
 impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
     type Receiver = HeapObjectRead<'heap, HashObject>;
 
-    #[pymethod]
+    #[pymethod(Update)]
     fn update<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
         args: ArgValues,
@@ -625,7 +625,7 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
         PyHashImpl::update(this, args, vm)
     }
 
-    #[pymethod]
+    #[pymethod(Digest)]
     fn digest<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
         args: ArgValues,
@@ -639,7 +639,7 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Hexdigest)]
     fn hexdigest<'h>(
         this: &mut HeapObjectRead<'h, HashObject>,
         args: ArgValues,
@@ -654,7 +654,7 @@ impl<'heap> PyAttrs<'heap> for PyHashXofImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, HashObject>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         PyHashImpl::copy(this, args, vm)
     }

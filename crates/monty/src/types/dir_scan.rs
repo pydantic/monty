@@ -998,7 +998,7 @@ pub(crate) struct PyDirEntryImpl;
 impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
     type Receiver = HeapObjectRead<'heap, DirScan>;
 
-    #[pymethod]
+    #[pymethod(IsDir)]
     fn is_dir<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
@@ -1011,7 +1011,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         Ok(CallResult::Value(value))
     }
 
-    #[pymethod]
+    #[pymethod(IsFile)]
     fn is_file<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
@@ -1024,7 +1024,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         Ok(CallResult::Value(value))
     }
 
-    #[pymethod]
+    #[pymethod(IsSymlink)]
     fn is_symlink<'h>(
         this: &mut HeapObjectRead<'h, DirScan>,
         args: ArgValues,
@@ -1041,7 +1041,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         Ok(CallResult::Value(value))
     }
 
-    #[pymethod]
+    #[pymethod(IsJunction)]
     fn is_junction<'h>(
         this: &mut HeapObjectRead<'h, DirScan>,
         args: ArgValues,
@@ -1057,7 +1057,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         Ok(CallResult::Value(value))
     }
 
-    #[pymethod]
+    #[pymethod(StatMethod)]
     fn stat_method<'h>(
         this: &mut HeapObjectRead<'h, DirScan>,
         args: ArgValues,
@@ -1079,7 +1079,7 @@ impl<'heap> PyAttrs<'heap> for PyDirEntryImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Fspath)]
     fn fspath<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let DirScan::Entry(entry) = this.get(vm.heap) else {
             unreachable!("DirEntry table receiver")
@@ -1099,7 +1099,7 @@ pub(crate) struct PyScandirImpl;
 impl<'heap> PyAttrs<'heap> for PyScandirImpl {
     type Receiver = HeapObjectRead<'heap, DirScan>;
 
-    #[pymethod]
+    #[pymethod(Close)]
     fn close<'h>(this: &mut HeapObjectRead<'h, DirScan>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         args.check_zero_args("ScandirIterator.close", vm.heap)?;
         if let DirScan::Scandir(iter) = this.get_mut(vm.heap) {

@@ -1835,7 +1835,7 @@ pub(crate) struct PyFrozenSetImpl;
 impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
     type Receiver = HeapObjectRead<'heap, FrozenSet>;
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("frozenset.copy", vm.heap)?;
@@ -1845,7 +1845,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Union)]
     fn union<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.union", vm.heap)?;
@@ -1853,7 +1853,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Intersection)]
     fn intersection<'h>(
         this: &mut HeapObjectRead<'h, FrozenSet>,
         args: ArgValues,
@@ -1865,7 +1865,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Difference)]
     fn difference<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.difference", vm.heap)?;
@@ -1873,7 +1873,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(SymmetricDifference)]
     fn symmetric_difference<'h>(
         this: &mut HeapObjectRead<'h, FrozenSet>,
         args: ArgValues,
@@ -1885,7 +1885,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Issubset)]
     fn issubset<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.issubset", vm.heap)?;
@@ -1894,7 +1894,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Issuperset)]
     fn issuperset<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.issuperset", vm.heap)?;
@@ -1903,7 +1903,7 @@ impl<'heap> PyAttrs<'heap> for PyFrozenSetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isdisjoint)]
     fn isdisjoint<'h>(this: &mut HeapObjectRead<'h, FrozenSet>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("frozenset.isdisjoint", vm.heap)?;
@@ -1919,7 +1919,7 @@ pub(crate) struct PySetImpl;
 impl<'heap> PyAttrs<'heap> for PySetImpl {
     type Receiver = HeapObjectRead<'heap, Set>;
 
-    #[pymethod]
+    #[pymethod(Add)]
     fn add<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let value = args.get_one_arg("set.add", vm.heap)?;
@@ -1928,7 +1928,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Remove)]
     fn remove<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let value = args.get_one_arg("set.remove", vm.heap)?;
@@ -1938,7 +1938,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Discard)]
     fn discard<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let value = args.get_one_arg("set.discard", vm.heap)?;
@@ -1948,7 +1948,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Pop)]
     fn pop<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.pop", vm.heap)?;
@@ -1956,7 +1956,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Clear)]
     fn clear<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.clear", vm.heap)?;
@@ -1965,7 +1965,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Copy)]
     fn copy<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             args.check_zero_args("set.copy", vm.heap)?;
@@ -1975,7 +1975,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Update)]
     fn update<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.update", vm.heap)?;
@@ -1984,7 +1984,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Union)]
     fn union<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.union", vm.heap)?;
@@ -1992,7 +1992,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Intersection)]
     fn intersection<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.intersection", vm.heap)?;
@@ -2000,7 +2000,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Difference)]
     fn difference<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.difference", vm.heap)?;
@@ -2008,7 +2008,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(SymmetricDifference)]
     fn symmetric_difference<'h>(
         this: &mut HeapObjectRead<'h, Set>,
         args: ArgValues,
@@ -2020,7 +2020,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Issubset)]
     fn issubset<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.issubset", vm.heap)?;
@@ -2029,7 +2029,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Issuperset)]
     fn issuperset<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.issuperset", vm.heap)?;
@@ -2038,7 +2038,7 @@ impl<'heap> PyAttrs<'heap> for PySetImpl {
         }
     }
 
-    #[pymethod]
+    #[pymethod(Isdisjoint)]
     fn isdisjoint<'h>(this: &mut HeapObjectRead<'h, Set>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
         {
             let other = args.get_one_arg("set.isdisjoint", vm.heap)?;

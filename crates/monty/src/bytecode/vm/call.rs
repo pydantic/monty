@@ -108,6 +108,12 @@ pub(crate) enum CallResult {
     },
 }
 
+impl From<Value> for CallResult {
+    fn from(value: Value) -> Self {
+        Self::Value(value)
+    }
+}
+
 impl CallResult {
     /// Completes a call at a Rust boundary that cannot yield to the host.
     /// Python frames still run; unsupported suspensions are raised inside them and cleaned up.
