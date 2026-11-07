@@ -2128,6 +2128,28 @@ fn a_refused_concatenation_releases_its_left_clones() {
     }
 }
 
+/// A named tuple clones the right operand before it preflights its own items.
+/// Refusal at the second check must release the first operand's heap references.
+#[test]
+fn refused_namedtuple_concatenation_releases_cloned_operand() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import namedtuple\nLarge = namedtuple('Large', ['f' + str(i) for i in range(32)])\nSmall = namedtuple('Small', ['x'])\nlarge = Large(*([None] * 32))\nsmall = Small([])",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    *repl.tracker_mut() = ResourceTracker::new(ResourceLimits::default().max_memory(128));
+    let error = repl.feed_run("large + small", vec![], PrintWriter::Disabled).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    *repl.tracker_mut() = ResourceTracker::default();
+    assert_eq!(
+        repl.feed_run("large[0] is None and small[0] == []", vec![], PrintWriter::Disabled)
+            .unwrap(),
+        MontyObject::bool(true)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Per-feed and per-turn duration limits
 // ---------------------------------------------------------------------------
