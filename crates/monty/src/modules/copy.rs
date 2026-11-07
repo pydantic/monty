@@ -300,7 +300,7 @@ fn classify<'h>(output: &HeapReadOutput<'h>, vm: &VM<'h>) -> Copyability {
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
         HeapReadOutput::BuiltinDescriptor(d) => {
-            if d.get(vm.heap).kind == Type::Property { Copyability::Shared } else { Copyability::Refused }
+            if d.get(vm.heap).kind() == Type::Property { Copyability::Shared } else { Copyability::Refused }
         }
         // Leaves and immutable containers Monty can never mutate, so a copy
         // that shared them is indistinguishable from one that rebuilt them.

@@ -2044,13 +2044,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
-        HeapData::BuiltinDescriptor(d) => {
-            for value in &d.values {
-                if let Value::Ref(id) = value {
-                    on_child(*id);
-                }
-            }
-        }
+        HeapData::BuiltinDescriptor(d) => d.visit_children(&mut on_child),
         HeapData::BoundMethod(bm) => {
             if let Value::Ref(id) = &bm.instance {
                 on_child(*id);

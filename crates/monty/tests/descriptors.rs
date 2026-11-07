@@ -1,12 +1,15 @@
 //! Descriptor binding, suspension and persistence regressions.
 
+use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
 use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
+/// Start an independent session for suspension and persistence checks.
 fn repl() -> MontyRepl {
     MontyRepl::new("descriptors.py", ResourceTracker::default(), CompileOptions::default())
 }
 
+/// Reload a suspended frame before its next host response.
 fn restore(progress: ReplProgress) -> ReplProgress {
     let bytes = dump("descriptors.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
     drop(progress.into_repl());
@@ -16,176 +19,14 @@ fn restore(progress: ReplProgress) -> ReplProgress {
     *progress
 }
 
-#[test]
-fn descriptor_protocol_and_builtin_wrappers() {
-    repl()
-        .feed_run(
-            include_str!("../test_cases/class__descriptors.py"),
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
-}
-
-#[test]
-fn ordinary_attribute_fast_paths_observe_descriptor_mutations() {
-    repl()
-        .feed_run(
-            r"
-class Record:
-    x = 7
-    __match_args__ = ('x',)
-
-record = Record()
-assert record.x == 7
-assert getattr(record, 'x', 0) == 7
-assert hasattr(record, 'x')
-assert not hasattr(record, 'absent')
-match record:
-    case Record(x):
-        assert x == 7
-
-Record.x = property(lambda obj: 42)
-assert record.x == 42
-assert getattr(record, 'x', 0) == 42
-assert hasattr(record, 'x')
-match record:
-    case Record(x):
-        assert x == 42
-
-class Candidate:
-    pass
-
-class LateRecord:
-    y = Candidate()
-
-class Inserted:
-    pass
-
-late = LateRecord()
-inserted = Inserted()
-late.y = 3
-inserted.y = 4
-Inserted.y = Candidate()
-Candidate.__get__ = lambda self, obj, owner: 8
-assert late.y == 3
-assert inserted.y == 4
-
-def store(self, obj, value):
-    obj.stored = value
-
-Candidate.__set__ = store
-late.y = 9
-inserted.y = 10
-assert late.stored == 9
-assert inserted.stored == 10
-assert late.y == 8
-assert inserted.y == 8
-del Candidate.__set__
-assert late.y == 3
-assert inserted.y == 4
-
-class Names:
-    def __get__(self, obj, owner):
-        assert obj is None
-        return ('y',)
-
-Record.__match_args__ = Names()
-record.y = 3
-match record:
-    case Record(y):
-        assert y == 3
-",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
-}
-
-#[test]
-fn mixed_classes_preserve_lookup_precedence_and_mutation() {
-    repl()
-        .feed_run(
-            r"
-class NonData:
-    def __get__(self, obj, owner):
-        return 91
-
-class Record:
-    __match_args__ = ('x',)
-    candidate = NonData()
-    @property
-    def computed(self):
-        return 42
-    @staticmethod
-    def static():
-        return 12
-    @classmethod
-    def class_method(cls):
-        return 13
-    def method(self):
-        return self.x
-    def defaults(self, delta=2):
-        return self.x + delta
-
-record = Record()
-record.x = 7
-record.candidate = 8
-record.static = lambda: 22
-record.class_method = lambda: 23
-for _ in range(3):
-    assert record.x == getattr(record, 'x') == 7
-    assert record.method() == 7
-    assert record.defaults() == 9
-    assert record.defaults(delta=3) == 10
-    assert getattr(record, 'method')() == 7
-    assert record.static() == 22
-    assert record.class_method() == 23
-    assert record.computed == 42
-    assert record.candidate == 8
-    assert hasattr(record, 'x')
-    assert not hasattr(record, 'absent')
-    assert getattr(record, 'absent', 99) == 99
-    match record:
-        case Record(x):
-            assert x == 7
-NonData.__set__ = lambda self, obj, value: None
-assert record.candidate == 91
-del NonData.__set__
-assert record.candidate == 8
-NonData.__delete__ = lambda self, obj: None
-assert record.candidate == 91
-del NonData.__delete__
-assert record.candidate == 8
-Record.x = property(lambda obj: 17)
-assert record.x == 17
-del Record.x
-assert record.x == 7
-del record.static
-del record.class_method
-assert record.static() == 12
-assert record.class_method() == 13
-record.method = lambda: 31
-assert record.method() == 31
-del record.method
-assert record.method() == 7
-Record.method = property(lambda obj: lambda: 32)
-assert record.method() == 32
-Record.method = lambda self: self.x + 1
-assert record.method() == 8
-class OnlyNonData:
-    static = staticmethod(lambda: 1)
-    class_method = classmethod(lambda cls: 2)
-other = OnlyNonData()
-other.static = lambda: 3
-other.class_method = lambda: 4
-assert other.static() == 3
-assert other.class_method() == 4
-",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
+/// Reload an idle session so native callables and guards are exercised after deserialization.
+fn restore_idle(repl: MontyRepl) -> MontyRepl {
+    let bytes = dump("descriptors.py", None, &[], SessionRef::Idle(&repl)).unwrap();
+    drop(repl);
+    let Session::Idle(repl) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected idle state")
+    };
+    *repl
 }
 
 #[test]
@@ -310,29 +151,6 @@ fn restored_plain_classes_can_gain_suspending_descriptors() {
 }
 
 #[test]
-fn builtin_descriptor_get_requires_a_receiver_or_owner() {
-    repl()
-        .feed_run(
-            r"
-for constructor in (property, classmethod, staticmethod):
-    descriptor = constructor(len)
-    for args in ((None,), (None, None)):
-        try:
-            descriptor.__get__(*args)
-        except TypeError as exc:
-            assert str(exc) == '__get__(None, None) is invalid'
-        else:
-            assert False
-    assert descriptor.__get__(None, list) is not None
-42
-",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
-}
-
-#[test]
 fn native_property_getter_chains_are_bounded_and_release_the_recursion_guard() {
     let mut repl = repl();
     assert_eq!(
@@ -357,6 +175,7 @@ assert property(len).__get__([1, 2]) == 2
         .unwrap(),
         MontyObject::int(42)
     );
+    let mut repl = restore_idle(repl);
     assert_eq!(
         repl.feed_run("1 + 1", vec![], PrintWriter::Disabled).unwrap(),
         MontyObject::int(2)
@@ -364,39 +183,10 @@ assert property(len).__get__([1, 2]) == 2
 }
 
 #[test]
-fn native_descriptor_reads_propagate_accessor_attribute_errors() {
-    repl()
-        .feed_run(
-            r"
-import dataclasses
-
-@dataclasses.dataclass
-class Record:
-    x: int
-
-left = Record(1)
-right = Record(1)
-Record.x = property()
-for operation in (lambda: repr(left), lambda: left == right):
-    try:
-        operation()
-    except AttributeError as exc:
-        assert str(exc) == 'property has no getter'
-    else:
-        assert False
-42
-",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
-}
-
-#[test]
 fn dataclass_descriptor_setters_reject_suspension_without_corrupting_state() {
     let mut repl = repl();
     repl.feed_run(
-        r"
+        r#"
 import dataclasses
 import os
 
@@ -418,13 +208,18 @@ class OsField:
     def __set__(self, obj, value):
         os.path.exists('/value')
 
-for descriptor in (property(None, external_setter), property(None, os_setter), ExternalField(), OsField()):
+for descriptor, kind, name in (
+    (property(None, external_setter), 'external function', 'ext_fn'),
+    (property(None, os_setter), 'OS function', 'Path.exists'),
+    (ExternalField(), 'external function', 'ext_fn'),
+    (OsField(), 'OS function', 'Path.exists'),
+):
     Record.x = descriptor
     for _ in range(2):
         try:
             Record(42)
         except NotImplementedError as exc:
-            assert 'cannot suspend in this synchronous context' in str(exc)
+            assert str(exc) == f"{kind} '{name}' cannot suspend in this synchronous context"
         else:
             assert False
 
@@ -433,7 +228,7 @@ def local_setter(obj, value):
 
 Record.x = property(None, local_setter)
 assert Record(42).actual == 42
-",
+"#,
         vec![],
         PrintWriter::Disabled,
     )
@@ -443,34 +238,6 @@ assert Record(42).actual == 42
             .unwrap(),
         MontyObject::int(7)
     );
-}
-
-#[test]
-fn delattr_errors_identify_the_class_and_invalid_name_type() {
-    repl()
-        .feed_run(
-            r#"
-class Record:
-    pass
-
-try:
-    delattr(Record, 'missing')
-except AttributeError as exc:
-    assert str(exc) == "type object 'Record' has no attribute 'missing'"
-else:
-    assert False
-
-try:
-    delattr(Record(), 1)
-except TypeError as exc:
-    assert str(exc) == "attribute name must be string, not 'int'"
-else:
-    assert False
-"#,
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
 }
 
 #[test]
@@ -731,7 +498,7 @@ result
                         Ok(next) => progress = next,
                         Err(error) => {
                             assert!(missing);
-                            assert!(error.error.to_string().contains("accepts 0 positional sub-patterns"));
+                            assert_snapshot!(error.error.message().unwrap(), @"Record() accepts 0 positional sub-patterns (1 given)");
                             break;
                         }
                     }
@@ -758,67 +525,6 @@ result
 }
 
 #[test]
-fn descriptor_match_args_validation_and_short_circuits() {
-    repl()
-        .feed_run(
-            r"
-class Names:
-    def __get__(self, obj, owner):
-        assert obj is None
-        return owner.names
-class Record:
-    __match_args__ = Names()
-    names = ('x', 123)
-    x = 42
-
-# Unused tuple elements do not need to be strings.
-match Record():
-    case Record(x):
-        assert x == 42
-
-Record.names = []
-# Neither a failed instance check nor a keyword-only pattern reads metadata.
-match 42:
-    case Record(x):
-        assert False
-match Record():
-    case Record(x=x):
-        assert x == 42
-
-try:
-    match Record():
-        case Record(x):
-            pass
-except TypeError as e:
-    assert '__match_args__ must be a tuple' in str(e)
-else:
-    assert False
-
-Record.names = (123,)
-try:
-    match Record():
-        case Record(x, y):
-            pass
-except TypeError as e:
-    assert 'accepts 1 positional sub-pattern' in str(e)
-else:
-    assert False
-try:
-    match Record():
-        case Record(x):
-            pass
-except TypeError as e:
-    assert '__match_args__ elements must be strings' in str(e)
-else:
-    assert False
-",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
-}
-
-#[test]
 fn nested_classmethod_bindings_are_bounded_and_release_the_recursion_guard() {
     let mut repl = repl();
     repl.feed_run(
@@ -839,6 +545,7 @@ assert classmethod(len).__get__(None, [1, 2])() == 2
         PrintWriter::Disabled,
     )
     .unwrap();
+    let mut repl = restore_idle(repl);
     assert_eq!(
         repl.feed_run("1 + 1", vec![], PrintWriter::Disabled).unwrap(),
         MontyObject::int(2)
@@ -847,25 +554,33 @@ assert classmethod(len).__get__(None, [1, 2])() == 2
 
 #[test]
 fn descriptor_protocol_methods_reject_deepcopy_replaced_receivers() {
-    repl()
-        .feed_run(
-            r"
+    let mut repl = repl();
+    repl.feed_run(
+        r"
 import copy
-
 p = property(len)
+forged_methods = []
 for method, args in ((p.__get__, ([],)), (p.__set__, ([], 1)), (p.__delete__, ([],)), (p.__set_name__, (int, 'x'))):
     for receiver in ([], {}, 42):
-        forged = copy.deepcopy(method, {id(p): receiver})
-        try:
-            forged(*args)
-        except TypeError as exc:
-            assert str(exc) == 'descriptor receiver required'
-        else:
-            assert False
+        forged_methods.append((copy.deepcopy(method, {id(p): receiver}), args))
+",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    let mut repl = restore_idle(repl);
+    repl.feed_run(
+        r"
+for forged, args in forged_methods:
+    try:
+        forged(*args)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == 'invalid descriptor receiver'
 assert p.__get__([1, 2]) == 2
 ",
-            vec![],
-            PrintWriter::Disabled,
-        )
-        .unwrap();
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
 }

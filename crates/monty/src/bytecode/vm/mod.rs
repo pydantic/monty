@@ -301,12 +301,17 @@ impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
     }
 }
 
-/// Return handling for descriptor continuations; old frames return one value.
+/// Closed set of opcode stack effects for descriptor continuations.
+/// MatchAttr is shared by attribute and class-pattern metadata reads; other continuations
+/// must return one ordinary value rather than introduce new return-stack shapes.
 #[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum FrameResult {
     #[default]
+    /// Push one ordinary result; also the default for frames from older dumps.
     Value,
+    /// A statement assignment ignores its setter's result.
     Discard,
+    /// Unpack the frozen pattern helper's (value, matched) pair for the pattern opcode.
     MatchAttr,
 }
 

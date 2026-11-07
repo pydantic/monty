@@ -8,12 +8,12 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapReadOutput},
-    types::{descriptor, instance::class_member},
+    types::descriptor,
     value::{EitherStr, Value},
 };
 
 /// `object.__setattr__(obj, name, value)` — writes an instance attribute
-/// without consulting the class.
+/// while honoring data descriptors and bypassing frozen-assignment checks.
 ///
 /// The escape hatch a class that hooks attribute writes needs: its own
 /// `__setattr__` has to store the value somehow, and going through `obj.x = v`
@@ -59,11 +59,9 @@ pub fn builtin_object_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Cal
         return Err(no_dict_error(object, &name, vm));
     };
 
-    if let Some(member) = class_member(instance.get(vm.heap).class(), name.as_str(vm.interns), vm) {
+    if let Some(member) = descriptor::data_member(instance.get(vm.heap).class(), name.as_str(vm.interns), vm) {
         defer_drop!(member, vm);
-        if descriptor::is_data(member, vm) {
-            return descriptor::mutate(member, object, Some(value.clone_with_heap(vm.heap)), vm);
-        }
+        return descriptor::mutate(member, object, Some(value.clone_with_heap(vm.heap)), vm);
     }
 
     let name = name.as_value(vm.heap);

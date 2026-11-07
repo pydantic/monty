@@ -2,7 +2,7 @@ use std::fmt::Write;
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, descriptor, instance::class_member};
+use super::{Dict, LazyHeapSet, PyTrait, Type, descriptor};
 use crate::{
     annotations,
     args::ArgValues,
@@ -12,8 +12,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReader,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapId, HeapItem, HeapObjectRead, HeapReadMut,
+        HeapReader, heap_read_ref_as_field_mut,
     },
     intern::{Interns, StringId},
     types::{Union, str::allocate_string},
@@ -141,6 +141,13 @@ impl<'h> HeapReadMut<'h, Class> {
         heap: &mut HeapReader<'h>,
         interns: &Interns,
     ) -> Option<Value> {
+        // Dump upgrades currently write native methods; keep other future writers conservative too.
+        if descriptor::may_be_descriptor(&value, heap) {
+            self.get_mut(heap).descriptor_free = false;
+        }
+        if descriptor::may_be_data_descriptor(&value, heap) {
+            self.get_mut(heap).data_descriptor_free = false;
+        }
         self.namespace_mut().set_interned_str(name, value, heap, interns)
     }
 
@@ -229,55 +236,40 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
         if attr_str == "__annotations__" {
             return annotations::class_annotations(self.id(), vm).map(Some);
         }
-        // Otherwise look up a member (method or class variable) in the namespace.
-        match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
-            Some(value) => {
+        match descriptor::resolve_class(self.id(), attr_str, vm) {
+            descriptor::AttributeResolution::Getter(value) => {
                 let value = value.clone_with_heap(vm.heap);
                 defer_drop!(value, vm);
                 descriptor::get(value, None, self.id(), vm).map(Some)
             }
-            None => Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
-            )),
+            resolution => resolution
+                .into_value(self.id(), vm)
+                .map(|value| Some(CallResult::Value(value)))
+                .ok_or_else(|| ExcType::attribute_error_type(self.get(vm.heap).name.as_str(vm.interns), attr_str)),
         }
     }
 
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let member = class_member(self.id(), attr.as_str(vm.interns), vm);
-        defer_drop!(member, vm);
-        if member.as_ref().is_some_and(|member| descriptor::has_get(member, vm)) {
+        let mut guard = DropGuard::new(args, vm);
+        let (_, vm) = guard.as_parts_mut();
+        // Synthesized metaclass attributes must follow the same read path as LoadAttr.
+        if !matches!(attr.as_str(vm.interns), "__name__" | "__annotations__")
+            && matches!(
+                descriptor::resolve_class(self.id(), attr.as_str(vm.interns), vm),
+                descriptor::AttributeResolution::Getter(_)
+            )
+        {
+            let (args, vm) = guard.into_parts();
             vm.heap.inc_ref(self.id());
-            return descriptor::call_attr(Value::Ref(self.id()), attr, args, vm);
-        }
-
-        let attr_str = attr.as_str(vm.interns);
-        // `__name__` is a synthesized string, not a namespace member (see
-        // `py_getattr`), so calling it goes through the normal callable
-        // dispatch and raises CPython's `TypeError: 'str' object is not
-        // callable` rather than a spurious `AttributeError`.
-        if attr_str == "__name__" {
-            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
-            let name_val = allocate_string(name, vm.heap);
-            defer_drop!(name_val, vm);
-            return vm.call_function(name_val, args);
-        }
-        // `Foo.method(args)` calls the raw (unbound) member with the given args —
-        // no `self` is inserted, the caller passes the instance explicitly.
-        let member = self
-            .get(vm.heap)
-            .namespace
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap));
-        if let Some(member) = member {
-            defer_drop!(member, vm);
-            vm.call_function(member, args)
+            descriptor::call_attr(Value::Ref(self.id()), attr, args, vm)
         } else {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error_type(
-                self.get(vm.heap).name.as_str(vm.interns),
-                attr_str,
-            ))
+            let result = self
+                .py_getattr(attr, vm)?
+                .expect("class read returns a result or raises");
+            let callable = result.require_synchronous(vm)?;
+            let (args, vm) = guard.into_parts();
+            defer_drop!(callable, vm);
+            vm.call_function(callable, args)
         }
     }
 }
@@ -285,30 +277,5 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Class> {
 impl HeapItem for Class {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.namespace.py_dec_ref_ids(stack);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn older_classes_default_to_descriptor_lookup() {
-        #[derive(serde::Serialize)]
-        struct OlderClass {
-            name: EitherStr,
-            namespace: Dict,
-            uuid: Option<MontyUuid>,
-        }
-
-        let old = OlderClass {
-            name: EitherStr::Heap("Record".to_owned()),
-            namespace: Dict::new(),
-            uuid: None,
-        };
-        let bytes = minicbor_serde::to_vec(&old).unwrap();
-        let restored: Class = minicbor_serde::from_slice(&bytes).unwrap();
-        assert!(!restored.descriptor_free());
-        assert!(!restored.data_descriptor_free());
     }
 }

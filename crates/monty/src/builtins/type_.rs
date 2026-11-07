@@ -183,8 +183,10 @@ fn create_class(
     }
     let namespace_dict = Dict::from_pairs(pairs, vm)?;
 
-    let class_id = vm
-        .heap
-        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict, vm.heap))));
+    let class_id = vm.heap.allocate(HeapData::Class(Box::new(Class::new(
+        class_name,
+        namespace_dict,
+        vm.heap,
+    ))));
     Ok(Value::Ref(class_id))
 }

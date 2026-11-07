@@ -203,10 +203,20 @@ impl VM<'_> {
         let args = args.into_pos_only("class pattern names", this.heap)?;
         defer_drop!(args, this);
         let [cls, keywords, Value::Int(nargs), match_args] = args.as_slice() else {
-            unreachable!("private class pattern signature")
+            return Err(ExcType::type_error(
+                "class pattern helper requires a class, keyword tuple, count and match args",
+            ));
         };
-        let nargs = usize::try_from(*nargs).expect("pattern count is a byte");
-        let names = class_pattern_names(cls, keywords, nargs, Some(match_args), this)?;
+        let nargs =
+            u8::try_from(*nargs).map_err(|_| ExcType::type_error("class pattern count must be between 0 and 255"))?;
+        if !is_class_object(cls, this)
+            || !matches!(keywords, Value::Ref(id) if matches!(this.heap.get(*id), HeapData::Tuple(_)))
+        {
+            return Err(ExcType::type_error(
+                "class pattern helper requires a class and keyword tuple",
+            ));
+        }
+        let names = class_pattern_names(cls, keywords, usize::from(nargs), Some(match_args), this)?;
         Ok(CallResult::Value(allocate_tuple(
             names.into_iter().collect(),
             this.heap,

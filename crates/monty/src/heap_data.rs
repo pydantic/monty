@@ -322,7 +322,7 @@ impl HeapData {
     #[must_use]
     pub(crate) fn is_callable(&self) -> bool {
         if let Self::BuiltinDescriptor(d) = self {
-            return d.kind == Type::StaticMethod;
+            return d.kind() == Type::StaticMethod;
         }
         matches!(
             self,
@@ -375,7 +375,7 @@ impl HeapData {
             // A class object's type is `type`; an instance's carries its class id.
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
-            Self::BuiltinDescriptor(d) => d.kind,
+            Self::BuiltinDescriptor(d) => d.kind(),
             Self::BoundMethod(_) => Type::Function,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,

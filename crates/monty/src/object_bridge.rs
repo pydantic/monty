@@ -354,7 +354,7 @@ impl GraphExporter {
                 defer_drop!(children, vm);
                 MontyNode::FrozenSet(self.push_all(children, vm))
             }
-            HeapReadOutput::BuiltinDescriptor(_) => repr_node(value, vm),
+            HeapReadOutput::BuiltinDescriptor(_) => self.repr_node(value, vm),
             HeapReadOutput::Cell(_) | HeapReadOutput::HostClassType(_) => {
                 unreachable!("cells and host class types are routed by push_ref")
             }

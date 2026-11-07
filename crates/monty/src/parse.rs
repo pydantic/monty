@@ -716,7 +716,7 @@ impl<'a, 'i> Parser<'a, 'i> {
             Stmt::Delete(d) => {
                 let position = self.convert_range(d.range);
                 let mut targets = d.targets.into_iter();
-                let Some(AstExpr::Attribute(ast::ExprAttribute { value, attr, .. })) = targets.next() else {
+                let Some(AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. })) = targets.next() else {
                     return Err(ParseError::not_implemented("the 'del' statement", position));
                 };
                 if targets.next().is_some() {
@@ -724,8 +724,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                 }
                 let object = self.parse_expression(*value)?;
                 let name = self.interner.intern(attr.id());
+                // CPython underlines the deleted attribute, excluding the `del` keyword.
+                let target_position = self.convert_range(range);
                 Ok(Node::Expr(ExprLoc::new(
-                    position,
+                    target_position,
                     Expr::Call {
                         callable: Callable::Builtin(Builtins::Function(BuiltinsFunctions::Delattr)),
                         args: Box::new(ArgExprs::Two(
@@ -1373,6 +1375,8 @@ impl<'a, 'i> Parser<'a, 'i> {
         for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
                 Stmt::FunctionDef(function) => {
+                    // Defaults and decorators run in class-body scope; a walrus there
+                    // would bind a class member. Walruses in method bodies remain local.
                     for param in function.parameters.iter_non_variadic_params() {
                         if let Some(default) = &param.default {
                             self.reject_class_body_walrus(default)?;

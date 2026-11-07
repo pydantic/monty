@@ -27,7 +27,7 @@ use crate::{
     types::{
         LazyHeapSet, PyTrait, Type, descriptor,
         host_class::write_dataclass_repr,
-        instance::{class_dunder, class_member, class_name, instance_attr},
+        instance::{class_dunder, class_name, instance_attr},
         py_trait::PyObjectIdentity,
         str::allocate_string,
     },
@@ -562,17 +562,15 @@ fn store_fields(
     };
     for i in 0..values.len() {
         let name = Value::InternString(names[i]);
-        if let Some(member) = class_member(instance.get(vm.heap).class(), vm.interns.get_str(names[i]), vm) {
+        if let Some(member) = descriptor::data_member(instance.get(vm.heap).class(), vm.interns.get_str(names[i]), vm) {
             defer_drop!(member, vm);
-            if descriptor::is_data(member, vm) {
-                let value = mem::replace(&mut values[i], Value::None);
-                vm.heap.inc_ref(instance_id);
-                let object = Value::Ref(instance_id);
-                defer_drop!(object, vm);
-                let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
-                result.drop_with(vm);
-                continue;
-            }
+            let value = mem::replace(&mut values[i], Value::None);
+            vm.heap.inc_ref(instance_id);
+            let object = Value::Ref(instance_id);
+            defer_drop!(object, vm);
+            let result = descriptor::mutate(member, object, Some(value), vm)?.require_synchronous(vm)?;
+            result.drop_with(vm);
+            continue;
         }
         let value = mem::replace(&mut values[i], Value::None);
         let replaced = if frozen {
