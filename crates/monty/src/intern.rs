@@ -1290,6 +1290,8 @@ pub enum StaticStrings {
     FromNumber,
     /// `bytes.fromhex()` classmethod.
     Fromhex,
+    /// `date.fromisocalendar()` / `datetime.fromisocalendar()` classmethod.
+    Fromisocalendar,
     /// `date.fromisoformat()` / `datetime.fromisoformat()` classmethod.
     Fromisoformat,
     /// `dict.fromkeys()` classmethod.
@@ -1543,6 +1545,11 @@ pub enum StaticStrings {
     Isoformat,
     /// `sys.flags.isolated` field.
     Isolated,
+    /// `date.isocalendar()` / `datetime.isocalendar()` method.
+    Isocalendar,
+    /// Named-tuple type name of the `isocalendar()` result.
+    #[strum(serialize = "datetime.IsoCalendarDate")]
+    IsoCalendarDate,
     /// `date.isoweekday()` / `datetime.isoweekday()` method.
     Isoweekday,
     /// `str.isprintable()` method.
@@ -2455,6 +2462,8 @@ pub enum StaticStrings {
     Timespec,
     /// `datetime.timestamp()` method.
     Timestamp,
+    /// `date.timetuple()` / `datetime.timetuple()` method.
+    Timetuple,
     /// `datetime.timetz` method name.
     Timetz,
     /// The `datetime.timezone` type.
@@ -2597,6 +2606,10 @@ pub enum StaticStrings {
     UserFunction,
     /// `timezone.utc` class constant.
     Utc,
+    /// `datetime.utcfromtimestamp()` classmethod.
+    Utcfromtimestamp,
+    /// `datetime.utcnow()` classmethod.
+    Utcnow,
     /// `utcoffset()` method of `time`, `datetime` and `timezone`.
     Utcoffset,
     /// `sys.flags.utf8_mode` field.
@@ -2629,6 +2642,8 @@ pub enum StaticStrings {
     WarnDefaultEncoding,
     /// `@dataclass(weakref_slot=...)`.
     WeakrefSlot,
+    /// `IsoCalendarDate.week` field.
+    Week,
     /// `date.weekday()` / `datetime.weekday()` method.
     Weekday,
     /// `timedelta(weeks=...)` constructor kwarg.
