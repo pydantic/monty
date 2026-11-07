@@ -149,11 +149,6 @@ order and error wording, but with these divergences:
     where `type.__name__` is a metaclass descriptor whose setter renames the
     class, it does not rename the class, so `Foo.__name__` reads and `repr(Foo)`
     keep the original name while instances see the member.
-- **Assigning `obj.__class__`** stores an ordinary instance attribute rather
-    than reassigning the object's class. `obj.__class__ = X` then reads back `X`,
-    but `type(obj)` and `isinstance` still report the original class, leaving an
-    internally inconsistent object. CPython either reassigns the class (for a
-    compatible class) or raises `TypeError: __class__ must be set to a class, not '...' object`.
 - **Recursive/deep `__repr__`/`__str__` raises `RecursionError` earlier than
     CPython.** A `__repr__` (or `__str__`) that reprs `self`, or a deep chain of
     instances whose reprs nest (e.g. a long linked list), re-enters the
@@ -464,8 +459,8 @@ every construction request. Divergences:
     refuses — the same escape hatch CPython's generated `__init__` uses. On a
     class object it does not write at all, where `Foo.x = v` sets a class member.
 - Introspection attributes other than `__name__`, `__doc__`, `__annotations__`
-    and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
-    `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__` of a compiled class
+    and `obj.__class__`: `Foo.__dict__`, `obj.__dict__`,
+    `Foo.__qualname__`, `Foo.__module__`, `Foo.__annotate__` of a compiled class
     (a `type()` namespace may bind its own; see [typing.md](typing.md#annotations)), and explicit
     `obj.__repr__()` / `obj.__str__()` calls when the class defines none, all
     raise `AttributeError`.
@@ -486,19 +481,14 @@ every construction request. Divergences:
 
 ## `object`
 
-The name resolves, but it is a carrier for `object.__setattr__` rather than a
-type: Monty has no inheritance, so there is no base class for it to be.
-`isinstance(x, object)` is `True` for every value, as in CPython.
+`object` is the root of every class (see [Inheritance](#inheritance)).
 
 - **`object()` cannot be constructed** — raises `TypeError: cannot create 'object' instances`, where CPython returns a
     featureless instance.
-- **`class Foo(object):` is still rejected**, like any base list (see above),
-    so the idiom carries no more weight than `class Foo:`.
-- **Only `__setattr__` and `__name__` resolve.** Every other member CPython's
-    `object` carries — `__doc__`, `__init__`, `__eq__`, `__getattribute__`,
-    `__class__`, `__mro__`, `__bases__`, `__qualname__`, `__module__`,
-    `__dict__` — raises `AttributeError`, with Monty's generic `'type' object has no attribute 'x'` where CPython says
-    `type object 'object' has no attribute 'x'`.
+- **Only some members resolve.** `__init__`, `__new__`, `__init_subclass__`, `__setattr__`, `__name__`,
+    `__bases__`, `__mro__` and `mro()` work; the rest of what CPython's `object` carries (`__doc__`, `__eq__`,
+    `__getattribute__`, `__qualname__`, `__module__`, `__dict__`, ...) raises
+    `AttributeError: type object 'object' has no attribute '...'`.
 - **`object.__setattr__` accepts only instances of sandbox-defined classes.**
     Anything else raises CPython's
     `AttributeError: '<type>' object has no attribute '<name>' and no __dict__ for setting new attributes` — including

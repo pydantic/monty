@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{
+    CompileOptions, ExcType, MontyObject, MontyType, MontyUuid, PrintWriter, ResourceLimits, ResourceTracker,
+};
 
 fn run(code: &str) {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
@@ -1218,6 +1220,80 @@ class UnpackedBase(*bases):
 
 assert issubclass(UnpackedBase, object)
 ");
+}
+
+/// Runs `code` under a 1ns feed limit, returning the error and how many lines it printed first.
+fn run_with_expired_time_limit(code: &str) -> (ExcType, usize) {
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_nanos(1));
+    let mut output = String::new();
+    let result = ex.run(
+        vec![],
+        ResourceTracker::new(limits),
+        PrintWriter::CollectString(&mut output, None),
+    );
+    (result.unwrap_err().exc_type(), output.lines().count())
+}
+
+#[test]
+fn nested_synchronous_class_hooks_poll_the_time_limit() {
+    // Each nested hook runs too few instructions to reach a dispatch checkpoint,
+    // so only a poll on hook entry stops the tree before it completes.
+    let (exc_type, printed) = run_with_expired_time_limit(
+        r"
+depth = 0
+class Tree:
+    def __new__(cls):
+        global depth
+        print('new')
+        if depth < 6:
+            depth += 1
+            cls(); cls(); cls(); cls()
+            depth -= 1
+        return 0
+Tree()
+",
+    );
+    assert_eq!(exc_type, ExcType::TimeoutError);
+    assert!(printed < 10, "printed {printed} lines before timing out");
+
+    let (exc_type, printed) = run_with_expired_time_limit(
+        r"
+depth = 0
+class Root:
+    def __init_subclass__(cls):
+        global depth
+        print('hook')
+        if depth < 6:
+            depth += 1
+            type('A', (Root,), {}); type('B', (Root,), {}); type('C', (Root,), {}); type('D', (Root,), {})
+            depth -= 1
+class Start(Root):
+    pass
+",
+    );
+    assert_eq!(exc_type, ExcType::TimeoutError);
+    assert!(printed < 10, "printed {printed} lines before timing out");
+}
+
+#[test]
+fn flat_classinfo_tuples_poll_the_time_limit() {
+    // The tuple is a host input so building it cannot reach a time check first;
+    // without polling, the scan finishes and `after` prints before the turn ends.
+    for check in ["issubclass(C, classes)", "isinstance(C(), classes)"] {
+        let code = format!("class C:\n    pass\nprint('before')\n{check}\nprint('after')");
+        let mut ex = MontyRun::new(code, "test.py", vec!["classes".to_owned()], CompileOptions::default()).unwrap();
+        let classes = MontyObject::tuple((0..10_000).map(|_| MontyObject::type_object(MontyType::Int)));
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_nanos(1));
+        let mut output = String::new();
+        let result = ex.run(
+            vec![classes],
+            ResourceTracker::new(limits),
+            PrintWriter::CollectString(&mut output, None),
+        );
+        assert_eq!(result.unwrap_err().exc_type(), ExcType::TimeoutError, "{check}");
+        assert_eq!(output, "before\n", "{check}");
+    }
 }
 
 #[test]

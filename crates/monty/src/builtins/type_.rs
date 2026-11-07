@@ -270,6 +270,12 @@ fn run_init_subclass(class_id: HeapId, kwargs: KwargsValues, vm: &mut VM<'_>) ->
     match hook.map(|hook| hook.clone_with_heap(vm.heap)) {
         Some(hook) => {
             defer_drop!(hook, vm);
+            // Re-entry restarts the dispatch countdown; poll so nested class
+            // creation inside hooks cannot defer the time limit.
+            if let Err(error) = vm.heap.tracker.check_time() {
+                args.drop_with(vm);
+                return Err(error.into());
+            }
             let result = vm.evaluate_function(hook, args)?;
             result.drop_with(vm);
             Ok(())

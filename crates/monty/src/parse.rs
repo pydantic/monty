@@ -1307,8 +1307,8 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// The class body is modelled as a synthetic zero-argument function (like
     /// CPython's class-body code object): the class statements are collected in
     /// source order into a [`RawFunctionDef`] that, when prepared and compiled,
-    /// runs in its own scope and returns the class namespace `Dict` for
-    /// `BuildClass`. Methods become nested `FunctionDef`s; class variables become `Assign`s with arbitrary
+    /// runs in its own scope and returns the namespace `Dict` that
+    /// `type(name, bases, dict, **kw)` turns into the class. Methods become nested `FunctionDef`s; class variables become `Assign`s with arbitrary
     /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
     /// recorded in `members`, in source order, for namespace assembly.
     ///

@@ -60,6 +60,8 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     for i in 0..len {
+        // Each entry may walk the whole MRO, so a long flat tuple needs polling too.
+        vm.heap.tracker.check_time_every(i)?;
         let item = &tuple.get(vm.heap).as_slice()[i];
         if let Some(class) = TypeRef::from_value(item, vm.heap) {
             if instance_of(obj, class, vm) {

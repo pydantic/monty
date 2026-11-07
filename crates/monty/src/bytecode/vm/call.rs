@@ -1164,6 +1164,12 @@ impl<'h> VM<'h> {
     fn instantiate_with_new(&mut self, class_id: HeapId, new_func: Value, args: ArgValues) -> RunResult<CallResult> {
         let this = self;
         defer_drop!(new_func, this);
+        // Each synchronous re-entry restarts the dispatch countdown, so a tree of
+        // short nested `__new__` calls would otherwise never reach a time check.
+        if let Err(error) = this.heap.tracker.check_time() {
+            args.drop_with(this);
+            return Err(error.into());
+        }
         let init_args = args.clone_with_heap(this.heap);
         let mut init_args = DropGuard::new(init_args, this);
         let this = init_args.ctx();

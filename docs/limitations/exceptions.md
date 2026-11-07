@@ -12,7 +12,7 @@ these built-ins; `raise MyClass()` on a plain user class raises
 `BaseException`, `Exception`, `SystemExit`, `KeyboardInterrupt`,
 `ArithmeticError`, `OverflowError`, `ZeroDivisionError`, `LookupError`,
 `IndexError`, `KeyError`, `RuntimeError`, `NotImplementedError`,
-`RecursionError`, `AttributeError`, `FrozenInstanceError`, `NameError`,
+`RecursionError`, `AttributeError`, `NameError`,
 `UnboundLocalError`, `ValueError`, `UnicodeDecodeError`, `UnicodeEncodeError`,
 `ImportError`, `ModuleNotFoundError`, `OSError`, `FileNotFoundError`, `FileExistsError`,
 `IsADirectoryError`, `NotADirectoryError`, `PermissionError`,
@@ -21,7 +21,8 @@ these built-ins; `raise MyClass()` on a plain user class raises
 
 Module-specific: `json.JSONDecodeError` and `tomllib.TOMLDecodeError` (subclasses of `ValueError`),
 `re.PatternError` / `re.error`, `io.UnsupportedOperation` (catchable as
-both `OSError` and `ValueError`, matching CPython's dual parentage).
+both `OSError` and `ValueError`, matching CPython's dual parentage), and
+`dataclasses.FrozenInstanceError` (a subclass of `AttributeError`).
 
 ## Exception classes NOT implemented
 
