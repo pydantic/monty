@@ -565,6 +565,10 @@ assert F.__delattr__ is deleter",
 /// by type name, a generic alias, a chained exception, types held in class
 /// bodies and constants, and `id(int)`. Written once by the build before the
 /// native type table and never regenerated, so it checks those shims.
+#[expect(
+    dead_code,
+    reason = "records the source of the pinned fixture, which is never regenerated"
+)]
 const TYPES_FIXTURE_STATE: &str = r"
 import datetime
 import json
@@ -602,6 +606,10 @@ def suspended(n):
 ";
 
 /// The call the types fixture is suspended on.
+#[expect(
+    dead_code,
+    reason = "records the source of the pinned fixture, which is never regenerated"
+)]
 const TYPES_FIXTURE_CALL: &str = "suspended(1)";
 
 /// Fed after restoring the types fixture and resuming it into its `ValueError`.
@@ -640,26 +648,6 @@ assert caught == ['exception', 'lookup']
 #[test]
 fn types_fixture_loads_and_resumes() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/types_v15.bin");
-    if !path.exists() && env::var_os(UPDATE_FIXTURE).is_some() {
-        let mut repl = MontyRepl::new("types.py", ResourceTracker::default(), CompileOptions::default());
-        repl.feed_run(TYPES_FIXTURE_STATE, vec![], PrintWriter::Stdout).unwrap();
-        let mut progress = repl
-            .feed_start(TYPES_FIXTURE_CALL, vec![], PrintWriter::Stdout)
-            .unwrap();
-        while let ReplProgress::NameLookup(lookup) = progress {
-            let host = MontyObject::function(lookup.name.clone(), None);
-            progress = lookup
-                .resume(NameLookupResult::Value(host), PrintWriter::Stdout)
-                .unwrap();
-        }
-        let ReplProgress::FunctionCall(call) = &progress else {
-            panic!("the types fixture must suspend on host_call, got {progress:?}");
-        };
-        assert_eq!(call.function_name, "host_call");
-        let bytes = dump("types.py", None, &[], SessionRef::Suspended(&progress)).unwrap();
-        fs::write(&path, bytes).unwrap();
-        eprintln!("wrote {}", path.display());
-    }
     let bytes = fs::read(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let loaded = Dump::load(&bytes).expect("the pre-refactor types fixture loads");
     let Session::Suspended(progress) = loaded.state else {
@@ -691,6 +679,21 @@ fn persisted_key_hashes_are_stable() {
         )
         .unwrap();
     assert_snapshot!(hashes.py_repr(), @"(-7376904247260835724, -8418895208483869890, -7578619387304540654, -6751866591645121981, -8097107109803033201, 2456456309100923238, -5014982954702616963, 2858064283329581446)");
+}
+
+/// `id()` of an object without a heap identity is derived from its value, so a
+/// session that stored one before a dump must see the same id after restoring.
+#[test]
+fn builtin_ids_are_stable() {
+    let mut repl = MontyRepl::new("ids.py", ResourceTracker::default(), CompileOptions::default());
+    let ids = repl
+        .feed_run(
+            "(id(len), id(type), id(ValueError), id(KeyError), id(int), id(list))",
+            vec![],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    assert_snapshot!(ids.py_repr(), @"(2097610, 2098122, 2105898, 2105642, 2113706, 2114058)");
 }
 
 /// The fixture for the current `DUMP_VERSION`; the name carries the version so

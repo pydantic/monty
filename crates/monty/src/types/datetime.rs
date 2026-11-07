@@ -684,7 +684,9 @@ fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
 pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args.get_one_arg("datetime.fromisoformat", heap)?;
+    let value = args
+        .reject_kwargs("datetime.fromisoformat", heap)?
+        .get_one_arg("datetime.fromisoformat", heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
     let s = s?;

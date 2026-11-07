@@ -368,7 +368,7 @@ try:
     type('BadCellInst', (), {'__classcell__': FactoryBase()})
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == "__classcell__ must be a nonlocal cell, not <class 'FactoryBase'>"
+    assert str(e) == f'__classcell__ must be a nonlocal cell, not {FactoryBase!r}'
 
 
 # locals() visibility and nested classes / custom __class__ class attribute.
@@ -638,3 +638,30 @@ for bad_attr in [
         assert False, 'expected AttributeError'
     except AttributeError:
         pass
+
+# === copying super proxies ===
+import copy
+
+
+class CopyBase:
+    def who(self):
+        return ('base', self.tag)
+
+
+class CopyChild(CopyBase):
+    def __init__(self, tag):
+        self.tag = tag
+
+
+copy_child = CopyChild([1])
+bound_super = super(CopyChild, copy_child)
+assert copy.copy(bound_super) is bound_super
+deep_super = copy.deepcopy(bound_super)
+assert deep_super is not bound_super
+assert deep_super.__self__ is not copy_child
+assert deep_super.__self__.tag == [1]
+assert deep_super.__self__.tag is not copy_child.tag
+assert deep_super.who() == ('base', [1])
+unbound_super = super(CopyChild)
+assert copy.copy(unbound_super) is unbound_super
+assert copy.deepcopy(unbound_super).__thisclass__ is CopyChild

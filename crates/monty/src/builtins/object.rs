@@ -162,6 +162,8 @@ fn native_overrides_init(ty: Type) -> bool {
                 | Type::Path
                 | Type::Random
                 | Type::Module
+                | Type::DecimalContext
+                | Type::Type
         )
 }
 

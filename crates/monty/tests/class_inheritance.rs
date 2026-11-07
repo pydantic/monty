@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monty::{Dump, MontyRepl, MontyRun, Session, SessionRef, dump};
 use monty_types::{CompileOptions, ExcType, MontyObject, MontyUuid, PrintWriter, ResourceLimits, ResourceTracker};
@@ -1084,6 +1084,24 @@ isinstance(1, t)
     assert!(result.is_err(), "should exceed time limit in isinstance");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// The C3 merge is cubic in the number of bases, so it must poll the deadline.
+#[test]
+fn mro_merge_respects_time_limits() {
+    let code = r"
+bases = tuple(type(f'B{i}', (), {}) for i in range(3000))
+type('C', bases, {})
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(200));
+    let start = Instant::now();
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    // Unpolled, the merge runs for over a minute before the limit is seen.
+    assert!(start.elapsed() < Duration::from_secs(10), "took {:?}", start.elapsed());
 }
 
 #[test]

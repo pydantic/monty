@@ -1313,7 +1313,6 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// recorded in `members`, in source order, for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
-    /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
     /// member, and annotated names the class's `__annotate__` function. Class
     /// decorators and base classes are supported (enclosing scope, applied bottom-up);
     /// metaclasses and anything else in the body are rejected as not-implemented.

@@ -24,8 +24,9 @@ both.
 
 ## Class patterns
 
-- **`isinstance` has no inheritance.** A class pattern on a user-defined or host class
-    matches instances of exactly that class; see [classes.md](classes.md).
+- **A host class matches only its own instances.** A class pattern on a user-defined class
+    also matches instances of its subclasses, as in CPython, but host classes have no bases
+    in the sandbox; see [classes.md](classes.md).
 - **Host classes only have the `__match_args__` the host sent** as a class
     attribute. Without one, a positional sub-pattern raises
     `TypeError: Cls() accepts 0 positional sub-patterns (1 given)` even when the

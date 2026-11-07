@@ -127,12 +127,16 @@ impl Builtins {
     }
 
     /// The bytes `id()` encodes: the postcard form of the pre-table enum, which
-    /// had `Function`, `ExcType` and `Type` variants, so `id(len)` and `id(int)`
-    /// survive a restore. Exception classes take the `Type` form now.
+    /// had `Function`, `ExcType` and `Type` variants, with `type` a function, so
+    /// `id(len)`, `id(type)`, `id(ValueError)` and `id(int)` survive a restore.
     pub(crate) fn identity_key(self) -> (u32, IdentityPayload) {
         match self {
             Self::Function(function) => (0, IdentityPayload::Function(function)),
-            Self::Type(ty) => (2, IdentityPayload::Type(ty)),
+            Self::Type(Type::Type) => (0, IdentityPayload::Function(BuiltinsFunctions::Type)),
+            Self::Type(ty) => match ty.exc_type() {
+                Some(exc_type) => (1, IdentityPayload::ExcType(exc_type)),
+                None => (2, IdentityPayload::Type(ty)),
+            },
         }
     }
 }
@@ -142,6 +146,7 @@ impl Builtins {
 #[serde(untagged)]
 pub(crate) enum IdentityPayload {
     Function(BuiltinsFunctions),
+    ExcType(ExcType),
     Type(Type),
 }
 

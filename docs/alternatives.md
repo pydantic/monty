@@ -89,7 +89,8 @@ The tables round the numbers; the measured values are in each section below.
 
 ## OSS Monty
 
-- **Language completeness**: no subclassing of built-in types, limited stdlib, no third-party libraries.
+- **Language completeness**: classes inherit only from Python classes and `object` (no subclassing of built-in types
+    or exceptions), limited stdlib, no third-party libraries.
     See [the Python subset](limitations/index.md).
 - **Security**: no filesystem, network or environment access except what you pass in; limits on execution time and
     memory, off unless you set them.
