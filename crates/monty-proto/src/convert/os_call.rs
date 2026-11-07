@@ -6,9 +6,9 @@
 use std::{collections::HashSet, time::Duration};
 
 use monty_types::{
-    GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS, MkdirCallArgs, MontyPath,
-    MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
-    ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
+    CreateExclusiveCallArgs, GetenvArgs, ImportArgs, MAX_TIMEZONE_OFFSET_SECONDS, MIN_TIMEZONE_OFFSET_SECONDS,
+    MkdirCallArgs, MontyPath, MontyTimeZone, MontyUuid, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs, ScanArgs, SourceRange, TypeHintsTarget, UrandomArgs, sleep_duration, unstable,
 };
 
 use crate::{
@@ -77,6 +77,11 @@ fn call_to_proto(call: OsFunctionCall) -> (os_call::Call, Option<WireArena>) {
         OsFunctionCall::Open(a) => Call::Open(os_call::Open {
             path: a.path.into_string(),
             mode: a.mode.as_str().to_owned(),
+        }),
+        OsFunctionCall::CreateExclusive(a) => Call::CreateExclusive(os_call::CreateExclusive {
+            path: a.path.into_string(),
+            mode: a.mode.as_str().to_owned(),
+            permissions: a.permissions,
         }),
         OsFunctionCall::Mkdir(a) => Call::Mkdir(os_call::Mkdir {
             path: a.path.into_string(),
@@ -168,6 +173,18 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 mode: o.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(o.mode))?,
                 path: MontyPath::new(o.path),
             }),
+            os_call::Call::CreateExclusive(c) => {
+                let args = CreateExclusiveCallArgs {
+                    path: MontyPath::new(c.path),
+                    mode: c.mode.parse().map_err(|_| ProtoConvertError::InvalidFileMode(c.mode))?,
+                    permissions: c.permissions,
+                };
+                args.validate().map_err(|reason| ProtoConvertError::InvalidValue {
+                    field: "CreateExclusive.permissions",
+                    reason: reason.to_owned(),
+                })?;
+                Self::CreateExclusive(args)
+            }
             os_call::Call::Mkdir(m) => Self::Mkdir(MkdirCallArgs {
                 path: MontyPath::new(m.path),
                 parents: m.parents,

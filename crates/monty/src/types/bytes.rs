@@ -307,6 +307,24 @@ impl PyObjectIdentity for PyBytes<'_> {
 }
 
 impl<'h> PyTrait<'h> for PyBytes<'h> {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        match self {
+            Self::Interned(id) => Ok(CallResult::Value(BytesIterator::from_intern(*id, vm))),
+            Self::Heap(value) => value.py_iter(vm),
+        }
+    }
+
+    fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
+        match self {
+            Self::Interned(id) => Ok(Some(vm.interns.bytes_hash(*id))),
+            Self::Heap(value) => value.py_hash(vm),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Bytes
     }

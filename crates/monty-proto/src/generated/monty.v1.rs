@@ -1153,7 +1153,7 @@ pub struct OsCall {
     pub position: ::core::option::Option<SourceRange>,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -1183,6 +1183,18 @@ pub mod os_call {
         /// Canonical open() mode string, same set as `FileHandle.mode`.
         #[prost(string, tag = "2")]
         pub mode: crate::budgeted_prost::alloc::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+    #[prost(prost_path = "crate::budgeted_prost")]
+    pub struct CreateExclusive {
+        #[prost(string, tag = "1")]
+        pub path: crate::budgeted_prost::alloc::string::String,
+        /// Access mode of the returned handle; creation is exclusive for every mode.
+        #[prost(string, tag = "2")]
+        pub mode: crate::budgeted_prost::alloc::string::String,
+        /// Access bits only (0..0777); native backends apply the host umask.
+        #[prost(uint32, tag = "3")]
+        pub permissions: u32,
     }
     #[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
     #[prost(prost_path = "crate::budgeted_prost")]
@@ -1439,6 +1451,9 @@ pub mod os_call {
         /// of hints, which the call returns as is; `not_handled` means `{}`.
         #[prost(message, tag = "34")]
         GetTypeHints(GetTypeHints),
+        /// Create a new empty file; an existing entry must never be opened or replaced.
+        #[prost(message, tag = "35")]
+        CreateExclusive(CreateExclusive),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

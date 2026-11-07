@@ -60,6 +60,7 @@ use crate::{
         release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
     parse::CodeRange,
+    py_value::PyValue,
     run::{Program, SessionTables, VmEnv},
     types::{
         Dict, PyTrait, SessionRandom,
@@ -1729,7 +1730,7 @@ impl<'h> VM<'h> {
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let mut iter = self.heap.read(heap_id);
+                    let iter = self.heap.read(heap_id);
                     // A file nobody has read yet has no buffer to slice: load it from
                     // the host, then re-dispatch this instruction against the buffer.
                     if let HeapReadOutput::OpenFile(file) = &iter
@@ -1743,10 +1744,11 @@ impl<'h> VM<'h> {
                         continue;
                     }
 
+                    let mut iter = PyValue::from(iter);
                     match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
-                            // Drop the HeapRead before dec_ref to release the reader count
+                            // Release the iterator view before decrementing its owned reference.
                             drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();

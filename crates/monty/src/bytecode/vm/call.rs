@@ -26,6 +26,7 @@ use crate::{
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::{PendingEffect, release_pending_effect},
+    py_value::PyValue,
     resource_checks::check_estimated_size,
     types::{Dict, Instance, PyTrait, Type, instance::class_name},
     value::{EitherStr, VALUE_SIZE, Value},
@@ -567,7 +568,7 @@ impl<'h> VM<'h> {
     /// the same `TypeError` the rejected arm used to, so a value that is not
     /// callable is refused without a branch of its own.
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
-        self.heap.read(heap_id).py_call(args, self)
+        PyValue::from_heap(heap_id, self.heap).py_call(args, self)
     }
 
     /// Calls a function with unpacked args tuple and optional kwargs dict.
@@ -1459,7 +1460,7 @@ fn dispatch_dunder(
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
             args.check_zero_args("__enter__", vm.heap)
-                .and_then(|()| vm.heap.read(heap_id).py_enter(vm))
+                .and_then(|()| PyValue::from_heap(heap_id, vm.heap).py_enter(vm))
         }
         StaticStrings::Exit => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");
@@ -1499,7 +1500,7 @@ fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<Ca
         Value::Ref(id) => Some(*id),
         _ => None,
     };
-    vm.heap.read(heap_id).py_exit(vm, exc)
+    PyValue::from_heap(heap_id, vm.heap).py_exit(vm, exc)
 }
 
 /// What a Python function value is called with: its id, captured cells, owned

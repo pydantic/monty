@@ -1188,6 +1188,42 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             .into(),
         },
         OsFunctionCall::Resolve(p) | OsFunctionCall::Absolute(p) => MontyObject::string(p.as_str().to_owned()).into(),
+        OsFunctionCall::CreateExclusive(args) => {
+            let path = args.path.as_str().to_owned();
+            if let Err(message) = args.validate() {
+                return MontyException::new(ExcType::ValueError, Some(message.to_owned())).into();
+            }
+            if path == "/" || get_virtual_file(&path).is_some() || is_virtual_dir(&path) {
+                return MontyException::new(
+                    ExcType::FileExistsError,
+                    Some(format!("[Errno 17] File exists: '{path}'")),
+                )
+                .into();
+            }
+            for (separator, _) in path.match_indices('/').filter(|(index, _)| *index > 0) {
+                let parent = &path[..separator];
+                let (exc_type, errno, message) = if get_virtual_file(parent).is_some() {
+                    (ExcType::NotADirectoryError, 20, "Not a directory")
+                } else if !is_virtual_dir(parent) {
+                    (ExcType::FileNotFoundError, 2, "No such file or directory")
+                } else {
+                    continue;
+                };
+                return MontyException::new(exc_type, Some(format!("[Errno {errno}] {message}: '{path}'"))).into();
+            }
+            MUTABLE_VFS.with(|vfs| {
+                let mut vfs = vfs.borrow_mut();
+                vfs.files
+                    .insert(path.clone(), (Vec::new(), i64::from(args.permissions)));
+                vfs.deleted_files.remove(&path);
+            });
+            MontyObject::file_handle(MontyFileHandle {
+                path,
+                mode: args.mode,
+                position: 0,
+            })
+            .into()
+        }
         OsFunctionCall::Open(args) => {
             let path = args.path.as_str().to_owned();
             let file_mode = args.mode;
@@ -2979,3 +3015,7 @@ datatest_stable::harness!(
     TEST_CASES_DIR,
     r"^.*\.py$",
 );
+
+#[cfg(test)]
+#[path = "../tests/units/create_exclusive.rs"]
+mod create_exclusive_tests;
