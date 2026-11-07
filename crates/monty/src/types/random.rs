@@ -27,7 +27,7 @@ use crate::{
         random::{RandomFunctions, random_dispatch},
     },
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, py_trait::PyObjectIdentity},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 
@@ -598,8 +598,8 @@ impl HeapItem for Random {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Random> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Random
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Random.into()
     }
 
     fn py_type_name(&self, _: &VM<'h>) -> Cow<'h, str> {

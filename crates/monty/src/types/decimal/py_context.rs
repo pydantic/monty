@@ -24,7 +24,9 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
-    types::{Dict, LazyHeapSet, List, PyTrait, Type, allocate_string, iter::collect_iterable, tuple::allocate_tuple},
+    types::{
+        Dict, LazyHeapSet, List, PyTrait, Type, TypeRef, allocate_string, iter::collect_iterable, tuple::allocate_tuple,
+    },
     value::{EitherStr, Value},
 };
 
@@ -435,7 +437,7 @@ fn signal_key(key: &Value) -> RunResult<Signal> {
 /// The signal an exception class value stands for.
 fn signal_of(value: &Value) -> Option<Signal> {
     match value {
-        Value::Builtin(Builtins::ExcType(exc_type)) => Signal::from_exc_type(*exc_type),
+        Value::Builtin(Builtins::Type(ty)) => ty.exc_type().and_then(Signal::from_exc_type),
         _ => None,
     }
 }
@@ -501,8 +503,8 @@ impl HeapItem for DecContext {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DecContext> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DecimalContext
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DecimalContext.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -637,7 +639,7 @@ impl HeapItem for SignalDict {
 fn signal_keys() -> impl Iterator<Item = (Signal, Value)> {
     Signal::ALL
         .into_iter()
-        .map(|signal| (signal, Value::Builtin(Builtins::ExcType(signal.exc_type()))))
+        .map(|signal| (signal, Value::Builtin(Builtins::Type(Type::from(signal.exc_type())))))
 }
 
 impl<'h> HeapObjectRead<'h, SignalDict> {
@@ -730,8 +732,8 @@ enum SignalDictPart {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, SignalDict> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DecimalSignalDict
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DecimalSignalDict.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -876,8 +878,8 @@ impl HeapItem for ContextManager {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ContextManager> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DecimalContextManager
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DecimalContextManager.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

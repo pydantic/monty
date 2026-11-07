@@ -15,7 +15,7 @@ use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    types::{BuiltinType, Module},
+    types::{Module, Type},
     value::Value,
 };
 
@@ -24,29 +24,21 @@ use crate::{
 pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     let mut module = Module::new(StaticStrings::Datetime, vm.interns);
 
-    module.set_attr(
-        StaticStrings::Date,
-        Value::Builtin(Builtins::Type(BuiltinType::Date)),
-        vm,
-    );
+    module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);
     module.set_attr(
         StaticStrings::Datetime,
-        Value::Builtin(Builtins::Type(BuiltinType::DateTime)),
+        Value::Builtin(Builtins::Type(Type::DateTime)),
         vm,
     );
-    module.set_attr(
-        StaticStrings::Time,
-        Value::Builtin(Builtins::Type(BuiltinType::Time)),
-        vm,
-    );
+    module.set_attr(StaticStrings::Time, Value::Builtin(Builtins::Type(Type::Time)), vm);
     module.set_attr(
         StaticStrings::Timedelta,
-        Value::Builtin(Builtins::Type(BuiltinType::TimeDelta)),
+        Value::Builtin(Builtins::Type(Type::TimeDelta)),
         vm,
     );
     module.set_attr(
         StaticStrings::Timezone,
-        Value::Builtin(Builtins::Type(BuiltinType::TimeZone)),
+        Value::Builtin(Builtins::Type(Type::TimeZone)),
         vm,
     );
 

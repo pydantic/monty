@@ -26,7 +26,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
-    types::{Dict, LazyHeapSet, PyTrait, Type, list::repr_should_truncate, tuple::allocate_tuple},
+    types::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, list::repr_should_truncate, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
 };
 
@@ -334,8 +334,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Partial> {
         vm.call_function(func, args)
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Partial
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Partial.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

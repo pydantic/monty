@@ -1014,6 +1014,12 @@ pub enum StaticStrings {
     /// `__cause__` of an exception, set by `raise ... from`.
     #[strum(serialize = "__cause__")]
     DunderCause,
+    /// `__class__` — implicit closure cell synthesized in class bodies for methods using `super()` or `__class__`.
+    #[strum(serialize = "__class__")]
+    DunderClass,
+    /// `__classcell__` — class-namespace entry carrying the implicit `__class__` cell to `type.__new__`.
+    #[strum(serialize = "__classcell__")]
+    DunderClasscell,
     /// `__context__` of an exception: the one being handled when it was raised.
     #[strum(serialize = "__context__")]
     DunderContext,
@@ -1042,7 +1048,7 @@ pub enum StaticStrings {
     /// `__getnewargs__` — the copy/pickle hook on named tuples.
     #[strum(serialize = "__getnewargs__")]
     DunderGetnewargs,
-    /// `__hash__` — written into a class namespace by `@dataclass`.
+    /// `__hash__` — written into a class namespace by `@dataclass`, or synthesized for classes with `__eq__`.
     #[strum(serialize = "__hash__")]
     DunderHash,
     /// `__init__` — written into a class namespace by `@dataclass`.

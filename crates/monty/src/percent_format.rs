@@ -452,9 +452,9 @@ impl Arguments {
             Value::Ref(id) if let HeapData::NamedTuple(tuple) = vm.heap.get(*id) => clone_items(tuple.as_vec(), vm)?,
             _ => smallvec![args.clone_with_heap(vm.heap)],
         };
-        let mapping = match args.py_type(vm) {
-            Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Range => true,
-            Type::Bytes => !bytes_template,
+        let mapping = match args.py_type(vm).native() {
+            Some(Type::Dict | Type::DefaultDict | Type::Counter | Type::List | Type::Range) => true,
+            Some(Type::Bytes) => !bytes_template,
             _ => false,
         }
         .then(|| args.clone_with_heap(vm.heap));

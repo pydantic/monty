@@ -32,7 +32,7 @@ use crate::{
     object_bridge::MontyObjectExt,
     os_dispatch::{PreConversionEffect, value_to_owned_string},
     types::{
-        Bytes, Module, Property, PyTrait, Type,
+        Bytes, Module, Property, PyTrait, Type, TypeRef,
         dir_scan::{scandir_call, walk_call},
         property::ZeroArgOsProperty,
         str::allocate_string,
@@ -609,9 +609,9 @@ struct FspathArgs {
 /// `bytes` pass through unchanged, `Path` and `DirEntry` yield their string form.
 fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let FspathArgs { path } = FspathArgs::from_args(args, vm)?;
-    match path.py_type_heap(vm.heap) {
-        Type::Str | Type::Bytes => Ok(CallResult::Value(path)),
-        Type::Path | Type::DirEntry => {
+    match path.py_type_heap(vm.heap).native() {
+        Some(Type::Str | Type::Bytes) => Ok(CallResult::Value(path)),
+        Some(Type::Path | Type::DirEntry) => {
             let text = value_to_owned_string(&path, vm.heap, vm.interns).expect("a path-like always yields a string");
             path.drop_with(vm.heap);
             Ok(CallResult::Value(allocate_string(text, vm.heap)))
@@ -800,7 +800,7 @@ pub(crate) fn check_mode(value: &Value, vm: &mut VM<'_>) -> RunResult<()> {
         Value::Int(mode) => i32::try_from(*mode).map(|_| ()).map_err(|_| ExcType::overflow_c_int()),
         _ => match value.py_type_heap(vm.heap) {
             // Big ints (`LongInt`) are outside i64, so far outside C int.
-            Type::Int => Err(ExcType::overflow_c_int()),
+            TypeRef::Native(Type::Int) => Err(ExcType::overflow_c_int()),
             other => {
                 if let Some(index) = value.py_index_impl(vm)? {
                     defer_drop!(index, vm);

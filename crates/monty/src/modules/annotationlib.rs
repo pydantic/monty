@@ -18,7 +18,7 @@ use crate::{
         ModuleFunctions,
         typing::{HintFormat, HintsRequest, HintsTask, collect_hints, namespace_dict},
     },
-    types::{BuiltinType, Class, Dict, Module, PyTrait, forward_ref::format_code},
+    types::{Class, Dict, Module, PyTrait, Type, forward_ref::format_code},
     value::{EitherStr, Value},
 };
 
@@ -29,7 +29,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
     module.set_attr(StaticStrings::FormatClass, format, vm);
     module.set_attr(
         StaticStrings::ForwardRef,
-        Value::Builtin(Builtins::Type(BuiltinType::ForwardRef)),
+        Value::Builtin(Builtins::Type(Type::ForwardRef)),
         vm,
     );
     module.set_attr(

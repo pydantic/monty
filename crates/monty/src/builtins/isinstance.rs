@@ -1,13 +1,12 @@
 //! Implementation of the isinstance() builtin function.
 
-use super::Builtins;
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
-    types::{PyTrait, Tuple, Type},
+    heap::{HeapData, HeapRead, HeapReadOutput},
+    types::{Tuple, TypeRef},
     value::Value,
 };
 
@@ -24,29 +23,13 @@ pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> 
 
 /// Checks if `obj` matches a single classinfo entry.
 ///
-/// Supports:
-/// - Single builtin types: `isinstance(x, int)`
-/// - Exception types and their hierarchy: `isinstance(err, LookupError)`
-/// - User-defined classes: `isinstance(obj, Foo)` (identity of the instance's
-///   class; there is no inheritance chain to walk yet)
-/// - Host classes: `isinstance(obj, Point)` for a `HostClassType` (exact class
-///   id; the host sends no bases)
-/// - Tuples (possibly nested) of the above
+/// A type (native or a class) matches when `type(obj)` is it or inherits from
+/// it; a tuple or a union matches when any member does, tested in order.
 pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
+    if let Some(class) = TypeRef::from_value(classinfo, vm.heap) {
+        return Ok(instance_of(obj, class, vm));
+    }
     match classinfo {
-        Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of((*t).into())),
-        Value::Builtin(Builtins::ExcType(handler_type)) => {
-            Ok(matches!(obj.py_type(vm), Type::Exception(exc_type) if exc_type.is_subclass_of(*handler_type)))
-        }
-        // A user-defined class: true iff `obj` is an instance of exactly this class.
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => Ok(instance_of_class(obj, *id, vm)),
-        // A `collections.namedtuple` class, matched by the instance's `class_id`.
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
-            Ok(instance_of_namedtuple_class(obj, *id, vm))
-        }
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClassType(_)) => {
-            Ok(instance_of_host_class(obj, *id, vm))
-        }
         Value::Ref(id) if let HeapReadOutput::Tuple(tuple) = vm.heap.read(*id) => {
             isinstance_check_tuple(obj, &tuple, vm)
         }
@@ -66,23 +49,9 @@ pub(crate) fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) 
     }
 }
 
-/// Whether `obj` is a host instance whose class entry is `class_id` (exact
-/// class only: the host never sends bases, so subclasses are unknown).
-fn instance_of_host_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
-    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::HostClass(hc) if hc.class_id() == class_id))
-}
-
-/// Whether `obj` is an instance whose class object is `class_id`.
-fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
-    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::Instance(inst) if inst.class() == class_id))
-}
-
-/// Whether `obj` is a namedtuple instance built from the class `class_id`.
-///
-/// Instances created by Monty internally (`sys.version_info`, host imports)
-/// carry no `class_id`, so they never match a factory class.
-fn instance_of_namedtuple_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
-    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::NamedTuple(nt) if nt.class_id() == Some(class_id)))
+/// Whether `obj` is an instance of `class` or of a subclass of it.
+fn instance_of(obj: &Value, class: TypeRef, vm: &VM<'_>) -> bool {
+    obj.py_class(vm).is_subclass_of(class, vm.heap)
 }
 
 /// Recursively walks a tuple of classinfo entries.
@@ -91,33 +60,18 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;
     for i in 0..len {
-        match &tuple.get(vm.heap).as_slice()[i] {
-            Value::Builtin(Builtins::Type(t)) => {
-                if obj.py_type(vm).is_instance_of((*t).into()) {
-                    return Ok(true);
-                }
+        let item = &tuple.get(vm.heap).as_slice()[i];
+        if let Some(class) = TypeRef::from_value(item, vm.heap) {
+            if instance_of(obj, class, vm) {
+                return Ok(true);
             }
-            Value::Builtin(Builtins::ExcType(exc)) => {
-                if matches!(obj.py_type(vm), Type::Exception(et) if et.is_subclass_of(*exc)) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
-                if instance_of_class(obj, *id, vm) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
-                if instance_of_namedtuple_class(obj, *id, vm) {
-                    return Ok(true);
-                }
-            }
-            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClassType(_)) => {
-                if instance_of_host_class(obj, *id, vm) {
-                    return Ok(true);
-                }
-            }
+            continue;
+        }
+        match item {
             Value::Ref(nested_id) if let HeapReadOutput::Tuple(nested) = vm.heap.read(*nested_id) => {
+                // A tuple can hold itself many times over, so walking nested
+                // tuples is exponential in their depth: bound it by time.
+                vm.heap.tracker.check_time()?;
                 if isinstance_check_tuple(obj, &nested, vm)? {
                     return Ok(true);
                 }

@@ -33,7 +33,7 @@ use crate::{
     intern::StaticStrings,
     py_value::PyValue,
     types::{
-        BuiltinType, CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, allocate_string,
+        CmpOrder, Complex, LazyHeapSet, LongInt, NamedTuple, PyTrait, Type, TypeRef, allocate_string,
         str::allocate_string_no_interning, tuple::allocate_tuple,
     },
     value::{EitherStr, Value},
@@ -297,6 +297,21 @@ fn sequence_items(value: &Value, vm: &VM<'_>) -> Option<Vec<Value>> {
     Some(items.iter().map(|item| item.clone_with_heap(vm.heap)).collect())
 }
 
+/// `Decimal.from_number(...)` and `Decimal.from_float(...)`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::FromNumber) {
+        Ok(class_from_number(vm, args).map(CallResult::Value))
+    } else if attr.as_str(vm.interns) == "from_float" {
+        Ok(class_from_float(vm, args).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// `Decimal.from_float(f)`: exact; an `int` is accepted too.
 pub(crate) fn class_from_float(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("Decimal.from_float", vm.heap)?;
@@ -542,8 +557,8 @@ fn exact_fraction_float(coeff: &Coeff, exp: i64) -> Option<f64> {
 // ============================================================================
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Decimal> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Decimal
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Decimal.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -858,10 +873,7 @@ impl<'h> HeapObjectRead<'h, Decimal> {
             DecimalMethod::DunderReduce => {
                 let text = allocate_string(d.to_sci_string(false, true), vm.heap);
                 let args = allocate_tuple(smallvec![text], vm.heap);
-                allocate_tuple(
-                    smallvec![Value::Builtin(Builtins::Type(BuiltinType::Decimal)), args],
-                    vm.heap,
-                )
+                allocate_tuple(smallvec![Value::Builtin(Builtins::Type(Type::Decimal)), args], vm.heap)
             }
             DecimalMethod::DunderComplex => {
                 let real = d.to_f64()?;

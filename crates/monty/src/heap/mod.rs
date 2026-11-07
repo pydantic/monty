@@ -20,7 +20,7 @@ use monty_types::{DEFAULT_GC_INTERVAL, MontyUuid, ResourceTracker};
 use serde::{de::Error as _, ser::SerializeStruct};
 
 #[cfg(feature = "ref-count-return")]
-use crate::types::Type;
+use crate::types::TypeRef;
 use crate::{
     asyncio::{Awaiter, ExternalFutureState, GatherState},
     types::{ExtFunction, HostClassType, TimeZone, Tuple, decimal::py_context::DecimalSlot},
@@ -1794,7 +1794,7 @@ impl HeapReader<'_> {
     ///
     /// Unlike the cycle collector's [`mark_gray`](Self::mark_gray) this touches
     /// no colors or refcounts, so it cannot perturb the state under test.
-    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
+    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, TypeRef)> {
         let mut seen: HashSet<HeapId> = HashSet::new();
         let mut work_stack: Vec<HeapId> = Vec::new();
         // The heap owns the session's decimal contexts, so they are live without a name.
@@ -2022,6 +2022,12 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::Class(class) => {
+            // Base classes the class owns; must match `Class::py_dec_ref_ids`.
+            for base in class.bases() {
+                if let Some(id) = base.class_id() {
+                    on_child(id);
+                }
+            }
             // The class namespace holds method/class-variable values.
             for (k, v) in class.namespace() {
                 if let Value::Ref(id) = k {
@@ -2094,6 +2100,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Union(union) => union.for_each_child_id(on_child),
         HeapData::ForwardRef(forward_ref) => forward_ref.for_each_child_id(on_child),
         HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
+        // The class it searches past and the object it binds; must match `Super::py_dec_ref_ids`.
+        HeapData::Super(proxy) => proxy.child_ids().for_each(on_child),
         // Attrs and, for a file module, its namespace dict.
         HeapData::Module(m) => m.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
@@ -2249,6 +2257,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::ForwardRef(forward_ref) => forward_ref.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
+        HeapData::Super(proxy) => proxy.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references

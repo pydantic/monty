@@ -1,4 +1,3 @@
-mod builtin_type;
 /// Type definitions for Python runtime values.
 ///
 /// This module contains structured types that wrap heap-allocated data
@@ -34,6 +33,7 @@ pub mod long_int;
 pub mod lru_cache;
 pub mod module;
 pub mod namedtuple;
+pub(crate) mod native;
 pub(crate) mod numeric;
 pub mod partial;
 pub mod path;
@@ -47,16 +47,17 @@ mod re_syntax;
 pub mod set;
 pub mod slice;
 pub mod str;
+pub(crate) mod super_;
 pub mod time;
 pub mod timedelta;
 pub mod timezone;
 pub mod tuple;
 pub mod r#type;
+pub(crate) mod type_ref;
 mod unicode_type;
 mod unicode_type_data;
 pub mod union;
 
-pub(crate) use builtin_type::BuiltinType;
 pub(crate) use bytes::{Bytes, BytesIterator};
 pub(crate) use class::Class;
 pub(crate) use complex::Complex;
@@ -70,7 +71,7 @@ pub(crate) use file::OpenFile;
 pub(crate) use forward_ref::ForwardRef;
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use hashlib::HashObject;
-pub(crate) use host_class::{HostClass, HostClassType, host_class_type};
+pub(crate) use host_class::{HostClass, HostClassType};
 pub(crate) use instance::{BoundMethod, Instance, instance_call_copy_hook};
 pub(crate) use iter::{collect_iterable, collect_iterable_bounded};
 pub(crate) use itertools::ItertoolsIter;
@@ -94,4 +95,5 @@ pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
 pub(crate) use tuple::{Tuple, TupleIterator, TupleVec, allocate_tuple};
 pub(crate) use r#type::Type;
+pub(crate) use type_ref::{OwnedTypeRef, TypeRef};
 pub(crate) use union::Union;

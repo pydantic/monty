@@ -259,10 +259,7 @@ fn frames_are_identical(a: &StackFrame, b: &StackFrame) -> bool {
     Deserialize,
 )]
 pub enum ExcType {
-    /// primary exception class - matches any exception in isinstance checks.
-    ///
-    /// Also the `Default` — required so `Type` (which embeds an `ExcType` in
-    /// its `Exception` variant) can derive `strum::EnumIter`.
+    /// The base of every ordinary exception; also the `Default`.
     #[default]
     Exception,
 
@@ -342,11 +339,9 @@ pub enum ExcType {
     /// `io.UnsupportedOperation` - raised by file objects when a requested
     /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
     ///
-    /// In CPython this inherits from both `OSError` and `ValueError`. Monty's
-    /// `ExcType` enum models single parents, but [`Self::is_subclass_of`]
-    /// matches `UnsupportedOperation` against both `OSError` and `ValueError`
-    /// so `except ValueError:` and `except OSError:` both catch it as in
-    /// CPython.
+    /// In CPython this inherits from both `OSError` and `ValueError`; the
+    /// interpreter's type table gives it both bases, so `except ValueError:`
+    /// and `except OSError:` both catch it as in CPython.
     #[strum(serialize = "io.UnsupportedOperation")]
     UnsupportedOperation,
     /// Subclass of OSError since Python 3.3 (PEP 3151).
@@ -399,7 +394,7 @@ pub enum ExcType {
 
     // --- decimal module ---
     // CPython's decimal signals form a multiple-inheritance hierarchy under
-    // `ArithmeticError`; [`Self::decimal_ancestors`] lists each one's bases.
+    // `ArithmeticError`; the interpreter's type table records each one's bases.
     /// `decimal.DecimalException`, the base of every decimal signal.
     #[strum(serialize = "decimal.DecimalException")]
     DecimalException,
@@ -443,114 +438,6 @@ pub enum ExcType {
     #[strum(serialize = "decimal.FloatOperation")]
     DecimalFloatOperation,
 }
-impl ExcType {
-    /// Checks if this exception type is a subclass of another exception type.
-    ///
-    /// Implements Python's exception hierarchy for try/except matching:
-    /// - `Exception` is the base class for all standard exceptions
-    /// - `LookupError` is the base for `KeyError` and `IndexError`
-    /// - `ArithmeticError` is the base for `ZeroDivisionError` and `OverflowError`
-    /// - `RuntimeError` is the base for `RecursionError` and `NotImplementedError`
-    ///
-    /// Returns true if `self` would be caught by `except handler_type:`.
-    #[must_use]
-    pub fn is_subclass_of(self, handler_type: Self) -> bool {
-        if self == handler_type || self.decimal_ancestors().contains(&handler_type) {
-            return true;
-        }
-        match handler_type {
-            // BaseException catches all exceptions
-            Self::BaseException => true,
-            // Exception catches everything except BaseException, and direct subclasses: KeyboardInterrupt, SystemExit
-            Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),
-            // LookupError catches KeyError and IndexError
-            Self::LookupError => matches!(self, Self::KeyError | Self::IndexError),
-            // ArithmeticError catches ZeroDivisionError and OverflowError
-            Self::ArithmeticError => matches!(self, Self::ZeroDivisionError | Self::OverflowError),
-            // RuntimeError catches RecursionError and NotImplementedError
-            Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
-            // AttributeError catches FrozenInstanceError
-            Self::AttributeError => matches!(self, Self::FrozenInstanceError),
-            // NameError catches UnboundLocalError
-            Self::NameError => matches!(self, Self::UnboundLocalError),
-            // io.UnsupportedOperation is here because CPython gives it dual
-            // OSError + ValueError parentage
-            Self::ValueError => matches!(
-                self,
-                Self::UnicodeDecodeError
-                    | Self::UnicodeEncodeError
-                    | Self::JsonDecodeError
-                    | Self::TomlDecodeError
-                    | Self::BinasciiError
-                    | Self::UnsupportedOperation
-            ),
-            // ImportError catches ModuleNotFoundError
-            Self::ImportError => matches!(self, Self::ModuleNotFoundError),
-            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,
-            // NotADirectoryError, PermissionError, io.UnsupportedOperation, and
-            // TimeoutError (an OSError subclass since Python 3.3)
-            Self::OSError => matches!(
-                self,
-                Self::FileNotFoundError
-                    | Self::FileExistsError
-                    | Self::IsADirectoryError
-                    | Self::NotADirectoryError
-                    | Self::PermissionError
-                    | Self::UnsupportedOperation
-                    | Self::TimeoutError
-            ),
-            // All other types only match exactly (handled by self == handler_type above)
-            _ => false,
-        }
-    }
-
-    /// Every base of a `decimal` exception below `Exception`, in CPython's MRO order;
-    /// empty for every other type.
-    ///
-    /// The decimal signals inherit from several classes at once (`DivisionByZero` is
-    /// also a `ZeroDivisionError`, `Underflow` is `Inexact`, `Rounded` and `Subnormal`).
-    #[must_use]
-    pub fn decimal_ancestors(self) -> &'static [Self] {
-        const BASE: &[ExcType] = &[ExcType::DecimalException, ExcType::ArithmeticError];
-        const INVALID: &[ExcType] = &[
-            ExcType::DecimalInvalidOperation,
-            ExcType::DecimalException,
-            ExcType::ArithmeticError,
-        ];
-        match self {
-            Self::DecimalException => &[Self::ArithmeticError],
-            Self::DecimalClamped
-            | Self::DecimalInvalidOperation
-            | Self::DecimalInexact
-            | Self::DecimalRounded
-            | Self::DecimalSubnormal => BASE,
-            Self::DecimalConversionSyntax | Self::DecimalDivisionImpossible | Self::DecimalInvalidContext => INVALID,
-            Self::DecimalDivisionUndefined => &[
-                Self::DecimalInvalidOperation,
-                Self::DecimalException,
-                Self::ZeroDivisionError,
-                Self::ArithmeticError,
-            ],
-            Self::DecimalDivisionByZero => &[Self::DecimalException, Self::ZeroDivisionError, Self::ArithmeticError],
-            Self::DecimalOverflow => &[
-                Self::DecimalInexact,
-                Self::DecimalRounded,
-                Self::DecimalException,
-                Self::ArithmeticError,
-            ],
-            Self::DecimalUnderflow => &[
-                Self::DecimalInexact,
-                Self::DecimalRounded,
-                Self::DecimalSubnormal,
-                Self::DecimalException,
-                Self::ArithmeticError,
-            ],
-            Self::DecimalFloatOperation => &[Self::DecimalException, Self::ArithmeticError, Self::TypeError],
-            _ => &[],
-        }
-    }
-}
-
 /// Structured payload attached to exception types whose CPython counterparts
 /// carry more than a message. Currently unicode and json decode errors have
 /// one; the enum leaves room for future variants (e.g. `OSError`'s

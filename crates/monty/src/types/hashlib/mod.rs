@@ -39,7 +39,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead},
     intern::StaticStrings,
     py_value::PyValue,
-    types::{LazyHeapSet, PyTrait, Type, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef, allocate_string, bytes::allocate_bytes, py_trait::PyObjectIdentity},
     value::{EitherStr, Value},
 };
 
@@ -436,8 +436,8 @@ impl HeapItem for HashObject {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, HashObject> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).algorithm.py_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).algorithm.py_type().into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

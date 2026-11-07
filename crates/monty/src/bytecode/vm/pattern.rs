@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
-    types::{Dict, PyTrait, Type, instance::class_name, set::set_element_hash, tuple::allocate_tuple},
+    types::{Dict, PyTrait, Type, TypeRef, set::set_element_hash, tuple::allocate_tuple, type_ref::is_class_like},
     value::{EitherStr, Value},
 };
 
@@ -55,13 +55,13 @@ impl VM<'_> {
     /// `str` or `bytes`; mappings are `dict` and its `collections` subclasses.
     pub(super) fn match_shape(&mut self, length: u16, flags: u8) {
         let subject = self.peek();
-        let ty = subject.py_type(self);
+        let ty = subject.py_type(self).native();
         let shape_ok = if flags & MATCH_SHAPE_MAPPING != 0 {
-            matches!(ty, Type::Dict | Type::DefaultDict | Type::Counter)
+            matches!(ty, Some(Type::Dict | Type::DefaultDict | Type::Counter))
         } else {
             matches!(
                 ty,
-                Type::List | Type::Tuple | Type::NamedTuple | Type::Range | Type::Deque
+                Some(Type::List | Type::Tuple | Type::NamedTuple | Type::Range | Type::Deque)
             )
         };
         let matched = shape_ok && {
@@ -327,11 +327,8 @@ fn class_pattern_names(
 /// Whether `value` is something `isinstance` accepts as a single class.
 fn is_class_object(value: &Value, vm: &VM<'_>) -> bool {
     match value {
-        Value::Builtin(Builtins::Type(_) | Builtins::ExcType(_)) => true,
-        Value::Ref(id) => matches!(
-            vm.heap.get(*id),
-            HeapData::Class(_) | HeapData::NamedTupleClass(_) | HeapData::HostClassType(_)
-        ),
+        Value::Builtin(Builtins::Type(_)) => true,
+        Value::Ref(id) => is_class_like(vm.heap.get(*id)),
         _ => false,
     }
 }
@@ -353,7 +350,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
     };
     let Value::Ref(cls_id) = cls else {
         return match cls {
-            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(&(*t).into()) => {
+            Value::Builtin(Builtins::Type(t)) if SELF_MATCHING_TYPES.contains(t) => {
                 check_count(1, vm).map(|()| MatchArgs::SelfMatch)
             }
             _ => check_count(0, vm).map(|()| MatchArgs::Names(Vec::new())),
@@ -421,18 +418,8 @@ fn positional_count_error(cls: &Value, allowed: usize, given: usize, vm: &VM<'_>
 
 /// The class's `__name__`, as CPython's class pattern errors spell it.
 fn class_pattern_name(cls: &Value, vm: &VM<'_>) -> String {
-    match cls {
-        Value::Builtin(Builtins::Type(t)) => Type::from(*t).dunder_name(vm.heap, vm.interns).into_owned(),
-        Value::Builtin(Builtins::ExcType(exc_type)) => {
-            let qualified = exc_type.to_string();
-            qualified.rsplit('.').next().unwrap_or(&qualified).to_owned()
-        }
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Class(_) => class_name(*id, vm.heap, vm.interns).into_owned(),
-            HeapData::NamedTupleClass(class) => class.name(vm.interns).to_owned(),
-            HeapData::HostClassType(class) => class.name(vm.interns).to_owned(),
-            _ => cls.py_type_name(vm).to_string(),
-        },
-        _ => cls.py_type_name(vm).to_string(),
+    match TypeRef::from_value(cls, vm.heap) {
+        Some(ty) => ty.dunder_name(vm.heap, vm.interns).into_owned(),
+        None => cls.py_type_name(vm).to_string(),
     }
 }

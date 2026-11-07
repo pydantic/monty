@@ -72,7 +72,7 @@ use monty_types::{ResourceError, ResourceTracker};
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
 
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
+use super::{CmpOrder, LazyHeapSet, PyTrait, Type, TypeRef};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -325,8 +325,8 @@ impl<'h> PyTrait<'h> for PyBytes<'h> {
         }
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Bytes
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Bytes.into()
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
@@ -430,8 +430,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Bytes> {
         true
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Bytes
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Bytes.into()
     }
 
     fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -2349,6 +2349,19 @@ struct BytesHexArgs {
 // fromhex classmethod
 // =============================================================================
 
+/// `bytes.fromhex(...)` called on the type.
+pub(crate) fn bytes_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromhex) {
+        Ok(bytes_fromhex(args, vm).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// Implements Python's `bytes.fromhex(string)` classmethod.
 ///
 /// Creates bytes from a hexadecimal string. Whitespace is allowed between byte pairs,
@@ -2521,8 +2534,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BytesIterator> {
         true
     }
 
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::BytesIterator
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::BytesIterator.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

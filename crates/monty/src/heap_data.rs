@@ -18,7 +18,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::FunctionId,
-    types::{LazyHeapSet, LongInt, PyTrait, Type},
+    types::{LazyHeapSet, LongInt, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -185,6 +185,8 @@ macro_rules! heap_payloads {
             DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
             /// The manager `decimal.localcontext()` returns.
             DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
+            /// A `super(type, obj)` proxy.
+            Super(inline $crate::types::super_::Super),
         }
     };
 }
@@ -275,6 +277,7 @@ impl HeapData {
             | Self::Union(_)
             | Self::ForwardRef(_)
             | Self::LruCache(_)
+            | Self::Super(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
@@ -332,14 +335,14 @@ impl HeapData {
         )
     }
 
-    /// Returns the Python `Type` for this heap data without requiring VM access.
+    /// Returns the Python type of this heap data without requiring VM access.
     ///
     /// This is a lightweight alternative to the `PyTrait::py_type` dispatch on
     /// `HeapReadOutput`, useful in error messages and diagnostics where only a
     /// `&Heap` is available (not a full `&VM`).
     #[must_use]
-    pub(crate) fn py_type(&self) -> Type {
-        match self {
+    pub(crate) fn py_type(&self) -> TypeRef {
+        TypeRef::Native(match self {
             Self::Str(_) => Type::Str,
             Self::Bytes(_) => Type::Bytes,
             Self::List(_) => Type::List,
@@ -363,12 +366,12 @@ impl HeapData {
             Self::Cell(_) => Type::Cell,
             Self::Range(_) => Type::Range,
             Self::Slice(_) => Type::Slice,
-            Self::Exception(e) => Type::Exception(e.exc_type()),
-            Self::HostClass(_) => Type::HostClass,
-            Self::HostClassType(_) => Type::Type,
-            // A class object's type is `type`; an instance's carries its class id.
-            Self::Class(_) => Type::Type,
-            Self::Instance(instance) => Type::Instance(instance.class()),
+            Self::Exception(e) => Type::from(e.exc_type()),
+            // An instance's type is its class object.
+            Self::HostClass(instance) => return TypeRef::Class(instance.class_id()),
+            Self::Instance(instance) => return TypeRef::Class(instance.class()),
+            // A class object's type is `type`.
+            Self::HostClassType(_) | Self::Class(_) => Type::Type,
             Self::BoundMethod(_) => Type::Function,
             Self::DataclassField(_) => Type::DataclassField,
             Self::DataclassMethod(_) => Type::Function,
@@ -404,7 +407,8 @@ impl HeapData {
             Self::DecimalContext(_) => Type::DecimalContext,
             Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
             Self::DecimalContextManager(_) => Type::DecimalContextManager,
-        }
+            Self::Super(_) => Type::Super,
+        })
     }
 }
 
@@ -516,8 +520,8 @@ fn call_def(
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Function
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Function.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -573,8 +577,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Function
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Function.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
