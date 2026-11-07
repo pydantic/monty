@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BufferedReader, BufferedWriter, TextIOWrapper
 from pathlib import Path
-from typing import Any, LiteralString, TextIO, assert_type, get_type_hints
+from typing import Any, LiteralString, TextIO, assert_type, cast, get_type_hints
 
 import annotationlib
 
@@ -831,3 +831,7 @@ forward.evaluate(format=annotationlib.Format.STRING)
 annotationlib.get_annotations(annotated, format=annotationlib.Format.STRING)
 assert_type(annotationlib.get_annotations(annotated), dict[str, Any])
 assert_type(get_type_hints(annotated, format=annotationlib.Format.FORWARDREF), dict[str, Any])
+
+# === typing.cast ===
+assert_type(cast(int, "x"), int)
+assert_type(cast("list[int]", get_type_hints(annotated)), list[int])

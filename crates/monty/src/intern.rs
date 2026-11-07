@@ -1341,6 +1341,16 @@ pub enum StaticStrings {
     GetDialect,
     /// `typing.get_type_hints()` function.
     GetTypeHints,
+    /// `typ` parameter of `typing.cast()`.
+    Typ,
+    /// `val` parameter of `typing.cast()` and `typing.assert_type()`.
+    Val,
+    /// `typing.cast()` function.
+    Cast,
+    /// `typing.assert_type()` function.
+    AssertType,
+    /// `typing.assert_never()` function.
+    AssertNever,
     /// `os.path.getatime()` function.
     Getatime,
     /// `decimal.getcontext()` function.

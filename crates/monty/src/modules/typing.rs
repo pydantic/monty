@@ -22,7 +22,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions, eval_exec},
     bytecode::{CallResult, MissingNames, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::{FrozenFunction, FrozenFunctions},
     heap::{HeapData, HeapId},
     intern::{FunctionId, StaticStrings},
@@ -67,6 +67,14 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
+    for (name, function) in [
+        (StaticStrings::Cast, TypingFunctions::Cast),
+        (StaticStrings::AssertType, TypingFunctions::AssertType),
+        (StaticStrings::AssertNever, TypingFunctions::AssertNever),
+    ] {
+        module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Typing(function)), vm);
+    }
+
     vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
@@ -106,13 +114,80 @@ const MARKER_ATTRS: &[StaticStrings] = &[
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum TypingFunctions {
     GetTypeHints,
+    Cast,
+    AssertType,
+    AssertNever,
 }
 
 /// Dispatches a `typing` module function call.
 pub(super) fn call(vm: &mut VM<'_>, function: TypingFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
         TypingFunctions::GetTypeHints => get_type_hints(vm, args),
+        TypingFunctions::Cast => cast(vm, args),
+        TypingFunctions::AssertType => assert_type(vm, args),
+        TypingFunctions::AssertNever => assert_never(vm, args),
     }
+}
+
+/// Arguments of `typing.cast(typ, val)`.
+#[derive(FromArgs)]
+#[from_args(name = "cast", style = def)]
+struct CastArgs {
+    typ: Value,
+    val: Value,
+}
+
+/// `typing.cast()`: returns `val`; `typ` is any object, a string forward reference included.
+fn cast(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let CastArgs { typ, val } = CastArgs::from_args(args, vm)?;
+    defer_drop!(typ, vm);
+    Ok(CallResult::Value(val))
+}
+
+/// Arguments of `typing.assert_type(val, typ, /)`.
+#[derive(FromArgs)]
+#[from_args(name = "assert_type", style = def)]
+struct AssertTypeArgs {
+    #[from_args(pos_only)]
+    val: Value,
+    #[from_args(pos_only)]
+    typ: Value,
+}
+
+/// `typing.assert_type()`: returns `val`; only a static type checker looks at `typ`.
+fn assert_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let AssertTypeArgs { val, typ } = AssertTypeArgs::from_args(args, vm)?;
+    defer_drop!(typ, vm);
+    Ok(CallResult::Value(val))
+}
+
+/// Arguments of `typing.assert_never(arg, /)`.
+#[derive(FromArgs)]
+#[from_args(name = "assert_never", style = def)]
+struct AssertNeverArgs {
+    #[from_args(pos_only)]
+    arg: Value,
+}
+
+/// Longest `repr` `typing.assert_never()` quotes before it truncates, in characters.
+const ASSERT_NEVER_REPR_MAX_LENGTH: usize = 100;
+
+/// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
+fn assert_never(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
+    let AssertNeverArgs { arg } = AssertNeverArgs::from_args(args, vm)?;
+    defer_drop!(arg, vm);
+    let repr = arg.py_repr(vm)?;
+    defer_drop!(repr, vm);
+    let text = repr.as_str(vm).expect("py_repr returns str");
+    let mut shown: String = text.chars().take(ASSERT_NEVER_REPR_MAX_LENGTH).collect();
+    if shown.len() < text.len() {
+        shown.push_str("...");
+    }
+    Err(SimpleException::new_msg(
+        ExcType::AssertionError,
+        format!("Expected code to be unreachable, but got: {shown}"),
+    )
+    .into())
 }
 
 /// Evaluates annotations as CPython 3.14's `annotationlib.get_annotations` and
