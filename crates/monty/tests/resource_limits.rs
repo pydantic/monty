@@ -2128,6 +2128,24 @@ fn a_refused_concatenation_releases_its_left_clones() {
     }
 }
 
+/// `typing.assert_never` quotes at most 100 characters of the value's `repr`, and never builds the rest.
+///
+/// The list costs about 48 KB but its full `repr` is over 3 MB, so with a 300 KB limit the
+/// error must stay an `AssertionError` with a short message, not a `MemoryError`. The bound on the
+/// host-side buffer itself is checked by `capped_repr_stops_writing_at_the_limit` in `typing.rs`.
+#[test]
+fn assert_never_caps_the_repr_it_builds() {
+    let code = "from typing import assert_never\ns = 'x' * 1000\nassert_never([s] * 3000)";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_memory(300_000);
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("assert_never always raises");
+    assert_eq!(exc.exc_type(), ExcType::AssertionError);
+    let expected = format!("Expected code to be unreachable, but got: ['{}...", "x".repeat(98));
+    assert_eq!(exc.message(), Some(expected.as_str()));
+}
+
 // ---------------------------------------------------------------------------
 // Per-feed and per-turn duration limits
 // ---------------------------------------------------------------------------

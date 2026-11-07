@@ -69,3 +69,16 @@ try:
     assert False, 'assert_never three args should fail'
 except TypeError as e:
     assert str(e) == 'assert_never() takes 1 positional argument but 3 were given', str(e)
+
+# === assert_type and assert_never take their arguments by position only ===
+try:
+    assert_type(val=1)
+    assert False, 'assert_type(val=1) should fail'
+except TypeError as e:
+    assert str(e) == "assert_type() got some positional-only arguments passed as keyword arguments: 'val'", str(e)
+
+try:
+    assert_never(arg=1)
+    assert False, 'assert_never(arg=1) should fail'
+except TypeError as e:
+    assert str(e) == "assert_never() got some positional-only arguments passed as keyword arguments: 'arg'", str(e)

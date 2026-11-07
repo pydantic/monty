@@ -13,6 +13,8 @@
 //! though Monty doesn't perform static type checking. `Optional[X]` is the one
 //! marker that can be subscripted, producing `X | None`.
 
+use std::fmt;
+
 use monty_types::{OsFunctionCall, TypeHintsTarget};
 use smallvec::SmallVec;
 
@@ -148,9 +150,9 @@ fn cast(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 #[derive(FromArgs)]
 #[from_args(name = "assert_type", style = def)]
 struct AssertTypeArgs {
-    #[from_args(pos_only)]
+    #[from_args(pos_only, static_string = "Val")]
     val: Value,
-    #[from_args(pos_only)]
+    #[from_args(pos_only, static_string = "Typ")]
     typ: Value,
 }
 
@@ -165,22 +167,55 @@ fn assert_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 #[derive(FromArgs)]
 #[from_args(name = "assert_never", style = def)]
 struct AssertNeverArgs {
-    #[from_args(pos_only)]
+    #[from_args(pos_only, static_string = "Arg")]
     arg: Value,
 }
 
 /// Longest `repr` `typing.assert_never()` quotes before it truncates, in characters.
 const ASSERT_NEVER_REPR_MAX_LENGTH: usize = 100;
 
+/// A `fmt::Write` sink holding at most [`ASSERT_NEVER_REPR_MAX_LENGTH`] characters.
+///
+/// Once more text arrives it sets `truncated` and fails the write, which stops the repr walk early.
+#[derive(Default)]
+struct CappedRepr {
+    text: String,
+    chars: usize,
+    truncated: bool,
+}
+
+impl fmt::Write for CappedRepr {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = ASSERT_NEVER_REPR_MAX_LENGTH - self.chars;
+        let mut taken = 0;
+        for (idx, _) in s.char_indices() {
+            if taken == room {
+                self.text.push_str(&s[..idx]);
+                self.chars += taken;
+                self.truncated = true;
+                return Err(fmt::Error);
+            }
+            taken += 1;
+        }
+        self.text.push_str(s);
+        self.chars += taken;
+        Ok(())
+    }
+}
+
 /// `typing.assert_never()`: always raises `AssertionError` quoting a bounded `repr(arg)`.
 fn assert_never(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let AssertNeverArgs { arg } = AssertNeverArgs::from_args(args, vm)?;
     defer_drop!(arg, vm);
-    let repr = arg.py_repr(vm)?;
-    defer_drop!(repr, vm);
-    let text = repr.as_str(vm).expect("py_repr returns str");
-    let mut shown: String = text.chars().take(ASSERT_NEVER_REPR_MAX_LENGTH).collect();
-    if shown.len() < text.len() {
+    // The repr is written into a capped buffer that refuses text past the limit, so a huge or
+    // deeply nested value never has its whole repr built in host memory.
+    let mut capped = CappedRepr::default();
+    let result = arg.py_repr_fmt(&mut capped, vm, &mut LazyHeapSet::default());
+    if !capped.truncated {
+        result?;
+    }
+    let mut shown = capped.text;
+    if capped.truncated {
         shown.push_str("...");
     }
     Err(SimpleException::new_msg(
@@ -865,4 +900,22 @@ pub(crate) fn call_eval_hint(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Call
         missing,
         vm,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write;
+
+    use super::*;
+
+    /// The sink refuses text past the limit, so a repr walk stops instead of buffering all of it.
+    #[test]
+    fn capped_repr_stops_writing_at_the_limit() {
+        let mut capped = CappedRepr::default();
+        let chunk = "x".repeat(60);
+        assert!(capped.write_str(&chunk).is_ok());
+        assert!(capped.write_str(&chunk).is_err());
+        assert!(capped.truncated);
+        assert_eq!(capped.text.len(), ASSERT_NEVER_REPR_MAX_LENGTH);
+    }
 }
