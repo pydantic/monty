@@ -781,18 +781,26 @@ impl<'h> VM<'h> {
         }
     }
 
+    /// Charges the memory a `return_exceptions` gather will keep for `err`: the
+    /// message bytes of a copy cloned out of a cached failure plus its heap entry.
+    /// A catchable error can thereby be refused with a resource error.
+    fn charge_exception(&self, err: &RunError) -> Result<(), RunError> {
+        if let RunError::Exc(exc) = err {
+            let len = exc.exc.arg().map_or(0, String::len);
+            self.heap
+                .tracker
+                .check_allocation(len.saturating_add(size_of::<HeapData>()))?;
+        }
+        Ok(())
+    }
+
     /// Turns a catchable failure into the exception object a `return_exceptions`
     /// gather stores as that item's result; resource and internal errors still
     /// propagate.
     fn exception_as_result(&mut self, err: RunError) -> Result<Value, RunError> {
+        self.charge_exception(&err)?;
         match err {
-            RunError::Exc(exc) => {
-                // The error was cloned out of a cached failure, so each copy of a
-                // large message is a fresh allocation: charge it before keeping it.
-                let len = exc.exc.arg().map_or(0, String::len);
-                self.heap.tracker.check_allocation(len)?;
-                Ok(Value::Ref(self.heap.allocate(HeapData::Exception(exc.exc))))
-            }
+            RunError::Exc(exc) => Ok(Value::Ref(self.heap.allocate(HeapData::Exception(exc.exc)))),
             err @ (RunError::UncatchableExc(_) | RunError::Internal(_)) => Err(err),
         }
     }
@@ -800,7 +808,7 @@ impl<'h> VM<'h> {
     /// Fails each gather in the awaiter chain and queues its terminal task to raise `error`.
     /// Returns that task's ID, or `None` if the task is gone or a gather already settled.
     /// The task raises the exception on activation; its own gather is notified only if it escapes.
-    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, mut error: RunError) -> Option<TaskId> {
         let this = self;
         defer_drop_mut!(awaiter, this);
         let target = loop {
@@ -813,12 +821,19 @@ impl<'h> VM<'h> {
                     // `return_exceptions`: the failure is this item's result and
                     // the gather carries on, so deliver it as a success.
                     if gather.get(this.heap).return_exceptions && matches!(error, RunError::Exc(_)) {
-                        drop(gather);
-                        let value = this
-                            .exception_as_result(error)
-                            .expect("a catchable error always becomes a result");
-                        let awaiter = mem::replace(awaiter, Awaiter::Task(TaskId::default()));
-                        return this.deliver_awaiter_success(awaiter, value);
+                        match this.charge_exception(&error) {
+                            Ok(()) => {
+                                drop(gather);
+                                let RunError::Exc(exc) = error else {
+                                    unreachable!("matched as Exc above")
+                                };
+                                let value = Value::Ref(this.heap.allocate(HeapData::Exception(exc.exc)));
+                                let awaiter = mem::replace(awaiter, Awaiter::Task(TaskId::default()));
+                                return this.deliver_awaiter_success(awaiter, value);
+                            }
+                            // Too big to keep: fail the gather with the resource error instead.
+                            Err(refused) => error = refused,
+                        }
                     }
                     // A gather that already settled has handed its waiter on;
                     // this failure arrives after the fact and stops here.
