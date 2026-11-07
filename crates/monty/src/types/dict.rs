@@ -1710,12 +1710,15 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    // Copy all key-value pairs (incrementing refcounts)
-    let pairs: Vec<(Value, Value)> = dict
-        .get(vm.heap)
-        .iter()
-        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
-        .collect();
+    // Removing every item can leave tombstones; an empty copy need not scan them.
+    let pairs: Vec<(Value, Value)> = if dict.get(vm.heap).is_empty() {
+        Vec::new()
+    } else {
+        dict.get(vm.heap)
+            .iter()
+            .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
+            .collect()
+    };
 
     // `copy()` preserves the subclass: a defaultdict keeps its factory, a
     // Counter stays a Counter. `cloned_kind` clones that factory reference, so

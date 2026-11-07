@@ -235,6 +235,11 @@ impl SetStorage {
     /// Indexed from scratch rather than cloning `indices`, which `HashTable`
     /// would reproduce at the source's bucket count — see [`Self::from_entry_vec`].
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        // Removing every member can leave tombstones; an empty copy need not scan them.
+        if self.is_empty() {
+            return Self::new();
+        }
+
         Self::from_entry_vec(
             self.live()
                 .map(|entry| SetEntry {
