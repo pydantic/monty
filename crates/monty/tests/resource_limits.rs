@@ -1507,7 +1507,7 @@ fn timeout_in_deepcopy_fill_loop() {
     );
 }
 
-/// `copy.copy` reaches no dispatch checkpoint either, and a dict copy has two
+/// `copy.copy` reaches no dispatch checkpoint either, and its dict path has two
 /// Rust loops to get past: the snapshot of every pair, then the re-hashing
 /// fill. Both poll, so the copy stops a budget in whatever the dict costs per
 /// entry — the claim the tests above make, and what makes a fixed threshold
@@ -1556,6 +1556,35 @@ fn timeout_in_shallow_copy_fill_loop() {
             "budget {budget}ms: should stop promptly, took {elapsed:?}"
         );
     }
+}
+
+/// A direct dict copy polls while retaining entries and releases a partial copy on timeout.
+#[test]
+fn timeout_in_dict_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "shared = []\nd = {i: shared for i in range(4_000_000)}",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+    let start = ThreadTime::now();
+    let exc = repl
+        .feed_run("d.copy()", vec![], PrintWriter::Stdout)
+        .expect_err("the copy must hit the time limit");
+    let elapsed = start.elapsed();
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "should stop promptly, took {elapsed:?}"
+    );
+    // The next feed's GC scans the retained source under memory-model-checks.
+    repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+    assert_eq!(
+        repl.feed_run("len(d)", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::int(4_000_000)
+    );
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside

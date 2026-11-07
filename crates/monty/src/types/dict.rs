@@ -1705,24 +1705,31 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    // Copy all key-value pairs (incrementing refcounts)
-    let pairs: Vec<(Value, Value)> = dict
-        .get(vm.heap)
-        .iter()
-        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
-        .collect();
+    let len = dict.get(vm.heap).len();
+    // Bucket rounding and control bytes fit within three words per entry,
+    // plus 32 bytes of alignment/padding for the rebuilt index.
+    let entry_bytes = mem::size_of::<DictEntry>() + 3 * mem::size_of::<usize>();
+    vm.heap
+        .tracker
+        .check_allocation(len.saturating_mul(entry_bytes).saturating_add(32))?;
 
-    // `copy()` preserves the subclass: a defaultdict keeps its factory, a
-    // Counter stays a Counter. `cloned_kind` clones that factory reference, so
-    // guard it — a `from_pairs` failure (e.g. a key `__eq__` raising) would
-    // otherwise drop `kind` via Rust's `Drop`, leaking the factory refcount.
-    // (`from_pairs` cleans up `pairs` on its own error paths.)
-    let kind = dict.get(vm.heap).cloned_kind(vm.heap);
-    let mut kind_guard = DropGuard::new(kind, vm);
-    let mut new_dict = Dict::from_pairs(pairs, kind_guard.ctx())?;
-    new_dict.set_kind(kind_guard.into_inner());
-    let heap_id = vm.heap.allocate(HeapData::Dict(new_dict));
-    Ok(Value::Ref(heap_id))
+    let mut copy = Dict::with_capacity(len);
+    copy.contains_refs = dict.get(vm.heap).contains_refs;
+    let mut copy_guard = DropGuard::new(copy, vm);
+    let (copy, vm) = copy_guard.as_parts_mut();
+    for (index, entry) in dict.get(vm.heap).table.live().enumerate() {
+        vm.heap.tracker.check_time_every(index)?;
+        // Preserve the source entries without invoking key __hash__ or __eq__.
+        copy.table.push(DictEntry {
+            key: entry.key.clone_with_heap(vm.heap),
+            value: entry.value.clone_with_heap(vm.heap),
+            hash: entry.hash,
+        });
+    }
+    copy.set_kind(dict.get(vm.heap).cloned_kind(vm.heap));
+
+    let (copy, vm) = copy_guard.into_parts();
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(copy))))
 }
 
 /// `left | right` for two dicts: a new dict of `left`'s pairs updated with
