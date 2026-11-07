@@ -317,7 +317,8 @@ pub struct RemoteDisconnect {
     /// The transport or protocol error for this failure; absent when the
     /// server sent a status.
     pub transport_error: Option<String>,
-    /// The server's `Retry-After` delay, when valid, in seconds.
+    /// The server's valid `Retry-After` delay on a refusal; always `None`
+    /// for a connection failure or disconnect.
     pub retry_after: Option<Duration>,
 }
 

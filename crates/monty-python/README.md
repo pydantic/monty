@@ -228,7 +228,7 @@ Execution duration limits use wall time by default.
 Both clocks charge bytecode and native builtin execution, excluding host suspension.
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
 CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
-(`async with`) raises `RuntimeError`.
+(`async with`) raises `MontyConfigurationError`.
 Remote clients on any platform adopt the server's clock.
 The clock applies to the whole pool; checkouts cannot override it.
 CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.

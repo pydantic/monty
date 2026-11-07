@@ -2994,7 +2994,9 @@ async fn disconnect_preserves_peer_close_details() {
         let mut socket = mock.accept();
         expect_configure(&mut socket);
         expect_feed(&mut socket, "1 + 1");
-        socket.close(Some(Cause::Capacity.status("session capacity exhausted")));
+        let mut status = Cause::Capacity.status("session capacity exhausted");
+        status.metadata_mut().insert("retry-after", "12".parse().unwrap());
+        socket.close(Some(status));
     });
     let (_pool, mut checkout) = remote_checkout(&url).await;
     let err = checkout
@@ -3011,6 +3013,8 @@ async fn disconnect_preserves_peer_close_details() {
     assert_eq!(details.status_message.as_deref(), Some("session capacity exhausted"));
     assert_eq!(details.cause, Some(RemoteCause::Capacity));
     assert_eq!(details.transport_error, None);
+    // retry hints belong to refusals: the session may already have run
+    assert_eq!(details.retry_after, None);
     join_server(server).await;
 }
 

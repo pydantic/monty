@@ -35,6 +35,14 @@ test('remote policy reasons do not occupy Error.cause', () => {
   t.is(refused.message, 'session refused')
 })
 
+test('MontyRefusedError derives retryable from the status code by default', () => {
+  t.is(new MontyRefusedError('refused', { statusCode: 'RESOURCE_EXHAUSTED' }).retryable, true)
+  t.is(new MontyRefusedError('refused', { statusCode: 'UNAVAILABLE' }).retryable, true)
+  t.is(new MontyRefusedError('refused', { statusCode: 'UNAUTHENTICATED' }).retryable, false)
+  t.is(new MontyRefusedError('refused').retryable, false)
+  t.is(new MontyRefusedError('refused', { statusCode: 'UNAVAILABLE', retryable: false }).retryable, false)
+})
+
 // =============================================================================
 // MontyRuntimeError tests
 // =============================================================================

@@ -311,7 +311,7 @@ export class MontyRefusedError extends MontyError {
     this.statusCode = details.statusCode ?? null
     this.statusMessage = details.statusMessage ?? null
     this.remoteCause = details.remoteCause ?? null
-    this.retryable = details.retryable ?? false
+    this.retryable = details.retryable ?? ['RESOURCE_EXHAUSTED', 'UNAVAILABLE'].includes(this.statusCode ?? '')
     this.retryAfter = details.retryAfter ?? null
   }
 }

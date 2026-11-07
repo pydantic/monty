@@ -213,7 +213,7 @@ impl Remote {
                 Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
                     return Err(PoolError::Refused {
                         url: url.to_owned(),
-                        refusal: Box::new(RemoteDisconnect::from_status(&status)),
+                        refusal: Box::new(RemoteDisconnect::from_refusal(&status)),
                     });
                 }
                 Ok(Err(status)) => {
@@ -696,12 +696,21 @@ impl RemoteDisconnect {
                 status_message: Some(status.message().to_owned()),
                 cause: Cause::of(status),
                 transport_error: None,
-                retry_after: status
-                    .metadata()
-                    .get("retry-after")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| retry_after(value, SystemTime::now())),
+                retry_after: None,
             }
+        }
+    }
+
+    /// Classifies an admission refusal, keeping the server's `Retry-After`:
+    /// retry hints mean nothing once a session exists.
+    fn from_refusal(status: &Status) -> Self {
+        Self {
+            retry_after: status
+                .metadata()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| retry_after(value, SystemTime::now())),
+            ..Self::from_status(status)
         }
     }
 

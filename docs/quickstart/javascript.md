@@ -235,7 +235,7 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 | `MontyDisconnectError`    | A [remote worker's](#remote-workers) connection closed                                | no               |
 | `MontyRefusedError`       | A [remote worker's](#remote-workers) server refused to open the session's stream      | no               |
 | `MontyConnectError`       | A remote connection failed before a session opened                                    | no               |
-| `MontyConfigurationError` | The client settings are incompatible with the remote server                           | no               |
+| `MontyConfigurationError` | The client settings are incompatible with the worker or server                        | no               |
 | `MontyShutdown`           | A [remote worker's](#remote-workers) server is shutting down; the request did not run | no               |
 | `ProtocolError`           | The worker, or a caller misusing the session, violated the wire protocol              | no               |
 
@@ -261,8 +261,10 @@ rejecting the session's configuration.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
-`MontyConfigurationError` identifies settings incompatible with the server, such as no finite CPU-mode `requestTimeout`.
-`Monty.create()` raises it for a CPU `executionClock` without a finite `requestTimeout`, or off Linux.
+`MontyConfigurationError` identifies settings incompatible with the worker or server.
+`Monty.create()` raises it for a CPU `executionClock` without a `requestTimeout`, or off Linux;
+a `MontyRemote` checkout raises it when the server's CPU clock needs a `requestTimeout` the client did not set.
+A `requestTimeout` that is negative or not finite, such as `Infinity`, is rejected with a plain `Error` instead.
 Invalid gRPC header names or string values also raise `MontyConfigurationError`.
 If `metadata` returns a non-object, `null`, an array, or an object with non-string values, checkout raises `TypeError` instead.
 Host-side error messages do not have a `RuntimeError:` prefix.

@@ -415,4 +415,8 @@ test.skipIf(isWasm)('native pool validates its clock and CPU wall deadline', asy
         : 'CPU execution clock is only supported for subprocess workers on Linux',
     ),
   )
+  // a non-finite timeout is an invalid argument, not an incompatible setting
+  const infinite = await t.throwsAsync(() => Monty.create({ executionClock: 'cpu', requestTimeout: Infinity }))
+  t.false(infinite instanceof MontyConfigurationError)
+  t.true(String(infinite).includes('invalid requestTimeout'))
 })
