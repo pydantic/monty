@@ -2246,6 +2246,30 @@ fn max_turn_duration_is_enforced_alone() {
     );
 }
 
+/// `quantiles` of one datum copies it `n - 1` times in a native loop, with `n` chosen by the
+/// program, so the loop must poll the clock.
+#[test]
+fn time_limit_covers_statistics_quantiles_singleton_expansion() {
+    let code = "import statistics\nstatistics.quantiles([1], n=100_000_000)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(1));
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("the expansion must be stopped by the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// An `n` too large to address raises `MemoryError` instead of aborting on the reservation.
+#[test]
+fn statistics_quantiles_unaddressable_n_is_a_memory_error() {
+    let code = "import statistics\nstatistics.quantiles([1, 2], n=2**62)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let exc = ex
+        .run_no_limits(vec![])
+        .expect_err("an unaddressable result must be refused");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
 /// `call_function` is its own unit of work: it opens a fresh feed, so a
 /// session that has already spent one still gets the full per-feed budget.
 ///

@@ -14,7 +14,7 @@
 
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{One, Zero};
+use num_traits::{One, Signed, Zero};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -24,13 +24,14 @@ use crate::{
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
+    resource_checks::try_vec_with_capacity,
     sorting::sort_values,
     types::{
         List, Module, PyTrait,
         iter::collect_owned_iterable,
         long_int::{LongInt, bigint_true_divide},
     },
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// The functions of the `statistics` module.
@@ -246,7 +247,7 @@ fn exact_sum<'a>(values: impl Iterator<Item = &'a Value>, vm: &mut VM<'_>) -> Ru
     let mut has_float = false;
     let mut count = 0;
     for (i, value) in values.enumerate() {
-        vm.heap.tracker.check_time_every(i)?;
+        vm.heap.tracker.check_memory_time_every(i)?;
         let (elem, is_float) = element(value, vm)?;
         has_float |= is_float;
         count += 1;
@@ -277,11 +278,24 @@ fn convert(frac: Frac, has_float: bool, vm: &mut VM<'_>) -> RunResult<Value> {
 // Argument shapes
 // ---------------------------------------------------------------------------
 
-#[derive(FromArgs)]
-#[from_args(name = "mean", style = def)]
-struct DataArgs {
-    data: Value,
+/// Declares the argument shape of a function that takes only `data`, named so that
+/// argument errors identify the function the caller used.
+macro_rules! data_args {
+    ($name:ident, $func:literal) => {
+        #[derive(FromArgs)]
+        #[from_args(name = $func, style = def)]
+        struct $name {
+            data: Value,
+        }
+    };
 }
+
+data_args!(MeanArgs, "mean");
+data_args!(MedianArgs, "median");
+data_args!(MedianLowArgs, "median_low");
+data_args!(MedianHighArgs, "median_high");
+data_args!(ModeArgs, "mode");
+data_args!(MultimodeArgs, "multimode");
 
 #[derive(FromArgs)]
 #[from_args(name = "variance", style = def)]
@@ -292,8 +306,24 @@ struct VarianceArgs {
 }
 
 #[derive(FromArgs)]
+#[from_args(name = "stdev", style = def)]
+struct StdevArgs {
+    data: Value,
+    #[from_args(default = Value::None)]
+    xbar: Value,
+}
+
+#[derive(FromArgs)]
 #[from_args(name = "pvariance", style = def)]
 struct PvarianceArgs {
+    data: Value,
+    #[from_args(default = Value::None)]
+    mu: Value,
+}
+
+#[derive(FromArgs)]
+#[from_args(name = "pstdev", style = def)]
+struct PstdevArgs {
     data: Value,
     #[from_args(default = Value::None)]
     mu: Value,
@@ -317,6 +347,12 @@ struct QuantilesArgs {
     method: Value,
 }
 
+/// An empty buffer with room for exactly `count` values, after checking that it fits the memory budget.
+fn reserve_values(count: usize, vm: &VM<'_>) -> RunResult<Vec<Value>> {
+    vm.heap.tracker.check_allocation(count.saturating_mul(VALUE_SIZE))?;
+    try_vec_with_capacity(count)
+}
+
 fn collect(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     collect_owned_iterable(data, vm)
 }
@@ -326,7 +362,7 @@ fn collect(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 // ---------------------------------------------------------------------------
 
 fn mean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-    let DataArgs { data } = DataArgs::from_args(args, vm)?;
+    let MeanArgs { data } = MeanArgs::from_args(args, vm)?;
     let items = collect(data, vm)?;
     let result = mean_of(&items, vm);
     items.drop_with(vm);
@@ -435,12 +471,23 @@ impl Spread {
 }
 
 fn spread(vm: &mut VM<'_>, args: ArgValues, kind: Spread) -> RunResult<Value> {
-    let (data, center) = if kind.sample() {
-        let VarianceArgs { data, xbar } = VarianceArgs::from_args(args, vm)?;
-        (data, xbar)
-    } else {
-        let PvarianceArgs { data, mu } = PvarianceArgs::from_args(args, vm)?;
-        (data, mu)
+    let (data, center) = match kind {
+        Spread::Variance => {
+            let VarianceArgs { data, xbar } = VarianceArgs::from_args(args, vm)?;
+            (data, xbar)
+        }
+        Spread::Stdev => {
+            let StdevArgs { data, xbar } = StdevArgs::from_args(args, vm)?;
+            (data, xbar)
+        }
+        Spread::Pvariance => {
+            let PvarianceArgs { data, mu } = PvarianceArgs::from_args(args, vm)?;
+            (data, mu)
+        }
+        Spread::Pstdev => {
+            let PstdevArgs { data, mu } = PstdevArgs::from_args(args, vm)?;
+            (data, mu)
+        }
     };
     let items = match collect(data, vm) {
         Ok(items) => items,
@@ -459,13 +506,13 @@ fn spread(vm: &mut VM<'_>, args: ArgValues, kind: Spread) -> RunResult<Value> {
 /// non-finite data), whether any datum was a float, and the count.
 fn sum_squares(items: &[Value], center: &Value, vm: &mut VM<'_>) -> RunResult<(Total, bool, usize)> {
     if !matches!(center, Value::None) {
-        let mut squares = Vec::with_capacity(items.len());
+        let mut squares = reserve_values(items.len(), vm)?;
         let mut failure = None;
         for (i, item) in items.iter().enumerate() {
             let step = vm
                 .heap
                 .tracker
-                .check_time_every(i)
+                .check_memory_time_every(i)
                 .map_err(RunError::from)
                 .and_then(|()| item.py_sub(center, vm))
                 .and_then(|d| {
@@ -494,7 +541,7 @@ fn sum_squares(items: &[Value], center: &Value, vm: &mut VM<'_>) -> RunResult<(T
     let mut special: Option<f64> = None;
     let mut has_float = false;
     for (i, item) in items.iter().enumerate() {
-        vm.heap.tracker.check_time_every(i)?;
+        vm.heap.tracker.check_memory_time_every(i)?;
         let (elem, is_float) = element(item, vm)?;
         has_float |= is_float;
         match elem {
@@ -542,6 +589,10 @@ fn spread_of(items: &[Value], center: &Value, kind: Spread, vm: &mut VM<'_>) -> 
             let mss = ss.div_int(divisor);
             if kind.is_stdev() {
                 let mss = mss.reduced();
+                // A user-defined `__sub__`/`__mul__` can make the total negative; CPython's `isqrt` rejects it.
+                if mss.num.is_negative() {
+                    return Err(ExcType::value_error("isqrt() argument must be nonnegative"));
+                }
                 float_sqrt_of_frac(&mss.num, &mss.den, vm)
             } else {
                 convert(mss, has_float, vm)
@@ -597,7 +648,11 @@ fn sorted_items(data: Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
 }
 
 fn median(vm: &mut VM<'_>, args: ArgValues, kind: Median) -> RunResult<Value> {
-    let DataArgs { data } = DataArgs::from_args(args, vm)?;
+    let data = match kind {
+        Median::Average => MedianArgs::from_args(args, vm)?.data,
+        Median::Low => MedianLowArgs::from_args(args, vm)?.data,
+        Median::High => MedianHighArgs::from_args(args, vm)?.data,
+    };
     let items = sorted_items(data, vm)?;
     let n = items.len();
     let result = if n == 0 {
@@ -654,10 +709,14 @@ fn quantile_values(items: &[Value], n: i64, method: &Value, vm: &mut VM<'_>) -> 
     let ld = i64::try_from(items.len()).expect("length fits in i64");
     if ld < 2 {
         if ld == 1 {
-            vm.heap
-                .tracker
-                .check_allocation(usize::try_from(n - 1).unwrap_or(usize::MAX).saturating_mul(16))?;
-            let copies: Vec<Value> = (1..n).map(|_| items[0].clone_with_heap(vm.heap)).collect();
+            let mut copies = reserve_values(usize::try_from(n - 1).unwrap_or(usize::MAX), vm)?;
+            for i in 1..n {
+                if let Err(err) = vm.heap.tracker.check_memory_time_every(usize::try_from(i).unwrap_or(0)) {
+                    copies.drop_with(vm);
+                    return Err(err.into());
+                }
+                copies.push(items[0].clone_with_heap(vm.heap));
+            }
             return Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(copies)))));
         }
         return Err(statistics_error("must have at least one data point"));
@@ -675,10 +734,7 @@ fn quantile_values(items: &[Value], n: i64, method: &Value, vm: &mut VM<'_>) -> 
             }
         },
     };
-    vm.heap
-        .tracker
-        .check_allocation(usize::try_from(n - 1).unwrap_or(usize::MAX).saturating_mul(16))?;
-    let mut out: Vec<Value> = Vec::new();
+    let mut out = reserve_values(usize::try_from(n - 1).unwrap_or(usize::MAX), vm)?;
     let mut failure = None;
     for i in 1..n {
         let (delta, lo_hi) = if inclusive {
@@ -693,7 +749,7 @@ fn quantile_values(items: &[Value], n: i64, method: &Value, vm: &mut VM<'_>) -> 
         let step = vm
             .heap
             .tracker
-            .check_time_every(usize::try_from(i).unwrap_or(0))
+            .check_memory_time_every(usize::try_from(i).unwrap_or(0))
             .map_err(RunError::from)
             .and_then(|()| {
                 let (lo, hi) = lo_hi;
@@ -733,7 +789,11 @@ fn quantile_values(items: &[Value], n: i64, method: &Value, vm: &mut VM<'_>) -> 
 // ---------------------------------------------------------------------------
 
 fn mode(vm: &mut VM<'_>, args: ArgValues, all: bool) -> RunResult<Value> {
-    let DataArgs { data } = DataArgs::from_args(args, vm)?;
+    let data = if all {
+        MultimodeArgs::from_args(args, vm)?.data
+    } else {
+        ModeArgs::from_args(args, vm)?.data
+    };
     let counter = counter_init(vm, ArgValues::One(data))?;
     let Value::Ref(id) = &counter else {
         unreachable!("Counter is a heap value");

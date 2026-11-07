@@ -71,3 +71,37 @@ try:
 except ValueError as e:
     assert isinstance(e, StatisticsError)
     assert e.args == ('no median for empty data',)
+
+
+# === argument errors name the function that was called ===
+for name, fn in (
+    ('mean', statistics.mean),
+    ('median', statistics.median),
+    ('median_low', statistics.median_low),
+    ('median_high', statistics.median_high),
+    ('mode', statistics.mode),
+    ('multimode', statistics.multimode),
+    ('stdev', statistics.stdev),
+    ('pstdev', statistics.pstdev),
+    ('variance', statistics.variance),
+    ('pvariance', statistics.pvariance),
+):
+    check(TypeError, f"{name}() missing 1 required positional argument: 'data'", fn)
+
+
+# === a user-defined subtraction can make the sum of squares negative ===
+class Negative:
+    def __sub__(self, other):
+        return self
+
+    def __mul__(self, other):
+        return -1
+
+
+try:
+    statistics.stdev([Negative(), Negative()], xbar=0)
+except ValueError as e:
+    assert e.args == ('isqrt() argument must be nonnegative',), e.args
+else:
+    assert False, 'stdev of a negative sum of squares did not raise'
+assert statistics.variance([Negative(), Negative()], xbar=0) == -2

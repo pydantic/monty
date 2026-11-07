@@ -193,6 +193,6 @@ for data, mean, variance, pvariance, stdev, pstdev, fmean in cases:
     assert statistics.mean(data) == mean and type(statistics.mean(data)) is type(mean), data
     assert statistics.variance(data) == variance and type(statistics.variance(data)) is type(variance), data
     assert statistics.pvariance(data) == pvariance and type(statistics.pvariance(data)) is type(pvariance), data
-    assert statistics.stdev(data) == stdev, data
-    assert statistics.pstdev(data) == pstdev, data
-    assert statistics.fmean(data) == fmean, data
+    assert statistics.stdev(data) == stdev and type(statistics.stdev(data)) is type(stdev), data
+    assert statistics.pstdev(data) == pstdev and type(statistics.pstdev(data)) is type(pstdev), data
+    assert statistics.fmean(data) == fmean and type(statistics.fmean(data)) is type(fmean), data
