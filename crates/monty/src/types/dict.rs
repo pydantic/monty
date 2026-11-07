@@ -426,6 +426,12 @@ impl<'h> HeapRead<'h, Dict> {
         // a temporary pair buffer, rehashing and Python __eq__ callbacks.
         let mut copy = Dict::with_capacity(len);
         copy.contains_refs = self.get(vm.heap).contains_refs;
+
+        // Individual removals can leave tombstones even when there are no entries to copy.
+        if len == 0 {
+            return Ok(copy);
+        }
+
         // A timeout must release every key/value reference retained so far.
         let mut copy_guard = DropGuard::new(copy, vm);
         let (copy, vm) = copy_guard.as_parts_mut();

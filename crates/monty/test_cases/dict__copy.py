@@ -143,3 +143,37 @@ for copied in [source.copy(), dict(source), Counter(source)]:
     assert list(copied)[0] is left
     assert list(copied)[1] is right
     assert list(copied.values()) == [1, 2]
+
+# Drained mapping sources must still apply constructor keywords and choose the result kind.
+shared = []
+for source in [
+    {i: [i] for i in range(128)},
+    Counter({i: i for i in range(128)}),
+    defaultdict(factory, {i: [i] for i in range(128)}),
+]:
+    for key in list(source):
+        source.pop(key)
+
+    plain = dict(source, extra=shared)
+    assert type(plain) is dict
+    assert plain == {'extra': []}
+    assert plain['extra'] is shared
+
+    counted = Counter(source, zero=0, negative=-2)
+    assert type(counted) is Counter
+    assert list(counted.items()) == [('zero', 0), ('negative', -2)]
+    assert counted['missing'] == 0
+
+    defaulted = defaultdict(factory, source, extra=shared)
+    assert type(defaulted) is defaultdict
+    assert defaulted.default_factory is factory
+    assert defaulted['extra'] is shared
+    assert defaulted['missing'] == []
+    assert 'missing' not in source
+
+    counted.update(source)
+    assert list(counted.items()) == [('zero', 0), ('negative', -2)]
+    empty_counted = Counter()
+    empty_counted.update(source, extra=2)
+    assert empty_counted == {'extra': 2}
+    assert source == {}
