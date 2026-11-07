@@ -38,6 +38,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `itertools`     | [itertools.md](itertools.md)         |
 | `json`          | [json.md](json.md)                   |
 | `math`          | [math.md](math.md)                   |
+| `operator`      | [operator.md](operator.md)           |
 | `os`            | [os.md](os.md)                       |
 | `os.path`       | [os.md](os.md)                       |
 | `pathlib`       | [pathlib.md](pathlib.md)             |

@@ -7,6 +7,7 @@ import functools
 import hashlib
 import itertools
 import json
+import operator
 import os
 import random
 import re
@@ -783,6 +784,18 @@ assert_type(fnmatch.fnmatchcase(b'a.py', b'*.py'), bool)
 assert_type(fnmatch.filter(['a.py', 'b.txt'], '*.py'), list[str])
 assert_type(fnmatch.filter((b'a', b'b'), b'?'), list[bytes])
 assert_type(fnmatch.translate('*.py'), str)
+
+# === operator ===
+
+added: Any = operator.add(1, 2)
+assert_type(added, Any)
+assert_type(operator.not_([1]), bool)
+assert_type(operator.index(3), int)
+assert_type(operator.countOf([1, 2], 1), int)
+assert_type(operator.itemgetter(1)([1, 2]), Any)
+assert_type(sorted([(1, 2)], key=operator.itemgetter(0)), list[tuple[int, int]])
+assert_type(operator.attrgetter('a.b')(object()), Any)
+assert_type(operator.methodcaller('upper')('a'), Any)
 
 # === open ===
 # Upstream typeshed's signatures accept any argument value the runtime might accept.

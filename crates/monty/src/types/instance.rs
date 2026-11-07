@@ -1031,6 +1031,7 @@ fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
             HeapData::Closure(_)
                 | HeapData::FunctionDefaults(_)
                 | HeapData::Partial(_)
+                | HeapData::Operator(_)
                 | HeapData::LruCache(_)
                 | HeapData::DataclassMethod(_)
         ),

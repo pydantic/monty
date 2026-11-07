@@ -273,6 +273,7 @@ fn module_imports_after_snapshot() {
         "binascii",
         "fnmatch",
         "annotationlib",
+        "operator",
     ] {
         let runner = MontyRun::new(
             format!("import {module}\n42"),

@@ -33,6 +33,7 @@ pub(crate) mod hashlib;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
+pub(crate) mod operator;
 pub(crate) mod os;
 pub(crate) mod os_path;
 pub(crate) mod pathlib;
@@ -107,6 +108,9 @@ pub(crate) enum StandardLib {
     Fnmatch,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
+    /// The `operator` module: function forms of the operators, and `itemgetter`,
+    /// `attrgetter` and `methodcaller`.
+    Operator,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -145,6 +149,7 @@ impl StandardLib {
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
+            StaticStrings::Operator => Some(Self::Operator),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -189,6 +194,7 @@ impl StandardLib {
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
+            Self::Operator => operator::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -227,6 +233,7 @@ pub(crate) enum ModuleFunctions {
     Fnmatch(fnmatch::FnmatchFunctions),
     Typing(typing::TypingFunctions),
     Annotationlib(annotationlib::AnnotationlibFunctions),
+    Operator(operator::OperatorFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -254,6 +261,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Itertools(func) => write!(f, "{func}"),
             Self::Dataclasses(func) => write!(f, "{func}"),
             Self::Functools(func) => write!(f, "{func}"),
+            Self::Operator(func) => write!(f, "{func}"),
             Self::Base64(func) => write!(f, "{func}"),
             Self::Binascii(func) => write!(f, "{func}"),
             Self::Random(func) => write!(f, "{func}"),
@@ -308,6 +316,7 @@ impl ModuleFunctions {
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
+            Self::Operator(functions) => operator::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

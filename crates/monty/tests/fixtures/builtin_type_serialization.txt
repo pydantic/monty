@@ -103,3 +103,6 @@ DecimalContext 103
 DecimalSignalDict 104
 DecimalContextManager 105
 ForwardRef 106
+ItemGetter 107
+AttrGetter 108
+MethodCaller 109

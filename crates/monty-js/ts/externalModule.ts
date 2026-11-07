@@ -133,6 +133,7 @@ const SANDBOX_MODULES = new Set([
   'itertools',
   'json',
   'math',
+  'operator',
   'os',
   'pathlib',
   'posixpath',

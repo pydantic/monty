@@ -210,6 +210,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "itertools",
     "json",
     "math",
+    "operator",
     "os",
     "pathlib",
     "posixpath",
