@@ -226,11 +226,14 @@ impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
 ///    ids, the waiter, the per-slot results, and any external futures still
 ///    being waited on all live inside the [`AwaitedGather`] payload. Tasks and
 ///    external resolutions write into `results` slots while in this state.
-/// 3. **`Completed(list_id)`** — all children completed successfully. The
+/// 3. **`Completed(list_id)`** — every child produced a result (with
+///    `return_exceptions`, a catchable failure counts as a result and is stored
+///    as its exception object). The
 ///    `list_id` is an inc_ref'd `HeapData::List` holding the gathered results;
 ///    re-awaiting the gather returns this same list, matching CPython's
 ///    behavior of caching a Future's result.
-/// 4. **`Failed(error)`** — a child task or external future raised. The error
+/// 4. **`Failed(error)`** — a child task or external future raised (or, with
+///    `return_exceptions`, hit a resource-limit or internal error). The error
 ///    was propagated to the original waiter on first await, and is cached here
 ///    so re-awaits re-raise the same exception (again matching CPython).
 ///
@@ -255,8 +258,8 @@ pub(crate) struct GatherFuture {
     /// id and is the owner until drop, so GC must always walk this vector
     /// regardless of `state`.
     pub items: Vec<HeapId>,
-    /// `return_exceptions=True`: a failing item contributes its exception to
-    /// the result list instead of failing the gather.
+    /// `return_exceptions=True`: a failing item's catchable exception becomes its
+    /// result in the result list. Resource-limit and internal errors still propagate.
     #[serde(default)]
     pub return_exceptions: bool,
     /// Phase of the gather lifecycle. See [`GatherState`].
@@ -272,10 +275,12 @@ pub(crate) enum GatherState {
     Pending,
     /// Currently being awaited. `AwaitedGather` carries every per-await field.
     Awaited(AwaitedGather),
-    /// All children completed successfully. Re-awaiting the gather inc_refs this
+    /// Every child produced a result (with `return_exceptions`, catchable
+    /// failures are stored as exception objects). Re-awaiting the gather inc_refs this
     /// value and returns it.
     Completed(Value),
-    /// A child task failed (or an external future was rejected). The error
+    /// A child task failed (or an external future was rejected), or with
+    /// `return_exceptions` a resource-limit or internal error occurred. The error
     /// is cached so subsequent awaits re-raise it. `RunError` implements
     /// `Clone`; clone the error when transitioning into this state.
     Failed(RunError),

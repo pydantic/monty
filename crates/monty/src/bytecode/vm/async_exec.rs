@@ -229,6 +229,8 @@ impl<'h> VM<'h> {
 
         while frame.next < frame.results.len() {
             let idx = frame.next;
+            // This loop can build many exception copies in one VM step.
+            self.heap.tracker.check_memory_time_every(idx)?;
             let item_id = gather.get(self.heap).items[idx];
             if let Some(slots) = frame.pending_children.get_mut(&item_id) {
                 // Dedup: We've already registered this item in this commit pass —
@@ -784,7 +786,13 @@ impl<'h> VM<'h> {
     /// propagate.
     fn exception_as_result(&mut self, err: RunError) -> Result<Value, RunError> {
         match err {
-            RunError::Exc(exc) => Ok(Value::Ref(self.heap.allocate(HeapData::Exception(exc.exc)))),
+            RunError::Exc(exc) => {
+                // The error was cloned out of a cached failure, so each copy of a
+                // large message is a fresh allocation: charge it before keeping it.
+                let len = exc.exc.arg().map_or(0, String::len);
+                self.heap.tracker.check_allocation(len)?;
+                Ok(Value::Ref(self.heap.allocate(HeapData::Exception(exc.exc))))
+            }
             err @ (RunError::UncatchableExc(_) | RunError::Internal(_)) => Err(err),
         }
     }

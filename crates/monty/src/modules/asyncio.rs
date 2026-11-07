@@ -155,8 +155,9 @@ fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
 /// 3. The current task blocks until all items complete
 /// 4. Results are collected in order and returned as a list
 /// 5. On any task failure, sibling tasks are cancelled and the exception propagates,
-///    unless `return_exceptions` is true: the exception is then stored in the result
-///    list at that position and every other awaitable still completes
+///    unless `return_exceptions` is true: a catchable exception is then stored in the
+///    result list at that position and every other awaitable still completes
+///    (resource-limit and internal errors still propagate)
 ///
 /// # Arguments
 /// * `heap` - The heap for allocating the GatherFuture
