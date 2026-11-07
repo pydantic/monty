@@ -566,14 +566,16 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
-    let iter = tuple.iter(vm)?;
+    let mut iter = tuple.iter(vm)?;
+    // Excluded prefix entries need neither equality calls nor reference-count traffic.
+    iter.index = start;
     defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
             break;
         }
-        if idx >= start && value.py_eq(item, vm)? {
+        if value.py_eq(item, vm)? {
             let idx_i64 = i64::try_from(idx).expect("index exceeds i64::MAX");
             return Ok(Value::Int(idx_i64));
         }
