@@ -76,6 +76,7 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 - **`elements()` returns a list**, not CPython's lazy iterator. The values and
     order match, but the whole sequence is built up front, so a very large count
     can hit the memory limit where CPython would stream.
+
 - **Crosses the host boundary as a plain `dict`.**
 
 ## Qualified vs bare type names
