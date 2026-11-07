@@ -70,17 +70,3 @@ assert calls == [4, 2, 6]
 calls.clear()
 assert heapq.nlargest(2, iter([4, 2, 6, 1]), key=key) == [1, 2]
 assert calls == [4, 2, 6, 1]
-
-# merge: sorted inputs combine into one sorted output; ties take the earlier iterable first.
-assert list(heapq.merge([1, 4, 7], [2, 5, 8], [3, 6, 9])) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-assert list(heapq.merge()) == []
-assert list(heapq.merge([], [])) == []
-assert list(heapq.merge([1, 2, 3])) == [1, 2, 3]
-assert list(heapq.merge([3, 2, 1], [6, 5, 4], reverse=True)) == [6, 5, 4, 3, 2, 1]
-assert list(heapq.merge(['a', 'dd'], ['bbb'], ['cc', 'eeee'], key=len)) == ['a', 'dd', 'cc', 'bbb', 'eeee']
-tagged = list(heapq.merge([(1, 'x'), (2, 'x')], [(1, 'y'), (2, 'y')], key=lambda p: p[0]))
-assert tagged == [(1, 'x'), (1, 'y'), (2, 'x'), (2, 'y')]
-tagged = list(heapq.merge([(2, 'x'), (1, 'x')], [(2, 'y'), (1, 'y')], key=lambda p: p[0], reverse=True))
-assert tagged == [(2, 'x'), (2, 'y'), (1, 'x'), (1, 'y')]
-assert list(heapq.merge(range(0, 10, 3), (x for x in [1, 2, 10]), [5])) == [0, 1, 2, 3, 5, 6, 9, 10]
-assert list(heapq.merge([1, 1], [1])) == [1, 1, 1]

@@ -1,3 +1,4 @@
+import _heapq
 import asyncio
 import bisect
 import datetime
@@ -797,8 +798,8 @@ assert_type(heapq.heappush_max(_heap, 1), None)
 assert_type(heapq.heappop_max(_heap), int)
 assert_type(heapq.nlargest(2, [1, 2, 3]), list[int])
 assert_type(heapq.nsmallest(2, ['a', 'b'], key=len), list[str])
-for _merged in heapq.merge([1, 3], [2, 4], reverse=False):
-    assert_type(_merged, int)
+assert_type(_heapq.heappush(_heap, 1), None)
+assert_type(_heapq.heappop_max(_heap), int)
 
 # === open ===
 # Upstream typeshed's signatures accept any argument value the runtime might accept.

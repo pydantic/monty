@@ -85,7 +85,6 @@ assert [heapq.heappop_max(hm) for _ in range(5000)] == sorted(big, reverse=True)
 
 assert heapq.nlargest(5, big) == sorted(big, reverse=True)[:5]
 assert heapq.nsmallest(5, big) == sorted(big)[:5]
-assert list(heapq.merge(sorted(big[:2500]), sorted(big[2500:]))) == sorted(big)
 
 # Exact layout of a heap just above the cache-friendly threshold matches CPython.
 layout = [(i * 31) % 2601 for i in range(2601)]

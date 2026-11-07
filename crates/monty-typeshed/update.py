@@ -168,6 +168,7 @@ VERSIONS = """\
 # which monty's minimimal typeshed includes
 
 _collections_abc: 3.3-
+_heapq: 3.0-  # Monty's native accelerator, narrowed by custom/_heapq.pyi
 _io: 3.0-  # not importable at runtime, only for type checking
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking

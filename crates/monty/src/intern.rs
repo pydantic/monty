@@ -1763,8 +1763,6 @@ pub enum StaticStrings {
     Md5,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
-    /// `heapq.merge()` function.
-    Merge,
     /// `field(metadata=...)`.
     Metadata,
     /// `sys.version_info.micro` field.
@@ -1859,11 +1857,11 @@ pub enum StaticStrings {
     Newline,
     /// `math.nextafter()` function.
     Nextafter,
-    /// `heapq.nlargest()` function.
-    Nlargest,
     /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
     #[strum(serialize = "_nil")]
     NilSentinel,
+    /// `heapq.nlargest()` function.
+    Nlargest,
     /// `re.NOFLAG` flag
     #[strum(serialize = "NOFLAG")]
     NoFlag,
@@ -2586,6 +2584,9 @@ pub enum StaticStrings {
     /// `decimal.Underflow` signal.
     #[strum(serialize = "Underflow")]
     Underflow,
+    /// Module name for `import _heapq`.
+    #[strum(serialize = "_heapq")]
+    UnderscoreHeapq,
     /// `binascii.unhexlify()` function.
     #[strum(serialize = "unhexlify")]
     Unhexlify,
