@@ -1397,6 +1397,28 @@ pub enum StaticStrings {
     /// `header` parameter of the `binascii` quoted-printable pair.
     #[strum(serialize = "header")]
     Header,
+    /// `heapq.heapify()` function.
+    Heapify,
+    /// `heapq.heapify_max()` function.
+    HeapifyMax,
+    /// `heapq.heappop()` function.
+    Heappop,
+    /// `heapq.heappop_max()` function.
+    HeappopMax,
+    /// `heapq.heappush()` function.
+    Heappush,
+    /// `heapq.heappush_max()` function.
+    HeappushMax,
+    /// `heapq.heappushpop()` function.
+    Heappushpop,
+    /// `heapq.heappushpop_max()` function.
+    HeappushpopMax,
+    /// Module name for `import heapq`.
+    Heapq,
+    /// `heapq.heapreplace()` function.
+    Heapreplace,
+    /// `heapq.heapreplace_max()` function.
+    HeapreplaceMax,
     /// `bytes.hex()` method.
     Hex,
     /// `hexdigest()` method of a hash object.
@@ -1741,6 +1763,8 @@ pub enum StaticStrings {
     Md5,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
+    /// `heapq.merge()` function.
+    Merge,
     /// `field(metadata=...)`.
     Metadata,
     /// `sys.version_info.micro` field.
@@ -1835,6 +1859,8 @@ pub enum StaticStrings {
     Newline,
     /// `math.nextafter()` function.
     Nextafter,
+    /// `heapq.nlargest()` function.
+    Nlargest,
     /// `_nil` parameter of `copy.deepcopy()`, CPython's private sentinel.
     #[strum(serialize = "_nil")]
     NilSentinel,
@@ -1868,6 +1894,8 @@ pub enum StaticStrings {
     NotImplementedRepr,
     /// `datetime.now()` classmethod.
     Now,
+    /// `heapq.nsmallest()` function.
+    Nsmallest,
     /// Kwarg name `num` — `Context.create_decimal()`.
     Num,
     /// Kwarg name `number` — `round(number=...)`.

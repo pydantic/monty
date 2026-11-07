@@ -35,6 +35,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `fnmatch`       | [fnmatch.md](fnmatch.md)             |
 | `functools`     | [functools.md](functools.md)         |
 | `hashlib`       | [hashlib.md](hashlib.md)             |
+| `heapq`         | [heapq.md](heapq.md)                 |
 | `itertools`     | [itertools.md](itertools.md)         |
 | `json`          | [json.md](json.md)                   |
 | `math`          | [math.md](math.md)                   |
@@ -63,7 +64,7 @@ production sandboxes never see it.
 Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `contextlib`,
 `ctypes`, `enum`, `fractions`,
-`heapq`, `hmac`, `http`, `inspect`, `io`,
+`hmac`, `http`, `inspect`, `io`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,

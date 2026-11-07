@@ -272,6 +272,7 @@ fn module_imports_after_snapshot() {
         "base64",
         "binascii",
         "fnmatch",
+        "heapq",
         "annotationlib",
     ] {
         let runner = MontyRun::new(

@@ -30,6 +30,7 @@ pub(crate) mod functools;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod hashlib;
+pub(crate) mod heapq;
 pub(crate) mod itertools;
 pub(crate) mod json;
 pub(crate) mod math;
@@ -105,6 +106,8 @@ pub(crate) enum StandardLib {
     Decimal,
     /// The `fnmatch` module: shell-style pattern matching.
     Fnmatch,
+    /// The `heapq` module: binary heaps over lists.
+    Heapq,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
     /// The `gc` module exposing a single `collect()` for tests. Only present
@@ -144,6 +147,7 @@ impl StandardLib {
             StaticStrings::Tomllib => Some(Self::Tomllib),
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
+            StaticStrings::Heapq => Some(Self::Heapq),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
@@ -188,6 +192,7 @@ impl StandardLib {
             Self::Tomllib => tomllib::create_module(vm),
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
+            Self::Heapq => heapq::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
@@ -225,6 +230,7 @@ pub(crate) enum ModuleFunctions {
     Tomllib(tomllib::TomllibFunctions),
     Decimal(decimal::DecimalFunctions),
     Fnmatch(fnmatch::FnmatchFunctions),
+    Heapq(heapq::HeapqFunctions),
     Typing(typing::TypingFunctions),
     Annotationlib(annotationlib::AnnotationlibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
@@ -266,6 +272,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Tomllib(func) => write!(f, "{func}"),
             Self::Decimal(func) => write!(f, "{func}"),
             Self::Fnmatch(func) => write!(f, "{func}"),
+            Self::Heapq(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -306,6 +313,7 @@ impl ModuleFunctions {
             Self::Tomllib(functions) => tomllib::call(vm, functions, args),
             Self::Decimal(functions) => decimal::call(vm, functions, args).map(CallResult::Value),
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
+            Self::Heapq(functions) => heapq::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
             #[cfg(feature = "test-hooks")]
