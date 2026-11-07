@@ -66,7 +66,7 @@ see "Reading the clock" below.
 `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
 Its errors differ as `datetime.fromtimestamp()`'s do (below).
 `today()` and `fromisoformat()` can only be called on the class: `date(2020, 1, 1).today()` raises `AttributeError`.
-`fromtimestamp()` also works on an instance.
+`fromtimestamp()` and `fromisocalendar()` also work on an instance.
 No class method can be read without calling it (see [builtins.md](builtins.md)).
 
 Constructor overflow wording on Windows: CPython's `i` converter goes
@@ -124,11 +124,15 @@ Class methods supported: `now(tz=None)`, `utcnow()`, `fromtimestamp(timestamp, t
 - `today()` is not implemented.
 - `utcnow()` and `utcfromtimestamp()` are deprecated in CPython 3.12+ and emit a `DeprecationWarning` there; Monty has
     no `warnings` mechanism, so none is emitted.
-    `utcfromtimestamp()` rounds half to even and raises CPython's range errors, like `fromtimestamp()`.
+    `utcfromtimestamp()` rounds half to even and raises CPython's range errors on Linux and macOS, like
+    `fromtimestamp()`.
+    On Windows it returns a result for negative timestamps and years after 3000, where CPython raises `OSError`
+    (see the `fromtimestamp()` bullets below).
     `utcnow()` reads the clock like `now()` (see "Reading the clock" below); with `'call_host'` it is answered through
     the same `time.time` call as `time.time()`, so the embedder's handler for that call supplies it.
-- `now()`, `utcnow()`, `strptime()`, `fromisoformat()`, `fromisocalendar()` and `combine()` can only be called on the
-    class: `datetime(2020, 1, 1).now()` raises `AttributeError`. `fromtimestamp()` also works on an instance.
+- `now()`, `strptime()`, `fromisoformat()` and `combine()` can only be called on the class:
+    `datetime(2020, 1, 1).now()` raises `AttributeError`.
+    `fromtimestamp()`, `utcfromtimestamp()`, `utcnow()` and `fromisocalendar()` also work on an instance.
     No class method can be read without calling it (see [builtins.md](builtins.md)).
 - A naive `fromtimestamp()` reads the [session zone](#reading-the-clock) where CPython reads the host's.
     Microseconds round half to even and the `time_t`, `NaN` and year errors match CPython on Linux and macOS,

@@ -1541,15 +1541,15 @@ pub enum StaticStrings {
     Isnan,
     /// `str.isnumeric()` method.
     Isnumeric,
-    /// `date.isoformat()` / `datetime.isoformat()` method.
-    Isoformat,
-    /// `sys.flags.isolated` field.
-    Isolated,
     /// `date.isocalendar()` / `datetime.isocalendar()` method.
     Isocalendar,
     /// Named-tuple type name of the `isocalendar()` result.
     #[strum(serialize = "datetime.IsoCalendarDate")]
     IsoCalendarDate,
+    /// `date.isoformat()` / `datetime.isoformat()` method.
+    Isoformat,
+    /// `sys.flags.isolated` field.
+    Isolated,
     /// `date.isoweekday()` / `datetime.isoweekday()` method.
     Isoweekday,
     /// `str.isprintable()` method.
