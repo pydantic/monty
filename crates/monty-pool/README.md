@@ -331,7 +331,8 @@ The interrupted request did not run, but restoring a suspended dump repeats its 
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
 
-A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`, set once the
+session opens: its first request opens it, or `Checkout::open` does so alone and waits for the reply;
 `ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
 `ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
 subprocess workers ignore it too.

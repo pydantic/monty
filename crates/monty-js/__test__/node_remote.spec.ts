@@ -242,7 +242,7 @@ test('a plain relay names no session, whatever ephemeral and profile say', async
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   for (const options of [{}, { ephemeral: true }, { ephemeral: false }, { profile: 'gpu' }, { profile: '' }]) {
     await using session = await pool.checkout(options)
-    t.is(session.sessionId, undefined)
+    t.is(await session.getSessionId(), undefined)
     t.is(await session.feedRun('1 + 1'), 2)
   }
 })
@@ -258,7 +258,7 @@ test('dump bytes from a plain relay load into a new session', async () => {
   }
   await using session = await pool.checkout()
   await session.loadSession(dump)
-  t.is(session.sessionId, undefined)
+  t.is(await session.getSessionId(), undefined)
   t.is(await session.feedRun('x + 1'), 21)
 })
 
@@ -284,16 +284,35 @@ test('a storing server names the session and a shutdown is resumed', async () =>
   const { url } = await server(new StoringServer().handle)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const session = await pool.checkout()
-  // the first run carries the Configure out, and its reply names the session
+  // the deprecated getter is unset until the first run carries the Configure out
   t.is(session.sessionId, undefined)
   await session.feedRun('x = 20')
   t.deepEqual(session.sessionId, Buffer.from('sess-1'))
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-1'))
   // the fake parks the session instead of running this feed; the pool
   // reloads the ID on a new connection and re-sends it
   t.is(await session.feedRun('x + 1'), 21)
   await session.close()
   // the ID the resume adopted outlives the checkout
-  t.deepEqual(session.sessionId, Buffer.from('sess-3'))
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-3'))
+})
+
+test('getSessionId opens the session before any request', async () => {
+  const { url } = await server(new StoringServer().handle)
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout()
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-1'))
+  t.is(await session.feedRun('x = 20'), null)
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-1'))
+})
+
+test('getSessionId raises a refused configuration and loses the session', async () => {
+  const { url } = await server(refusingServer("unknown profile 'gpu'"))
+  await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
+  await using session = await pool.checkout({ profile: 'gpu' })
+  const error = await t.throwsAsync(() => session.getSessionId(), { instanceOf: MontyRuntimeError })
+  t.is(error.message, "RuntimeError: unknown profile 'gpu'")
+  t.is(await t.throwsAsync(() => session.feedRun('1')), error)
 })
 
 test('with autoResume off a shutdown raises MontyShutdown naming the session', async () => {
@@ -308,7 +327,7 @@ test('with autoResume off a shutdown raises MontyShutdown naming the session', a
   }
   await using session = await pool.checkout()
   await session.loadSession(Buffer.from('sess-1'))
-  t.deepEqual(session.sessionId, Buffer.from('sess-3'))
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-3'))
   t.is(await session.feedRun('x + 1'), 21)
 })
 

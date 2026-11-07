@@ -915,6 +915,25 @@ impl NativeSession {
         )
     }
 
+    /// Opens the session if no request has yet, sending its `Configure` alone,
+    /// so `sessionId` is set once this resolves. Resolves to an `ok` turn, or
+    /// what a refused first request would.
+    #[napi]
+    pub fn open<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, _on_print| {
+                Box::pin(async move {
+                    match checkout.open().await {
+                        Ok(()) => TurnOutcome::Ok,
+                        Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                    }
+                })
+            }),
+        )
+    }
+
     /// Ends the session and returns the worker to the pool (best effort — a
     /// crashed worker has already been discarded and replaced).
     #[napi]

@@ -1132,7 +1132,7 @@ class AsyncMontyRemote:
     status and raises `MontyDisconnectError` naming its `cause`; a stream it
     refuses to open raises `MontyRefusedError` the same way.
 
-    A server that stores sessions gives each one an ID (`session.session_id`)
+    A server that stores sessions gives each one an ID (`await session.get_session_id()`)
     instead of handing state back: `dump()` writes the current state to a
     record that never changes and returns its ID, and `load_session` /
     `load_snapshot` start a new session from either ID, in any process.
@@ -1472,14 +1472,26 @@ class AsyncMontySession:
         on another thread (the getter never blocks on a running turn).
         """
 
-    @property
-    def session_id(self) -> bytes | None:
+    async def get_session_id(self) -> bytes | None:
         """The opaque ID a server that stores sessions gave this session.
 
         Pass it to `load_session` / `load_snapshot` to start a new session from
         the state as of this one's last park, from any process. `None` for local
-        workers, ephemeral sessions and servers that store nothing, and until the
-        session's first request (`feed_run`, `feed_start`, `load_*`, ...) opens it.
+        workers, ephemeral sessions and servers that store nothing.
+
+        Opens the session if no request has yet, which costs one round trip and
+        raises what that request would on a refused configuration. Waits for a
+        running turn, and after the session exits returns the last ID seen.
+        Raises `RuntimeError` before the session is entered.
+        """
+
+    @property
+    @deprecated('`session_id` is `None` until the first request opens the session; use `await get_session_id()`.')
+    def session_id(self) -> bytes | None:
+        """Deprecated: use `get_session_id()`.
+
+        The ID as last seen, which is `None` until the session's first request
+        (`feed_run`, `feed_start`, `load_*`, ...) opens it.
         """
 
 @final

@@ -591,7 +591,7 @@ async def test_plain_relay_names_no_session(relay_url: str):
     async with AsyncMontyRemote(relay_url, request_timeout=30.0) as pool:
         for ephemeral in (None, True, False):
             async with pool.checkout(ephemeral=ephemeral) as session:
-                assert session.session_id is None
+                assert await session.get_session_id() is None
                 assert await session.feed_run('1 + 1') == snapshot(2)
 
 
@@ -611,7 +611,7 @@ async def test_loaded_session_has_no_id_on_a_plain_relay(relay_url: str):
             dump = await session.dump()
         async with pool.checkout() as session:
             await session.load_session(dump)
-            assert session.session_id is None
+            assert await session.get_session_id() is None
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -625,16 +625,42 @@ async def test_auto_resume_can_be_disabled(relay_url: str):
 async def test_storing_server_names_the_session_and_resumes_a_shutdown(storing_url: str):
     async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
         async with pool.checkout() as session:
-            # the first request carries the Configure out, and its reply names the session
-            assert session.session_id is None
             await session.feed_run('x = 20')
-            assert session.session_id == snapshot(b'sess-1')
+            assert await session.get_session_id() == snapshot(b'sess-1')
             # the fake parks the session instead of running this feed; the
             # client reloads the ID on a new stream and re-sends it
             assert await session.feed_run('x + 1') == snapshot(21)
         # the ID the resume adopted outlives the checkout, even when nothing
         # read it while the checkout was live
-        assert session.session_id == snapshot(b'sess-3')
+        assert await session.get_session_id() == snapshot(b'sess-3')
+
+
+async def test_get_session_id_opens_the_session(storing_url: str):
+    """Before any request, `get_session_id()` sends the configuration alone and waits for the ID."""
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            assert await session.get_session_id() == snapshot(b'sess-1')
+            assert await session.feed_run('x = 20') == snapshot(None)
+            assert await session.get_session_id() == snapshot(b'sess-1')
+
+
+async def test_get_session_id_needs_an_entered_session(storing_url: str):
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        with pytest.raises(RuntimeError) as exc_info:
+            await pool.checkout().get_session_id()
+    assert exc_info.value.args[0] == snapshot(
+        'get_session_id() needs an entered session: use `async with pool.checkout() as session`'
+    )
+
+
+async def test_session_id_property_is_deprecated(storing_url: str):
+    """The property races the first request, so it warns; it still reads the ID once known."""
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('x = 20')
+            with pytest.warns(DeprecationWarning) as record:
+                assert session.session_id == snapshot(b'sess-1')  # pyright: ignore[reportDeprecated]
+    assert str(record[0].message) == snapshot('session_id is deprecated, use `await session.get_session_id()`')
 
 
 async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_url: str):
@@ -646,7 +672,7 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_u
             assert exc_info.value.dump == snapshot(b'sess-1')
         async with pool.checkout() as session:
             await session.load_session(b'sess-1')
-            assert session.session_id == snapshot(b'sess-3')
+            assert await session.get_session_id() == snapshot(b'sess-3')
             assert await session.feed_run('x + 1') == snapshot(21)
 
 

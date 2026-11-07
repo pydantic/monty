@@ -262,6 +262,11 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
   }
 
+  /** Opens the session: a no-op, since a WASM worker has no session ID to wait for. */
+  async open(_onPrint: OnPrint): Promise<{ kind: 'ok' }> {
+    return { kind: 'ok' }
+  }
+
   /** Reports the sandbox worker's lack of dependency installation. */
   async installDependencies(requirements: string[], _onPrint: OnPrint): Promise<NativeTurn | { kind: 'ok' }> {
     return requirements.length === 0

@@ -416,8 +416,7 @@ pub struct Checkout {
     worker: Option<Worker>,
     pool: Arc<PoolInner>,
     /// The `Configure` that opens the session, sent ahead of the first request
-    /// in the same write (see [`Self::open_session`]). A session is never
-    /// configured in a turn of its own.
+    /// in the same write (see [`Self::open_session`]), or alone by [`Checkout::open`].
     pending_configure: Option<Box<pb::ParentRequest>>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
@@ -1364,10 +1363,23 @@ impl Checkout {
     }
 
     /// The opaque session ID a storing relay minted, which [`Checkout::restore`]
-    /// resumes from any process. `None` for local workers and ephemeral sessions.
+    /// resumes from any process. `None` for local workers and ephemeral sessions,
+    /// and until the session opens: call [`Checkout::open`] first to wait for it.
     #[must_use]
     pub fn session_id(&self) -> Option<&[u8]> {
         self.session_id.as_deref()
+    }
+
+    /// Opens the session now: sends its pending `Configure` on its own and
+    /// waits for the reply, which is where a storing relay names the session.
+    /// A no-op once the session is open, even if its worker has since gone.
+    /// Otherwise the first request carries the `Configure` out, saving this round trip.
+    pub async fn open(&mut self) -> Result<(), PoolError> {
+        if self.pending_configure.is_none() {
+            return Ok(());
+        }
+        self.ensure_ready()?;
+        self.open_session(None).await.map(drop)
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -1579,7 +1591,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
-        let outcome = match self.open_session(request).await {
+        let outcome = match self.open_session(Some(request)).await {
             Ok(None) => self.turn(request, deadline, None, on_print).await,
             Ok(Some(opened)) => {
                 let deadline = if is_execution_turn(request) {
@@ -1624,7 +1636,7 @@ impl Checkout {
     }
 
     /// Opens the session a pending `Configure` describes: sends it, queues
-    /// `request` behind it and reads only the `Configure` reply, bounded by
+    /// `request` (if any) behind it and reads only the `Configure` reply, bounded by
     /// `request_timeout` alone, as a checkout's `Configure` turn would be. The
     /// child answers in order, so pipelining the two costs the first turn no
     /// round trip. Returns when the reply arrived, which is when the request's
@@ -1635,11 +1647,16 @@ impl Checkout {
     /// request's own reply (an error for the missing session) is never read.
     /// `Reset` and `Shutdown` drop the pending `Configure` instead: nothing
     /// ran, so there is no session to open.
-    async fn open_session(&mut self, request: &pb::ParentRequest) -> Result<Option<DeadlineInstant>, PoolError> {
-        if matches!(
-            request.kind,
-            Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
-        ) {
+    async fn open_session(
+        &mut self,
+        request: Option<&pb::ParentRequest>,
+    ) -> Result<Option<DeadlineInstant>, PoolError> {
+        if request.is_some_and(|request| {
+            matches!(
+                request.kind,
+                Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
+            )
+        }) {
             self.pending_configure = None;
         }
         let Some(configure) = self.pending_configure.take() else {
@@ -1662,7 +1679,7 @@ impl Checkout {
     async fn open_session_io(
         &mut self,
         configure: &pb::ParentRequest,
-        request: &pb::ParentRequest,
+        request: Option<&pb::ParentRequest>,
     ) -> Result<DeadlineInstant, PoolError> {
         if let Err(err) = self.send_request(configure).await {
             self.discard_worker();
@@ -1671,12 +1688,11 @@ impl Checkout {
         // CPU is charged from a sample taken once the reply is read, so under
         // CPU supervision the request is queued only then: written sooner, the
         // child could run part of it before that sample
-        let defer = self.supervises_cpu(request);
+        let deferred = request.filter(|request| self.supervises_cpu(request));
         // only an oversize request leaves the worker to open the session
-        let queued = if defer {
-            Ok(())
-        } else {
-            self.deliver(request, true).await
+        let queued = match request {
+            Some(request) if deferred.is_none() => self.deliver(request, true).await,
+            _ => Ok(()),
         };
         if self.worker.is_none() {
             return Err(queued.err().unwrap_or(PoolError::Finished));
@@ -1704,7 +1720,7 @@ impl Checkout {
                     }
                     queued?;
                     let opened = DeadlineInstant::now();
-                    if defer {
+                    if let Some(request) = deferred {
                         // queuing writes nothing: the turn's reads write it, after this sample
                         self.deliver(request, true).await?;
                         match self.sample_cpu()? {
@@ -1962,7 +1978,7 @@ impl Checkout {
         // the first raw request opens the session like a typed one; a raw
         // driver is never auto-resumed, so a relay shutting down meanwhile
         // ends the session here
-        let opened = match self.open_session(request).await {
+        let opened = match self.open_session(Some(request)).await {
             Ok(opened) => opened,
             Err(err @ PoolError::Shutdown { .. }) => {
                 self.discard_worker();

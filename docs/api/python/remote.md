@@ -57,18 +57,21 @@ Neither exception occurs on the local subprocess transport.
 ## Stored sessions
 
 A server that stores sessions gives each one an opaque ID instead of sending its state back.
-[`session_id`][pydantic_monty.AsyncMontySession.session_id] holds it once the server accepts the configuration the
-session's first request carries out, even if that request itself fails; it is `None` against a server that stores nothing.
+[`get_session_id()`][pydantic_monty.AsyncMontySession.get_session_id] returns it; it returns `None` against a server
+that stores nothing.
+The session's configuration normally travels with its first request, so called before any request,
+`get_session_id()` sends the configuration on its own and waits for the reply, which costs one round trip.
+The `session_id` property is deprecated: it is `None` until the first request has been answered.
 `monty-server` run without a store also refuses `dump()`, `load_session()` and `load_snapshot()` with
 `MontyRuntimeError`, and the session carries on; the development relay in `scripts/grpc_relay.py` instead passes
 them to its worker, which dumps and loads bytes as a local session does.
 Against a storing server [`dump()`][pydantic_monty.AsyncMontySession.dump] writes the session's current state to a
-record that never changes and returns that record's ID; the session continues under its `session_id`.
-The server also writes the session's state under `session_id` whenever it parks the session: idle for its
+record that never changes and returns that record's ID; the session continues under its own ID.
+The server also writes the session's state under the session's ID whenever it parks the session: idle for its
 `--park-after`, the client gone, or a drain.
 Passing either ID to the loader matching the stored state, [`load_session()`][pydantic_monty.AsyncMontySession.load_session]
 for an idle session or [`load_snapshot()`][pydantic_monty.AsyncMontySession.load_snapshot] for one suspended mid-feed, on
-a fresh session, from any process, starts a new session with its own ID: a `session_id` gives the state as of that
+a fresh session, from any process, starts a new session with its own ID: a session's ID gives the state as of that
 session's last park, a `dump()` ID the state dumped.
 The record is unchanged and the session that wrote it is never resumed in place, so loading one ID twice gives two
 independent sessions, and a session still running elsewhere is unaffected.
@@ -80,7 +83,7 @@ session can carry on as well.
 `dump()` is the server's choice.
 
 When such a server drains a session, the client opens a new stream, loads the state the server named into a new session and
-re-sends the request, so the caller sees the result rather than `MontyShutdown`; `session_id` then names the new
+re-sends the request, so the caller sees the result rather than `MontyShutdown`; `get_session_id()` then returns the new
 session, and the session's suspension and sleep totals carry over.
 `MontyShutdown` is still raised if the server named nothing to load, if the reload fails, if `auto_resume=False` is
 passed to [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], or if the session has no ID.
