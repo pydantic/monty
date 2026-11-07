@@ -14,7 +14,7 @@ use smallvec::SmallVec;
 use crate::{
     args::{ArgValues, KwargsValues},
     builtins::{Builtins, BuiltinsFunctions},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     frozen::FrozenFunction,
@@ -268,6 +268,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OperatorCallable> {
                     .map(|(key, value)| (key.clone_with_heap(vm), value.clone_with_heap(vm)))
                     .collect();
                 let args = ArgValues::from_parts(items.into_vec(), KwargsValues::Pairs(pairs));
+                // Forwarding is a native call that can reach this callable again, so it
+                // takes a re-entry level, as `functools.partial` does.
+                if let Err(err) = vm.enter_run_reentry() {
+                    obj.drop_with(vm);
+                    args.drop_with(vm);
+                    return Err(err.into());
+                }
+                let mut guard = RunReentryGuard::new(vm);
+                let vm = &mut *guard;
+                // A name the program has interned goes through `VM::call_attr`, which
+                // owns the dunder dispatch (`__enter__`, `__exit__`) the syntax relies on.
+                if let Some(name_id) = vm.interns.get_string_id_by_name(attr.as_str(vm.interns)) {
+                    return vm.call_attr(obj, name_id, args);
+                }
                 defer_drop!(obj, vm);
                 obj.py_value(vm).py_call_attr(vm, &attr, args)
             }

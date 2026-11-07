@@ -1,4 +1,6 @@
 import operator
+import sys
+from typing import Any
 
 # === arithmetic ===
 assert operator.add(1, 2) == 3
@@ -153,3 +155,35 @@ try:
     assert False, 'expected TypeError'
 except TypeError as exc:
     assert str(exc) == '_operator.add() takes no keyword arguments'
+
+# === concat / iconcat need a sequence ===
+assert operator.concat([1], [2]) == [1, 2]
+assert operator.concat('a', 'b') == 'ab'
+assert operator.iconcat([1], (2,)) == [1, 2]
+
+
+class AddOnly:
+    def __add__(self, other: object) -> str:
+        return 'added'
+
+
+try:
+    operator.concat(AddOnly(), AddOnly())
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'AddOnly' object can't be concatenated"
+
+try:
+    operator.concat(1, 2)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object can't be concatenated"
+
+# === call recursion is bounded ===
+chain: list[Any] = [operator.call] * 10000
+chain.extend([len, []])
+try:
+    operator.call(*chain)
+    assert sys.platform != 'monty', 'expected RecursionError'
+except RecursionError:
+    pass

@@ -1975,6 +1975,9 @@ pub enum StaticStrings {
     Opener,
     /// Module name for `import operator`.
     Operator,
+    /// Module name for `import _operator`, the native accelerator behind `operator`.
+    #[strum(serialize = "_operator")]
+    UOperator,
     /// `sys.flags.optimize` field.
     Optimize,
     /// `typing.Optional` marker.

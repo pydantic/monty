@@ -72,7 +72,7 @@ pub(crate) use forward_ref::ForwardRef;
 pub(crate) use generic_alias::GenericAlias;
 pub(crate) use hashlib::HashObject;
 pub(crate) use host_class::{HostClass, HostClassType, host_class_type};
-pub(crate) use instance::{BoundMethod, Instance, instance_call_copy_hook};
+pub(crate) use instance::{BoundMethod, Instance, instance_call_copy_hook, instance_class_defines};
 pub(crate) use iter::{collect_iterable, collect_iterable_bounded};
 pub(crate) use itertools::ItertoolsIter;
 pub(crate) use list::List;

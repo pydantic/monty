@@ -111,6 +111,8 @@ pub(crate) enum StandardLib {
     /// The `operator` module: function forms of the operators, and `itemgetter`,
     /// `attrgetter` and `methodcaller`.
     Operator,
+    /// The native `_operator` module: the implementation `operator` re-exports.
+    UOperator,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -150,6 +152,7 @@ impl StandardLib {
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
             StaticStrings::Operator => Some(Self::Operator),
+            StaticStrings::UOperator => Some(Self::UOperator),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -194,7 +197,8 @@ impl StandardLib {
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
-            Self::Operator => operator::create_module(vm),
+            Self::Operator => operator::create_module(vm, StaticStrings::Operator),
+            Self::UOperator => operator::create_module(vm, StaticStrings::UOperator),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }

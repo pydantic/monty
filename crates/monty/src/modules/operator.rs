@@ -1,4 +1,5 @@
-//! Implementation of Python's `operator` module.
+//! Implementation of Python's native `_operator` module, which `operator` re-exports
+//! until the vendored `operator.py` replaces that stand-in.
 //!
 //! The function forms run as frozen Python functions (see [`crate::frozen`]) that
 //! apply the operator syntax itself, so results, errors and user dunder methods
@@ -8,15 +9,15 @@
 //! absent from the namespace, so they raise `AttributeError` up front.
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
-    bytecode::{CallResult, VM},
+    bytecode::{CallResult, RunReentryGuard, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::FrozenFunction,
     heap::{DropWithContext, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    types::{BuiltinType, Module},
+    types::{BuiltinType, Module, instance_class_defines},
     value::Value,
 };
 
@@ -239,6 +240,8 @@ enum Plan {
     Unary(i64),
     /// An in-place operator by its code in [`INPLACE_SOURCE`].
     Inplace(i64),
+    /// `concat` (false) or `iconcat` (true): the sequence check, then `+` or `+=`.
+    Concat(bool),
     Frozen(FrozenFunction),
     Abs,
     Index,
@@ -301,7 +304,8 @@ impl OperatorFunctions {
     /// How this function is carried out.
     fn plan(self) -> Plan {
         match self {
-            Self::Add | Self::Concat => Plan::Binary(BinaryOp::Add),
+            Self::Add => Plan::Binary(BinaryOp::Add),
+            Self::Concat => Plan::Concat(false),
             Self::Sub => Plan::Binary(BinaryOp::Sub),
             Self::Mul => Plan::Binary(BinaryOp::Mul),
             Self::Truediv => Plan::Binary(BinaryOp::Truediv),
@@ -329,7 +333,8 @@ impl OperatorFunctions {
             Self::Invert => Plan::Unary(2),
             Self::NotUnderscore => Plan::Unary(3),
             Self::Truth => Plan::Unary(4),
-            Self::Iadd | Self::Iconcat => Plan::Inplace(0),
+            Self::Iadd => Plan::Inplace(0),
+            Self::Iconcat => Plan::Concat(true),
             Self::Isub => Plan::Inplace(1),
             Self::Imul => Plan::Inplace(2),
             Self::Itruediv => Plan::Inplace(3),
@@ -351,9 +356,10 @@ impl OperatorFunctions {
     }
 }
 
-/// Creates the `operator` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
-    let mut module = Module::new(StaticStrings::Operator, vm.interns);
+/// Creates the native `_operator` module, or `operator` re-exporting the same
+/// objects, on the heap.
+pub fn create_module(vm: &mut VM<'_>, module_name: StaticStrings) -> HeapId {
+    let mut module = Module::new(module_name, vm.interns);
     for (name, function) in OperatorFunctions::ALL {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Operator(function)), vm);
     }
@@ -392,9 +398,23 @@ pub(super) fn call(vm: &mut VM<'_>, function: OperatorFunctions, args: ArgValues
             let (a, b) = args.get_two_args(&name, vm.heap)?;
             vm.call_frozen_exact(FrozenFunction::OperatorInplace, [Value::Int(code), a, b])
         }
+        Plan::Concat(inplace) => {
+            let (a, b) = args.get_two_args(&name, vm.heap)?;
+            if !can_concatenate(&a, &b, vm) {
+                let err = ExcType::type_error(format!("'{}' object can't be concatenated", a.py_type_name(vm)));
+                a.drop_with(vm);
+                b.drop_with(vm);
+                return Err(err);
+            }
+            if inplace {
+                vm.call_frozen_exact(FrozenFunction::OperatorInplace, [Value::Int(0), a, b])
+            } else {
+                vm.call_frozen_exact(FrozenFunction::OperatorBinary, [Value::Int(BinaryOp::Add as i64), a, b])
+            }
+        }
         Plan::Frozen(FrozenFunction::OperatorSetitem) => {
-            let (a, b, c) = take_three(args, &name, vm)?;
-            vm.call_frozen_exact(FrozenFunction::OperatorSetitem, [a, b, c])
+            let SetitemArgs { obj, key, value } = SetitemArgs::from_args(args, vm)?;
+            vm.call_frozen_exact(FrozenFunction::OperatorSetitem, [obj, key, value])
         }
         Plan::Frozen(FrozenFunction::OperatorIndexOf) => {
             let (a, b) = args.get_two_args(&name, vm.heap)?;
@@ -424,23 +444,63 @@ pub(super) fn call(vm: &mut VM<'_>, function: OperatorFunctions, args: ArgValues
     }
 }
 
-/// Collects exactly three positional arguments for `setitem`.
-fn take_three(args: ArgValues, name: &str, vm: &mut VM<'_>) -> RunResult<(Value, Value, Value)> {
-    let (positional, keywords) = args.into_parts();
-    keywords.drop_with(vm);
-    let mut values: Vec<Value> = positional.collect();
-    if values.len() != 3 {
-        let count = values.len();
-        values.drop_with(vm);
-        return Err(ExcType::type_error_arg_count(name, 3, count));
+/// Whether `operator.concat(a, b)` may go ahead, as CPython's `PySequence_Concat` decides.
+///
+/// The built-in sequences that join with `+` always may; anything else needs both
+/// operands to be sequences, which for a user class means defining `__getitem__`.
+/// A class with only `__add__` is therefore refused, though `a + b` works.
+fn can_concatenate(a: &Value, b: &Value, vm: &mut VM<'_>) -> bool {
+    let joins_itself = match a {
+        Value::InternString(_) | Value::InlineString(_) | Value::InternBytes(_) => true,
+        Value::Ref(id) => matches!(
+            vm.heap.get(*id),
+            HeapData::List(_) | HeapData::Tuple(_) | HeapData::Str(_) | HeapData::Bytes(_) | HeapData::Deque(_)
+        ),
+        _ => false,
+    };
+    joins_itself || (is_sequence(a, vm) && is_sequence(b, vm))
+}
+
+/// `PySequence_Check`: a built-in sequence, or an instance whose class defines `__getitem__`.
+fn is_sequence(value: &Value, vm: &mut VM<'_>) -> bool {
+    match value {
+        Value::InternString(_) | Value::InlineString(_) | Value::InternBytes(_) => true,
+        Value::Ref(id) => {
+            if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
+                return instance_class_defines(*id, "__getitem__", vm);
+            }
+            matches!(
+                vm.heap.get(*id),
+                HeapData::List(_)
+                    | HeapData::Tuple(_)
+                    | HeapData::NamedTuple(_)
+                    | HeapData::Str(_)
+                    | HeapData::Bytes(_)
+                    | HeapData::Deque(_)
+                    | HeapData::Range(_)
+            )
+        }
+        _ => false,
     }
-    let c = values.pop().expect("length checked");
-    let b = values.pop().expect("length checked");
-    let a = values.pop().expect("length checked");
-    Ok((a, b, c))
+}
+
+/// `operator.setitem(obj, key, value)`: three positional-only arguments.
+#[derive(FromArgs)]
+#[from_args(name = "setitem", style = unpack)]
+struct SetitemArgs {
+    #[from_args(pos_only)]
+    obj: Value,
+    #[from_args(pos_only)]
+    key: Value,
+    #[from_args(pos_only)]
+    value: Value,
 }
 
 /// `operator.call(obj, /, *args, **kwargs)`.
+///
+/// Forwarding is a native call, so it takes a re-entry level like
+/// `functools.partial`: `operator.call(*([operator.call] * 10000))` would
+/// otherwise nest Rust frames until the stack overflows.
 fn call_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (positional, keywords) = args.into_parts();
     let mut values: Vec<Value> = positional.collect();
@@ -449,6 +509,14 @@ fn call_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         return Err(ExcType::type_error_at_least("call", 1, 0));
     }
     let target = values.remove(0);
+    if let Err(err) = vm.enter_run_reentry() {
+        target.drop_with(vm);
+        values.drop_with(vm);
+        keywords.drop_with(vm);
+        return Err(err.into());
+    }
+    let mut guard = RunReentryGuard::new(vm);
+    let vm = &mut *guard;
     let result = vm.call_function(&target, ArgValues::from_parts(values, keywords));
     target.drop_with(vm);
     result

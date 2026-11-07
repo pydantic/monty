@@ -135,3 +135,11 @@ assert g != operator.itemgetter(1)
 # === with reduce ===
 assert functools.reduce(operator.add, [1, 2, 3, 4]) == 10
 assert functools.reduce(operator.mul, [1, 2, 3, 4], 10) == 240
+
+
+# === as a class attribute it is not bound to the instance ===
+class Holder:
+    getter = operator.itemgetter(0)
+
+
+assert Holder().getter([7, 8]) == 7
