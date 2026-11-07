@@ -259,6 +259,20 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OperatorCallable> {
             OperatorKind::MethodCaller => {
                 let mut items = items;
                 let name = items.remove(0);
+                let name_len = name.try_to_str_heap(vm.heap, vm.interns).map_or(0, str::len);
+                let keyword_count = self.get(vm.heap).keywords.len();
+                // The name copy and the keyword pairs are allocations of their own, so
+                // they are preflighted as `clone_items` does the positional slots.
+                if let Err(err) = vm
+                    .heap
+                    .tracker
+                    .check_allocation(name_len.saturating_add(keyword_count.saturating_mul(2 * VALUE_SIZE)))
+                {
+                    name.drop_with(vm);
+                    obj.drop_with(vm);
+                    items.drop_with(vm);
+                    return Err(err.into());
+                }
                 let attr = EitherStr::Heap(name.try_to_str_heap(vm.heap, vm.interns).unwrap_or_default().to_owned());
                 name.drop_with(vm);
                 let pairs: Vec<(Value, Value)> = self
