@@ -1,3 +1,4 @@
+import copy
 from collections import Counter, defaultdict
 
 
@@ -12,11 +13,23 @@ for kind, original in [
     assert type(copied) is type(original)
     assert copied is not original
     assert copied == {}
+
+    shallow = copy.copy(original)
+    assert shallow is not original
+    assert type(shallow) is type(original)
+    assert shallow == {}
+    merged = original | {}
+    assert merged == {}
+    assert type(merged) is (defaultdict if kind == 'defaultdict' else dict)
+
     if kind == 'defaultdict':
         assert copied['missing'] == []
+        assert shallow['missing'] == []
+        assert merged['missing'] == []
         assert 'missing' not in original
     elif kind == 'counter':
         assert copied['missing'] == 0
+        assert shallow['missing'] == 0
         assert 'missing' not in copied
     copied['new'] = [1]
     assert 'new' not in original
@@ -50,6 +63,13 @@ assert counter_copy['missing'] == 0
 values = set(range(128))
 for value in range(128):
     values.remove(value)
+
+updated = {'keep'}
+updated.update(values)
+assert updated == {'keep'}
+assert updated.isdisjoint(values)
+assert values.issubset(updated)
+
 copied = values.copy()
 assert copied is not values
 assert copied == set()

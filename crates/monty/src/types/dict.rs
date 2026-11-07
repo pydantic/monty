@@ -1239,6 +1239,12 @@ impl<'h> HeapRead<'h, Dict> {
     pub(crate) fn clone_all_pairs(&self, vm: &mut VM<'h>) -> RunResult<Vec<(Value, Value)>> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
+
+        // An empty source can still retain tombstones after individual removals.
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
         let mut pairs = Vec::with_capacity(len);
         // One borrow for the whole snapshot, so no user code can run under it.
         let polled = self.get(vm.heap).iter().enumerate().try_for_each(|(i, (key, value))| {
