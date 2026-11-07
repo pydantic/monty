@@ -2891,7 +2891,7 @@ impl ExceptionRaise {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RawStackFrame {
     pub position: CodeRange,
-    /// The name of the frame (function name StringId, or None for module-level code).
+    /// The frame's function name, or `<module>` for module-level code; always set.
     pub frame_name: Option<StringId>,
     pub parent: Option<Box<Self>>,
     /// Whether to hide the caret marker in the traceback for this frame.
