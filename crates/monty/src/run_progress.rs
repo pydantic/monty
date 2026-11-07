@@ -20,7 +20,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapReader},
     intern::Interns,
     object_bridge::MontyObjectExt,
-    os_dispatch::{PendingEffect, PostConversionEffect, release_pending_effect},
+    os_dispatch::{PendingEffect, PostConversionEffect, SleepDestination, release_pending_effect},
     run::Executor,
     value::Value,
 };
@@ -330,6 +330,15 @@ impl OsCall {
     /// file effects roll back. Always returns `Err`.
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.abort(exc, print)
+    }
+
+    /// Returns a mutable reference to the resource tracker.
+    ///
+    /// Exposed only under `test-hooks` for integration tests that adjust limits
+    /// while the VM is suspended at an OS call.
+    #[cfg(feature = "test-hooks")]
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        &mut self.snapshot.heap.tracker
     }
 
     /// Returns the resource tracker while execution is suspended.
@@ -958,11 +967,23 @@ pub(crate) fn resume_with_result(
                     .into(),
                 );
             }
-            // `asyncio.sleep` hands its result to the awaitable; no other
+            // The sleeps hand their host answer to the awaitable; no other
             // effect survives a future answer.
             match vm.pending_effect.take() {
-                Some(PendingEffect::Post(PostConversionEffect::SleepResult { result })) => {
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult {
+                    result,
+                    destination: SleepDestination::Value,
+                })) => {
                     vm.add_pending_sleep(CallId::new(call_id), result);
+                }
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult {
+                    result,
+                    destination: SleepDestination::Wait(wait),
+                })) => {
+                    result.drop_with(vm);
+                    let timer = vm.allocate_pending_future(CallId::new(call_id), None);
+                    let wait = vm.install_wait_timer(wait, timer);
+                    vm.push(wait);
                 }
                 effect => {
                     release_pending_effect(effect, vm.heap);
@@ -975,7 +996,29 @@ pub(crate) fn resume_with_result(
             vm.run_external()
         }
         (ExtFunctionResult::Return(obj), None) => vm.resume(obj),
-        (ExtFunctionResult::Error(exc), None) => vm.resume_with_exception(exc.into()),
+        (ExtFunctionResult::Error(exc), None) => {
+            // A rejected timer counts as a fired timer, not an exception: the
+            // wait's timer answer is a wake-up signal on either outcome.
+            match vm.pending_effect.take() {
+                Some(PendingEffect::Post(PostConversionEffect::SleepResult {
+                    result,
+                    destination: SleepDestination::Wait(wait),
+                })) => {
+                    result.drop_with(vm);
+
+                    let timer = vm.settled_awaitable(Value::None);
+                    let wait = vm.install_wait_timer(wait, timer);
+
+                    vm.push(wait);
+                    vm.resume_after_async_wait()
+                }
+                effect => {
+                    // Other effects have rollback in `resume_with_exception`.
+                    vm.pending_effect = effect;
+                    vm.resume_with_exception(exc.into())
+                }
+            }
+        }
         (ExtFunctionResult::NotFound(function_name), None) => {
             vm.resume_with_exception(ExtFunctionResult::not_found_exc(&function_name))
         }

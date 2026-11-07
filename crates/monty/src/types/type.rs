@@ -345,6 +345,10 @@ pub enum Type {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    /// The `asyncio.Task` type. Its `tp_name` is `_asyncio.Task`, while
+    /// `__name__` strips the module through [`Type::dunder_name`].
+    #[strum(serialize = "_asyncio.Task")]
+    Task,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

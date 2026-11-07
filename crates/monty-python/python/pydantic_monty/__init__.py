@@ -264,6 +264,7 @@ ExcType = Literal[
     'IndexError',
     'KeyError',
     'RuntimeError',
+    'asyncio.exceptions.InvalidStateError',
     'NotImplementedError',
     'RecursionError',
     'AttributeError',
@@ -314,9 +315,10 @@ ExcType = Literal[
 Used by `ExternalExceptionData` to identify an exception by name rather than
 passing a concrete Python exception instance. Names match Python's built-in
 exception classes, except for `json.JSONDecodeError`, `tomllib.TOMLDecodeError`,
-`re.PatternError`, `binascii.Error`, `binascii.Incomplete`, `_csv.Error` and the
-`decimal` signals (`decimal.InvalidOperation`, ...), which are dotted to
-disambiguate from their `ValueError` / `Exception` / `ArithmeticError` parents.
+`asyncio.exceptions.InvalidStateError`, `re.PatternError`, `binascii.Error`,
+`binascii.Incomplete`, `_csv.Error` and the `decimal` signals
+(`decimal.InvalidOperation`, ...), which are dotted to disambiguate from their
+`ValueError` / `Exception` / `ArithmeticError` parents.
 """
 
 

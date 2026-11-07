@@ -3,7 +3,8 @@
 //! # Task Model
 //!
 //! The current task's context lives in the VM; all other contexts live in their tasks.
-//! Task 0 is the main task. Spawned tasks (1+) deliver results to their gather.
+//! Task 0 is the main task. Spawned tasks (1+) deliver results to their gather or complete
+//! their Python-visible task handle.
 
 use std::{collections::VecDeque, mem};
 
@@ -56,6 +57,10 @@ pub(crate) struct Task {
     /// Result recipient, owning an inc_ref for a gather. An already-settled gather
     /// discards the result. The main task has no awaiter.
     pub awaiter: Option<Awaiter>,
+    /// Python-visible `asyncio.Task` handle for a task created by
+    /// `asyncio.create_task`, owned by the scheduler until it completes, fails or is cancelled.
+    #[serde(default)]
+    pub python_handle: Option<HeapId>,
     /// Current execution state.
     state: TaskState,
 }
@@ -73,6 +78,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Task {
         }
         if let Some(awaiter) = self.awaiter.take() {
             awaiter.drop_with(heap);
+        }
+        if let Some(handle) = self.python_handle.take() {
+            heap.heap_mut().dec_ref(handle);
         }
     }
 }
@@ -117,6 +125,7 @@ impl Task {
             instruction_ip: 0,
             coroutine_id,
             awaiter,
+            python_handle: None,
             state: TaskState::Ready(Ok(())),
         }
     }
@@ -130,11 +139,15 @@ pub(crate) struct Scheduler {
     /// All tasks keyed by their `TaskId`.
     tasks: AHashMap<TaskId, Task>,
     /// Tasks ready to execute or raise a pending exception.
-    ready_queue: VecDeque<TaskId>,
+    ready_queue: ReadyQueue,
     /// Task whose context is in the VM, or `None` when that context has been discarded.
     current_task: Option<TaskId>,
     /// Counter for generating new task IDs.
     next_task_id: u32,
+    /// Counter for automatic Task names. CPython's running task is `Task-1`,
+    /// so the first user-created task is `Task-2`.
+    #[serde(default = "default_next_task_name")]
+    next_task_name: u32,
     /// Counter for external call IDs (always incremented, even for sync resolution).
     next_call_id: u32,
     /// Host-side index mapping each unresolved external call to its
@@ -144,7 +157,8 @@ pub(crate) struct Scheduler {
     /// holding a `Value::Ref` to it.
     pending_externals: AHashMap<CallId, HeapId>,
     /// Index mapping a spawned coroutine's `HeapId` to the `TaskId` driving
-    /// it. Populated in [`Scheduler::spawn`] and removed in
+    /// it. Populated by [`Scheduler::spawn_gather_child`] and
+    /// [`Scheduler::spawn_python_task`], and removed in
     /// [`Scheduler::cancel_task`]. Lets `GatherFuture` and other call sites
     /// dispatch from coroutine heap id back to the driving task without
     /// scanning all tasks.
@@ -160,9 +174,10 @@ impl Scheduler {
         tasks.insert(main_task_id, main_task);
         Self {
             tasks,
-            ready_queue: VecDeque::new(), // Main task is current, not in ready queue
+            ready_queue: ReadyQueue::default(), // Main task is current, not in ready queue
             current_task: Some(main_task_id),
             next_task_id: 1,
+            next_task_name: default_next_task_name(),
             next_call_id: 0,
             pending_externals: AHashMap::new(),
             coroutine_to_task: AHashMap::new(),
@@ -206,6 +221,14 @@ impl Scheduler {
         id
     }
 
+    /// Allocates the next automatic `Task-N` name. The running task is
+    /// `Task-1`, so the first user-created task is `Task-2`.
+    pub fn allocate_task_name(&mut self) -> String {
+        let name = format!("Task-{}", self.next_task_name);
+        self.next_task_name += 1;
+        name
+    }
+
     /// Registers a freshly created `ExternalFuture` for `call_id`.
     ///
     /// The scheduler inc_refs `future_id` so the entry stays alive between
@@ -223,6 +246,11 @@ impl Scheduler {
     /// scheduler (typically dec_ref'd once the state transition is committed).
     pub fn take_pending_external(&mut self, call_id: CallId) -> Option<HeapId> {
         self.pending_externals.remove(&call_id)
+    }
+
+    /// Returns the registered `ExternalFuture` for `call_id` without consuming it.
+    pub fn pending_external(&self, call_id: CallId) -> Option<HeapId> {
+        self.pending_externals.get(&call_id).copied()
     }
 
     /// Marks the current task as `Blocked` on the awaitable at `awaitable_id`.
@@ -245,22 +273,34 @@ impl Scheduler {
     }
 
     /// Removes the queue entry when delivering directly to an exiting task's waiter.
+    ///
+    /// O(1): the slot is left stale and skipped when it reaches the queue front.
     pub fn remove_from_ready_queue(&mut self, task_id: TaskId) {
-        self.ready_queue.retain(|&id| id != task_id);
+        self.ready_queue.remove(task_id);
     }
 
-    /// Spawns a new task from a coroutine, enforcing one-task-per-coroutine.
+    /// Spawns a task that reports its result to `gather`, enforcing one-task-per-coroutine.
     ///
-    /// Returns `None` if `coroutine_id` is already driving a task —
-    /// caught here because cross-gather reuse can hit two spawns while
-    /// both coroutine states are still `New`, so the state check in
-    /// `await_coroutine` doesn't catch it. Callers translate `None`
-    /// into a `RuntimeError: cannot reuse already awaited coroutine`.
-    /// Both `coroutine_id` and the `GatherSlot` built from `gather_id` become
-    /// **owning** references held by the new task; the matching `dec_ref`
-    /// happens in [`Scheduler::cancel_task`]. It takes `gather_id` rather than
-    /// a ready-made `Awaiter` so the `None` return above has nothing to unwind.
-    pub fn spawn(&mut self, heap: &Heap, coroutine_id: HeapId, gather_id: Option<HeapId>) -> Option<TaskId> {
+    /// Returns `None` if `coroutine_id` is already driving a task — caught here
+    /// because cross-gather reuse can hit two spawns while both coroutine states
+    /// are still `New`, so the state check in `await_coroutine` doesn't catch it.
+    /// Callers translate `None` into `RuntimeError: cannot reuse already awaited coroutine`.
+    /// `coroutine_id` and `gather_id` become **owning** references held by the
+    /// new task; the matching `dec_ref` happens in [`Scheduler::cancel_task`].
+    pub fn spawn_gather_child(&mut self, heap: &Heap, coroutine_id: HeapId, gather_id: HeapId) -> Option<TaskId> {
+        self.spawn_inner(heap, coroutine_id, SpawnTarget::Gather(gather_id))
+    }
+
+    /// Spawns the task behind a Python-visible `asyncio.Task` handle.
+    ///
+    /// `coroutine_id` and `handle` become **owning** references held by the new
+    /// task; the matching `dec_ref` happens in [`Scheduler::cancel_task`].
+    pub fn spawn_python_task(&mut self, heap: &Heap, coroutine_id: HeapId, handle: HeapId) -> Option<TaskId> {
+        self.spawn_inner(heap, coroutine_id, SpawnTarget::Handle(handle))
+    }
+
+    /// Shared construction for both spawn targets, after the duplicate check.
+    fn spawn_inner(&mut self, heap: &Heap, coroutine_id: HeapId, target: SpawnTarget) -> Option<TaskId> {
         if self.coroutine_to_task.contains_key(&coroutine_id) {
             return None;
         }
@@ -269,19 +309,29 @@ impl Scheduler {
         self.next_task_id += 1;
 
         // Take ownership of the heap references — the task now holds an inc_ref'd
-        // pointer to its coroutine and (if applicable) its enclosing gather.
-        // The slot is keyed by the coroutine's own id, which is what
-        // `resolve_child` looks up.
+        // pointer to its coroutine and to its wake-up target. The slot is keyed
+        // by the coroutine's own id, which is what `resolve_child` looks up.
         heap.inc_ref(coroutine_id);
-        let awaiter = gather_id.map(|gather| {
-            heap.inc_ref(gather);
-            Awaiter::GatherSlot {
-                gather,
-                source: coroutine_id,
+        let (awaiter, python_handle) = match target {
+            SpawnTarget::Gather(gather) => {
+                heap.inc_ref(gather);
+                (
+                    Some(Awaiter::GatherSlot {
+                        gather,
+                        source: coroutine_id,
+                    }),
+                    None,
+                )
             }
-        });
+            SpawnTarget::Handle(handle) => {
+                heap.inc_ref(handle);
+                (None, Some(handle))
+            }
+        };
 
-        let task = Task::new(task_id, Some(coroutine_id), awaiter);
+        let mut task = Task::new(task_id, Some(coroutine_id), awaiter);
+        task.python_handle = python_handle;
+
         self.tasks.insert(task_id, task);
         self.coroutine_to_task.insert(coroutine_id, task_id);
         self.ready_queue.push_back(task_id);
@@ -291,9 +341,20 @@ impl Scheduler {
 
     /// Gets the next ready task from the queue.
     ///
-    /// Returns `None` if no tasks are ready.
+    /// Stale entries are discarded on the way; returns `None` if no tasks are ready.
     pub fn next_ready_task(&mut self) -> Option<TaskId> {
         self.ready_queue.pop_front()
+    }
+
+    /// Requeues the current task so another ready task can take the next turn.
+    ///
+    /// The current task stays runnable; its context is saved when the next task
+    /// activates. Used after an asynchronous host wait, where the waiting task
+    /// is ready again but should not starve tasks created while it waited.
+    pub fn requeue_current(&mut self) {
+        if let Some(task_id) = self.current_task {
+            self.ready_queue.push_back(task_id);
+        }
     }
 
     /// Wakes a blocked task with a value already on its stack, or an exception to raise.
@@ -332,7 +393,7 @@ impl Scheduler {
     /// blocked on for [`Scheduler::cancel_task`] to drain.
     ///
     /// Dropping this task ahead of the children it queued is sound: each owns
-    /// an inc_ref on that same gather (see [`Scheduler::spawn`]).
+    /// an inc_ref on that same gather (see [`Scheduler::spawn_gather_child`]).
     fn cancel_one(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>, pending: &mut SmallVec<[TaskId; 4]>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
@@ -349,7 +410,7 @@ impl Scheduler {
             self.coroutine_to_task.remove(&coroutine_id);
         }
 
-        self.ready_queue.retain(|&id| id != task_id);
+        self.ready_queue.remove(task_id);
 
         // Blocked on a gather: queue the tasks spawned under it. An
         // external future needs no extra teardown.
@@ -427,8 +488,100 @@ impl Scheduler {
     }
 }
 
+/// Default for scheduler dumps written before automatic Task names existed.
+fn default_next_task_name() -> u32 {
+    2
+}
+
 impl Default for Scheduler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Wake-up target of a task spawned from a coroutine.
+///
+/// The two variants own different references; passing them separately keeps a
+/// mistyped swap from compiling.
+#[derive(Clone, Copy)]
+enum SpawnTarget {
+    /// Report completion through a slot in this gather.
+    Gather(HeapId),
+    /// Complete this Python-visible `asyncio.Task` handle.
+    Handle(HeapId),
+}
+
+/// FIFO of runnable tasks with O(1) removal.
+///
+/// Removal drops the task from `live`; its slot is skipped when it reaches the
+/// front. Pushing an already-live task gives it a newer generation, moving it to
+/// the back. Dumps write only live entries, keeping the wire shape a list of ids.
+#[derive(Debug, Default)]
+struct ReadyQueue {
+    /// Slots in FIFO order; a slot is live only while `live` holds its generation.
+    entries: VecDeque<(TaskId, u64)>,
+    /// Generation of each queued task's live slot.
+    live: AHashMap<TaskId, u64>,
+    /// Source of slot generations.
+    next_generation: u64,
+}
+
+impl ReadyQueue {
+    /// Appends a live slot, invalidating any earlier slot for the same task.
+    fn push_back(&mut self, task_id: TaskId) {
+        let generation = self.next_generation;
+
+        self.next_generation = self.next_generation.wrapping_add(1);
+        self.live.insert(task_id, generation);
+        self.entries.push_back((task_id, generation));
+    }
+
+    /// Drops the task's live slot in O(1); the stale entry is skipped on pop.
+    fn remove(&mut self, task_id: TaskId) {
+        self.live.remove(&task_id);
+    }
+
+    /// Pops the next live task, discarding stale entries.
+    fn pop_front(&mut self) -> Option<TaskId> {
+        while let Some((task_id, generation)) = self.entries.pop_front() {
+            if self.live.get(&task_id) == Some(&generation) {
+                self.live.remove(&task_id);
+                return Some(task_id);
+            }
+        }
+
+        None
+    }
+
+    /// Whether any task is ready; stale entries do not count.
+    fn is_empty(&self) -> bool {
+        self.live.is_empty()
+    }
+}
+
+impl serde::Serialize for ReadyQueue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Collect first so the sequence has an exact length, matching the previous
+        // `VecDeque<TaskId>` encoding.
+        let ids: Vec<TaskId> = self
+            .entries
+            .iter()
+            .filter(|&&(task_id, generation)| self.live.get(&task_id) == Some(&generation))
+            .map(|&(task_id, _)| task_id)
+            .collect();
+        serializer.collect_seq(ids)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReadyQueue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let ids = <Vec<TaskId> as serde::Deserialize>::deserialize(deserializer)?;
+        let mut queue = Self::default();
+
+        for task_id in ids {
+            queue.push_back(task_id);
+        }
+
+        Ok(queue)
     }
 }

@@ -4,7 +4,8 @@
 //! and task identifiers. The host acts as the event loop - external function
 //! calls return `ExternalFuture` objects that can be awaited.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
 
 use crate::{
@@ -186,9 +187,17 @@ impl ExternalFuture {
 ///   The wrapper **owns an inc_ref on `gather`**: storing the awaiter on an
 ///   awaitable keeps the gather alive for the in-flight window, so the
 ///   awaitable's resolution path can dispatch to it safely without
-///   additional cleanup elsewhere. Drop the owned `Awaiter` via
-///   [`DropWithContext`] (and clone via [`Self::clone_with_heap`]) so the
-///   `gather` ref count stays balanced.
+///   additional cleanup elsewhere. Discard the owned `Awaiter` via
+///   [`DropWithContext`], which releases exactly the reference
+///   [`Self::heap_ref`] reports.
+/// - `WaitSlot` is the `wait` analogue of `GatherSlot`: it owns an inc_ref
+///   on `wait` and uses `source`, a borrowed child id, to mark that child
+///   done.
+/// - `UserTask` completes the Python-visible `Task` at `task`, owning an
+///   inc_ref on it; it is stored on the future the task wraps.
+///
+/// `source` is never an owned reference in either slot variant: the gather's
+/// items, the wait's inputs, or the wait's timer own the child entry.
 ///
 /// An awaitable whose downstream has already settled keeps its `Awaiter`
 /// pointing at it; the value is discarded where it is delivered rather than
@@ -200,18 +209,180 @@ impl ExternalFuture {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Awaiter {
     Task(TaskId),
-    GatherSlot { gather: HeapId, source: HeapId },
+    GatherSlot {
+        gather: HeapId,
+        source: HeapId,
+    },
+    /// A child settled inside `wait(wait)`: record it on the wait future.
+    WaitSlot {
+        wait: HeapId,
+        source: HeapId,
+    },
+    /// An adopted host future settled: complete this heap task and fan its
+    /// result out to the task's own awaiters.
+    UserTask {
+        task: HeapId,
+    },
 }
 
-impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
-    fn drop_with(self, heap: &mut C) {
-        if let Self::GatherSlot { gather, .. } = self {
-            heap.heap_mut().dec_ref(gather);
+impl Awaiter {
+    /// The heap reference this awaiter owns, if any.
+    ///
+    /// Every heap-owning variant inc_refs its target when constructed; GC and
+    /// `dec_ref` use this to release it without matching each variant by hand.
+    #[inline]
+    pub fn heap_ref(&self) -> Option<HeapId> {
+        match self {
+            Self::Task(_) => None,
+            Self::GatherSlot { gather: id, .. } | Self::WaitSlot { wait: id, .. } => Some(*id),
+            Self::UserTask { task } => Some(*task),
         }
     }
 }
 
-/// A gather() result tracking multiple coroutines/tasks and external futures.
+impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
+    fn drop_with(self, heap: &mut C) {
+        if let Some(id) = self.heap_ref() {
+            heap.heap_mut().dec_ref(id);
+        }
+    }
+}
+
+/// A user-created `asyncio.Task` wrapping a coroutine or a host future.
+///
+/// The scheduler owns the execution context of a coroutine-backed task; this
+/// heap entry is the Python-visible handle and the completion record that
+/// `await`, `result()`, `exception()` and `wait()` read. `task_id` is `None`
+/// for an adopted host future, which the host already drives and which needs
+/// no scheduler task.
+///
+/// A host-adopted task is completed by [`crate::asyncio::Awaiter::UserTask`]
+/// when its future resolves. A coroutine-backed task is completed by
+/// `VM::handle_task_completion` / `VM::handle_task_failure`.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TaskFuture {
+    /// Scheduler task driving the coroutine, if this is not a host future.
+    pub task_id: Option<TaskId>,
+    /// Owned reference to the wrapped coroutine, external future or wait
+    /// future. Kept so `get_coro()` still works after the scheduler releases
+    /// its own reference.
+    pub coroutine_id: HeapId,
+    /// Display name used by `get_name`, `set_name` and `repr`.
+    pub name: String,
+    /// Completion record. `Pending` until the scheduler or host resolves it.
+    pub state: TaskFutureState,
+    /// Downstreams awaiting this task. Owned; each heap-owning awaiter
+    /// (`GatherSlot` or `WaitSlot`) holds an inc_ref on its target. A task
+    /// may have several awaiters.
+    pub awaiters: Vec<Awaiter>,
+}
+
+/// Completion state of a [`TaskFuture`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum TaskFutureState {
+    /// The wrapped work has not completed.
+    Pending,
+    /// Completed with this cached result. Re-awaits clone it.
+    Completed(Value),
+    /// Failed with this cached exception. Re-awaits replay it.
+    Failed(RunError),
+}
+
+impl TaskFuture {
+    /// Creates a pending task handle around `coroutine_id`, taking ownership
+    /// of that heap reference and naming the task `name`.
+    pub fn new(task_id: Option<TaskId>, coroutine_id: HeapId, name: String) -> Self {
+        Self {
+            task_id,
+            coroutine_id,
+            name,
+            state: TaskFutureState::Pending,
+            awaiters: Vec::new(),
+        }
+    }
+
+    /// Whether the task has completed, successfully or not.
+    #[inline]
+    pub fn is_done(&self) -> bool {
+        !matches!(self.state, TaskFutureState::Pending)
+    }
+}
+
+/// The result of an `asyncio.wait()` call, before and after its first await.
+///
+/// CPython implements `wait` as a coroutine, so calling it starts nothing and
+/// awaiting it twice raises `cannot reuse already awaited coroutine`. This
+/// heap object mirrors that shape: `Unawaited` owns the argument and option
+/// values, `Pending` owns the per-child bookkeeping, and `Consumed` makes a
+/// second await fail.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct WaitFuture {
+    /// Lifecycle state. See [`WaitFutureState`].
+    pub state: WaitFutureState,
+}
+
+/// Lifecycle of a [`WaitFuture`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum WaitFutureState {
+    /// Created by `asyncio.wait(...)`, not yet awaited.
+    Unawaited(UnawaitedWait),
+    /// Awaited and waiting for children or its timeout timer.
+    Pending(WaitPending),
+    /// Its one allowed await has returned; a second await raises.
+    Consumed,
+}
+
+/// Arguments held by a [`WaitFuture`] until its first await.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UnawaitedWait {
+    /// The caller's `fs` iterable, owned until the first await materialises it.
+    pub fs: Value,
+    /// `return_when`, validated when the future is first awaited. `None`
+    /// means the argument was omitted and defaults to `ALL_COMPLETED`.
+    pub return_when: Option<Value>,
+    /// Timeout sleep awaitable for a positive timeout, owned until completion.
+    /// A settled one means the timeout already elapsed.
+    pub timer: Option<HeapId>,
+    /// A timeout that elapsed before a timer awaitable existed: `timeout` is
+    /// NaN or `<= 0`, or the sleep policy settles immediately. A settled
+    /// `timer` is checked at first await.
+    pub timed_out: bool,
+}
+
+/// Per-await bookkeeping for an [`WaitFuture`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct WaitPending {
+    /// Every deduplicated input, owned. Partitioned into the result sets on
+    /// completion, so this is also the source of the result objects.
+    pub inputs: Vec<HeapId>,
+    /// Inputs that have not settled yet. Borrowed from `inputs`.
+    #[serde(
+        serialize_with = "serialize_heap_id_set",
+        deserialize_with = "deserialize_heap_id_set"
+    )]
+    pub pending: AHashSet<HeapId>,
+    /// Inputs that have settled, in resolution order. Borrowed from `inputs`.
+    pub done: Vec<HeapId>,
+    /// Whether any input failed. Only relevant to `FIRST_EXCEPTION`.
+    pub failed_any: bool,
+    /// Completion condition supplied to `wait`.
+    pub return_when: WaitCondition,
+    /// The task or gather that receives the completed `(done, pending)` tuple.
+    pub awaiter: Option<Awaiter>,
+    /// Timeout sleep awaitable while it can still fire, owned until completion.
+    pub timer: Option<HeapId>,
+    /// Whether the timer fired before every child settled.
+    pub timed_out: bool,
+}
+
+/// `asyncio.wait` completion conditions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum WaitCondition {
+    AllCompleted,
+    FirstCompleted,
+    FirstException,
+}
+
 ///
 /// Created by `asyncio.gather(*awaitables)`. Does NOT spawn tasks immediately -
 /// tasks are spawned when the GatherFuture is awaited in Await.
@@ -248,8 +419,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GatherFuture {
     /// Heap ids of items to gather. Each id points to an awaitable
-    /// `HeapData` entry (currently `Coroutine` or `ExternalFuture`); the
-    /// kind is recovered with `heap.read(id)` at gather-await time.
+    /// `HeapData` entry (`Coroutine`, `ExternalFuture`, `GatherFuture`,
+    /// `WaitFuture` or `TaskFuture`); the kind is recovered with
+    /// `heap.read(id)` at gather-await time.
     ///
     /// Set once at construction and never mutated. The gather inc_refs each
     /// id and is the owner until drop, so GC must always walk this vector
@@ -350,4 +522,22 @@ impl GatherFuture {
             GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => None,
         }
     }
+}
+
+/// Serializes a heap-id set in id order so a dump is stable across a reload.
+fn serialize_heap_id_set<S>(set: &AHashSet<HeapId>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let mut ids: Vec<HeapId> = set.iter().copied().collect();
+    ids.sort_unstable_by_key(|id| id.index());
+    ids.serialize(serializer)
+}
+
+/// Rebuilds a heap-id set from the id-ordered sequence written by `serialize_heap_id_set`.
+fn deserialize_heap_id_set<'de, D>(deserializer: D) -> Result<AHashSet<HeapId>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Vec::<HeapId>::deserialize(deserializer)?.into_iter().collect())
 }

@@ -43,6 +43,26 @@ async def single():
 result = await asyncio.gather(single())  # pyright: ignore
 assert result == [42]
 
+
+# === gather over a wait future ===
+async def gather_wait_child():
+    return 'gather-wait'
+
+
+async def gather_wait_sibling():
+    return 'gather-wait-sibling'
+
+
+wait_task = asyncio.create_task(gather_wait_child())
+combined = await asyncio.gather(asyncio.wait([wait_task]), gather_wait_sibling())  # pyright: ignore
+assert len(combined) == 2
+done, pending = combined[0]
+assert done == {wait_task}
+assert pending == set()
+assert wait_task.result() == 'gather-wait'
+assert combined[1] == 'gather-wait-sibling'
+
+
 # === repr of gather function ===
 r = repr(asyncio.gather)
 assert r.startswith('<function gather at 0x'), f'repr should start with: {r}'

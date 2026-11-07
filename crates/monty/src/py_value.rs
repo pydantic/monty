@@ -12,6 +12,7 @@ use num_bigint::BigInt;
 use crate::{
     annotations,
     args::ArgValues,
+    asyncio::TaskFutureState,
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop,
@@ -23,14 +24,14 @@ use crate::{
     heap_data::heap_payloads,
     identity::Identity,
     intern::{FunctionId, StaticStrings},
-    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
+    modules::{ModuleFunctions, asyncio::task_call_method, collections::defaultdict::defaultdict_missing},
     types::{
         BuiltinType, GenericAlias, LazyHeapSet, LongInt, Property, PyTrait, Type, Union, allocate_string,
         bytes::PyBytes,
         long_int::{PyInt, arithmetic::float_binary},
         numeric::{round_digits, round_float},
         py_trait::PyObjectIdentity,
-        str::PyStr,
+        str::{PyStr, string_repr_fmt},
     },
     value::{EitherStr, Marker, Value, float_divmod_tuple, float_pow_value, py_float_divmod, py_float_mod},
 };
@@ -287,6 +288,18 @@ impl<'h> PyValue<'h> {
             }
             Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
             Self::ExternalFuture(fut) => Ok(write!(f, "<coroutine external_future({})>", fut.get(vm.heap).call_id.raw())?),
+            Self::Task(task) => {
+                let task = task.get(vm.heap);
+                let status = match &task.state {
+                    TaskFutureState::Pending => "pending",
+                    TaskFutureState::Completed(_) => "finished",
+                    TaskFutureState::Failed(_) => "finished",
+                };
+                write!(f, "<Task {status} name=")?;
+                string_repr_fmt(&task.name, f)?;
+                Ok(f.write_str(">")?)
+            }
+            Self::WaitFuture(_) => Ok(f.write_str("<coroutine object wait>")?),
         })
     }
 }
@@ -424,6 +437,9 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
         forward_py_value!(self, |value| value.py_hash(vm), {
             Self::Cell(value) => Ok(Some(identity_hash(value.id()))),
             Self::Module(value) => Ok(Some(identity_hash(value.id()))),
+            Self::Task(value) => Ok(Some(identity_hash(value.id()))),
+            Self::GatherFuture(value) => Ok(Some(identity_hash(value.id()))),
+            Self::ExternalFuture(value) => Ok(Some(identity_hash(value.id()))),
             Self::Undefined => Value::Undefined.py_hash(vm),
             Self::Ellipsis => Value::Ellipsis.py_hash(vm),
             Self::NotImplemented => Value::NotImplemented.py_hash(vm),
@@ -466,6 +482,8 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
             Self::Exception(e) => e.py_type(vm),
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
+            Self::Task(_) => Type::Task,
+            Self::WaitFuture(_) => Type::Coroutine,
         })
     }
 
@@ -775,6 +793,7 @@ impl<'h> PyTrait<'h> for PyValue<'h> {
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
         forward_py_value!(self, |value| value.py_call_attr(vm, attr, args), {
             Self::Module(value) => value.py_call_attr(vm, attr, args),
+            Self::Task(value) => task_call_method(value, attr, args, vm),
             Self::Builtin(Builtins::Type(ty)) => Type::from(*ty).call_class_method(attr, args, vm),
             Self::DefFunction(func_id) => {
                 match annotations::function_call_attr(*func_id, None, attr.as_str(vm.interns), args, vm) {
