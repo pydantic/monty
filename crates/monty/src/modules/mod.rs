@@ -38,6 +38,7 @@ pub(crate) mod os_path;
 pub(crate) mod pathlib;
 pub(crate) mod random;
 pub(crate) mod re;
+pub(crate) mod statistics;
 pub(crate) mod sys;
 pub(crate) mod time;
 pub(crate) mod tomllib;
@@ -107,6 +108,8 @@ pub(crate) enum StandardLib {
     Fnmatch,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
+    /// The `statistics` module: means, medians, modes, variances and quantiles.
+    Statistics,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -145,6 +148,7 @@ impl StandardLib {
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
+            StaticStrings::Statistics => Some(Self::Statistics),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -189,6 +193,7 @@ impl StandardLib {
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
+            Self::Statistics => statistics::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -227,6 +232,7 @@ pub(crate) enum ModuleFunctions {
     Fnmatch(fnmatch::FnmatchFunctions),
     Typing(typing::TypingFunctions),
     Annotationlib(annotationlib::AnnotationlibFunctions),
+    Statistics(statistics::StatisticsFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -268,6 +274,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Fnmatch(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
+            Self::Statistics(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -308,6 +315,7 @@ impl ModuleFunctions {
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
+            Self::Statistics(functions) => statistics::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]

@@ -45,6 +45,7 @@ use crate::{
 };
 
 mod aggregate;
+pub(crate) use aggregate::{fsum, sumprod};
 
 // ==========================
 // Shared constants and error helpers

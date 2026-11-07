@@ -1253,6 +1253,8 @@ pub enum StaticStrings {
     Flush,
     /// `math.fma()` function.
     Fma,
+    /// `statistics.fmean()` function.
+    Fmean,
     /// `math.fmod()` function.
     Fmod,
     /// Module name for `import fnmatch`, and its `fnmatch()` function.
@@ -1333,6 +1335,8 @@ pub enum StaticStrings {
     /// `typing.Generic` marker.
     #[strum(serialize = "Generic")]
     Generic,
+    /// `statistics.geometric_mean()` function.
+    GeometricMean,
     /// `dict.get()` method.
     Get,
     /// `annotationlib.get_annotations()` function.
@@ -1380,6 +1384,8 @@ pub enum StaticStrings {
     Grouper,
     /// `match.groups()` method
     Groups,
+    /// `statistics.harmonic_mean()` function.
+    HarmonicMean,
     /// `field(hash=...)`.
     Hash,
     /// `hash_name` parameter of `hashlib.pbkdf2_hmac()`.
@@ -1472,6 +1478,8 @@ pub enum StaticStrings {
     Interactive,
     /// `set.intersection()` method.
     Intersection,
+    /// `interval` parameter of `statistics.median_grouped()`.
+    Interval,
     /// `decimal.InvalidContext` condition.
     #[strum(serialize = "InvalidContext")]
     InvalidContext,
@@ -1739,10 +1747,22 @@ pub enum StaticStrings {
     Maxunicode,
     /// `hashlib.md5()` function and hash name.
     Md5,
+    /// `statistics.mean()` function.
+    Mean,
+    /// `statistics.median()` function.
+    Median,
+    /// `statistics.median_grouped()` function.
+    MedianGrouped,
+    /// `statistics.median_high()` function.
+    MedianHigh,
+    /// `statistics.median_low()` function.
+    MedianLow,
     /// `memo` parameter of `copy.deepcopy()`.
     Memo,
     /// `field(metadata=...)`.
     Metadata,
+    /// `method` parameter of `statistics.quantiles()`.
+    Method,
     /// `sys.version_info.micro` field.
     Micro,
     /// `datetime` / `time` `microsecond` attribute and constructor kwarg.
@@ -1816,6 +1836,8 @@ pub enum StaticStrings {
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
+    /// `statistics.multimode()` function.
+    Multimode,
     /// `Path.name` property; also `file.name`, `os.name` and `unicodedata.name()`.
     Name,
     /// The `collections.namedtuple` factory function.
@@ -2020,8 +2042,14 @@ pub enum StaticStrings {
     /// `typing.Protocol` marker.
     #[strum(serialize = "Protocol")]
     Protocol,
+    /// `statistics.pstdev()` function.
+    Pstdev,
+    /// `statistics.pvariance()` function.
+    Pvariance,
     /// `sys.pycache_prefix` attribute.
     PycachePrefix,
+    /// `statistics.quantiles()` function.
+    Quantiles,
     /// `sys.flags.quiet` field.
     Quiet,
     /// `csv.QUOTE_ALL` constant.
@@ -2353,8 +2381,15 @@ pub enum StaticStrings {
     StatMethod,
     /// `state` parameter of `Random.setstate()`.
     State,
+    /// Module name for `import statistics`.
+    Statistics,
+    /// `statistics.StatisticsError` exception class.
+    #[strum(serialize = "StatisticsError")]
+    StatisticsError,
     /// `sys.stderr` attribute and the marker it holds.
     Stderr,
+    /// `statistics.stdev()` function.
+    Stdev,
     /// `sys.stdout` attribute and the marker it holds.
     Stdout,
     /// `Path.stem` property.
@@ -2615,6 +2650,8 @@ pub enum StaticStrings {
     ValueWithFakeGlobals,
     /// `dict.values()` method.
     Values,
+    /// `statistics.variance()` function.
+    Variance,
     /// `sys.flags.verbose` field.
     Verbose,
     /// `sys.version` attribute.
@@ -2662,6 +2699,8 @@ pub enum StaticStrings {
     Writerow,
     /// `writerows()` method of the `csv` writers.
     Writerows,
+    /// `xbar` parameter of `statistics.variance()`.
+    Xbar,
     /// `date` / `datetime` `year` attribute and constructor kwarg.
     Year,
     /// `base64.z85decode()` function.

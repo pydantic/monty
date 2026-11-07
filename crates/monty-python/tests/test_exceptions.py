@@ -5,6 +5,7 @@ from __future__ import annotations
 import binascii
 import csv
 import json
+import statistics
 import sys
 
 import pytest
@@ -171,6 +172,16 @@ def test_binascii_error(monty_run: RunMonty):
     assert isinstance(inner, binascii.Error)
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('Incorrect padding')
+
+
+def test_statistics_error(monty_run: RunMonty):
+    # A sandbox `statistics` failure surfaces as the real stdlib class, a `ValueError` subclass.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('import statistics\nstatistics.mean([])')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, statistics.StatisticsError)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('mean requires at least one data point')
 
 
 def test_csv_error(monty_run: RunMonty):

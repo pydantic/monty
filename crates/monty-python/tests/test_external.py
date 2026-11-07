@@ -4,6 +4,7 @@ import io
 import json
 import pathlib
 import re
+import statistics
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -410,6 +411,7 @@ def test_external_function_json_decode_error_missing_attributes(monty_run: RunMo
         (re.error, 're.PatternError'),
         (binascii.Error, 'binascii.Error'),
         (binascii.Incomplete, 'binascii.Incomplete'),
+        (statistics.StatisticsError, 'statistics.StatisticsError'),
     ],
 )
 def test_external_function_exception_hierarchy(
@@ -506,6 +508,7 @@ caught
         (binascii.Incomplete, 'binascii.Incomplete', Exception),
         (json.JSONDecodeError, 'json.JSONDecodeError', ValueError),
         (re.error, 're.PatternError', Exception),
+        (statistics.StatisticsError, 'statistics.StatisticsError', ValueError),
     ],
 )
 def test_external_function_dotted_exception_caught_by_own_name(
