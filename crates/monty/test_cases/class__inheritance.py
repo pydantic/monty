@@ -943,7 +943,7 @@ hook_log = []
 
 class HookRoot:
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__()
+        object.__init_subclass__()
         hook_log.append((cls.__name__, kwargs))
 
 
@@ -1317,13 +1317,13 @@ for _builtin_inst in [ValueError('orig'), [1, 2], {'a': 1}, {1, 2}]:
         assert str(exc) == 'object.__init__() takes exactly one argument (the instance to initialize)'
 
 
-# super().__setattr__ fallback
-class SuperSetAttr(object):
+# object.__setattr__ fallback
+class ObjectSetAttr(object):
     def set_val(self, k, v):
-        super().__setattr__(k, v)
+        object.__setattr__(self, k, v)
 
 
-ssa = SuperSetAttr()
+ssa = ObjectSetAttr()
 ssa.set_val('my_attr', 42)
 assert ssa.my_attr == 42
 

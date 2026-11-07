@@ -28,10 +28,11 @@ These raise `NameError`:
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`.
     (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `memoryview`, `object`, `ascii`.
+- **Inheritance**: `super`; call the base explicitly (`Base.__init__(self, ...)`).
 - **Other**: `callable`, `delattr`, `aiter`, `anext`.
 
-`object` exists as the root class but cannot be instantiated, and `super()` and
-`issubclass()` work on classes; see [classes.md](classes.md#inheritance).
+`object` exists as the root class but cannot be instantiated, and `issubclass()`
+works on classes; see [classes.md](classes.md#inheritance).
 
 ## Behavioural divergences
 

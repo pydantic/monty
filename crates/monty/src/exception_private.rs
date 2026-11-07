@@ -1502,12 +1502,6 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Creates a RuntimeError with the given message.
-    #[must_use]
-    fn runtime_error(msg: impl fmt::Display) -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, msg).into()
-    }
-
     /// Creates a RuntimeError for dict mutation during iteration.
     ///
     /// Matches CPython's format: `RuntimeError: dictionary changed size during iteration`

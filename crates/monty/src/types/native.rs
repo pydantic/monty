@@ -25,9 +25,7 @@ use crate::{
     modules::{collections, csv, hashlib, itertools},
     types::{
         Bytes, Deque, Dict, ForwardRef, FrozenSet, List, Partial, Path, Random, Range, Set, Slice, Str, TimeZone,
-        Tuple, bytes, complex, date, datetime, decimal, dict, path,
-        super_::builtin_super,
-        time, timedelta, timezone,
+        Tuple, bytes, complex, date, datetime, decimal, dict, path, time, timedelta, timezone,
         r#type::{bool_init, float_init, int_init, union_init},
     },
     value::{EitherStr, Value},
@@ -732,10 +730,6 @@ native_types! {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     ForwardRef("annotationlib.ForwardRef")
         .ctor(Constructor::Value(ForwardRef::init)),
-    /// `super`, the proxy that looks attributes up past a class in an MRO.
-    Super("super")
-        .builtin()
-        .ctor(Constructor::Value(builtin_super)),
     /// The base of every ordinary exception.
     Exception("Exception", BaseException)
         .builtin()

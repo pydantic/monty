@@ -439,198 +439,12 @@ assert isinstance(obj, Parent)
 }
 
 #[test]
-fn super_zero_arg_and_cooperative_dispatch() {
-    run(r#"
-class Animal:
-    def __init__(self, name):
-        self.name = name
-
-    def speak(self):
-        return f"{self.name} makes a sound"
-
-class Dog(Animal):
-    def __init__(self, name, breed):
-        super().__init__(name)
-        self.breed = breed
-
-    def speak(self):
-        return f"{super().speak()} and barks"
-
-d = Dog("Rex", "Collie")
-assert d.name == "Rex"
-assert d.breed == "Collie"
-assert d.speak() == "Rex makes a sound and barks"
-
-# Diamond multiple inheritance cooperative dispatch
-class A:
-    def greet(self):
-        return ["A"]
-
-class B(A):
-    def greet(self):
-        return ["B"] + super().greet()
-
-class C(A):
-    def greet(self):
-        return ["C"] + super().greet()
-
-class D(B, C):
-    def greet(self):
-        return ["D"] + super().greet()
-
-d_obj = D()
-assert d_obj.greet() == ["D", "B", "C", "A"]
-"#);
-}
-
-#[test]
-fn super_two_arg_and_introspection() {
-    run(r#"
-class Base:
-    def foo(self):
-        return "Base.foo"
-
-class Mid(Base):
-    def foo(self):
-        return "Mid.foo"
-
-class Sub(Mid):
-    def foo(self):
-        return "Sub.foo"
-    def mid_foo(self):
-        return super().foo()
-    def base_foo(self):
-        return super(Mid, self).foo()
-
-s = Sub()
-assert s.foo() == "Sub.foo"
-assert s.mid_foo() == "Mid.foo"
-assert s.base_foo() == "Base.foo"
-
-# super(Type, SubType)
-class Shape:
-    kind = "generic shape"
-
-class Polygon(Shape):
-    kind = "polygon"
-
-class Triangle(Polygon):
-    kind = "triangle"
-
-assert super(Triangle, Triangle).kind == "polygon"
-assert super(Polygon, Triangle).kind == "generic shape"
-
-# Introspection attributes
-class X:
-    pass
-
-class Y(X):
-    def check_super(self):
-        s = super()
-        assert s.__thisclass__ is Y
-        assert s.__self__ is self
-        assert s.__self_class__ is Y
-
-y = Y()
-y.check_super()
-
-s_unbound = super(Y)
-assert repr(s_unbound) == "<super: <class 'Y'>, NULL>"
-assert s_unbound.__thisclass__ is Y
-assert s_unbound.__self__ is None
-assert s_unbound.__self_class__ is None
-
-try:
-    s_unbound.some_attr
-except AttributeError as e:
-    assert "'super' object has no attribute 'some_attr'" in str(e)
-else:
-    assert False
-
-s_bound = super(Y, y)
-assert repr(s_bound) == "<super: <class 'Y'>, <Y object>>"
-
-s_class_bound = super(X, Y)
-assert repr(s_class_bound) == "<super: <class 'X'>, <Y object>>"
-
-# object.__init__ via super()
-class Leaf:
-    def __init__(self):
-        super().__init__()
-
-Leaf()
-"#);
-}
-
-#[test]
-fn super_errors() {
-    run(r#"
-class X:
-    pass
-
-class Y(X):
-    pass
-
-# Arg 1 not a type
-try:
-    super(1, 2)
-    assert False, "expected TypeError"
-except TypeError as e:
-    assert str(e) == "super() argument 1 must be a type, not int"
-
-# Arg 2 not an instance or subtype
-try:
-    super(X, "not_an_instance")
-    assert False, "expected TypeError"
-except TypeError as e:
-    assert "is not an instance or subtype of type" in str(e)
-
-try:
-    super(Y, X())
-    assert False, "expected TypeError"
-except TypeError as e:
-    assert "is not an instance or subtype of type" in str(e)
-
-# Kwargs rejected
-try:
-    super(foo=1)
-    assert False, "expected TypeError"
-except TypeError as e:
-    assert str(e) == "super() takes no keyword arguments"
-
-# Too many arguments
-try:
-    super(X, Y(), 1)
-    assert False, "expected TypeError"
-except TypeError as e:
-    assert "super() expected at most 2 arguments, got 3" in str(e)
-
-# Free function zero-arg super
-def free_func():
-    super()
-
-try:
-    free_func()
-    assert False, "expected RuntimeError"
-except RuntimeError as e:
-    assert "super(): no arguments" in str(e)
-
-# Zero-arg super outside any frame
-try:
-    eval("super()")
-    assert False, "expected RuntimeError"
-except RuntimeError as e:
-    assert "super(): no current frame" in str(e) or "super(): no arguments" in str(e)
-"#);
-}
-
-#[test]
 fn init_subclass_hooks_and_class_kwargs() {
     run(r#"
 class PluginBase:
     registry = []
     def __init_subclass__(cls, plugin_name="default", **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         cls.plugin_name = plugin_name
         cls.registry.append(cls)
 
@@ -648,7 +462,7 @@ assert PluginBase.registry == [PluginA, PluginB]
 calls = []
 class Tracker:
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         calls.append(cls.__name__)
 
 assert calls == []
@@ -658,29 +472,29 @@ class SubTracker(Tracker):
 
 assert calls == ["SubTracker"]
 
-# Cooperative multi-level kwargs forwarding
+# The nearest hook in the MRO runs
 log = []
 class A:
     def __init_subclass__(cls, a=1, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         log.append(("A", cls.__name__, a))
 
 class B(A):
     def __init_subclass__(cls, b=2, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         log.append(("B", cls.__name__, b))
 
 assert log == [("A", "B", 1)]
 
-class C(B, a=10, b=20):
+class C(B, b=20):
     pass
 
-assert log == [("A", "B", 1), ("A", "C", 10), ("B", "C", 20)]
+assert log == [("A", "B", 1), ("B", "C", 20)]
 
 # Dynamic type() call with kwargs
 class DynBase:
     def __init_subclass__(cls, tag="", **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         cls.tag = tag
 
 DynSub = type("DynSub", (DynBase,), {}, tag="dynamic_plugin")
@@ -961,7 +775,7 @@ except TypeError as e:
 # Calling object.__new__ with extra arguments when __new__ is overridden
 class PlainWithNew:
     def __new__(cls, *args, **kwargs):
-        return super().__new__(cls)
+        return object.__new__(cls)
 
 try:
     object.__new__(PlainWithNew, 1)
@@ -1012,7 +826,7 @@ class Base:
 
 class Sub(Base):
     def __init__(self, x, y):
-        super().__init__(x)
+        Base.__init__(self, x)
         self.y = y
 
 s = Sub([1, 2], {"a": 1})
@@ -1029,7 +843,7 @@ assert s_deep.y is not s.y
 assert s_deep.y == {"a": 1}
 "#);
 
-    // Repl session snapshotting and restoring class hierarchy with super()
+    // Repl session snapshotting and restoring class hierarchy
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(
         r"
@@ -1039,7 +853,7 @@ class A:
 
 class B(A):
     def val(self):
-        return super().val() + 20
+        return A.val(self) + 20
 
 b = B()
 ",
@@ -1105,52 +919,7 @@ type('C', bases, {})
 }
 
 #[test]
-fn super_new_and_unbound_super() {
-    run(r#"
-class A:
-    def __new__(cls):
-        return super().__new__(cls)
-
-a = A()
-assert isinstance(a, A)
-
-class Parent:
-    def __new__(cls, val):
-        obj = super().__new__(cls)
-        obj.val = val
-        return obj
-
-class Child(Parent):
-    def __new__(cls, val):
-        return super().__new__(cls, val * 2)
-
-c = Child(5)
-assert c.val == 10
-
-s = super(Child, None)
-assert repr(s) == "<super: <class 'Child'>, NULL>"
-assert s.__self__ is None
-assert s.__self_class__ is None
-assert s.__thisclass__ is Child
-
-class Root:
-    def f(self):
-        return 42
-
-class Base(Root):
-    pass
-
-class Sub(Base):
-    pass
-
-unbound = super(Base, Sub).f
-sub_obj = Sub()
-assert unbound(sub_obj) == 42
-"#);
-}
-
-#[test]
-fn instance_bases_reassignment_and_super_cell_spoofing() {
+fn instance_bases_reassignment_is_an_instance_attribute() {
     run(r"
 class Foo:
     pass
@@ -1159,57 +928,6 @@ f = Foo()
 f.__bases__ = 42
 assert f.__bases__ == 42
 
-class MethodSpoof:
-    def f(self):
-        __class__ = 42
-        return super()
-
-try:
-    MethodSpoof().f()
-    assert False, 'expected RuntimeError'
-except RuntimeError as e:
-    assert str(e) == 'super(): __class__ cell not found'
-
-def make_outer_spoof():
-    __class__ = 42
-    class OuterSpoof:
-        def f(self):
-            return super()
-    return OuterSpoof
-
-OuterSpoof = make_outer_spoof()
-s = OuterSpoof().f()
-assert s.__thisclass__ is OuterSpoof
-");
-}
-
-#[test]
-fn method_aliasing_and_self_reassignment_in_super() {
-    run(r"
-class Base:
-    def m(self):
-        return 'base'
-
-class Mid(Base):
-    def m(self):
-        return super().m()
-
-class Sub(Mid):
-    alias = Mid.m
-
-assert Sub().m() == 'base'
-
-class ReassignSelf(Base):
-    def m(self):
-        self = Base()
-        super()
-
-try:
-    ReassignSelf().m()
-except TypeError as e:
-    assert 'is not an instance or subtype' in str(e)
-else:
-    assert False
 ");
 }
 
@@ -1228,7 +946,7 @@ def fail():
 
 class Base:
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__()
+        object.__init_subclass__()
         cls.saved_kwargs = kwargs
 
 class C1(Base, k=track("kw")):
@@ -1471,72 +1189,6 @@ assert d.val == 42
 }
 
 #[test]
-fn super_edge_cases_coverage() {
-    run(r"
-class A:
-    def f(self): return 'A'
-
-class B(A):
-    def f(self): return super().f()
-
-b = B()
-assert b.f() == 'A'
-s = super(B, b)
-assert repr(s).startswith('<super: <class \'B\'>, <B object>>')
-assert not (s == 123)
-assert hash(s) == hash(s)
-assert type(s) is super
-assert type(b.f).__name__ == 'function'
-
-class Base: pass
-class Derived(Base): pass
-s_cls = super(Base, Derived)
-assert repr(s_cls).startswith('<super: <class \'Base\'>, <Derived object>>')
-
-try:
-    for x in s: pass
-    assert False, 'iterating super should raise TypeError'
-except TypeError:
-    pass
-
-try:
-    for x in ValueError(): pass
-    assert False, 'iterating exception should raise TypeError'
-except TypeError:
-    pass
-
-");
-
-    run_err(
-        "class A: pass\nclass B: pass\nsuper(A, B)",
-        "super(type, obj): obj (type B) is not an instance or subtype of type (A).",
-    );
-    run_err(
-        "class A: pass\nclass B: pass\nsuper(A, B())",
-        "super(type, obj): obj (instance of B) is not an instance or subtype of type (A).",
-    );
-    run_err("class A: pass\nlen(super(A, A()))", "'super' has no len()");
-    run_err(
-        r"
-class A:
-    def __init__(self, x):
-        super().__init__(x)
-A(1)
-",
-        "object.__init__() takes exactly one argument",
-    );
-    run_err(
-        r"
-class A:
-    def f(self):
-        super().nonexistent()
-A().f()
-",
-        "'super' object has no attribute 'nonexistent'",
-    );
-}
-
-#[test]
 fn class_keyword_walrus_and_base_unpacking_coverage() {
     run(r"
 class BaseHook:
@@ -1575,24 +1227,15 @@ def f(self):
     return 1
 
 def g(self):
-    return super(Child, self).m1() + 2
-
-def free_zero_super(self):
-    return super().m1()
+    return Base.m1(self) + 2
 
 # Base has same function bound to multiple names
 Base = type('Base', (), {'m1': f, 'm2': f, 'm3': f})
-Child = type('Child', (Base,), {'m1': g, 'm2': g, 'bad': free_zero_super})
+Child = type('Child', (Base,), {'m1': g, 'm2': g})
 
 c = Child()
 assert c.m1() == 3
 assert c.m2() == 3
-
-try:
-    c.bad()
-    assert False, 'expected RuntimeError'
-except RuntimeError as e:
-    assert str(e) == 'super(): __class__ cell not found'
 ");
 
     let code = r"
@@ -1614,25 +1257,6 @@ fn descriptor_parity_and_hasattr() {
 class A:
     pass
 
-class B(A):
-    def test_super(self):
-        s = super()
-        assert hasattr(s, '__init__')
-        assert hasattr(s, '__init_subclass__')
-        assert hasattr(s, '__new__')
-        assert s.__init__() is None
-        assert s.__init_subclass__() is None
-
-        # object.__init__ extra args error
-        try:
-            s.__init__(1, 2)
-        except TypeError as e:
-            assert 'takes exactly one argument' in str(e)
-        else:
-            assert False, 'expected TypeError'
-
-b = B()
-b.test_super()
 
 # Class descriptors
 assert hasattr(A, 'mro')
@@ -1763,7 +1387,7 @@ else:
 # Excess args when __new__ is overridden
 class CustomNew:
     def __new__(cls, *args, **kwargs):
-        return super().__new__(cls)
+        return object.__new__(cls)
 
 try:
     object.__new__(CustomNew, 1)
@@ -1834,7 +1458,7 @@ else:
 }
 
 #[test]
-fn super_class_cell_and_subclass_ops_survive_dump_restore() {
+fn class_cell_and_subclass_ops_survive_dump_restore() {
     let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(
         r"
@@ -1849,7 +1473,7 @@ class Base:
 def add_one(cls):
     class Wrapped(cls):
         def val(self):
-            return (lambda s: super().val() + 1)(self)
+            return (lambda s: cls.val(s) + 1)(self)
         def cls_obj(self):
             return (lambda: __class__)()
     return Wrapped
@@ -1881,8 +1505,8 @@ class Sub(Base):
 }
 
 #[test]
-fn host_class_type_inheritance_issubclass_super_and_new() {
-    let code = r#"
+fn host_class_type_inheritance_issubclass_and_new() {
+    let code = r"
 class Plain:
     pass
 
@@ -1897,19 +1521,6 @@ assert isinstance(host_cls, type)
 assert isinstance(host_inst, host_cls)
 assert not isinstance(host_inst, other_cls)
 
-s_inst = super(host_cls, host_inst)
-assert repr(s_inst) == "<super: <class 'HostPt'>, <HostPt object>>"
-assert s_inst.__self_class__ is host_cls
-
-s_cls = super(object, host_cls)
-assert repr(s_cls) == "<super: <class 'object'>, <HostPt object>>"
-assert s_cls.__self_class__ is host_cls
-
-try:
-    super(host_cls, 42)
-    assert False
-except TypeError as e:
-    assert str(e) == 'super(type, obj): obj (instance of int) is not an instance or subtype of type (HostPt).'
 
 try:
     object.__new__(host_cls)
@@ -1918,7 +1529,7 @@ except TypeError as e:
     assert str(e) == 'object.__new__(HostPt) is not safe, use HostPt.__new__()'
 
 1
-"#;
+";
     let host_cls = MontyObject::class_type("HostPt", MontyUuid::from_u128(10), true, false, []);
     let host_inst = MontyObject::class_instance(
         MontyObject::class_type("HostPt", MontyUuid::from_u128(10), true, false, []),
@@ -2085,17 +1696,17 @@ assert type(c) is C
 }
 
 #[test]
-fn object_init_excess_args_and_super_setattr() {
+fn object_init_excess_args_and_object_setattr() {
     run(r"
 assert object.__init__(1, 2) is None
 assert object.__init__('hello', k=1) is None
 assert object.__init__((1, 2), 'extra') is None
 
-class SuperSet(object):
+class ObjectSet(object):
     def set_val(self, k, v):
-        super().__setattr__(k, v)
+        object.__setattr__(self, k, v)
 
-s = SuperSet()
+s = ObjectSet()
 s.set_val('x', 99)
 assert s.x == 99
 ");
@@ -2114,7 +1725,7 @@ fn custom_class_constructor_args_memory_preflight() {
     let code = r"
 class Base:
     def __new__(cls, *args, **kwargs):
-        return super().__new__(cls)
+        return object.__new__(cls)
 
 args = (1,) * 200_000
 Base(*args)

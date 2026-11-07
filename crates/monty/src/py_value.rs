@@ -152,7 +152,6 @@ macro_rules! forward_py_value {
             Self::Union($value) => $body,
             Self::ForwardRef($value) => $body,
             Self::LruCache($value) => $body,
-            Self::Super($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::NamedTupleClass($value) => $body,

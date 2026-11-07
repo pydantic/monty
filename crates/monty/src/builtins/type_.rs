@@ -74,7 +74,7 @@ pub(crate) fn type_of_ref(vm: &mut VM<'_>, value: &Value) -> Value {
 /// Follows CPython's validation order (name, then bases, then dict) and
 /// message wording, except that non-string namespace keys raise a `TypeError`
 /// where CPython merely warns. The namespace dict is *copied* into the class,
-/// minus the `__classcell__` a body using `super()` passes, which is filled
+/// minus the `__classcell__` a body referencing `__class__` passes, which is filled
 /// with the new class instead. A `__doc__ = None` entry is synthesized when
 /// the dict omits it, and `__hash__ = None` when it defines `__eq__` without
 /// `__hash__`, as CPython's `type_new` does. Keyword arguments go to the

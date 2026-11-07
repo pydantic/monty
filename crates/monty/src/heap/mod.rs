@@ -2100,8 +2100,6 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::Union(union) => union.for_each_child_id(on_child),
         HeapData::ForwardRef(forward_ref) => forward_ref.for_each_child_id(on_child),
         HeapData::LruCache(cache) => cache.for_each_child_id(on_child),
-        // The class it searches past and the object it binds; must match `Super::py_dec_ref_ids`.
-        HeapData::Super(proxy) => proxy.child_ids().for_each(on_child),
         // Attrs and, for a file module, its namespace dict.
         HeapData::Module(m) => m.for_each_child_id(on_child),
         HeapData::Coroutine(coro) => {
@@ -2257,7 +2255,6 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Union(union) => union.py_dec_ref_ids(stack),
         HeapData::ForwardRef(forward_ref) => forward_ref.py_dec_ref_ids(stack),
         HeapData::LruCache(cache) => cache.py_dec_ref_ids(stack),
-        HeapData::Super(proxy) => proxy.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references

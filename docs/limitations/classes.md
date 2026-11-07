@@ -48,7 +48,7 @@ and function-attributes-become-methods), bound methods, class variables
 Classes can inherit from other classes and from `object`, singly or with
 multiple bases. The MRO is CPython's C3 linearisation (`__mro__`, `mro()`,
 `__bases__`), and inherited methods, class variables and dunders resolve through
-it. `super()` (zero-argument and explicit), `isinstance`, `issubclass`,
+it. `isinstance`, `issubclass`,
 `__new__`, `__init_subclass__` with class keyword arguments, and the
 subclass-first rule for reflected operators and `==` all follow CPython.
 
@@ -61,6 +61,9 @@ subclass-first rule for reflected operators and `==` all follow CPython.
     Types CPython refuses (`bool`, `range`, ...) raise CPython's
     `type 'bool' is not an acceptable base type`. In particular there are no
     user-defined exception classes yet (see [exceptions.md](exceptions.md)).
+- **No `super()`**: the name is undefined, so `super().__init__()` raises
+    `NameError: name 'super' is not defined`. Call the base class explicitly
+    (`Base.__init__(self, ...)`, `object.__init_subclass__(**kwargs)`).
 - **No metaclasses**: `class Foo(metaclass=M)` and `**kwargs` unpacking in a
     class statement are rejected at parse time.
 - **`object()` cannot be instantiated**: `object()` and `object.__new__(object)`
@@ -73,7 +76,7 @@ subclass-first rule for reflected operators and `==` all follow CPython.
     shows `<slot wrapper '__init__' of 'object' objects>`. Only `__init__`,
     `__new__`, `__init_subclass__` and `__setattr__` come from `object`; its
     other dunders (`__repr__`, `__eq__`, `__hash__`, ...) raise `AttributeError`
-    when looked up explicitly (`super().__repr__()`, `Foo.__eq__`).
+    when looked up explicitly (`object.__repr__`, `Foo.__eq__`).
 - **`__new__` and `__init_subclass__` cannot suspend**: they run to completion
     synchronously, so one that calls an external/OS function raises rather than
     yielding to the host. `__init__` still can.

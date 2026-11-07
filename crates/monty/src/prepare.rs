@@ -206,7 +206,7 @@ struct Prepare<'i, 'g> {
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
     /// Aliased class-body local slot holding the implicit `__class__` cell when a
-    /// method or nested closure in this class references `super` or `__class__`.
+    /// method or nested closure in this class references `__class__`.
     class_cell_slot: Option<NamespaceId>,
     /// Whether the annotation expressions of a synthesized `__annotate__` scope
     /// are being prepared: every name, even the scope's `format` parameter,
@@ -1797,7 +1797,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
 
         // Pass 1: Collect scope information from the function body
-        let scope_info = collect_function_scope_info(&body, &param_names, self.interner, false);
+        let scope_info = collect_function_scope_info(&body, &param_names, self.interner);
 
         // Build `enclosing_locals` for the new function: the union of every
         // ancestor function scope's locals (see `child_enclosing_locals` for the
@@ -2018,7 +2018,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // body's own locals are never cells (no nested scope may capture them —
         // see the doc above), so drop any cell-var candidates the generic
         // pre-pass flagged: keeping every member a plain local.
-        let mut scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner, true);
+        let mut scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
         scope_info.cell_var_names.clear();
 
         // Names the class body may capture from scopes enclosing the class.
@@ -2178,7 +2178,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         // Pass 1: Collect scope information from the lambda body
         // (Lambdas can't have global/nonlocal declarations, but can have nested functions)
-        let scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner, false);
+        let scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
 
         // Build enclosing_locals: names that are local to this scope or
         // captured from any enclosing scope (see `child_enclosing_locals`).
@@ -2590,24 +2590,10 @@ fn build_cell_slots(
 ///
 /// This information is used to determine whether each name reference should resolve
 /// to the local namespace, global namespace, or an enclosing scope via cells.
-/// Marks `__class__` as referenced whenever a function or lambda body references `super`,
-/// matching CPython's `ste_needs_class_closure` rule so zero-argument `super()` receives the
-/// enclosing class's implicit `__class__` cell.
-fn add_implicit_super_class_ref(referenced: &mut AHashSet<StringId>, interner: &CompileInterns<'_>) {
-    if interner
-        .get_string_id_by_name("super")
-        .is_some_and(|id| referenced.contains(&id))
-        && let Some(dunder_class_id) = interner.get_string_id_by_name("__class__")
-    {
-        referenced.insert(dunder_class_id);
-    }
-}
-
 fn collect_function_scope_info(
     nodes: &[ParseNode],
     params: &[StringId],
     interner: &CompileInterns<'_>,
-    is_class_body: bool,
 ) -> FunctionScopeInfo {
     let mut global_names = AHashSet::new();
     let mut nonlocal_names = AHashSet::new();
@@ -2647,9 +2633,6 @@ fn collect_function_scope_info(
     // the enclosing scope's locals are - that's determined later when we call new_function.
     for node in nodes {
         collect_referenced_names_from_node(node, &mut referenced_names, interner);
-    }
-    if !is_class_body {
-        add_implicit_super_class_ref(&mut referenced_names, interner);
     }
 
     // Potential implicit captures are names that are:
@@ -3349,7 +3332,6 @@ fn collect_cell_vars_from_function(
     for n in body {
         collect_referenced_names_from_node(n, &mut referenced, interner);
     }
-    add_implicit_super_class_ref(&mut referenced, interner);
 
     // Extract param names from signature for scope analysis
     let param_names: Vec<StringId> = signature.param_names().collect();
@@ -3458,7 +3440,6 @@ fn collect_cell_vars_from_expr(
             // Find what names are referenced in the lambda body
             let mut referenced = AHashSet::new();
             collect_referenced_names_from_expr(body, &mut referenced, interner);
-            add_implicit_super_class_ref(&mut referenced, interner);
 
             // Extract param names from signature
             let param_names: Vec<StringId> = signature.param_names().collect();
@@ -3872,14 +3853,13 @@ fn collect_nested_function_references(
     for n in body {
         collect_referenced_names_from_node(n, &mut nested_referenced, interner);
     }
-    add_implicit_super_class_ref(&mut nested_referenced, interner);
 
     // Anything the nested function binds for itself does NOT propagate out.
     // We treat `global X` the same way: the nested function explicitly
     // routes X to module scope, so we don't want to capture X in this scope's
     // cell variables.
     let param_names: Vec<StringId> = signature.param_names().collect();
-    let nested_scope = collect_function_scope_info(body, &param_names, interner, false);
+    let nested_scope = collect_function_scope_info(body, &param_names, interner);
     let nested_params: AHashSet<StringId> = param_names.iter().copied().collect();
     for name in nested_referenced {
         if nested_scope.assigned_names.contains(&name)
@@ -3981,7 +3961,6 @@ fn collect_referenced_names_from_expr(
             // Collect references from the body expression into a temporary set
             let mut body_refs: AHashSet<StringId> = AHashSet::new();
             collect_referenced_names_from_expr(body, &mut body_refs, interner);
-            add_implicit_super_class_ref(&mut body_refs, interner);
 
             // Filter out the lambda's own parameters before adding to referenced set.
             // The lambda's parameters are bound by the lambda, not free from outer scope.

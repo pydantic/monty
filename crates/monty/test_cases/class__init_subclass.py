@@ -5,7 +5,7 @@ class PluginBase:
     registry = []
 
     def __init_subclass__(cls, plugin_name=None, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         cls.plugin_name = plugin_name
         cls.registry.append(cls)
 
@@ -28,7 +28,7 @@ calls = []
 
 class Tracker:
     def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         calls.append(cls.__name__)
 
 
@@ -41,36 +41,36 @@ class SubTracker(Tracker):
 
 assert calls == ['SubTracker']
 
-# 3. Multilevel cooperative __init_subclass__ with kwargs forwarding
+# 3. The nearest __init_subclass__ in the MRO runs
 log = []
 
 
 class A:
     def __init_subclass__(cls, a=1, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         log.append(('A', cls.__name__, a))
 
 
 class B(A):
     def __init_subclass__(cls, b=2, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         log.append(('B', cls.__name__, b))
 
 
 assert log == [('A', 'B', 1)]
 
 
-class C(B, a=10, b=20):
+class C(B, b=20):
     pass
 
 
-assert log == [('A', 'B', 1), ('A', 'C', 10), ('B', 'C', 20)]
+assert log == [('A', 'B', 1), ('B', 'C', 20)]
 
 
 # 4. Dynamic type() call with keyword arguments
 class DynBase:
     def __init_subclass__(cls, tag=None, **kwargs):
-        super().__init_subclass__(**kwargs)
+        object.__init_subclass__(**kwargs)
         cls.tag = tag
 
 

@@ -185,8 +185,6 @@ macro_rules! heap_payloads {
             DecimalSignalDict(inline $crate::types::decimal::py_context::SignalDict),
             /// The manager `decimal.localcontext()` returns.
             DecimalContextManager(inline $crate::types::decimal::py_context::ContextManager),
-            /// A `super(type, obj)` proxy.
-            Super(inline $crate::types::super_::Super),
         }
     };
 }
@@ -277,7 +275,6 @@ impl HeapData {
             | Self::Union(_)
             | Self::ForwardRef(_)
             | Self::LruCache(_)
-            | Self::Super(_)
             | Self::Csv(_) => true,
             // Leaf types, plus iterators whose heap refs only point at leaves and so
             // cannot close a cycle. Move one up if it gains a container-valued field.
@@ -407,7 +404,6 @@ impl HeapData {
             Self::DecimalContext(_) => Type::DecimalContext,
             Self::DecimalSignalDict(_) => Type::DecimalSignalDict,
             Self::DecimalContextManager(_) => Type::DecimalContextManager,
-            Self::Super(_) => Type::Super,
         })
     }
 }

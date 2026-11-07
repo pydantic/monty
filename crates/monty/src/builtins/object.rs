@@ -2,7 +2,7 @@
 //! `__init_subclass__` and `__setattr__`.
 //!
 //! They are reached as `object.__init__`, through a class that defines no
-//! override (`Foo.__init__`), and through `super()`.
+//! override (`Foo.__init__`).
 
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
@@ -157,7 +157,6 @@ fn native_overrides_init(ty: Type) -> bool {
                 | Type::Counter
                 | Type::Set
                 | Type::Deque
-                | Type::Super
                 | Type::Property
                 | Type::Path
                 | Type::Random
