@@ -29,8 +29,11 @@ use super::{
 };
 
 /// Most entries one scan may examine, counting each time a pattern state
-/// revisits a listing; bounds the work of patterns like `*/**/*/**/*`.
-const MAX_SCAN_VISITS: u64 = 10_000_000;
+/// revisits a listing, plus one per glob listing.
+///
+/// This bounds the host work of one suspension, which no turn limit sees.
+/// The default memory limit lets a scan read about 390K entries.
+const MAX_SCAN_VISITS: u64 = 1_000_000;
 
 /// Runs a scan rooted in `mounts[root]`, replying with a glob's matches or the
 /// entries it read (see [`collect_scan`]).

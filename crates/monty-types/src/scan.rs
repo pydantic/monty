@@ -17,11 +17,13 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     convert::Infallible,
     rc::Rc,
     sync::Arc,
 };
+
+use ahash::{AHashMap, AHashSet};
 
 use crate::{
     graph::{MontyGraph, MontyNode, NodeId},
@@ -331,8 +333,9 @@ pub trait ScanSource {
     /// `None` when it does not exist.
     fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Self::Error>;
 
-    /// Called once per entry a scan examines, so a host can cap the work a
-    /// pathological pattern (`*/**/*/**/...`) or a symlink cycle costs.
+    /// Called once per entry a scan examines and once per glob listing, so a
+    /// host can cap the work a pathological pattern (`*/**/*/**/...`) or a
+    /// symlink cycle costs.
     ///
     /// No default: a host-side source, or a wrapper that fails to forward
     /// this, would leave that work unbounded without anything failing.
@@ -689,7 +692,9 @@ impl<'p> GlobSelector<'p> {
     pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Option<Vec<String>>, E> {
         let mut run = Run {
             stack: Vec::new(),
-            seen: HashSet::new(),
+            seen: AHashSet::new(),
+            walked: self.steps.iter().map(|_| AHashMap::new()).collect(),
+            deferred: BTreeMap::new(),
             out: Some(Vec::new()),
         };
         self.run(source, &mut run)?;
@@ -697,58 +702,96 @@ impl<'p> GlobSelector<'p> {
     }
 
     /// The selection loop behind [`Self::select`].
+    ///
+    /// Walks of a merged `**` with more parts to come are deferred until the
+    /// stack drains, then run shortest origin first, so [`Run::claim_walk`]
+    /// can skip each deeper one: popped depth first, every deeper origin
+    /// would be re-walked by each ancestor queued after it.
     fn run<E>(&self, source: &mut impl ScanSource<Error = E>, run: &mut Run) -> Result<(), E> {
         run.push(0, "", false, source)?;
-        while let Some((index, path, exists)) = run.stack.pop() {
-            let step = self.steps[index]
-                .as_ref()
-                .expect("states are only pushed by the step chain compiled from part 0");
-            match step {
-                Step::Exists => {
-                    if exists || lexists(&path, source)? {
-                        run.emit(path.to_string(), source);
-                    }
+        loop {
+            while let Some((index, path, exists)) = run.stack.pop() {
+                self.process(index, path, exists, source, run)?;
+            }
+            // Every state is queued by a lower step, so with the stack empty
+            // the lowest deferred step has all its origins.
+            let Some((index, mut origins)) = run.deferred.pop_first() else {
+                return Ok(());
+            };
+            origins.sort_by_key(|(path, _)| path.len());
+            for (path, exists) in origins {
+                self.select_recursive(index, &path, exists, source, run)?;
+            }
+        }
+    }
+
+    /// Runs one state's step.
+    fn process<E>(
+        &self,
+        index: usize,
+        path: Rc<str>,
+        exists: bool,
+        source: &mut impl ScanSource<Error = E>,
+        run: &mut Run,
+    ) -> Result<(), E> {
+        let step = self.steps[index]
+            .as_ref()
+            .expect("states are only pushed by the step chain compiled from part 0");
+        match step {
+            Step::Exists => {
+                if exists || lexists(&path, source)? {
+                    run.emit(path.to_string(), source);
                 }
-                Step::Special => {
-                    let mut path = format!("{path}{}", self.parts[index]);
-                    if index + 1 < self.parts.len() {
-                        path.push('/');
-                    }
-                    run.push(index + 1, &path, exists, source)?;
+            }
+            Step::Special => {
+                let mut path = format!("{path}{}", self.parts[index]);
+                if index + 1 < self.parts.len() {
+                    path.push('/');
                 }
-                Step::Literal { joined, next } => run.push(*next, &format!("{path}{joined}"), false, source)?,
-                Step::Wildcard { matcher, next } => {
-                    let dir_only = *next < self.parts.len();
-                    for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default().iter() {
-                        source.visit()?;
-                        if matcher.as_ref().is_none_or(|matcher| matcher.matches(name)) {
-                            let entry = join(&path, name);
-                            if !dir_only {
-                                run.emit(entry, source);
-                            } else if info.is_dir {
-                                run.push(*next, &(entry + "/"), true, source)?;
-                            }
+                run.push(index + 1, &path, exists, source)?;
+            }
+            Step::Literal { joined, next } => run.push(*next, &format!("{path}{joined}"), false, source)?,
+            Step::Wildcard { matcher, next } => {
+                let dir_only = *next < self.parts.len();
+                // A listing costs a visit even when empty, so empty directories are not free to revisit.
+                source.visit()?;
+                for (name, info) in source.list(path.trim_end_matches('/'))?.unwrap_or_default().iter() {
+                    source.visit()?;
+                    if matcher.as_ref().is_none_or(|matcher| matcher.matches(name)) {
+                        let entry = join(&path, name);
+                        if !dir_only {
+                            run.emit(entry, source);
+                        } else if info.is_dir {
+                            run.push(*next, &(entry + "/"), true, source)?;
                         }
                     }
                 }
-                Step::Recursive { matcher, next } => {
-                    self.select_recursive(matcher.as_ref(), *next, &path, exists, source, run)?;
-                }
             }
+            Step::Recursive { matcher: Some(_), next } if *next < self.parts.len() => {
+                run.deferred.entry(index).or_default().push((path, exists));
+            }
+            Step::Recursive { .. } => self.select_recursive(index, &path, exists, source, run)?,
         }
         Ok(())
     }
 
-    /// Runs a `**` step: the path itself, then each descendant, depth first.
+    /// Runs `**` step `index`: the path itself, then each descendant, depth first.
+    ///
+    /// With more parts to come, a directory this step already walked is skipped
+    /// (see [`Run::claim_walk`]): its states are queued, and re-walking it from
+    /// every ancestor would cost depth × entries per step (`**/..` repeated).
     fn select_recursive<E>(
         &self,
-        matcher: Option<&MultiPattern>,
-        next: usize,
+        index: usize,
         path: &str,
         exists: bool,
         source: &mut impl ScanSource<Error = E>,
         run: &mut Run,
     ) -> Result<(), E> {
+        let Some(Step::Recursive { matcher, next }) = &self.steps[index] else {
+            unreachable!("only `**` steps walk");
+        };
+        let (matcher, next) = (matcher.as_ref(), *next);
         let dir_only = next < self.parts.len();
         let match_pos = path.len();
         if matcher.is_none_or(|matcher| matcher.matches("")) {
@@ -756,7 +799,13 @@ impl<'p> GlobSelector<'p> {
         }
         let mut dirs = vec![path.to_owned()];
         while let Some(dir) = dirs.pop() {
-            for (name, info) in source.list(dir.trim_end_matches('/'))?.unwrap_or_default().iter() {
+            let dir_key = dir.trim_end_matches('/');
+            // A final `**` emits rather than queues, and CPython yields its repeats, so it walks every time.
+            if dir_only && !run.claim_walk(index, dir_key, match_pos, matcher.is_some(), source)? {
+                continue;
+            }
+            source.visit()?;
+            for (name, info) in source.list(dir_key)?.unwrap_or_default().iter() {
                 source.visit()?;
                 let is_dir = info.is_dir && (self.recurse_symlinks || !info.is_symlink);
                 if is_dir || !dir_only {
@@ -791,17 +840,55 @@ type State = (usize, Rc<str>, bool);
 /// the seen set, plus the path's reference counts.
 const STATE_OVERHEAD: usize = 2 * size_of::<State>() + 2 * size_of::<usize>();
 
+/// Bytes a [`Run::walked`] entry holds beside its path: the key and origin length.
+const WALKED_OVERHEAD: usize = size_of::<(String, usize)>();
+
 /// The pending states and results of one [`GlobSelector`] run.
 struct Run {
     /// States still to process.
     stack: Vec<State>,
     /// Every state ever queued, so each is processed once.
-    seen: HashSet<State>,
+    seen: AHashSet<State>,
+    /// Per `**` step, each directory it has walked, with the length of the
+    /// shortest walk origin it was reached from (see [`Self::claim_walk`]).
+    walked: Vec<AHashMap<String, usize>>,
+    /// Walk origins of merged `**` steps by step index, held until the stack drains.
+    deferred: BTreeMap<usize, Vec<(Rc<str>, bool)>>,
     /// Matches, until they outgrow the source's [`ScanSource::match_capacity`].
     out: Option<Vec<String>>,
 }
 
 impl Run {
+    /// Whether `**` step `step`, walking from an origin `origin_len` bytes
+    /// long, should list `dir`; if so, records that it did.
+    ///
+    /// A walk lists every descendant before returning, so a directory already
+    /// walked has queued every state below it. With a `merged` matcher, matches
+    /// depend on the origin, but a leading `**` absorbs any prefix: a shorter
+    /// origin on the same path matches a superset, so only that skips.
+    fn claim_walk<E>(
+        &mut self,
+        step: usize,
+        dir: &str,
+        origin_len: usize,
+        merged: bool,
+        source: &mut impl ScanSource<Error = E>,
+    ) -> Result<bool, E> {
+        let walked = &mut self.walked[step];
+        Ok(match walked.get_mut(dir) {
+            Some(walked_from) if !merged || *walked_from <= origin_len => false,
+            Some(walked_from) => {
+                *walked_from = origin_len;
+                true
+            }
+            None => {
+                source.charge(WALKED_OVERHEAD + dir.len())?;
+                walked.insert(dir.to_owned(), origin_len);
+                true
+            }
+        })
+    }
+
     /// Queues a state with its path normalized (keeping a trailing `/`) unless
     /// it was queued before; one climbing above the root is dropped.
     ///

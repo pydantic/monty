@@ -110,9 +110,10 @@ Consequences of the shared budget that have no CPython analogue:
     so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
 - A glob also charges each directory it reaches at each wildcard part, so a pattern that returns to the same
     directories many times (`'*/../' * 30 + '*'`) can raise `MemoryError` on a tree its single-part form reads.
-- A scan may examine at most 10,000,000 entries, counting each time a glob pattern revisits a directory, then raises
-    `RuntimeError: directory scan examined more than 10000000 entries`. CPython has no such cap; it bounds patterns
-    like `*/**/*/**/*` whose cost multiplies with every recursive part, and walks through symlink cycles.
+- A scan may examine at most 1,000,000 entries, counting each time a glob pattern revisits a directory and each
+    directory a glob lists, then raises `RuntimeError: directory scan examined more than 1000000 entries`.
+    CPython has no such cap; it bounds patterns like `*/**/*/**/*` whose cost multiplies with every recursive part,
+    and walks through symlink cycles.
 - Paths deeper than [64 components](#at-most-64-path-components) are not listed, so a walk stops there.
 - `OverlayMemory` never follows symlinks, so a scan there reports them as neither files nor directories.
 - A symlink whose target is missing or outside the mount is left out, as `iterdir()` leaves it out and the

@@ -267,6 +267,93 @@ fn dot_dot_routes_collapse() {
     assert!(source.1 < 100, "listed {} times", source.1);
 }
 
+/// A source that counts the visits a scan reports, the work a host caps.
+struct Visiting(ScanTree, usize);
+
+impl ScanSource for Visiting {
+    type Error = Infallible;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
+        self.0.list(dir)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
+        self.0.lookup(path)
+    }
+
+    fn visit(&mut self) -> Result<(), Infallible> {
+        self.1 += 1;
+        Ok(())
+    }
+
+    fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
+        Ok(())
+    }
+}
+
+/// `chains` directories, each holding a chain of `depth` nested `d` directories.
+fn chains(chains: usize, depth: usize) -> ScanTree {
+    let mut paths = vec![String::new()];
+    for chain in 0..chains {
+        let mut path = format!("c{chain}");
+        paths.push(path.clone());
+        for _ in 0..depth {
+            path.push_str("/d");
+            paths.push(path.clone());
+        }
+    }
+    let items: Vec<(&str, char)> = paths.iter().map(|path| (path.as_str(), 'd')).collect();
+    tree(&items)
+}
+
+/// The directories of [`chains`] below the root with a child, sorted.
+fn chain_parents(chains: usize, depth: usize) -> Vec<String> {
+    let mut parents: Vec<String> = (0..chains)
+        .flat_map(|chain| (0..depth).map(move |level| format!("c{chain}{}", "/d".repeat(level))))
+        .collect();
+    parents.sort();
+    parents
+}
+
+/// Globs `pattern` over `tree`, returning its sorted matches and the visits it cost.
+fn visits(tree: ScanTree, pattern: &str, recurse_symlinks: bool) -> (Vec<String>, usize) {
+    let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
+    let mut source = Visiting(tree, 0);
+    let mut matches = all_matches(&GlobSelector::new(&parts, None, recurse_symlinks), &mut source);
+    matches.sort();
+    (matches, source.1)
+}
+
+/// Each `**` step walks a directory once, rather than once per ancestor it was
+/// reached from: `**/..` re-queues every parent, so repeating it cost
+/// depth × entries per step, hours of host time across a session's suspensions.
+#[test]
+fn recursive_steps_walk_each_directory_once() {
+    let entries = 10 * 21 + 1;
+    let pattern = ["**/.."; 10].join("/");
+    let mut expected = chain_parents(10, 20);
+    expected.insert(0, String::new());
+    for recurse_symlinks in [false, true] {
+        let (matches, visits) = visits(chains(10, 20), &pattern, recurse_symlinks);
+        assert_eq!(matches, expected, "recurse_symlinks={recurse_symlinks}");
+        // two visits per directory per step: its listing and its entry in its parent's
+        assert!(
+            visits < 2 * 10 * entries,
+            "recurse_symlinks={recurse_symlinks}: {visits} visits"
+        );
+    }
+}
+
+/// Following symlinks, the parts after `**` merge into one matcher relative to
+/// each walk's origin, so walks run shortest origin first and deeper ones skip.
+#[test]
+fn merged_recursive_steps_walk_each_directory_once() {
+    let pattern = ["**/d/.."; 10].join("/");
+    let (matches, visits) = visits(chains(10, 20), &pattern, true);
+    assert_eq!(matches, chain_parents(10, 20));
+    assert!(visits < 2 * 10 * (10 * 21 + 1), "{visits} visits");
+}
+
 /// A source that totals what a scan charges it and fails past `cap` bytes.
 struct Charging {
     tree: ScanTree,

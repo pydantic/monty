@@ -177,6 +177,24 @@ fn amplifying_globs_reply_with_the_tree() {
     assert_eq!(shallow, entries(&[("y/", 'm'), ("y/e.py", 'm')]));
 }
 
+/// `**/..` re-queues every parent, so a recursive step that walked each subtree
+/// once per ancestor cost depth × entries per step: on 40 chains of 60
+/// directories, more than the visit cap, all host time outside every turn limit.
+#[test]
+fn recursive_steps_after_dot_dot_walk_each_directory_once() {
+    let dir = TempDir::new().unwrap();
+    for chain in 0..40 {
+        fs::create_dir_all(dir.path().join(format!("c{chain}")).join(["d"; 60].join("/"))).unwrap();
+    }
+    let parts = [["**", ".."]; 31].concat();
+    for mode in all_modes() {
+        let mut table = mount(&dir, mode);
+        let reply = scan(&mut table, glob("/mnt", &parts)).unwrap();
+        // the root and every directory with a child
+        assert_eq!(reply.len(), 1 + 40 * 60);
+    }
+}
+
 #[test]
 fn dot_dot_in_a_pattern_stays_below_the_scan_root() {
     let dir = create_tree();
