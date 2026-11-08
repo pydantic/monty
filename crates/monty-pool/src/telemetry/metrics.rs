@@ -619,13 +619,8 @@ impl TurnMetrics {
                 // `Load`, `InstallDependencies`, ...) is that turn's outcome,
                 // not a run's — no run happened, so recording an execution
                 // sample would fake one. A failed dump even leaves the feed
-                // suspended and resumable. A refused `Configure` never ran the
-                // request it carried, so it ends neither.
-                if event.session_refused == Some(true) {
-                    self.feed = None;
-                    self.run_active = false;
-                    self.turn = None;
-                } else if self.turn.is_some() {
+                // suspended and resumable.
+                if self.turn.is_some() {
                     self.end_turn("error");
                 } else {
                     self.end_run("error", event);
@@ -641,6 +636,12 @@ impl TurnMetrics {
                 self.end_turn("ok");
             }
             Some(pb::child_event::Kind::Ok(_)) => self.end_turn("ok"),
+            // the request a refused `Configure` carried never ran, so it is no run
+            Some(pb::child_event::Kind::SessionRefused(_)) => {
+                self.feed = None;
+                self.run_active = false;
+                self.end_turn("refused");
+            }
             // the worker is about to exit; the pool counts the termination
             Some(pb::child_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
             Some(pb::child_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
@@ -1123,7 +1124,6 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1355,7 +1355,6 @@ mod tests {
                 restored_script_name: None,
                 session_id: None,
                 execution_clock: None,
-                session_refused: None,
                 feed_suspended: None,
                 feed_execution_micros: 0,
                 max_feed_duration_micros: None,
@@ -1455,7 +1454,6 @@ mod tests {
             restored_script_name: Some("dumped.py".to_owned()),
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1470,7 +1468,6 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1505,7 +1502,6 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1531,7 +1527,6 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1580,17 +1575,9 @@ mod tests {
         let (mut metrics, capture) = recorder();
         metrics.begin_session();
         metrics.begin_turn(&feed());
-        metrics.event(&pb::ChildEvent {
-            session_refused: Some(true),
-            ..event(pb::child_event::Kind::Error(pb::Error {
-                exception: Some(pb::RaisedException {
-                    exc_type: "RuntimeError".to_owned(),
-                    message: None,
-                    traceback: vec![].into(),
-                    data: None,
-                }),
-            }))
-        });
+        metrics.event(&event(pb::child_event::Kind::SessionRefused(pb::SessionRefused {
+            message: "invalid os_policy".to_owned(),
+        })));
         assert!(!capture.has("monty.run.duration"));
         assert!(!capture.has("monty.run.execution_time"));
     }

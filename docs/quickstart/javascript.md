@@ -256,8 +256,9 @@ which ignores any argument:
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
 `retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
-`checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
-rejecting the session's configuration.
+`checkout()` rejects with the same classes when the session cannot be created.
+A worker or server rejecting the session's configuration (an invalid `osPolicy`, an unknown profile) raises
+`MontyConfigurationError` from the session's first request.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
@@ -422,7 +423,8 @@ A dropped connection raises `MontyDisconnectError`, and a draining server raises
 Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
 It does not establish whether the request ran, so do not replay a disconnected request automatically.
 A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
-request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call.
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call with
+`MontyConfigurationError`.
 Against a server that stores sessions, `await session.getSessionId()` names the session, sending the configuration
 alone if no request has yet (one round trip); the `sessionId` getter is deprecated, since it is unset until then.
 `session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with the loader matching

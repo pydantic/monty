@@ -859,9 +859,9 @@ pub struct Configure {
     pub execution_clock: ::core::option::Option<i32>,
     /// The session's first request, so that one round trip opens the session and
     /// runs it. If the `Configure` is refused, the request does not run and the
-    /// reply is the refusal's `Error`, marked `ChildEvent.session_refused`;
-    /// otherwise the reply is the request's own, carrying the acknowledgement's
-    /// `execution_clock`. Absent, the reply is the acknowledgement alone.
+    /// reply is `SessionRefused`; otherwise the reply is the request's own,
+    /// carrying the acknowledgement's `execution_clock`. Absent, the reply is the
+    /// acknowledgement alone.
     #[prost(oneof = "configure::First", tags = "15, 16")]
     pub first: ::core::option::Option<configure::First>,
 }
@@ -869,9 +869,9 @@ pub struct Configure {
 pub mod configure {
     /// The session's first request, so that one round trip opens the session and
     /// runs it. If the `Configure` is refused, the request does not run and the
-    /// reply is the refusal's `Error`, marked `ChildEvent.session_refused`;
-    /// otherwise the reply is the request's own, carrying the acknowledgement's
-    /// `execution_clock`. Absent, the reply is the acknowledgement alone.
+    /// reply is `SessionRefused`; otherwise the reply is the request's own,
+    /// carrying the acknowledgement's `execution_clock`. Absent, the reply is the
+    /// acknowledgement alone.
     #[derive(Clone, PartialEq, crate::budgeted_prost::Oneof)]
     #[prost(prost_path = "crate::budgeted_prost")]
     pub enum First {
@@ -1081,13 +1081,9 @@ pub struct ChildEvent {
     /// reply, when it carries one). Local CPU-mode parents require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
-    /// Set on the `Error` refusing a `Configure` that carries a `first` request:
-    /// the request did not run and the child holds no session.
-    #[prost(bool, optional, tag = "31")]
-    pub session_refused: ::core::option::Option<bool>,
     #[prost(
         oneof = "child_event::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
     )]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
@@ -1122,6 +1118,8 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
         #[prost(message, tag = "13")]
         Ping(super::Ping),
+        #[prost(message, tag = "14")]
+        SessionRefused(super::SessionRefused),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1545,6 +1543,17 @@ pub struct DumpResult {
     /// Opaque versioned snapshot; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: crate::budgeted_prost::alloc::vec::Vec<u8>,
+}
+/// Turn end: the `Configure` was refused, so no session exists and its `first`
+/// request did not run. Sent by a child rejecting its settings or a relay
+/// rejecting its profile; the reply to `Configure` whether or not it carried a
+/// request.
+#[derive(Clone, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct SessionRefused {
+    /// Why, for the caller: e.g. "invalid os_policy: …" or "unknown profile: …".
+    #[prost(string, tag = "1")]
+    pub message: crate::budgeted_prost::alloc::string::String,
 }
 /// Generic acknowledgement for Configure / Load (idle) / Reset / Shutdown.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, crate::budgeted_prost::Message)]

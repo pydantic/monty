@@ -1971,6 +1971,44 @@ async fn os_policy_are_answered_in_the_worker() {
     session.finish().await.unwrap();
 }
 
+/// A worker refusing the session's settings fails the first request, which
+/// never runs, with a configuration error, and the session ends.
+#[tokio::test]
+async fn a_refused_configure_is_a_configuration_error() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                datetime: DateTimeSource::Fixed {
+                    unix_seconds: 0,
+                    microsecond: 1_000_000,
+                },
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("print('ran')", vec![], vec![], false, &mut |_, text| {
+            panic!("the refused request ran: {text}")
+        })
+        .await
+        .expect_err("the worker refuses the session");
+    let PoolError::Configuration(message) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "session refused: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+    );
+    let err = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the session is over");
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
+}
+
 /// A checkout pinned to a fixed clock at `unix_seconds`.
 fn fixed_clock(unix_seconds: i64) -> ReplConfig {
     ReplConfig {

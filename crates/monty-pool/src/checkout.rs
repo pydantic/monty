@@ -690,13 +690,17 @@ fn ends_turn(event: &pb::ChildEvent) -> bool {
     )
 }
 
-/// Whether a turn-ending reply to an accepted `Configure` carries its
-/// acknowledgement: a worker dying (`FatalError`) or a relay shutting down
-/// reports no clock, and is classified as such instead.
+/// Whether a turn-ending reply to a `Configure` carries its acknowledgement:
+/// a refusal, a worker dying (`FatalError`) or a relay shutting down reports
+/// no clock, and is classified as such instead.
 fn acknowledges_configure(event: &pb::ChildEvent) -> bool {
     !matches!(
         event.kind,
-        Some(pb::child_event::Kind::FatalError(_) | pb::child_event::Kind::Shutdown(_))
+        Some(
+            pb::child_event::Kind::SessionRefused(_)
+                | pb::child_event::Kind::FatalError(_)
+                | pb::child_event::Kind::Shutdown(_)
+        )
     )
 }
 
@@ -1906,7 +1910,7 @@ impl Checkout {
             if ends_turn(&event) && opening.take().is_some() {
                 // a refusal is forwarded as `FatalError` is: no session opened,
                 // so the worker goes, but the driver's client hears why
-                if event.session_refused == Some(true) {
+                if matches!(event.kind, Some(pb::child_event::Kind::SessionRefused(_))) {
                     self.discard_worker();
                     return Ok(event);
                 }
@@ -2023,12 +2027,10 @@ impl Checkout {
             // the first turn-ending reply to a `Configure` carrying `request`
             // answers both, not an abort's after it
             let opened = ends_turn(&event) && opening.take().is_some();
-            if opened && event.session_refused == Some(true) {
-                return Err(self.session_refused(event));
-            }
+            let lone_configure = matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)));
+            let configuring = opened || lone_configure;
             if (opened && acknowledges_configure(&event))
-                || (matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
-                    && matches!(event.kind, Some(pb::child_event::Kind::Ok(_))))
+                || (lone_configure && matches!(event.kind, Some(pb::child_event::Kind::Ok(_))))
             {
                 self.adopt_execution_clock(&event)?;
             }
@@ -2248,6 +2250,17 @@ impl Checkout {
                         dump: shutdown.dump.map(Into::into),
                     });
                 }
+                Some(pb::child_event::Kind::SessionRefused(refused)) => {
+                    if !configuring {
+                        return Err(self.protocol_violation("SessionRefused reply to a request that opens no session"));
+                    }
+                    // no session opened and the request it carried never ran
+                    self.discard_worker();
+                    return Err(PoolError::Configuration(format!(
+                        "session refused: {}",
+                        refused.message
+                    )));
+                }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
                 }
@@ -2287,22 +2300,6 @@ impl Checkout {
             Ok(())
         } else {
             Err(self.protocol_violation("worker did not acknowledge the configured execution clock"))
-        }
-    }
-
-    /// The error for a `Configure` refused with the first request it carried:
-    /// the request did not run and no session opened, so the worker is discarded.
-    fn session_refused(&mut self, event: pb::ChildEvent) -> PoolError {
-        let Some(pb::child_event::Kind::Error(pb::Error {
-            exception: Some(exception),
-        })) = event.kind
-        else {
-            return self.protocol_violation("a session refusal must be an error with an exception");
-        };
-        self.discard_worker();
-        match MontyException::try_from(exception) {
-            Ok(exc) => PoolError::Runtime(exc),
-            Err(err) => self.protocol_violation(format!("invalid exception payload: {err}")),
         }
     }
 

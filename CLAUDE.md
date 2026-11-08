@@ -199,7 +199,7 @@ subprocesses:
     streamed `Print` events out, then exactly one turn-ending event. The
     session's `Configure` carries its first `Feed` or `Load` (`Configure.first`),
     so one round trip opens the session and runs it; a refused `Configure` is
-    the reply, marked `session_refused`, and the request does not run. The child
+    answered `SessionRefused`, and the request does not run. The child
     arms the session's memory ceiling (`EventSink::session_opened`) before
     running the request.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.

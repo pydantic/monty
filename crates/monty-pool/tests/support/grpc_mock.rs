@@ -299,9 +299,6 @@ impl MockStream {
             }
             // the `Configure` was refused, so the request behind it never runs
             opening.request = None;
-            if matches!(event.kind, Some(pb::child_event::Kind::Error(_))) {
-                event.session_refused = Some(true);
-            }
         } else if let Some(ack) = opening.ack.take() {
             event.execution_clock = event.execution_clock.or(ack.execution_clock);
             event.session_id = event.session_id.or(ack.session_id);

@@ -153,11 +153,11 @@ const REQUEST_LOAD = 8
 const CONFIGURE_LOAD = 16
 // `ChildEvent.kind` arms, which own the field numbers below `FIRST_EVENT_FIELD`:
 const EVENT_PRINT = 1
-const EVENT_ERROR = 7
 const EVENT_DUMP_RESULT = 9
 const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
 const EVENT_PING = 13
+const EVENT_SESSION_REFUSED = 14
 // `ChildEvent`'s message-level fields:
 const FIRST_EVENT_FIELD = 20
 const EVENT_SESSION_ID = 28
@@ -165,9 +165,7 @@ const EVENT_SESSION_ID = 28
 const LOAD_STATE = 1
 const DUMP_RESULT_STATE = 1
 const SHUTDOWN_DUMP_DUMP = 1
-const ERROR_EXCEPTION = 1
-const RAISED_EXCEPTION_EXC_TYPE = 1
-const RAISED_EXCEPTION_MESSAGE = 2
+const SESSION_REFUSED_MESSAGE = 1
 
 // Protobuf's encoding (https://protobuf.dev/programming-guides/encoding/):
 // a field's tag is a varint holding `field_number << 3 | wire_type`.
@@ -187,32 +185,15 @@ export const OK_EVENT = bytesField(EVENT_OK, Buffer.alloc(0))
 
 export const CPU_CLOCK_OK_EVENT = Buffer.concat([OK_EVENT, Buffer.from([0xf0, 0x01, 0x01])])
 
-/** `ChildEvent.session_refused = true` (field 31, varint). */
-const SESSION_REFUSED = Buffer.from([0xf8, 0x01, 0x01])
-
 /** The liveness probe a serving relay sends between turns. */
 export const PING_EVENT = bytesField(EVENT_PING, Buffer.alloc(0))
 
 /**
- * A server that refuses the session's `Configure` with a `RuntimeError`
- * naming `message`, as a server refusing a profile does, then ends the stream.
+ * A server that refuses the session's `Configure` with `message`, as a server
+ * refusing a profile does, then ends the stream.
  */
 export function refusingServer(message: string): (stream: Stream) => Promise<void> {
-  return answerConfigure(
-    Buffer.concat([
-      bytesField(
-        EVENT_ERROR,
-        bytesField(
-          ERROR_EXCEPTION,
-          Buffer.concat([
-            bytesField(RAISED_EXCEPTION_EXC_TYPE, Buffer.from('RuntimeError')),
-            bytesField(RAISED_EXCEPTION_MESSAGE, Buffer.from(message)),
-          ]),
-        ),
-      ),
-      SESSION_REFUSED,
-    ]),
-  )
+  return answerConfigure(bytesField(EVENT_SESSION_REFUSED, bytesField(SESSION_REFUSED_MESSAGE, Buffer.from(message))))
 }
 
 /** A draining server: answers the first request with a shutdown naming no stored session. */

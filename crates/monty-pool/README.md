@@ -25,8 +25,9 @@ async futures) until the snippet completes, then `Checkout::finish` returns the 
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool. The session's `Configure` carries its first `feed` /
 `restore` (`Configure.first`) rather than taking a turn of its own, so a worker refusing it (an
-invalid `os_policy`, a clock it cannot serve) fails that request, which never runs, and ends the
-session; a checkout that is finished without a request never configures its worker.
+invalid `os_policy`, a clock it cannot serve) replies `SessionRefused`: that request never runs,
+fails with `PoolError::Configuration`, and ends the session; a checkout that is finished without a
+request never configures its worker.
 `Checkout::open`, and a first `dump` or non-empty `install_dependencies`, send it alone and wait for
 the reply. The first request's duration backstop also covers a freshly spawned worker's start-up:
 the process is spawned before the checkout, but it may still be loading when the request goes out.

@@ -338,7 +338,11 @@ export class MontyConnectError extends MontyError {
   }
 }
 
-/** Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server. */
+/**
+ * Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
+ * A worker or server refusing the session's configuration (`session refused: …`) raises it from the session's first
+ * request, which did not run; the session is lost.
+ */
 export class MontyConfigurationError extends MontyError {
   constructor(message: string) {
     super('ValueError', message)

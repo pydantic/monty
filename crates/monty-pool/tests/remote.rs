@@ -1009,7 +1009,6 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
                 restored_script_name: None,
                 session_id: None,
                 execution_clock: None,
-                session_refused: None,
                 feed_suspended: None,
                 feed_execution_micros: 0,
                 max_feed_duration_micros: Some(100_000),
@@ -1292,7 +1291,6 @@ async fn restored_session_rearms_the_duration_backstop() {
                 restored_script_name: Some("restored.py".to_owned()),
                 session_id: None,
                 execution_clock: None,
-                session_refused: None,
                 feed_suspended: None,
                 total_execution_micros: 0,
                 max_suspensions: None,
@@ -2280,13 +2278,8 @@ async fn a_refused_configure_fails_the_first_request_and_ends_the_session() {
         assert!(matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))));
         send_kind(
             &mut socket,
-            pb::child_event::Kind::Error(pb::Error {
-                exception: Some(pb::RaisedException {
-                    exc_type: "RuntimeError".to_owned(),
-                    message: Some("protocol violation: invalid os_policy".to_owned()),
-                    traceback: vec![].into(),
-                    data: None,
-                }),
+            pb::child_event::Kind::SessionRefused(pb::SessionRefused {
+                message: "unknown profile: x".to_owned(),
             }),
         );
         assert!(socket.read().is_none(), "a refused session must not continue");
@@ -2297,10 +2290,10 @@ async fn a_refused_configure_fails_the_first_request_and_ends_the_session() {
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await
         .expect_err("the refusal is the feed's error");
-    let PoolError::Runtime(exc) = err else {
+    let PoolError::Configuration(message) = err else {
         panic!("got {err:?}");
     };
-    assert_eq!(exc.message(), Some("protocol violation: invalid os_policy"));
+    assert_eq!(message, "session refused: unknown profile: x");
     let err = checkout
         .feed("2 + 2", vec![], vec![], false, &mut no_print)
         .await

@@ -202,12 +202,12 @@ test('a URL validation error carries its reason as the transport failure', async
 // The session's configuration goes out with its first request, so a server
 // refusing the session fails that request rather than the checkout.
 
-test('a session the server refuses fails its first run with MontyRuntimeError', async () => {
+test('a session the server refuses fails its first run with MontyConfigurationError', async () => {
   const { url } = await server(refusingServer("unknown profile 'gpu'"))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout({ profile: 'gpu' })
-  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyRuntimeError })
-  t.is(error.message, "RuntimeError: unknown profile 'gpu'")
+  const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyConfigurationError })
+  t.is(error.message, "session refused: unknown profile 'gpu'")
 })
 
 test('a connection dropped on the first request rejects it with MontyDisconnectError', async () => {
@@ -308,8 +308,8 @@ test('getSessionId raises a refused configuration and loses the session', async 
   const { url } = await server(refusingServer("unknown profile 'gpu'"))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout({ profile: 'gpu' })
-  const error = await t.throwsAsync(() => session.getSessionId(), { instanceOf: MontyRuntimeError })
-  t.is(error.message, "RuntimeError: unknown profile 'gpu'")
+  const error = await t.throwsAsync(() => session.getSessionId(), { instanceOf: MontyConfigurationError })
+  t.is(error.message, "session refused: unknown profile 'gpu'")
   t.is(await t.throwsAsync(() => session.feedRun('1')), error)
 })
 

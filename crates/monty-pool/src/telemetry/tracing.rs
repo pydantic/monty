@@ -444,6 +444,17 @@ impl Recorder {
                     length_limit_exceeded = cut.then_some(true),
                 );
             }
+            // the request a refused `Configure` carried never ran
+            Some(pb::child_event::Kind::SessionRefused(r)) => {
+                let (message, cut) = truncate_str(&r.message);
+                logfire::error!(
+                    parent: self.context_span(),
+                    "session refused",
+                    message = message,
+                    length_limit_exceeded = cut.then_some(true),
+                );
+                self.end_feed();
+            }
             // liveness, not a turn (and answered by the transport, never seen here)
             Some(pb::child_event::Kind::Ping(_)) => {}
             None => logfire::error!(parent: self.context_span(), "event with no kind"),
@@ -1220,7 +1231,6 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1398,7 +1408,6 @@ mod tests {
             restored_script_name: Some("dumped.py".to_owned()),
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1455,7 +1464,6 @@ mod tests {
             restored_script_name: Some("restored.py".to_owned()),
             session_id: None,
             execution_clock: None,
-            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,

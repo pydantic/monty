@@ -297,6 +297,13 @@ fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
 }
 
 #[track_caller]
+fn expect_refusal(event: pb::child_event::Kind) -> String {
+    match event {
+        pb::child_event::Kind::SessionRefused(refused) => refused.message,
+        other => panic!("expected SessionRefused, got {other:?}"),
+    }
+}
+
 fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
     match event {
         pb::child_event::Kind::Error(error) => error.exception.expect("error has no exception"),
@@ -384,7 +391,6 @@ fn a_first_feed_opens_its_session() {
     };
     let (_, event) = child.send_opening(first_feed("while True:\n    pass"), configure);
     assert_eq!(event.execution_clock, Some(pb::ExecutionClock::Wall as i32));
-    assert_eq!(event.session_refused, None);
     let error = expect_error(event.kind.expect("event kind"));
     assert_eq!(error.exc_type, "TimeoutError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
@@ -401,11 +407,9 @@ fn a_refused_configure_runs_nothing() {
     };
     let (prints, event) = child.send_opening(first_feed("print('ran')"), configure);
     assert!(prints.is_empty(), "the refused request ran: {prints:?}");
-    assert_eq!(event.session_refused, Some(true));
-    let error = expect_error(event.kind.expect("event kind"));
     assert_eq!(
-        error.message.as_deref(),
-        Some("protocol violation: invalid execution_clock")
+        expect_refusal(event.kind.expect("event kind")),
+        "invalid execution_clock"
     );
     // nothing opened, so the worker can still be configured
     child.create_repl();
@@ -745,12 +749,9 @@ fn invalid_os_policy_is_rejected_on_configure() {
         }),
         ..configure()
     }));
-    let error = expect_error(child.recv());
     assert_eq!(
-        error.message.as_deref(),
-        Some(
-            "protocol violation: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
-        )
+        expect_refusal(child.recv()),
+        "invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
     );
     child.create_repl();
     child.feed_complete("1 + 1");
@@ -2655,10 +2656,9 @@ fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
             type_check_stubs: Some(stubs),
             ..configure()
         }));
-        let error = expect_error(child.recv());
         assert_eq!(
-            error.message.as_deref(),
-            Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+            expect_refusal(child.recv()),
+            "invalid type_check_stubs: Source is too deeply nested"
         );
     }
     child.create_repl();

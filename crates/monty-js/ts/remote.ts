@@ -133,9 +133,10 @@ export class MontyRemote {
    * Opens a session stream to the server and creates a REPL session there.
    * Rejects with `MontyConnectError` when the connection fails;
    * `MontyRefusedError` when the server refuses the stream, e.g. one at
-   * capacity; `MontyRuntimeError` when the server refuses the session; and
-   * `MontyDisconnectError` / `MontyShutdown` when it is lost while being
-   * created. Release the stream with `session.close()` (or `await using`).
+   * capacity; and `MontyDisconnectError` / `MontyShutdown` when it is lost
+   * while being created. A server refusing the session's configuration
+   * fails its first request with `MontyConfigurationError`. Release the
+   * stream with `session.close()` (or `await using`).
    */
   async checkout(options: RemoteCheckoutOptions = {}): Promise<MontySession> {
     if (this.closing !== undefined) {

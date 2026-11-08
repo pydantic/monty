@@ -663,9 +663,9 @@ message Configure {
 
   // The session's first request, so that one round trip opens the session and
   // runs it. If the `Configure` is refused, the request does not run and the
-  // reply is the refusal's `Error`, marked `ChildEvent.session_refused`;
-  // otherwise the reply is the request's own, carrying the acknowledgement's
-  // `execution_clock`. Absent, the reply is the acknowledgement alone.
+  // reply is `SessionRefused`; otherwise the reply is the request's own,
+  // carrying the acknowledgement's `execution_clock`. Absent, the reply is the
+  // acknowledgement alone.
   oneof first {
     Feed feed = 15;
     Load load = 16;
@@ -824,6 +824,7 @@ message ChildEvent {
     FatalError fatal_error = 11;
     ShutdownDump shutdown = 12;
     Ping ping = 13;
+    SessionRefused session_refused = 14;
   }
 
   // Cumulative execution time consumed by the session's sandbox code, in
@@ -878,10 +879,6 @@ message ChildEvent {
   // Configure acknowledgment, on the reply to `Configure` (its `first` request's
   // reply, when it carries one). Local CPU-mode parents require this.
   optional ExecutionClock execution_clock = 30;
-
-  // Set on the `Error` refusing a `Configure` that carries a `first` request:
-  // the request did not run and the child holds no session.
-  optional bool session_refused = 31;
 }
 
 enum PrintStream {
@@ -1172,6 +1169,15 @@ message TypingError {
 message DumpResult {
   // Opaque versioned snapshot; see `Dump`.
   bytes state = 1;
+}
+
+// Turn end: the `Configure` was refused, so no session exists and its `first`
+// request did not run. Sent by a child rejecting its settings or a relay
+// rejecting its profile; the reply to `Configure` whether or not it carried a
+// request.
+message SessionRefused {
+  // Why, for the caller: e.g. "invalid os_policy: …" or "unknown profile: …".
+  string message = 1;
 }
 
 // Generic acknowledgement for Configure / Load (idle) / Reset / Shutdown.
