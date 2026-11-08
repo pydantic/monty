@@ -93,6 +93,102 @@ fn grouping_keeps_completed_postfix_operands_charged() {
 }
 
 #[test]
+fn interpolated_string_closures_keep_operand_depth_charged() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    let groups = (limit - 2) / 2;
+    for prefix in ["f\"{", "t\"{"] {
+        let mut source = prefix.repeat(groups);
+        source.push_str("value");
+        for depth in 1..=groups {
+            source.push_str(&".x".repeat(2 * depth));
+            source.push_str("}\"");
+        }
+        source.push_str(&".x".repeat(limit));
+        source.push_str("\n#");
+        source.push_str(&"padding".repeat(700));
+        assert!(!source_within_nesting_bound(&source, 0), "{prefix}");
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn completed_container_roots_keep_operand_depth_charged() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    for container in ["[[value.x]]", "((value.x,),)", "{{value.x}}", "{0: {0: value.x}}"] {
+        let source = format!("{container}{}\n#{}", ".y".repeat(limit - 1), "padding".repeat(700));
+        assert!(!source_within_nesting_bound(&source, 0), "{container}");
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn sibling_interpolations_and_adjacent_literals_do_not_accumulate_depth() {
+    for prefix in ['f', 't'] {
+        let fields = format!("{prefix}'{}'", "{value}".repeat(1_000));
+        let literals = format!("{prefix}'{{value}}' ").repeat(1_000);
+        for source in [fields, literals] {
+            assert!(source_within_nesting_bound(&source, 0));
+            if prefix == 'f' {
+                assert_compiles(source);
+            }
+        }
+    }
+    assert_compiles("f'{value}' 'text' ".repeat(1_000));
+}
+
+#[test]
+fn adjacent_deep_literals_share_their_depth_budget() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    for prefix in ['f', 't'] {
+        let literal = format!("{prefix}'{{value{}}}'", ".x".repeat(limit - 6));
+        let source = format!("{literal} {literal}.y.y\n#{}", "padding".repeat(700));
+        assert!(source_within_nesting_bound(&source, 0));
+        if prefix == 'f' {
+            assert_compiles(source);
+        }
+    }
+}
+
+#[test]
+fn malformed_string_closures_do_not_reuse_literal_depth() {
+    let source = format!("{}\n#{}", r#"f'{f'':{:'f""#, "padding".repeat(50));
+    assert!(source_within_nesting_bound(&source, 0));
+}
+
+#[test]
+fn completed_operands_preserve_depth_at_the_scan_boundary() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    for (operand, depth) in [
+        ("(value.x)", 1),
+        ("[[value.x]]", 3),
+        ("((value.x,),)", 3),
+        ("{{value.x}}", 3),
+        ("{0: {0: value.x}}", 3),
+        ("[]", 1),
+        ("()", 1),
+        ("{}", 1),
+        ("(value,)", 1),
+        ("(value for item in [])", 2),
+        ("(lambda a, b: value)", 2),
+        ("f'{value}'", 2),
+        ("t'{value}'", 2),
+        ("f'{value, other}'", 3),
+        ("t'{value, other}'", 3),
+        ("f'{value:{other}}'", 4),
+        ("f'{value.x}' f'{other}'", 3),
+        ("f'{value}' f'{other.x}'", 3),
+        ("f'{value.x}' 'text' f'{other}'", 3),
+        ("t'{value.x}' t'{other}'", 3),
+        ("t'{value}' t'{other.x}'", 3),
+    ] {
+        let allowed = format!("{operand}{}", ".y".repeat(limit - depth));
+        assert!(source_within_nesting_bound(&allowed, 0), "{allowed}");
+        let exceeded = format!("{allowed}.y");
+        assert!(!source_within_nesting_bound(&exceeded, 0), "{exceeded}");
+    }
+}
+
+#[test]
 fn recovered_keyword_attributes_keep_postfix_depth_charged() {
     for keyword in [
         "as", "from", "if", "for", "in", "is", "and", "or", "not", "else", "case", "await",

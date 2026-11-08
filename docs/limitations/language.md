@@ -87,6 +87,8 @@ exactly, except for the comprehension target restriction in
     more than 200 of those open at once, with no comma, newline or lower-precedence operator between them, is rejected
     even where CPython would accept it.
     A long literal such as `[-1, -2, ...]` releases the count at every comma.
+    Closing a container, replacement field or interpolated string retains its deepest child's depth.
+    Sibling fields and implicitly concatenated string literals retain their maximum depth instead of adding together.
     A logical line starting with a variable named `case` counts its binary `+` and `-` the same way.
     For sources that undergo this scan, excessively deep postfix chains are rejected before AST construction because
     destroying a deeply nested AST can overflow the native stack.
