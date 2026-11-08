@@ -15,7 +15,7 @@ Project goals:
 - **Simplicity**: Clean, understandable implementation focused on a Python subset
 - **Snapshotting and iteration**: Plan is to allow code to be iteratively executed and snapshotted at each function call
 - **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
-- Targets the latest stable version of Python, currently Python 3.14
+- Targets Python 3.14 semantics, with documented allowances for newer syntax
 
 ## `monty-types` — shared boundary types
 

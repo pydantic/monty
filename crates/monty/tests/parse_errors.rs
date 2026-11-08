@@ -23,6 +23,9 @@ fn lazy_imports_return_syntax_error() {
         "def f():\n    lazy from math import sqrt",
         "if False:\n    lazy import math",
         "if False:\n    lazy from math import sqrt",
+        "class C:\n    lazy import math",
+        "class C:\n    lazy from math import sqrt",
+        "lazy import math as __debug__",
     ] {
         let err = get_parse_err(code);
         assert_eq!(err.exc_type(), ExcType::SyntaxError, "{code}");

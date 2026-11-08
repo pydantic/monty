@@ -8,9 +8,9 @@
 //! skips it, its depth being bounded by its length.
 
 use ruff_python_ast::{
-    Expr, Mod, Stmt, StringLiteral,
+    Expr, InterpolatedStringElement, Mod, Pattern, Stmt, StringLiteral,
     token::TokenKind,
-    visitor::{Visitor, walk_expr, walk_stmt},
+    visitor::{Visitor, walk_expr, walk_interpolated_string_element, walk_pattern, walk_stmt},
 };
 use ruff_python_parser::{Mode, ParseOptions, lexer::lex, parse_string_annotation, parse_unchecked};
 use ruff_text_size::{Ranged, TextLen, TextRange};
@@ -355,7 +355,7 @@ impl Level {
     }
 }
 
-/// Range of the first expression in `source` nested deeper than `limit`,
+/// Range of the first AST node in `source` nested deeper than `limit`,
 /// counting through the contents of string literals as the type checker does.
 ///
 /// ruff builds arbitrarily deep ASTs from flat source (`1+1+...`, `a.x.x...`,
@@ -387,23 +387,47 @@ struct AstDepth<'s> {
     exceeded: Option<TextRange>,
 }
 
+impl AstDepth<'_> {
+    fn enter(&mut self, range: TextRange) -> bool {
+        if self.exceeded.is_some() {
+            false
+        } else if let Some(remaining) = self.remaining.checked_sub(1) {
+            self.remaining = remaining;
+            true
+        } else {
+            self.exceeded = Some(range);
+            false
+        }
+    }
+}
+
 impl<'a> Visitor<'a> for AstDepth<'_> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
-        if self.exceeded.is_none() {
+        if self.enter(stmt.range()) {
             walk_stmt(self, stmt);
+            self.remaining += 1;
         }
     }
 
     fn visit_expr(&mut self, expr: &'a Expr) {
-        if self.exceeded.is_some() {
-            return;
-        }
-        if let Some(remaining) = self.remaining.checked_sub(1) {
-            self.remaining = remaining;
+        if self.enter(expr.range()) {
             walk_expr(self, expr);
             self.remaining += 1;
-        } else {
-            self.exceeded = Some(expr.range());
+        }
+    }
+
+    fn visit_pattern(&mut self, pattern: &'a Pattern) {
+        if self.enter(pattern.range()) {
+            walk_pattern(self, pattern);
+            self.remaining += 1;
+        }
+    }
+
+    fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
+        // Format specifications can recurse without an intervening Expr node.
+        if self.enter(element.range()) {
+            walk_interpolated_string_element(self, element);
+            self.remaining += 1;
         }
     }
 

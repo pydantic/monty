@@ -266,6 +266,18 @@ fn type_check_rejects_deep_asts_from_flat_source() {
 }
 
 #[test]
+fn type_check_bounds_short_format_specs_and_patterns() {
+    for prefix in ["f", "t"] {
+        let source = format!("{prefix}'{}{{x}}{}'", "{x:".repeat(400), "}".repeat(400));
+        assert!(source.len() < SOURCE_SCAN_THRESHOLD);
+        assert_type_check_rejects(&source);
+    }
+    let source = format!("match x:\n    case {}y{}: pass", "[".repeat(250), "]".repeat(250));
+    assert!(source.len() < SOURCE_SCAN_THRESHOLD);
+    assert_type_check_rejects(&source);
+}
+
+#[test]
 fn type_check_accepts_shallow_sources() {
     let shallow =
         "def f(a: int | str, b: 'list[int]') -> dict[str, list[int]]:\n    return {'k': [a.x.y for _ in b]}\n";

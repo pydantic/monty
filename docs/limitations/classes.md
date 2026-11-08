@@ -362,6 +362,9 @@ every construction request. Divergences:
 
 ## What does NOT exist for user code
 
+- **Runtime private-name mangling.** Inside `class C`, `self.__x` stores an attribute named `__x`, where CPython
+    stores `_C__x`.
+    Compiler checks recognize private-name aliases, but runtime names and attribute accesses keep their spelling.
 - `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
     parse time: "class inheritance and metaclasses"; the runtime equivalent
     `type('Foo', (Bar,), {})` raises `TypeError`, see above).

@@ -14,9 +14,9 @@
 //!   never `None`, so Monty declines to expose it rather than diverge on type)
 //! - `__annotations__` is always an empty dict (CPython 3.14 raises
 //!   `NameError` when a module has no annotations, per PEP 649)
-//! - reassigning any of these at module/global scope is rejected at compile
-//!   time with `NotImplementedError` (CPython allows it, except `__debug__`
-//!   which it rejects with `SyntaxError`)
+//! - reassigning these at module/global scope is rejected at compile time
+//!   with `NotImplementedError`, except `__debug__` which raises `SyntaxError`
+//!   as in CPython
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceTracker, dir_stat};
@@ -167,7 +167,9 @@ fn reassign_doc_at_module_scope_rejected() {
 #[test]
 fn reassign_via_global_in_function_rejected() {
     let code = "def f():\n    global __debug__\n    __debug__ = False\nf()";
-    assert_reassignment_rejected(code, "__debug__");
+    let error = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap_err();
+    assert_eq!(error.exc_type(), ExcType::SyntaxError);
+    assert_eq!(error.message(), Some("cannot assign to __debug__"));
 }
 
 #[test]

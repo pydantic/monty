@@ -37,6 +37,18 @@ matching Monty's Python 3.14 target.
 
 - **Template strings (t-strings)** — PEP 750.
 
+Type-parameter lists on functions and classes are validated, but their runtime bindings are not implemented;
+see [typing.md](typing.md#type-parameters).
+
+## Accepted newer syntax
+
+Monty targets Python 3.14 but accepts selected Python 3.15 syntax:
+
+- Unary `+` in numeric `match` patterns; see [match.md](match.md).
+- Comprehension unpacking in postponed annotations (`from __future__ import annotations`), such as
+    `x: [*items for items in groups]`.
+    The annotation is stringized; executing an unpacking comprehension remains unsupported.
+
 ## Starred unpacking
 
 Anything Monty can iterate may follow a `*`, matching CPython: `[*xs]`,
@@ -63,6 +75,7 @@ exactly, except for the comprehension target restriction in
     see [with.md](with.md).
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`,
     `too many statically nested blocks`, …).
+- CPython's separate limit on statically nested blocks does not apply; Monty uses the shared AST budget above.
 - Class-body annotations count against the budget, as do class-variable values and method parameter defaults; all
     three are walked before being parsed.
 - A source longer than `CompileOptions::source_scan_threshold` bytes (4 KiB by default) is first scanned token by
@@ -80,7 +93,7 @@ exactly, except for the comprehension target restriction in
     brackets is rejected the same way even when it is plain data.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
-    That includes function parameter and return annotations.
+    That includes function parameter and return annotations, match patterns and nested format specifications.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
@@ -140,17 +153,15 @@ extracted, and `__annotations__` is always an empty `dict` because
 module-level annotations are not stored (see [typing.md](typing.md)); CPython 3.14
 instead raises `NameError` when a module has no annotations (PEP 649).
 
-These names are **read-only**: assigning one at module or global scope (including
+These names are **read-only**: assigning one other than `__debug__` at module or global scope (including
 via `global __name__` inside a function, and augmented assignment like
 `__name__ += ...`) is rejected at compile time with
 `NotImplementedError: cannot reassign read-only module attribute '<name>'`.
-CPython instead *allows* rebinding most of them (it is how you set a module
-docstring), and rejects only `__debug__`, with a `SyntaxError`.
+CPython instead *allows* rebinding them (it is how you set a module docstring).
+Assignments to `__debug__` raise `SyntaxError` in every scope, as in CPython.
 
-Binding one of these names as a **function local** is allowed (it is an
-ordinary local in a separate namespace), matching CPython, except `__debug__`,
-which CPython rejects everywhere with `SyntaxError` but Monty permits as a
-local.
+Binding one of these names other than `__debug__` as a **function local** is allowed (it is an
+ordinary local in a separate namespace), matching CPython.
 
 `__file__` is the final path component of the session's script name placed
 under the virtual working directory the feed started in: `/main.py` by
