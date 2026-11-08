@@ -605,9 +605,11 @@ class MontyConfigurationError(MontyError):
     """Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
 
     CPU-mode pools and servers require a finite client `request_timeout`.
-    A worker or server refusing the session's configuration (an invalid
-    `os_policy`, an unknown profile) raises it as `session refused: …` from the
-    session's first request, which did not run; the session is lost.
+    A worker or server refusing the session's configuration (deeply nested
+    `type_check_stubs`, an unknown profile) raises it as `session refused: …`
+    from the session's first request, which did not run; the session is lost.
+    Options the binding checks itself, such as `os_policy`, raise `TypeError`
+    or `ValueError` from `checkout()` instead.
     Cannot be constructed directly from Python.
     """
 

@@ -231,7 +231,8 @@ pub enum PoolError {
     },
     /// The pool or request configuration is invalid, or incompatible with the
     /// server. A worker or server refusing a session's `Configure` raises it
-    /// (`session refused: …`) from the request that carried it, which did not run.
+    /// (`session refused: …`) from the request that carried it, which did not
+    /// run, or from [`Checkout::open`] when it was sent alone.
     Configuration(String),
     /// The remote server refused to open the session stream (remote transport
     /// only) with an admission code: `RESOURCE_EXHAUSTED`, `UNAVAILABLE`,

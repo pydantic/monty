@@ -52,6 +52,9 @@ fn serve() -> ExitCode {
     let mut reader = FrameReader::new(io::stdin().lock());
     let mut child = Child::default();
     let mut sink = StdoutSink;
+    // set the memory baseline on the pristine worker: a session's first request
+    // is decoded before its ceiling is armed, and must not count as overhead
+    apply_memory_limit(&child);
 
     loop {
         match reader.read::<pb::ParentRequest>() {
@@ -102,8 +105,8 @@ fn serve() -> ExitCode {
     }
 }
 
-/// Applies the hard memory limit of whatever session the child now holds,
-/// after every request.
+/// Applies the hard memory limit of whatever session the child now holds, at
+/// start-up and after every request.
 ///
 /// Reading the child's state rather than the request is what keeps the limit
 /// honest: a rejected `Configure` changes nothing, a `Load` brings the dump's
