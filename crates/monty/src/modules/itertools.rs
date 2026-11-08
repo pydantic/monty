@@ -617,8 +617,8 @@ fn call_zip_longest(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ZipLongestArgs { iterables, fillvalue } = ZipLongestArgs::from_args(args, vm)?;
     // Every argument is resolved up front, unlike `chain`'s lazy ones, so a
     // later non-iterable must release the arguments never reached as well. The
-    // `Value::None` swap leaves those in the guard's vec: draining it instead
-    // would hand the tail to a Rust `Drop`, which cannot `drop_with`.
+    // `Value::None` swap leaves those in the guard's vec, so the one guard on
+    // `iterables` covers them without a second guard on a drain.
     defer_drop_mut!(iterables, vm);
     let mut guard = DropGuard::new(Vec::with_capacity(iterables.len()), vm);
     for slot in iterables.iter_mut() {
@@ -772,7 +772,7 @@ fn call_product(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ProductArgs { iterables, repeat } = ProductArgs::from_args(args, vm)?;
     // Each argument is moved out of the vec as it is collected; the ones a
     // `repeat` of zero never reaches stay in it and are released by the guard,
-    // as `zip_longest` does — see there for why not `drain`.
+    // as `zip_longest` does.
     defer_drop_mut!(iterables, vm);
     let converted = ssize_arg(&repeat, vm);
     repeat.drop_with(vm);

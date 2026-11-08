@@ -28,8 +28,9 @@ pub fn builtin_print(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         sep,
         end,
         file,
-        flush: _,
+        flush,
     } = PrintArgs::from_args(args, vm)?;
+    flush.drop_with(vm);
     defer_drop!(objects, vm);
     defer_drop!(sep, vm);
     defer_drop!(end, vm);
@@ -105,9 +106,8 @@ struct PrintArgs {
     end: Value,
     #[from_args(default = Value::None)]
     file: Value,
-    /// Accepted from Python for CPython compatibility but never consumed:
+    /// Accepted from Python for CPython compatibility and released unread:
     /// Monty doesn't buffer stdout, so there is nothing to flush.
-    #[expect(dead_code, reason = "accepted but ignored — Monty doesn't buffer stdout")]
     #[from_args(default = Value::None)]
     flush: Value,
 }

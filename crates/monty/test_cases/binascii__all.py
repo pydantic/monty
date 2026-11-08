@@ -474,3 +474,16 @@ try:
     raise binascii.Error('caught as ValueError')
 except ValueError as exc:
     assert str(exc) == 'caught as ValueError'
+
+# === unhexlify / a2b_uu with too many arguments ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    binascii.unhexlify([2**70], 2)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'binascii.unhexlify() takes exactly one argument (2 given)'
+try:
+    binascii.a2b_uu([2**70], 2)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'binascii.a2b_uu() takes exactly one argument (2 given)'

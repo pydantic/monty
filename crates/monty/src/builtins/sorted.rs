@@ -23,14 +23,17 @@ use crate::{
 pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (mut pos_iter, kwargs) = args.into_parts();
     let pos_count = pos_iter.len();
+    // The kwargs are only handed to `sort` after the iterable is collected, and
+    // collecting can raise; the guard releases them on that path.
+    let mut kwargs_guard = DropGuard::new(kwargs, vm);
     if pos_count != 1 {
-        pos_iter.drop_with(vm);
-        kwargs.drop_with(vm);
+        pos_iter.drop_with(kwargs_guard.ctx());
         return Err(ExcType::type_error_expected_exact("sorted", 1, pos_count));
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items: Vec<_> = collect_owned_iterable(iterable, vm)?;
+    let items: Vec<_> = collect_owned_iterable(iterable, kwargs_guard.ctx())?;
+    let (kwargs, vm) = kwargs_guard.into_parts();
     let mut items_guard = DropGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 

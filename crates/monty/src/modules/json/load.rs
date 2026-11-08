@@ -206,7 +206,10 @@ fn parse_json_bytes(bytes: &[u8], hooks: &NumberHooks<'_>, vm: &mut VM<'_>) -> R
     let mut cache = mem::take(&mut vm.json_string_cache);
     let result = parse_json_value(&mut jiter, 0, &mut cache, hooks, vm);
     // Always restore the cache before returning, regardless of success/failure.
-    vm.json_string_cache = cache;
+    // A `parse_int`/`parse_float` hook may have re-entered `json.loads`, leaving
+    // the nested call's cache in the VM; its values must be released, not dropped.
+    let mut nested = mem::replace(&mut vm.json_string_cache, cache);
+    nested.drop_all(vm.heap);
     let value = result.map_err(|error| match error {
         JsonLoadError::Parse(error) => json_number_out_of_range_to_run_error(&error, bytes)
             .unwrap_or_else(|| json_error_to_run_error(&error, bytes)),

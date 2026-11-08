@@ -209,3 +209,13 @@ for source, message in [
     except ValueError as exc:
         assert str(exc) == message
     assert d == {} or d == {'a': 1}
+
+# === dict.setdefault() with an unhashable key and a heap default ===
+# guards a reference-count leak that only the memory-model-checks build detects
+d = {'a': 1}
+try:
+    d.setdefault([], [1, 2])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a dict key (unhashable type: 'list')"
+assert d == {'a': 1}
