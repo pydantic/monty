@@ -3174,9 +3174,13 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     config.feed_duration_limit_grace = Some(grace);
     config.request_timeout = None;
     let pool = Pool::new(config).await.unwrap();
-    while !started.exists() {
-        sleep(Duration::from_millis(10)).await;
-    }
+    timeout(Duration::from_secs(10), async {
+        while !started.exists() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the stand-in did not start");
     let mut checkout = pool
         .checkout(&ReplConfig {
             limits: Some(ResourceLimits::default().max_feed_duration(budget)),

@@ -425,8 +425,8 @@ A connection that cannot be opened rejects `checkout()` itself; the session's co
 request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call.
 Against a server that stores sessions, `await session.getSessionId()` names the session, sending the configuration
 alone if no request has yet (one round trip); the `sessionId` getter is deprecated, since it is unset until then.
-`session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with `loadSession` /
-`loadSnapshot`.
+`session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with the loader matching
+the stored state: `loadSession` for an idle session, `loadSnapshot` for one suspended mid-feed.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
 unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).

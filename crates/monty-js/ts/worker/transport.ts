@@ -253,7 +253,7 @@ export class WorkerTransport {
     return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
   }
 
-  /** Opens the session: a no-op, since a WASM worker has no session ID to wait for. */
+  /** Opens the session: a no-op, since a WASM checkout already waited for its `Configure` reply. */
   async open(_onPrint: OnPrint): Promise<{ kind: 'ok' }> {
     return { kind: 'ok' }
   }

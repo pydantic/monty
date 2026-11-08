@@ -619,8 +619,13 @@ impl TurnMetrics {
                 // `Load`, `InstallDependencies`, ...) is that turn's outcome,
                 // not a run's — no run happened, so recording an execution
                 // sample would fake one. A failed dump even leaves the feed
-                // suspended and resumable.
-                if self.turn.is_some() {
+                // suspended and resumable. A refused `Configure` never ran the
+                // request it carried, so it ends neither.
+                if event.session_refused == Some(true) {
+                    self.feed = None;
+                    self.run_active = false;
+                    self.turn = None;
+                } else if self.turn.is_some() {
                     self.end_turn("error");
                 } else {
                     self.end_run("error", event);
@@ -1565,6 +1570,27 @@ mod tests {
                 ("turn".to_owned(), "install_dependencies".to_owned())
             ]]
         );
+        assert!(!capture.has("monty.run.duration"));
+        assert!(!capture.has("monty.run.execution_time"));
+    }
+
+    /// A refused `Configure` never ran the feed it carried, so no run records.
+    #[test]
+    fn a_refused_session_is_not_a_run() {
+        let (mut metrics, capture) = recorder();
+        metrics.begin_session();
+        metrics.begin_turn(&feed());
+        metrics.event(&pb::ChildEvent {
+            session_refused: Some(true),
+            ..event(pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: None,
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }))
+        });
         assert!(!capture.has("monty.run.duration"));
         assert!(!capture.has("monty.run.execution_time"));
     }

@@ -284,6 +284,14 @@ impl MockStream {
             return self.deliver(Ok(body));
         }
         let mut event = decode_frame::<pb::ChildEvent>(body.as_ref()).expect("decode event");
+        if matches!(
+            event.kind,
+            Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::Ping(_))
+        ) {
+            // not a reply: sent as written, since re-encoding drops unknown fields
+            drop(opening);
+            return self.deliver(Ok(body));
+        }
         if mem::take(&mut opening.awaiting_reply) {
             if matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) {
                 opening.ack = Some(event);
@@ -294,13 +302,6 @@ impl MockStream {
             if matches!(event.kind, Some(pb::child_event::Kind::Error(_))) {
                 event.session_refused = Some(true);
             }
-        } else if matches!(
-            event.kind,
-            Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::Ping(_))
-        ) {
-            // not a reply: sent as written, since re-encoding drops unknown fields
-            drop(opening);
-            return self.deliver(Ok(body));
         } else if let Some(ack) = opening.ack.take() {
             event.execution_clock = event.execution_clock.or(ack.execution_clock);
             event.session_id = event.session_id.or(ack.session_id);

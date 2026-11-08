@@ -95,20 +95,26 @@ impl ChildProc {
     }
 
     /// Sends a `Configure` carrying the session's first request, and reads
-    /// its turn-ending event whole (prints are skipped).
-    fn send_opening(&mut self, first: pb::configure::First, configure: pb::Configure) -> pb::ChildEvent {
+    /// its streamed prints and its turn-ending event whole.
+    fn send_opening(
+        &mut self,
+        first: pb::configure::First,
+        configure: pb::Configure,
+    ) -> (Vec<pb::Print>, pb::ChildEvent) {
         self.send(pb::parent_request::Kind::Configure(pb::Configure {
             first: Some(first),
             ..configure
         }));
+        let mut prints = Vec::new();
         loop {
             let event = self
                 .reader
                 .read::<pb::ChildEvent>()
                 .expect("failed to read event")
                 .expect("unexpected EOF from child");
-            if !matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
-                return event;
+            match event.kind {
+                Some(pb::child_event::Kind::Print(print)) => prints.push(print),
+                _ => return (prints, event),
             }
         }
     }
@@ -376,7 +382,7 @@ fn a_first_feed_opens_its_session() {
         os_policy: Some((&OsPolicy::default()).into()),
         ..configure()
     };
-    let event = child.send_opening(first_feed("while True:\n    pass"), configure);
+    let (_, event) = child.send_opening(first_feed("while True:\n    pass"), configure);
     assert_eq!(event.execution_clock, Some(pb::ExecutionClock::Wall as i32));
     assert_eq!(event.session_refused, None);
     let error = expect_error(event.kind.expect("event kind"));
@@ -393,7 +399,8 @@ fn a_refused_configure_runs_nothing() {
         execution_clock: Some(99),
         ..configure()
     };
-    let event = child.send_opening(first_feed("print('ran')"), configure);
+    let (prints, event) = child.send_opening(first_feed("print('ran')"), configure);
+    assert!(prints.is_empty(), "the refused request ran: {prints:?}");
     assert_eq!(event.session_refused, Some(true));
     let error = expect_error(event.kind.expect("event kind"));
     assert_eq!(

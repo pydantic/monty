@@ -916,8 +916,8 @@ impl NativeSession {
     }
 
     /// Opens the session if no request has yet, sending its `Configure` alone,
-    /// so `sessionId` is set once this resolves. Resolves to an `ok` turn, or
-    /// what a refused first request would.
+    /// so a storing server's `sessionId` is set once this resolves. Resolves to
+    /// an `ok` turn, or what a refused first request would.
     #[napi]
     pub fn open<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
         self.run_outcome(

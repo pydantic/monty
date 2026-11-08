@@ -690,6 +690,16 @@ fn ends_turn(event: &pb::ChildEvent) -> bool {
     )
 }
 
+/// Whether a turn-ending reply to an accepted `Configure` carries its
+/// acknowledgement: a worker dying (`FatalError`) or a relay shutting down
+/// reports no clock, and is classified as such instead.
+fn acknowledges_configure(event: &pb::ChildEvent) -> bool {
+    !matches!(
+        event.kind,
+        Some(pb::child_event::Kind::FatalError(_) | pb::child_event::Kind::Shutdown(_))
+    )
+}
+
 /// Recognizes turn-ending events that await a host answer.
 fn is_suspension(event: &pb::ChildEvent) -> bool {
     matches!(
@@ -1876,7 +1886,7 @@ impl Checkout {
     async fn turn_io_raw(
         &mut self,
         request: &pb::ParentRequest,
-        opening: Option<&pb::Configure>,
+        mut opening: Option<&pb::Configure>,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
         self.send_request(request, opening).await?;
@@ -1892,14 +1902,17 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if opening.is_some() && ends_turn(&event) {
+            // only the first turn-ending reply answers the `Configure`, not an abort's after it
+            if ends_turn(&event) && opening.take().is_some() {
                 // a refusal is forwarded as `FatalError` is: no session opened,
                 // so the worker goes, but the driver's client hears why
                 if event.session_refused == Some(true) {
                     self.discard_worker();
                     return Ok(event);
                 }
-                self.adopt_execution_clock(&event)?;
+                if acknowledges_configure(&event) {
+                    self.adopt_execution_clock(&event)?;
+                }
             }
             let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
             let aborting = self.abort_in_flight || explicit_abort;
@@ -1987,7 +2000,7 @@ impl Checkout {
     async fn turn_io(
         &mut self,
         request: &pb::ParentRequest,
-        opening: Option<&pb::Configure>,
+        mut opening: Option<&pb::Configure>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.send_request(request, opening).await?;
@@ -2007,12 +2020,13 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            // the turn-ending reply to a `Configure` carrying `request` answers both
-            let opened = opening.is_some() && ends_turn(&event);
+            // the first turn-ending reply to a `Configure` carrying `request`
+            // answers both, not an abort's after it
+            let opened = ends_turn(&event) && opening.take().is_some();
             if opened && event.session_refused == Some(true) {
                 return Err(self.session_refused(event));
             }
-            if opened
+            if (opened && acknowledges_configure(&event))
                 || (matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
                     && matches!(event.kind, Some(pb::child_event::Kind::Ok(_))))
             {

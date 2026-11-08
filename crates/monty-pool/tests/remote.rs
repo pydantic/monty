@@ -3931,6 +3931,74 @@ async fn server_selects_cpu_clock_and_enforces_it_beside_the_remote_child() {
     assert!(rx.recv().unwrap(), "the server must enforce the independent CPU limit");
 }
 
+/// An abort's reply ending the first turn does not acknowledge the `Configure`
+/// again: the session keeps the CPU clock the first reply reported, so a later
+/// slow feed is not cut short by a wall-time backstop.
+#[tokio::test]
+async fn an_abort_in_the_first_turn_keeps_the_server_clock() {
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        let mut configured = event_kind(ok_event());
+        configured.execution_clock = Some(pb::ExecutionClock::Cpu as i32);
+        send_event(&mut socket, &configured);
+        expect_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, function_call(1));
+        // over `max_suspensions`, so the client aborts within the first turn
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::AbortFeed(_)
+        ));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "RuntimeError".to_owned(),
+                    message: Some("suspension limit 0 exceeded".to_owned()),
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+        );
+        expect_feed(&mut socket, "42");
+        // well past the 50ms feed limit a wall clock would enforce here
+        thread::sleep(Duration::from_millis(150));
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(42))),
+        );
+        let _ = socket.read();
+    });
+    config.request_timeout = Some(Duration::from_secs(2));
+    config.feed_duration_limit_grace = Some(Duration::ZERO);
+    let pool = Pool::new(config).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(
+                ResourceLimits::default()
+                    .max_suspensions(0)
+                    .max_feed_duration(Duration::from_millis(50)),
+            ),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the suspension is over the limit");
+    assert!(matches!(err, PoolError::Runtime(_)), "{err:?}");
+    let event = session.feed("42", vec![], vec![], false, &mut no_print).await.unwrap();
+    assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
+    drop(session);
+    pool.close().await;
+    join_server(server).await;
+}
+
 /// A server reports its clock with the first request's reply, so invalid clock
 /// metadata fails that request and ends the session before anything else runs.
 #[tokio::test]

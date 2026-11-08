@@ -61,7 +61,8 @@ A server that stores sessions gives each one an opaque ID instead of sending its
 that stores nothing.
 The session's configuration normally travels with its first request, so called before any request,
 `get_session_id()` sends the configuration on its own and waits for the reply, which costs one round trip.
-The `session_id` property is deprecated: it is `None` until the first request has been answered.
+The `session_id` property is deprecated: it is `None` until the server has accepted the configuration, whose reply
+comes back with the first request's, even when that request fails.
 `monty-server` run without a store also refuses `dump()`, `load_session()` and `load_snapshot()` with
 `MontyRuntimeError`, and the session carries on; the development relay in `scripts/grpc_relay.py` instead passes
 them to its worker, which dumps and loads bytes as a local session does.
@@ -84,7 +85,7 @@ session can carry on as well.
 
 When such a server drains a session, the client opens a new stream, loads the state the server named into a new session and
 re-sends the request, so the caller sees the result rather than `MontyShutdown`; `get_session_id()` then returns the new
-session, and the session's suspension and sleep totals carry over.
+session's ID, and the session's suspension and sleep totals carry over.
 `MontyShutdown` is still raised if the server named nothing to load, if the reload fails, if `auto_resume=False` is
 passed to [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], or if the session has no ID.
 The new stream uses the metadata returned when the session was entered, so an expired token makes
