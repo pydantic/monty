@@ -68,6 +68,31 @@ fn long_postfix_spines_are_rejected_before_ast_construction() {
 }
 
 #[test]
+fn grouping_keeps_completed_postfix_operands_charged() {
+    let groups = if cfg!(debug_assertions) { 29 } else { 199 };
+    for separator in [")", ", 0)", ", value=0)"] {
+        let mut source = if separator.contains("value=") {
+            "call(".repeat(groups)
+        } else {
+            "(".repeat(groups)
+        };
+        source.push_str("value");
+        for depth in 1..=groups {
+            source.push_str(&".x".repeat(depth));
+            source.push_str(separator);
+        }
+        source.push_str(&".x".repeat(groups + 1));
+        source.push_str("\n#");
+        source.push_str(&"padding".repeat(700));
+        assert!(!source_within_nesting_bound(&source, 0));
+        assert_too_deeply_nested(source);
+    }
+
+    let shallow = format!("{}value.x{}", "(".repeat(groups), ")".repeat(groups));
+    assert!(source_within_nesting_bound(&shallow, 0));
+}
+
+#[test]
 fn recovered_keyword_attributes_keep_postfix_depth_charged() {
     for keyword in [
         "as", "from", "if", "for", "in", "is", "and", "or", "not", "else", "case", "await",

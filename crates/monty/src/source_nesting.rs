@@ -140,6 +140,8 @@ struct Level {
     /// Lambda bodies, `else` branches and format specs: only the level's end
     /// or a comma, newline or statement colon proves they have returned.
     loose: u32,
+    /// Deepest operand completed before a comma or another expression separator.
+    completed_depth: u32,
     /// `lambda` keywords whose `:` has not arrived, so commas are still
     /// separating parameters rather than ending a body.
     pending_lambdas: u32,
@@ -390,9 +392,10 @@ impl Scanner {
         if self.levels.len() > 1 {
             let level = self.levels.pop().expect("length checked above");
             self.total -= 1 + level.tight + level.loose;
-            if matches!(level.kind, LevelKind::Bracket { postfix: true }) {
-                // Transfer the bracket's charge to the call/subscript node that remains in the AST.
-                return self.add_tight(1);
+            if let LevelKind::Bracket { postfix } = level.kind {
+                // Parentheses keep their operand's AST; containers and calls keep their children too.
+                let child_depth = level.completed_depth.max(level.tight + level.loose);
+                return self.add_tight(child_depth + u32::from(postfix));
             }
         }
         false
@@ -410,6 +413,7 @@ impl Scanner {
 
     fn reset_tight(&mut self) {
         let top = self.top();
+        top.completed_depth = top.completed_depth.max(top.tight + top.loose);
         let released = top.tight;
         top.tight = 0;
         self.total -= released;
@@ -418,6 +422,7 @@ impl Scanner {
     fn reset_level(&mut self) {
         let top = self.top();
         let released = top.tight + top.loose;
+        top.completed_depth = top.completed_depth.max(released);
         top.tight = 0;
         top.loose = 0;
         self.total -= released;
@@ -435,6 +440,7 @@ impl Level {
             kind,
             tight: 0,
             loose: 0,
+            completed_depth: 0,
             pending_lambdas: 0,
         }
     }
