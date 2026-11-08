@@ -115,7 +115,7 @@ struct Scanner {
     /// Whether the previous token can end an operand, making a following
     /// `-`, `+`, `*` or `not` binary rather than prefix.
     prev_ends_operand: bool,
-    prev_was_dot: bool,
+    previous: TokenKind,
     /// Whether a `case` began the current logical line, so `+` and `-` join
     /// complex-literal patterns, which recurse on their right operand.
     in_pattern: bool,
@@ -165,7 +165,7 @@ impl Scanner {
             levels: vec![Level::new(LevelKind::Top)],
             indent: 0,
             prev_ends_operand: false,
-            prev_was_dot: false,
+            previous: TokenKind::EndOfFile,
             in_pattern: false,
             statement: StatementContext::Start,
             total: 0,
@@ -179,8 +179,8 @@ impl Scanner {
         }
         // Ruff recovers keywords after `.` as attributes before reporting invalid syntax.
         // They must keep the spine charged, including keywords that otherwise reset it.
-        if self.prev_was_dot && kind.is_keyword() {
-            self.prev_was_dot = false;
+        if self.previous == TokenKind::Dot && kind.is_keyword() {
+            self.previous = kind;
             self.prev_ends_operand = true;
             return false;
         }
@@ -321,7 +321,10 @@ impl Scanner {
             | TokenKind::As
             | TokenKind::From
             | TokenKind::Rarrow => {
-                self.reset_tight();
+                // `yield from` recursively parses its operand; `raise ... from` starts a new one.
+                if kind != TokenKind::From || self.previous != TokenKind::Yield {
+                    self.reset_tight();
+                }
                 false
             }
             _ => false,
@@ -332,7 +335,7 @@ impl Scanner {
             _ if matches!(self.statement, StatementContext::Import(_)) => self.statement,
             _ => StatementContext::Other,
         };
-        self.prev_was_dot = kind == TokenKind::Dot;
+        self.previous = kind;
         self.prev_ends_operand = kind.is_soft_keyword()
             || matches!(
                 kind,

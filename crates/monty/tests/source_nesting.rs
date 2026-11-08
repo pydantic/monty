@@ -45,6 +45,13 @@ fn power_chain_is_rejected() {
 }
 
 #[test]
+fn yield_from_chain_keeps_recursive_operands_charged() {
+    let source = format!("{}value", "yield from ".repeat(10_000));
+    assert!(!source_within_nesting_bound(&source, 0));
+    assert_too_deeply_nested(source);
+}
+
+#[test]
 fn long_postfix_spines_are_rejected_before_ast_construction() {
     for source in [
         format!("value{}", ".x".repeat(10_000)),
@@ -74,7 +81,7 @@ fn recovered_keyword_attributes_keep_postfix_depth_charged() {
 #[test]
 fn soft_keywords_end_postfix_operands() {
     let depth = if cfg!(debug_assertions) { 18 } else { 110 };
-    for name in ["case", "match", "type"] {
+    for name in ["case", "lazy", "match", "type"] {
         for suffix in [format!("().{name}"), format!("[0].{name}")] {
             let source = format!("{name}{}", suffix.repeat(depth));
             assert!(!source_within_nesting_bound(&source, 0), "{name}");
