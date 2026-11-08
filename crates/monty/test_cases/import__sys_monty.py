@@ -53,6 +53,7 @@ assert sys.pycache_prefix is None
 # === sys.builtin_module_names is the whole importable set ===
 # `gc` is only registered in test builds, so compare against the production set.
 assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
+    '_heapq',
     'asyncio',
     'base64',
     'binascii',

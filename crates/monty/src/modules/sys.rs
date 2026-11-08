@@ -55,6 +55,7 @@ const MAXUNICODE: i64 = 0x0010_FFFF;
 /// interpreter, so this is the whole importable set rather than a C-extension
 /// subset — keep it in step with [`StandardLib`](super::StandardLib).
 const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
+    StaticStrings::UnderscoreHeapq,
     StaticStrings::Asyncio,
     StaticStrings::Base64,
     StaticStrings::Binascii,

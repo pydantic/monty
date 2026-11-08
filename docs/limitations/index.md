@@ -74,6 +74,7 @@ The following modules are present:
 | Module          | Divergences                          |
 | --------------- | ------------------------------------ |
 | `annotationlib` | [annotationlib.md](annotationlib.md) |
+| `_heapq`        | [heapq.md](heapq.md)                 |
 | `asyncio`       | [asyncio.md](asyncio.md)             |
 | `base64`        | [base64.md](base64.md)               |
 | `binascii`      | [base64.md](base64.md)               |
