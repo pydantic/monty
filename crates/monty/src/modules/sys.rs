@@ -66,6 +66,7 @@ const BUILTIN_MODULE_NAMES: &[StaticStrings] = &[
     StaticStrings::Functools,
     #[cfg(feature = "test-hooks")]
     StaticStrings::Gc,
+    StaticStrings::Heapq,
     StaticStrings::Itertools,
     StaticStrings::Json,
     StaticStrings::Math,

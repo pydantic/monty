@@ -62,6 +62,7 @@ assert tuple(name for name in sys.builtin_module_names if name != 'gc') == (
     'dataclasses',
     'datetime',
     'functools',
+    'heapq',
     'itertools',
     'json',
     'math',
