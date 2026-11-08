@@ -16,13 +16,8 @@
 // `ParentRequest`; the child replies with zero or more streamed `Print` events
 // followed by exactly one turn-ending event. A stream never interleaves two
 // turns, so a parent can be implemented with a single blocking read loop in
-// any language. The one request a parent may write before reading is the
-// first after `Configure`: the child answers the two in order, so a session
-// opens and runs its first `Feed` or `Load` in one round trip. A refused
-// `Configure` ends the session: the parent discards the child without reading
-// the reply to the request behind it.
-// Outside that alternation sit the liveness messages: a server sends `Ping`
-// between turns and the parent answers `Pong`; neither is a turn.
+// any language. Outside that alternation sit the liveness messages: a server
+// sends `Ping` between turns and the parent answers `Pong`; neither is a turn.
 //
 // Evolution rules: the schema carries its own version, independent of the
 // monty package version. A parent declares it in `Configure.protocol_version`
@@ -605,10 +600,10 @@ message ParentRequest {
 }
 
 // Configures the REPL session this child will serve until `Reset`, sent once
-// when the worker is checked out. The session's repl is materialized lazily on
-// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
-// worker can still be initialized by `Load` instead. Valid only when the
-// worker has no session yet.
+// per session, normally carrying its first request (see `first`). The
+// session's repl is materialized lazily on the first `Feed` (or restored by
+// `Load`), so a configured-but-unfed worker can still be initialized by `Load`
+// instead. Valid only when the worker has no session yet.
 message Configure {
   string script_name = 1;
   ResourceLimits limits = 2;
@@ -665,6 +660,16 @@ message Configure {
   // Local VM and supervisor clock; absent defaults to wall time in the child.
   // Remote clients leave this absent. The server selects the worker's clock.
   optional ExecutionClock execution_clock = 14;
+
+  // The session's first request, so that one round trip opens the session and
+  // runs it. If the `Configure` is refused, the request does not run and the
+  // reply is the refusal's `Error`, marked `ChildEvent.session_refused`;
+  // otherwise the reply is the request's own, carrying the acknowledgement's
+  // `execution_clock`. Absent, the reply is the acknowledgement alone.
+  oneof first {
+    Feed feed = 15;
+    Load load = 16;
+  }
 }
 
 // How a serving relay treats the session's state; children ignore it.
@@ -870,8 +875,13 @@ message ChildEvent {
   // machine. Parents must preserve an outstanding suspension when unknown.
   optional bool feed_suspended = 29;
 
-  // Configure acknowledgment. Local CPU-mode parents require this before execution.
+  // Configure acknowledgment, on the reply to `Configure` (its `first` request's
+  // reply, when it carries one). Local CPU-mode parents require this.
   optional ExecutionClock execution_clock = 30;
+
+  // Set on the `Error` refusing a `Configure` that carries a `first` request:
+  // the request did not run and the child holds no session.
+  optional bool session_refused = 31;
 }
 
 enum PrintStream {

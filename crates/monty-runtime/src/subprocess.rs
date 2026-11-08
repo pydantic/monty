@@ -17,7 +17,7 @@ use std::{io, panic, process::ExitCode, thread};
 
 use monty_proto::{
     FrameError, FrameReader, pb,
-    worker::{Child, EventSink, HandleOutcome, fatal_error_event, protocol_violation},
+    worker::{Child, EventSink, HandleOutcome, SessionBudget, fatal_error_event, protocol_violation},
     write_frame,
 };
 use monty_types::memory_limit_with_headroom;
@@ -111,7 +111,11 @@ fn serve() -> ExitCode {
 /// in the shared state machine because each entry point declares its own
 /// allocator: the wasm worker does the same thing in its own turn loop.
 fn apply_memory_limit(child: &Child) {
-    let budget = child.session_budget();
+    apply_budget(child.session_budget());
+}
+
+/// Sets the allocator's hard ceiling for `budget`.
+fn apply_budget(budget: SessionBudget) {
     let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
     monty_alloc::set_hard_limit(hard_memory_limit).expect("monty-runtime must install LimitedAllocator globally");
 }
@@ -125,6 +129,11 @@ struct StdoutSink;
 impl EventSink for StdoutSink {
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
         write_frame(&mut io::stdout(), event)
+    }
+
+    /// A session opened by its first request runs under its ceiling, not the unconfigured one.
+    fn session_opened(&mut self, budget: SessionBudget) {
+        apply_budget(budget);
     }
 }
 

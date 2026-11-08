@@ -394,6 +394,8 @@ fn configure_from_component(request: ConfigureRequest) -> pb::Configure {
         persistence: pb::Persistence::Unspecified.into(),
         // a relay's concern; the component is a child and has no profiles
         profile: None,
+        // the component's host sends the first request in a turn of its own
+        first: None,
     }
 }
 

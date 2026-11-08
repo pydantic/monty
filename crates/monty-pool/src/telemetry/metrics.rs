@@ -474,10 +474,6 @@ pub(crate) struct TurnMetrics {
     pending: Option<Suspension>,
     /// The in-flight housekeeping turn: what to label it, and when it started.
     turn: Option<(&'static str, Instant)>,
-    /// When the `Configure` opening the session was sent. Kept apart from
-    /// `turn`: the checkout pipelines the first request behind it, so that
-    /// request's turn is already open when the `Configure` reply arrives.
-    configure: Option<Instant>,
     /// Cumulative sandbox execution time as last reported, so each run
     /// contributes its own delta instead of the session total.
     reported_micros: u64,
@@ -492,7 +488,6 @@ impl TurnMetrics {
             run_active: false,
             pending: None,
             turn: None,
-            configure: None,
             reported_micros: 0,
         }
     }
@@ -506,6 +501,16 @@ impl TurnMetrics {
         );
     }
 
+    /// Resets for a new session on this worker, opened by a `Configure` sent
+    /// alone or carried by its first request. Its execution clock restarts, so
+    /// the delta ratchet has to as well.
+    pub(crate) fn begin_session(&mut self) {
+        self.feed = None;
+        self.run_active = false;
+        self.abandon_pending();
+        self.reported_micros = 0;
+    }
+
     /// Starts timing one turn; called once the request is on the wire.
     ///
     /// The resume family opens nothing — it *answers* the open suspension, so
@@ -514,15 +519,9 @@ impl TurnMetrics {
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
         let now = Instant::now();
         match &request.kind {
-            // a new session on this worker; its execution clock restarts, so
-            // the delta ratchet has to as well
             Some(pb::parent_request::Kind::Configure(_)) => {
-                self.feed = None;
-                self.run_active = false;
-                self.abandon_pending();
-                self.turn = None;
-                self.configure = Some(now);
-                self.reported_micros = 0;
+                self.begin_session();
+                self.turn = Some(("configure", now));
             }
             Some(pb::parent_request::Kind::Feed(_)) => {
                 self.abandon_pending();
@@ -586,23 +585,6 @@ impl TurnMetrics {
     /// Records one event from the worker: a suspension opens the pending
     /// round-trip, a turn-ending event closes the run or housekeeping turn.
     pub(crate) fn event(&mut self, event: &pb::ChildEvent) {
-        // the first reply after `Configure` answers it, ahead of the request
-        // pipelined behind it: an `Ok` opens the session, anything else is the
-        // configure turn's outcome and the worker is discarded after it
-        if let Some(start) = self.configure.take() {
-            let outcome = match &event.kind {
-                Some(pb::child_event::Kind::Ok(_)) => "ok",
-                Some(pb::child_event::Kind::FatalError(_)) => "fatal_error",
-                Some(pb::child_event::Kind::Shutdown(_)) => "shutdown",
-                _ => "error",
-            };
-            self.metrics.record(
-                &TURN_DURATION,
-                MetricValue::seconds(start.elapsed()),
-                &[KeyValue::new("turn", "configure"), KeyValue::new("outcome", outcome)],
-            );
-            return;
-        }
         // a load's reply stamps the restored session's cumulative clock, spent
         // in another process: re-base the delta ratchet so the next run
         // records only its own cost
@@ -1136,6 +1118,7 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
+            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1367,6 +1350,7 @@ mod tests {
                 restored_script_name: None,
                 session_id: None,
                 execution_clock: None,
+                session_refused: None,
                 feed_suspended: None,
                 feed_execution_micros: 0,
                 max_feed_duration_micros: None,
@@ -1466,6 +1450,7 @@ mod tests {
             restored_script_name: Some("dumped.py".to_owned()),
             session_id: None,
             execution_clock: None,
+            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1480,6 +1465,7 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
+            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1514,6 +1500,7 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
+            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,
@@ -1539,6 +1526,7 @@ mod tests {
             restored_script_name: None,
             session_id: None,
             execution_clock: None,
+            session_refused: None,
             feed_suspended: None,
             feed_execution_micros: 0,
             max_feed_duration_micros: None,

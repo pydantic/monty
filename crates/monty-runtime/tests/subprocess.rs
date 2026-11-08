@@ -94,6 +94,25 @@ impl ChildProc {
         .expect("failed to write request");
     }
 
+    /// Sends a `Configure` carrying the session's first request, and reads
+    /// its turn-ending event whole (prints are skipped).
+    fn send_opening(&mut self, first: pb::configure::First, configure: pb::Configure) -> pb::ChildEvent {
+        self.send(pb::parent_request::Kind::Configure(pb::Configure {
+            first: Some(first),
+            ..configure
+        }));
+        loop {
+            let event = self
+                .reader
+                .read::<pb::ChildEvent>()
+                .expect("failed to read event")
+                .expect("unexpected EOF from child");
+            if !matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+                return event;
+            }
+        }
+    }
+
     /// Reads a single event.
     fn recv(&mut self) -> pb::child_event::Kind {
         self.reader
@@ -341,6 +360,61 @@ fn runtime_error_preserves_session() {
     // the session survives the error, including earlier globals
     assert_eq!(child.feed_complete("kept + 1"), MontyObject::int(42));
     child.shutdown();
+}
+
+/// A `Configure` can carry the session's first `Feed`: one reply, stamped with
+/// the acknowledged clock, under the session's limits.
+#[test]
+fn a_first_feed_opens_its_session() {
+    let mut child = ChildProc::spawn();
+    let configure = pb::Configure {
+        limits: Some(pb::ResourceLimits {
+            max_feed_duration_micros: Some(100_000),
+            ..Default::default()
+        }),
+        execution_clock: Some(pb::ExecutionClock::Wall as i32),
+        os_policy: Some((&OsPolicy::default()).into()),
+        ..configure()
+    };
+    let event = child.send_opening(first_feed("while True:\n    pass"), configure);
+    assert_eq!(event.execution_clock, Some(pb::ExecutionClock::Wall as i32));
+    assert_eq!(event.session_refused, None);
+    let error = expect_error(event.kind.expect("event kind"));
+    assert_eq!(error.exc_type, "TimeoutError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A refused `Configure` is the reply, and the first request it carries never runs.
+#[test]
+fn a_refused_configure_runs_nothing() {
+    let mut child = ChildProc::spawn();
+    let configure = pb::Configure {
+        execution_clock: Some(99),
+        ..configure()
+    };
+    let event = child.send_opening(first_feed("print('ran')"), configure);
+    assert_eq!(event.session_refused, Some(true));
+    let error = expect_error(event.kind.expect("event kind"));
+    assert_eq!(
+        error.message.as_deref(),
+        Some("protocol violation: invalid execution_clock")
+    );
+    // nothing opened, so the worker can still be configured
+    child.create_repl();
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A first `Feed` of `code` with no inputs.
+fn first_feed(code: &str) -> pb::configure::First {
+    pb::configure::First::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs: vec![].into(),
+        values: None,
+        skip_type_check: false,
+        cwd: "/".to_owned(),
+    })
 }
 
 // =============================================================================

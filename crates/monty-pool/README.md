@@ -23,12 +23,12 @@ fails to spawn is retried with a doubling backoff. Remote pools never refill.
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
-state cannot be trusted back into the pool. The session's `Configure` goes out with its first
-request rather than in a turn of its own, so a worker refusing it (an invalid `os_policy`, a
-clock it cannot serve) fails that first `feed` / `restore`, which also ends the session; a
-checkout that is finished without a request never configures its worker.
-The `Configure` reply is awaited under `request_timeout`, and the first request's duration limits
-start when it arrives, so a worker's start-up is never charged to them.
+state cannot be trusted back into the pool. The session's `Configure` carries its first `feed` /
+`restore` (`Configure.first`) rather than taking a turn of its own, so a worker refusing it (an
+invalid `os_policy`, a clock it cannot serve) fails that request, which never runs, and ends the
+session; a checkout that is finished without a request never configures its worker.
+`Checkout::open`, and a first `dump` or `install_dependencies`, send it alone and wait for the reply.
+The first request's duration backstop also covers the start-up of a freshly spawned worker.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
@@ -332,7 +332,7 @@ had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
 
 A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`, set once the
-session opens: its first request opens it, or `Checkout::open` does so alone and waits for the reply;
+session opens (call `Checkout::open` to open it before any request);
 `ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
 `ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
 subprocess workers ignore it too.

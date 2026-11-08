@@ -14,7 +14,6 @@ import {
   droppingRelay,
   endWithStatus,
   messages,
-  OK_EVENT,
   PING_EVENT,
   protoFields,
   refusingServer,
@@ -263,8 +262,8 @@ test('dump bytes from a plain relay load into a new session', async () => {
 })
 
 test('a dropped connection raises MontyDisconnectError and loses the session', async () => {
-  // request 1 is Configure, 2 the first feed
-  const { url } = await server(droppingRelay(3))
+  // request 1 is the Configure, carrying the first feed
+  const { url } = await server(droppingRelay(2))
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout()
   t.is(await session.feedRun('1 + 1'), 2)
@@ -284,7 +283,7 @@ test('a storing server names the session and a shutdown is resumed', async () =>
   const { url } = await server(new StoringServer().handle)
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   const session = await pool.checkout()
-  // the deprecated getter is unset until the first run carries the Configure out
+  // the deprecated getter is unset until the first run carries the Configure
   t.is(session.sessionId, undefined)
   await session.feedRun('x = 20')
   t.deepEqual(session.sessionId, Buffer.from('sess-1'))
@@ -294,7 +293,7 @@ test('a storing server names the session and a shutdown is resumed', async () =>
   t.is(await session.feedRun('x + 1'), 21)
   await session.close()
   // the ID the resume adopted outlives the checkout
-  t.deepEqual(await session.getSessionId(), Buffer.from('sess-3'))
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-2'))
 })
 
 test('getSessionId opens the session before any request', async () => {
@@ -303,7 +302,6 @@ test('getSessionId opens the session before any request', async () => {
   await using session = await pool.checkout()
   t.deepEqual(await session.getSessionId(), Buffer.from('sess-1'))
   t.is(await session.feedRun('x = 20'), null)
-  t.deepEqual(await session.getSessionId(), Buffer.from('sess-1'))
 })
 
 test('getSessionId raises a refused configuration and loses the session', async () => {
@@ -327,7 +325,7 @@ test('with autoResume off a shutdown raises MontyShutdown naming the session', a
   }
   await using session = await pool.checkout()
   await session.loadSession(Buffer.from('sess-1'))
-  t.deepEqual(await session.getSessionId(), Buffer.from('sess-3'))
+  t.deepEqual(await session.getSessionId(), Buffer.from('sess-2'))
   t.is(await session.feedRun('x + 1'), 21)
 })
 
@@ -347,9 +345,8 @@ test('every close() call waits for a finished session stream to end', async () =
   const { url } = await server(async (stream) => {
     admit(stream)
     const requests = messages(stream)
-    await requests.next() // Configure
-    stream.write(OK_EVENT)
-    // drain until the half-close, then hold the response side open
+    // a session that is never fed sends nothing: drain until the half-close,
+    // then hold the response side open
     for await (const _ of requests);
     ended()
     await released
@@ -434,17 +431,14 @@ test('a CPU-mode server requires a finite requestTimeout', async () => {
   const session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyConfigurationError })
   t.is(error.message, 'CPU execution clock requires a finite client request_timeout')
-  // the feed was pipelined behind the Configure, but nothing follows it
-  t.is(extraRequests.length, 1)
+  t.deepEqual(extraRequests, [])
 })
 
 test('a status ending the stream is reported with its code, message and cause', async () => {
   const { url } = await server(async (stream) => {
     admit(stream)
     const requests = messages(stream)
-    await requests.next() // Configure
-    stream.write(OK_EVENT)
-    await requests.next() // Feed
+    await requests.next() // Configure, carrying the first feed
     endWithStatus(stream, status.DEADLINE_EXCEEDED, 'idle timeout', 'idle_timeout')
   })
   await using pool = await MontyRemote.create(url, { requestTimeout: 30, autoResume: false })
@@ -465,9 +459,7 @@ test('a stream the server simply ends reports an OK status', async () => {
   const { url } = await server(async (stream) => {
     admit(stream)
     const requests = messages(stream)
-    await requests.next() // Configure
-    stream.write(OK_EVENT)
-    await requests.next() // Feed
+    await requests.next() // Configure, carrying the first feed
     stream.end()
   })
   await using pool = await MontyRemote.create(url, { requestTimeout: 30, autoResume: false })

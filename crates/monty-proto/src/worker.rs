@@ -56,6 +56,11 @@ use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 pub trait EventSink {
     /// Frames and emits one event.
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError>;
+
+    /// Called once a `Configure` carrying a first request is accepted, before
+    /// that request runs: a host bounding the process from outside (the
+    /// subprocess shell's allocator ceiling) must apply the session's budget first.
+    fn session_opened(&mut self, _budget: SessionBudget) {}
 }
 
 /// An [`EventSink`] that appends framed events to an in-memory buffer.
@@ -263,7 +268,7 @@ impl Child {
         };
 
         let mut event = match kind {
-            pb::parent_request::Kind::Configure(configure) => {
+            pb::parent_request::Kind::Configure(mut configure) => {
                 // An unsupported protocol version is fatal: the parent may frame
                 // or interpret later messages differently, so serving it risks a
                 // silent desync. Emit the fatal last gasp and stop the child.
@@ -271,7 +276,12 @@ impl Child {
                     sink.send(&self.fatal_event(&refusal))?;
                     return Ok(HandleOutcome::Fatal);
                 }
-                self.handle_configure(configure)
+                let first = configure.first.take();
+                let reply = self.handle_configure(configure);
+                match first {
+                    Some(first) => self.handle_first(first, reply, sink),
+                    None => reply,
+                }
             }
             pb::parent_request::Kind::Feed(feed) => self.handle_repl_feed(feed, sink),
             // The Monty sandbox has no host interpreter to install packages for;
@@ -503,6 +513,28 @@ impl Child {
         }
     }
 
+    /// Runs the first request a `Configure` carried, given that `Configure`'s
+    /// reply: a refusal answers for the request, which never runs, while an
+    /// accepted session arms its budget first and lends its clock to the reply.
+    fn handle_first(
+        &mut self,
+        first: pb::configure::First,
+        mut configured: pb::ChildEvent,
+        sink: &mut dyn EventSink,
+    ) -> pb::ChildEvent {
+        if !matches!(configured.kind, Some(pb::child_event::Kind::Ok(_))) {
+            configured.session_refused = Some(true);
+            return configured;
+        }
+        sink.session_opened(self.session_budget());
+        let mut event = match first {
+            pb::configure::First::Feed(feed) => self.handle_repl_feed(feed, sink),
+            pb::configure::First::Load(load) => self.handle_load(&load),
+        };
+        event.execution_clock = configured.execution_clock;
+        event
+    }
+
     /// Materializes the repl from the stored config the first time the session
     /// runs (feed/dump), applying the config's script name, limits, and
     /// type-check setup. A no-op once the repl exists; errors only if the
@@ -542,6 +574,8 @@ impl Child {
             persistence: _,
             // a relay's concern; the child has no profiles
             profile: _,
+            // taken and run when the `Configure` arrived
+            first: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;

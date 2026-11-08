@@ -8,7 +8,7 @@ use std::{
 };
 
 use super::{Clock, parse_start_time};
-use crate::cpu::{self, Baseline, Failure, Monitor};
+use crate::cpu::{self, Failure, Monitor};
 
 /// A stand-in child that idles until the test kills it.
 fn sleeper() -> Child {
@@ -93,11 +93,11 @@ async fn a_crossed_limit_is_confirmed_before_the_worker_is_failed() {
     let mut impostor = clock.clone();
     impostor.start_time += 1;
 
-    let genuine = Monitor::new(Baseline::sample(clock).unwrap(), Duration::ZERO);
+    let genuine = Monitor::new(clock, Duration::ZERO).unwrap();
     let outcome = cpu::run(Some(&genuine), None, pending::<()>()).await;
     assert!(matches!(outcome, Err(Failure::Limit { .. })));
 
-    let reused = Monitor::new(Baseline::sample(impostor).unwrap(), Duration::ZERO);
+    let reused = Monitor::new(impostor, Duration::ZERO).unwrap();
     let Err(Failure::Clock(error)) = cpu::run(Some(&reused), None, pending::<()>()).await else {
         panic!("an unconfirmed sample over the limit must not fail the worker as a limit");
     };
@@ -112,7 +112,7 @@ fn the_final_charge_is_confirmed() {
     let mut child = sleeper();
     let mut clock = Clock::for_child(child.id(), process::id()).unwrap();
     clock.start_time += 1;
-    let monitor = Monitor::new(Baseline::sample(clock).unwrap(), Duration::MAX);
+    let monitor = Monitor::new(clock, Duration::MAX).unwrap();
     assert_eq!(monitor.elapsed().unwrap_err().to_string(), "child has already exited");
     child.kill().unwrap();
     child.wait().unwrap();

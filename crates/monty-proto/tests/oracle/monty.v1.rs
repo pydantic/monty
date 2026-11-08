@@ -4,6 +4,7 @@
     clippy::pedantic,
     clippy::use_self,
     clippy::absolute_paths,
+    clippy::large_enum_variant,
     missing_docs,
     dead_code
 )]
@@ -767,10 +768,10 @@ pub mod parent_request {
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
-/// when the worker is checked out. The session's repl is materialized lazily on
-/// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
-/// worker can still be initialized by `Load` instead. Valid only when the
-/// worker has no session yet.
+/// per session, normally carrying its first request (see `first`). The
+/// session's repl is materialized lazily on the first `Feed` (or restored by
+/// `Load`), so a configured-but-unfed worker can still be initialized by `Load`
+/// instead. Valid only when the worker has no session yet.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Configure {
     #[prost(string, tag = "1")]
@@ -842,6 +843,28 @@ pub struct Configure {
     /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// The session's first request, so that one round trip opens the session and
+    /// runs it. If the `Configure` is refused, the request does not run and the
+    /// reply is the refusal's `Error`, marked `ChildEvent.session_refused`;
+    /// otherwise the reply is the request's own, carrying the acknowledgement's
+    /// `execution_clock`. Absent, the reply is the acknowledgement alone.
+    #[prost(oneof = "configure::First", tags = "15, 16")]
+    pub first: ::core::option::Option<configure::First>,
+}
+/// Nested message and enum types in `Configure`.
+pub mod configure {
+    /// The session's first request, so that one round trip opens the session and
+    /// runs it. If the `Configure` is refused, the request does not run and the
+    /// reply is the refusal's `Error`, marked `ChildEvent.session_refused`;
+    /// otherwise the reply is the request's own, carrying the acknowledgement's
+    /// `execution_clock`. Absent, the reply is the acknowledgement alone.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum First {
+        #[prost(message, tag = "15")]
+        Feed(super::Feed),
+        #[prost(message, tag = "16")]
+        Load(super::Load),
+    }
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1023,9 +1046,14 @@ pub struct ChildEvent {
     /// machine. Parents must preserve an outstanding suspension when unknown.
     #[prost(bool, optional, tag = "29")]
     pub feed_suspended: ::core::option::Option<bool>,
-    /// Configure acknowledgment. Local CPU-mode parents require this before execution.
+    /// Configure acknowledgment, on the reply to `Configure` (its `first` request's
+    /// reply, when it carries one). Local CPU-mode parents require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// Set on the `Error` refusing a `Configure` that carries a `first` request:
+    /// the request did not run and the child holds no session.
+    #[prost(bool, optional, tag = "31")]
+    pub session_refused: ::core::option::Option<bool>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }

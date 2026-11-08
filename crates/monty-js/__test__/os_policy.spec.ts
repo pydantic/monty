@@ -1,7 +1,6 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 import type { OsPolicy, MontyDate, MontyDateTime } from '@pydantic/monty'
-import { MontyRuntimeError } from '@pydantic/monty'
 import { isWasm } from './env.js'
 import { setupPool } from './helpers.js'
 
@@ -166,20 +165,12 @@ test('invalid datetime and timezone values are rejected before the checkout', as
     instanceOf: RangeError,
     message: 'timezone offsetSeconds must be an integer number of seconds',
   })
-  // the native binding resolves the name before spawning; the wasm worker is
-  // the first to see it, on the session's first turn (which carries the Configure)
-  if (isWasm) {
-    await using session = await pool().checkout({ osPolicy: { timezone: 'Mars/Olympus' } })
-    const refused = await t.throwsAsync(() => session.feedRun('1'), { instanceOf: MontyRuntimeError })
-    t.is(
-      refused.message,
-      "RuntimeError: protocol violation: invalid os_policy: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'",
-    )
-  } else {
-    await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: 'Mars/Olympus' } }), {
-      message: "timezone: unknown timezone 'Mars/Olympus'",
-    })
-  }
+  // the native binding resolves the name before spawning; the wasm worker is the first to see it
+  await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: 'Mars/Olympus' } }), {
+    message: isWasm
+      ? "Configure failed: protocol violation: invalid os_policy: invalid value for SandboxTimeZone.named: unknown timezone 'Mars/Olympus'"
+      : "timezone: unknown timezone 'Mars/Olympus'",
+  })
   await t.throwsAsync(() => pool().checkout({ osPolicy: { timezone: { name: 'CET' } as unknown as 'utc' } }), {
     instanceOf: TypeError,
   })

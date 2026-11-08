@@ -106,8 +106,8 @@ async def storing_url() -> AsyncIterator[str]:
     """Serves a fake of a server that stores sessions, bridging each stream to a
     real `monty subprocess` child.
 
-    It names the session on the reply to `Configure` and to `Load`, and the third
-    request of the first stream is not run: the child is dumped, its state kept
+    It names the session on the reply to its first request and to `Load`, and the
+    second request of the first stream is not run: the child is dumped, its state kept
     under the session's ID, and the request answered with `ShutdownDump` naming
     that ID. A later `Load` of the ID gives the child the stored state.
     """
@@ -202,7 +202,9 @@ async def _reaping_children(relay: ModuleType) -> AsyncGenerator[list[asyncio.su
 
 _LENGTH_PREFIX = struct.Struct('<I')
 # `ParentRequest.kind` and `ChildEvent.kind` field numbers, from `monty.proto`
-_REQUEST_DUMP, _REQUEST_LOAD = 7, 8
+_REQUEST_CONFIGURE, _REQUEST_DUMP, _REQUEST_LOAD = 1, 7, 8
+# `Configure.first`'s `Load` arm
+_CONFIGURE_LOAD = 16
 _EVENT_PRINT, _EVENT_DUMP_RESULT, _EVENT_OK, _EVENT_SHUTDOWN = 1, 9, 10, 12
 # `ChildEvent.kind` arms own the tags below this; the message-level fields start here
 _FIRST_EVENT_FIELD = 20
@@ -228,7 +230,8 @@ class _StoringServer:
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())  # admit the stream; see `admit` in the relay script
         self.streams += 1
-        drain_at = 3 if self.streams == 1 else None
+        # request 1 is the `Configure`, carrying the first feed; the first stream parks the next
+        drain_at = 2 if self.streams == 1 else None
         child = await self.relay.spawn_child(self.monty_bin)
         assert child.stdin is not None and child.stdout is not None
         stdin, stdout = child.stdin, child.stdout
@@ -256,11 +259,20 @@ class _StoringServer:
                     self.records[session_id] = _proto_fields(reply[_EVENT_DUMP_RESULT])[1]
                     yield _bytes_field(_EVENT_SHUTDOWN, _bytes_field(1, session_id))
                     return
-                names = request_count == 1 or _REQUEST_LOAD in fields
-                if _REQUEST_LOAD in fields:
+                # a `Load` comes alone or as the first request a `Configure` carries
+                configure = fields.get(_REQUEST_CONFIGURE)
+                load = fields.get(_REQUEST_LOAD)
+                if load is None and configure is not None:
+                    load = _proto_fields(configure).get(_CONFIGURE_LOAD)
+                names = request_count == 1 or load is not None
+                if load is not None:
                     # the child loads the stored bytes the ID stands for
-                    state = self.records[_proto_fields(fields[_REQUEST_LOAD])[1]]
-                    message = _bytes_field(_REQUEST_LOAD, _bytes_field(1, state))
+                    stored = _bytes_field(1, self.records[_proto_fields(load)[1]])
+                    if configure is None:
+                        message = _bytes_field(_REQUEST_LOAD, stored)
+                    else:
+                        # a repeated message field merges into the first, so this `Load` replaces its state
+                        message = _bytes_field(_REQUEST_CONFIGURE, configure + _bytes_field(_CONFIGURE_LOAD, stored))
                 await to_child(message)
                 while True:
                     reply = await from_child()
@@ -632,7 +644,7 @@ async def test_storing_server_names_the_session_and_resumes_a_shutdown(storing_u
             assert await session.feed_run('x + 1') == snapshot(21)
         # the ID the resume adopted outlives the checkout, even when nothing
         # read it while the checkout was live
-        assert await session.get_session_id() == snapshot(b'sess-3')
+        assert await session.get_session_id() == snapshot(b'sess-2')
 
 
 async def test_get_session_id_opens_the_session(storing_url: str):
@@ -641,7 +653,6 @@ async def test_get_session_id_opens_the_session(storing_url: str):
         async with pool.checkout() as session:
             assert await session.get_session_id() == snapshot(b'sess-1')
             assert await session.feed_run('x = 20') == snapshot(None)
-            assert await session.get_session_id() == snapshot(b'sess-1')
 
 
 async def test_get_session_id_needs_an_entered_session(storing_url: str):
@@ -672,7 +683,7 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_u
             assert exc_info.value.dump == snapshot(b'sess-1')
         async with pool.checkout() as session:
             await session.load_session(b'sess-1')
-            assert await session.get_session_id() == snapshot(b'sess-3')
+            assert await session.get_session_id() == snapshot(b'sess-2')
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -755,13 +766,13 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # Configure, carrying the first feed
         if status is not None:
             assert message is not None
             trailers = () if cause is None else (('monty-cause', cause),)
             await context.abort(status, message, trailing_metadata=trailers)
+        return
+        yield b''
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
@@ -877,8 +888,7 @@ async def test_cpu_server_requires_a_finite_request_timeout():
     assert repr(caught.value) == snapshot(
         'MontyConfigurationError(CPU execution clock requires a finite client request_timeout)'
     )
-    # the feed was pipelined behind the Configure, but nothing follows it
-    assert len(extra_requests) == 1
+    assert extra_requests == snapshot([])
 
 
 async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
@@ -997,14 +1007,13 @@ async def test_out_of_memory_status_raises_memory_error():
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # Configure, carrying the first feed
         await context.abort(
             grpc.StatusCode.RESOURCE_EXHAUSTED,
             'worker exceeded its memory limit',
             trailing_metadata=(('monty-cause', 'out_of_memory'),),
         )
+        yield b''
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url) as pool:

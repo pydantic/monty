@@ -9,6 +9,7 @@ mod convert;
 mod decode_budget;
 mod frame;
 mod generated;
+mod opening;
 // The gRPC transport's path, codec and status vocabulary; opt-in because it
 // links tonic, which stdio-only consumers (the runtime) never need.
 #[cfg(feature = "grpc")]
@@ -109,5 +110,6 @@ pub use frame::{
     encode_framed_into, encode_to_capped_vec, exceeds_max_frame_len, write_frame,
 };
 pub use generated::pb;
+pub use opening::OpeningRequest;
 pub use requirement::validate_requirement;
 pub use wire::{WireArena, WireFunctionCall, WireIndexes, WireNamedTuple, WireNodePairs};

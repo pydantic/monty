@@ -6,7 +6,7 @@ use std::{
     borrow::Cow,
     fmt,
     future::{Future, ready},
-    io, mem,
+    mem,
     path::Path,
     pin::Pin,
     process::ExitStatus,
@@ -16,7 +16,7 @@ use std::{
 
 use monty_fs::{MountCallOutcome, MountMode, MountRoot, MountTable, OverlayState};
 use monty_proto::{
-    BudgetVec, FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
+    FrameError, PROTOCOL_VERSION, ext_result_to_proto, future_results_to_proto, import_stubs_from_answer,
     named_values_to_proto, os_call_from_proto, pb, validate_requirement,
 };
 use monty_types::{
@@ -27,10 +27,7 @@ use monty_types::{
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
-use tokio::{
-    task::spawn_blocking,
-    time::{Instant as DeadlineInstant, timeout},
-};
+use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
@@ -415,9 +412,9 @@ pub struct Checkout {
     /// `None` after `finish()` or after the worker was discarded on error.
     worker: Option<Worker>,
     pool: Arc<PoolInner>,
-    /// The `Configure` that opens the session, sent ahead of the first request
-    /// in the same write (see [`Self::open_session`]), or alone by [`Checkout::open`].
-    pending_configure: Option<Box<pb::ParentRequest>>,
+    /// The `Configure` opening the session, which carries its first `Feed` /
+    /// `Load` (see [`Self::request_turn`]) or goes alone from [`Checkout::open`].
+    pending_configure: Option<Box<pb::Configure>>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
     /// Set while a turn's I/O is in flight; still set on the next call only
@@ -435,9 +432,6 @@ pub struct Checkout {
     /// refused `Load` cannot reset the suspension count, and an abort of the
     /// re-announced suspension does not discard the dump's limit.
     pending_load_budget: Option<SessionBudget>,
-    /// The child CPU sample [`Self::open_session`] takes before writing a
-    /// pipelined execution turn, so that turn's monitor charges from the send.
-    cpu_baseline: Option<cpu::Baseline>,
     /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when it fires.
     armed_deadline: Option<Duration>,
@@ -680,6 +674,22 @@ fn is_execution_turn(request: &pb::ParentRequest) -> bool {
     )
 }
 
+/// Recognizes the requests the `Configure` opening a session can carry.
+fn opens_session(request: &pb::ParentRequest) -> bool {
+    matches!(
+        request.kind,
+        Some(pb::parent_request::Kind::Feed(_) | pb::parent_request::Kind::Load(_))
+    )
+}
+
+/// Whether `event` ends its turn: anything but a streamed `Print` or a liveness `Ping`.
+fn ends_turn(event: &pb::ChildEvent) -> bool {
+    !matches!(
+        event.kind,
+        Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::Ping(_))
+    )
+}
+
 /// Recognizes turn-ending events that await a host answer.
 fn is_suspension(event: &pb::ChildEvent) -> bool {
     matches!(
@@ -784,10 +794,10 @@ pub(crate) struct Redial {
 }
 
 impl Checkout {
-    /// Prepares `Configure` for a fresh worker without sending it: the first
-    /// request carries it out (see [`Self::open_session`]), so a refused
-    /// configuration surfaces as that request's error. The worker materializes
-    /// the repl lazily on the first feed, or restores one via `load_snapshot`.
+    /// Prepares `Configure` for a fresh worker without sending it: it carries
+    /// the first request, so a refused configuration surfaces as that
+    /// request's error. The worker materializes the repl lazily on the first
+    /// feed, or restores one via `load_snapshot` instead.
     ///
     /// `redial` is kept for [`PoolConfig::auto_resume`]; `None` disables it.
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig, redial: Option<Redial>) -> Self {
@@ -803,7 +813,6 @@ impl Checkout {
             abort_in_flight: false,
             budget,
             pending_load_budget: None,
-            cpu_baseline: None,
             armed_deadline: None,
             restored_script_name: None,
             session_id: None,
@@ -817,9 +826,9 @@ impl Checkout {
     }
 
     /// Restores a dumped session into this checkout's not-yet-fed worker (the
-    /// `Load` carries the session's `Configure` out when it is the first
-    /// request), returning the re-announced suspension event when the dump was
-    /// taken mid-feed (`None` for an idle, between-feeds dump).
+    /// session's `Configure` carries the `Load` when it is the first request),
+    /// returning the re-announced suspension event when the dump was taken
+    /// mid-feed (`None` for an idle, between-feeds dump).
     ///
     /// This is the low-level restore both `session.load_session` (idle dumps) and
     /// `session.load_snapshot` (suspended dumps) drive: the caller inspects the
@@ -865,14 +874,21 @@ impl Checkout {
         self.begin_load();
         self.pending = None;
         self.restored_script_name = None;
+        // a load names a new session; a storing relay's reply supplies its ID
+        let session_id = self.session_id.take();
         self.feed_mounts = feed_mounts;
-        // a load names a new session: the reply adopting the dump supplies its
-        // ID (see `turn_io`), while a refusal keeps the one the session had
         let request = request(pb::parent_request::Kind::Load(pb::Load { state: state.into() }));
         let outcome = self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
             .await;
         self.end_load();
+        // A `Runtime` error that named no session leaves the worker's as it
+        // was — a frame-size rejection before the send, or a load the worker
+        // refused — so it keeps the ID it had, which a storing relay still
+        // holds it under. (An aborted over-budget load named the new one.)
+        if matches!(outcome, Err(PoolError::Runtime(_))) && self.session_id.is_none() {
+            self.session_id = session_id;
+        }
         let event = match outcome? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
@@ -1252,6 +1268,7 @@ impl Checkout {
         for requirement in &requirements {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
+        self.open().await?;
         let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
             requirements: requirements.into(),
         }));
@@ -1267,6 +1284,7 @@ impl Checkout {
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
+        self.open().await?;
         let request = request(pb::parent_request::Kind::Dump(pb::Dump {}));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
@@ -1370,16 +1388,26 @@ impl Checkout {
         self.session_id.as_deref()
     }
 
-    /// Opens the session now: sends its pending `Configure` on its own and
-    /// waits for the reply, which is where a storing relay names the session.
-    /// A no-op once the session is open, even if its worker has since gone.
-    /// Otherwise the first request carries the `Configure` out, saving this round trip.
+    /// Opens the session now, sending its `Configure` alone and waiting for the
+    /// reply, which is where a storing relay names the session. A no-op once the
+    /// session is open, even if its worker has since gone. Otherwise the
+    /// `Configure` carries the first `Feed` / `Load`, saving this round trip.
     pub async fn open(&mut self) -> Result<(), PoolError> {
-        if self.pending_configure.is_none() {
+        let Some(configure) = self.pending_configure.take() else {
             return Ok(());
+        };
+        let request = request(pb::parent_request::Kind::Configure(*configure));
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await {
+            Ok(ControlEvent::Ok) => Ok(()),
+            Ok(other) => Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+            // the session never opened, so the worker goes with the refusal
+            Err(err) => {
+                self.discard_worker();
+                Err(err)
+            }
         }
-        self.ensure_ready()?;
-        self.open_session(None).await.map(drop)
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -1401,18 +1429,25 @@ impl Checkout {
 
     /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        if self.budget.execution_clock == ExecutionClock::Cpu {
+        // A remote server reports its clock only with the first request's
+        // reply. One using CPU time requires a finite `request_timeout`, which
+        // then bounds that request in place of a wall-time backstop.
+        let clock_unknown = self.pending_configure.is_some()
+            && self.pool.config.transport.is_remote()
+            && self.pool.config.request_timeout.is_some();
+        if self.budget.execution_clock == ExecutionClock::Cpu || clock_unknown {
             return None;
         }
         self.budget
             .backstop_deadline(DurationGraces::from_config(&self.pool.config))
     }
 
-    /// Supervises this turn's OS CPU, independent of worker reports, from the
-    /// baseline `open_session` took or a fresh sample.
+    /// Takes a fresh OS CPU baseline for this turn, independent of worker reports.
     async fn cpu_monitor(&mut self, request: &pb::ParentRequest) -> Result<Option<cpu::Monitor>, PoolError> {
-        let baseline = self.cpu_baseline.take();
-        if !self.supervises_cpu(request) {
+        if self.budget.execution_clock != ExecutionClock::Cpu || self.pool.config.transport.is_remote() {
+            return Ok(None);
+        }
+        if !is_execution_turn(request) {
             return Ok(None);
         }
         let Some(limit) = cpu::allowance(
@@ -1424,27 +1459,11 @@ impl Checkout {
         ) else {
             return Ok(None);
         };
-        let baseline = match baseline {
-            Some(baseline) => Ok(baseline),
-            None => self.sample_cpu()?,
-        };
-        match baseline {
-            Ok(baseline) => Ok(Some(cpu::Monitor::new(baseline, limit))),
+        let clock = self.worker.as_ref().ok_or(PoolError::Finished)?.cpu_clock();
+        match clock.and_then(|clock| cpu::Monitor::new(clock, limit)) {
+            Ok(monitor) => Ok(Some(monitor)),
             Err(error) => Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
         }
-    }
-
-    /// Whether the parent measures `request`'s CPU: local CPU-clock execution turns only.
-    fn supervises_cpu(&self, request: &pb::ParentRequest) -> bool {
-        self.budget.execution_clock == ExecutionClock::Cpu
-            && !self.pool.config.transport.is_remote()
-            && is_execution_turn(request)
-    }
-
-    /// Samples the worker's CPU clock as a turn's baseline; the outer error is a finished checkout.
-    fn sample_cpu(&self) -> Result<io::Result<cpu::Baseline>, PoolError> {
-        let worker = self.worker.as_ref().ok_or(PoolError::Finished)?;
-        Ok(worker.cpu_clock().and_then(cpu::Baseline::sample))
     }
 
     /// Checks a final sample because a ready I/O future can run past the CPU budget.
@@ -1561,7 +1580,7 @@ impl Checkout {
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
-        match worker.send(&abort).await {
+        match worker.send(&abort, None).await {
             Ok(()) => {
                 self.abort_in_flight = true;
                 Ok(true)
@@ -1581,9 +1600,8 @@ impl Checkout {
     /// A `Shutdown` naming what to load is resumed on a new worker (see
     /// [`PoolConfig::auto_resume`]); any other ends the session.
     ///
-    /// The session's first request also opens it (see [`Self::open_session`]);
-    /// an execution turn then re-derives its deadline from the budget the
-    /// `Configure` reply settled, timed from that reply.
+    /// A session's `Configure` carries its first `Feed` / `Load`, so one round
+    /// trip opens the session and runs the request.
     async fn request_turn(
         &mut self,
         request: &pb::ParentRequest,
@@ -1591,18 +1609,16 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
-        let outcome = match self.open_session(Some(request)).await {
-            Ok(None) => self.turn(request, deadline, None, on_print).await,
-            Ok(Some(opened)) => {
-                let deadline = if is_execution_turn(request) {
-                    min_deadline(self.pool.config.request_timeout, self.backstop_deadline())
-                } else {
-                    deadline
-                };
-                self.turn(request, deadline, Some(opened), on_print).await
-            }
-            Err(err) => Err(err),
-        };
+        let opening = self.pending_configure.take_if(|_| opens_session(request));
+        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
+        let monitor = self.cpu_monitor(request).await?;
+        self.turn_in_flight = true;
+        self.armed_deadline = deadline;
+        let turn = self.turn_io(request, opening.as_deref(), &mut *on_print);
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, turn).await;
+        let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
+        self.turn_in_flight = false;
+        self.keep_unsent_configure(opening);
         match outcome {
             // boxed: it recurses into this turn, and its state machine must not
             // enlarge every turn's future for a path taken once per shutdown.
@@ -1613,171 +1629,12 @@ impl Checkout {
         }
     }
 
-    /// One bounded turn: send `request`, then stream and classify its reply.
-    /// `opened` is when [`Self::open_session`] opened the session behind
-    /// `request`, already queued: the turn is timed from then, not resent.
-    async fn turn(
-        &mut self,
-        request: &pb::ParentRequest,
-        deadline: Option<Duration>,
-        opened: Option<DeadlineInstant>,
-        on_print: OnPrint<'_>,
-    ) -> Result<ControlEvent, PoolError> {
-        let started = opened.unwrap_or_else(DeadlineInstant::now);
-        let wall_deadline = deadline.and_then(|limit| started.checked_add(limit));
-        let monitor = self.cpu_monitor(request).await?;
-        self.turn_in_flight = true;
-        self.armed_deadline = deadline;
-        let send = opened.is_none();
-        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io(request, send, on_print)).await;
-        let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
-        self.turn_in_flight = false;
-        outcome
-    }
-
-    /// Opens the session a pending `Configure` describes: sends it, queues
-    /// `request` (if any) behind it and reads only the `Configure` reply, bounded by
-    /// `request_timeout` alone, as a checkout's `Configure` turn would be. The
-    /// child answers in order, so pipelining the two costs the first turn no
-    /// round trip. Returns when the reply arrived, which is when the request's
-    /// turn starts: a worker's start-up is never charged to it, but the rest of
-    /// its write is (see [`Worker::queue`]). `None` when no session was pending.
-    ///
-    /// A refused `Configure` ends the session: the worker is discarded, and the
-    /// request's own reply (an error for the missing session) is never read.
-    /// `Reset` and `Shutdown` drop the pending `Configure` instead: nothing
-    /// ran, so there is no session to open.
-    async fn open_session(
-        &mut self,
-        request: Option<&pb::ParentRequest>,
-    ) -> Result<Option<DeadlineInstant>, PoolError> {
-        if request.is_some_and(|request| {
-            matches!(
-                request.kind,
-                Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
-            )
-        }) {
-            self.pending_configure = None;
-        }
-        let Some(configure) = self.pending_configure.take() else {
-            return Ok(None);
-        };
-        let timeout = self.pool.config.request_timeout;
-        let wall_deadline = timeout.and_then(|limit| DeadlineInstant::now().checked_add(limit));
-        self.turn_in_flight = true;
-        self.armed_deadline = timeout;
-        let outcome = cpu::run(None, wall_deadline, self.open_session_io(&configure, request)).await;
-        let outcome = self.finish_cpu_turn(None, wall_deadline, outcome).await;
-        self.turn_in_flight = false;
-        outcome.map(Some)
-    }
-
-    /// The body of [`Self::open_session`]: the send and the queue, then the
-    /// `Configure` reply. An oversize `request` is rejected before it is
-    /// queued, so the session still opens and the request fails as it would
-    /// have on an open session; an oversize `Configure` can never open one.
-    async fn open_session_io(
-        &mut self,
-        configure: &pb::ParentRequest,
-        request: Option<&pb::ParentRequest>,
-    ) -> Result<DeadlineInstant, PoolError> {
-        if let Err(err) = self.send_request(configure).await {
-            self.discard_worker();
-            return Err(err);
-        }
-        // CPU is charged from a sample taken once the reply is read, so under
-        // CPU supervision the request is queued only then: written sooner, the
-        // child could run part of it before that sample
-        let deferred = request.filter(|request| self.supervises_cpu(request));
-        // only an oversize request leaves the worker to open the session
-        let queued = match request {
-            Some(request) if deferred.is_none() => self.deliver(request, true).await,
-            _ => Ok(()),
-        };
-        if self.worker.is_none() {
-            return Err(queued.err().unwrap_or(PoolError::Finished));
-        }
-        loop {
-            let mut event = self.recv_event().await?;
-            match event.kind {
-                // answered by the remote transport's reader task; not a reply
-                Some(pb::child_event::Kind::Ping(_)) => {}
-                Some(pb::child_event::Kind::Ok(_)) => {
-                    // Only a storing relay names the session, here or on a
-                    // `Load` reply. A shutdown's name is left alone: a session
-                    // that never opened has nothing to resume.
-                    if let Some(session_id) = event.session_id.take() {
-                        self.session_id = Some(session_id.into_inner());
-                    }
-                    self.adopt_execution_clock(&event)?;
-                    // the reply echoes the session's limits, which can only tighten
-                    self.budget.update_from(&event);
-                    // a `Load` behind it snapshotted the budget before this reply,
-                    // and a refused `Load` restores that snapshot
-                    if let Some(saved) = &mut self.pending_load_budget {
-                        saved.execution_clock = self.budget.execution_clock;
-                        saved.update_from(&event);
-                    }
-                    queued?;
-                    let opened = DeadlineInstant::now();
-                    if let Some(request) = deferred {
-                        // queuing writes nothing: the turn's reads write it, after this sample
-                        self.deliver(request, true).await?;
-                        match self.sample_cpu()? {
-                            Ok(baseline) => self.cpu_baseline = Some(baseline),
-                            Err(error) => return Err(self.poison_supervision(cpu::Failure::Clock(error)).await),
-                        }
-                    }
-                    return Ok(opened);
-                }
-                Some(pb::child_event::Kind::Error(error)) => {
-                    let Some(exception) = error.exception else {
-                        return Err(self.protocol_violation("error event with no exception"));
-                    };
-                    let exc = match MontyException::try_from(exception) {
-                        Ok(exc) => exc,
-                        Err(err) => return Err(self.protocol_violation(format!("invalid exception payload: {err}"))),
-                    };
-                    // the session never opened; the worker goes with it
-                    self.discard_worker();
-                    return Err(PoolError::Runtime(exc));
-                }
-                Some(pb::child_event::Kind::FatalError(fatal)) => {
-                    return Err(self.fatal_error(&fatal.message).await);
-                }
-                Some(pb::child_event::Kind::Shutdown(shutdown)) => return Err(self.shutdown(shutdown)),
-                _ => return Err(self.protocol_violation("unexpected reply to Configure")),
-            }
-        }
-    }
-
-    /// Adopts the execution clock a `Configure` reply reports: a remote server
-    /// chooses its own (CPU needs a finite `request_timeout` to be supervised
-    /// here), while a subprocess must acknowledge the configured one.
-    fn adopt_execution_clock(&mut self, event: &pb::ChildEvent) -> Result<(), PoolError> {
-        let clock = match pb::ExecutionClock::try_from(event.execution_clock.unwrap_or_default()) {
-            Ok(clock) => ExecutionClock::from(clock),
-            Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
-        };
-        if self.pool.config.transport.is_remote() {
-            if clock == ExecutionClock::Cpu
-                && self
-                    .pool
-                    .config
-                    .request_timeout
-                    .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
-            {
-                self.discard_worker();
-                return Err(PoolError::Configuration(
-                    "CPU execution clock requires a finite client request_timeout".to_owned(),
-                ));
-            }
-            self.budget.execution_clock = clock;
-            Ok(())
-        } else if clock == self.pool.config.execution_clock {
-            Ok(())
-        } else {
-            Err(self.protocol_violation("worker did not acknowledge the configured execution clock"))
+    /// Puts back a `Configure` whose request never reached the worker (an
+    /// oversize frame is rejected before any byte is written), so the next
+    /// request still opens the session.
+    fn keep_unsent_configure(&mut self, opening: Option<Box<pb::Configure>>) {
+        if !self.request_sent && self.worker.is_some() {
+            self.pending_configure = opening;
         }
     }
 
@@ -1875,7 +1732,7 @@ impl Checkout {
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);
-        // the `Load` opens the new worker's session (see `open_session`)
+        // the `Load` below carries it, opening the new worker's session
         self.pending_configure = Some(Box::new(configure));
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
@@ -1920,17 +1777,14 @@ impl Checkout {
     /// turn-ender.
     ///
     /// **Bypasses this checkout's session bookkeeping** (`pending`,
-    /// `feed_mounts`, `restored_script_name`, and `session_id` beyond the ID
-    /// the opening `Configure` reply names) — never interleave
+    /// `feed_mounts`, `restored_script_name`, `session_id`) — never interleave
     /// with `feed`/`resume`/`restore`: the driver reads what a reply names from
     /// the frame it forwards. Worker lifecycle, poisoning and parent-side
     /// limits work as on the typed path; a raw `Load` re-adopts its budget like
     /// [`Checkout::restore`]. A `FatalError`
     /// (or remote `ShutdownDump`) turn-ender is returned so the driver can
     /// forward it, but discards the worker first — later calls report
-    /// [`PoolError::Finished`]; a raw driver is never auto-resumed. A relay
-    /// shutting down before the first request's `Configure` is answered is
-    /// [`PoolError::Shutdown`] instead: no session opened, so there is no frame to forward.
+    /// [`PoolError::Finished`]; a raw driver is never auto-resumed.
     /// An error from an older worker does not establish that a suspended feed ended.
     /// Complete its suspension or finish the checkout before starting another feed.
     ///
@@ -1975,17 +1829,10 @@ impl Checkout {
         {
             return Err(PoolError::Protocol("AbortFeed requires a valid exception".into()));
         }
-        // the first raw request opens the session like a typed one; a raw
-        // driver is never auto-resumed, so a relay shutting down meanwhile
-        // ends the session here
-        let opened = match self.open_session(Some(request)).await {
-            Ok(opened) => opened,
-            Err(err @ PoolError::Shutdown { .. }) => {
-                self.discard_worker();
-                return Err(err);
-            }
-            Err(err) => return Err(err),
-        };
+        // the first raw request opens the session like a typed one: the
+        // `Configure` carries a `Feed` / `Load`, or goes alone before anything else
+        let opening = self.pending_configure.take_if(|_| opens_session(request));
+        self.open().await?;
         // As `restore`: forget the Configure-time budget and re-adopt the
         // dump's from the reply's budget fields (see `pending_load_budget`).
         let is_load = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)));
@@ -2008,18 +1855,13 @@ impl Checkout {
         // as `expect_turn`: `request_timeout` alone would drop the duration
         // backstops, leaving a wedged child bounded by a timeout that may be unset
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
-        // a first request is timed from the `Configure` reply, as in `turn`
-        let started = opened.unwrap_or_else(DeadlineInstant::now);
-        let wall_deadline = deadline.and_then(|limit| started.checked_add(limit));
+        let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.armed_deadline = deadline;
-        let outcome = cpu::run(
-            monitor.as_ref(),
-            wall_deadline,
-            self.turn_io_raw(request, opened.is_none(), on_event),
-        )
-        .await;
+        let turn = self.turn_io_raw(request, opening.as_deref(), on_event);
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, turn).await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
+        self.keep_unsent_configure(opening);
         if is_load {
             self.end_load();
         }
@@ -2034,14 +1876,31 @@ impl Checkout {
     async fn turn_io_raw(
         &mut self,
         request: &pb::ParentRequest,
-        send: bool,
+        opening: Option<&pb::Configure>,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
-        if send {
-            self.send_request(request).await?;
-        }
+        self.send_request(request, opening).await?;
         loop {
-            let mut event = self.recv_event().await?;
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+                Ok(event) => event,
+                Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                // a frame larger than the reader accepts: the worker misbehaved
+                Err(err @ FrameError::FrameTooLarge { .. }) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                Err(_) => return Err(self.poison("waiting for a reply").await),
+            };
+            if opening.is_some() && ends_turn(&event) {
+                // a refusal is forwarded as `FatalError` is: no session opened,
+                // so the worker goes, but the driver's client hears why
+                if event.session_refused == Some(true) {
+                    self.discard_worker();
+                    return Ok(event);
+                }
+                self.adopt_execution_clock(&event)?;
+            }
             let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
             let aborting = self.abort_in_flight || explicit_abort;
             let feed_ended = is_execution_turn(request)
@@ -2122,32 +1981,47 @@ impl Checkout {
             .map_or_else(opentelemetry::Context::new, Worker::callback_context)
     }
 
-    /// One request/reply exchange: send the request (unless `open_session`
-    /// already did), stream prints, classify the turn-ending event. All
-    /// failure paths discard the worker except `Runtime` / `Typing`, which are
-    /// sandbox-level outcomes.
+    /// One request/reply exchange: send the request, stream prints, classify
+    /// the turn-ending event. All failure paths discard the worker except
+    /// `Runtime` / `Typing`, which are sandbox-level outcomes.
     async fn turn_io(
         &mut self,
         request: &pb::ParentRequest,
-        send: bool,
+        opening: Option<&pb::Configure>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
-        if send {
-            self.send_request(request).await?;
-        }
+        self.send_request(request, opening).await?;
         loop {
-            let mut event = self.recv_event().await?;
-            // Only a storing relay sets this. A reply adopting a dump names
-            // the new session (or none: a stored session's reply carries its
-            // ID, a dump's nothing), while a refused `Load` keeps the ID the
-            // session had, which the relay still holds it under. Taken before
-            // the budget check: a re-announced suspension over budget is
-            // aborted and dropped, but the session it names lives on.
-            let names_new_session = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)))
-                && (matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) || is_suspension(&event));
-            if names_new_session {
-                self.session_id = event.session_id.take().map(BudgetVec::into_inner);
-            } else if let Some(session_id) = event.session_id.take() {
+            let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
+                Ok(event) => event,
+                // a decode failure means the frame arrived intact but its
+                // payload was garbage (including values that fail semantic
+                // validation, which happens during decode) — the worker
+                // misbehaved, it didn't die
+                Err(FrameError::Decode(err)) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                // a frame larger than the reader accepts: the worker misbehaved
+                Err(err @ FrameError::FrameTooLarge { .. }) => {
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                }
+                Err(_) => return Err(self.poison("waiting for a reply").await),
+            };
+            // the turn-ending reply to a `Configure` carrying `request` answers both
+            let opened = opening.is_some() && ends_turn(&event);
+            if opened && event.session_refused == Some(true) {
+                return Err(self.session_refused(event));
+            }
+            if opened
+                || (matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
+                    && matches!(event.kind, Some(pb::child_event::Kind::Ok(_))))
+            {
+                self.adopt_execution_clock(&event)?;
+            }
+            // Only a storing relay sets this, on its reply to `Configure` or
+            // `Load`. Taken before the budget check: a re-announced suspension
+            // over budget is aborted and dropped, but the session it names lives on.
+            if let Some(session_id) = event.session_id.take() {
                 self.session_id = Some(session_id.into_inner());
             }
             // a suspension past `max_suspensions` is aborted here and never
@@ -2337,7 +2211,29 @@ impl Checkout {
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     return Err(self.fatal_error(&fatal.message).await);
                 }
-                Some(pb::child_event::Kind::Shutdown(shutdown)) => return Err(self.shutdown(shutdown)),
+                Some(pb::child_event::Kind::Shutdown(shutdown)) => {
+                    // Only a serving relay sends this, never a child — so a
+                    // local subprocess claiming to shut down is a protocol
+                    // violation, not a shutdown. Accepting it would let the
+                    // child hand back a dump it minted itself, which the
+                    // caller would then restore as trusted session state.
+                    if !self.pool.config.transport.is_remote() {
+                        return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
+                    }
+                    // The serving side is shutting down and dropped this
+                    // request unexecuted; its worker is gone.
+                    //
+                    // NOTE(sign-dump): `dump` is server-minted and travels
+                    // back through this client into `Checkout::restore`; if
+                    // host-side dump signing lands it must pass the same
+                    // verification there as any other dump.
+                    //
+                    // The session state stays for `request_turn` to resume or discard.
+                    self.release_worker();
+                    return Err(PoolError::Shutdown {
+                        dump: shutdown.dump.map(Into::into),
+                    });
+                }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
                 }
@@ -2345,47 +2241,54 @@ impl Checkout {
         }
     }
 
-    /// Reads the next event frame; a frame that cannot be decoded is the
-    /// worker misbehaving (a protocol violation), a broken stream its death.
-    async fn recv_event(&mut self) -> Result<pb::ChildEvent, PoolError> {
-        let Some(worker) = self.worker.as_mut() else {
-            return Err(PoolError::Finished);
+    /// Adopts the execution clock a `Configure` acknowledgement reports: a remote
+    /// server chooses its own (CPU needs a finite `request_timeout` to be
+    /// supervised here), while a subprocess must acknowledge the configured one.
+    fn adopt_execution_clock(&mut self, event: &pb::ChildEvent) -> Result<(), PoolError> {
+        let clock = match pb::ExecutionClock::try_from(event.execution_clock.unwrap_or_default()) {
+            Ok(clock) => ExecutionClock::from(clock),
+            Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
         };
-        match worker.recv().await {
-            Ok(event) => Ok(event),
-            // a decode failure means the frame arrived intact but its
-            // payload was garbage (including values that fail semantic
-            // validation, which happens during decode) — the worker
-            // misbehaved, it didn't die
-            Err(FrameError::Decode(err)) => Err(self.protocol_violation(format!("invalid payload from worker: {err}"))),
-            // a frame larger than the reader accepts: the worker misbehaved
-            Err(err @ FrameError::FrameTooLarge { .. }) => {
-                Err(self.protocol_violation(format!("invalid payload from worker: {err}")))
+        if self.pool.config.transport.is_remote() {
+            if clock == ExecutionClock::Cpu
+                && self
+                    .pool
+                    .config
+                    .request_timeout
+                    .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
+            {
+                self.discard_worker();
+                return Err(PoolError::Configuration(
+                    "CPU execution clock requires a finite client request_timeout".to_owned(),
+                ));
             }
-            Err(_) => Err(self.poison("waiting for a reply").await),
+            self.budget.execution_clock = clock;
+            // a refused first `Load` restores the budget it snapshotted, which
+            // must keep the clock the server chose
+            if let Some(saved) = &mut self.pending_load_budget {
+                saved.execution_clock = clock;
+            }
+            Ok(())
+        } else if clock == self.pool.config.execution_clock {
+            Ok(())
+        } else {
+            Err(self.protocol_violation("worker did not acknowledge the configured execution clock"))
         }
     }
 
-    /// Classifies a `Shutdown` turn-ender. Only a serving relay sends one,
-    /// never a child — so a local subprocess claiming to shut down is a
-    /// protocol violation, not a shutdown: accepting it would let the child
-    /// hand back a dump it minted itself, which the caller would then restore
-    /// as trusted session state.
-    ///
-    /// The serving side dropped the request unexecuted and its worker is gone;
-    /// the session state stays for `request_turn` to resume or discard.
-    ///
-    /// NOTE(sign-dump): `dump` is server-minted and travels back through this
-    /// client into `Checkout::restore`; if host-side dump signing lands it must
-    /// pass the same verification there as any other dump.
-    fn shutdown(&mut self, shutdown: pb::ShutdownDump) -> PoolError {
-        if self.pool.config.transport.is_remote() {
-            self.release_worker();
-            PoolError::Shutdown {
-                dump: shutdown.dump.map(Into::into),
-            }
-        } else {
-            self.protocol_violation("subprocess worker sent a ShutdownDump")
+    /// The error for a `Configure` refused with the first request it carried:
+    /// the request did not run and no session opened, so the worker is discarded.
+    fn session_refused(&mut self, event: pb::ChildEvent) -> PoolError {
+        let Some(pb::child_event::Kind::Error(pb::Error {
+            exception: Some(exception),
+        })) = event.kind
+        else {
+            return self.protocol_violation("a session refusal must be an error with an exception");
+        };
+        self.discard_worker();
+        match MontyException::try_from(exception) {
+            Ok(exc) => PoolError::Runtime(exc),
+            Err(err) => self.protocol_violation(format!("invalid exception payload: {err}")),
         }
     }
 
@@ -2397,49 +2300,27 @@ impl Checkout {
     /// (nothing overwrites it on this path), so the suspension stays
     /// answerable with a smaller value. Every other send failure is a real
     /// I/O break (dead worker / closed pipe).
-    async fn send_request(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
-        self.deliver(request, false).await
-    }
-
-    /// Writes `request`, or with `queue` hands it to the worker to write while
-    /// it reads (see [`Worker::queue`]), recording whether it reached the worker.
-    async fn deliver(&mut self, request: &pb::ParentRequest, queue: bool) -> Result<(), PoolError> {
+    async fn send_request(
+        &mut self,
+        request: &pb::ParentRequest,
+        opening: Option<&pb::Configure>,
+    ) -> Result<(), PoolError> {
         self.request_sent = false;
-        let worker = self.worker.as_mut().ok_or(PoolError::Finished)?;
-        let delivered = if queue {
-            worker.queue(request).await
-        } else {
-            worker.send(request).await
+        let Some(worker) = self.worker.as_mut() else {
+            return Err(PoolError::Finished);
         };
-        match delivered {
+        match worker.send(request, opening).await {
             Ok(()) => {
                 self.request_sent = true;
                 Ok(())
             }
-            Err(FrameError::FrameTooLarge { len, max }) => Err(frame_too_large(len, max)),
-            Err(_) => Err(self.write_failed().await),
-        }
-    }
-
-    /// Discards the worker after a failed write. A local child that stopped
-    /// reading may have said why before exiting, so an announced `FatalError` is
-    /// read first, as [`Worker::recv`] does when a queued write fails.
-    async fn write_failed(&mut self) -> PoolError {
-        let announced = match self.worker.as_mut() {
-            Some(worker) if !self.pool.config.transport.is_remote() => {
-                match timeout(FATAL_EXIT_GRACE, worker.recv()).await {
-                    Ok(Ok(pb::ChildEvent {
-                        kind: Some(pb::child_event::Kind::FatalError(fatal)),
-                        ..
-                    })) => Some(fatal.message),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-        match announced {
-            Some(message) => self.fatal_error(&message).await,
-            None => self.poison("sending a request").await,
+            Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!(
+                    "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                )),
+            ))),
+            Err(_) => Err(self.poison("sending a request").await),
         }
     }
 
@@ -2675,8 +2556,8 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest {
-    request(pb::parent_request::Kind::Configure(pb::Configure {
+fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
+    pb::Configure {
         script_name: repl.script_name.clone(),
         execution_clock: (!pool.transport.is_remote()).then(|| pb::ExecutionClock::from(pool.execution_clock) as i32),
         limits: repl.limits.as_ref().map(Into::into),
@@ -2696,7 +2577,9 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
-    }))
+        // attached when the first request goes out (see `OpeningRequest`)
+        first: None,
+    }
 }
 
 /// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`
@@ -2768,16 +2651,6 @@ pub(crate) fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
 /// Python `ValueError`.
 fn invalid_requirement(message: String) -> PoolError {
     PoolError::Runtime(MontyException::new(ExcType::ValueError, Some(message)))
-}
-
-/// The session-preserving error for a request too large to frame, raised before any byte is written.
-fn frame_too_large(len: u32, max: u32) -> PoolError {
-    PoolError::Runtime(MontyException::new(
-        ExcType::RuntimeError,
-        Some(format!(
-            "request frame of {len} bytes exceeds the maximum of {max} bytes"
-        )),
-    ))
 }
 
 /// The tighter of two optional deadlines (`None` means no deadline).

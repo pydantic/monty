@@ -78,10 +78,7 @@ fn arithmetic_saturates_instead_of_wrapping() {
 #[tokio::test]
 async fn a_dead_clock_fails_before_the_request_is_polled() {
     let mut child = Command::new("sleep").arg("60").kill_on_drop(true).spawn().unwrap();
-    let monitor = super::Monitor::new(
-        super::Baseline::sample(Clock::new(&child).unwrap()).unwrap(),
-        Duration::from_millis(50),
-    );
+    let monitor = super::Monitor::new(Clock::new(&child).unwrap(), Duration::from_millis(50)).unwrap();
     child.kill().await.unwrap();
     let outcome = super::run(Some(&monitor), None, async {
         panic!("request must not run after a clock failure")
