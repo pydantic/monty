@@ -7,6 +7,7 @@ npm install @pydantic/monty
 ```
 
 Under Node, `@pydantic/monty` is a native (napi) binding over the same Rust worker pool the Python package uses.
+The package supports Node 20 and later.
 The binding and the `monty` worker binary ship as platform-specific packages selected through `optionalDependencies`,
 so a plain `npm install` gets you everything.
 Execution happens in `monty` worker subprocesses, so a crash triggered by adversarial code kills only the worker.
@@ -35,7 +36,25 @@ limits.
 `feedRun` executes a snippet and returns the value of its trailing expression; `inputs` are values it can read and
 `externalLookup` holds the host functions it can call.
 `await using` closes the session and the pool at the end of scope.
-Without it, call `session.close()` and `pool.close()` yourself.
+It needs Node 24 or later at runtime, unless TypeScript or another transpiler downlevels it.
+On Node 20 or 22, declare both handles without `using` and close them yourself in `finally` blocks, so they are released even if `feedRun` throws:
+
+```ts
+import { Monty } from '@pydantic/monty'
+
+const pool = await Monty.create()
+try {
+  const session = await pool.checkout()
+  try {
+    console.log(await session.feedRun('1 + 2')) // 3
+  } finally {
+    await session.close()
+  }
+} finally {
+  await pool.close()
+}
+```
+
 `checkout({ scriptName })` names diagnostics and supplies the filename portion of the sandbox's `__file__`.
 
 ## Sessions keep state
