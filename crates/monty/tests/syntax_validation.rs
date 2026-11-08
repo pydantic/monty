@@ -92,6 +92,7 @@ fn comprehension_walrus_cannot_rebind_any_iteration_variable() {
         "((x := 1) for x in [])",
         "[x for x in [] if (x := 1)]",
         "[(x := 1) for *x, y in []]",
+        "[(x := 1) for [x, y] in []]",
         "[(x := y) for y in [] for x in []]",
         "[[(x := y) for y in []] for x in []]",
         "[(lambda value=(x := 1): value) for x in []]",
@@ -209,6 +210,15 @@ fn parameters_and_annotations_cannot_conflict_with_scope_declarations() {
         syntax_error(&code, "annotated name 'x' can't be global");
     }
     syntax_error("x: int\nglobal x", "annotated name 'x' can't be global");
+    for body in ["x: int\nnonlocal x", "nonlocal x\nx: int"] {
+        syntax_error(
+            &format!(
+                "def outer():\n    x = 1\n    def inner():\n        {}",
+                body.replace('\n', "\n        ")
+            ),
+            "annotated name 'x' can't be nonlocal",
+        );
+    }
     for code in ["global x\nx: int", "def f():\n    global x\n    (x): int"] {
         MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect(code);
     }
@@ -379,6 +389,22 @@ fn generic_annotations_have_a_distinct_scope_from_defaults_and_lambda_bodies() {
         "class C[T](base := object): pass",
         "named expression cannot be used within the definition of a generic",
     );
+    syntax_error(
+        "class C[T](await value): pass",
+        "await expression cannot be used within the definition of a generic",
+    );
+    for expression in ["yield 1", "yield from values"] {
+        syntax_error(
+            &format!("class C[T](({expression})): pass"),
+            "yield expression cannot be used within the definition of a generic",
+        );
+    }
+    for parameter in ["T: [(y := i) for i in []]", "T = [(y := i) for i in []]"] {
+        syntax_error(
+            &format!("def f[{parameter}](): pass"),
+            "assignment expression within a comprehension cannot be used in a TypeVar bound",
+        );
+    }
     for source in [
         "def f[T](x=[(y := i) for i in []]): pass",
         "def f[T](x: [(lambda: (y := i))() for i in []]): pass",
