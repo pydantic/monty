@@ -1942,10 +1942,10 @@ fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut V
         // second call, the growth preflight), so the clone is guarded until returned.
         let ((key, default), vm) = args_guard.into_parts();
         let mut return_guard = DropGuard::new(default.clone_with_heap(vm), vm);
-        if let Some(old_value) = dict.set(key, default, return_guard.ctx())? {
-            // This shouldn't happen since we checked, but handle it anyway
-            old_value.drop_with(return_guard.ctx());
-        }
+        // A replaced value is only possible when `__eq__` answers differently on
+        // the second lookup; release it rather than leak it.
+        let old_value = dict.set(key, default, return_guard.ctx())?;
+        old_value.drop_with(return_guard.ctx());
         Ok(return_guard.into_inner())
     }
 }
