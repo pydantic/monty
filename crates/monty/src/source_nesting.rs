@@ -115,6 +115,7 @@ struct Scanner {
     /// Whether the previous token can end an operand, making a following
     /// `-`, `+`, `*` or `not` binary rather than prefix.
     prev_ends_operand: bool,
+    prev_was_dot: bool,
     /// Whether a `case` began the current logical line, so `+` and `-` join
     /// complex-literal patterns, which recurse on their right operand.
     in_pattern: bool,
@@ -164,6 +165,7 @@ impl Scanner {
             levels: vec![Level::new(LevelKind::Top)],
             indent: 0,
             prev_ends_operand: false,
+            prev_was_dot: false,
             in_pattern: false,
             statement: StatementContext::Start,
             total: 0,
@@ -173,6 +175,13 @@ impl Scanner {
     /// Accounts for one token, returning whether the estimate now exceeds the limit.
     fn observe(&mut self, kind: TokenKind) -> bool {
         if matches!(kind, TokenKind::Comment | TokenKind::NonLogicalNewline) {
+            return false;
+        }
+        // Ruff recovers keywords after `.` as attributes before reporting invalid syntax.
+        // They must keep the spine charged, including keywords that otherwise reset it.
+        if self.prev_was_dot && kind.is_keyword() {
+            self.prev_was_dot = false;
+            self.prev_ends_operand = true;
             return false;
         }
         if self.statement == StatementContext::Start && matches!(kind, TokenKind::Import | TokenKind::From) {
@@ -323,23 +332,25 @@ impl Scanner {
             _ if matches!(self.statement, StatementContext::Import(_)) => self.statement,
             _ => StatementContext::Other,
         };
-        self.prev_ends_operand = matches!(
-            kind,
-            TokenKind::Name
-                | TokenKind::Int
-                | TokenKind::Float
-                | TokenKind::Complex
-                | TokenKind::String
-                | TokenKind::FStringEnd
-                | TokenKind::TStringEnd
-                | TokenKind::Rpar
-                | TokenKind::Rsqb
-                | TokenKind::Rbrace
-                | TokenKind::True
-                | TokenKind::False
-                | TokenKind::None
-                | TokenKind::Ellipsis
-        );
+        self.prev_was_dot = kind == TokenKind::Dot;
+        self.prev_ends_operand = kind.is_soft_keyword()
+            || matches!(
+                kind,
+                TokenKind::Name
+                    | TokenKind::Int
+                    | TokenKind::Float
+                    | TokenKind::Complex
+                    | TokenKind::String
+                    | TokenKind::FStringEnd
+                    | TokenKind::TStringEnd
+                    | TokenKind::Rpar
+                    | TokenKind::Rsqb
+                    | TokenKind::Rbrace
+                    | TokenKind::True
+                    | TokenKind::False
+                    | TokenKind::None
+                    | TokenKind::Ellipsis
+            );
         exceeded
     }
 

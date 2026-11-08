@@ -88,7 +88,8 @@ exactly, except for the comprehension target restriction in
     even where CPython would accept it.
     A long literal such as `[-1, -2, ...]` releases the count at every comma.
     A logical line starting with a variable named `case` counts its binary `+` and `-` the same way.
-    Postfix chains are rejected before AST construction because destroying a deeply nested AST can overflow the native stack.
+    For sources that undergo this scan, excessively deep postfix chains are rejected before AST construction because
+    destroying a deeply nested AST can overflow the native stack.
 - The scan also enters string literals, because the type checker parses a forward-reference annotation such as
     `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
     brackets is rejected the same way even when it is plain data.

@@ -61,6 +61,28 @@ fn long_postfix_spines_are_rejected_before_ast_construction() {
 }
 
 #[test]
+fn recovered_keyword_attributes_keep_postfix_depth_charged() {
+    for keyword in [
+        "as", "from", "if", "for", "in", "is", "and", "or", "not", "else", "case", "await",
+    ] {
+        let source = format!("value{}", format!(".{keyword}").repeat(10_000));
+        assert!(!source_within_nesting_bound(&source, 0), "{keyword}");
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn soft_keywords_end_postfix_operands() {
+    let depth = if cfg!(debug_assertions) { 18 } else { 110 };
+    for name in ["case", "match", "type"] {
+        for suffix in [format!("().{name}"), format!("[0].{name}")] {
+            let source = format!("{name}{}", suffix.repeat(depth));
+            assert!(!source_within_nesting_bound(&source, 0), "{name}");
+        }
+    }
+}
+
+#[test]
 fn independent_postfix_expressions_do_not_accumulate_depth() {
     let depth = if cfg!(debug_assertions) { 18 } else { 110 };
     let left = format!("a{}", ".x".repeat(depth));
