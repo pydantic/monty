@@ -44,7 +44,7 @@ fn runtime_compilation_rejects_parenthesized_keyword_names() {
 
             let message = error.message().unwrap();
             if function == "exec" && source.starts_with(' ') {
-                assert!(message.contains("indent"), "{message}");
+                assert_eq!(message, "Unexpected indentation (<string>, line 1)");
             } else {
                 let line = if source.starts_with('\n') { 2 } else { 1 };
                 assert_eq!(message, format!("{KEYWORD_ERROR} (<string>, line {line})"));

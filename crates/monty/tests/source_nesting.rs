@@ -45,6 +45,62 @@ fn power_chain_is_rejected() {
 }
 
 #[test]
+fn long_postfix_spines_are_rejected_before_ast_construction() {
+    for source in [
+        format!("value{}", ".x".repeat(10_000)),
+        format!("value{}", "()".repeat(10_000)),
+        format!("value{}", "[0]".repeat(10_000)),
+        format!("def f[T: value{}](): pass", ".x".repeat(10_000)),
+        format!("import a as b{}", ".x".repeat(10_000)),
+        format!("(value{}\n)", "()\n".repeat(10_000)),
+        format!("import a as b{}", format!("{}(0, 0)", ".x".repeat(32)).repeat(150)),
+    ] {
+        assert!(!source_within_nesting_bound(&source, 0));
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn independent_postfix_expressions_do_not_accumulate_depth() {
+    let depth = if cfg!(debug_assertions) { 18 } else { 110 };
+    let left = format!("a{}", ".x".repeat(depth));
+    let right = format!("b{}", ".y".repeat(depth));
+    for source in [
+        format!("{left} = {right}"),
+        format!("{left} += {right}"),
+        format!("with {left} as {right}: pass"),
+        format!("raise {left} from {right}"),
+    ] {
+        assert!(source_within_nesting_bound(&source, 0), "{source}");
+        MontyRun::new(
+            source.clone(),
+            "test.py",
+            vec![],
+            CompileOptions {
+                source_scan_threshold: 0,
+                ..CompileOptions::default()
+            },
+        )
+        .expect(&source);
+    }
+}
+
+#[test]
+fn long_import_paths_are_not_postfix_spines() {
+    let component = "module".repeat(100);
+    let module = vec![component.as_str(); 32].join(".");
+    for source in [
+        format!("import {module}"),
+        format!("from {module} import value"),
+        format!("import {module}, {module} as alias, {module} as other"),
+    ] {
+        for prefix in ["", "\n", "# comment\n"] {
+            assert_compiles(format!("{prefix}{source}"));
+        }
+    }
+}
+
+#[test]
 fn lambda_chain_is_rejected() {
     assert_too_deeply_nested(format!("{}1", "lambda: ".repeat(1000)));
 }

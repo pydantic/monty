@@ -6,6 +6,7 @@
 //! ([`MAX_NESTING_DEPTH`]) ever runs. One lexer pass over-approximates the
 //! parser's recursion depth; a source of at most `source_scan_threshold` bytes
 //! skips it, its depth being bounded by its length.
+//! Completed postfix spines are bounded too: dropping a deeply nested AST is recursive.
 
 use ruff_python_ast::{
     Expr, InterpolatedStringElement, Mod, Pattern, Stmt, StringLiteral,
@@ -15,7 +16,7 @@ use ruff_python_ast::{
 use ruff_python_parser::{Mode, ParseOptions, lexer::lex, parse_string_annotation, parse_unchecked};
 use ruff_text_size::{Ranged, TextLen, TextRange};
 
-use crate::parse::MAX_NESTING_DEPTH;
+use crate::parse::{MAX_IMPORT_COMPONENTS, MAX_NESTING_DEPTH};
 
 /// Whether `source` can be handed to ruff (or ty) without the parser recursing
 /// past [`MAX_NESTING_DEPTH`]; a source of at most `source_scan_threshold`
@@ -98,7 +99,7 @@ fn string_literal_contents(literal: &str) -> Option<(&str, Mode)> {
     quoted.ends_with(closer).then_some((inner, mode))
 }
 
-/// Token-by-token model of the frames ruff's parser holds open.
+/// Token-by-token model of parser frames and completed postfix AST spines.
 ///
 /// ruff recurses on every bracketed expression, prefix operator, `**` right
 /// operand, lambda body, conditional `else` branch, f-string format spec,
@@ -117,15 +118,23 @@ struct Scanner {
     /// Whether a `case` began the current logical line, so `+` and `-` join
     /// complex-literal patterns, which recurse on their right operand.
     in_pattern: bool,
+    statement: StatementContext,
     /// Open levels (excluding the bottom), indentation and every level's counts.
     total: u32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StatementContext {
+    Start,
+    Import(usize),
+    Other,
 }
 
 /// Frames open at one bracket level.
 struct Level {
     kind: LevelKind,
-    /// Prefix operators and `**` right operands: any lower-precedence binary
-    /// operator proves they have returned.
+    /// Prefix operators, `**` right operands and completed postfix nodes.
+    /// A lower-precedence binary operator ends the current operand.
     tight: u32,
     /// Lambda bodies, `else` branches and format specs: only the level's end
     /// or a comma, newline or statement colon proves they have returned.
@@ -140,7 +149,7 @@ enum LevelKind {
     /// The module or expression itself.
     Top,
     /// `(`, `[` or `{` outside an f-string.
-    Bracket,
+    Bracket { postfix: bool },
     /// Between `FStringStart` and `FStringEnd` (or the t-string pair).
     FString,
     /// A `{...}` replacement field; `in_spec` once its format spec began,
@@ -156,29 +165,45 @@ impl Scanner {
             indent: 0,
             prev_ends_operand: false,
             in_pattern: false,
+            statement: StatementContext::Start,
             total: 0,
         }
     }
 
     /// Accounts for one token, returning whether the estimate now exceeds the limit.
     fn observe(&mut self, kind: TokenKind) -> bool {
+        if matches!(kind, TokenKind::Comment | TokenKind::NonLogicalNewline) {
+            return false;
+        }
+        if self.statement == StatementContext::Start && matches!(kind, TokenKind::Import | TokenKind::From) {
+            self.statement = StatementContext::Import(MAX_IMPORT_COMPONENTS);
+        }
+        let statement_colon = kind == TokenKind::Colon && self.levels.len() == 1 && self.top().pending_lambdas == 0;
+        if matches!(
+            kind,
+            TokenKind::As | TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace
+        ) && let StatementContext::Import(remaining) = &mut self.statement
+        {
+            *remaining = 0;
+        }
         let exceeded = match kind {
-            TokenKind::Lpar | TokenKind::Lsqb => self.push(LevelKind::Bracket),
+            TokenKind::Lpar | TokenKind::Lsqb => self.push(LevelKind::Bracket {
+                postfix: self.prev_ends_operand,
+            }),
             TokenKind::Lbrace => {
                 let kind = match self.top().kind {
                     LevelKind::FString | LevelKind::Interpolation { in_spec: true } => {
                         LevelKind::Interpolation { in_spec: false }
                     }
-                    LevelKind::Top | LevelKind::Bracket | LevelKind::Interpolation { in_spec: false } => {
-                        LevelKind::Bracket
+                    LevelKind::Top | LevelKind::Bracket { .. } | LevelKind::Interpolation { in_spec: false } => {
+                        LevelKind::Bracket { postfix: false }
                     }
                 };
                 self.push(kind)
             }
             TokenKind::FStringStart | TokenKind::TStringStart => self.push(LevelKind::FString),
             TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace | TokenKind::FStringEnd | TokenKind::TStringEnd => {
-                self.pop();
-                false
+                self.pop()
             }
             TokenKind::Indent => {
                 self.indent += 1;
@@ -193,6 +218,18 @@ impl Scanner {
             }
             // `case 1+1+1:` parses each `+` or `-` as a nested complex literal.
             TokenKind::Minus | TokenKind::Plus if self.in_pattern => self.add_tight(1),
+            // These AST spines are parsed iteratively, but recursively dropping them can overflow.
+            TokenKind::Dot => {
+                // Cap the flat import allowance so malformed paths cannot hide postfix spines.
+                if let StatementContext::Import(remaining) = &mut self.statement
+                    && *remaining > 0
+                {
+                    *remaining -= 1;
+                    false
+                } else {
+                    self.add_tight(1)
+                }
+            }
             // Binary after an operand (`a - b`, `a * b`, `a not in b`), prefix otherwise.
             TokenKind::Minus | TokenKind::Plus | TokenKind::Star | TokenKind::Not => {
                 if self.prev_ends_operand {
@@ -223,6 +260,9 @@ impl Scanner {
             TokenKind::Comma if self.top().pending_lambdas > 0 => false,
             TokenKind::Comma => {
                 self.reset_level();
+                if self.levels.len() == 1 && matches!(self.statement, StatementContext::Import(_)) {
+                    self.statement = StatementContext::Import(MAX_IMPORT_COMPONENTS);
+                }
                 false
             }
             TokenKind::Newline | TokenKind::Semi => {
@@ -255,7 +295,33 @@ impl Scanner {
                 self.reset_tight();
                 false
             }
+            TokenKind::Equal
+            | TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::DoubleStarEqual
+            | TokenKind::SlashEqual
+            | TokenKind::DoubleSlashEqual
+            | TokenKind::PercentEqual
+            | TokenKind::AtEqual
+            | TokenKind::VbarEqual
+            | TokenKind::AmperEqual
+            | TokenKind::CircumflexEqual
+            | TokenKind::LeftShiftEqual
+            | TokenKind::RightShiftEqual
+            | TokenKind::As
+            | TokenKind::From
+            | TokenKind::Rarrow => {
+                self.reset_tight();
+                false
+            }
             _ => false,
+        };
+        self.statement = match kind {
+            TokenKind::Newline | TokenKind::Semi | TokenKind::Indent | TokenKind::Dedent => StatementContext::Start,
+            TokenKind::Colon if statement_colon => StatementContext::Start,
+            _ if matches!(self.statement, StatementContext::Import(_)) => self.statement,
+            _ => StatementContext::Other,
         };
         self.prev_ends_operand = matches!(
             kind,
@@ -306,11 +372,16 @@ impl Scanner {
         self.add(1)
     }
 
-    fn pop(&mut self) {
+    fn pop(&mut self) -> bool {
         if self.levels.len() > 1 {
             let level = self.levels.pop().expect("length checked above");
             self.total -= 1 + level.tight + level.loose;
+            if matches!(level.kind, LevelKind::Bracket { postfix: true }) {
+                // Transfer the bracket's charge to the call/subscript node that remains in the AST.
+                return self.add_tight(1);
+            }
         }
+        false
     }
 
     fn add_tight(&mut self, frames: u32) -> bool {
@@ -358,7 +429,7 @@ impl Level {
 /// Range of the first AST node in `source` nested deeper than `limit`,
 /// counting through the contents of string literals as the type checker does.
 ///
-/// ruff builds arbitrarily deep ASTs from flat source (`1+1+...`, `a.x.x...`,
+/// ruff builds arbitrarily deep ASTs from flat source (`1+1+...`,
 /// `A | B | ...`) without recursing itself, so [`nesting_bound_exceeded`]
 /// passes them; ty then recurses once per level. The caller must already have
 /// bounded ruff's own recursion with that scan.

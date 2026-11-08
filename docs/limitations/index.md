@@ -56,9 +56,15 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - t-strings
 
 Python 3.15 lazy imports raise `SyntaxError`; see [language.md](language.md).
+Selected [Python 3.15 syntax](language.md#accepted-newer-syntax) is accepted, including unary `+` patterns and
+comprehension unpacking in postponed annotations.
 
 **Missing in other ways:**
 
+- Runtime [type-parameter bindings](typing.md#type-parameters).
+    Function and class type-parameter lists are validated but do not create type variables.
+- Runtime [private-name mangling](classes.md#what-does-not-exist-for-user-code).
+    Names such as `__x` keep their spelling inside classes; compiler checks recognize private-name aliases.
 - User-defined exception classes.
     The built-in exception types are a fixed set, and without inheritance you cannot add to it.
 - Function attributes.
