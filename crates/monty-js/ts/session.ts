@@ -217,7 +217,15 @@ export class MontySession {
   ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
-    native.setStreamedCallSink((callId, parent) => this.onStreamedCall?.(callId, parent))
+    native.setStreamedCallSink((callId, parent) => {
+      if (this.onStreamedCall !== undefined) {
+        this.onStreamedCall(callId, parent)
+      } else {
+        // only `feedRun` asks the worker to stream calls: drop the call and refuse the session
+        this.native.takeStreamedCall(callId)
+        this.poison(new ProtocolError('worker streamed a host call outside feedRun()'))
+      }
+    })
   }
 
   /**
@@ -236,12 +244,31 @@ export class MontySession {
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
     const onPrint = bindPrintCallback((stream, text) => printTarget.write(stream, text))
     // streamed calls arrive on the session's sink mid-turn, so each starts while the sandbox runs
-    this.onStreamedCall = bindStreamedCallCallback((callId) => {
+    const onStreamedCall = bindStreamedCallCallback((callId) => {
       // a failed print ends the feed, so no host call may start after one
       if (!printTarget.hasFailed()) {
         answerer.startStreamedCall(callId)
       }
     })
+    this.onStreamedCall = onStreamedCall
+    try {
+      return await this.driveFeed(code, options, printTarget, answerer, onPrint)
+    } finally {
+      // later turns (`feedStart`, dumps) must not reach this feed's host functions
+      if (this.onStreamedCall === onStreamedCall) {
+        this.onStreamedCall = undefined
+      }
+    }
+  }
+
+  /** `feedRun`'s drive loop: feeds `code`, then answers each suspension until the turn ends. */
+  private async driveFeed(
+    code: string,
+    options: FeedOptions,
+    printTarget: PrintTarget,
+    answerer: TurnAnswerer,
+    onPrint: ReturnType<typeof bindPrintCallback>,
+  ): Promise<unknown> {
     let turn = (await this.native.feed(
       code,
       prepareInputs(options.inputs, this.instances),
@@ -437,7 +464,14 @@ export class MontySession {
   private newDriver(options: FeedStartOptions | LoadSnapshotOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
-    return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
+    return new SnapshotDriver(
+      this.native,
+      this.instances,
+      printTarget,
+      answerer,
+      (err) => this.poison(err),
+      () => this.broken,
+    )
   }
 
   /**
@@ -1191,6 +1225,8 @@ class SnapshotDriver {
     private readonly printTarget: PrintTarget,
     private readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
+    /** The session's poison, set by its streamed-call sink when a call arrives during this drive. */
+    private readonly broken: () => Error | null,
   ) {}
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
@@ -1199,6 +1235,10 @@ class SnapshotDriver {
       // `feedStart` never asks the worker to start calls, and a snapshot cannot
       // hand over calls that started without a suspension.
       throw this.poison(new Error('worker started host calls during feedStart()'))
+    }
+    const broken = this.broken()
+    if (broken !== null) {
+      throw broken
     }
     for (;;) {
       switch (turn.kind) {
