@@ -607,7 +607,8 @@ class MontyConfigurationError(MontyError):
     CPU-mode pools and servers require a finite client `request_timeout`.
     A worker or server refusing the session's configuration (deeply nested
     `type_check_stubs`, an unknown profile) raises it as `session refused: …`
-    from the session's first request, which did not run; the session is lost.
+    from the session's first request, which did not run, or from
+    `get_session_id()` when it opens the session alone; the session is lost.
     Options the binding checks itself, such as `os_policy`, raise `TypeError`
     or `ValueError` from `checkout()` instead.
     Cannot be constructed directly from Python.

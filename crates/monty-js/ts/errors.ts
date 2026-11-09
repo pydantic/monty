@@ -341,7 +341,8 @@ export class MontyConnectError extends MontyError {
 /**
  * Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
  * A worker or server refusing the session's configuration (`session refused: …`) raises it from the session's first
- * request, which did not run, and the session is lost; the WASM worker raises it from `checkout()`.
+ * request, which did not run, or from `getSessionId()` when it opens the session alone, and the session is lost;
+ * the WASM worker raises it from `checkout()`.
  */
 export class MontyConfigurationError extends MontyError {
   constructor(message: string) {

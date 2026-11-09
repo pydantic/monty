@@ -259,8 +259,9 @@ which ignores any argument:
 `checkout()` rejects with the same classes when the session cannot be created.
 Options the binding can check, such as `osPolicy`, are rejected by `checkout()` itself.
 A worker or server rejecting the rest of the session's configuration (deeply nested `typeCheckStubs`, an unknown
-profile) raises `MontyConfigurationError` from the session's first request, or from `checkout()` on the WASM worker,
-which configures the session there.
+profile) raises `MontyConfigurationError` from the session's first request, which did not run, or from `getSessionId()`
+when it opens the session alone.
+On the WASM worker it is raised from `checkout()`, which configures the session there.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
