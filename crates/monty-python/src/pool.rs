@@ -1588,7 +1588,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
         // answer discards the checkout (see `sync_turn_answer`).
         // no calls are started in this API; a worker that starts some anyway
         // leaves futures the `ResolveFutures` check below rejects
-        let (native, _) = py.detach(|| block_on_sync(callback_context_and_streamed_calls(&checkout)))?;
+        let (native, _) = py.detach(|| block_on_sync(checkout.callback_context_and_streamed_calls()))?;
         let callback_guard = callback_context.enter(py, &native)?;
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
@@ -1873,7 +1873,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let (native, buffered) = callback_context_and_streamed_calls(&checkout).await;
+        let (native, buffered) = checkout.callback_context_and_streamed_calls().await;
         // Calls the pool kept because the sink could not take them (none while
         // this drive holds the receiver), started before the turn's own event
         // is answered: `ResolveFutures` may name them.
@@ -2127,18 +2127,19 @@ async fn answer_call(
     dispatched_answer(dispatched, call_id).await
 }
 
-/// Reads the checkout's telemetry context and takes the calls to async host
-/// functions its last turn started, under one lock.
-pub(crate) async fn callback_context_and_streamed_calls(
-    checkout: &SharedCheckout,
-) -> (opentelemetry::Context, Vec<StreamedCall>) {
-    checkout
-        .lock()
-        .await
-        .as_mut()
-        .map_or_else(Default::default, |checkout| {
+/// Turn-boundary reads on a [`SharedCheckout`], which is an alias and so cannot have inherent methods.
+pub(crate) trait SharedCheckoutExt {
+    /// Reads the checkout's telemetry context and takes the calls to async host
+    /// functions its last turn started, under one lock; empty once the checkout is discarded.
+    async fn callback_context_and_streamed_calls(&self) -> (opentelemetry::Context, Vec<StreamedCall>);
+}
+
+impl SharedCheckoutExt for SharedCheckout {
+    async fn callback_context_and_streamed_calls(&self) -> (opentelemetry::Context, Vec<StreamedCall>) {
+        self.lock().await.as_mut().map_or_else(Default::default, |checkout| {
             (checkout.callback_context(), checkout.take_streamed_calls())
         })
+    }
 }
 
 /// Starts a call the sandbox made to an async host function without waiting:

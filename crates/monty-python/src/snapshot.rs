@@ -64,9 +64,9 @@ use crate::{
     },
     import_files::{find_import_file_async, find_import_file_sync, import_search},
     pool::{
-        FeedArgs, OsDispatch, SharedCheckout, TurnFuture, block_on_sync, callback_context_and_streamed_calls,
-        decode_result, discard_checkout, discard_checkout_sync, dispatch_os_parts, ext_to_resume, pool_err_to_py,
-        run_turn_async, run_turn_sync, turn_fn,
+        FeedArgs, OsDispatch, SharedCheckout, SharedCheckoutExt, TurnFuture, block_on_sync, decode_result,
+        discard_checkout, discard_checkout_sync, dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async,
+        run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
     telemetry::{capture_otel_context, snapshot_trace_context},
@@ -270,7 +270,7 @@ async fn drive_async(
 /// Discards the worker and fails when the last turn started calls: run after
 /// every turn whose event becomes a snapshot.
 fn reject_streamed_calls_sync(py: Python<'_>, checkout: &SharedCheckout) -> PyResult<()> {
-    let (_, started) = py.detach(|| block_on_sync(callback_context_and_streamed_calls(checkout)))?;
+    let (_, started) = py.detach(|| block_on_sync(checkout.callback_context_and_streamed_calls()))?;
     if started.is_empty() {
         Ok(())
     } else {
@@ -281,7 +281,7 @@ fn reject_streamed_calls_sync(py: Python<'_>, checkout: &SharedCheckout) -> PyRe
 
 /// Async counterpart of [`reject_streamed_calls_sync`].
 async fn reject_streamed_calls_async(checkout: &SharedCheckout) -> PyResult<()> {
-    let (_, started) = callback_context_and_streamed_calls(checkout).await;
+    let (_, started) = checkout.callback_context_and_streamed_calls().await;
     if started.is_empty() {
         Ok(())
     } else {
