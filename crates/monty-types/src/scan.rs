@@ -768,6 +768,8 @@ impl<'p> GlobSelector<'p> {
                 }
             }
             Step::Recursive { matcher: Some(_), next } if *next < self.parts.len() => {
+                // The stack keeps its capacity, so the deferred slot is extra; the path is shared with `seen`.
+                source.charge(DEFERRED_OVERHEAD)?;
                 run.deferred.entry(index).or_default().push((path, exists));
             }
             Step::Recursive { .. } => self.select_recursive(index, &path, exists, source, run)?,
@@ -842,6 +844,9 @@ const STATE_OVERHEAD: usize = 2 * size_of::<State>() + 2 * size_of::<usize>();
 
 /// Bytes a [`Run::walked`] entry holds beside its path: the key and origin length.
 const WALKED_OVERHEAD: usize = size_of::<(String, usize)>();
+
+/// Bytes a [`Run::deferred`] entry holds beside its shared path.
+const DEFERRED_OVERHEAD: usize = size_of::<(Rc<str>, bool)>();
 
 /// The pending states and results of one [`GlobSelector`] run.
 struct Run {

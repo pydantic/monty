@@ -3,7 +3,7 @@
 //! Expectations for single segments come from CPython's `fnmatch` (case
 //! sensitive) and `re.IGNORECASE` over `fnmatch.translate` (insensitive).
 
-use std::{convert::Infallible, iter::repeat_n};
+use std::{convert::Infallible, iter::repeat_n, rc::Rc};
 
 use monty_types::{
     MontyObject, ScanArgs,
@@ -412,6 +412,43 @@ fn glob_states_are_charged_to_the_source() {
     assert!(crafted > 31 * 50 * 200, "charged {crafted}");
     assert!(single < 50 * 2 * 200, "charged {single}");
     assert!(charged(&("*/../".repeat(31) + "*"), crafted / 2).is_err());
+}
+
+/// A source that records each charge a scan makes, in order.
+struct Recording(ScanTree, Vec<usize>);
+
+impl ScanSource for Recording {
+    type Error = Infallible;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
+        self.0.list(dir)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
+        self.0.lookup(path)
+    }
+
+    fn visit(&mut self) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<(), Infallible> {
+        self.1.push(bytes);
+        Ok(())
+    }
+}
+
+/// A merged `**` walk deferred until the stack drains holds a slot for its
+/// origin, beside the state already charged, so that slot is charged too.
+#[test]
+fn deferred_walk_origins_are_charged() {
+    let mut source = Recording(tree(&[("", 'd'), ("d", 'd')]), Vec::new());
+    let parts: Vec<String> = "**/d/..".split('/').map(str::to_owned).collect();
+    let matches = all_matches(&GlobSelector::new(&parts, None, true), &mut source);
+    assert_eq!(matches, [""]);
+    // the root state, its deferred origin, the walk of `` and `d`, then `d/` and `d/..`
+    assert_eq!(source.1.len(), 6);
+    assert_eq!(source.1[1], size_of::<(Rc<str>, bool)>());
 }
 
 /// Following symlinks, a merged trailing `**` needs a segment, as CPython's `.*` after `/` does.
