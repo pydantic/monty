@@ -134,10 +134,11 @@ Class methods supported: `now(tz=None)`, `fromtimestamp(timestamp, tz=None)`, `s
 Subclassing `datetime` is not possible, since there is no class inheritance
 (see [classes.md](classes.md)).
 
-`datetime.replace()`, `date.replace()` and `time.replace()` accept **only
+`datetime.replace()` and `time.replace()` accept **only
 keyword arguments** in Monty. CPython accepts positional args too
-(`d.replace(2025)` is valid in CPython 3.14). Calling with positionals
+(`dt.replace(2025)` is valid in CPython 3.14). Calling with positionals
 in Monty raises `TypeError: replace expected at most 0 arguments, got N`.
+`date.replace()` accepts positional or keyword year, month, and day arguments, including calls with a datetime receiver.
 
 ## Reading the clock
 

@@ -16,20 +16,18 @@ use crate::{
         itertools,
         itertools::ItertoolsFunctions,
     },
+    py_attrs::{self, AttrDef, AttrTable, PyAttrs},
+    py_class::PyClass,
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
-        bytes::{bytes_fromhex, bytes_repr},
+        BuiltinType, Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait,
+        Random, Range, Set, Slice, Str, TimeZone, Tuple,
+        bytes::bytes_repr,
         complex, date, datetime, decimal,
-        dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
-        path,
         str::{StringRepr, allocate_string},
-        time,
-        timedelta::{self, DAY_MICROSECONDS, MAX_TIMEDELTA_DAYS, MIN_TIMEDELTA_DAYS},
-        timezone::{self, MAX_TIMEZONE_CONSTANT_SECONDS},
+        time, timedelta,
     },
     value::{EitherStr, Value},
 };
@@ -636,69 +634,121 @@ impl Type {
         }
     }
 
+    /// Returns the class view for a type representable by `BuiltinType`.
+    ///
+    /// Panics for other types. Every type with a registered classmethod must support this conversion.
+    fn py_class<'h>(self) -> PyClass<'h> {
+        PyClass::Builtin(BuiltinType::try_from(self).expect("registered builtin type"))
+    }
+
+    /// Returns the generated attribute definitions for this builtin type.
+    ///
+    /// Types without a registered table return `None`.
+    pub(crate) const fn attr_table(self) -> Option<AttrTable> {
+        match self {
+            Self::LruCacheWrapper => Some(<super::lru_cache::PyLruCacheImpl as PyAttrs<'static>>::TABLE),
+            Self::NamedTuple => Some(<super::namedtuple::PyNamedTupleImpl as PyAttrs<'static>>::TABLE),
+            Self::Bytes => Some(<super::bytes::PyBytes<'static> as PyAttrs<'static>>::TABLE),
+            Self::Path => Some(<super::path::PyPathImpl as PyAttrs<'static>>::TABLE),
+            Self::Random => Some(<super::random::PyRandomImpl as PyAttrs<'static>>::TABLE),
+            Self::HashlibHash | Self::Blake2b | Self::Blake2s => {
+                Some(<super::hashlib::PyHashImpl as PyAttrs<'static>>::TABLE)
+            }
+            Self::HashlibHashXof => Some(<super::hashlib::PyHashXofImpl as PyAttrs<'static>>::TABLE),
+            Self::CsvWriter => Some(<super::csv::PyCsvWriterImpl as PyAttrs<'static>>::TABLE),
+            Self::CsvDictWriter => Some(<super::csv::PyCsvDictWriterImpl as PyAttrs<'static>>::TABLE),
+            Self::DirEntry => Some(<super::dir_scan::PyDirEntryImpl as PyAttrs<'static>>::TABLE),
+            Self::ScandirIterator => Some(<super::dir_scan::PyScandirImpl as PyAttrs<'static>>::TABLE),
+            Self::Dict => Some(<super::dict::PyDictImpl as PyAttrs<'static>>::TABLE),
+            Self::DefaultDict => Some(<super::dict::PyDefaultDictImpl as PyAttrs<'static>>::TABLE),
+            Self::Counter => Some(<super::dict::PyCounterImpl as PyAttrs<'static>>::TABLE),
+            Self::Set => Some(<super::set::PySetImpl as PyAttrs<'static>>::TABLE),
+            Self::FrozenSet => Some(<super::set::PyFrozenSetImpl as PyAttrs<'static>>::TABLE),
+            Self::DictKeys => Some(<super::dict_view::PyDictKeysViewImpl as PyAttrs<'static>>::TABLE),
+            Self::DictItems => Some(<super::dict_view::PyDictItemsViewImpl as PyAttrs<'static>>::TABLE),
+            Self::DateTime => Some(<super::datetime::PyDateTimeImpl as PyAttrs<'static>>::TABLE),
+            Self::Deque => Some(<super::deque::PyDequeImpl as PyAttrs<'static>>::TABLE),
+            Self::TextIOWrapper | Self::BufferedReader | Self::BufferedWriter | Self::BufferedRandom => {
+                Some(<super::file::PyFileImpl as PyAttrs<'static>>::TABLE)
+            }
+            Self::Decimal => Some(<super::decimal::py::PyDecimalImpl as PyAttrs<'static>>::TABLE),
+            Self::DecimalContext => Some(<super::decimal::py_context::PyContextImpl as PyAttrs<'static>>::TABLE),
+            Self::DecimalSignalDict => Some(<super::decimal::py_context::PySignalDictImpl as PyAttrs<'static>>::TABLE),
+            Self::ForwardRef => Some(<super::forward_ref::PyForwardRefImpl as PyAttrs<'static>>::TABLE),
+            Self::Str => Some(<super::str::PyStr<'static> as PyAttrs<'static>>::TABLE),
+            Self::List => Some(<super::list::PyListImpl as PyAttrs<'static>>::TABLE),
+            Self::Tuple => Some(<super::tuple::PyTupleImpl as PyAttrs<'static>>::TABLE),
+            Self::Complex => Some(<super::complex::PyComplexImpl as PyAttrs<'static>>::TABLE),
+            Self::Date => Some(<super::date::PyDateImpl as PyAttrs<'static>>::TABLE),
+            Self::Time => Some(<super::time::PyTimeImpl as PyAttrs<'static>>::TABLE),
+            Self::TimeDelta => Some(<super::timedelta::PyTimeDeltaImpl as PyAttrs<'static>>::TABLE),
+            Self::TimeZone => Some(<super::timezone::PyTimeZoneImpl as PyAttrs<'static>>::TABLE),
+            Self::RePattern => Some(<super::re_pattern::PyRePatternImpl as PyAttrs<'static>>::TABLE),
+            Self::ReMatch => Some(<super::re_match::PyReMatchImpl as PyAttrs<'static>>::TABLE),
+            _ => None,
+        }
+    }
+
+    /// Looks up a name in this builtin type's generated attribute table.
+    ///
+    /// Returns the definition without binding a receiver or evaluating a value factory.
+    /// Names absent from the table return `None`; dynamic namespaces are handled separately.
+    pub(crate) fn lookup_attr(self, attr: &EitherStr, interns: &Interns) -> Option<AttrDef> {
+        let name = attr.static_string(interns)?;
+        (self.attr_table()?.lookup)(name)
+    }
+
+    /// Calls registered methods on existing native views, binding class methods to their owner.
+    pub(crate) fn call_attr<'h>(
+        self,
+        obj: &mut PyValue<'h>,
+        attr: &EitherStr,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm.interns) {
+            Some(AttrDef::Method { call, .. }) => call(obj, args, vm),
+            Some(AttrDef::ClassMethod(classmethod)) => classmethod(self.py_class(), args, vm),
+            _ => obj.call_dynamic_attr(vm, attr, args),
+        }
+    }
+
     /// Dispatches classmethod calls on builtin type objects (e.g. `dict.fromkeys`).
     ///
     /// Keeps classmethod behavior centralized with type semantics instead of VM
     /// call plumbing. Any other name is looked up as a plain attribute and the
     /// result called, so `list.__name__()` raises `'str' object is not callable`.
     pub(crate) fn call_class_method(self, attr: &EitherStr, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        match self.lookup_attr(attr, vm.interns) {
+            Some(AttrDef::ClassMethod(classmethod)) => {
+                return classmethod(self.py_class(), args, vm);
+            }
+            Some(AttrDef::Method {
+                call: method,
+                owner: Some(owner),
+            }) => return py_attrs::call_unbound(owner, attr, method, args, vm),
+            Some(AttrDef::Method {
+                call: method,
+                owner: None,
+            }) if self == Self::Counter => {
+                return collections::counter::call_unbound(attr, method, args, vm);
+            }
+            Some(AttrDef::Method { call: method, .. }) => return py_attrs::call_unbound(self, attr, method, args, vm),
+            _ => {}
+        }
         match (self, attr.static_string(vm.interns)) {
-            // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
-            (Self::Dict, Some(StaticStrings::Fromkeys)) => {
-                dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
-            }
-            // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
-            // factory — matching CPython's inherited `dict.fromkeys` classmethod.
-            (Self::DefaultDict, Some(StaticStrings::Fromkeys)) => {
-                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
-            }
             // `chain.from_iterable(iterable)`, CPython's one classmethod here.
             (Self::ItertoolsChain, Some(StaticStrings::FromIterable)) => {
                 itertools::call(vm, ItertoolsFunctions::ChainFromIterable, args).map(CallResult::Value)
             }
-            // Counter deliberately disables the inherited classmethod.
-            (Self::Counter, Some(StaticStrings::Fromkeys)) => {
-                args.drop_with(vm);
-                Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
-            }
-            (Self::Bytes, Some(StaticStrings::Fromhex)) => bytes_fromhex(args, vm).map(CallResult::Value),
-            (Self::Complex, Some(StaticStrings::FromNumber)) => {
-                complex::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Decimal, Some(StaticStrings::FromNumber)) => {
-                decimal::py::class_from_number(vm, args).map(CallResult::Value)
-            }
-            (Self::Decimal, _) if attr.as_str(vm.interns) == "from_float" => {
-                decimal::py::class_from_float(vm, args).map(CallResult::Value)
-            }
-            (Self::Date, Some(StaticStrings::Today)) => date::class_today(vm, args),
-            (Self::Path, Some(StaticStrings::Cwd)) => path::class_cwd(vm, args).map(CallResult::Value),
-            (Self::Date, Some(StaticStrings::Fromisoformat)) => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
-            (Self::Date, Some(StaticStrings::Fromtimestamp)) => {
-                date::class_fromtimestamp(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Fromtimestamp)) => {
-                datetime::class_fromtimestamp(vm, args).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Now)) => datetime::class_now(vm, args),
-            (Self::DateTime, Some(StaticStrings::Strptime)) => {
-                datetime::class_strptime(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
-            (Self::DateTime, Some(StaticStrings::Fromisoformat)) => {
-                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value)
-            }
+
             // `object.__setattr__(obj, name, value)` called directly, which is
             // how it is nearly always reached; `object.__setattr__` as a value
             // is handled by `class_getattr`.
             (Self::Object, _) if attr.as_str(vm.interns) == "__setattr__" => {
                 builtin_object_setattr(vm, args).map(CallResult::Value)
             }
-            (Self::DateTime, Some(StaticStrings::Combine)) => datetime::class_combine(vm, args).map(CallResult::Value),
-            (Self::Time, Some(StaticStrings::Fromisoformat)) => {
-                time::class_fromisoformat(vm, args).map(CallResult::Value)
-            }
+
             // `list.__class_getitem__(int)` is `list[int]`; the error names the
             // bare type as CPython does (`deque.__class_getitem__()`).
             (ty, Some(StaticStrings::ClassGetitem)) if ty.has_class_getitem() => {
@@ -768,36 +818,16 @@ impl Type {
     /// Every lookup allocates a fresh object, so `date.min is date.min` is
     /// `False` where CPython caches (see limitations/datetime.md).
     pub(crate) fn class_constant(self, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-        // One microsecond short of `MAX_TIMEDELTA_DAYS + 1` days, which
-        // normalizes to CPython's `timedelta(days=999999999, seconds=86399,
-        // microseconds=999999)`.
-        const MAX_TIMEDELTA_MICROS: i128 = ((MAX_TIMEDELTA_DAYS as i128) + 1) * DAY_MICROSECONDS - 1;
-        const MIN_TIMEDELTA_MICROS: i128 = (MIN_TIMEDELTA_DAYS as i128) * DAY_MICROSECONDS;
+        if let Some(AttrDef::Value(get)) = self.lookup_attr(attr, vm.interns) {
+            return Some(get(vm));
+        }
 
         Some(match (self, attr.static_string(vm.interns)?) {
-            (Self::Date, StaticStrings::Min) => date::allocate_ymd(1, 1, 1, vm.heap),
-            (Self::Date, StaticStrings::Max) => date::allocate_ymd(9999, 12, 31, vm.heap),
-            (Self::Date, StaticStrings::Resolution) => timedelta::allocate_micros(DAY_MICROSECONDS, vm.heap),
-            (Self::DateTime, StaticStrings::Min) => datetime::allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
-            (Self::DateTime, StaticStrings::Max) => {
-                datetime::allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap)
-            }
-            (Self::Time, StaticStrings::Min) => time::allocate_naive(0, 0, 0, 0, vm.heap),
-            (Self::Time, StaticStrings::Max) => time::allocate_naive(23, 59, 59, 999_999, vm.heap),
-            (Self::TimeDelta, StaticStrings::Min) => timedelta::allocate_micros(MIN_TIMEDELTA_MICROS, vm.heap),
-            (Self::TimeDelta, StaticStrings::Max) => timedelta::allocate_micros(MAX_TIMEDELTA_MICROS, vm.heap),
-            // The three microsecond-resolution classes share one constant.
-            (Self::DateTime | Self::Time | Self::TimeDelta, StaticStrings::Resolution) => {
-                timedelta::allocate_micros(1, vm.heap)
-            }
-            (Self::TimeZone, StaticStrings::Utc) => vm.heap.get_timezone_utc(),
             // The `_blake2` size limits, on the class and so on its instances.
             (Self::Blake2b, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(64),
             (Self::Blake2b, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(16),
             (Self::Blake2s, StaticStrings::MaxDigestSize | StaticStrings::MaxKeySize) => Value::Int(32),
             (Self::Blake2s, StaticStrings::SaltSize | StaticStrings::PersonSize) => Value::Int(8),
-            (Self::TimeZone, StaticStrings::Min) => timezone::allocate_offset(-MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
-            (Self::TimeZone, StaticStrings::Max) => timezone::allocate_offset(MAX_TIMEZONE_CONSTANT_SECONDS, vm.heap),
             _ => return None,
         })
     }

@@ -5,6 +5,7 @@ use std::{
     mem, vec,
 };
 
+use monty_macros::pyattrs;
 use serde::ser::SerializeStruct;
 use smallvec::smallvec;
 
@@ -32,6 +33,8 @@ use crate::{
         },
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
+    py_attrs::PyAttrs,
+    py_class::PyClass,
     types::{
         Type,
         hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
@@ -252,10 +255,8 @@ impl Dict {
     /// Clones this dict's kind for a derived dict, taking a counted reference to
     /// a `defaultdict` factory.
     ///
-    /// Exhaustive over [`DictKind`] on purpose: every operation that builds a
-    /// *new* dict from an existing one (`copy`, and any future `|` / slice-like
-    /// derivation) must carry the tag across, and a hand-written `if
-    /// is_defaultdict()` chain silently degrades a `Counter` to a plain dict.
+    /// Subtype-preserving operations must handle every kind; a hand-written
+    /// `is_defaultdict()` check would silently degrade a `Counter` to a plain dict.
     #[must_use]
     pub fn cloned_kind(&self, heap: &impl ContainsHeap) -> DictKind {
         match self.kind.0.as_deref() {
@@ -1468,125 +1469,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         }
         Ok(())
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
-            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
-        };
-
-        let value = match method {
-            // Counter-only methods (a plain dict falls through to AttributeError).
-            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self, args, vm),
-            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self, args, vm),
-            StaticStrings::Total if self.get(vm.heap).is_counter() => {
-                args.check_zero_args("total", vm.heap)?;
-                counter_total(self, vm)
-            }
-            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self, args, true, vm),
-            // Counter overrides `update` to add counts, and disables `fromkeys`.
-            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self, args, false, vm),
-            StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
-                args.drop_with(vm);
-                return Err(ExcType::not_implemented(
-                    "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
-                )
-                .into());
-            }
-            StaticStrings::Get => {
-                // dict.get() accepts 1 or 2 arguments
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
-                defer_drop!(key, vm);
-                let default = default.unwrap_or(Value::None);
-                let mut default_guard = DropGuard::new(default, vm);
-                let vm = default_guard.ctx();
-                // Handle the lookup - may fail for unhashable keys
-                match self.dict_get(key, vm)? {
-                    Some(v) => Ok(v),
-                    None => Ok(default_guard.into_inner()),
-                }
-            }
-            StaticStrings::Keys => {
-                args.check_zero_args("dict.keys", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Values => {
-                args.check_zero_args("dict.values", vm.heap)?;
-                let view_id = vm
-                    .heap
-                    .allocate(HeapData::DictValuesView(DictValuesView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Items => {
-                args.check_zero_args("dict.items", vm.heap)?;
-                let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self.id())));
-                vm.heap.inc_ref(self.id());
-                Ok(Value::Ref(view_id))
-            }
-            StaticStrings::Pop => {
-                // dict.pop() accepts 1 or 2 arguments (key, optional default)
-                let (key, default) = args.get_one_two_args("pop", vm.heap)?;
-                defer_drop!(key, vm);
-                let mut default_guard = DropGuard::new(default, vm);
-                let vm = default_guard.ctx();
-                if let Some((old_key, value)) = self.pop(key, vm)? {
-                    // Drop the old key - we don't need it
-                    old_key.drop_with(vm);
-                    Ok(value)
-                } else {
-                    let (default, vm) = default_guard.into_parts();
-                    // No matching key - return default if provided, else KeyError
-                    if let Some(d) = default {
-                        Ok(d)
-                    } else {
-                        Err(ExcType::key_error(key, vm))
-                    }
-                }
-            }
-            StaticStrings::Clear => {
-                args.check_zero_args("dict.clear", vm.heap)?;
-                dict_clear(self, vm);
-                Ok(Value::None)
-            }
-            StaticStrings::Copy => {
-                args.check_zero_args("dict.copy", vm.heap)?;
-                dict_copy(self, vm)
-            }
-            StaticStrings::Update => dict_update(self, args, vm),
-            StaticStrings::Setdefault => dict_setdefault(self, args, vm),
-            StaticStrings::Popitem => {
-                args.check_zero_args("dict.popitem", vm.heap)?;
-                dict_popitem(self, vm)
-            }
-            // fromkeys is a classmethod but also accessible on instances. CPython
-            // builds `cls()`, so a defaultdict receiver yields a defaultdict with
-            // no factory (the zero-arg constructor); Counter is rejected above.
-            StaticStrings::Fromkeys => {
-                let kind = if self.get(vm.heap).is_defaultdict() {
-                    DictKind::defaultdict(None)
-                } else {
-                    DictKind::plain()
-                };
-                dict_fromkeys(args, kind, vm)
-            }
-            // `defaultdict.__missing__(key)` — plain dicts have no such method.
-            StaticStrings::DunderMissing if self.get(vm.heap).is_defaultdict() => {
-                let key = args.get_one_arg("__missing__", vm.heap)?;
-                defer_drop!(key, vm);
-                defaultdict_missing(self, key, vm)
-            }
-            _ => {
-                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
-                args.drop_with(vm);
-                return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
-            }
-        };
-        value.map(CallResult::Value)
-    }
 }
 
 impl<'h> HeapObjectRead<'h, Dict> {
@@ -1701,10 +1583,8 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
-/// Implements Python's `dict.copy()` method.
-///
-/// Returns a shallow copy of the dict.
-fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
+/// Copies entries into the requested kind; callers choose whether to preserve the subtype.
+fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, kind: DictKind, vm: &mut VM<'h>) -> RunResult<Value> {
     // Copy all key-value pairs (incrementing refcounts)
     let pairs: Vec<(Value, Value)> = dict
         .get(vm.heap)
@@ -1712,12 +1592,7 @@ fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value>
         .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
         .collect();
 
-    // `copy()` preserves the subclass: a defaultdict keeps its factory, a
-    // Counter stays a Counter. `cloned_kind` clones that factory reference, so
-    // guard it — a `from_pairs` failure (e.g. a key `__eq__` raising) would
-    // otherwise drop `kind` via Rust's `Drop`, leaking the factory refcount.
-    // (`from_pairs` cleans up `pairs` on its own error paths.)
-    let kind = dict.get(vm.heap).cloned_kind(vm.heap);
+    // A defaultdict kind owns its factory reference; release it if rebuilding entries fails.
     let mut kind_guard = DropGuard::new(kind, vm);
     let mut new_dict = Dict::from_pairs(pairs, kind_guard.ctx())?;
     new_dict.set_kind(kind_guard.into_inner());
@@ -1763,7 +1638,7 @@ fn dict_or<'h>(left: &HeapRead<'h, Dict>, right: &Value, vm: &mut VM<'h>) -> Run
 /// If `other` is a dict, copies its key-value pairs.
 /// If `other` is an iterable, expects pairs of (key, value).
 /// Keyword arguments are also added to the dict.
-fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+pub(crate) fn dict_update<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
     let mut kwargs_guard = DropGuard::new(extras, vm);
 
@@ -2236,5 +2111,286 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
         }
         let (copy, _) = guard.into_parts();
         Ok(copy)
+    }
+}
+
+pub(crate) struct PyDictImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDictImpl {
+    type Receiver = HeapObjectRead<'heap, Dict>;
+
+    #[pymethod(Get)]
+    fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            // dict.get() accepts 1 or 2 arguments
+            let (key, default) = args.get_one_two_args("get", vm.heap)?;
+            defer_drop!(key, vm);
+            let default = default.unwrap_or(Value::None);
+            let mut default_guard = DropGuard::new(default, vm);
+            let vm = default_guard.ctx();
+            // Handle the lookup - may fail for unhashable keys
+            match this.dict_get(key, vm)? {
+                Some(v) => Ok(v),
+                None => Ok(default_guard.into_inner()),
+            }
+        }
+    }
+
+    #[pymethod(Keys)]
+    fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("dict.keys", vm.heap)?;
+            let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(this.id())));
+            vm.heap.inc_ref(this.id());
+            Ok(Value::Ref(view_id))
+        }
+    }
+
+    #[pymethod(Values)]
+    fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("dict.values", vm.heap)?;
+            let view_id = vm
+                .heap
+                .allocate(HeapData::DictValuesView(DictValuesView::new(this.id())));
+            vm.heap.inc_ref(this.id());
+            Ok(Value::Ref(view_id))
+        }
+    }
+
+    #[pymethod(Items)]
+    fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("dict.items", vm.heap)?;
+            let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(this.id())));
+            vm.heap.inc_ref(this.id());
+            Ok(Value::Ref(view_id))
+        }
+    }
+
+    #[pymethod(Pop)]
+    fn pop<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            // dict.pop() accepts 1 or 2 arguments (key, optional default)
+            let (key, default) = args.get_one_two_args("pop", vm.heap)?;
+            defer_drop!(key, vm);
+            let mut default_guard = DropGuard::new(default, vm);
+            let vm = default_guard.ctx();
+            if let Some((old_key, value)) = this.pop(key, vm)? {
+                // Drop the old key - we don't need it
+                old_key.drop_with(vm);
+                Ok(value)
+            } else {
+                let (default, vm) = default_guard.into_parts();
+                // No matching key - return default if provided, else KeyError
+                if let Some(d) = default {
+                    Ok(d)
+                } else {
+                    Err(ExcType::key_error(key, vm))
+                }
+            }
+        }
+    }
+
+    #[pymethod(Clear)]
+    fn clear<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("dict.clear", vm.heap)?;
+            dict_clear(this, vm);
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("dict.copy", vm.heap)?;
+            dict_copy(this, DictKind::plain(), vm)
+        }
+    }
+
+    #[pymethod(Update)]
+    fn update<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        dict_update(this, args, vm)
+    }
+
+    #[pymethod(Setdefault)]
+    fn setdefault<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        dict_setdefault(this, args, vm)
+    }
+
+    #[pymethod(Popitem)]
+    fn popitem<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("dict.popitem", vm.heap)?;
+            dict_popitem(this, vm)
+        }
+    }
+
+    #[pyclassmethod(Fromkeys)]
+    fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value)
+    }
+}
+
+pub(crate) struct PyDefaultDictImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDefaultDictImpl {
+    type Receiver = HeapObjectRead<'heap, Dict>;
+
+    #[pymethod(Get, Dict)]
+    fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::get(this, args, vm)
+    }
+
+    #[pymethod(Keys, Dict)]
+    fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::keys(this, args, vm)
+    }
+
+    #[pymethod(Values, Dict)]
+    fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::values(this, args, vm)
+    }
+
+    #[pymethod(Items, Dict)]
+    fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::items(this, args, vm)
+    }
+
+    #[pymethod(Pop, Dict)]
+    fn pop<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::pop(this, args, vm)
+    }
+
+    #[pymethod(Clear, Dict)]
+    fn clear<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::clear(this, args, vm)
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("dict.copy", vm.heap)?;
+        let kind = this.get(vm.heap).cloned_kind(vm.heap);
+        dict_copy(this, kind, vm)
+    }
+
+    #[pymethod(Update, Dict)]
+    fn update<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::update(this, args, vm)
+    }
+
+    #[pymethod(Setdefault, Dict)]
+    fn setdefault<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::setdefault(this, args, vm)
+    }
+
+    #[pymethod(Popitem, Dict)]
+    fn popitem<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::popitem(this, args, vm)
+    }
+
+    #[pymethod(DunderMissing)]
+    fn dunder_missing<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            let key = args.get_one_arg("__missing__", vm.heap)?;
+            defer_drop!(key, vm);
+            defaultdict_missing(this, key, vm)
+        }
+    }
+
+    #[pyclassmethod(Fromkeys)]
+    fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        dict_fromkeys(args, DictKind::defaultdict(None), vm).map(CallResult::Value)
+    }
+}
+
+pub(crate) struct PyCounterImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyCounterImpl {
+    type Receiver = HeapObjectRead<'heap, Dict>;
+
+    #[pymethod(Get, Dict)]
+    fn get<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::get(this, args, vm)
+    }
+
+    #[pymethod(Keys, Dict)]
+    fn keys<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::keys(this, args, vm)
+    }
+
+    #[pymethod(Values, Dict)]
+    fn values<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::values(this, args, vm)
+    }
+
+    #[pymethod(Items, Dict)]
+    fn items<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::items(this, args, vm)
+    }
+
+    #[pymethod(Pop, Dict)]
+    fn pop<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::pop(this, args, vm)
+    }
+
+    #[pymethod(Clear, Dict)]
+    fn clear<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::clear(this, args, vm)
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        args.check_zero_args("dict.copy", vm.heap)?;
+        let kind = this.get(vm.heap).cloned_kind(vm.heap);
+        dict_copy(this, kind, vm)
+    }
+
+    #[pymethod(Update)]
+    fn update<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        counter_update_method(this, args, false, vm)
+    }
+
+    #[pymethod(Setdefault, Dict)]
+    fn setdefault<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::setdefault(this, args, vm)
+    }
+
+    #[pymethod(Popitem, Dict)]
+    fn popitem<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        PyDictImpl::popitem(this, args, vm)
+    }
+
+    #[pymethod(MostCommon)]
+    fn most_common<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        counter_most_common(this, args, vm)
+    }
+
+    #[pymethod(Elements)]
+    fn elements<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        counter_elements(this, args, vm)
+    }
+
+    #[pymethod(Total)]
+    fn total<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("total", vm.heap)?;
+            counter_total(this, vm)
+        }
+    }
+
+    #[pymethod(Subtract)]
+    fn subtract<'h>(this: &mut HeapObjectRead<'h, Dict>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        counter_update_method(this, args, true, vm)
+    }
+
+    #[pyclassmethod(Fromkeys)]
+    fn fromkeys(_name: StaticStrings, _class: PyClass<'_>, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+        args.drop_with(vm);
+        Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
     }
 }

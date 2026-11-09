@@ -1,5 +1,7 @@
 use std::{cmp::Ordering, collections::VecDeque, fmt::Write, mem};
 
+use monty_macros::pyattrs;
+
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::{ArgValues, FromArgs},
@@ -12,6 +14,7 @@ use crate::{
     },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
+    py_attrs::PyAttrs,
     py_value::PyValue,
     resource_checks::{
         check_estimated_size, check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity,
@@ -656,14 +659,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
         }
         Ok(None)
     }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        let Some(method) = attr.static_string(vm.interns) else {
-            args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm.interns)));
-        };
-        call_deque_method(self, method, args, vm).map(CallResult::Value)
-    }
 }
 
 impl HeapItem for Deque {
@@ -794,267 +789,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DequeIterator> {
     }
 }
 
-/// Dispatches a method call on a deque.
-///
-/// The `FromArgs`-style arity wording differs per method because CPython's own C
-/// implementation does: `append`/`count`/`copy` use `METH_O`/`METH_NOARGS` (which
-/// name the type), while `index`/`insert`/`rotate` use `PyArg_UnpackTuple` (which
-/// does not). The messages are reproduced verbatim.
-fn call_deque_method<'h>(
-    deque: &mut HeapObjectRead<'h, Deque>,
-    method: StaticStrings,
-    args: ArgValues,
-    vm: &mut VM<'h>,
-) -> RunResult<Value> {
-    match method {
-        StaticStrings::Append => {
-            let item = args.get_one_arg("deque.append", vm.heap)?;
-            deque.append(vm, item)?;
-            Ok(Value::None)
-        }
-        StaticStrings::Appendleft => {
-            let item = args.get_one_arg("deque.appendleft", vm.heap)?;
-            deque.appendleft(vm, item)?;
-            Ok(Value::None)
-        }
-        StaticStrings::Pop => {
-            args.check_zero_args("deque.pop", vm.heap)?;
-            let this = deque.get_mut(vm.heap);
-            // An empty pop raises without mutating, so it must not bump the state.
-            let item = this
-                .items
-                .pop_back()
-                .ok_or_else(ExcType::index_error_pop_from_empty_deque)?;
-            this.bump_state();
-            Ok(item)
-        }
-        StaticStrings::Popleft => {
-            args.check_zero_args("deque.popleft", vm.heap)?;
-            let this = deque.get_mut(vm.heap);
-            let item = this
-                .items
-                .pop_front()
-                .ok_or_else(ExcType::index_error_pop_from_empty_deque)?;
-            this.bump_state();
-            Ok(item)
-        }
-        StaticStrings::Clear => {
-            args.check_zero_args("deque.clear", vm.heap)?;
-            let this = deque.get_mut(vm.heap);
-            // CPython returns early for an already-empty deque, leaving state alone.
-            if this.items.is_empty() {
-                return Ok(Value::None);
-            }
-            this.bump_state();
-            let items: Vec<Value> = this.items.drain(..).collect();
-            items.drop_with(vm);
-            Ok(Value::None)
-        }
-        StaticStrings::Copy => {
-            args.check_zero_args("deque.copy", vm.heap)?;
-            let maxlen = deque.get(vm.heap).maxlen();
-            let items = deque.clone_all_items(vm)?;
-            let (new_deque, evicted) = Deque::new(items, maxlen);
-            evicted.drop_with(vm);
-            let id = vm.heap.allocate(HeapData::Deque(new_deque));
-            Ok(Value::Ref(id))
-        }
-        StaticStrings::Reverse => {
-            args.check_zero_args("deque.reverse", vm.heap)?;
-            deque.get_mut(vm.heap).items.make_contiguous().reverse();
-            Ok(Value::None)
-        }
-        StaticStrings::Extend => {
-            let iterable = args.get_one_arg("deque.extend", vm.heap)?;
-            deque_extend(deque, iterable, ExtendEnd::Right, vm)?;
-            Ok(Value::None)
-        }
-        StaticStrings::Extendleft => {
-            let iterable = args.get_one_arg("deque.extendleft", vm.heap)?;
-            // extendleft REVERSES the input: each item is pushed to the front in turn.
-            deque_extend(deque, iterable, ExtendEnd::Left, vm)?;
-            Ok(Value::None)
-        }
-        StaticStrings::Rotate => rotate(deque, args, vm),
-        StaticStrings::Insert => insert(deque, args, vm),
-        StaticStrings::Remove => remove(deque, args, vm),
-        StaticStrings::Index => index(deque, args, vm),
-        StaticStrings::Count => count(deque, args, vm),
-        _ => {
-            args.drop_with(vm);
-            Err(ExcType::attribute_error(Type::Deque, method.into()))
-        }
-    }
-}
-
-/// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
-fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
-    defer_drop!(n, vm);
-    // A big int is a valid rotation count; only one out of `i64` range is an
-    // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
-    let n = match read_ssize(n, vm, ExcType::overflow_c_ssize_t) {
-        Some(res) => res?,
-        None => return Err(ExcType::type_error_not_an_integer(&n.py_type_name(vm))),
-    };
-    let this = deque.get_mut(vm.heap);
-    let len = this.items.len();
-    // CPython bails for len <= 1 without touching state (no iterator invalidation);
-    // above that it bumps unconditionally — even `rotate(0)`, hence no `shift != 0`
-    // guard.
-    if len <= 1 {
-        return Ok(Value::None);
-    }
-    this.bump_state();
-    // Reduce modulo len so a huge n doesn't spin; rem_euclid keeps it non-negative.
-    let shift = usize::try_from(n.rem_euclid(i64::try_from(len).expect("len fits in i64")))
-        .expect("rem_euclid is non-negative");
-    this.items.rotate_right(shift);
-    Ok(Value::None)
-}
-
-/// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
-fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let InsertArgs {
-        index: index_value,
-        item,
-    } = InsertArgs::from_args(args, vm)?;
-    defer_drop!(index_value, vm);
-    // Every failing branch below releases `item` through the guard. The insert
-    // at the end takes it back out.
-    let mut item_guard = DropGuard::new(item, vm);
-    let vm = item_guard.ctx();
-
-    // CPython checks fullness before touching the index.
-    let this = deque.get(vm.heap);
-    if let Some(max) = this.maxlen()
-        && this.len() >= max
-    {
-        return Err(ExcType::index_error_deque_full());
-    }
-
-    // A big int is a valid insert position; one out of `i64` range is an
-    // `OverflowError` (CPython's `PyNumber_AsSsize_t`), not a type error.
-    let raw = match read_ssize(index_value, vm, ExcType::overflow_c_ssize_t) {
-        Some(Ok(i)) => i,
-        Some(Err(e)) => return Err(e),
-        None => return Err(ExcType::type_error_not_an_integer(&index_value.py_type_name(vm))),
-    };
-
-    // insert() clamps rather than raising, like list.insert.
-    let len = i64::try_from(deque.get(vm.heap).len()).expect("len fits in i64");
-    let normalized = if raw < 0 { (raw + len).max(0) } else { raw.min(len) };
-    let idx = usize::try_from(normalized).expect("index clamped non-negative");
-
-    let (item, vm) = item_guard.into_parts();
-    if matches!(item, Value::Ref(_)) {
-        deque.get_mut(vm.heap).contains_refs = true;
-    }
-    let this = deque.get_mut(vm.heap);
-    this.items.insert(idx, item);
-    this.bump_state();
-    Ok(Value::None)
-}
-
-/// `deque.remove(x)` — removes the first item equal to `x`.
-fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let target = args.get_one_arg("deque.remove", vm.heap)?;
-    defer_drop!(target, vm);
-
-    let (len, start_state) = {
-        let this = deque.get(vm.heap);
-        (this.len(), this.state())
-    };
-    for i in 0..len {
-        let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
-        defer_drop!(item, vm);
-        let eq = item.py_eq(target, vm)?;
-        // CPython checks for mutation by the user `__eq__` before acting on the
-        // comparison — even a matching one — and quirkily raises IndexError here.
-        if deque.get(vm.heap).state() != start_state {
-            return Err(ExcType::index_error_deque_mutated());
-        }
-        if eq {
-            let this = deque.get_mut(vm.heap);
-            let removed = this.items.remove(i).expect("index in range");
-            // Only a successful removal bumps: a `remove()` that raises ValueError
-            // leaves CPython's iterators valid (verified against CPython 3.14).
-            this.bump_state();
-            removed.drop_with(vm);
-            return Ok(Value::None);
-        }
-    }
-    Err(ExcType::value_error_deque_remove())
-}
-
-/// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
-fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let IndexArgs {
-        value: target,
-        start,
-        stop,
-    } = IndexArgs::from_args(args, vm)?;
-    defer_drop!(target, vm);
-    defer_drop!(start, vm);
-    defer_drop!(stop, vm);
-
-    // Both bounds are coerced before the length is read, because coercion can run a
-    // user `__index__` that mutates this deque. Reading the length first would
-    // resolve a negative bound against a stale size and let the walk below index
-    // past the end of a shortened deque, which panics.
-    let start_arg = coerce_bound(start.as_ref(), vm)?;
-    let stop_arg = coerce_bound(stop.as_ref(), vm)?;
-
-    let len = deque.get(vm.heap).len();
-    let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
-    let stop = stop_arg.map_or(len, |i| normalize_sequence_index(i, len));
-
-    let start_state = deque.get(vm.heap).state();
-    for i in start..stop {
-        let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
-        defer_drop!(item, vm);
-        if item.py_eq(target, vm)? {
-            return Ok(Value::Int(i64::try_from(i).expect("index fits in i64")));
-        }
-        // A user `__eq__` mutating the deque invalidates the walk; CPython
-        // raises, checking only after a false compare.
-        if deque.get(vm.heap).state() != start_state {
-            return Err(ExcType::runtime_error_deque_mutated());
-        }
-    }
-    Err(ExcType::value_error_deque_index())
-}
-
-/// `deque.count(x)` — number of items equal to `x`.
-fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
-    let target = args.get_one_arg("deque.count", vm.heap)?;
-    defer_drop!(target, vm);
-
-    let (len, start_state) = {
-        let this = deque.get(vm.heap);
-        (this.len(), this.state())
-    };
-    let mut total: i64 = 0;
-    for i in 0..len {
-        let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
-        defer_drop!(item, vm);
-        if item.py_eq(target, vm)? {
-            total += 1;
-        }
-        // A user `__eq__` mutating the deque invalidates the walk; CPython
-        // checks after counting each compare.
-        if deque.get(vm.heap).state() != start_state {
-            return Err(ExcType::runtime_error_deque_mutated());
-        }
-    }
-    Ok(Value::Int(total))
-}
-
 /// Coerces an optional `index` bound to an `i64`, leaving normalization to the caller.
 ///
 /// `None` means "not supplied"; an explicit `Value::None` is a *bad argument*, matching
 /// CPython (`index()` bounds go through `_PyEval_SliceIndexNotNone`, unlike real slicing
-/// which accepts `None`). Normalization is deliberately not done here — see [`index`].
+/// which accepts `None`). Normalization is deliberately not done here — see [`PyDequeImpl::index`].
 fn coerce_bound(value: Option<&Value>, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Some(value) => Ok(Some(value_to_i64_bound(value, vm)?)),
@@ -1212,5 +951,284 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Deque> {
         }
         let (copy, _) = guard.into_parts();
         Ok(copy)
+    }
+}
+
+pub(crate) struct PyDequeImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDequeImpl {
+    type Receiver = HeapObjectRead<'heap, Deque>;
+
+    #[pymethod(Append)]
+    fn append<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            let item = args.get_one_arg("deque.append", vm.heap)?;
+            this.append(vm, item)?;
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Appendleft)]
+    fn appendleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            let item = args.get_one_arg("deque.appendleft", vm.heap)?;
+            this.appendleft(vm, item)?;
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Pop)]
+    fn pop<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("deque.pop", vm.heap)?;
+            let this = this.get_mut(vm.heap);
+            // An empty pop raises without mutating, so it must not bump the state.
+            let item = this
+                .items
+                .pop_back()
+                .ok_or_else(ExcType::index_error_pop_from_empty_deque)?;
+            this.bump_state();
+            Ok(item)
+        }
+    }
+
+    #[pymethod(Popleft)]
+    fn popleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("deque.popleft", vm.heap)?;
+            let this = this.get_mut(vm.heap);
+            let item = this
+                .items
+                .pop_front()
+                .ok_or_else(ExcType::index_error_pop_from_empty_deque)?;
+            this.bump_state();
+            Ok(item)
+        }
+    }
+
+    #[pymethod(Clear)]
+    fn clear<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("deque.clear", vm.heap)?;
+            let this = this.get_mut(vm.heap);
+            // CPython returns early for an already-empty deque, leaving state alone.
+            if this.items.is_empty() {
+                return Ok(Value::None);
+            }
+            this.bump_state();
+            let items: Vec<Value> = this.items.drain(..).collect();
+            items.drop_with(vm);
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Copy)]
+    fn copy<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("deque.copy", vm.heap)?;
+            let maxlen = this.get(vm.heap).maxlen();
+            let items = this.clone_all_items(vm)?;
+            let (new_deque, evicted) = Deque::new(items, maxlen);
+            evicted.drop_with(vm);
+            let id = vm.heap.allocate(HeapData::Deque(new_deque));
+            Ok(Value::Ref(id))
+        }
+    }
+
+    #[pymethod(Reverse)]
+    fn reverse<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            args.check_zero_args("deque.reverse", vm.heap)?;
+            this.get_mut(vm.heap).items.make_contiguous().reverse();
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Extend)]
+    fn extend<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            let iterable = args.get_one_arg("deque.extend", vm.heap)?;
+            deque_extend(this, iterable, ExtendEnd::Right, vm)?;
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Extendleft)]
+    fn extendleft<'h>(this: &mut HeapObjectRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        {
+            let iterable = args.get_one_arg("deque.extendleft", vm.heap)?;
+            // extendleft REVERSES the input: each item is pushed to the front in turn.
+            deque_extend(this, iterable, ExtendEnd::Left, vm)?;
+            Ok(Value::None)
+        }
+    }
+
+    #[pymethod(Rotate)]
+    /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
+    fn rotate<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
+        defer_drop!(n, vm);
+        // A big int is a valid rotation count; only one out of `i64` range is an
+        // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
+        let n = match read_ssize(n, vm, ExcType::overflow_c_ssize_t) {
+            Some(res) => res?,
+            None => return Err(ExcType::type_error_not_an_integer(&n.py_type_name(vm))),
+        };
+        let this = deque.get_mut(vm.heap);
+        let len = this.items.len();
+        // CPython bails for len <= 1 without touching state (no iterator invalidation);
+        // above that it bumps unconditionally — even `rotate(0)`, hence no `shift != 0`
+        // guard.
+        if len <= 1 {
+            return Ok(Value::None);
+        }
+        this.bump_state();
+        // Reduce modulo len so a huge n doesn't spin; rem_euclid keeps it non-negative.
+        let shift = usize::try_from(n.rem_euclid(i64::try_from(len).expect("len fits in i64")))
+            .expect("rem_euclid is non-negative");
+        this.items.rotate_right(shift);
+        Ok(Value::None)
+    }
+
+    #[pymethod(Insert)]
+    /// `deque.insert(i, x)` — raises if the deque is already at `maxlen`.
+    fn insert<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let InsertArgs {
+            index: index_value,
+            item,
+        } = InsertArgs::from_args(args, vm)?;
+        defer_drop!(index_value, vm);
+        // Every failing branch below releases `item` through the guard. The insert
+        // at the end takes it back out.
+        let mut item_guard = DropGuard::new(item, vm);
+        let vm = item_guard.ctx();
+
+        // CPython checks fullness before touching the index.
+        let this = deque.get(vm.heap);
+        if let Some(max) = this.maxlen()
+            && this.len() >= max
+        {
+            return Err(ExcType::index_error_deque_full());
+        }
+
+        // A big int is a valid insert position; one out of `i64` range is an
+        // `OverflowError` (CPython's `PyNumber_AsSsize_t`), not a type error.
+        let raw = match read_ssize(index_value, vm, ExcType::overflow_c_ssize_t) {
+            Some(Ok(i)) => i,
+            Some(Err(e)) => return Err(e),
+            None => return Err(ExcType::type_error_not_an_integer(&index_value.py_type_name(vm))),
+        };
+
+        // insert() clamps rather than raising, like list.insert.
+        let len = i64::try_from(deque.get(vm.heap).len()).expect("len fits in i64");
+        let normalized = if raw < 0 { (raw + len).max(0) } else { raw.min(len) };
+        let idx = usize::try_from(normalized).expect("index clamped non-negative");
+
+        let (item, vm) = item_guard.into_parts();
+        if matches!(item, Value::Ref(_)) {
+            deque.get_mut(vm.heap).contains_refs = true;
+        }
+        let this = deque.get_mut(vm.heap);
+        this.items.insert(idx, item);
+        this.bump_state();
+        Ok(Value::None)
+    }
+
+    #[pymethod(Remove)]
+    /// `deque.remove(x)` — removes the first item equal to `x`.
+    fn remove<'h>(deque: &HeapReadMut<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let target = args.get_one_arg("deque.remove", vm.heap)?;
+        defer_drop!(target, vm);
+
+        let (len, start_state) = {
+            let this = deque.get(vm.heap);
+            (this.len(), this.state())
+        };
+        for i in 0..len {
+            let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
+            defer_drop!(item, vm);
+            let eq = item.py_eq(target, vm)?;
+            // CPython checks for mutation by the user `__eq__` before acting on the
+            // comparison — even a matching one — and quirkily raises IndexError here.
+            if deque.get(vm.heap).state() != start_state {
+                return Err(ExcType::index_error_deque_mutated());
+            }
+            if eq {
+                let this = deque.get_mut(vm.heap);
+                let removed = this.items.remove(i).expect("index in range");
+                // Only a successful removal bumps: a `remove()` that raises ValueError
+                // leaves CPython's iterators valid (verified against CPython 3.14).
+                this.bump_state();
+                removed.drop_with(vm);
+                return Ok(Value::None);
+            }
+        }
+        Err(ExcType::value_error_deque_remove())
+    }
+
+    #[pymethod(Index)]
+    /// `deque.index(x[, start[, stop]])` — index of the first item equal to `x`.
+    fn index<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let IndexArgs {
+            value: target,
+            start,
+            stop,
+        } = IndexArgs::from_args(args, vm)?;
+        defer_drop!(target, vm);
+        defer_drop!(start, vm);
+        defer_drop!(stop, vm);
+
+        // Both bounds are coerced before the length is read, because coercion can run a
+        // user `__index__` that mutates this deque. Reading the length first would
+        // resolve a negative bound against a stale size and let the walk below index
+        // past the end of a shortened deque, which panics.
+        let start_arg = coerce_bound(start.as_ref(), vm)?;
+        let stop_arg = coerce_bound(stop.as_ref(), vm)?;
+
+        let len = deque.get(vm.heap).len();
+        let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
+        let stop = stop_arg.map_or(len, |i| normalize_sequence_index(i, len));
+
+        let start_state = deque.get(vm.heap).state();
+        for i in start..stop {
+            let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
+            defer_drop!(item, vm);
+            if item.py_eq(target, vm)? {
+                return Ok(Value::Int(i64::try_from(i).expect("index fits in i64")));
+            }
+            // A user `__eq__` mutating the deque invalidates the walk; CPython
+            // raises, checking only after a false compare.
+            if deque.get(vm.heap).state() != start_state {
+                return Err(ExcType::runtime_error_deque_mutated());
+            }
+        }
+        Err(ExcType::value_error_deque_index())
+    }
+
+    #[pymethod(Count)]
+    /// `deque.count(x)` — number of items equal to `x`.
+    fn count<'h>(deque: &HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
+        let target = args.get_one_arg("deque.count", vm.heap)?;
+        defer_drop!(target, vm);
+
+        let (len, start_state) = {
+            let this = deque.get(vm.heap);
+            (this.len(), this.state())
+        };
+        let mut total: i64 = 0;
+        for i in 0..len {
+            let item = deque.get(vm.heap).items[i].clone_with_heap(vm.heap);
+            defer_drop!(item, vm);
+            if item.py_eq(target, vm)? {
+                total += 1;
+            }
+            // A user `__eq__` mutating the deque invalidates the walk; CPython
+            // checks after counting each compare.
+            if deque.get(vm.heap).state() != start_state {
+                return Err(ExcType::runtime_error_deque_mutated());
+            }
+        }
+        Ok(Value::Int(total))
     }
 }

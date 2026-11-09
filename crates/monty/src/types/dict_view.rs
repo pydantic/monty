@@ -1,20 +1,21 @@
 use std::{fmt::Write, mem};
 
+use monty_macros::pyattrs;
 use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{RunError, RunResult},
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
-    intern::StaticStrings,
+    py_attrs::PyAttrs,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
         dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
         iter::checked_preallocation_hint,
     },
-    value::{EitherStr, Value},
+    value::Value,
 };
 
 /// Shared accessors for heap-backed dictionary view objects.
@@ -244,17 +245,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictKeysView> {
         f.write_str("dict_keys([")?;
         write_dict_keys_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
-            }
-            _ => Err(ExcType::attribute_error_method(Type::DictKeys, attr, args, vm)),
-        }
     }
 }
 
@@ -520,17 +510,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, DictItemsView> {
         f.write_str("dict_items([")?;
         write_dict_items_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
-    }
-
-    fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        match attr.static_string(vm.interns) {
-            Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
-                defer_drop!(other, vm);
-                Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
-            }
-            _ => Err(ExcType::attribute_error_method(Type::DictItems, attr, args, vm)),
-        }
     }
 }
 
@@ -884,5 +863,45 @@ pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap
             }
         }
         _ => None,
+    }
+}
+
+pub(crate) struct PyDictItemsViewImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDictItemsViewImpl {
+    type Receiver = HeapObjectRead<'heap, DictItemsView>;
+
+    #[pymethod(Isdisjoint)]
+    fn isdisjoint<'h>(
+        this: &mut HeapObjectRead<'h, DictItemsView>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
+            defer_drop!(other, vm);
+            Ok(CallResult::Value(Value::Bool(this.isdisjoint_from_value(other, vm)?)))
+        }
+    }
+}
+
+pub(crate) struct PyDictKeysViewImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyDictKeysViewImpl {
+    type Receiver = HeapObjectRead<'heap, DictKeysView>;
+
+    #[pymethod(Isdisjoint)]
+    fn isdisjoint<'h>(
+        this: &mut HeapObjectRead<'h, DictKeysView>,
+        args: ArgValues,
+        vm: &mut VM<'h>,
+    ) -> RunResult<CallResult> {
+        {
+            let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
+            defer_drop!(other, vm);
+            Ok(CallResult::Value(Value::Bool(this.isdisjoint_from_value(other, vm)?)))
+        }
     }
 }

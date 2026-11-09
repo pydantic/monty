@@ -125,6 +125,39 @@ unit tests for every attribute-validation error.
 Projects a struct into the `CallArgs` a host callback takes, reusing the `#[from_args(...)]` field attributes.
 `varargs` fields contribute one positional argument per element.
 
+## `#[pyattrs]`
+
+Collects Python-visible functions on a namespace implementing `PyAttrs` inside `monty`.
+The macro keeps their native bodies in an inherent implementation and generates `PyAttrs::TABLE`.
+The table contains enumerable entries and a lookup function generated from the same declarations.
+`Type::attr_table` registers each native namespace once.
+
+Each annotation names its `StaticStrings` key explicitly:
+
+- `#[pymethod(Sort)]` registers an instance method with a native receiver, `ArgValues`, and `&mut VM`.
+  Methods return `RunResult<Value>` or `RunResult<CallResult>`; the adapter converts values and preserves suspension.
+  An inherited native descriptor can specify its defining base, e.g. `#[pymethod(Get, Dict)]`,
+  so unbound calls validate against `dict` even when reached through a subclass.
+- `#[pyclassmethod(Fromkeys)]` registers `(StaticStrings, PyClass, ArgValues, &mut VM) -> RunResult<CallResult>`.
+  The adapter supplies the registered key and bound class, including calls through instances.
+- `#[pyvalue(Min)]` registers `(&mut VM) -> Value`.
+
+`Receiver` declares the view borrowed from `PyValue`:
+`HeapRead<'heap, T>`, `HeapReadMut<'heap, T>`, `HeapObjectRead<'heap, T>`,
+`PyStr<'heap>`, `PyBytes<'heap>`, `PyInt<'heap>`, `f64`, or `bool`.
+Heap methods can take `&HeapRead`, `&HeapReadMut`, or `&HeapObjectRead`; existing handlers may also take
+`&mut HeapObjectRead` when they need the guard itself mutably.
+String, bytes, and integer handlers take shared references to their logical views.
+In particular, integer handlers use `PyInt` to cover both small and heap integers; an `i64` receiver is unsupported.
+Immediate float and bool receivers are passed by value.
+An incompatible native view raises `TypeError` and releases the arguments.
+
+Rust resolves the trait path, including aliases, and checks handler signatures and receiver type arguments.
+The macro selects the receiver projection and checks duplicate attribute keys.
+Conditional registrations are rejected because a table entry and its handler must have the same availability.
+Functions retain their visibility, lifetime parameters, documentation, and bodies.
+Unannotated helper functions are preserved without registration.
+
 ## Not a standalone crate
 
 Generated code emits `crate::...` paths: `FromArgs` compiles inside `monty`, and `ToArgs` inside `monty-types`.

@@ -76,10 +76,15 @@ mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 A non-str subject passed to a Pattern *method* raises `expected string, not {type}` rather than CPython's
 `expected string or bytes-like object, got '{type}'`. The module-level functions match CPython's wording.
 
+Missing arguments to `Pattern.search`, `match`, `fullmatch`, `findall`, and `finditer` use Monty's native arity wording, e.g.
+`Pattern.search() takes exactly one argument (0 given)`, rather than CPython's
+`search() missing required argument 'string' (pos 1)`.
+
 ## `re.Match` objects
 
 Attributes: `re`, `string`.
 Methods: `group`, `groups`, `groupdict`, `start`, `end`, `span`.
+`groups()` does not accept CPython's optional `default` argument; unmatched groups always produce `None`.
 
 Not implemented: `lastindex`, `lastgroup`, `expand`, `pos`, `endpos`,
 `regs`. Indexing (`m[0]`, `m["name"]`) is not supported; use `.group()`.

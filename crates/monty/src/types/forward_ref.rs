@@ -16,6 +16,7 @@ use std::{
 };
 
 use ahash::AHasher;
+use monty_macros::pyattrs;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -29,6 +30,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, StandardLib, typing},
+    py_attrs::PyAttrs,
     types::{
         BuiltinType, Dict, LazyHeapSet, PyTrait, Type, Union,
         generic_alias::repr_type_arg,
@@ -650,11 +652,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, ForwardRef> {
         Ok(Some(CallResult::Value(value)))
     }
 
-    /// `evaluate(...)`; any other method composes `Later.method(...)` on a stringifier.
+    /// Unknown methods compose `Later.method(...)` on a stringifier.
     fn py_call_attr(&mut self, vm: &mut VM<'h>, attr: &EitherStr, args: ArgValues) -> RunResult<CallResult> {
-        if attr.static_string(vm.interns) == Some(StaticStrings::Evaluate) {
-            self.evaluate(args, vm)
-        } else if self.composes(vm) {
+        if self.composes(vm) {
             let mut text = String::new();
             self.write_operand(Precedence::Atom, vm, &mut text);
             text.push('.');
@@ -943,4 +943,17 @@ fn is_identifier(text: &str) -> bool {
     let mut chars = text.chars();
     chars.next().is_some_and(|first| first == '_' || first.is_alphabetic())
         && chars.all(|c| c == '_' || c.is_alphanumeric())
+}
+
+/// Python entry point for annotation evaluation.
+pub(crate) struct PyForwardRefImpl;
+
+#[pyattrs]
+impl<'heap> PyAttrs<'heap> for PyForwardRefImpl {
+    type Receiver = HeapObjectRead<'heap, ForwardRef>;
+
+    #[pymethod(Evaluate)]
+    fn evaluate<'h>(value: &HeapObjectRead<'h, ForwardRef>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
+        value.evaluate(args, vm)
+    }
 }

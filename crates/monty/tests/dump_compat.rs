@@ -9,8 +9,10 @@
 use std::{env, fs, path::PathBuf, thread, time::Duration};
 
 use insta::assert_snapshot;
-use monty::{DUMP_VERSION, Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
-use monty_types::{CompileOptions, ExecutionClock, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
+use monty::{DUMP_VERSION, Dump, MontyRepl, MontyRun, ReplProgress, Session, SessionRef, dump};
+use monty_types::{
+    CompileOptions, ExecutionClock, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+};
 use serde::{Deserialize, Serialize};
 
 /// Environment variable that rewrites the fixture instead of checking it.
@@ -811,4 +813,36 @@ fn fresh_location_tracebacks() -> Vec<String> {
                 .to_string()
         })
         .collect()
+}
+
+#[test]
+fn table_forward_ref_evaluation_can_suspend_and_restore() {
+    let run = MontyRun::new(
+        "from annotationlib import ForwardRef\nForwardRef.evaluate(ForwardRef('f()'), globals={'f': f})".to_owned(),
+        "test.py",
+        vec!["f".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = run
+        .start(
+            vec![MontyObject::function("fetch", None)],
+            ResourceTracker::default(),
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let bytes = dump("test.py", None, &[], SessionRef::Running(&progress)).unwrap();
+    let Session::Running(restored) = Dump::load(&bytes).unwrap().state else {
+        panic!("expected a running session")
+    };
+    for progress in [progress, *restored] {
+        let call = progress.into_function_call().expect("expected the fetch call");
+        assert_eq!(call.function_name, "fetch");
+        let result = call
+            .resume(MontyObject::type_object(MontyType::Int), PrintWriter::Disabled)
+            .unwrap()
+            .into_complete()
+            .unwrap();
+        assert_eq!(result, MontyObject::type_object(MontyType::Int));
+    }
 }

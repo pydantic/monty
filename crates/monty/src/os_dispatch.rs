@@ -594,34 +594,6 @@ fn directory_entries(value: MontyObject, receiver: Option<(&str, &ResourceTracke
 // Path-method dispatcher (used by `types/path.rs`).
 // =============================================================================
 
-/// Pre-flight check for [`build_path_os_call`]: lets the caller decide whether
-/// to commit ownership of the path/args to the builder.
-#[must_use]
-pub(crate) fn is_path_os_method(method: StaticStrings) -> bool {
-    matches!(
-        method,
-        StaticStrings::Exists
-            | StaticStrings::IsFile
-            | StaticStrings::IsDir
-            | StaticStrings::IsSymlink
-            | StaticStrings::ReadText
-            | StaticStrings::ReadBytes
-            | StaticStrings::StatMethod
-            | StaticStrings::Iterdir
-            | StaticStrings::Resolve
-            | StaticStrings::Absolute
-            | StaticStrings::Unlink
-            | StaticStrings::Rmdir
-            | StaticStrings::WriteText
-            | StaticStrings::AppendText
-            | StaticStrings::WriteBytes
-            | StaticStrings::AppendBytes
-            | StaticStrings::Mkdir
-            | StaticStrings::Rename
-            | StaticStrings::Replace
-    )
-}
-
 /// Builds a host request and its resume action for a `pathlib.Path` OS method.
 /// Owns `args` and cleans up its references on every error path.
 pub(crate) fn build_path_os_call(
@@ -700,7 +672,7 @@ pub(crate) fn build_path_os_call(
         }
         _ => {
             args.drop_with(vm.heap);
-            unreachable!("is_path_os_method gates the call");
+            unreachable!("the registered Path method selects the call");
         }
     };
     Ok(CallResult::OsCall(call))
