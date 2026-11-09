@@ -87,6 +87,8 @@ A worker that predates `Configure.accepts_streamed_calls` ignores all of this an
 Collect them with `Checkout::take_streamed_calls` after every turn, or receive each as it arrives, while the turn
 still runs, through a channel passed to `Checkout::set_streamed_call_sink`; start each one, and settle them with
 `resume_futures` once a `TurnEvent::ResolveFutures` names them.
+The sink is an unbounded channel the checkout never waits on, so drain it while the turn runs: each call it holds
+keeps its arguments in host memory.
 Each started call counts against `max_suspensions`.
 The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
 `SleepMode::Zero` returns immediately.
