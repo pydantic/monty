@@ -244,8 +244,11 @@ export class MontySession {
     const onPrint = bindPrintCallback((stream, text) => printTarget.write(stream, text))
     // streamed calls arrive on the session's sink mid-turn, so each starts while the sandbox runs
     const onStreamedCall = bindStreamedCallCallback((callId) => {
-      // a failed print ends the feed, so no host call may start after one
-      if (!printTarget.hasFailed()) {
+      if (printTarget.hasFailed()) {
+        // a failed print ends the feed, so no host call may start after one;
+        // still take the call, or the session holds its arguments until it closes
+        this.native.takeStreamedCall(callId)
+      } else {
         answerer.startStreamedCall(callId)
       }
     })
