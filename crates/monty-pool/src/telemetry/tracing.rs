@@ -59,6 +59,8 @@ pub(crate) struct Recorder {
     /// One span per streamed call, by call id: open from the call until the
     /// `ResumeFutures` carrying its result, so the host call runs under it.
     streamed_calls: BTreeMap<u32, OpenSpan>,
+    /// Rendered argument bytes `streamed_calls` hold, capped at [`STREAMED_ARGS_ATTR_LIMIT`].
+    streamed_arg_bytes: usize,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -82,6 +84,7 @@ impl Recorder {
             turn: None,
             pending: None,
             streamed_calls: BTreeMap::new(),
+            streamed_arg_bytes: 0,
             feed: None,
             session: None,
             dump_turn: false,
@@ -135,7 +138,7 @@ impl Recorder {
             // cheap to be safe against) is closed by the overwrite
             Some(pb::parent_request::Kind::Configure(c)) => {
                 self.pending = None;
-                self.streamed_calls.clear();
+                self.clear_streamed_calls();
                 self.feed = None;
                 let limits = c.limits.as_ref();
                 let (script_name, script_name_cut) = truncate_str(&c.script_name);
@@ -184,7 +187,7 @@ impl Recorder {
             // land mid-suspension, so close innermost-first.
             Some(pb::parent_request::Kind::Reset(_)) => {
                 self.pending = None;
-                self.streamed_calls.clear();
+                self.clear_streamed_calls();
                 self.feed = None;
                 self.session = None;
             }
@@ -203,7 +206,7 @@ impl Recorder {
                 // a feed while one is open is a checkout-level error the
                 // worker rejects; close the stale spans so nesting stays sane
                 self.pending = None;
-                self.streamed_calls.clear();
+                self.clear_streamed_calls();
                 self.feed = None;
                 let cut = code_cut | inputs_cut;
                 let span = start_span(logfire::span!(
@@ -244,6 +247,7 @@ impl Recorder {
                 for mut call in mem::take(&mut self.streamed_calls).into_values() {
                     call.record("aborted_with", &result, cut);
                 }
+                self.streamed_arg_bytes = 0;
                 self.close_pending("aborted_with", &result, cut);
             }
             Some(pb::parent_request::Kind::ResumeFutures(r)) => {
@@ -253,6 +257,7 @@ impl Recorder {
                     .iter()
                     .filter(|result| match self.streamed_calls.remove(&result.call_id) {
                         Some(mut call) => {
+                            self.streamed_arg_bytes -= call.arg_bytes;
                             let (value, cut) = render_ext_result(result.result.as_ref(), r.values.as_ref());
                             call.record("return_value", &value, cut);
                             false
@@ -297,7 +302,7 @@ impl Recorder {
             // exiting; closing whatever is open is the record
             Some(pb::parent_request::Kind::Shutdown(_)) => {
                 self.pending = None;
-                self.streamed_calls.clear();
+                self.clear_streamed_calls();
                 self.feed = None;
                 self.session = None;
             }
@@ -345,12 +350,24 @@ impl Recorder {
             // feed, until the `ResumeFutures` carrying the call's result
             Some(pb::child_event::Kind::StreamedCalls(started)) => {
                 for c in &started.calls {
-                    let span = self.call_span(c, micros, max_feed_duration);
-                    self.streamed_calls.insert(c.call_id, span);
+                    let (args, kwargs, cut) = render_call_arguments(c);
+                    let bytes = args.as_ref().map_or(0, String::len) + kwargs.as_ref().map_or(0, String::len);
+                    // open spans keep their attributes, so past the cap a call records none
+                    let (arguments, kept) = if self.streamed_arg_bytes + bytes <= STREAMED_ARGS_ATTR_LIMIT {
+                        ((args, kwargs, cut), bytes)
+                    } else {
+                        ((None, None, true), 0)
+                    };
+                    self.streamed_arg_bytes += kept;
+                    let mut span = self.call_span(c, arguments, micros, max_feed_duration);
+                    span.arg_bytes = kept;
+                    if let Some(replaced) = self.streamed_calls.insert(c.call_id, span) {
+                        self.streamed_arg_bytes -= replaced.arg_bytes;
+                    }
                 }
             }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
-                let mut pending = self.call_span(c, micros, max_feed_duration);
+                let mut pending = self.call_span(c, render_call_arguments(c), micros, max_feed_duration);
                 pending.eager_call_id = c.allow_eager_await.then_some(c.call_id);
                 self.pending = Some(pending);
             }
@@ -512,8 +529,15 @@ impl Recorder {
     }
 
     /// Opens the `call {function_name}` span for a suspended or streamed call.
-    fn call_span(&self, c: &WireFunctionCall, micros: u64, max_feed_duration: Option<u64>) -> OpenSpan {
-        let (args, kwargs, args_cut) = render_call_arguments(c);
+    /// `arguments` is [`render_call_arguments`]'s output, or nothing for a call past the cap.
+    fn call_span(
+        &self,
+        c: &WireFunctionCall,
+        arguments: (Option<String>, Option<String>, bool),
+        micros: u64,
+        max_feed_duration: Option<u64>,
+    ) -> OpenSpan {
+        let (args, kwargs, args_cut) = arguments;
         let (function_name, name_cut) = truncate_str(&c.function_name);
         let position = PositionAttrs::new(c.position.as_ref());
         let cut = args_cut | name_cut | position.cut;
@@ -562,13 +586,19 @@ impl Recorder {
         self.pending.take().map_or_else(Span::none, |pending| pending.span)
     }
 
+    /// Closes every streamed call's span, releasing their argument bytes.
+    fn clear_streamed_calls(&mut self) {
+        self.streamed_calls.clear();
+        self.streamed_arg_bytes = 0;
+    }
+
     /// Closes the feed-scoped spans after a turn-ending
     /// `Complete`/`Error`/`TypingError` event; innermost-first, and a no-op
     /// for the housekeeping turns those events can also end.
     fn end_feed(&mut self) {
         self.turn = None;
         self.pending = None;
-        self.streamed_calls.clear();
+        self.clear_streamed_calls();
         self.feed = None;
     }
 }
@@ -583,6 +613,9 @@ struct OpenSpan {
     cut: bool,
     /// Matches an eager reply to this call; absent on other spans.
     eager_call_id: Option<u32>,
+    /// Rendered argument bytes a streamed call's span counts against
+    /// [`STREAMED_ARGS_ATTR_LIMIT`]; zero on other spans.
+    arg_bytes: usize,
 }
 
 impl OpenSpan {
@@ -592,6 +625,7 @@ impl OpenSpan {
             span,
             cut,
             eager_call_id: None,
+            arg_bytes: 0,
         }
     }
 
@@ -1020,6 +1054,11 @@ fn record_error(error: &pb::Error, micros: u64, max_feed_duration: Option<u64>, 
 /// record gets a `length_limit_exceeded` attribute saying so.
 const ATTR_SIZE_LIMIT: usize = 64 * 1024;
 
+/// Byte cap for the `args` and `kwargs` the open streamed-call spans hold
+/// together: they stay open until each call settles, so 1000 calls could
+/// otherwise keep 128 MiB of telemetry alive.
+const STREAMED_ARGS_ATTR_LIMIT: usize = 1024 * 1024;
+
 /// Renders the value rooted at `id` in `nodes` as a typed OTel attribute:
 /// scalars keep their native attribute type, everything else becomes
 /// logfire-style JSON text. The bool is true when [`ATTR_SIZE_LIMIT`] cut the
@@ -1157,8 +1196,8 @@ mod tests {
     use std::sync::{Mutex, PoisonError};
 
     use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
-    use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
-    use monty_types::{CallArgs, MontyObject, NameLookupResult, SourceRange};
+    use monty_proto::{WireFunctionCall, future_results_to_proto, pb, pb::os_call::Call};
+    use monty_types::{CallArgs, ExtFunctionResult, MontyObject, NameLookupResult, SourceRange};
     use opentelemetry::{
         logs::AnyValue,
         trace::{SpanContext, SpanId, TraceContextExt as _, TraceFlags, TraceId, TraceState},
@@ -1169,7 +1208,7 @@ mod tests {
     };
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-    use super::{ATTR_SIZE_LIMIT, PositionAttrs, Recorder, bytes_attr, render_ext_result};
+    use super::{ATTR_SIZE_LIMIT, PositionAttrs, Recorder, STREAMED_ARGS_ATTR_LIMIT, bytes_attr, render_ext_result};
     use crate::telemetry::TelemetryContext;
 
     /// The suspension position every hand-built event carries.
@@ -1350,6 +1389,55 @@ mod tests {
         assert_eq!(attr(call, "sandbox.code.offset.start"), Some(0.into()));
         assert_eq!(attr(call, "sandbox.code.offset.end"), Some(7.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
+    }
+
+    /// Open streamed-call spans share one argument budget: past it a call's span
+    /// records no `args` and is flagged, and settling a call frees its share.
+    #[test]
+    fn streamed_call_arguments_share_one_budget() {
+        let (logfire, spans, _logs) = test_logfire();
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
+        let big = |call_id| {
+            WireFunctionCall::new(
+                "f".to_owned(),
+                // half the per-attribute cap, so each call's `args` is kept whole
+                CallArgs::from(vec![MontyObject::string("x".repeat(ATTR_SIZE_LIMIT / 2))]),
+                call_id,
+                None,
+                false,
+                position(),
+            )
+        };
+        let fitting = STREAMED_ARGS_ATTR_LIMIT / (ATTR_SIZE_LIMIT / 2);
+        let calls: Vec<_> = (0..u32::try_from(fitting).unwrap() + 2).map(big).collect();
+        recorder.event(&event(pb::child_event::Kind::StreamedCalls(pb::StreamedCalls {
+            calls: calls.into(),
+        })));
+        assert!(recorder.streamed_arg_bytes <= STREAMED_ARGS_ATTR_LIMIT);
+        let capped = recorder
+            .streamed_calls
+            .values()
+            .filter(|call| call.arg_bytes == 0)
+            .count();
+        assert!(capped >= 2, "only {capped} calls were capped");
+
+        // settling every call frees the budget
+        let results = recorder
+            .streamed_calls
+            .keys()
+            .map(|&call_id| (call_id, ExtFunctionResult::Return(MontyObject::none())))
+            .collect();
+        recorder.begin_turn(&request(pb::parent_request::Kind::ResumeFutures(
+            future_results_to_proto(results),
+        )));
+        assert_eq!(recorder.streamed_arg_bytes, 0);
+        let spans = spans.get_finished_spans().unwrap();
+        let unrecorded = spans
+            .iter()
+            .filter(|span| !span.attributes.iter().any(|kv| kv.key.as_str() == "args"))
+            .count();
+        assert_eq!(unrecorded, capped);
     }
 
     /// A suspension's answer is an attribute of the span it closes, and a cut
