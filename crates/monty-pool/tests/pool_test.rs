@@ -15,10 +15,11 @@ use std::{
     fmt::Write as _,
     fs,
     future::ready,
-    io,
+    io, mem,
     path::{Path, PathBuf},
     pin::pin,
     process::Command,
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -26,7 +27,7 @@ use std::{
 use insta::assert_snapshot;
 use monty_pool::{
     Checkout, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture,
-    ReplConfig, ResumeValue, TurnEvent, on_print_sync,
+    ReplConfig, ResumeValue, StreamedCall, TurnEvent, on_print_sync,
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
@@ -2208,10 +2209,30 @@ async fn suspension_limit_aborts_the_feed() {
 }
 
 /// A subprocess pool leaves `stream_async_calls` off, so a call to an async host
-/// function suspends like any other.
+/// function suspends like any other, even with a handler set.
 #[tokio::test]
 async fn async_calls_suspend_without_stream_async_calls() {
     let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let started = collect_streamed_calls(&mut session);
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let event = session
+        .feed("a = f(1)\nawait a", inputs, vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { .. }),
+        "expected a suspension, got {event:?}"
+    );
+    assert!(started.lock().unwrap().is_empty());
+    drop(session);
+}
+
+/// Without a streamed-call handler a streaming pool's feeds do not stream: the
+/// call suspends, since nothing would start it.
+#[tokio::test]
+async fn async_calls_suspend_without_a_handler() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
     let event = session
@@ -2222,36 +2243,64 @@ async fn async_calls_suspend_without_stream_async_calls() {
         matches!(event, TurnEvent::FunctionCall { .. }),
         "expected a suspension, got {event:?}"
     );
-    assert!(session.take_streamed_calls().is_empty());
     drop(session);
 }
 
-/// With a sink set, a streamed call reaches the host while the turn is still
-/// running, so the host can start it before the sandbox's long loop ends.
+/// A streamed call reaches the handler while the turn is still running, so the
+/// host can start it before the sandbox's long loop ends.
 #[tokio::test]
-async fn streamed_calls_reach_the_sink_before_the_turn_ends() {
+async fn streamed_calls_reach_the_handler_before_the_turn_ends() {
     let pool = Pool::new(streaming_config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let (sink, mut streamed) = unbounded_channel();
-    session.set_streamed_call_sink(Some(sink));
+    session.set_streamed_call_handler(Some(Box::new(move |call| {
+        sink.send(call).unwrap();
+        Box::pin(ready(()))
+    })));
     let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
     let code = "a = f(1)\nfor _ in range(2_000_000):\n    pass\nawait a";
     let (call, event) = {
         let mut print = no_print;
         let mut feed = pin!(session.feed(code, inputs, vec![], false, &mut print));
         let call = tokio::select! {
-            call = streamed.recv() => call.expect("the sink stays open"),
+            call = streamed.recv() => call.expect("the handler stays set"),
             event = &mut feed => panic!("the turn ended before the call arrived: {event:?}"),
         };
         (call, feed.await.unwrap())
     };
     assert_eq!(call.function_name, "f");
     assert!(matches!(event, TurnEvent::ResolveFutures { .. }), "got {event:?}");
-    // delivered to the sink, so nothing was kept for `take_streamed_calls`
-    assert!(session.take_streamed_calls().is_empty());
     let results = vec![(call.call_id, ResumeValue::Return(MontyObject::int(7)))];
     let event = session.resume_futures(results, &mut no_print).await.unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(7));
+    session.finish().await.unwrap();
+}
+
+/// The handler runs in order with prints: a call made before a `print()`
+/// reaches the host before that print does.
+#[tokio::test]
+async fn streamed_calls_and_prints_arrive_in_sandbox_order() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            print_flush_interval: Some(Duration::ZERO),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let call_log = Arc::clone(&log);
+    session.set_streamed_call_handler(Some(Box::new(move |call| {
+        call_log.lock().unwrap().push(format!("call {}", call.function_name));
+        Box::pin(ready(()))
+    })));
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let code = "a = f(1)\nprint('one')\nb = f(2)\nprint('two')";
+    let print_log = Arc::clone(&log);
+    let mut on_print = on_print_sync(move |_, text| print_log.lock().unwrap().push(format!("print {text}")));
+    let event = session.feed(code, inputs, vec![], false, &mut on_print).await.unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    assert_eq!(*log.lock().unwrap(), ["call f", "print one\n", "call f", "print two\n"]);
     session.finish().await.unwrap();
 }
 
@@ -2261,6 +2310,7 @@ async fn streamed_calls_reach_the_sink_before_the_turn_ends() {
 async fn streamed_calls_settle_through_one_resolve_futures() {
     let pool = Pool::new(streaming_config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let started = collect_streamed_calls(&mut session);
     let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
     let code = "import asyncio\nawait asyncio.gather(*[f(i) for i in range(5)])";
     let event = session.feed(code, inputs, vec![], false, &mut no_print).await.unwrap();
@@ -2270,14 +2320,12 @@ async fn streamed_calls_settle_through_one_resolve_futures() {
     else {
         panic!("expected the feed to block on its futures, got {event:?}")
     };
-    let started = session.take_streamed_calls();
+    let started = mem::take(&mut *started.lock().unwrap());
     assert!(started.iter().all(|call| call.function_name == "f"));
     // started in call order; the worker names pending futures in no particular order
     let started_ids: Vec<u32> = started.iter().map(|call| call.call_id).collect();
     pending_call_ids.sort_unstable();
     assert_eq!(started_ids, pending_call_ids);
-    // taking them empties the buffer
-    assert!(session.take_streamed_calls().is_empty());
     let results = started
         .iter()
         .map(|call| {
@@ -2303,6 +2351,7 @@ async fn streamed_calls_count_against_the_suspension_limit() {
         })
         .await
         .unwrap();
+    let started = collect_streamed_calls(&mut session);
     let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
     let code = "import asyncio\nawait asyncio.gather(*[f(i) for i in range(5)])";
     let err = session
@@ -2314,39 +2363,77 @@ async fn streamed_calls_count_against_the_suspension_limit() {
     };
     assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
     // the worker started three, then suspended on the fourth
-    assert_eq!(session.take_streamed_calls().len(), 3);
+    assert_eq!(started.lock().unwrap().len(), 3);
     session.finish().await.unwrap();
 }
 
-/// A feed refused before it is sent (here an oversize input) leaves the
-/// previous turn's streamed calls for the caller to take.
-///
-/// Allocates just over the 256 MiB frame limit in the test process.
+/// Streamed calls whose results the host has not sent may hold at most a
+/// quarter of `max_decode_bytes` of arguments; past that the session ends with
+/// a `MemoryError`, as the worker's own memory limit does.
 #[tokio::test]
-async fn an_unsent_feed_keeps_the_previous_turns_streamed_calls() {
-    const OVERSIZE: usize = 257 * 1024 * 1024;
-    let _big = BIG_ALLOCATIONS.lock().await;
-
-    let pool = Pool::new(streaming_config()).await.unwrap();
+async fn streamed_call_arguments_are_capped() {
+    let pool = Pool::new(PoolConfig {
+        max_decode_bytes: 1024 * 1024,
+        ..streaming_config()
+    })
+    .await
+    .unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let started = collect_streamed_calls(&mut session);
     let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
-    let event = session
-        .feed("t = f(1)", inputs, vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::none());
-
-    let huge = MontyObject::string("x".repeat(OVERSIZE));
+    let code = "import asyncio\nawait asyncio.gather(*[f('x' * 100_000) for _ in range(5)])";
     let err = session
-        .feed("data", vec![("data".to_owned(), huge)], vec![], false, &mut no_print)
+        .feed(code, inputs, vec![], false, &mut no_print)
         .await
         .unwrap_err();
-    assert!(matches!(err, PoolError::Runtime(_)), "unexpected error: {err:?}");
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(
+        exc.message(),
+        Some("streamed calls held more than 262144 bytes of arguments; the session was ended")
+    );
+    // two fitted; the third overran the 256 KiB budget and never reached the host
+    assert_eq!(started.lock().unwrap().len(), 2);
+    assert!(session.worker_id().is_none());
+}
 
-    let started = session.take_streamed_calls();
-    assert_eq!(started.len(), 1);
-    assert_eq!(started[0].function_name, "f");
+/// Sending a call's result releases its arguments, so calls settled one at a
+/// time never accumulate against the budget.
+#[tokio::test]
+async fn settled_streamed_calls_release_their_arguments() {
+    let pool = Pool::new(PoolConfig {
+        max_decode_bytes: 1024 * 1024,
+        ..streaming_config()
+    })
+    .await
+    .unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let started = collect_streamed_calls(&mut session);
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let code = "for _ in range(5):\n    a = f('x' * 100_000)\n    await a";
+    let mut event = session.feed(code, inputs, vec![], false, &mut no_print).await.unwrap();
+    while let TurnEvent::ResolveFutures { .. } = event {
+        let results = mem::take(&mut *started.lock().unwrap())
+            .into_iter()
+            .map(|call| (call.call_id, ResumeValue::Return(MontyObject::none())))
+            .collect();
+        event = session.resume_futures(results, &mut no_print).await.unwrap();
+    }
+    assert_eq!(expect_complete(event), MontyObject::none());
     session.finish().await.unwrap();
+}
+
+/// Installs a handler that keeps every streamed call for the test to inspect.
+fn collect_streamed_calls(session: &mut Checkout) -> Arc<Mutex<Vec<StreamedCall>>> {
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&started);
+    session.set_streamed_call_handler(Some(Box::new(move |call| {
+        sink.lock().unwrap().push(call);
+        Box::pin(ready(()))
+    })));
+    started
 }
 
 /// The `max_suspensions` budget travels in the dump and is re-adopted on

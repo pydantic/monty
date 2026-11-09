@@ -114,17 +114,28 @@ pub(crate) fn dispatch_coroutine(
     Ok(dispatch_future(Box::pin(future), call_id, mode, join_set))
 }
 
+/// Converts the coroutine a host callback answered with into its result
+/// future; it is already scheduled on the event loop, so it runs unpolled.
+pub(crate) fn coroutine_answer(coro: Py<PyAny>, instances: &InstanceStore) -> PyResult<AnswerFuture> {
+    Ok(Box::pin(coroutine_future(coro, instances)?))
+}
+
 /// Schedules module factories for the caller to await; see [`PendingModule`].
 pub(crate) fn dispatch_module_coroutine(
     names: Vec<String>,
     coros: Vec<Py<PyAny>>,
     then: AfterModule,
 ) -> PyResult<Dispatched<AnswerFuture>> {
+    pending_module(names, coros, then).map(Dispatched::Module)
+}
+
+/// Schedules module factories, returning them for the caller to settle.
+pub(crate) fn pending_module(names: Vec<String>, coros: Vec<Py<PyAny>>, then: AfterModule) -> PyResult<PendingModule> {
     let futures = coros
         .into_iter()
         .map(|coro| python_future(coro).map(|future| Box::pin(future) as ModuleFuture))
         .collect::<PyResult<Vec<_>>>()?;
-    Ok(Dispatched::Module(PendingModule { names, then, futures }))
+    Ok(PendingModule { names, then, futures })
 }
 
 /// Pending factories, one per module. Await [`settle`](Self::settle) outside the GIL,
@@ -172,6 +183,23 @@ impl SettledModule {
         match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
             Staged::Done(result) => Ok(Dispatched::AsValue(Box::pin(ready(result)))),
             Staged::Coroutine(coro) => dispatch_coroutine(coro, call_id, mode, join_set, instances),
+        }
+    }
+
+    /// Installs modules and returns the waiting call's result future, for a
+    /// streamed call, which nothing awaits at the call.
+    pub(crate) fn into_answer(
+        self,
+        py: Python<'_>,
+        names: &HostNames,
+        instances: &InstanceStore,
+    ) -> PyResult<AnswerFuture> {
+        let modules = self
+            .result
+            .map(|modules| modules.into_iter().map(|module| module.into_bound(py)).collect());
+        match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
+            Staged::Done(result) => Ok(Box::pin(ready(result))),
+            Staged::Coroutine(coro) => coroutine_answer(coro, instances),
         }
     }
 }

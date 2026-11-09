@@ -5,6 +5,7 @@ mod cpu;
 mod cpu_clock;
 mod pool;
 mod remote;
+mod streamed_args;
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
 /// Compatibility alias for the former public module name.
@@ -24,8 +25,8 @@ use monty_types::{ExecutionClock, MontyException};
 use crate::telemetry::Metrics;
 pub use crate::{
     checkout::{
-        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, Persistence, PrintFuture, ReplConfig,
-        ResumeValue, StreamedCall, TurnEvent, on_print_sync,
+        Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnRawEvent, OnStreamedCall, Persistence,
+        PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent, on_print_sync,
     },
     pool::Pool,
 };

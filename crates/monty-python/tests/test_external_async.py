@@ -128,15 +128,13 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
 # streamed call (which never waits for the host) can pass the sandbox's check below.
 HOST_BLOCK_SECONDS = 1.0
 
-# times the call from inside the sandbox, then works long enough for a call started mid-turn to run before it ends
+# times the call from inside the sandbox, then prints: calls and prints reach the host in sandbox order
 TIMED_CALL = f"""
 import time
 t0 = time.monotonic()
 a = fetch(1)
 elapsed = time.monotonic() - t0
-for _ in range(2_000_000):
-    pass
-print('after the loop')
+print('after the call')
 [await a, elapsed < {HOST_BLOCK_SECONDS}]
 """
 
@@ -169,8 +167,29 @@ async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_ca
         TIMED_CALL, stream_async_calls=stream_async_calls, external_lookup={'fetch': fetch}, print_callback=on_print
     )
     assert result == [1, returned_at_once]
-    # either way the host ran the call before the sandbox's loop ended
-    assert log == ['fetch(1)', 'after the loop\n']
+    # either way the host started the call before it saw the print that followed it
+    assert log == ['fetch(1)', 'after the call\n']
+
+
+async def test_failed_print_stops_later_streamed_calls():
+    """A call made after a print that failed never starts on the host."""
+    log: list[str] = []
+
+    async def effect() -> None:
+        log.append('effect')
+
+    def on_print(_stream: str, _text: str) -> None:
+        raise ValueError('print refused')
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await run_async(
+            "print('x')\na = effect()\nawait a",
+            stream_async_calls=True,
+            external_lookup={'effect': effect},
+            print_callback=on_print,
+        )
+    assert str(exc_info.value) == snapshot('ValueError: print refused')
+    assert log == []
 
 
 async def test_coroutine_function_error_raises_at_the_await():

@@ -252,6 +252,10 @@ Each call to an [async host function](host-functions.md#starting-calls-without-w
 without a suspension.
 Once a session has started `max_suspensions` such calls, the next one suspends, so the limit still ends a loop that
 never awaits them.
+The pool also caps the arguments those calls hold on the host: calls whose results it has not yet sent back may hold
+at most a quarter of its per-frame decode budget between them (256 MiB by default; `max_decode_bytes` sets the budget
+on [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote]).
+A call past that ends the session with `MemoryError`, as exceeding `max_memory` does, and never reaches the host.
 These host round trips are outside `max_memory`; each [`ClassType`](host-objects.md) construction with `init=True` also
 adds an instance-store entry.
 Because the duration limits pause during suspensions, a snippet could otherwise retry rejected calls indefinitely.

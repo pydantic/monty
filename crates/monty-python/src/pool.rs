@@ -32,7 +32,7 @@ use std::{
     future::{Future, ready},
     num::NonZeroU32,
     path::PathBuf,
-    pin::{Pin, pin},
+    pin::Pin,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
@@ -43,7 +43,8 @@ use std::{
 
 use monty_pool::{
     Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
+    OnStreamedCall, Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, StreamedCall,
+    TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -63,18 +64,16 @@ use pyo3::{
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
-    sync::{
-        Mutex as AsyncMutex,
-        mpsc::{UnboundedReceiver, unbounded_channel},
-    },
+    sync::Mutex as AsyncMutex,
     task::{JoinSet, block_in_place},
     time::sleep as tokio_sleep,
 };
 
 use crate::{
     async_dispatch::{
-        CoroutineMode, Dispatched, dispatch_coroutine, dispatch_function_call, dispatch_intercepted_os_call,
-        dispatch_module_coroutine, dispatch_system_sleep, wait_for_futures,
+        AnswerFuture, CoroutineMode, Dispatched, coroutine_answer, dispatch_coroutine, dispatch_function_call,
+        dispatch_intercepted_os_call, dispatch_module_coroutine, dispatch_system_sleep, pending_module,
+        wait_for_futures,
     },
     build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
@@ -1586,9 +1585,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, names: &HostNames) -> PyResult<Py<
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
         // answer discards the checkout (see `sync_turn_answer`).
-        // no calls are started in this API; a worker that starts some anyway
-        // leaves futures the `ResolveFutures` check below rejects
-        let (native, _) = py.detach(|| block_on_sync(checkout.callback_context_and_streamed_calls()))?;
+        // this API sets no streamed-call handler, so every call suspends
+        let native = py.detach(|| block_on_sync(checkout.callback_context()))?;
         let callback_guard = callback_context.enter(py, &native)?;
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
@@ -1777,8 +1775,13 @@ async fn drive_async(args: FeedArgs, names: HostNames, abandoned: Arc<AtomicBool
         started: Arc::clone(&started),
         armed: true,
     };
+    let checkout = Arc::clone(&args.checkout);
     let result = drive_async_inner(args, names, started).await;
     guard.armed = false;
+    // the handler holds this feed's host names; later feeds install their own
+    if let Some(checkout) = checkout.lock().await.as_mut() {
+        checkout.set_streamed_call_handler(None);
+    }
     result
 }
 
@@ -1834,20 +1837,16 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
     let async_functions = names.async_functions.clone();
-    // streamed calls reach this drive as they arrive, so each starts while the turn runs
-    let (sink, mut streamed) = unbounded_channel();
-    // A fresh borrow per turn: `join_set` is also answered between turns.
-    macro_rules! starter {
-        () => {
-            &mut CallStarter {
-                streamed: &mut streamed,
-                join_set: &mut join_set,
-                names: &names,
-                instances: &instances,
-                callback_context: &callback_context,
-            }
-        };
-    }
+    let names = Arc::new(names);
+    let instances = Arc::new(instances);
+    let callback_context = Arc::new(callback_context);
+    // the checkout hands each streamed call to `starts` inside the turn, in order with prints
+    let starts = Arc::new(StreamedStarts::new(
+        Arc::clone(&names),
+        Arc::clone(&instances),
+        Arc::clone(&callback_context),
+    ));
+    let handler = StreamedStarts::handler(&starts);
 
     let mut event = run_turn_starting_calls(
         &checkout,
@@ -1859,12 +1858,12 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
             started.store(true, Ordering::Release);
             Box::pin(async move {
                 c.set_async_functions(Some(async_functions));
-                c.set_streamed_call_sink(Some(sink));
+                c.set_streamed_call_handler(Some(handler));
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
         }),
-        starter!(),
+        &starts,
     )
     .await?;
 
@@ -1873,15 +1872,12 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
         // futures `ResolveFutures` awaits erroring) discards the checkout.
         // `Complete` and `ResolveFutures` stay inline — the latter must await
         // the pending tasks.
-        let (native, buffered) = checkout.callback_context_and_streamed_calls().await;
-        // Calls the pool kept because the sink could not take them (none while
-        // this drive holds the receiver), started before the turn's own event
-        // is answered: `ResolveFutures` may name them.
-        for call in buffered {
-            if let Err(err) = start_call_async(call, &names, &instances, &mut join_set, &callback_context).await {
-                discard_checkout(&checkout).await;
-                return Err(err);
-            }
+        let native = checkout.callback_context().await;
+        // the calls the last turn started, joined before its event is answered:
+        // `ResolveFutures` may name them
+        if let Err(err) = starts.drain_into(&mut join_set) {
+            discard_checkout(&checkout).await;
+            return Err(err);
         }
         // intercepted OS calls are answered here, ahead of mounts and `os=`
         let intercepted =
@@ -1930,7 +1926,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     &checkout,
                     &print_target,
                     turn_fn(move |c, p| Box::pin(c.resume_futures(results, p))),
-                    starter!(),
+                    &starts,
                 )
                 .await?;
                 continue;
@@ -1957,7 +1953,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     &checkout,
                     &print_target,
                     turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
-                    starter!(),
+                    &starts,
                 )
                 .await?;
                 if let Some(next) = mounted {
@@ -1999,7 +1995,7 @@ async fn drive_async_inner(args: FeedArgs, names: HostNames, started: Arc<Atomic
                     }
                 })
             }),
-            starter!(),
+            &starts,
         )
         .await?;
     }
@@ -2129,61 +2125,125 @@ async fn answer_call(
 
 /// Turn-boundary reads on a [`SharedCheckout`], which is an alias and so cannot have inherent methods.
 pub(crate) trait SharedCheckoutExt {
-    /// Reads the checkout's telemetry context and takes the calls to async host
-    /// functions its last turn started, under one lock; empty once the checkout is discarded.
-    async fn callback_context_and_streamed_calls(&self) -> (opentelemetry::Context, Vec<StreamedCall>);
+    /// The telemetry context host callbacks answering the last turn run under;
+    /// empty once the checkout is discarded.
+    async fn callback_context(&self) -> opentelemetry::Context;
 }
 
 impl SharedCheckoutExt for SharedCheckout {
-    async fn callback_context_and_streamed_calls(&self) -> (opentelemetry::Context, Vec<StreamedCall>) {
-        self.lock().await.as_mut().map_or_else(Default::default, |checkout| {
-            (checkout.callback_context(), checkout.take_streamed_calls())
-        })
+    async fn callback_context(&self) -> opentelemetry::Context {
+        self.lock()
+            .await
+            .as_ref()
+            .map_or_else(Default::default, Checkout::callback_context)
     }
 }
 
-/// Starts a call the sandbox made to an async host function without waiting:
-/// a coroutine is spawned into `join_set`, and a plain return value settles a
-/// ready future, so either answers the call's pending future at `ResolveFutures`.
-async fn start_call_async(
+/// What the async drive's streamed-call handler shares with the drive: what
+/// starting a call needs, and the calls it started for the drive to join.
+///
+/// The checkout runs the handler inside the turn, in order with prints, so a
+/// call made before a failed print never starts, and the sync part of each host
+/// function runs before the sandbox's next frame is read.
+struct StreamedStarts {
+    names: Arc<HostNames>,
+    instances: Arc<InstanceStore>,
+    callback_context: Arc<CallbackContext>,
+    /// Set by the drive's print callback on the first failed print: the feed is
+    /// aborted, so no later call may start.
+    print_failed: AtomicBool,
+    /// The futures of calls started since the drive last joined them.
+    started: Mutex<Vec<(u32, AnswerFuture)>>,
+    /// The first call that failed to start; the drive discards the checkout.
+    error: Mutex<Option<PyErr>>,
+}
+
+impl StreamedStarts {
+    fn new(names: Arc<HostNames>, instances: Arc<InstanceStore>, callback_context: Arc<CallbackContext>) -> Self {
+        Self {
+            names,
+            instances,
+            callback_context,
+            print_failed: AtomicBool::new(false),
+            started: Mutex::new(Vec::new()),
+            error: Mutex::new(None),
+        }
+    }
+
+    /// The checkout handler starting each call into `this`.
+    fn handler(this: &Arc<Self>) -> OnStreamedCall {
+        let this = Arc::clone(this);
+        Box::new(move |call| {
+            let this = Arc::clone(&this);
+            Box::pin(async move { this.start(call).await })
+        })
+    }
+
+    /// Starts one call, unless a print or an earlier start has failed.
+    async fn start(&self, call: StreamedCall) {
+        if self.print_failed.load(Ordering::Acquire) || lock(&self.error).is_some() {
+            return;
+        }
+        let call_id = call.call_id;
+        match start_streamed_call(call, &self.names, &self.instances, &self.callback_context).await {
+            Ok(future) => lock(&self.started).push((call_id, future)),
+            Err(err) => *lock(&self.error) = Some(err),
+        }
+    }
+
+    /// Moves the started calls into `join_set`, or reports the call that failed to start.
+    fn drain_into(&self, join_set: &mut JoinSet<(u32, ExtFunctionResult)>) -> PyResult<()> {
+        if let Some(err) = lock(&self.error).take() {
+            return Err(err);
+        }
+        for (call_id, future) in lock(&self.started).drain(..) {
+            join_set.spawn(async move { (call_id, future.await) });
+        }
+        Ok(())
+    }
+}
+
+/// Runs a streamed call's host function under the call's span, returning the
+/// future that settles it: the function's coroutine, already scheduled on the
+/// event loop, or its plain return value.
+async fn start_streamed_call(
     call: StreamedCall,
     names: &HostNames,
     instances: &InstanceStore,
-    join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     callback_context: &CallbackContext,
-) -> PyResult<()> {
+) -> PyResult<AnswerFuture> {
     let StreamedCall {
         function_name,
         args,
-        call_id,
         callback_context: native,
         ..
     } = call;
-    let dispatch = || dispatch_function_call(&function_name, None, &args, names, instances);
-    match answer_call(
-        dispatch,
-        call_id,
-        false,
-        names,
-        instances,
-        join_set,
-        callback_context,
-        &native,
-    )
-    .await?
-    {
-        // `CoroutineMode::Future` spawned the coroutine
-        TurnAnswer::Call(ResumeValue::Future) => {}
-        TurnAnswer::Call(value) => {
-            let result = started_call_outcome(value, &function_name)
-                .map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return);
-            join_set.spawn(ready((call_id, result)));
+    let started = Python::attach(|py| {
+        let _guard = callback_context.enter(py, &native)?;
+        match dispatch_function_call(&function_name, None, &args, names, instances) {
+            CallResult::Sync(result) => Ok(Ok(settled_answer(ext_to_resume(result)?, &function_name))),
+            CallResult::Coroutine(coro) => coroutine_answer(coro, instances).map(Ok),
+            CallResult::ModuleCoroutine { names, coros, then } => pending_module(names, coros, then).map(Err),
         }
-        TurnAnswer::Name(_) | TurnAnswer::Eager(..) | TurnAnswer::Futures(_) => {
-            unreachable!("answer_call answers a call without eager await with `TurnAnswer::Call`")
+    })?;
+    match started {
+        Ok(future) => Ok(future),
+        // a module factory to await first, outside the call's context, as at a suspension
+        Err(pending) => {
+            let settled = pending.settle().await;
+            Python::attach(|py| {
+                let _guard = callback_context.enter(py, &native)?;
+                settled.into_answer(py, names, instances)
+            })
         }
     }
-    Ok(())
+}
+
+/// A started call's future when its host function answered at once.
+fn settled_answer(value: ResumeValue, function_name: &str) -> AnswerFuture {
+    let result =
+        started_call_outcome(value, function_name).map_or_else(ExtFunctionResult::Error, ExtFunctionResult::Return);
+    Box::pin(ready(result))
 }
 
 /// How a started call that answered at once settles its future. A future
@@ -2267,28 +2327,21 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> (Result<T, PoolError>, Option<MontyException>) {
-    match run_turn_inner(checkout, print_target, turn, None).await {
-        Ok(outcome) => outcome,
-        Err(_) => unreachable!("only starting a streamed call fails, and no starter was given"),
-    }
+    run_turn_inner(checkout, print_target, turn, None).await
 }
 
-/// Body of [`run_turn`], starting the turn's streamed calls with `starter` when given.
-///
-/// `Err` means a streamed call failed to start: the turn was abandoned
-/// mid-flight, so the checkout has been discarded.
+/// Body of [`run_turn`], also flagging a failed print in `print_failed` so the
+/// turn's later streamed calls do not start.
 async fn run_turn_inner<T: TurnOutcome>(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
-    starter: Option<&mut CallStarter<'_>>,
-) -> PyResult<(Result<T, PoolError>, Option<MontyException>)> {
+    print_failed: Option<&AtomicBool>,
+) -> (Result<T, PoolError>, Option<MontyException>) {
     let mut guard = checkout.lock().await;
     let Some(locked) = guard.as_mut() else {
-        return Ok((Err(PoolError::Finished), None));
+        return (Err(PoolError::Finished), None);
     };
-    // set with the first failed print: no streamed call may start after one
-    let print_failed = AtomicBool::new(false);
     let mut print_err: Option<MontyException> = None;
     let result = {
         let mut on_print = |stream: PrintStream, text: &str| -> PrintFuture {
@@ -2296,22 +2349,13 @@ async fn run_turn_inner<T: TurnOutcome>(
                 && let Err(err) = print_target.write_event(stream, text)
             {
                 print_err = Some(err);
-                print_failed.store(true, Ordering::Release);
+                if let Some(print_failed) = print_failed {
+                    print_failed.store(true, Ordering::Release);
+                }
             }
             Box::pin(ready(()))
         };
-        let turn = turn(locked, &mut on_print);
-        match starter {
-            None => Ok(turn.await),
-            Some(starter) => starter.run(turn, &print_failed).await,
-        }
-    };
-    let result = match result {
-        Ok(result) => result,
-        Err(err) => {
-            *guard = None;
-            return Err(err);
-        }
+        turn(locked, &mut on_print).await
     };
     // A print-callback failure aborts the feed. If the turn left the worker
     // suspended awaiting a resume the aborted feed will never send, drop the
@@ -2320,64 +2364,18 @@ async fn run_turn_inner<T: TurnOutcome>(
     if print_err.is_some() && result.as_ref().is_ok_and(TurnOutcome::left_suspended) {
         *guard = None;
     }
-    Ok((result, print_err))
+    (result, print_err)
 }
 
-/// The calls a turn streams and what starting each needs, borrowed from
-/// [`drive_async_inner`]: the receiver the checkout's sink feeds
-/// ([`Checkout::set_streamed_call_sink`]) and the drive's pending futures.
-struct CallStarter<'a> {
-    streamed: &'a mut UnboundedReceiver<StreamedCall>,
-    join_set: &'a mut JoinSet<(u32, ExtFunctionResult)>,
-    names: &'a HostNames,
-    instances: &'a InstanceStore,
-    callback_context: &'a CallbackContext,
-}
-
-impl CallStarter<'_> {
-    /// Awaits `turn` while starting each streamed call as it arrives, so host I/O
-    /// overlaps the sandbox's own work, then starts those that arrived as it ended.
-    ///
-    /// Once a print fails no further call starts, matching a suspended call that
-    /// the failed feed never answers; calls left when the turn itself fails stay
-    /// unstarted, as that error ends the feed.
-    async fn run<T>(
-        &mut self,
-        turn: impl Future<Output = Result<T, PoolError>>,
-        print_failed: &AtomicBool,
-    ) -> PyResult<Result<T, PoolError>> {
-        let mut turn = pin!(turn);
-        let result = loop {
-            tokio::select! {
-                result = &mut turn => break result,
-                Some(call) = self.streamed.recv(), if !print_failed.load(Ordering::Acquire) => {
-                    self.start(call).await?;
-                }
-            }
-        };
-        if result.is_ok() && !print_failed.load(Ordering::Acquire) {
-            while let Ok(call) = self.streamed.try_recv() {
-                self.start(call).await?;
-            }
-        }
-        Ok(result)
-    }
-
-    /// Starts one streamed call (see [`start_call_async`]).
-    async fn start(&mut self, call: StreamedCall) -> PyResult<()> {
-        start_call_async(call, self.names, self.instances, self.join_set, self.callback_context).await
-    }
-}
-
-/// [`run_turn_async`] for the async drive loop, starting the turn's streamed
-/// calls as they arrive (see [`CallStarter::run`]).
+/// [`run_turn_async`] for the async drive loop: a failed print also stops
+/// `starts` from starting the turn's later streamed calls.
 async fn run_turn_starting_calls<T: TurnOutcome>(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
-    starter: &mut CallStarter<'_>,
+    starts: &StreamedStarts,
 ) -> PyResult<T> {
-    let (result, print_err) = run_turn_inner(checkout, print_target, turn, Some(starter)).await?;
+    let (result, print_err) = run_turn_inner(checkout, print_target, turn, Some(&starts.print_failed)).await;
     Python::attach(|py| finalize_turn(py, result, print_err))
 }
 

@@ -311,6 +311,8 @@ With `stream_async_calls` (`streamAsyncCalls` in JavaScript), calls to `async` h
 lets the worker send the call to the host and keep running, and the sandbox blocks once, when every task is waiting.
 The 20-call `gather` then costs one round trip plus the slowest call.
 The host starts each call as it arrives, so the call's own I/O overlaps whatever the sandbox does before its `await`.
+Calls and `print()` output reach the host in the order the sandbox made them, so a call made after a failed
+`print_callback` never starts.
 A call awaited at once, as in `await fetch(url)`, still suspends, since nothing else could run in the meantime.
 The option is set on the pool: it is on by default for [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] and
 `MontyRemote`, where each round trip crosses the network, and off by default for subprocess pools.

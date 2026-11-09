@@ -85,9 +85,8 @@ test('calls to async functions start without suspending the remote worker', asyn
     printCallback: (_stream, text) => log.push(text),
   })
   t.deepEqual(result, [0, 10, 20])
-  // every call started on the host; a call start and a print run on separate
-  // tasks, so their relative order is not part of the contract
-  t.deepEqual([...log].sort(), ['fetch(0)', 'fetch(1)', 'fetch(2)', 'started\n'])
+  // calls and prints reach the host in sandbox order, so each call started before the print after it
+  t.deepEqual(log, ['fetch(0)', 'fetch(1)', 'fetch(2)', 'started\n'])
 })
 
 test('separate checkouts are isolated', async () => {

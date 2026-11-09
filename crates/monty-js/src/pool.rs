@@ -17,8 +17,8 @@
 //! never on the JS event loop thread. Sandbox `print()` output streams
 //! mid-turn through a threadsafe function; the turn awaits each JS callback
 //! (`call_async`), preserving print ordering and backpressure. Calls to async
-//! host functions the worker streams are announced the same way, on the
-//! session's streamed-call sink as they arrive (see
+//! host functions the worker streams are announced the same way and in order
+//! with prints, on the session's streamed-call sink (see
 //! [`NativeSession::set_streamed_call_sink`]), so the host starts them mid-turn. The checkout
 //! mutex (a tokio mutex) is held for a whole turn: event-loop-thread methods
 //! must never block on it (`worker_pid` uses `try_lock`, everything else
@@ -27,7 +27,7 @@
 use std::{
     collections::HashMap,
     future::Future,
-    pin::{pin, Pin},
+    pin::Pin,
     result::Result as StdResult,
     str::FromStr,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
@@ -36,8 +36,8 @@ use std::{
 
 use monty_pool::{
     telemetry::{TelemetryAdapterHandle, TelemetryContext},
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, Persistence, Pool, PoolConfig, PoolError,
-    PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
+    Checkout, CheckoutOptions, MountSpec, MountSpecMode, OnPrint, OnStreamedCall, Persistence, Pool, PoolConfig,
+    PoolError, PrintFuture, RemoteDisconnect, ReplConfig, ResumeValue, StreamedCall, TurnEvent,
 };
 use monty_types::{
     unstable::{self, NodeId},
@@ -54,7 +54,7 @@ use napi::{
 };
 use napi_derive::napi;
 use opentelemetry::{trace::TraceContextExt, Context};
-use tokio::sync::{mpsc::unbounded_channel, watch, Mutex as AsyncMutex};
+use tokio::sync::{watch, Mutex as AsyncMutex};
 
 use crate::{
     convert::{js_to_monty, monty_to_js, DecodedArena, GraphEncoder},
@@ -502,17 +502,16 @@ pub struct NativeSession {
     /// Streamed calls announced mid-turn, by call ID, until TypeScript takes
     /// them with [`NativeSession::take_streamed_call`].
     announced_calls: Arc<Mutex<HashMap<u32, StreamedCall>>>,
-    /// Set by [`NativeSession::set_streamed_call_sink`]; without it a turn's
-    /// streamed calls arrive only as its `streamedCalls` once it ends.
+    /// Set by [`NativeSession::set_streamed_call_sink`]; without it no feed streams calls.
     streamed_call_sink: Arc<Mutex<Option<StreamedCallAnnouncer>>>,
 }
 
 #[napi]
 impl NativeSession {
-    /// Installs the callback every later turn announces its streamed calls on,
-    /// as `(callId, spanKey)` while the turn runs; the turn awaits each one,
-    /// so TypeScript registers the call's future before the turn resolves.
-    /// Weak, so an idle session does not keep Node's event loop alive.
+    /// Installs the callback feeds given `asyncFunctions` announce their streamed
+    /// calls on, as `(callId, spanKey)` while the turn runs. The turn awaits each,
+    /// in order with prints, so TypeScript registers the call's future before the
+    /// next frame. Weak, so an idle session does not keep Node's event loop alive.
     #[napi]
     pub fn set_streamed_call_sink(&self, callback: StreamedCallCallback<'_>) -> Result<()> {
         let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
@@ -527,7 +526,7 @@ impl NativeSession {
     }
 
     /// Takes the streamed call announced mid-turn on the streamed-call sink,
-    /// converted like a turn's `streamedCalls` entry; `null` once taken.
+    /// converted to a JS object; `null` once taken.
     #[napi]
     pub fn take_streamed_call<'env>(&self, env: &'env Env, call_id: u32) -> Result<Option<Object<'env>>> {
         let call = lock(&self.announced_calls).remove(&call_id);
@@ -615,12 +614,18 @@ impl NativeSession {
             skip_type_check,
             async_functions,
         } = options;
+        // only a feed with `asyncFunctions` (`feedRun`) streams, to the session's sink
+        let handler = async_functions
+            .is_some()
+            .then(|| self.streamed_call_handler())
+            .flatten();
         self.run_turn(
             env,
             on_print,
             outcome_fn(move |checkout, on_print| {
                 Box::pin(async move {
                     checkout.set_async_functions(async_functions);
+                    checkout.set_streamed_call_handler(handler);
                     checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
                         .await
@@ -1036,6 +1041,20 @@ impl NativeSession {
         )
     }
 
+    /// The checkout handler announcing each streamed call on the session's sink:
+    /// the call waits in `announced_calls` for `take_streamed_call`. `None`
+    /// before TypeScript installs a sink.
+    fn streamed_call_handler(&self) -> Option<OnStreamedCall> {
+        let announcer = lock(&self.streamed_call_sink).clone()?;
+        let announced_calls = Arc::clone(&self.announced_calls);
+        Some(Box::new(move |call: StreamedCall| {
+            let call_id = call.call_id;
+            let span_key = callback_span_key(&call.callback_context);
+            lock(&announced_calls).insert(call_id, call);
+            announcer(call_id, span_key)
+        }))
+    }
+
     /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
     /// checkout inside the spawned future, streams prints, and resolves the
     /// computed [`TurnOutcome`] to a JS turn object. `compute` returns the
@@ -1048,8 +1067,6 @@ impl NativeSession {
         compute: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> OutcomeFuture<'a, TurnOutcome> + Send + 'static,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = Arc::new(on_print.build_threadsafe_function().build()?);
-        let announcer = lock(&self.streamed_call_sink).clone();
-        let announced_calls = Arc::clone(&self.announced_calls);
         let slot = Arc::clone(&self.checkout);
         let session_id = Arc::clone(&self.session_id);
         env.spawn_future_with_callback(
@@ -1059,7 +1076,6 @@ impl NativeSession {
                     return Ok((
                         TurnOutcome::Protocol("the session is closed — check out a new one".to_owned()),
                         None,
-                        Vec::new(),
                     ));
                 };
                 // Forward each print to JS and *await the callback having
@@ -1083,52 +1099,12 @@ impl NativeSession {
                         let _ = tsfn.call_async(args).await;
                     })
                 };
-                let outcome = match announcer {
-                    // Each streamed call is held for `take_streamed_call` and
-                    // announced on the sink, awaited as a print is, so
-                    // TypeScript starts it while the turn runs and has
-                    // registered its future before the turn resolves.
-                    Some(announcer) => {
-                        let announce = |call: StreamedCall| {
-                            let call_id = call.call_id;
-                            let span_key = callback_span_key(&call.callback_context);
-                            lock(&announced_calls).insert(call_id, call);
-                            announcer(call_id, span_key)
-                        };
-                        let (sink, mut streamed) = unbounded_channel();
-                        checkout.set_streamed_call_sink(Some(sink));
-                        let outcome = {
-                            let mut turn = pin!(compute(checkout, &mut on_print));
-                            loop {
-                                tokio::select! {
-                                    outcome = &mut turn => break outcome,
-                                    Some(call) = streamed.recv() => announce(call).await,
-                                }
-                            }
-                        };
-                        checkout.set_streamed_call_sink(None);
-                        // calls that arrived as the turn ended
-                        while let Ok(call) = streamed.try_recv() {
-                            announce(call).await;
-                        }
-                        outcome
-                    }
-                    // no sink: the checkout collects them for the turn's `streamedCalls`
-                    None => compute(checkout, &mut on_print).await,
-                };
+                let outcome = compute(checkout, &mut on_print).await;
                 // a load or an auto-resume can each move the session to a new ID
                 *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
-                // taken every turn: a `resolveFutures` can name a call that only arrived this way
-                let started = checkout.take_streamed_calls();
-                Ok((outcome, callback_span_key(&checkout.callback_context()), started))
+                Ok((outcome, callback_span_key(&checkout.callback_context())))
             },
-            |env, (outcome, context, started)| {
-                let mut obj = turn_to_js(env, (outcome, context))?;
-                if !started.is_empty() {
-                    obj.set("streamedCalls", streamed_calls_to_js(env, started)?)?;
-                }
-                Ok(obj)
-            },
+            turn_to_js,
         )
     }
 }
@@ -1402,17 +1378,6 @@ fn turn_to_js(env: &Env, (outcome, context): (TurnOutcome, Option<String>)) -> R
         }
     }
     Ok(obj)
-}
-
-/// Converts the calls to async host functions a turn started into the
-/// `streamedCalls` array of its turn object, shaped like a `functionCall` turn's
-/// fields; `ts/session.ts` runs each and registers its promise as a future.
-fn streamed_calls_to_js(env: &Env, started: Vec<StreamedCall>) -> Result<Array<'_>> {
-    let mut calls = env.create_array(0)?;
-    for call in started {
-        calls.insert(streamed_call_to_js(env, call)?)?;
-    }
-    Ok(calls)
 }
 
 /// One streamed call as a JS object: functionName, args, kwargs, callId and position.

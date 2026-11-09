@@ -62,7 +62,6 @@ import {
   type ResolveFuturesTurn,
   type ShutdownTurn,
   osCallAcceptsFuture,
-  streamedCallsOf,
 } from './native.js'
 import { CollectString, CollectStreams } from './print.js'
 
@@ -281,16 +280,12 @@ export class MontySession {
       onPrint,
     )) as NativeTurn
     for (;;) {
-      // A failed print is checked before any started call runs on the host, so
-      // an output limit or a throwing print callback stops host-side effects too.
       switch (turn.kind) {
         case 'complete':
           printTarget.throwIfFailed()
-          await answerer.startCalls(turn)
           return restore(turn.value, this.instances)
         case 'error':
           printTarget.throwIfFailed()
-          await answerer.startCalls(turn)
           throw montyErrorFromNative(turn.exception)
         case 'typingError':
           printTarget.throwIfFailed()
@@ -310,8 +305,6 @@ export class MontySession {
       } catch (err) {
         throw this.poison(err instanceof Error ? err : new Error(String(err)))
       }
-      // before the turn is answered: a `resolveFutures` turn may name these calls
-      await answerer.startCalls(turn)
       try {
         turn = await answerer.answer(turn, onPrint)
       } catch (err) {
@@ -718,28 +711,9 @@ class TurnAnswerer {
   }
 
   /**
-   * Runs the calls to async host functions `turn` started, in the order the
-   * sandbox made them, and registers each outcome as the call's future. Never
-   * throws: a lookup failure or a throwing function settles that future with
-   * the error, which the sandbox raises at the `await`.
-   */
-  async startCalls(turn: object): Promise<void> {
-    const started = streamedCallsOf(turn)
-    if (started.length === 0) {
-      return
-    }
-    const spanKey = (turn as { callbackSpanKey?: string }).callbackSpanKey
-    await runWithCallbackContext(spanKey, async () => {
-      for (const call of started) {
-        this.registerFuture(call.callId, (await this.startCall(call)).promise)
-      }
-    })
-  }
-
-  /**
    * Starts a call the native session announced mid-turn on its streamed-call
    * sink (see `setStreamedCallSink` in src/pool.rs), registering its future at once so a later `resolveFutures`
-   * finds it. Runs in the announcing turn's callback context.
+   * finds it. Runs in the call's callback context, in order with the turn's prints.
    */
   startStreamedCall(callId: number): void {
     const call = this.native.takeStreamedCall(callId) as NativeStreamedCall | null
@@ -1231,11 +1205,7 @@ class SnapshotDriver {
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
-    if (streamedCallsOf(turn).length > 0) {
-      // `feedStart` never asks the worker to start calls, and a snapshot cannot
-      // hand over calls that started without a suspension.
-      throw this.poison(new Error('worker started host calls during feedStart()'))
-    }
+    // `feedStart` never streams calls; one announced anyway poisoned the session
     const broken = this.broken()
     if (broken !== null) {
       throw broken

@@ -27,17 +27,14 @@ use monty_types::{
 };
 #[cfg(feature = "telemetry")]
 use opentelemetry::trace::{FutureExt, TraceContextExt};
-use tokio::{
-    sync::mpsc::{UnboundedSender, error::SendError},
-    task::spawn_blocking,
-    time::Instant as DeadlineInstant,
-};
+use tokio::{task::spawn_blocking, time::Instant as DeadlineInstant};
 
 #[cfg(feature = "telemetry")]
 use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
     CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
+    streamed_args::{StreamedArgs, streamed_args_limit},
     worker::Worker,
 };
 
@@ -337,8 +334,8 @@ pub enum TurnEvent {
 }
 
 /// A call to an async host function the sandbox started without waiting
-/// for the host, delivered as it arrives (see [`Checkout::set_streamed_call_sink`])
-/// or collected during a turn (see [`Checkout::take_streamed_calls`]).
+/// for the host, handed to the [`OnStreamedCall`] handler as it arrives
+/// (see [`Checkout::set_streamed_call_handler`]).
 ///
 /// The sandbox already holds a pending future for `call_id`: start the call,
 /// then settle it with [`Checkout::resume_futures`] once a
@@ -397,6 +394,15 @@ pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Se
 /// turn-ender — `Print`s today. Returns a future for the same reason
 /// [`OnPrint`] does: a slow sink backpressures the worker.
 pub type OnRawEvent<'a> = &'a mut (dyn FnMut(&pb::ChildEvent) -> PrintFuture + Send);
+
+/// Handler starting each [`StreamedCall`] as its frame arrives; see
+/// [`Checkout::set_streamed_call_handler`].
+///
+/// The turn awaits the returned future before reading the next frame, so calls
+/// and prints reach the host in the order the sandbox made them, and a slow
+/// handler backpressures the worker. Start the call and return: awaiting the
+/// call's own result here would stall the turn until it settles.
+pub type OnStreamedCall = Box<dyn FnMut(StreamedCall) -> PrintFuture + Send>;
 
 /// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
 ///
@@ -467,12 +473,15 @@ pub struct Checkout {
     /// Names sent as `Feed.async_functions` with every later feed, or `None`
     /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
     async_functions: Option<Vec<String>>,
-    /// Calls to async host functions started since the caller last took them.
-    /// Cleared once a `Feed`, `Load` or `Reset` is sent, so a feed never sees another's.
-    streamed_calls: Vec<StreamedCall>,
-    /// Where streamed calls go as they arrive instead of `streamed_calls`; see
-    /// [`Checkout::set_streamed_call_sink`].
-    streamed_call_sink: Option<UnboundedSender<StreamedCall>>,
+    /// Starts each streamed call as it arrives; feeds stream calls only while
+    /// one is set (see [`Checkout::set_streamed_call_handler`]).
+    on_streamed_call: Option<OnStreamedCall>,
+    /// Whether the in-flight feed asked the worker to stream calls: a
+    /// `StreamedCalls` event in any other feed is a protocol violation.
+    feed_streams: bool,
+    /// Argument bytes the host holds for streamed calls; cleared once a `Feed`,
+    /// `Load` or `Reset` is sent.
+    streamed_args: StreamedArgs,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Parent-side mount table for the in-flight feed, built from the
@@ -832,6 +841,7 @@ impl Checkout {
         redial: Option<Redial>,
     ) -> Result<Self, PoolError> {
         let request = configure_request(repl, &pool.config);
+        let streamed_args = StreamedArgs::new(streamed_args_limit(pool.config.max_decode_bytes));
         let mut budget = SessionBudget::from_config(repl);
         budget.execution_clock = pool.config.execution_clock;
         let mut this = Self {
@@ -845,8 +855,9 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             async_functions: Some(Vec::new()),
-            streamed_calls: Vec::new(),
-            streamed_call_sink: None,
+            on_streamed_call: None,
+            feed_streams: false,
+            streamed_args,
             session_id: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
@@ -1002,6 +1013,8 @@ impl Checkout {
         // The child resets its feed clock on this request, so the last feed's
         // reported total must not shorten this feed's backstop.
         self.budget.begin_feed();
+        // calls stream only to a handler that starts them as they arrive
+        self.feed_streams = self.async_functions.is_some() && self.on_streamed_call.is_some();
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
@@ -1009,7 +1022,7 @@ impl Checkout {
             skip_type_check,
             cwd,
             async_functions: self.async_functions.clone().unwrap_or_default().into(),
-            stream_async_calls: self.async_functions.is_some(),
+            stream_async_calls: self.feed_streams,
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1271,6 +1284,10 @@ impl Checkout {
                 Ok((call_id, result))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        // the host is done with these calls' arguments once it sends their results
+        for (call_id, _) in &results {
+            self.streamed_args.release(*call_id);
+        }
         let request = request(pb::parent_request::Kind::ResumeFutures(future_results_to_proto(
             results,
         )));
@@ -1417,9 +1434,10 @@ impl Checkout {
 
     /// Sets how the feeds that follow treat calls to async host functions,
     /// replacing any earlier choice. With `Some(names)` (the default, with no
-    /// names) calls to a [`MontyObject::async_function`] value or to one of
-    /// `names` start without waiting and arrive through [`Self::take_streamed_calls`];
-    /// `None` makes them suspend like any call, for a host answering each call itself.
+    /// names) and a [streamed-call handler](Self::set_streamed_call_handler),
+    /// calls to a [`MontyObject::async_function`] value or to one of `names`
+    /// start without waiting and reach that handler; `None`, or no handler,
+    /// makes them suspend like any call, for a host answering each call itself.
     ///
     /// `names` covers names the sandbox calls without ever reading as a value,
     /// which reach the host only as a call by name. A worker that predates
@@ -1428,34 +1446,17 @@ impl Checkout {
         self.async_functions = names;
     }
 
-    /// Takes the calls to async host functions the sandbox started since the
-    /// last take, in the order it made them.
+    /// Sets the handler that starts each streamed call of the feeds that follow,
+    /// replacing any earlier one; `None` makes those feeds suspend at every call.
     ///
-    /// Take them after every turn, before answering its event: a
-    /// [`TurnEvent::ResolveFutures`] can name a call that only arrived this way.
-    /// Calls past `max_suspensions` are dropped; the feed is aborted at its
-    /// next suspension.
-    pub fn take_streamed_calls(&mut self) -> Vec<StreamedCall> {
-        mem::take(&mut self.streamed_calls)
-    }
-
-    /// Sends the streamed calls of the turns that follow to `sink` as they
-    /// arrive, so the host can start each while the sandbox keeps running;
-    /// `None` collects them for [`Self::take_streamed_calls`] instead.
-    ///
-    /// A call the sink can no longer take (its receiver was dropped) is
-    /// collected as if no sink were set, so none is lost.
-    pub fn set_streamed_call_sink(&mut self, sink: Option<UnboundedSender<StreamedCall>>) {
-        self.streamed_call_sink = sink;
-    }
-
-    /// Hands one streamed call to the sink, or collects it when there is none.
-    fn deliver_streamed_call(&mut self, call: StreamedCall) {
-        let unsent = match &self.streamed_call_sink {
-            Some(sink) => sink.send(call).err().map(|SendError(call)| call),
-            None => Some(call),
-        };
-        self.streamed_calls.extend(unsent);
+    /// The handler runs inside the turn, in order with prints: start the call,
+    /// then settle it with [`Self::resume_futures`] once a
+    /// [`TurnEvent::ResolveFutures`] names it. Calls past `max_suspensions` never
+    /// reach it, and the feed is aborted at its next suspension. Calls whose
+    /// unsettled arguments pass a quarter of `PoolConfig::max_decode_bytes` end
+    /// the session with a `MemoryError`, as the worker's memory limit does.
+    pub fn set_streamed_call_handler(&mut self, handler: Option<OnStreamedCall>) {
+        self.on_streamed_call = handler;
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -2088,14 +2089,23 @@ impl Checkout {
                     }
                 }
                 Some(pb::child_event::Kind::StreamedCalls(started)) => {
+                    if !self.feed_streams || self.on_streamed_call.is_none() {
+                        return Err(self.protocol_violation("worker streamed calls the feed did not ask for"));
+                    }
                     // `update_from` already counted these. Keep only the calls the
                     // budget had room for: the suspension after an overrun is
-                    // aborted, so more would only let a worker grow this buffer.
+                    // aborted, so more would only let a worker grow host memory.
                     let calls = started.calls.into_inner();
                     let seen_before = self.budget.suspensions_seen.saturating_sub(calls.len() as u64);
                     let room = self.budget.suspension_limit.saturating_sub(seen_before);
                     let room = usize::try_from(room).unwrap_or(usize::MAX);
-                    for mut call in calls.into_iter().take(room) {
+                    let calls: Vec<_> = calls.into_iter().take(room).collect();
+                    let call_ids: Vec<u32> = calls.iter().map(|call| call.call_id).collect();
+                    let frame_len = self.worker.as_ref().map_or(0, Worker::last_frame_len);
+                    if !call_ids.is_empty() && !self.streamed_args.charge(frame_len, &call_ids) {
+                        return Err(self.streamed_args_exceeded());
+                    }
+                    for mut call in calls {
                         let position = suspension_position(call.position.take());
                         let function_name = mem::take(&mut call.function_name);
                         let call_id = call.call_id;
@@ -2105,17 +2115,33 @@ impl Checkout {
                                 return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                             }
                         };
+                        #[cfg(feature = "telemetry")]
+                        let context = self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
+                            worker.streamed_call_context(call_id)
+                        });
                         let call = StreamedCall {
                             function_name,
                             args,
                             call_id,
                             position,
                             #[cfg(feature = "telemetry")]
-                            callback_context: self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
-                                worker.streamed_call_context(call_id)
-                            }),
+                            callback_context: context.clone(),
                         };
-                        self.deliver_streamed_call(call);
+                        let handler = self.on_streamed_call.as_mut().expect("checked above");
+                        // awaited like a print, so the next frame waits until the call has started
+                        let future = {
+                            #[cfg(feature = "telemetry")]
+                            let _context = context.has_active_span().then(|| context.clone().attach());
+                            handler(call)
+                        };
+                        #[cfg(feature = "telemetry")]
+                        if context.has_active_span() {
+                            future.with_context(context).await;
+                        } else {
+                            future.await;
+                        }
+                        #[cfg(not(feature = "telemetry"))]
+                        future.await;
                     }
                 }
                 Some(pb::child_event::Kind::FunctionCall(mut call)) => {
@@ -2310,7 +2336,7 @@ impl Checkout {
             Ok(()) => {
                 self.request_sent = true;
                 // a new turn starts only once its request is out, so a refused
-                // request leaves the previous turn's calls for the caller
+                // request leaves the previous feed's state as it was
                 if matches!(
                     request.kind,
                     Some(
@@ -2319,7 +2345,11 @@ impl Checkout {
                             | pb::parent_request::Kind::Reset(_)
                     )
                 ) {
-                    self.streamed_calls.clear();
+                    self.streamed_args.clear();
+                    // a restored or reset session runs no streaming feed until the next `Feed`
+                    if !matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
+                        self.feed_streams = false;
+                    }
                 }
                 Ok(())
             }
@@ -2523,6 +2553,19 @@ impl Checkout {
         error
     }
 
+    /// Ends the session once streamed calls' unsettled arguments pass their
+    /// budget: like the worker's memory limit, a terminal `MemoryError`.
+    fn streamed_args_exceeded(&mut self) -> PoolError {
+        self.discard_worker();
+        PoolError::Runtime(MontyException::new(
+            ExcType::MemoryError,
+            Some(format!(
+                "streamed calls held more than {} bytes of arguments; the session was ended",
+                self.streamed_args.limit()
+            )),
+        ))
+    }
+
     /// Discards the worker without crash classification, for turn-enders
     /// that are not crashes: protocol violations (the worker answered, just
     /// wrongly) and server `Shutdown` replies. Fatal errors instead go
@@ -2586,7 +2629,7 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
-        // the checkout collects them (`take_streamed_calls`)
+        // each feed still opts in, and only with a handler (`set_streamed_call_handler`)
         accepts_streamed_calls: pool.stream_async_calls,
     }))
 }
