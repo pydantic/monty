@@ -96,12 +96,15 @@ impl ChildProc {
 
     /// Reads a single event.
     fn recv(&mut self) -> pb::child_event::Kind {
+        self.recv_event().kind.expect("event has no kind")
+    }
+
+    /// Reads a single event, stamps included.
+    fn recv_event(&mut self) -> pb::ChildEvent {
         self.reader
             .read::<pb::ChildEvent>()
             .expect("failed to read event")
             .expect("unexpected EOF from child")
-            .kind
-            .expect("event has no kind")
     }
 
     /// Reads until the turn-ending event, collecting streamed prints.
@@ -140,6 +143,12 @@ impl ChildProc {
     }
 
     fn feed_with(&mut self, code: &str, inputs: NamedValues) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        self.send_feed(code, inputs);
+        self.recv_turn()
+    }
+
+    /// Sends a `Feed` without reading the reply.
+    fn send_feed(&mut self, code: &str, inputs: NamedValues) {
         let (inputs, values) = named_values_to_proto(inputs);
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
@@ -148,7 +157,17 @@ impl ChildProc {
             skip_type_check: false,
             cwd: "/".to_owned(),
         }));
-        self.recv_turn()
+    }
+
+    /// Feeds a snippet and returns its whole turn-ending event, stamps included.
+    fn feed_event(&mut self, code: &str) -> pb::ChildEvent {
+        self.send_feed(code, NamedValues::new());
+        loop {
+            let event = self.recv_event();
+            if !matches!(event.kind, Some(pb::child_event::Kind::Print(_))) {
+                return event;
+            }
+        }
     }
 
     /// Feeds a snippet and asserts it completes, returning the value.
@@ -930,6 +949,49 @@ fn exceeding_the_soft_memory_limit_preserves_the_worker() {
     let (_, event) = child.feed("len([str(i) + 'abcdefghijklmnop' for i in range(131_072)])");
     assert_eq!(expect_error(event).exc_type, "MemoryError");
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// Every reply to a feed carries the feed's peak memory, whether or not
+/// `max_memory` is set. The peak counts memory the snippet freed before it
+/// finished, and the next feed starts again from what is live.
+#[test]
+fn feed_replies_carry_the_feed_peak_memory() {
+    const MIB: u64 = 1024 * 1024;
+    let peak = |event: &pb::ChildEvent| event.feed_peak_memory_bytes.expect("peak memory stamped");
+
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    let trivial = peak(&child.feed_event("1"));
+    let freed = peak(&child.feed_event("len(list(range(1_000_000)))"));
+    assert!(freed > trivial + 8 * MIB, "{freed} <= {trivial} + 8 MiB");
+    let after = peak(&child.feed_event("1"));
+    assert!(after < trivial + MIB, "{after} >= {trivial} + 1 MiB");
+
+    // a feed ending in an error, and a suspension mid-feed, carry it too
+    let error = child.feed_event("x = [0] * 1_000_000\nraise ValueError('boom')");
+    assert!(matches!(error.kind, Some(pb::child_event::Kind::Error(_))), "{error:?}");
+    assert!(peak(&error) > trivial + 8 * MIB, "{}", peak(&error));
+    let call = child.feed_event("x = [0] * 1_000_000\nf()");
+    assert!(
+        matches!(call.kind, Some(pb::child_event::Kind::FunctionCall(_))),
+        "{call:?}"
+    );
+    assert!(peak(&call) > trivial + 8 * MIB, "{}", peak(&call));
+    child.shutdown();
+
+    // a feed stopped by `max_memory` reports how close it came
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
+    let error = child.feed_event("len([str(i) + 'abcdefghijklmnop' for i in range(131_072)])");
+    let Some(pb::child_event::Kind::Error(pb::Error {
+        exception: Some(exception),
+    })) = &error.kind
+    else {
+        panic!("expected MemoryError, got {error:?}");
+    };
+    assert_eq!(exception.exc_type, "MemoryError");
+    assert!(peak(&error) > 4 * MIB, "{}", peak(&error));
     child.shutdown();
 }
 

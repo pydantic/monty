@@ -11,7 +11,7 @@ use std::{
 
 #[cfg(feature = "exit-code")]
 use monty_types::OOM_EXIT_CODE;
-use monty_types::{BASELINE_MEMORY, LIVE_MEMORY};
+use monty_types::{BASELINE_MEMORY, LIVE_MEMORY, PEAK_MEMORY};
 
 /// The absolute ceiling for allocator-backed live bytes.
 /// Counting starts with the process: a counter armed later would see `dealloc`s
@@ -99,7 +99,8 @@ unsafe impl GlobalAlloc for LimitedAllocator {
     }
 }
 
-/// Adds `size` to the live total, exiting past the hard limit.
+/// Adds `size` to the live total, exiting past the hard limit, and raises the
+/// high-water mark [`PEAK_MEMORY`].
 #[inline]
 fn charge(size: usize) {
     let live = LIVE_MEMORY.fetch_add(size, Ordering::Relaxed).saturating_add(size);
@@ -107,6 +108,11 @@ fn charge(size: usize) {
         out_of_memory(format_args!(
             "monty worker: allocation of {size} bytes exceeds the memory limit"
         ));
+    }
+    // A plain load first, so an allocation below the mark adds no locked
+    // instruction; `fetch_max` keeps the mark exact if threads race.
+    if live > PEAK_MEMORY.load(Ordering::Relaxed) {
+        PEAK_MEMORY.fetch_max(live, Ordering::Relaxed);
     }
 }
 

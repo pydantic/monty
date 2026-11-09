@@ -233,9 +233,13 @@ pool health
 (`monty.pool.workers.live`, `monty.pool.workers.idle`,
 `monty.pool.workers.suspended`, `monty.pool.checkout.wait`, `monty.pool.worker.terminated`,
 `monty.pool.session.duration`, `monty.pool.session.resumed`) and per-turn cost (`monty.run.duration`,
-`monty.run.execution_time`, `monty.turn.duration`, `monty.run.suspensions`,
+`monty.run.execution_time`, `monty.run.peak_memory.bytes`, `monty.turn.duration`, `monty.run.suspensions`,
 `monty.ext.call.duration`, `monty.snapshot.bytes`, `monty.print.bytes`,
 `monty.wire.frame.bytes`).
+`monty.run.peak_memory.bytes`, also set as `peak_memory_bytes` on the feed's span, is the most memory a feed used,
+counted as `max_memory` counts it, whether or not a limit is set.
+It includes compiling and type checking the feed.
+A feed whose worker dies (hard memory ceiling, crash, timeout) records neither.
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
 `monty.pool.session.resumed` counts auto-resume attempts: `ok`, or why the reload failed (`exhausted`,

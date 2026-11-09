@@ -32,6 +32,29 @@ pub static LIVE_MEMORY: AtomicUsize = AtomicUsize::new(0);
 /// What the worker costs to exist: the leanest the process has ever been at an
 /// arming point, plus structures it keeps for life (see [`allocate_into_baseline`]).
 pub static BASELINE_MEMORY: AtomicUsize = AtomicUsize::new(usize::MAX);
+/// Highest [`LIVE_MEMORY`] since the last [`reset_peak_memory`], kept by `monty-alloc`
+/// on every allocation. Read it through [`peak_memory`].
+pub static PEAK_MEMORY: AtomicUsize = AtomicUsize::new(0);
+
+/// Restarts the high-water mark at the current live count.
+///
+/// The protocol worker calls this when it accepts a `Feed` or `Load`, so [`peak_memory`]
+/// then covers that feed, or a restored one from its `Load` on. The mark is
+/// process-wide: one session per process, as for `max_memory` itself.
+pub fn reset_peak_memory() {
+    PEAK_MEMORY.store(LIVE_MEMORY.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// The most memory used since [`reset_peak_memory`], in the units `max_memory`
+/// limits: allocator-backed bytes above [`BASELINE_MEMORY`].
+///
+/// `None` until `monty-alloc` is installed and armed, since nothing keeps the mark
+/// without it.
+#[must_use]
+pub fn peak_memory() -> Option<usize> {
+    let baseline = BASELINE_MEMORY.load(Ordering::Relaxed);
+    (baseline != usize::MAX).then(|| PEAK_MEMORY.load(Ordering::Relaxed).saturating_sub(baseline))
+}
 
 /// Runs `build` and adds what it leaves allocated to [`BASELINE_MEMORY`], so a
 /// structure the worker keeps for life (such as typeshed) is not charged to the

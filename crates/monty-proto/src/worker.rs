@@ -31,7 +31,7 @@ use monty_types::{
     AssertMessageAnnotations, CHECKER_MODULE_NAMES, CompileOptions, ExcType, ExecutionClock, ExtFunctionResult,
     IMPORT_STUBS_CALL_ID, ModuleStub, MontyException, MontyObject, NamedValues, OsFunctionCall, OsPolicy, PrintStream,
     PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker, SANDBOX_MODULE_NAMES, SOURCE_SCAN_THRESHOLD,
-    SourceRange, TypeCheckState, TypeCheckingConfig,
+    SourceRange, TypeCheckState, TypeCheckingConfig, peak_memory, reset_peak_memory,
 };
 
 use super::{
@@ -584,6 +584,8 @@ impl Child {
         if !matches!(self.state, SessionState::Ready(_)) {
             return protocol_violation("Feed without a session ready for input");
         }
+        // the feed's peak covers converting inputs, compiling and type checking as well as running
+        reset_peak_memory();
         let inputs = match named_values_from_proto(feed.inputs, feed.values) {
             Ok(inputs) => inputs,
             Err(err) => return protocol_violation(&format!("invalid inputs: {err}")),
@@ -972,6 +974,8 @@ impl Child {
             }
             _ => return protocol_violation("Load requires a session that has not started (a feed has already run)"),
         };
+        // a restored feed's earlier peak was spent in another process
+        reset_peak_memory();
         let restored = match Dump::load(&load.state) {
             Ok(restored) => restored,
             Err(err) => return protocol_violation(&format!("failed to load session: {err}")),
@@ -1223,9 +1227,10 @@ fn error_event_from(exc: &MontyException) -> pb::ChildEvent {
     }))
 }
 
-/// Stamps `tracker`'s timing and parent-enforced limits onto an event. Called
-/// again by [`Child::handle`] just before sending, so a suspension announcement
-/// is size-checked with the stamps it will carry.
+/// Stamps `tracker`'s timing and parent-enforced limits, plus the feed's peak
+/// memory, onto an event. Called again by [`Child::handle`] just before
+/// sending, so a suspension announcement is size-checked with the stamps it
+/// will carry. A peak already stamped is kept, so it cannot lengthen a checked frame.
 fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
     event.feed_execution_micros = u64::try_from(tracker.feed_elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -1233,6 +1238,9 @@ fn stamp_budget(event: &mut pb::ChildEvent, tracker: &ResourceTracker) {
     event.max_turn_duration_micros = micros_field(tracker.max_turn_duration());
     event.max_total_sleep_micros = micros_field(tracker.max_total_sleep());
     event.max_suspensions = Some(tracker.max_suspensions() as u64);
+    event.feed_peak_memory_bytes = event
+        .feed_peak_memory_bytes
+        .or_else(|| peak_memory().map(|bytes| bytes as u64));
 }
 
 /// Describes a suspension announcement that would exceed the wire frame limit.

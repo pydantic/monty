@@ -306,6 +306,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     capture.last("monty.turn.duration", "turn", "configure");
     capture.last("monty.turn.duration", "turn", "reset");
     assert!(capture.has("monty.run.execution_time"));
+    assert!(capture.has("monty.run.peak_memory.bytes"));
     // `print` writes 3 bytes including its newline
     assert_eq!(
         capture.last("monty.print.bytes", "stream", "stdout").value,
