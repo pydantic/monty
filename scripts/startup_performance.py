@@ -93,7 +93,9 @@ def run_full_monty_warm(rounds: int = 20):
         return samples
 
     samples = asyncio.run(run())
-    print(f'Commercial Support new sandbox time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
+    print(
+        f'Commercial Support new sandbox time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})'
+    )
 
 
 def run_pyodide():
