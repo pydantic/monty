@@ -1030,7 +1030,9 @@ fn list_index<'h>(list: &HeapRead<'h, List>, args: ArgValues, vm: &mut VM<'h>) -
     let start = start_arg.map_or(0, |i| normalize_sequence_index(i, len));
     let end = end_arg.map_or(len, |i| normalize_sequence_index(i, len)).max(start);
 
-    // Search for the value in the specified range
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
     let mut iter = list.iter(vm)?;
     // Excluded prefix entries need neither equality calls nor reference-count traffic.
     iter.index = start;

@@ -566,6 +566,9 @@ fn tuple_index<'h>(tuple: &HeapRead<'h, Tuple>, args: ArgValues, vm: &mut VM<'h>
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
     };
 
+    // Nested short offset searches may never reach an iterator checkpoint.
+    vm.heap.tracker.check_time()?;
+
     let mut iter = tuple.iter(vm)?;
     // Excluded prefix entries need neither equality calls nor reference-count traffic.
     iter.index = start;

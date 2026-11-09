@@ -57,3 +57,46 @@ fn index_offsets_keep_callback_timeout_checks() {
         );
     }
 }
+
+/// Every nested suffix ends before index 127, so iterator polling alone never checks the clock.
+#[test]
+fn index_offsets_check_time_on_recursive_short_searches() {
+    for constructor in ["list", "tuple"] {
+        let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+        let setup = format!(
+            "class Needle:
+    def __init__(self, child=None):
+        self.child = child
+
+    def __eq__(self, other):
+        if self.child is not None:
+            print('.', end='')
+            values.index(self.child, 64)
+        return other == 125
+
+needle = Needle(Needle())
+values = {constructor}(range(126))"
+        );
+        repl.feed_run(&setup, vec![], PrintWriter::Stdout).unwrap();
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let mut output = DelayedOutput {
+            text: String::new(),
+            delay: Some(Duration::from_millis(100)),
+        };
+        let error = repl
+            .feed_run("values.index(needle, 64)", vec![], PrintWriter::Callback(&mut output))
+            .expect_err("a nested short suffix search must check the expired budget on entry");
+        assert_eq!(error.exc_type(), ExcType::TimeoutError, "{constructor}");
+        assert!(
+            output.text.len() <= 1,
+            "{constructor}: {} nested searches continued after the delay",
+            output.text.len()
+        );
+
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(1));
+        assert_eq!(
+            repl.feed_run("1 + 1", vec![], PrintWriter::Stdout).unwrap(),
+            MontyObject::int(2)
+        );
+    }
+}
