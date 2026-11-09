@@ -36,7 +36,6 @@ time (see [language.md](language.md)).
 ## `async def` / `await`
 
 - `async def` functions and `await` work; coroutines can call each other.
-- `await` inside a synchronous function (`def`) or `lambda` raises `SyntaxError: 'await' outside async function`; in a class body it raises `SyntaxError: 'await' outside function`.
 - **Coroutines are single-shot.** Awaiting the same coroutine object twice
     raises `RuntimeError`. Store the *result*, not the coroutine, if you need
     it again.

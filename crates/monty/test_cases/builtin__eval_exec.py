@@ -160,6 +160,16 @@ try:
 except SyntaxError as e:
     assert str(e) == "'await' outside async function (<string>, line 3)"
 try:
+    eval('await x')
+    assert False, 'expected SyntaxError'
+except SyntaxError as e:
+    assert str(e) == "'await' outside function (<string>, line 1)"
+try:
+    eval('lambda: await x')
+    assert False, 'expected SyntaxError'
+except SyntaxError as e:
+    assert str(e) == "'await' outside async function (<string>, line 1)"
+try:
     eval(b'\xff')
     assert False, 'expected SyntaxError'
 except SyntaxError as e:
