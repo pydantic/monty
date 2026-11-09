@@ -1214,9 +1214,11 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
             1_493_714,
         ),
+        // The mapping copy reserves 4,000 entries instead of retaining the
+        // 4,096-entry buffer from incremental insertion, lowering repr's baseline.
         (
             "from collections import Counter\ns = 'x' * 200\nc = Counter({(i, s): 1 for i in range(4_000)})\nlen(repr(c))",
-            1_103_442,
+            1_099_842,
         ),
         (
             "import functools\ns = 'x' * 200\np = functools.partial(print, *([s] * 5_000))\nlen(repr(p))",
