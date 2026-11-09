@@ -325,10 +325,17 @@ fn exception_arg(exc: &Bound<'_, exceptions::PyBaseException>) -> Option<String>
 /// (matching the cap Monty applies when raising) while the rest is kept.
 fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
     let extract = || -> PyResult<JsonErrorData> {
-        let doc: String = exc.getattr("doc")?.extract()?;
+        let doc = exc.getattr("doc")?.cast_into::<PyString>()?;
+        // The cap counts UTF-8 bytes, which are never fewer than code points, so a
+        // document over the cap in code points is dropped without being copied.
+        let doc = if doc.len()? <= JsonErrorData::MAX_DOC_LEN {
+            Some(doc.extract::<String>()?).filter(|doc| doc.len() <= JsonErrorData::MAX_DOC_LEN)
+        } else {
+            None
+        };
         Ok(JsonErrorData {
             msg: exc.getattr("msg")?.extract()?,
-            doc: (doc.len() <= JsonErrorData::MAX_DOC_LEN).then_some(doc),
+            doc,
             pos: exc.getattr("pos")?.extract()?,
             lineno: exc.getattr("lineno")?.extract()?,
             colno: exc.getattr("colno")?.extract()?,
