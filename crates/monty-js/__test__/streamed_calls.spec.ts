@@ -124,6 +124,26 @@ test('a failed print stops started calls from running on the host', async (ctx) 
   t.is(calls, 0)
 })
 
+test('a feedRun refused while another is suspended leaves that feed its calls', async (ctx) => {
+  skipIfWasm(ctx)
+  await using session = await pool().checkout()
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const fetch = async (x: number) => {
+    await gate
+    return x
+  }
+  // A suspends awaiting its first call, then streams a second call once resumed
+  const first = session.feedRun('a = fetch(1)\nx = await a\nb = fetch(2)\nx + await b', { externalLookup: { fetch } })
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  // observed at once: it is refused while `first` is still running
+  const second = t.throwsAsync(() => session.feedRun('1', { externalLookup: { fetch } }))
+  release()
+  t.is(await first, 3)
+  const error = await second
+  t.is(error.message, 'monty worker protocol error: feed called while a suspension is awaiting an answer')
+})
+
 test('a subprocess pool leaves streamAsyncCalls off, so async calls suspend', async (ctx) => {
   skipIfWasm(ctx)
   const log: string[] = []

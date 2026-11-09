@@ -205,8 +205,11 @@ export class MontySession {
    *  wrapper sent through any boundary of this session lives here so method
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
-  /** Starts a call the worker streamed mid-turn; bound by each `feedRun` to its answerer and async context. */
-  private onStreamedCall: ((callId: number, parent?: string | null) => void) | undefined
+  /** Starts a call the worker streamed mid-turn, by the ID of the running `feedRun` that made it;
+   *  each is bound to that feed's answerer and async context. */
+  private readonly streamedCallHandlers = new Map<number, (callId: number, parent?: string | null) => void>()
+  /** The last feed ID handed to the native session. */
+  private lastFeedId = 0
 
   /** @internal — sessions are created by `Monty.checkout`, which validates the modules first. */
   constructor(
@@ -216,9 +219,10 @@ export class MontySession {
   ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
-    native.setStreamedCallSink((callId, parent) => {
-      if (this.onStreamedCall !== undefined) {
-        this.onStreamedCall(callId, parent)
+    native.setStreamedCallSink((feedId, callId, parent) => {
+      const handler = this.streamedCallHandlers.get(feedId)
+      if (handler !== undefined) {
+        handler(callId, parent)
       } else {
         // only `feedRun` asks the worker to stream calls: drop the call and refuse the session
         this.native.takeStreamedCall(callId)
@@ -252,14 +256,14 @@ export class MontySession {
         answerer.startStreamedCall(callId)
       }
     })
-    this.onStreamedCall = onStreamedCall
+    // keyed by feed, so a second `feedRun` the worker refuses cannot take this one's calls
+    const feedId = ++this.lastFeedId
+    this.streamedCallHandlers.set(feedId, onStreamedCall)
     try {
-      return await this.driveFeed(code, options, printTarget, answerer, onPrint)
+      return await this.driveFeed(code, options, feedId, printTarget, answerer, onPrint)
     } finally {
       // later turns (`feedStart`, dumps) must not reach this feed's host functions
-      if (this.onStreamedCall === onStreamedCall) {
-        this.onStreamedCall = undefined
-      }
+      this.streamedCallHandlers.delete(feedId)
     }
   }
 
@@ -267,6 +271,7 @@ export class MontySession {
   private async driveFeed(
     code: string,
     options: FeedOptions,
+    feedId: number,
     printTarget: PrintTarget,
     answerer: TurnAnswerer,
     onPrint: ReturnType<typeof bindPrintCallback>,
@@ -279,6 +284,7 @@ export class MontySession {
         cwd: options.cwd,
         skipTypeCheck: options.skipTypeCheck ?? false,
         asyncFunctions: asyncFunctionNames(options.externalLookup),
+        feedId,
       },
       onPrint,
     )) as NativeTurn

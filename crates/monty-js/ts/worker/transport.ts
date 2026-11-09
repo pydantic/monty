@@ -283,7 +283,7 @@ export class WorkerTransport {
 
   /** A no-op matching `NativeSession.setStreamedCallSink`: wasm workers
    *  suspend at every host call, so nothing is ever streamed. */
-  setStreamedCallSink(_callback: (callId: number, parent?: string | null) => void): void {}
+  setStreamedCallSink(_callback: (feedId: number, callId: number, parent?: string | null) => void): void {}
 
   /** Dumps the current session into opaque bytes, or resolves to the failure
    *  turn; takes `onPrint` to match `NativeSession.dump`, never invoking it. */

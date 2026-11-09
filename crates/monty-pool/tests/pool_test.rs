@@ -2425,6 +2425,38 @@ async fn settled_streamed_calls_release_their_arguments() {
     session.finish().await.unwrap();
 }
 
+/// A feed refused because another is suspended leaves that feed's handler in
+/// place: its later streamed calls still reach it, not the refused feed's.
+#[tokio::test]
+async fn a_refused_feed_keeps_the_running_feeds_handler() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let first = collect_streamed_calls(&mut session);
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let code = "a = f(1)\nx = await a\nb = f(2)\nawait b";
+    let event = session.feed(code, inputs, vec![], false, &mut no_print).await.unwrap();
+    assert!(matches!(event, TurnEvent::ResolveFutures { .. }), "got {event:?}");
+
+    let second = collect_streamed_calls(&mut session);
+    let err = session
+        .feed("1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Protocol(_)), "got {err:?}");
+
+    let mut event = event;
+    while let TurnEvent::ResolveFutures { .. } = event {
+        let results = mem::take(&mut *first.lock().unwrap())
+            .into_iter()
+            .map(|call| (call.call_id, ResumeValue::Return(MontyObject::int(7))))
+            .collect();
+        event = session.resume_futures(results, &mut no_print).await.unwrap();
+    }
+    assert_eq!(expect_complete(event), MontyObject::int(7));
+    assert!(second.lock().unwrap().is_empty());
+    session.finish().await.unwrap();
+}
+
 /// Installs a handler that keeps every streamed call for the test to inspect.
 fn collect_streamed_calls(session: &mut Checkout) -> Arc<Mutex<Vec<StreamedCall>>> {
     let started = Arc::new(Mutex::new(Vec::new()));

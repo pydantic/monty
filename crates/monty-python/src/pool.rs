@@ -1778,7 +1778,7 @@ async fn drive_async(args: FeedArgs, names: HostNames, abandoned: Arc<AtomicBool
     let checkout = Arc::clone(&args.checkout);
     let result = drive_async_inner(args, names, started).await;
     guard.armed = false;
-    // the handler holds this feed's host names; later feeds install their own
+    // a handler no feed adopted (this feed was refused) would hold its host names
     if let Some(checkout) = checkout.lock().await.as_mut() {
         checkout.set_streamed_call_handler(None);
     }

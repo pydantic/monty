@@ -473,12 +473,11 @@ pub struct Checkout {
     /// Names sent as `Feed.async_functions` with every later feed, or `None`
     /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
     async_functions: Option<Vec<String>>,
-    /// Starts each streamed call as it arrives; feeds stream calls only while
-    /// one is set (see [`Checkout::set_streamed_call_handler`]).
-    on_streamed_call: Option<OnStreamedCall>,
-    /// Whether the in-flight feed asked the worker to stream calls: a
-    /// `StreamedCalls` event in any other feed is a protocol violation.
-    feed_streams: bool,
+    /// The handler the next feed adopts once accepted (see [`Checkout::set_streamed_call_handler`]).
+    next_streamed_call_handler: Option<OnStreamedCall>,
+    /// The in-flight feed's handler, set only when it asked the worker to stream
+    /// calls: a `StreamedCalls` event in any other feed is a protocol violation.
+    feed_handler: Option<OnStreamedCall>,
     /// Argument bytes the host holds for streamed calls; cleared once a `Feed`,
     /// `Load` or `Reset` is sent.
     streamed_args: StreamedArgs,
@@ -855,8 +854,8 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             async_functions: Some(Vec::new()),
-            on_streamed_call: None,
-            feed_streams: false,
+            next_streamed_call_handler: None,
+            feed_handler: None,
             streamed_args,
             session_id: None,
             redial: redial.map(Box::new),
@@ -1013,8 +1012,11 @@ impl Checkout {
         // The child resets its feed clock on this request, so the last feed's
         // reported total must not shorten this feed's backstop.
         self.budget.begin_feed();
-        // calls stream only to a handler that starts them as they arrive
-        self.feed_streams = self.async_functions.is_some() && self.on_streamed_call.is_some();
+        // Calls stream only to a handler that starts them as they arrive. It is
+        // adopted only here, past the checks above: a feed refused while another
+        // is suspended must leave that feed's handler in place.
+        let handler = self.next_streamed_call_handler.take();
+        self.feed_handler = handler.filter(|_| self.async_functions.is_some());
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
@@ -1022,7 +1024,7 @@ impl Checkout {
             skip_type_check,
             cwd,
             async_functions: self.async_functions.clone().unwrap_or_default().into(),
-            stream_async_calls: self.feed_streams,
+            stream_async_calls: self.feed_handler.is_some(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1446,8 +1448,9 @@ impl Checkout {
         self.async_functions = names;
     }
 
-    /// Sets the handler that starts each streamed call of the feeds that follow,
-    /// replacing any earlier one; `None` makes those feeds suspend at every call.
+    /// Sets the handler that starts each streamed call of the next feed; without
+    /// one, that feed suspends at every call. The feed adopts it only once it is
+    /// accepted, so a feed refused mid-suspension leaves the running feed's handler.
     ///
     /// The handler runs inside the turn, in order with prints: start the call,
     /// then settle it with [`Self::resume_futures`] once a
@@ -1456,7 +1459,7 @@ impl Checkout {
     /// unsettled arguments pass a quarter of `PoolConfig::max_decode_bytes` end
     /// the session with a `MemoryError`, as the worker's memory limit does.
     pub fn set_streamed_call_handler(&mut self, handler: Option<OnStreamedCall>) {
-        self.on_streamed_call = handler;
+        self.next_streamed_call_handler = handler;
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -2089,7 +2092,7 @@ impl Checkout {
                     }
                 }
                 Some(pb::child_event::Kind::StreamedCalls(started)) => {
-                    if !self.feed_streams || self.on_streamed_call.is_none() {
+                    if self.feed_handler.is_none() {
                         return Err(self.protocol_violation("worker streamed calls the feed did not ask for"));
                     }
                     // `update_from` already counted these. Keep only the calls the
@@ -2127,7 +2130,7 @@ impl Checkout {
                             #[cfg(feature = "telemetry")]
                             callback_context: context.clone(),
                         };
-                        let handler = self.on_streamed_call.as_mut().expect("checked above");
+                        let handler = self.feed_handler.as_mut().expect("checked above");
                         // awaited like a print, so the next frame waits until the call has started
                         let future = {
                             #[cfg(feature = "telemetry")]
@@ -2348,7 +2351,7 @@ impl Checkout {
                     self.streamed_args.clear();
                     // a restored or reset session runs no streaming feed until the next `Feed`
                     if !matches!(request.kind, Some(pb::parent_request::Kind::Feed(_))) {
-                        self.feed_streams = false;
+                        self.feed_handler = None;
                     }
                 }
                 Ok(())

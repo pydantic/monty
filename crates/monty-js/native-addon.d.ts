@@ -57,6 +57,6 @@ export declare class NativeSession {
   resumeLazyAttr(...args: unknown[]): Promise<object>
   resumeNameLookupError(...args: unknown[]): Promise<object>
   resolveFutures(...args: unknown[]): Promise<object>
-  setStreamedCallSink(callback: (callId: number, parent?: string | null) => void): void
+  setStreamedCallSink(callback: (feedId: number, callId: number, parent?: string | null) => void): void
   takeStreamedCall(callId: number): object | null
 }

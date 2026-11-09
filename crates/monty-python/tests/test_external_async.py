@@ -192,6 +192,28 @@ async def test_failed_print_stops_later_streamed_calls():
     assert log == []
 
 
+async def test_feed_refused_while_another_is_suspended_leaves_that_feed_its_calls():
+    """A second `feed_run` refused mid-suspension cannot take the running feed's streamed calls."""
+    gate = asyncio.Event()
+
+    async def fetch(x: int) -> int:
+        await gate.wait()
+        return x
+
+    code = 'a = fetch(1)\nx = await a\nb = fetch(2)\nx + await b'
+    async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
+        async with pool.checkout() as session:
+            first = asyncio.ensure_future(session.feed_run(code, external_lookup={'fetch': fetch}))
+            await asyncio.sleep(0.1)
+            with pytest.raises(RuntimeError) as exc_info:
+                await session.feed_run('1', external_lookup={'fetch': fetch})
+            assert str(exc_info.value) == snapshot(
+                'monty worker protocol error: feed called while a suspension is awaiting an answer'
+            )
+            gate.set()
+            assert await first == snapshot(3)
+
+
 async def test_coroutine_function_error_raises_at_the_await():
     """The call returns at once; the host's exception is raised where it is awaited."""
 

@@ -77,9 +77,10 @@ type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>
 
 /// The JS callback announcing a streamed call: its call ID and the span key of
 /// its telemetry context.
-type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
-/// Announces one streamed call to JS and resolves once the callback has run.
-type StreamedCallAnnouncer = Arc<dyn Fn(u32, Option<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, u32, Option<String>)>, UnknownReturnValue>;
+/// Announces one streamed call to JS as `(feedId, callId, spanKey)` and resolves once the callback has run.
+type StreamedCallAnnouncer =
+    Arc<dyn Fn(u32, u32, Option<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
@@ -243,6 +244,9 @@ pub struct NativeFeedOptions {
     /// starts without waiting; unset makes every call suspend, as `feedStart()`
     /// needs (see `Checkout::set_async_functions`).
     pub async_functions: Option<Vec<String>>,
+    /// Names this feed's streamed calls on the session's sink, so TypeScript
+    /// routes each to the `feedRun` that made it.
+    pub feed_id: Option<u32>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -509,16 +513,16 @@ pub struct NativeSession {
 #[napi]
 impl NativeSession {
     /// Installs the callback feeds given `asyncFunctions` announce their streamed
-    /// calls on, as `(callId, spanKey)` while the turn runs. The turn awaits each,
+    /// calls on, as `(feedId, callId, spanKey)` while the turn runs. The turn awaits each,
     /// in order with prints, so TypeScript registers the call's future before the
     /// next frame. Weak, so an idle session does not keep Node's event loop alive.
     #[napi]
     pub fn set_streamed_call_sink(&self, callback: StreamedCallCallback<'_>) -> Result<()> {
         let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
-        let announcer: StreamedCallAnnouncer = Arc::new(move |call_id, span_key| {
+        let announcer: StreamedCallAnnouncer = Arc::new(move |feed_id, call_id, span_key| {
             let tsfn = Arc::clone(&tsfn);
             Box::pin(async move {
-                let _ = tsfn.call_async(FnArgs::from((call_id, span_key))).await;
+                let _ = tsfn.call_async(FnArgs::from((feed_id, call_id, span_key))).await;
             })
         });
         *lock(&self.streamed_call_sink) = Some(announcer);
@@ -613,11 +617,12 @@ impl NativeSession {
             cwd,
             skip_type_check,
             async_functions,
+            feed_id,
         } = options;
         // only a feed with `asyncFunctions` (`feedRun`) streams, to the session's sink
         let handler = async_functions
             .is_some()
-            .then(|| self.streamed_call_handler())
+            .then(|| self.streamed_call_handler(feed_id.unwrap_or_default()))
             .flatten();
         self.run_turn(
             env,
@@ -1041,17 +1046,17 @@ impl NativeSession {
         )
     }
 
-    /// The checkout handler announcing each streamed call on the session's sink:
-    /// the call waits in `announced_calls` for `take_streamed_call`. `None`
-    /// before TypeScript installs a sink.
-    fn streamed_call_handler(&self) -> Option<OnStreamedCall> {
+    /// The checkout handler announcing each of feed `feed_id`'s streamed calls on
+    /// the session's sink: the call waits in `announced_calls` for
+    /// `take_streamed_call`. `None` before TypeScript installs a sink.
+    fn streamed_call_handler(&self, feed_id: u32) -> Option<OnStreamedCall> {
         let announcer = lock(&self.streamed_call_sink).clone()?;
         let announced_calls = Arc::clone(&self.announced_calls);
         Some(Box::new(move |call: StreamedCall| {
             let call_id = call.call_id;
             let span_key = callback_span_key(&call.callback_context);
             lock(&announced_calls).insert(call_id, call);
-            announcer(call_id, span_key)
+            announcer(feed_id, call_id, span_key)
         }))
     }
 
