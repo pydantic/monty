@@ -16,7 +16,7 @@ because the interpreter implements no such operation.
 
 !!! note
 
-    If you want Monty combined with OS-level isolation, see [Full Monty](server.md), the commercial version of Monty.
+    If you want Monty combined with OS-level isolation, see [Commercial Support](server.md), the commercial version of Monty.
 
 In practice that means:
 

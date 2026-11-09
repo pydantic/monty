@@ -22,7 +22,7 @@ from mcp_run_python import code_sandbox
 from pydantic_monty import AsyncMontyRemote, Monty
 
 code = '1 + 1'
-# a running Full Monty server, e.g. the container image from docs/server.md
+# a running commercial support server, e.g. the container image from docs/server.md
 FULL_MONTY_URL = os.environ.get('FULL_MONTY_URL', 'http://localhost:8000/')
 
 # The numbers these produce are quoted in docs/index.md, docs/alternatives.md and
@@ -72,7 +72,7 @@ def run_full_monty():
     result = asyncio.run(run())
     diff = time.perf_counter() - start
     assert result == 2, f'Unexpected result: {result!r}'
-    print(f'Full Monty new client pool time: {(diff * 1000):.3f} milliseconds')
+    print(f'Commercial Support new client pool time: {(diff * 1000):.3f} milliseconds')
 
 
 def run_full_monty_warm(rounds: int = 20):
@@ -93,7 +93,7 @@ def run_full_monty_warm(rounds: int = 20):
         return samples
 
     samples = asyncio.run(run())
-    print(f'Full Monty new sandbox time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
+    print(f'Commercial Support new sandbox time: {(statistics.median(samples) * 1000):.3f} milliseconds (median of {rounds})')
 
 
 def run_pyodide():
@@ -310,7 +310,7 @@ def agent_full_monty(warm: bool):
         return time.perf_counter() - start, output
 
     diff, output = asyncio.run(run())
-    report_agent('Full Monty warm' if warm else 'Full Monty new client pool', diff, output)
+    report_agent('Commercial Support warm' if warm else 'Commercial Support new client pool', diff, output)
 
 
 def agent_wasmtime():

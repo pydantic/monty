@@ -398,7 +398,7 @@ See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTeleme
 
 ## Remote workers
 
-`MontyRemote` is a pool of remote workers, usually [Full Monty](../server.md): the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
+`MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server: the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
 connection is pre-warmed or reused.
 Sessions are the same `MontySession` a local pool returns:
 
