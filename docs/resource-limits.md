@@ -124,6 +124,7 @@ Limit detection can overshoot by the polling interval, OS counter resolution, an
     a sleep that would take the total over with an uncatchable `TimeoutError`; each is also a suspension, so
     `max_suspensions` bounds a sleeping loop as well. Under `'call_host'` the host waits uncharged, and a `'zero'`
     sleep does not suspend at all. See [security](security.md#waiting).
+    The total travels in [snapshots](snapshots.md), so a restored session keeps what it has already slept.
 - There is no way for sandboxed code to observe a budget or the time remaining.
     `os_policy={'process_time': 'elapsed'}` exposes this same execution clock as `time.process_time()`; the
     default `'zero'` keeps it hidden.

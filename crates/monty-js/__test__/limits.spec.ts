@@ -229,8 +229,14 @@ test('a suspension answering abort-feed ends the wasm worker', async () => {
   const transport = await WorkerTransport.create(async (request) => {
     requests.push(request.tag)
     return request.tag === 'configure'
-      ? { status: 'continue', events: [{ tag: 'ok' }], maxSuspensions: 1n, feedExecutionMicros: 0n }
-      : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n }
+      ? {
+          status: 'continue',
+          events: [{ tag: 'ok' }],
+          maxSuspensions: 1n,
+          feedExecutionMicros: 0n,
+          totalSleepMicros: 0n,
+        }
+      : { status: 'continue', events: [call(requests.length)], feedExecutionMicros: 0n, totalSleepMicros: 0n }
   })
   let reusable: boolean | undefined
   transport.onFinish = (value) => {
@@ -270,6 +276,7 @@ test.each([
                 ],
           // A malicious reply cannot rewind the clock during the same feed.
           feedExecutionMicros: request.tag === 'feed' ? 400_000n : 100_000n,
+          totalSleepMicros: 0n,
           maxFeedDurationMicros: 2_000_000n,
           maxTurnDurationMicros: 3_000_000n,
         }
@@ -304,18 +311,18 @@ test('the sleep limit is a ceiling a restored dump can only tighten', async () =
     capped = await session.dump()
   }
 
-  // a dump with no limit does not loosen the checkout's, and the total restarts
+  // a dump with no limit does not loosen the checkout's
   await using kept = await pool().checkout({ limits: { maxTotalSleepSecs: 0.25 } })
   await kept.loadSession(unlimited)
   t.is(await kept.feedRun(sleep(0.125)), null)
   const over = await t.throwsAsync(() => kept.feedRun(sleep(0.5)), isRuntimeError)
   t.is(over.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
 
-  // a dump's limit tightens a checkout that set none
+  // a dump's limit tightens a checkout that set none, and the dump keeps what it slept
   await using adopted = await pool().checkout()
   await adopted.loadSession(capped)
   const refused = await t.throwsAsync(() => adopted.feedRun(sleep(0.5)), isRuntimeError)
-  t.is(refused.display('msg'), 'sleep limit exceeded: 500ms > 250ms')
+  t.is(refused.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
 })
 
 test('restored session keeps its suspension limit with a fresh count', async () => {

@@ -1010,6 +1010,9 @@ impl ReplOsCall {
 
     /// Always returns `Err` with a reusable session; see [`crate::OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        if let Some(delay) = self.function_call.system_sleep() {
+            self.snapshot.repl.tracker().refund_sleep(delay);
+        }
         self.snapshot.abort(exc, print)
     }
 }

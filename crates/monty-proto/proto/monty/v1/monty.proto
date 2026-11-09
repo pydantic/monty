@@ -904,6 +904,12 @@ message WorkerEvent {
   // Configure acknowledgment, on the reply to `Configure` (its `first` request's
   // reply, when it carries one). Local CPU-mode clients require this.
   optional ExecutionClock execution_clock = 30;
+
+  // Capped system sleep the session has requested, in microseconds, including
+  // a sleep it is suspended on. Survives Dump/Load, so a client restoring a
+  // session adopts it from the `Load` reply as its `max_total_sleep` usage.
+  // Zero outside a session and from older workers.
+  uint64 total_sleep_micros = 31;
 }
 
 enum PrintStream {

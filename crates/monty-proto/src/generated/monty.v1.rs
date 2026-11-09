@@ -1110,6 +1110,12 @@ pub struct WorkerEvent {
     /// reply, when it carries one). Local CPU-mode clients require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// Capped system sleep the session has requested, in microseconds, including
+    /// a sleep it is suspended on. Survives Dump/Load, so a client restoring a
+    /// session adopts it from the `Load` reply as its `max_total_sleep` usage.
+    /// Zero outside a session and from older workers.
+    #[prost(uint64, tag = "31")]
+    pub total_sleep_micros: u64,
     #[prost(
         oneof = "worker_event::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"

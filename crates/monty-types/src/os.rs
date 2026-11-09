@@ -388,6 +388,15 @@ impl OsFunctionCall {
         }
     }
 
+    /// The capped delay of a system sleep the host waits out itself, or `None` for every other variant.
+    #[must_use]
+    pub fn system_sleep(&self) -> Option<Duration> {
+        match self {
+            Self::SystemSleep(delay) | Self::AsyncSystemSleep(delay) => Some(*delay),
+            _ => None,
+        }
+    }
+
     /// The rename destination path, or `None` for every other variant — the
     /// second routing key a mount table needs (both rename endpoints must
     /// resolve to the same mount).

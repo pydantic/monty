@@ -318,7 +318,7 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return this.crash()
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint)
+    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint, true)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -349,15 +349,16 @@ export class WorkerTransport {
 
   /**
    * Counts a suspension and charges a `'system'` sleep, aborting the feed when
-   * either the suspension limit or the sleep budget is exceeded.
+   * either the suspension limit or the sleep budget is exceeded. A `restored`
+   * suspension's sleep is already in the dump's total, so it is only checked.
    */
-  private async enforceLimits(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
+  private async enforceLimits(turn: NativeTurn, onPrint: OnPrint, restored = false): Promise<NativeTurn> {
     if (isSuspension(turn)) {
       this.suspensionsSeen += 1n
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
         turn = await this.abortFeed('RuntimeError', `suspension limit ${this.suspensionLimit} exceeded`, onPrint)
       } else {
-        const refused = this.chargeSleep(turn)
+        const refused = this.chargeSleep(turn, restored)
         if (refused !== null) turn = await this.abortFeed('TimeoutError', refused, onPrint)
       }
     }
@@ -384,9 +385,9 @@ export class WorkerTransport {
    * Charges the capped sleep duration, returning a refusal message if over budget, else `null`.
    * Matches monty-pool's `SessionBudget` errors.
    */
-  private chargeSleep(turn: NativeTurn): string | null {
+  private chargeSleep(turn: NativeTurn, restored: boolean): string | null {
     if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
-    const micros = BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
+    const micros = restored ? 0n : BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
     const total = this.sleepUsedMicros + micros
     if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
       return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
@@ -433,12 +434,13 @@ export class WorkerTransport {
         this.exitStatus = result.exitStatus ?? undefined
       }
       // the component reports the limit in force (the configured one, else
-      // the 1000 default; a dump's on load), so it is adopted from the reply
+      // the 1000 default; a dump's on load), so it is adopted from the reply;
+      // so is the time a dump already slept
       if (request.tag === 'configure' || request.tag === 'load') {
         this.suspensionLimit = tighter(this.suspensionLimit, result.maxSuspensions)
         this.suspensionsSeen = 0n
         this.sleepLimitMicros = tighter(this.configuredSleepLimitMicros, result.maxTotalSleepMicros)
-        this.sleepUsedMicros = 0n
+        this.sleepUsedMicros = request.tag === 'load' ? result.totalSleepMicros : 0n
       }
       events = result.events
     } catch (error) {

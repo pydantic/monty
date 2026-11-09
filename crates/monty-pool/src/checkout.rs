@@ -547,7 +547,8 @@ struct SessionBudget {
     /// Client-enforced ceiling on each system sleep, even from a compromised worker.
     /// Uses the configured maximum, or the default for other modes because a restored dump may sleep.
     system_sleep_max: Duration,
-    /// Capped system sleep accepted so far; `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
+    /// Capped system sleep accepted so far, seeded from the dump on restore;
+    /// `charge_sleep` refuses a sleep that would exceed `sleep_limit`.
     sleep_used: Duration,
 }
 
@@ -574,7 +575,7 @@ impl SessionBudget {
     }
 
     /// Clears consumption before adopting a dump's budget. The limits stay:
-    /// they are the ceilings on the dump's.
+    /// they are the ceilings on the dump's. Sleep usage is then taken from the `Load` reply.
     fn forget(&mut self) {
         *self = Self {
             execution_clock: self.execution_clock,
@@ -644,8 +645,9 @@ impl SessionBudget {
 
     /// Charges a capped system sleep; other events, including `CallHost` sleeps, are free.
     /// Returns `Some((limit, total))` without charging if the caller must refuse the sleep.
-    /// Invalid worker delays count as the ceiling.
-    fn charge_sleep(&mut self, event: &pb::WorkerEvent) -> Option<(Duration, Duration)> {
+    /// Invalid worker delays count as the ceiling. A sleep a `Load` reply re-announces is
+    /// `restored`: the dump's total already counts it, so it is only checked against the limit.
+    fn charge_sleep(&mut self, event: &pb::WorkerEvent, restored: bool) -> Option<(Duration, Duration)> {
         let seconds = match &event.kind {
             Some(pb::worker_event::Kind::OsCall(call)) => match call.call {
                 Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds })) => seconds,
@@ -654,7 +656,11 @@ impl SessionBudget {
             },
             _ => return None,
         };
-        let delay = self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX));
+        let delay = if restored {
+            Duration::ZERO
+        } else {
+            self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX))
+        };
         let total = self.sleep_used.saturating_add(delay);
         match self.sleep_limit {
             Some(limit) if total > limit => Some((limit, total)),
@@ -1663,10 +1669,13 @@ impl Checkout {
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
+        let mut restored = false;
         if !is_print && let Some(saved) = self.pending_load_budget.take() {
             if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) || is_suspension(event) {
                 // Restore seeds saved VM usage. Live turns use OS measurements.
                 self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
+                self.budget.sleep_used = Duration::from_micros(event.total_sleep_micros);
+                restored = true;
             } else {
                 self.budget = saved;
             }
@@ -1690,7 +1699,7 @@ impl Checkout {
             .map(suspension_limit_exceeded)
             .or_else(|| {
                 self.budget
-                    .charge_sleep(event)
+                    .charge_sleep(event, restored)
                     .map(|(limit, total)| sleep_limit_exceeded(limit, total))
             });
         let Some(exception) = exceeded else {
@@ -1867,9 +1876,8 @@ impl Checkout {
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
         let mut no_print = on_print_sync(|_, _| {});
-        // a re-announced suspension counts and charges itself again on arrival,
-        // as after `restore`: let it through on zeroed totals, then put the
-        // session's true totals back
+        // a re-announced suspension counts and charges itself again on arrival:
+        // let it through on zeroed totals, then put the session's true totals back
         let (suspensions_seen, sleep_used) = (self.budget.suspensions_seen, self.budget.sleep_used);
         self.budget.suspensions_seen = 0;
         self.budget.sleep_used = Duration::ZERO;

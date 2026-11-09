@@ -2656,6 +2656,91 @@ async fn restored_session_readopts_its_suspension_limit() {
     restored.finish().await.unwrap();
 }
 
+/// The time a session already slept travels in the dump. A refused sleep is not
+/// counted, and the sleep a restored suspension re-announces is not charged twice.
+#[tokio::test]
+async fn restored_session_keeps_the_time_it_slept() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_total_sleep(Duration::from_millis(250))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let event = session
+        .feed("import time\ntime.sleep(0.125)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            event,
+            TurnEvent::OsCall {
+                system_sleep: Some(_),
+                ..
+            }
+        ),
+        "got {event:?}"
+    );
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    let err = session
+        .feed("time.sleep(0.5)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 625ms > 250ms"));
+    let event = session
+        .feed("time.sleep(0.125)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            event,
+            TurnEvent::OsCall {
+                system_sleep: Some(_),
+                ..
+            }
+        ),
+        "got {event:?}"
+    );
+    let state = session.dump().await.unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    assert!(
+        matches!(
+            event,
+            Some(TurnEvent::OsCall {
+                system_sleep: Some(_),
+                ..
+            })
+        ),
+        "got {event:?}"
+    );
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    // both 125ms sleeps count, the refused 500ms does not
+    let err = restored
+        .feed("time.sleep(0.001)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 251ms > 250ms"));
+    restored.finish().await.unwrap();
+}
+
 #[tokio::test]
 async fn loaded_session_keeps_its_duration_budget() {
     // The `max_feed_duration` budget travels inside the dump — a session
