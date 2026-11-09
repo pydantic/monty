@@ -60,6 +60,8 @@ from typing_extensions import (
     ParamSpec,
     Self,
     TypeAlias,
+    TypeGuard,
+    TypeIs,
     TypeVarTuple,
     deprecated,
     disjoint_base,
@@ -1133,6 +1135,33 @@ else:
 
 exit: _sitebuiltins.Quitter
 
+@disjoint_base
+class filter(Generic[_T]):
+    @overload
+    def __new__(cls, function: None, iterable: Iterable[_T | None], /) -> Self: ...
+    @overload
+    def __new__(cls, function: Callable[[_S], TypeGuard[_T]], iterable: Iterable[_S], /) -> Self: ...
+    @overload
+    def __new__(cls, function: Callable[[_S], TypeIs[_T]], iterable: Iterable[_S], /) -> Self: ...
+    @overload
+    def __new__(cls, function: Callable[[_T], Any], iterable: Iterable[_T], /) -> Self: ...
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> _T: ...
+
+def format(value: object, format_spec: str = '', /) -> str: ...
+@overload
+def getattr(o: object, name: str, /) -> Any: ...
+@overload
+def getattr(o: object, name: str, default: None, /) -> Any | None: ...
+@overload
+def getattr(o: object, name: str, default: bool, /) -> Any | bool: ...
+@overload
+def getattr(o: object, name: str, default: list[Any], /) -> Any | list[Any]: ...
+@overload
+def getattr(o: object, name: str, default: dict[Any, Any], /) -> Any | dict[Any, Any]: ...
+@overload
+def getattr(o: object, name: str, default: _T, /) -> Any | _T: ...
+def hasattr(obj: object, name: str, /) -> bool: ...
 def hash(obj: object, /) -> int: ...
 
 help: _sitebuiltins._Helper
@@ -1164,6 +1193,124 @@ def len(obj: Sized, /) -> int: ...
 license: _sitebuiltins._Printer
 
 def locals() -> dict[str, Any]: ...
+
+@disjoint_base
+class map(Generic[_S]):
+    if sys.version_info >= (3, 14):
+        @overload
+        def __new__(cls, func: Callable[[_T1], _S], iterable: Iterable[_T1], /, *, strict: bool = False) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            /,
+            *,
+            strict: bool = False,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2, _T3], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            iter3: Iterable[_T3],
+            /,
+            *,
+            strict: bool = False,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2, _T3, _T4], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            iter3: Iterable[_T3],
+            iter4: Iterable[_T4],
+            /,
+            *,
+            strict: bool = False,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2, _T3, _T4, _T5], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            iter3: Iterable[_T3],
+            iter4: Iterable[_T4],
+            iter5: Iterable[_T5],
+            /,
+            *,
+            strict: bool = False,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[..., _S],
+            iterable: Iterable[Any],
+            iter2: Iterable[Any],
+            iter3: Iterable[Any],
+            iter4: Iterable[Any],
+            iter5: Iterable[Any],
+            iter6: Iterable[Any],
+            /,
+            *iterables: Iterable[Any],
+            strict: bool = False,
+        ) -> Self: ...
+    else:
+        @overload
+        def __new__(cls, func: Callable[[_T1], _S], iterable: Iterable[_T1], /) -> Self: ...
+        @overload
+        def __new__(cls, func: Callable[[_T1, _T2], _S], iterable: Iterable[_T1], iter2: Iterable[_T2], /) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2, _T3], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            iter3: Iterable[_T3],
+            /,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2, _T3, _T4], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            iter3: Iterable[_T3],
+            iter4: Iterable[_T4],
+            /,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[[_T1, _T2, _T3, _T4, _T5], _S],
+            iterable: Iterable[_T1],
+            iter2: Iterable[_T2],
+            iter3: Iterable[_T3],
+            iter4: Iterable[_T4],
+            iter5: Iterable[_T5],
+            /,
+        ) -> Self: ...
+        @overload
+        def __new__(
+            cls,
+            func: Callable[..., _S],
+            iterable: Iterable[Any],
+            iter2: Iterable[Any],
+            iter3: Iterable[Any],
+            iter4: Iterable[Any],
+            iter5: Iterable[Any],
+            iter6: Iterable[Any],
+            /,
+            *iterables: Iterable[Any],
+        ) -> Self: ...
+
+    def __iter__(self) -> Self: ...
+    def __next__(self) -> _S: ...
+
 @overload
 def max(
     arg1: SupportsRichComparisonT, arg2: SupportsRichComparisonT, /, *_args: SupportsRichComparisonT, key: None = None
@@ -1377,6 +1524,7 @@ class _SupportsRound2(Protocol[_T_co]):
 def round(number: _SupportsRound1[_T], ndigits: None = None) -> _T: ...
 @overload
 def round(number: _SupportsRound2[_T], ndigits: SupportsIndex) -> _T: ...
+def setattr(obj: object, name: str, value: Any, /) -> None: ...
 @overload
 def sorted(
     iterable: Iterable[SupportsRichComparisonT], /, *, key: None = None, reverse: bool = False
@@ -1566,6 +1714,15 @@ if sys.version_info >= (3, 10):
 else:
     class AttributeError(Exception): ...
 
+@disjoint_base
+class ImportError(Exception):
+    def __init__(self, *args: object, name: str | None = None, path: str | None = None) -> None: ...
+    name: str | None
+    path: str | None
+    msg: str
+    if sys.version_info >= (3, 12):
+        name_from: str | None
+
 class LookupError(Exception): ...
 class MemoryError(Exception): ...
 
@@ -1608,8 +1765,10 @@ class TypeError(Exception): ...
 class ValueError(Exception): ...
 class OverflowError(ArithmeticError): ...
 class ZeroDivisionError(ArithmeticError): ...
+class ModuleNotFoundError(ImportError): ...
 class IndexError(LookupError): ...
 class KeyError(LookupError): ...
+class UnboundLocalError(NameError): ...
 class FileExistsError(OSError): ...
 class FileNotFoundError(OSError): ...
 class IsADirectoryError(OSError): ...
