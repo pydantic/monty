@@ -88,8 +88,9 @@ A worker that predates `Configure.accepts_streamed_calls` ignores all of this an
 The turn awaits the handler for each call as it awaits `on_print`, so calls and prints reach the host in the order the
 sandbox made them; start the call there, and settle it with `resume_futures` once a `TurnEvent::ResolveFutures` names it.
 Each started call counts against `max_suspensions`.
-Calls whose results the host has not sent may hold at most a quarter of `PoolConfig::max_decode_bytes` (256 MiB by
-default) of arguments; past that the session ends with a `MemoryError`, as the worker's memory limit does.
+Within a feed, calls whose results the host has not sent may hold at most a quarter of `PoolConfig::max_decode_bytes`
+(256 MiB by default) of arguments; past that the pool discards the worker and the session ends with a `MemoryError`.
+The count restarts with each feed, so a `StreamedCall` a handler keeps past its feed is the handler's to free.
 The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
 `SleepMode::Zero` returns immediately.
 

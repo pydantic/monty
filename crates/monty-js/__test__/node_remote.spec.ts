@@ -75,16 +75,23 @@ test('calls to async functions start without suspending the remote worker', asyn
   const log: string[] = []
   const fetch = async (x: number) => {
     log.push(`fetch(${x})`)
+    const until = Date.now() + 300
+    while (Date.now() < until) {
+      // busy-wait: the sandbox only waits for this if the call suspended it
+    }
     return x * 10
   }
   await using pool = await MontyRemote.create(url, { requestTimeout: 30 })
   await using session = await pool.checkout()
-  const code = "import asyncio\naws = [fetch(i) for i in range(3)]\nprint('started')\nawait asyncio.gather(*aws)"
+  const code =
+    'import asyncio, time\nt0 = time.monotonic()\naws = [fetch(i) for i in range(3)]\n' +
+    "elapsed = time.monotonic() - t0\nprint('started')\n[await asyncio.gather(*aws), elapsed < 0.25]"
   const result = await session.feedRun(code, {
     externalLookup: { fetch },
     printCallback: (_stream, text) => log.push(text),
   })
-  t.deepEqual(result, [0, 10, 20])
+  // the sandbox did not wait for the host's 900ms of calls, so they did not suspend it
+  t.deepEqual(result, [[0, 10, 20], true])
   // calls and prints reach the host in sandbox order, so each call started before the print after it
   t.deepEqual(log, ['fetch(0)', 'fetch(1)', 'fetch(2)', 'started\n'])
 })

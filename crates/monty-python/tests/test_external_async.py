@@ -171,12 +171,17 @@ async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_ca
     assert log == ['fetch(1)', 'after the call\n']
 
 
+@pytest.mark.skipif(sys.version_info < (3, 12), reason='inspect.markcoroutinefunction needs Python 3.12')
 async def test_failed_print_stops_later_streamed_calls():
     """A call made after a print that failed never starts on the host."""
     log: list[str] = []
 
-    async def effect() -> None:
+    def effect() -> Any:
+        # logs when called, not when its coroutine is awaited
         log.append('effect')
+        return asyncio.sleep(0)
+
+    effect = inspect.markcoroutinefunction(effect)
 
     def on_print(_stream: str, _text: str) -> None:
         raise ValueError('print refused')
@@ -195,8 +200,10 @@ async def test_failed_print_stops_later_streamed_calls():
 async def test_feed_refused_while_another_is_suspended_leaves_that_feed_its_calls():
     """A second `feed_run` refused mid-suspension cannot take the running feed's streamed calls."""
     gate = asyncio.Event()
+    started = asyncio.Event()
 
     async def fetch(x: int) -> int:
+        started.set()
         await gate.wait()
         return x
 
@@ -204,7 +211,7 @@ async def test_feed_refused_while_another_is_suspended_leaves_that_feed_its_call
     async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
         async with pool.checkout() as session:
             first = asyncio.ensure_future(session.feed_run(code, external_lookup={'fetch': fetch}))
-            await asyncio.sleep(0.1)
+            await started.wait()
             with pytest.raises(RuntimeError) as exc_info:
                 await session.feed_run('1', external_lookup={'fetch': fetch})
             assert str(exc_info.value) == snapshot(
