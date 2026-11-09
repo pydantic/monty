@@ -9,7 +9,7 @@
 
 use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, UnicodeErrorObject, unstable::MontyNode};
 use pyo3::{
-    PyTypeCheck,
+    PyTypeCheck, PyTypeInfo,
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
@@ -328,7 +328,12 @@ fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
         let doc = exc.getattr("doc")?.cast_into::<PyString>()?;
         // The cap counts UTF-8 bytes, which are never fewer than code points, so a
         // document over the cap in code points is dropped without being copied.
-        let doc = if doc.len()? <= JsonErrorData::MAX_DOC_LEN {
+        // `str.__len__` is called unbound because a `str` subclass may override `__len__`.
+        // TODO: switch to `PyStringMethods::code_point_len` once on PyO3 0.30.
+        let code_points: usize = PyString::type_object(exc.py())
+            .call_method1("__len__", (&doc,))?
+            .extract()?;
+        let doc = if code_points <= JsonErrorData::MAX_DOC_LEN {
             Some(doc.extract::<String>()?).filter(|doc| doc.len() <= JsonErrorData::MAX_DOC_LEN)
         } else {
             None

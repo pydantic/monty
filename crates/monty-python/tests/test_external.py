@@ -384,6 +384,24 @@ def test_external_function_json_decode_error_doc_cap(monty_run: RunMonty, doc: s
     assert inner.doc == (doc if kept else '')
 
 
+def test_external_function_json_decode_error_doc_len_override(monty_run: RunMonty):
+    """The doc cap measures the string itself, ignoring a `str` subclass's
+    `__len__`, so an override cannot drop the structured payload."""
+
+    class Doc(str):
+        def __len__(self) -> int:
+            raise RuntimeError('len called')
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise json.JSONDecodeError('Expecting value', Doc('[1,\n2,]'), 6)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('fail()', external_lookup={'fail': fail})
+    inner = exc_info.value.exception()
+    assert type(inner) is json.JSONDecodeError
+    assert inner.doc == '[1,\n2,]'
+
+
 def test_external_function_json_decode_error_missing_attributes(monty_run: RunMonty):
     """A host `JSONDecodeError` stripped of one of its attributes crosses into
     the sandbox message-only (the structured capture is all-or-nothing), so it
