@@ -1016,7 +1016,8 @@ impl Checkout {
         // adopted only here, past the checks above: a feed refused while another
         // is suspended must leave that feed's handler in place.
         let handler = self.next_streamed_call_handler.take();
-        self.feed_handler = handler.filter(|_| self.async_functions.is_some());
+        // a pool that does not accept streamed calls never asks the worker for them
+        self.feed_handler = handler.filter(|_| self.pool.config.stream_async_calls && self.async_functions.is_some());
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
@@ -1286,10 +1287,6 @@ impl Checkout {
                 Ok((call_id, result))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        // the host is done with these calls' arguments once it sends their results
-        for (call_id, _) in &results {
-            self.streamed_args.release(*call_id);
-        }
         let request = request(pb::parent_request::Kind::ResumeFutures(future_results_to_proto(
             results,
         )));
@@ -2340,6 +2337,12 @@ impl Checkout {
                 self.request_sent = true;
                 // a new turn starts only once its request is out, so a refused
                 // request leaves the previous feed's state as it was
+                // the host is done with these calls' arguments once their results are out
+                if let Some(pb::parent_request::Kind::ResumeFutures(resume)) = &request.kind {
+                    for result in &resume.results {
+                        self.streamed_args.release(result.call_id);
+                    }
+                }
                 if matches!(
                     request.kind,
                     Some(

@@ -8,6 +8,8 @@
 
 use std::collections::HashMap;
 
+use monty_proto::DEFAULT_MAX_DECODE_BYTES;
+
 /// Argument bytes of the streamed calls whose results the host has not yet sent.
 ///
 /// Sizes are wire bytes: each `StreamedCalls` frame's length split evenly
@@ -70,7 +72,8 @@ impl StreamedArgs {
 }
 
 /// The budget a pool with `max_decode_bytes` gives each session: a quarter of
-/// it, so 256 MiB by default, the size of one maximum frame.
-pub(crate) const fn streamed_args_limit(max_decode_bytes: usize) -> usize {
-    max_decode_bytes / 4
+/// it, so 256 MiB by default, the size of one maximum frame. Decoding never
+/// uses more than `DEFAULT_MAX_DECODE_BYTES`, so neither does this.
+pub(crate) fn streamed_args_limit(max_decode_bytes: usize) -> usize {
+    max_decode_bytes.min(DEFAULT_MAX_DECODE_BYTES) / 4
 }

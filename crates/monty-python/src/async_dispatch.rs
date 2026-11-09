@@ -198,6 +198,10 @@ impl SettledModule {
             .result
             .map(|modules| modules.into_iter().map(|module| module.into_bound(py)).collect());
         match ExternalLookup::new(py, names, instances).finish_after_module(&self.names, modules, &self.then) {
+            // a future settles with a value or an error, so a missing function raises here
+            Staged::Done(ExtFunctionResult::NotFound(name)) => Ok(Box::pin(ready(ExtFunctionResult::Error(
+                ExtFunctionResult::not_found_exception(&name),
+            )))),
             Staged::Done(result) => Ok(Box::pin(ready(result))),
             Staged::Coroutine(coro) => coroutine_answer(coro, instances),
         }
