@@ -44,9 +44,16 @@ use monty_types::{
 };
 #[cfg(unix)]
 use tokio::time::timeout;
-use tokio::{sync::mpsc::unbounded_channel, time::sleep};
+use tokio::{
+    sync::{Mutex as AsyncMutex, mpsc::unbounded_channel},
+    time::sleep,
+};
 
 use crate::{binary::monty_binary, common::wait_for_idle};
+
+/// Held by each test that allocates hundreds of MiB (oversize frames, oversize
+/// dumps), so the parallel test runner never holds two such buffers at once.
+static BIG_ALLOCATIONS: AsyncMutex<()> = AsyncMutex::const_new(());
 
 fn config() -> PoolConfig {
     PoolConfig::subprocess(monty_binary())
@@ -578,6 +585,7 @@ async fn working_directory_survives_a_rejected_first_feed() {
 /// directory is not established: the next feed still sends the mount default.
 #[tokio::test]
 async fn working_directory_survives_an_oversize_first_feed() {
+    let _big = BIG_ALLOCATIONS.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let mount = || vec![MountSpec::new("/mnt", dir.path(), MountSpecMode::ReadOnly).unwrap()];
     let pool = Pool::new(config()).await.unwrap();
@@ -968,6 +976,7 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
 async fn oversize_frames_are_rejected_without_killing_the_worker() {
     // just over monty_proto's 256 MiB MAX_FRAME_LEN
     const OVERSIZE: usize = 257 * 1024 * 1024;
+    let _big = BIG_ALLOCATIONS.lock().await;
 
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
@@ -1147,6 +1156,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
 /// memory-heavy; disable it if it proves flaky in CI.
 #[tokio::test]
 async fn oversize_dump_while_suspended_fails_cleanly_and_resumes() {
+    let _big = BIG_ALLOCATIONS.lock().await;
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     // a tiny suspension announcement on top of a heap too big to dump
@@ -2315,6 +2325,7 @@ async fn streamed_calls_count_against_the_suspension_limit() {
 #[tokio::test]
 async fn an_unsent_feed_keeps_the_previous_turns_streamed_calls() {
     const OVERSIZE: usize = 257 * 1024 * 1024;
+    let _big = BIG_ALLOCATIONS.lock().await;
 
     let pool = Pool::new(streaming_config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();

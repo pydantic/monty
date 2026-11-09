@@ -124,8 +124,12 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
             assert str(exc_info2.value) == snapshot('this checkout has already been finished')
 
 
+# How long `fetch` blocks the host. A suspended call cannot return sooner, so only a
+# streamed call (which never waits for the host) can pass the sandbox's check below.
+HOST_BLOCK_SECONDS = 1.0
+
 # times the call from inside the sandbox, then works long enough for a call started mid-turn to run before it ends
-TIMED_CALL = """
+TIMED_CALL = f"""
 import time
 t0 = time.monotonic()
 a = fetch(1)
@@ -133,7 +137,7 @@ elapsed = time.monotonic() - t0
 for _ in range(2_000_000):
     pass
 print('after the loop')
-[await a, elapsed < 0.25]
+[await a, elapsed < {HOST_BLOCK_SECONDS}]
 """
 
 
@@ -153,7 +157,7 @@ async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_ca
 
     def fetch(x: int) -> Any:
         log.append(f'fetch({x})')
-        time.sleep(0.3)
+        time.sleep(HOST_BLOCK_SECONDS)
         return asyncio.sleep(0, x)
 
     def on_print(_stream: str, text: str) -> None:
