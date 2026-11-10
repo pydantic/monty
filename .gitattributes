@@ -1,0 +1,2 @@
+# vendored CPython files and patches are checked byte-for-byte (`make check-stdlib`)
+crates/monty/stdlib/** -text

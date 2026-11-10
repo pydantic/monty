@@ -95,8 +95,8 @@ def main() -> None:
     parser.add_argument('--timeout', type=float, default=20, help='seconds allowed per module')
     args = parser.parse_args()
 
-    if sys.version_info[:2] != (3, 14):
-        sys.exit(f'run this with CPython 3.14, not {sys.version.split()[0]}')
+    if sys.implementation.name != 'cpython' or sys.version_info[:2] != (3, 14):
+        sys.exit(f'run this with CPython 3.14, not {sys.implementation.name} {sys.version.split()[0]}')
     if not args.monty.is_file():
         sys.exit(f'{args.monty} not found; build it with `cargo build -p monty-runtime --bin monty`')
 
@@ -120,23 +120,33 @@ def default_monty() -> Path:
 def run_module(module: str, lib: Path, monty: Path, timeout: float) -> str:
     """Run one module's source in Monty and return `LOADS` or the last line of its error.
 
+    The source runs through `exec()` with the module's own `__name__`, as an import would, so `__main__` blocks
+    stay skipped; importing it by name instead would load Monty's vendored copy of a module that has one.
     Each module runs alone in an empty directory, so it cannot import a sibling candidate by accident.
     """
     source = module_source(module, lib)
     if source is None:
         return 'not found in this CPython'
     with tempfile.TemporaryDirectory() as tmp:
-        script = Path(tmp) / f'{module}.py'
-        script.write_text(source, encoding='utf-8')
+        driver = Path(tmp) / 'driver.py'
+        driver.write_text(f'exec({source!r}, {{"__name__": {module!r}}})\n', encoding='utf-8')
         try:
             result = subprocess.run(
-                [monty, script.name], cwd=tmp, capture_output=True, text=True, timeout=timeout, check=False
+                [monty, driver.name],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=timeout,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             return f'timed out after {timeout:g}s'
     if result.returncode == 0:
         return LOADS
-    lines = [line for line in (result.stderr + result.stdout).splitlines() if line.strip()]
+    # the error is the last line on stderr; stdout only holds what the module printed
+    lines = [line for line in (result.stderr or result.stdout).splitlines() if line.strip()]
     return lines[-1].strip() if lines else f'exit code {result.returncode} with no output'
 
 

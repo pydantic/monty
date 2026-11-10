@@ -46,7 +46,7 @@ def main() -> None:
     upstream = {file: fetch(tag, f'Lib/{file}') for file in files}
 
     if args.make_patch:
-        if not args.reason:
+        if not (args.reason or '').strip():
             sys.exit('--make-patch needs a --reason explaining why the CPython source must change')
         make_patch(args.make_patch, args.reason, upstream)
         return
@@ -77,8 +77,8 @@ def fetch(tag: str, path: str) -> str:
 
 
 def read(path: Path) -> str | None:
-    """A file's text, or `None` if it does not exist."""
-    return path.read_text(encoding='utf-8') if path.is_file() else None
+    """A file's exact text, or `None` if it does not exist; unlike `read_text()`, it keeps CRLF line endings."""
+    return path.read_bytes().decode('utf-8') if path.is_file() else None
 
 
 def apply_patches(sources: dict[str, str], patches: list[Path]) -> dict[str, str]:
