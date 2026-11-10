@@ -117,7 +117,7 @@ impl VM<'_> {
     /// Compares immediate int/float pairs without owning heap references.
     /// The callback receives `None` for NaN operands.
     #[inline]
-    fn compare_numeric(&mut self, compare: impl FnOnce(Option<Ordering>) -> bool) -> bool {
+    pub(super) fn compare_numeric(&mut self, compare: impl FnOnce(Option<Ordering>) -> bool) -> bool {
         let len = self.stack.len();
         let ordering = match (&self.stack[len - 2], &self.stack[len - 1]) {
             (Value::Int(lhs), Value::Int(rhs)) => Some(lhs.cmp(rhs)),

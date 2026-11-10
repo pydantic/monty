@@ -17,7 +17,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput, HeapReader},
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
@@ -357,6 +357,24 @@ impl HeapItem for RangeIterator {
     fn py_dec_ref_ids(&mut self, _: &mut Vec<HeapId>) {}
 }
 
+impl<'h> HeapObjectRead<'h, RangeIterator> {
+    /// Advances without Python callbacks or an exception payload.
+    #[inline]
+    pub(crate) fn next_item(&mut self, heap: &mut HeapReader<'h>) -> Option<Value> {
+        let iter = self.get_mut(heap);
+        if iter.remaining == 0 {
+            None
+        } else {
+            let value = iter.next;
+            iter.remaining -= 1;
+            if iter.remaining > 0 {
+                iter.next += iter.step;
+            }
+            Some(Value::Int(value))
+        }
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
@@ -379,16 +397,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RangeIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let iter = self.get_mut(vm.heap);
-        if iter.remaining == 0 {
-            Ok(None)
-        } else {
-            let value = iter.next;
-            iter.remaining -= 1;
-            if iter.remaining > 0 {
-                iter.next += iter.step;
-            }
-            Ok(Some(Value::Int(value)))
-        }
+        Ok(self.next_item(vm.heap))
     }
 }

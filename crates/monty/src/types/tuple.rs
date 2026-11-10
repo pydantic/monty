@@ -32,7 +32,10 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
-    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{
+        DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput,
+        HeapReader,
+    },
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
     resource_checks::{check_repeat_size, repeated_len},
@@ -673,6 +676,27 @@ impl HeapItem for TupleIterator {
     }
 }
 
+impl<'h> HeapObjectRead<'h, TupleIterator> {
+    /// Advances without Python callbacks or an exception payload.
+    #[inline]
+    pub(crate) fn next_item(&mut self, heap: &mut HeapReader<'h>) -> Option<Value> {
+        let (source_id, index) = {
+            let iter = self.get(heap);
+            (iter.source_id(), iter.index)
+        };
+        let item = match heap.get(source_id) {
+            HeapData::Tuple(tuple) => tuple.as_slice().get(index),
+            HeapData::NamedTuple(tuple) => tuple.as_vec().get(index),
+            _ => unreachable!("tuple iterator must retain tuple-like storage"),
+        }
+        .map(|value| value.clone_with_heap(heap));
+        if item.is_some() {
+            self.get_mut(heap).index += 1;
+        }
+        item
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
     fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
@@ -695,20 +719,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, TupleIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let (source_id, index) = {
-            let iter = self.get(vm.heap);
-            (iter.source_id(), iter.index)
-        };
-        let item = match vm.heap.get(source_id) {
-            HeapData::Tuple(tuple) => tuple.as_slice().get(index),
-            HeapData::NamedTuple(tuple) => tuple.as_vec().get(index),
-            _ => unreachable!("tuple iterator must retain tuple-like storage"),
-        }
-        .map(|value| value.clone_with_heap(vm.heap));
-        if item.is_some() {
-            self.get_mut(vm.heap).index += 1;
-        }
-        Ok(item)
+        Ok(self.next_item(vm.heap))
     }
 }
 
