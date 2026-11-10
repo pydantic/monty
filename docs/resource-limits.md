@@ -217,7 +217,7 @@ OS counter resolution and scheduling can delay detection. This is approximate ac
 
 Restore starts from the trusted snapshot's saved VM consumption and takes a fresh OS baseline.
 Snapshots do not store protocol CPU or spent CPU grace separately.
-For remote sessions, the server's pool or profile selects the clock beside the actual child.
+For remote sessions, the server's pool or profile selects the clock beside the actual worker.
 Clients do not select or override it. The server reports its clock with the configuration reply.
 The client uses that metadata to avoid deriving wall deadlines from CPU budgets.
 Use clients that understand the clock metadata with CPU-mode server profiles for this noisy-neighbor protection.
@@ -228,7 +228,7 @@ Python and Node remote clients default to 10 seconds. Rust clients have no defau
 Choose this wall deadline for the expected budgets and scheduling delays.
 It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
-Local CPU pools require the child to acknowledge CPU mode before executing code.
+Local CPU pools require the worker to acknowledge CPU mode before executing code.
 A remote client cannot independently measure a remote process.
 See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 

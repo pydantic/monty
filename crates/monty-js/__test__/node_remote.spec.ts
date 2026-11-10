@@ -1,5 +1,5 @@
 // `MontyRemote` end-to-end against in-process gRPC servers that bridge each
-// session stream to a real `monty subprocess` child (see remote_servers.ts),
+// session stream to a real `monty subprocess` worker (see remote_servers.ts),
 // mirroring crates/monty-python/tests/test_remote.py.
 
 import { AsyncLocalStorage } from 'node:async_hooks'

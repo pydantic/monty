@@ -206,7 +206,7 @@ impl Pool {
         }
         for (worker, _) in &mut idle {
             let _ = worker
-                .send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})), None)
+                .send(&request(pb::client_request::Kind::Shutdown(pb::Shutdown {})), None)
                 .await;
         }
         // Reap concurrently: a *nonresponsive* worker costs the full grace, so

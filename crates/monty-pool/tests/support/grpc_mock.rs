@@ -1,4 +1,4 @@
-//! An in-process gRPC server standing in for a remote child, scripted from a
+//! An in-process gRPC server standing in for a remote worker, scripted from a
 //! plain thread: each session stream the pool opens becomes a [`MockStream`]
 //! with blocking `read` / `send` / `close`, so a test spells out the server
 //! side of a conversation step by step while the pool under test runs on the
@@ -228,7 +228,7 @@ struct Opening {
     /// Set from handing out the `Configure` until the script answers it.
     awaiting_reply: bool,
     /// The `Configure`'s `Ok`, whose fields the request's reply takes on.
-    ack: Option<pb::ChildEvent>,
+    ack: Option<pb::WorkerEvent>,
 }
 
 impl MockStream {
@@ -240,18 +240,18 @@ impl MockStream {
         }
         let message = self.read_unsplit()?;
         let opening = self.opening.get_mut().unwrap();
-        let mut request = decode_frame::<pb::ParentRequest>(message.as_ref()).expect("decode request");
-        let Some(pb::parent_request::Kind::Configure(configure)) = &mut request.kind else {
+        let mut request = decode_frame::<pb::ClientRequest>(message.as_ref()).expect("decode request");
+        let Some(pb::client_request::Kind::Configure(configure)) = &mut request.kind else {
             return Some(message);
         };
         let first = match configure.first.take() {
-            Some(pb::configure::First::Feed(feed)) => pb::parent_request::Kind::Feed(feed),
-            Some(pb::configure::First::Load(load)) => pb::parent_request::Kind::Load(load),
+            Some(pb::configure::First::Feed(feed)) => pb::client_request::Kind::Feed(feed),
+            Some(pb::configure::First::Load(load)) => pb::client_request::Kind::Load(load),
             None => return Some(message),
         };
-        let first = pb::ParentRequest {
+        let first = pb::ClientRequest {
             kind: Some(first),
-            ..pb::ParentRequest::default()
+            ..pb::ClientRequest::default()
         };
         opening.request = Some(encode_to_capped_vec(&first).expect("encode request").into());
         opening.awaiting_reply = true;
@@ -283,17 +283,17 @@ impl MockStream {
             drop(opening);
             return self.deliver(Ok(body));
         }
-        let mut event = decode_frame::<pb::ChildEvent>(body.as_ref()).expect("decode event");
+        let mut event = decode_frame::<pb::WorkerEvent>(body.as_ref()).expect("decode event");
         if matches!(
             event.kind,
-            Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::Ping(_))
+            Some(pb::worker_event::Kind::Print(_) | pb::worker_event::Kind::Ping(_))
         ) {
             // not a reply: sent as written, since re-encoding drops unknown fields
             drop(opening);
             return self.deliver(Ok(body));
         }
         if mem::take(&mut opening.awaiting_reply) {
-            if matches!(event.kind, Some(pb::child_event::Kind::Ok(_))) {
+            if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) {
                 opening.ack = Some(event);
                 return Ok(());
             }

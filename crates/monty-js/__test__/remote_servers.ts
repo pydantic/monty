@@ -1,6 +1,6 @@
 // In-process gRPC servers for the `MontyRemote` specs, the Node counterparts
 // of the fixtures in crates/monty-python/tests/test_remote.py. Each session
-// stream is bridged to a real `monty subprocess` child: the child
+// stream is bridged to a real `monty subprocess` worker: the worker
 // length-prefixes each protocol frame on stdio, gRPC carries one frame per
 // message, so the bridge only adds and strips the prefix. The service is
 // declared by hand over raw bytes — no schema, nothing generated.
@@ -145,20 +145,20 @@ export function droppingRelay(dropAt: number): (stream: Stream) => Promise<void>
 }
 
 // Field numbers from `crates/monty-proto/proto/monty/v1/monty.proto`.
-// `ParentRequest.kind` arms:
+// `ClientRequest.kind` arms:
 const REQUEST_CONFIGURE = 1
 const REQUEST_DUMP = 7
 const REQUEST_LOAD = 8
 // `Configure.first`'s `Load` arm:
 const CONFIGURE_LOAD = 16
-// `ChildEvent.kind` arms, which own the field numbers below `FIRST_EVENT_FIELD`:
+// `WorkerEvent.kind` arms, which own the field numbers below `FIRST_EVENT_FIELD`:
 const EVENT_PRINT = 1
 const EVENT_DUMP_RESULT = 9
 const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
 const EVENT_PING = 13
 const EVENT_SESSION_REFUSED = 14
-// `ChildEvent`'s message-level fields:
+// `WorkerEvent`'s message-level fields:
 const FIRST_EVENT_FIELD = 20
 const EVENT_SESSION_ID = 28
 // Fields of the messages those arms carry:
@@ -216,7 +216,7 @@ function answerConfigure(reply: Buffer): (stream: Stream) => Promise<void> {
 /**
  * A fake of a server that stores sessions, as `_StoringServer` in the Python
  * tests. It names the session on the reply to its first request and to `Load`,
- * and does not run the second request of the first stream: the child is dumped,
+ * and does not run the second request of the first stream: the worker is dumped,
  * its state kept under the session's ID, and the request answered with
  * `ShutdownDump` naming that ID. A later `Load` of the ID gets the stored state.
  */
@@ -238,7 +238,7 @@ export class StoringServer {
         requests += 1
         const fields = protoFields(message)
         if (requests === drainAt) {
-          // park: dump the idle child, keep its state under the ID, and tell
+          // park: dump the idle worker, keep its state under the ID, and tell
           // the client the request did not run
           child.send(bytesField(REQUEST_DUMP, Buffer.alloc(0)))
           const reply = protoFields((await child.next())!)
@@ -256,7 +256,7 @@ export class StoringServer {
           fields.get(REQUEST_LOAD) ?? (configure === undefined ? undefined : protoFields(configure).get(CONFIGURE_LOAD))
         const names = requests === 1 || load !== undefined
         if (load !== undefined) {
-          // the child loads the stored bytes the ID stands for
+          // the worker loads the stored bytes the ID stands for
           const id = protoFields(load).get(LOAD_STATE)!
           const stored = bytesField(LOAD_STATE, this.records.get(id.toString('latin1'))!)
           message =
@@ -285,7 +285,7 @@ export class StoringServer {
   }
 }
 
-/** Sends the child's replies to `stream` up to and including the turn-ending one. */
+/** Sends the worker's replies to `stream` up to and including the turn-ending one. */
 async function forwardReplies(child: ChildFrames, stream: Stream): Promise<void> {
   for (;;) {
     const reply = await child.next()
@@ -296,7 +296,7 @@ async function forwardReplies(child: ChildFrames, stream: Stream): Promise<void>
   }
 }
 
-/** One `monty subprocess` child, framed: whole frames in, whole frames out. */
+/** One `monty subprocess` worker, framed: whole frames in, whole frames out. */
 class ChildFrames {
   private readonly child: ChildProcessWithoutNullStreams
   private buffered = Buffer.alloc(0)
@@ -328,12 +328,12 @@ class ChildFrames {
     this.child.stdin.write(Buffer.concat([prefix, frame]))
   }
 
-  /** Closes the child's stdin: it reads EOF as a clean end and exits. */
+  /** Closes the worker's stdin: it reads EOF as a clean end and exits. */
   endInput(): void {
     this.child.stdin.end()
   }
 
-  /** The next frame from the child, or `null` once its output ends. */
+  /** The next frame from the worker, or `null` once its output ends. */
   async next(): Promise<Buffer | null> {
     while (this.frames.length === 0 && !this.ended) {
       await new Promise<void>((resolve) => (this.wake = resolve))

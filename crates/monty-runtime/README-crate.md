@@ -48,25 +48,25 @@ OpenTelemetry exporter and resource environment variables. The CLI owns the SDK
 lifecycle and flushes it before exiting.
 
 `monty subprocess` deliberately ignores telemetry environment configuration:
-worker processes are instrumented by their parent pool, avoiding duplicate
+worker processes are instrumented by their pool, avoiding duplicate
 exporters and keeping credentials out of sandbox workers.
 
 ## Worker mode
 
-`monty subprocess` runs the binary as a wire-protocol child: framed protobuf
+`monty subprocess` runs the binary as a wire-protocol worker: framed protobuf
 requests on stdin, framed events on stdout (see the
 [`monty-proto`](https://crates.io/crates/monty-proto) crate). This is how the
 [`monty-pool`](https://crates.io/crates/monty-pool) crate — and through it the
 [`pydantic-monty`](https://pypi.org/project/pydantic-monty/) and
 [`@pydantic/monty`](https://www.npmjs.com/package/@pydantic/monty) packages —
-runs Monty with crash isolation. It is meant to be driven by a parent
-process, not by hand.
+runs Monty with crash isolation. It is meant to be driven by a client,
+not by hand.
 
 The binary runs under the
 [`monty-alloc`](https://crates.io/crates/monty-alloc) global allocator, which
 provides the session's soft-limit usage and enforces a higher hard ceiling.
 Crossing the soft limit raises `MemoryError` at an interpreter checkpoint;
-crossing the hard limit exits with a dedicated status the parent can classify.
+crossing the hard limit exits with a dedicated status the client can classify.
 
 ## PyPI packaging (`pydantic-monty-runtime`)
 
@@ -88,7 +88,7 @@ and crate links below mean nothing to someone installing from PyPI.
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode. **this crate**
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pools and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

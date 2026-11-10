@@ -2,7 +2,7 @@
 //! opaque-bytes codec both ends frame messages with, and the status a server
 //! ends a stream with when it drops a session by policy.
 //!
-//! The RPC carries the same `ParentRequest` / `ChildEvent` messages as the
+//! The RPC carries the same `ClientRequest` / `WorkerEvent` messages as the
 //! stdio transport, one per gRPC message. Both ends keep the payload opaque at
 //! the tonic layer — [`BytesCodec`] moves `Bytes` — and decode it themselves
 //! through [`decode_frame_with_budget`](crate::decode_frame_with_budget), so

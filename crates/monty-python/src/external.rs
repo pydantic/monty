@@ -613,7 +613,7 @@ fn call_object_method_raw<'py>(
 /// `__call__` is the one dunder the sandbox legitimately suspends on (calling
 /// a host object; the wrapper's own policy still gates it). Otherwise the
 /// sandbox never suspends on `_`-prefixed names, so seeing one here means the
-/// frame is forged; wire frames from a child are untrusted.
+/// frame is forged; wire frames from a worker are untrusted.
 fn validate_host_method_name(function_name: &str) -> PyResult<()> {
     if function_name.starts_with('_') && function_name != "__call__" {
         Err(PyAttributeError::new_err(format!(
@@ -668,7 +668,7 @@ pub fn resolve_object_attr(
 ) -> NameLookupResult {
     if name.starts_with('_') {
         // Defensive re-check of the sandbox's underscore rule; wire frames
-        // from a (possibly compromised) child are untrusted.
+        // from a (possibly compromised) worker are untrusted.
         NameLookupResult::Undefined
     } else {
         match callback_context::call(py, || instances.lookup_lazy_attr(py, object_id, name)) {

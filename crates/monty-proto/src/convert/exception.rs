@@ -34,7 +34,7 @@ impl TryFrom<pb::RaisedException> for MontyException {
             .into_iter()
             .map(StackFrame::try_from)
             .collect::<Result<Vec<_>, _>>()?;
-        // The payload comes from a possibly-compromised child, so it is
+        // The payload comes from a possibly-compromised worker, so it is
         // dropped rather than trusted when malformed (see `sanitize_unicode_data`);
         // the worst a bogus-but-well-formed payload can do is put odd
         // attribute values on a host-side exception.
@@ -81,7 +81,7 @@ impl From<&JsonErrorData> for pb::JsonErrorData {
 
 /// Validates an untrusted wire `JsonErrorData`, returning `None` when any
 /// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
-/// compromised child pinning large amounts of parent memory: `msg` normally
+/// compromised worker pinning large amounts of client memory: `msg` normally
 /// prefixes the exception's `message`, so it may be no longer (a TOML key can make
 /// both long), or [`JsonErrorData::MAX_DOC_LEN`] without a message; legitimate
 /// senders drop `doc` above that cap.
@@ -139,8 +139,8 @@ impl From<&UnicodeErrorData> for pb::UnicodeErrorData {
 /// field is missing or out of range. Enforces the same size cap the sender
 /// applies to `object` ([`UnicodeErrorData::MAX_OBJECT_LEN`]) on all three
 /// string fields — legitimate senders only ever fill `encoding`/`reason` with
-/// short static codec names and reason phrases — so a compromised child
-/// cannot pin large amounts of parent memory through an exception payload.
+/// short static codec names and reason phrases — so a compromised worker
+/// cannot pin large amounts of client memory through an exception payload.
 fn sanitize_unicode_data(data: pb::UnicodeErrorData) -> Option<Box<UnicodeErrorData>> {
     // Real `encoding`/`reason` values are tiny ("utf-8", "invalid start
     // byte", ...), so anything near the object cap is bogus; reusing that cap
