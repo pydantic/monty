@@ -48,6 +48,7 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `re`            | [re.md](re.md)                        |
 | `stat`          | [vendored](#vendored-cpython-modules) |
 | `sys`           | [sys.md](sys.md)                      |
+| `textwrap`      | [vendored](#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                    |
 | `tomllib`       | [tomllib.md](tomllib.md)              |
 | `typing`        | [typing.md](typing.md)                |
@@ -95,7 +96,7 @@ typeshed's `abc` declarations.
 
 ## Vendored CPython modules
 
-`colorsys`, `keyword` and `stat` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`colorsys`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
 `crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
 They differ from CPython's modules in how they are loaded:
 
@@ -108,7 +109,7 @@ They differ from CPython's modules in how they are loaded:
 - The host is never asked for these names, so neither a host module nor a same-named `.py` file in the working
     directory can shadow them; in CPython a script's directory comes before the standard library on `sys.path`.
 
-`keyword` and `stat` are patched (`crates/monty/stdlib/patches/`), with these consequences:
+`keyword`, `stat` and `textwrap` are patched (`crates/monty/stdlib/patches/`), with these consequences:
 
 - `keyword.iskeyword` and `keyword.issoftkeyword` are Python functions, where CPython binds
     `frozenset.__contains__`: a wrong argument count raises
@@ -122,6 +123,10 @@ They differ from CPython's modules in how they are loaded:
         raises `OverflowError: can't convert negative value to unsigned int`.
     - Platform-specific constants take `stat.py`'s portable values on every host: `S_IFWHT` is `0` and
         `SF_SETTABLE` is `0xffff0000`, where CPython on macOS reports `0o160000` and `0x3fff0000`.
+- `textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
+    regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
+    and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
+    `del cur_line[-1]` are `.pop()` calls with the same effect.
 
 ## Host modules
 

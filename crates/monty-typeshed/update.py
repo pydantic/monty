@@ -164,6 +164,7 @@ COPY_FILES = [
     'keyword.pyi',
     'stat.pyi',
     '_stat.pyi',
+    'textwrap.pyi',
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
@@ -208,6 +209,7 @@ random: 3.0-
 re: 3.0-
 stat: 3.0-
 sys: 3.0-
+textwrap: 3.0-
 time: 3.0-
 tomllib: 3.11-
 typing: 3.5-

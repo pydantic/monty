@@ -100,12 +100,13 @@ The following modules are present:
 | `re`            | [re.md](re.md)                                    |
 | `stat`          | [modules.md](modules.md#vendored-cpython-modules) |
 | `sys`           | [sys.md](sys.md)                                  |
+| `textwrap`      | [modules.md](modules.md#vendored-cpython-modules) |
 | `time`          | [time.md](time.md)                                |
 | `tomllib`       | [tomllib.md](tomllib.md)                          |
 | `typing`        | [typing.md](typing.md)                            |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)                  |
 
-Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword` and `stat` run CPython's own source.
+Each covers only part of its CPython surface — often a small part. `colorsys`, `keyword`, `stat` and `textwrap` run CPython's own source.
 `itertools`, `hashlib`, `tomllib` and `fnmatch` are the other exceptions: `itertools` implements every name it exports, `hashlib` every
 guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-name surfaces.
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as

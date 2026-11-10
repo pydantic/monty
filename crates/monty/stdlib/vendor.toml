@@ -12,4 +12,5 @@ files = [
     "colorsys.py",
     "keyword.py",
     "stat.py",
+    "textwrap.py",
 ]

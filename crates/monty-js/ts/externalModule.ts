@@ -142,6 +142,7 @@ const SANDBOX_MODULES = new Set([
   're',
   'stat',
   'sys',
+  'textwrap',
   'time',
   'tomllib',
   'typing',

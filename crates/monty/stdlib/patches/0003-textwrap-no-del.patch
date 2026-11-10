@@ -1,0 +1,57 @@
+Monty does not parse `del` yet (#1032), so the class-body `del` and `del seq[-1]` become a no-op and `.pop()`. It also cannot read a builtin method without calling it, so `patsearch = pattern.search` becomes a direct call. Drop the `del` part once `del` is supported.
+
+--- a/textwrap.py
++++ b/textwrap.py
+@@ -93,14 +93,12 @@
+         )''' % {'wp': word_punct, 'lt': letter,
+                 'ws': whitespace, 'nws': nowhitespace},
+         re.VERBOSE)
+-    del word_punct, letter, nowhitespace
+ 
+     # This less funky little regex just split on recognized spaces. E.g.
+     #   "Hello there -- you goof-ball, use the -b option!"
+     # splits into
+     #   Hello/ /there/ /--/ /you/ /goof-ball,/ /use/ /the/ /-b/ /option!/
+     wordsep_simple_re = re.compile(r'(%s+)' % whitespace)
+-    del whitespace
+ 
+     # XXX this is not locale- or charset-aware -- string.lowercase
+     # is US-ASCII only (and therefore English-only)
+@@ -186,9 +184,8 @@
+         space to two.
+         """
+         i = 0
+-        patsearch = self.sentence_end_re.search
+         while i < len(chunks)-1:
+-            if chunks[i+1] == " " and patsearch(chunks[i]):
++            if chunks[i+1] == " " and self.sentence_end_re.search(chunks[i]):
+                 chunks[i+1] = "  "
+                 i += 2
+             else:
+@@ -282,7 +279,7 @@
+             # First chunk on line is whitespace -- drop it, unless this
+             # is the very beginning of the text (ie. no lines started yet).
+             if self.drop_whitespace and chunks[-1].strip() == '' and lines:
+-                del chunks[-1]
++                chunks.pop()
+ 
+             while chunks:
+                 l = len(chunks[-1])
+@@ -305,7 +302,7 @@
+             # If the last chunk on this line is all whitespace, drop it.
+             if self.drop_whitespace and cur_line and cur_line[-1].strip() == '':
+                 cur_len -= len(cur_line[-1])
+-                del cur_line[-1]
++                cur_line.pop()
+ 
+             if cur_line:
+                 if (self.max_lines is None or
+@@ -325,7 +322,7 @@
+                             lines.append(indent + ''.join(cur_line))
+                             break
+                         cur_len -= len(cur_line[-1])
+-                        del cur_line[-1]
++                        cur_line.pop()
+                     else:
+                         if lines:
+                             prev_line = lines[-1].rstrip()
