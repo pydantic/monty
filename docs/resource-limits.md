@@ -228,7 +228,7 @@ Python and Node remote clients default to 10 seconds. Rust clients have no defau
 Choose this wall deadline for the expected budgets and scheduling delays.
 It can expire before a CPU budget under severe contention. CPU accounting does not extend it.
 A missing clock means a legacy wall-time server. Unknown clock values fail configuration.
-Local CPU pools require the child to acknowledge CPU mode before executing code.
+Local CPU pools require the worker to acknowledge CPU mode before executing code.
 A remote client cannot independently measure a remote process.
 See [`PoolConfig`](api/rust/monty-pool.md#poolconfig) for the pool settings.
 

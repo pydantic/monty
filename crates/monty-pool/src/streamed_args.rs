@@ -13,7 +13,7 @@ use monty_proto::DEFAULT_MAX_DECODE_BYTES;
 /// Argument bytes of the streamed calls whose results the host has not yet sent.
 ///
 /// Sizes are wire bytes: each `StreamedCalls` frame's length split evenly
-/// across its calls, since the frame is the unit the parent decodes.
+/// across its calls, since the frame is the unit the client decodes.
 #[derive(Debug)]
 pub(crate) struct StreamedArgs {
     /// The most bytes that may be held at once.

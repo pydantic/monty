@@ -318,7 +318,7 @@ fn repr_and_cycle_round_trip() {
     assert_value_round_trip(&MontyObject::repr("<unrepresentable>".to_owned()));
 
     // Cycles appear in worker outputs (e.g. a returned cyclic list), so the
-    // parent must decode them; produce one via execution and round-trip it.
+    // client must decode them; produce one via execution and round-trip it.
     // Using one as an *execution input* is rejected by `MontyObject::to_value`.
     let mut run = MontyRun::new(
         "a = []\na.append(a)\na".to_owned(),
@@ -455,7 +455,7 @@ fn exception_without_traceback_round_trips() {
     assert_eq!(back, exc);
 }
 
-/// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine child
+/// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine worker
 /// controls, for probing the receive-side sanitizer.
 fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, reason: String) -> pb::RaisedException {
     pb::RaisedException {
@@ -478,7 +478,7 @@ fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, re
 fn bogus_unicode_payloads_are_dropped_not_trusted() {
     let oversized = "x".repeat(UnicodeErrorData::MAX_OBJECT_LEN + 1);
     // Every rejected payload still converts — only the structured data is
-    // dropped, since a hostile child must not be able to block error reporting.
+    // dropped, since a hostile worker must not be able to block error reporting.
     let bogus = [
         unicode_exception(oversized.clone(), vec![0xFF], 0, 1, "reason".to_owned()),
         unicode_exception("utf-8".to_owned(), vec![0xFF], 0, 1, oversized.clone()),
@@ -538,7 +538,7 @@ fn json_error_payload_round_trips() {
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
-/// child controls, for probing the receive-side sanitizer.
+/// worker controls, for probing the receive-side sanitizer.
 /// The message is `msg` with a location suffix, as both decode errors format it.
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
     pb::RaisedException {
@@ -673,7 +673,7 @@ fn os_policy_round_trip() {
         };
         assert_eq!(OsPolicy::try_from(pb::OsPolicy::from(&calls)).unwrap(), calls);
     }
-    // the UTC default has its own arm, so an explicit UTC survives a parent with a different default
+    // the UTC default has its own arm, so an explicit UTC survives a client with a different default
     let utc = pb::OsPolicy::from(&OsPolicy::default());
     assert_eq!(
         utc.timezone,
@@ -682,7 +682,7 @@ fn os_policy_round_trip() {
         })
     );
     assert_eq!(OsPolicy::try_from(utc).unwrap().timezone, SandboxTimeZone::utc());
-    // a named zone crosses as its IANA name, which the child resolves against its own database
+    // a named zone crosses as its IANA name, which the worker resolves against its own database
     let london = pb::OsPolicy::from(&OsPolicy {
         timezone: SandboxTimeZone::named("Europe/London").unwrap(),
         ..OsPolicy::default()
@@ -872,8 +872,8 @@ fn deep_values_cross_the_wire() {
     let mut inputs = NamedValues::new();
     inputs.push("v", unstable::object_from_graph(graph, id).unwrap());
     let (refs, values) = named_values_to_proto(inputs.clone());
-    let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let request = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: String::new(),
             inputs: refs,
             values: Some(values),
@@ -884,8 +884,8 @@ fn deep_values_cross_the_wire() {
         })),
         trace_parent: None,
     };
-    let back = decode_frame::<pb::ParentRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
-    let Some(pb::parent_request::Kind::Feed(feed)) = back.kind else {
+    let back = decode_frame::<pb::ClientRequest>(request.encode_to_vec().as_slice()).expect("deep feed decodes");
+    let Some(pb::client_request::Kind::Feed(feed)) = back.kind else {
         panic!("expected a feed");
     };
     assert_eq!(named_values_from_proto(feed.inputs, feed.values).unwrap(), inputs);
@@ -1085,8 +1085,8 @@ fn os_calls_round_trip_all_variants() {
     }
 }
 
-/// The byte count is unsigned on the wire, so the parent cannot see a
-/// negative one; a count above `i64::MAX` from a compromised child still
+/// The byte count is unsigned on the wire, so the client cannot see a
+/// negative one; a count above `i64::MAX` from a compromised worker still
 /// converts, reaching the host handler as an exact `BigInt` for its cap to
 /// reject.
 #[test]
@@ -1101,7 +1101,7 @@ fn os_call_urandom_size_above_i64_converts_exactly() {
     assert_eq!(args.arg(0).unwrap(), MontyObject::int(2496));
 }
 
-/// A child that lies about a sleep length is refused rather than handed on: a
+/// A worker that lies about a sleep length is refused rather than handed on: a
 /// host would convert these to its own duration type, and the obvious
 /// conversions panic on all three.
 #[test]
@@ -1198,7 +1198,7 @@ fn os_call_create_exclusive_rejects_malformed_arguments() {
 
 #[test]
 fn os_call_conversion_rejects_invalid_payloads() {
-    // A bogus open mode the child could never produce.
+    // A bogus open mode the worker could never produce.
     let bad_mode = pb::os_call::Call::Open(pb::os_call::Open {
         path: "/mnt/data/f.txt".to_owned(),
         mode: "q".to_owned(),
@@ -1232,25 +1232,25 @@ fn os_call_conversion_rejects_invalid_payloads() {
 
 #[test]
 fn shutdown_event_round_trips() {
-    let event = pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+    let event = pb::WorkerEvent {
+        kind: Some(pb::worker_event::Kind::Shutdown(pb::ShutdownDump {
             dump: Some(vec![1, 2, 3].into()),
         })),
         ..Default::default()
     };
-    let back = decode_frame::<pb::ChildEvent>(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
+    let back = decode_frame::<pb::WorkerEvent>(event.encode_to_vec().as_slice()).expect("ShutdownDump event decodes");
     assert_eq!(back, event);
     // a shutdown with nothing to dump (no session yet) also round-trips
-    let bare = pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::Shutdown(pb::ShutdownDump { dump: None })),
+    let bare = pb::WorkerEvent {
+        kind: Some(pb::worker_event::Kind::Shutdown(pb::ShutdownDump { dump: None })),
         ..Default::default()
     };
-    let back = decode_frame::<pb::ChildEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
+    let back = decode_frame::<pb::WorkerEvent>(bare.encode_to_vec().as_slice()).expect("bare ShutdownDump decodes");
     assert_eq!(back, bare);
 }
 
 /// A stubs ask naming a module twice is refused: a host runs one factory per
-/// name, and a compromised child must not multiply that work.
+/// name, and a compromised worker must not multiply that work.
 #[test]
 fn a_stubs_ask_repeating_a_module_is_rejected() {
     let call = pb::os_call::Call::ImportStubs(pb::os_call::ImportStubs {
@@ -1279,7 +1279,7 @@ fn a_malformed_type_hints_ask_is_rejected() {
     );
 }
 
-/// A child predating file imports sends an `import` with no search path, which
+/// A worker predating file imports sends an `import` with no search path, which
 /// decodes as one only host modules can answer.
 #[test]
 fn an_import_without_a_search_path_is_host_modules_only() {
@@ -1295,7 +1295,7 @@ fn an_import_without_a_search_path_is_host_modules_only() {
     assert_eq!(args.candidates().count(), 0);
 }
 
-/// A child-supplied fixed offset outside `datetime.timezone`'s range is refused
+/// A worker-supplied fixed offset outside `datetime.timezone`'s range is refused
 /// before it can reach a host as a `MontyTimeZone`.
 #[test]
 fn out_of_range_now_timezone_is_rejected() {

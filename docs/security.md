@@ -426,11 +426,11 @@ Two more properties of the subprocess worker boundary matter:
 
 - **Workers spawn with an empty environment** (Windows keeps only `SystemRoot`), so host secrets are never in a worker's
     memory to begin with.
-- **The parent treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
+- **The client treats every frame from a worker as untrusted input.** A worker could in principle be compromised.
     Wire decoding validates values and enforces allocation budgets before growing decoded buffers.
     Generated repeated fields, including empty traceback entries and print segments, share the value decoder's budget.
     A worker that violates the protocol is discarded.
-    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted)
+    See the [protocol allocation budget](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted)
     for what the per-frame budget counts and excludes.
 - **Workers are reused, then recycled.** A compromised worker could see later sessions until it is replaced, after
     1000 checkouts by default.

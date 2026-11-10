@@ -33,7 +33,7 @@ pub struct Arena {
 /// One node of an `Arena`. Leaf arms carry the value; container arms carry
 /// the indexes of their children.
 ///
-/// `repr` and `cycle` are OUTPUT-ONLY: the child may emit them (e.g. inside a
+/// `repr` and `cycle` are OUTPUT-ONLY: the worker may emit them (e.g. inside a
 /// `Complete` value) but rejects them as inputs.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MontyNode {
@@ -347,7 +347,7 @@ pub struct ModuleNode {
     #[prost(message, optional, tag = "3")]
     pub attrs: ::core::option::Option<NodePairs>,
 }
-/// An external (host-provided) function value, usually supplied by the parent
+/// An external (host-provided) function value, usually supplied by the client
 /// in response to a `NameLookup` event.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Function {
@@ -356,10 +356,10 @@ pub struct Function {
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
     /// Calls to this function return an awaitable without waiting for the
-    /// parent. Under `Configure.accepts_streamed_calls` the child registers the future
-    /// itself and streams the call in `StreamedCalls`; otherwise, or on a child
+    /// client. Under `Configure.accepts_streamed_calls` the worker registers the future
+    /// itself and streams the call in `StreamedCalls`; otherwise, or on a worker
     /// that predates the field, it suspends with `FunctionCall` as for any other
-    /// function, which the parent may still answer with a future.
+    /// function, which the client may still answer with a future.
     #[prost(bool, tag = "3")]
     pub is_async: bool,
 }
@@ -496,9 +496,9 @@ pub struct StackFrame {
     pub hide_frame_name: bool,
 }
 /// Sandbox resource limits. Absent fields are unlimited except recursion depth
-/// and `max_suspensions`, which both default to 1000. The parent enforces
-/// `max_suspensions`; the child only retains it for dumps and echoes it on
-/// `ChildEvent`.
+/// and `max_suspensions`, which both default to 1000. The client enforces
+/// `max_suspensions`; the worker only retains it for dumps and echoes it on
+/// `WorkerEvent`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "2")]
@@ -515,7 +515,7 @@ pub struct ResourceLimits {
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "7")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
-    /// Cumulative budget for system sleeps, enforced by the parent.
+    /// Cumulative budget for system sleeps, enforced by the client.
     #[prost(uint64, optional, tag = "8")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
 }
@@ -548,10 +548,10 @@ pub mod os_policy {
     /// The instant `date.today()`, `datetime.now()` and `time.time()` read.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Datetime {
-        /// The child's clock.
+        /// The worker's clock.
         #[prost(message, tag = "1")]
         System(super::Unit),
-        /// Suspend to the parent's OS handler.
+        /// Suspend to the client's OS handler.
         #[prost(message, tag = "2")]
         CallHost(super::Unit),
         /// One frozen instant, for reproducible runs.
@@ -561,7 +561,7 @@ pub mod os_policy {
     /// Where an unseeded `random` generator gets its first state.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum RandomStart {
-        /// From the child's own OS entropy.
+        /// From the worker's own OS entropy.
         #[prost(message, tag = "6")]
         RandomSystem(super::Unit),
         /// Suspend the first draw with an `os.urandom` call for 2496 bytes.
@@ -596,7 +596,7 @@ pub mod sandbox_time_zone {
         /// UTC, the default.
         #[prost(message, tag = "1")]
         Utc(super::Unit),
-        /// An IANA zone name (`Europe/London`), resolved from the child's tz database.
+        /// An IANA zone name (`Europe/London`), resolved from the worker's tz database.
         #[prost(string, tag = "2")]
         Named(::prost::alloc::string::String),
         /// A fixed offset from UTC, with a name if it has one.
@@ -614,10 +614,10 @@ pub struct SleepMode {
 pub mod sleep_mode {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Mode {
-        /// The parent waits without invoking its OS handler.
+        /// The client waits without invoking its OS handler.
         #[prost(message, tag = "1")]
         System(super::SystemSleep),
-        /// Suspend to the parent, which performs the wait.
+        /// Suspend to the client, which performs the wait.
         #[prost(message, tag = "2")]
         CallHost(super::Unit),
         /// Return at once without waiting.
@@ -625,7 +625,7 @@ pub mod sleep_mode {
         Zero(super::Unit),
     }
 }
-/// A sleep capped by the child and performed by the parent.
+/// A sleep capped by the worker and performed by the client.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SystemSleep {
     /// Longest wait one call performs; longer sleeps are cut short. Absent = 10s.
@@ -664,8 +664,8 @@ pub mod random_seed {
         Bytes(::prost::alloc::vec::Vec<u8>),
     }
 }
-/// Outcome of an external function / OS call, decided by the parent. Mirrors
-/// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
+/// Outcome of an external function / OS call, decided by the client. Mirrors
+/// monty's `ExtFunctionResult`, plus `not_handled` (which only the worker can
 /// resolve, against its suspended call).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExtFunctionResult {
@@ -687,17 +687,17 @@ pub mod ext_function_result {
         /// (the id from the suspension event) and keep executing other tasks.
         #[prost(uint32, tag = "3")]
         Future(u32),
-        /// No handler exists for this name — the child raises NameError.
+        /// No handler exists for this name — the worker raises NameError.
         #[prost(string, tag = "4")]
         NotFound(::prost::alloc::string::String),
-        /// No handler accepted this OS call — the child raises the call's own
+        /// No handler accepted this OS call — the worker raises the call's own
         /// no-handler default (PermissionError naming the path for filesystem
         /// calls, RuntimeError for the rest). Only valid answering an `OsCall`
-        /// suspension; the child computes it from its retained call payload.
+        /// suspension; the worker computes it from its retained call payload.
         #[prost(message, tag = "5")]
         NotHandled(super::Unit),
         /// The module's `.py` file, answering an `import` call with a non-empty
-        /// `search_path`; the child runs it as the module.
+        /// `search_path`; the worker runs it as the module.
         #[prost(message, tag = "6")]
         ModuleFile(super::ModuleFile),
     }
@@ -728,24 +728,24 @@ pub struct NamedRef {
     pub value: u32,
 }
 /// Tags 1-19 are reserved for `kind` arms and the message-level fields start
-/// at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
+/// at 20, mirroring `WorkerEvent` — a oneof shares its field-number space with
 /// the enclosing message, so a new arm never has to jump the numbering. The
 /// same caveats apply: arms past 15 cost a two-byte key, and a forwarding
 /// server mirrors this numbering to classify frames without decoding them, so
 /// adding an arm degrades to "opaque" while renumbering one would misroute.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ParentRequest {
-    /// W3C `traceparent` identifying the caller's span, so a child that exports
+pub struct ClientRequest {
+    /// W3C `traceparent` identifying the caller's span, so a worker that exports
     /// its own telemetry can attach its spans to the trace the request came
-    /// from. Purely additive context: the child's execution of the request must
-    /// not depend on it, and it is absent whenever the parent is not tracing.
+    /// from. Purely additive context: the worker's execution of the request must
+    /// not depend on it, and it is absent whenever the client is not tracing.
     #[prost(string, optional, tag = "20")]
     pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
-    pub kind: ::core::option::Option<parent_request::Kind>,
+    #[prost(oneof = "client_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
+    pub kind: ::core::option::Option<client_request::Kind>,
 }
-/// Nested message and enum types in `ParentRequest`.
-pub mod parent_request {
+/// Nested message and enum types in `ClientRequest`.
+pub mod client_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
@@ -774,7 +774,7 @@ pub mod parent_request {
         Pong(super::Pong),
     }
 }
-/// Configures the REPL session this child will serve until `Reset`, sent once
+/// Configures the REPL session this worker will serve until `Reset`, sent once
 /// per session, normally carrying its first request (see `first`). The
 /// session's repl is materialized lazily on the first `Feed` (or restored by
 /// `Load`), so a configured-but-unfed worker can still be initialized by `Load`
@@ -791,9 +791,9 @@ pub struct Configure {
     /// Optional stub file contents used by type checking.
     #[prost(string, optional, tag = "4")]
     pub type_check_stubs: ::core::option::Option<::prost::alloc::string::String>,
-    /// The parent's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
+    /// The client's monty package version (e.g. "0.0.18"). INFORMATIONAL ONLY —
     /// it is never checked, only reported (in telemetry, and when diagnosing a
-    /// rejected `protocol_version`). Parent and child may run different package
+    /// rejected `protocol_version`). Client and worker may run different package
     /// versions as long as their protocol versions are compatible.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
@@ -803,9 +803,9 @@ pub struct Configure {
     /// any ellipsis, cutting on a character boundary.
     #[prost(uint32, optional, tag = "6")]
     pub assert_message_annotations: ::core::option::Option<u32>,
-    /// How the child renders the diagnostics carried by `TypingError`. The
+    /// How the worker renders the diagnostics carried by `TypingError`. The
     /// structured diagnostics borrow the type checker's database and so cannot
-    /// cross the wire — the parent picks the format up front and the child
+    /// cross the wire — the client picks the format up front and the worker
     /// renders it. Ignored when `type_check` is false.
     #[prost(enumeration = "TypeCheckFormat", tag = "7")]
     pub type_check_format: i32,
@@ -813,18 +813,18 @@ pub struct Configure {
     /// `CONCISE` carry colour; the machine-readable formats ignore it.
     #[prost(bool, tag = "8")]
     pub type_check_color: bool,
-    /// Version of the wire schema the parent speaks. The child rejects the
+    /// Version of the wire schema the client speaks. The worker rejects the
     /// session with a `FatalError` naming its own supported range when this
-    /// falls outside it, so a parent deployed separately from its worker (over
+    /// falls outside it, so a client deployed separately from its worker (over
     /// a gRPC stream, say) learns what to downgrade to without a handshake.
     ///
-    /// 0 means the parent declared nothing — either it predates this field or it
-    /// is not a monty parent — and is always rejected. The protocol has no
+    /// 0 means the client declared nothing — either it predates this field or it
+    /// is not a monty client — and is always rejected. The protocol has no
     /// in-band negotiation, so an undeclared peer cannot be assumed compatible.
     #[prost(uint32, tag = "9")]
     pub protocol_version: u32,
-    /// How long the child may hold buffered `print()` output before emitting it
-    /// as a `Print` event, in milliseconds. Absent means the child's default
+    /// How long the worker may hold buffered `print()` output before emitting it
+    /// as a `Print` event, in milliseconds. Absent means the worker's default
     /// (`DEFAULT_PRINT_FLUSH_INTERVAL`). 0 disables the timer and restores line
     /// buffering — one event per completed line, as before this field existed —
     /// for a host that wants each `print()` delivered on its own.
@@ -833,27 +833,27 @@ pub struct Configure {
     /// the field trades streaming latency for event volume and nothing else.
     #[prost(uint32, optional, tag = "10")]
     pub print_flush_interval_ms: ::core::option::Option<u32>,
-    /// Absent = `OsPolicy::default()`: the child's clock in UTC and its entropy,
-    /// with parent-serviced sleeps capped at 10s. It also governs a session restored by
+    /// Absent = `OsPolicy::default()`: the worker's clock in UTC and its entropy,
+    /// with client-serviced sleeps capped at 10s. It also governs a session restored by
     /// `Load`, replacing the policy the dump was taken under.
     #[prost(message, optional, tag = "11")]
     pub os_policy: ::core::option::Option<OsPolicy>,
-    /// Relay-only: whether a serving relay may store the session. Children ignore
+    /// Relay-only: whether a serving relay may store the session. Workers ignore
     /// it.
     #[prost(enumeration = "Persistence", tag = "12")]
     pub persistence: i32,
     /// Relay-only: names the server-side profile to run the session under.
-    /// Absent = the relay's default. Children ignore it.
+    /// Absent = the relay's default. Workers ignore it.
     #[prost(string, optional, tag = "13")]
     pub profile: ::core::option::Option<::prost::alloc::string::String>,
-    /// Local VM and supervisor clock; absent defaults to wall time in the child.
+    /// Local VM and supervisor clock; absent defaults to wall time in the worker.
     /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
-    /// The parent accepts `StreamedCalls`, so calls to async host functions
+    /// The client accepts `StreamedCalls`, so calls to async host functions
     /// (`Function.is_async`, `Feed.async_functions`) may start without
     /// suspending in a feed that sets `Feed.stream_async_calls`. Absent or false, the
-    /// child suspends with `FunctionCall` for them as for any call. A child that predates the field ignores it, so no
+    /// worker suspends with `FunctionCall` for them as for any call. A worker that predates the field ignores it, so no
     /// protocol version change is needed. A forwarder that cannot pass
     /// `StreamedCalls` on must clear it before forwarding.
     #[prost(bool, tag = "17")]
@@ -897,19 +897,19 @@ pub struct Feed {
     #[prost(bool, tag = "4")]
     pub skip_type_check: bool,
     /// Absolute virtual working directory to switch the session to before the
-    /// feed, resolved by the parent (an explicit choice, or the first mount on
+    /// feed, resolved by the client (an explicit choice, or the first mount on
     /// the session's first feed). Empty keeps the session's current directory.
     #[prost(string, tag = "5")]
     pub cwd: ::prost::alloc::string::String,
     /// Names of host functions whose calls in this feed start without waiting,
-    /// as for `Function.is_async`. Covers a call of a bare name the parent never
-    /// supplied a value for, which reaches the parent only as a `FunctionCall`
+    /// as for `Function.is_async`. Covers a call of a bare name the client never
+    /// supplied a value for, which reaches the client only as a `FunctionCall`
     /// by name. Ignored unless `stream_async_calls` is set.
     #[prost(string, repeated, tag = "6")]
     pub async_functions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Calls to async host functions in this feed start without suspending
     /// (see `Configure.accepts_streamed_calls`, which must also be set). False makes them
-    /// suspend like any call, for a parent that answers every call itself.
+    /// suspend like any call, for a client that answers every call itself.
     #[prost(bool, tag = "7")]
     pub stream_async_calls: bool,
 }
@@ -949,11 +949,11 @@ pub mod resume_name_lookup {
         /// The name resolves to this value: an index into `values`.
         #[prost(uint32, tag = "2")]
         Value(u32),
-        /// The name is undefined — the child raises NameError (AttributeError for
+        /// The name is undefined — the worker raises NameError (AttributeError for
         /// a lazy attribute lookup).
         #[prost(message, tag = "3")]
         Undefined(super::Unit),
-        /// Resolving the name raised on the parent — the child raises this
+        /// Resolving the name raised on the client — the worker raises this
         /// exception where the lookup suspended, bypassing hasattr()/getattr()
         /// defaults.
         #[prost(message, tag = "4")]
@@ -980,8 +980,8 @@ pub struct ResumeFutures {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
-/// the restored state was suspended, the child re-emits the suspension event so
-/// the parent learns the resume point; otherwise it replies `Ok`. A relay
+/// the restored state was suspended, the worker re-emits the suspension event so
+/// the client learns the resume point; otherwise it replies `Ok`. A relay
 /// without session storage answers `Error` and the session carries on.
 /// The restored session takes the preceding `Configure`'s `os_policy` (the
 /// default without one), not the policy it was dumped under.
@@ -989,21 +989,21 @@ pub struct Dump {}
 pub struct Load {
     /// Either:
     /// - Dump bytes, or
-    /// - A previously named session ID from `ChildEvent::session_id`
+    /// - A previously named session ID from `WorkerEvent::session_id`
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
-/// Ends the checkout: the child drops all session state and returns to the
+/// Ends the checkout: the worker drops all session state and returns to the
 /// no-session state, ready for the next `Configure` or `Load`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Reset {}
-/// The child replies `Ok` and exits cleanly.
+/// The worker replies `Ok` and exits cleanly.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Shutdown {}
 /// Installs third-party Python packages into the session before further feeds,
 /// using `uv pip install --python <venv-python>` against the worker's session
 /// virtualenv. Only the
-/// embedded-CPython worker honors this; the Monty sandbox child rejects it with
+/// embedded-CPython worker honors this; the Monty sandbox worker rejects it with
 /// an `Error` (it has no host interpreter to install for). Repeatable between
 /// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
 /// failure. Valid only once a session exists (after `Configure`).
@@ -1021,42 +1021,42 @@ pub struct InstallDependencies {
 /// (which walk only field keys, on every frame) pay per event. Such a server
 /// mirrors this numbering to classify frames without decoding them, so
 /// renumbering an existing arm would misroute frames. A forwarder may also
-/// treat a tag it does not know as fatal to the session, so a child sends a new
-/// arm only to a parent that asked for it in `Configure`.
+/// treat a tag it does not know as fatal to the session, so a worker sends a new
+/// arm only to a client that asked for it in `Configure`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ChildEvent {
+pub struct WorkerEvent {
     /// Cumulative execution time consumed by the session's sandbox code, in
     /// microseconds. The in-sandbox clock runs only while the interpreter is
-    /// executing bytecode — never while suspended waiting on the parent or idle
+    /// executing bytecode — never while suspended waiting on the client or idle
     /// between feeds — and survives Dump/Load. Set on every turn-ending event
     /// while a session exists (zero on Print events and outside a session) so
-    /// the parent can report how much sandbox time a session has used without
+    /// the client can report how much sandbox time a session has used without
     /// keeping a second clock. Bounds nothing: the budgets are per-feed and
     /// per-turn.
     #[prost(uint64, tag = "20")]
     pub total_execution_micros: u64,
-    /// Echoes the parent-enforced budget so a host restoring an opaque dump can
+    /// Echoes the client-enforced budget so a host restoring an opaque dump can
     /// recover it.
     #[prost(uint64, optional, tag = "22")]
     pub max_suspensions: ::core::option::Option<u64>,
     /// Execution time consumed by the feed in progress, in microseconds — the
     /// `total_execution_micros` clock restarted at the feed that is running.
-    /// Lets the parent backstop `max_feed_duration_micros` without tracking feed
+    /// Lets the client backstop `max_feed_duration_micros` without tracking feed
     /// boundaries against a clock it cannot see. Zero outside a session.
     #[prost(uint64, tag = "24")]
     pub feed_execution_micros: u64,
     /// The session's `max_feed_duration` and `max_turn_duration` limits in
-    /// microseconds, when configured. Reported so a parent that restored a
+    /// microseconds, when configured. Reported so a client that restored a
     /// session via `Load` (where the limits travel inside the opaque state
     /// bytes) still learns its budgets.
     #[prost(uint64, optional, tag = "25")]
     pub max_feed_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "26")]
     pub max_turn_duration_micros: ::core::option::Option<u64>,
-    /// Parent-enforced sleep budget, also reported on `Load`.
+    /// Client-enforced sleep budget, also reported on `Load`.
     #[prost(uint64, optional, tag = "27")]
     pub max_total_sleep_micros: ::core::option::Option<u64>,
-    /// The session's script name, surfaced on a `Load` reply so a parent that
+    /// The session's script name, surfaced on a `Load` reply so a client that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
     /// on a successful `Load` reply; unset on all other events.
@@ -1070,21 +1070,21 @@ pub struct ChildEvent {
     pub session_id: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
     /// On Error or TypingError, whether the feed still awaits a host answer.
     /// Absent for older workers or errors generated outside the session state
-    /// machine. Parents must preserve an outstanding suspension when unknown.
+    /// machine. Clients must preserve an outstanding suspension when unknown.
     #[prost(bool, optional, tag = "29")]
     pub feed_suspended: ::core::option::Option<bool>,
     /// Configure acknowledgment, on the reply to `Configure` (its `first` request's
-    /// reply, when it carries one). Local CPU-mode parents require this.
+    /// reply, when it carries one). Local CPU-mode clients require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
     #[prost(
-        oneof = "child_event::Kind",
+        oneof = "worker_event::Kind",
         tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
-    pub kind: ::core::option::Option<child_event::Kind>,
+    pub kind: ::core::option::Option<worker_event::Kind>,
 }
-/// Nested message and enum types in `ChildEvent`.
-pub mod child_event {
+/// Nested message and enum types in `WorkerEvent`.
+pub mod worker_event {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
@@ -1165,40 +1165,40 @@ pub struct FunctionCall {
     /// twice crosses once.
     #[prost(message, optional, tag = "7")]
     pub values: ::core::option::Option<Arena>,
-    /// Where the call expression is in the source. Absent from a child that
-    /// predates the field; the parent then reports an empty range at offset 0.
+    /// Where the call expression is in the source. Absent from a worker that
+    /// predates the field; the client then reports an empty range at offset 0.
     #[prost(message, optional, tag = "8")]
     pub position: ::core::option::Option<SourceRange>,
 }
 /// Mid-turn, like `Print`: calls to async host functions (`Function.is_async`)
 /// the sandbox has started without waiting. Each call already has an external
-/// future registered under its `call_id`; the parent starts it and settles it
+/// future registered under its `call_id`; the client starts it and settles it
 /// through `ResumeFutures` when a later `ResolveFutures` names it. Sent only
-/// to a parent that set `Configure.accepts_streamed_calls`. The child sends every started
+/// to a client that set `Configure.accepts_streamed_calls`. The worker sends every started
 /// call before the turn-ending event that follows it, so a `ResolveFutures`
-/// never names a call the parent has not received. An event may carry any
+/// never names a call the client has not received. An event may carry any
 /// number of calls; `allow_eager_await` is always false on them. A session
 /// starts at most `max_suspensions` calls this way; later calls suspend with
-/// `FunctionCall`, so the parent's suspension budget still ends a runaway loop.
+/// `FunctionCall`, so the client's suspension budget still ends a runaway loop.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StreamedCalls {
     #[prost(message, repeated, tag = "1")]
     pub calls: ::prost::alloc::vec::Vec<FunctionCall>,
 }
-/// Suspension: the sandbox performed an OS operation, surfaced for the parent
+/// Suspension: the sandbox performed an OS operation, surfaced for the client
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
 /// per call; every path is a virtual POSIX sandbox path, never a host path.
 /// Some calls have typed result expectations (e.g. `open` must return a
 /// file_handle); a mismatched result becomes a Python-level error inside the
 /// sandbox.
 ///
-/// A parent with no handler should answer `ResumeCall` with
-/// `ExtFunctionResult.not_handled`: the child raises the call's own default
+/// A client with no handler should answer `ResumeCall` with
+/// `ExtFunctionResult.not_handled`: the worker raises the call's own default
 /// (PermissionError naming the path for filesystem calls, RuntimeError for
 /// the rest — monty's `OsFunctionCall::on_no_handler`).
 ///
 /// Tags 2-49 are reserved for `call` arms and the other message-level fields
-/// start at 50, as in `ChildEvent`, so a new call never has to jump the numbering.
+/// start at 50, as in `WorkerEvent`, so a new call never has to jump the numbering.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OsCall {
     #[prost(uint32, tag = "1")]
@@ -1206,7 +1206,7 @@ pub struct OsCall {
     /// The arena any value-typed argument (`Getenv.default`) indexes.
     #[prost(message, optional, tag = "50")]
     pub values: ::core::option::Option<Arena>,
-    /// As on `FunctionCall`: the parent may await a coroutine and answer with
+    /// As on `FunctionCall`: the client may await a coroutine and answer with
     /// `ResumeFutures` for `call_id`. Only ever set on `async_sleep`, the one
     /// call a future may answer at all.
     #[prost(bool, tag = "51")]
@@ -1281,7 +1281,7 @@ pub mod os_call {
         pub default: u32,
     }
     /// A `time`-module clock read. `caller` names the Python function that asked
-    /// (`time.time`, `time.monotonic`, ...), so a parent may answer them
+    /// (`time.time`, `time.monotonic`, ...), so a client may answer them
     /// differently; they all share the `time.time` call name.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct TimeCall {
@@ -1304,7 +1304,7 @@ pub mod os_call {
         #[prost(uint64, tag = "1")]
         pub size: u64,
     }
-    /// time.sleep(seconds) — the parent waits, then answers (the sandbox
+    /// time.sleep(seconds) — the client waits, then answers (the sandbox
     /// evaluates the call to None whatever the answer carried). Answering with a
     /// future is refused: the call is a block by definition.
     #[derive(Clone, Copy, PartialEq, ::prost::Message)]
@@ -1314,7 +1314,7 @@ pub mod os_call {
         #[prost(double, tag = "1")]
         pub seconds: f64,
     }
-    /// asyncio.sleep(delay) — the awaitable form. A parent running an event
+    /// asyncio.sleep(delay) — the awaitable form. A client running an event
     /// loop should answer `ExtFunctionResult.future` and resolve it once the
     /// delay elapses, so the sandbox's other tasks keep running; answering
     /// directly is equivalent to a wait that blocks them. The answer's value is
@@ -1466,8 +1466,8 @@ pub mod os_call {
         /// asyncio.sleep(delay) under `call_host`
         #[prost(message, tag = "28")]
         AsyncSleep(AsyncSleep),
-        /// System sleeps: capped by the child, charged to `max_total_sleep` and
-        /// waited out by the parent without invoking its OS handler.
+        /// System sleeps: capped by the worker, charged to `max_total_sleep` and
+        /// waited out by the client without invoking its OS handler.
         #[prost(message, tag = "29")]
         SystemSleep(Sleep),
         #[prost(message, tag = "30")]
@@ -1496,7 +1496,7 @@ pub mod os_call {
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
-/// the parent provides an external function — or, when `object_id` is set, a
+/// the client provides an external function — or, when `object_id` is set, a
 /// lazy attribute lookup on a host-backed object. Answer with
 /// `ResumeNameLookup`; for attribute lookups an `undefined` answer raises
 /// AttributeError (not NameError) inside the sandbox.
@@ -1557,7 +1557,7 @@ pub struct DumpResult {
     pub state: ::prost::alloc::vec::Vec<u8>,
 }
 /// Turn end: the `Configure` was refused, so no session exists and its `first`
-/// request did not run. Sent by a child rejecting its settings or a relay
+/// request did not run. Sent by a worker rejecting its settings or a relay
 /// rejecting its profile; the reply to `Configure` whether or not it carried a
 /// request.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1569,16 +1569,16 @@ pub struct SessionRefused {
 /// Generic acknowledgement for Configure / Load (idle) / Reset / Shutdown.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Ok {}
-/// The child hit an unrecoverable error (frame desync, panic, unsupported
-/// protocol version) and exits immediately after writing this. A child that
-/// exits WITHOUT a FatalError crashed hard (segfault, abort, kill) — parents
+/// The worker hit an unrecoverable error (frame desync, panic, unsupported
+/// protocol version) and exits immediately after writing this. A worker that
+/// exits WITHOUT a FatalError crashed hard (segfault, abort, kill) — clients
 /// must treat EOF as a crash.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct FatalError {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
 }
-/// Turn end: the serving relay (monty-server, never a child) is shutting down
+/// Turn end: the serving relay (monty-server, never a worker) is shutting down
 /// and did NOT run the request it is replying to. Sent only in reply to an
 /// in-flight request, so the client is always reading when it arrives.
 ///
@@ -1594,17 +1594,17 @@ pub struct ShutdownDump {
     #[prost(bytes = "vec", optional, tag = "1")]
     pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
-/// Liveness probe from a serving relay, never a turn end. A parent answers
+/// Liveness probe from a serving relay, never a turn end. A client answers
 /// each one with `Pong` without otherwise acting on it; a relay that hears
-/// nothing back for a further interval treats the parent as gone. A parent
+/// nothing back for a further interval treats the client as gone. A client
 /// reads the stream in order, so the answer follows the events before the
 /// ping, which a slow host callback may hold: a relay sends it between turns.
 /// In-band because HTTP/2 PING frames stop at the nearest proxy, while the
-/// parent a relay wants to hear from sits beyond it. A child never sends one.
+/// client a relay wants to hear from sits beyond it. A worker never sends one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Ping {}
-/// The parent's answer to `Ping`. Not a request: it opens no turn, and a child
-/// or relay that receives one between turns simply notes the parent is alive.
+/// The client's answer to `Ping`. Not a request: it opens no turn, and a worker
+/// or relay that receives one between turns simply notes the client is alive.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Pong {}
 /// Where a `Type` comes from — drives id presence and input validation.
@@ -1676,7 +1676,7 @@ impl ExecutionClock {
         }
     }
 }
-/// How a serving relay treats the session's state; children ignore it.
+/// How a serving relay treats the session's state; workers ignore it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum Persistence {
@@ -1714,7 +1714,7 @@ impl Persistence {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum TypeCheckFormat {
-    /// Unset by an older parent — the child renders `FULL`.
+    /// Unset by an older client — the worker renders `FULL`.
     Unspecified = 0,
     Full = 1,
     Concise = 2,

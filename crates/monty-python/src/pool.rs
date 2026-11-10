@@ -452,7 +452,7 @@ impl PyMontySession {
             self.instances.clone_ref(py),
             print_target,
             // the dump's own script name, falling back to the session config
-            // only if the worker did not report one (e.g. an older child)
+            // only if the worker did not report one (e.g. an older worker)
             script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
             names,
             os,
@@ -668,7 +668,7 @@ impl PyAsyncMonty {
 
 /// Async context manager owning a pool of remote `monty` workers reached over
 /// gRPC: one HTTP/2 connection to the configured URL, one stream per session.
-/// The intended peer is `monty-server` (one child per stream plus
+/// The intended peer is `monty-server` (one worker per stream plus
 /// timeout/capacity/drain policy); any server that bridges a stream to a
 /// worker fits, e.g. the dev relay script.
 ///
@@ -1083,7 +1083,7 @@ impl PyAsyncMontySession {
                 ));
             };
             // the dump's own script name, falling back to the session config
-            // only if the worker did not report one (e.g. an older child)
+            // only if the worker did not report one (e.g. an older worker)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
                 let ctx = DriveContext::new(checkout, instances, print_target, script_name, names, os, trace_context);
@@ -2536,7 +2536,7 @@ pub(crate) enum OsDispatch {
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,
-/// which services mount I/O on the parent side — nothing crosses the process
+/// which services mount I/O on the client side — nothing crosses the process
 /// boundary, and overlay writes are discarded when the feed ends.
 fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSpec>> {
     let Some(mount) = mount else {

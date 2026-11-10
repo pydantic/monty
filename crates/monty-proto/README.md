@@ -1,20 +1,20 @@
 # monty-proto
 
 The wire protocol connecting [Monty](https://github.com/pydantic/monty) worker
-processes to the parents that drive them.
+processes to the clients that drive them.
 
 Monty executes untrusted Python, and a Monty process can never be made fully
 crash-proof against memory errors (stack overflow aborts, allocator aborts —
 the [`monty-alloc`](https://crates.io/crates/monty-alloc) allocator turns the
-latter into this crate's `OOM_EXIT_CODE` so a parent can classify them).
-The subprocess architecture isolates those crashes: a parent — the
+latter into this crate's `OOM_EXIT_CODE` so a client can classify them).
+The subprocess architecture isolates those crashes: a client — the
 [`monty-pool`](https://crates.io/crates/monty-pool) crate, and through it the
-Python and JavaScript packages — drives `monty subprocess` children over
-framed stdio (or a gRPC stream), and a dead child is simply replaced. This crate
+Python and JavaScript packages — drives `monty subprocess` workers over
+framed stdio (or a gRPC stream), and a dead worker is simply replaced. This crate
 defines the protocol both sides speak.
 
 The protocol is protobuf (rather than Monty's internal CBOR dump format) so a
-parent or child can be implemented in any language — see
+client or worker can be implemented in any language — see
 [`proto/monty/v1/monty.proto`](https://github.com/pydantic/monty/blob/main/crates/monty-proto/proto/monty/v1/monty.proto)
 for the schema and the protocol rules documented alongside it.
 
@@ -31,7 +31,7 @@ for the schema and the protocol rules documented alongside it.
 - Host-object routing on the wire: host-backed `ClassInstance` / `ClassType`
   nodes carry host-generated uuids, and `FunctionCall.object_id` /
   `NameLookup.object_id` route their method calls and lazy attribute lookups
-  back to the parent's per-session instance store; sandbox-defined classes and
+  back to the client's per-session instance store; sandbox-defined classes and
   instances carry worker-generated uuids that never reach that store. Calling a
   host-backed instance arrives as a `__call__` method call on its uuid.
 - Host modules: `OsCall.import` requests a missing top-level module; answer with its value or `not_found`.
@@ -42,11 +42,11 @@ for the schema and the protocol rules documented alongside it.
   (by `ClassType` id) when sandbox code calls `typing.get_type_hints()` on it.
   Answer with a dict of hints; `not_handled` means `{}`.
 - `PROTOCOL_VERSION` / `MIN_SUPPORTED_PROTOCOL_VERSION` — the wire schema
-  version a parent declares in `Configure`, and the range a child serves.
+  version a client declares in `Configure`, and the range a worker serves.
   Versioned independently of the monty package: peers on different releases
   interoperate as long as their protocol versions overlap. There is no in-band
-  negotiation, so a child rejecting a version reports its range in the
-  `FatalError` for the parent to downgrade to, then exits non-zero.
+  negotiation, so a worker rejecting a version reports its range in the
+  `FatalError` for the client to downgrade to, then exits non-zero.
   Version `0` is always rejected; `monty_version` is diagnostic metadata, not a compatibility check.
   Snapshot compatibility is checked separately using the dump-format version.
   `OsCall.create_exclusive` (field 35) returns a file-handle value.
@@ -81,9 +81,9 @@ Duplicate fields follow protobuf merging rules, and value depth does not increas
 `tests/differential.rs` proves it byte-compatible against a fully prost-generated oracle (`tests/oracle/`, regenerated
 and CI-checked together with the main codegen).
 
-## Children are untrusted
+## Workers are untrusted
 
-A parent must treat every frame from a (possibly compromised) child as
+A client must treat every frame from a (possibly compromised) worker as
 untrusted input: conversions from proto to Rust are fallible by design,
 decoding enforces a per-frame decode budget and validates every arena index,
 and nothing in this crate panics on malformed wire data.
@@ -112,38 +112,38 @@ Those checks do not account for all allocations made by the component ABI or Jav
 
 Invalid dates, timedeltas, exception names and other semantic values are rejected after parsing each protobuf node.
 The browser component validates semantic values while converting WIT arenas.
-A parent receiving an invalid frame discards the worker with a protocol error.
+A client receiving an invalid frame discards the worker with a protocol error.
 A worker receiving such a malformed request reports `RuntimeError("protocol violation: malformed request: ...")`
 and keeps the session.
 
 ## Worker state machine
 
 The `worker` cargo feature (off by default) adds the `worker` module: the
-transport-agnostic child state machine, shared by the native `monty subprocess`
+transport-agnostic worker state machine, shared by the native `monty subprocess`
 worker and the wasm worker. It links the `monty` interpreter, so only
 worker-side crates enable it.
 
-Error and typing-error replies carry optional `ChildEvent.feed_suspended` state from the worker.
+Error and typing-error replies carry optional `WorkerEvent.feed_suspended` state from the worker.
 It distinguishes a rejected request that preserves a suspension from an execution error that ends the feed.
-Older workers and errors generated by a transport omit it. A parent must preserve an outstanding suspension when this state is unknown.
+Older workers and errors generated by a transport omit it. A client must preserve an outstanding suspension when this state is unknown.
 This additive field does not change the protocol version or snapshot format.
 
-An external `FunctionCall` with `allow_eager_await = true` permits the parent to await a coroutine before replying.
-The parent sends its value or exception in `ResumeFutures`, with exactly one result matching the call ID.
+An external `FunctionCall` with `allow_eager_await = true` permits the client to await a coroutine before replying.
+The client sends its value or exception in `ResumeFutures`, with exactly one result matching the call ID.
 The worker creates a settled awaitable and continues, avoiding a separate `ResolveFutures` suspension.
-Synchronous returns still use `ResumeCall`; parents may also ignore the hint and register a pending future as before.
-Older workers omit the flag, which defaults to false, so newer parents retain the existing reply sequence.
+Synchronous returns still use `ResumeCall`; clients may also ignore the hint and register a pending future as before.
+Older workers omit the flag, which defaults to false, so newer clients retain the existing reply sequence.
 
-Calls to async host functions start without suspending when the parent sets `Configure.accepts_streamed_calls` and the feed
-sets `Feed.stream_async_calls`; a parent answering every call itself, as `feed_start` does, leaves the feed's flag unset.
+Calls to async host functions start without suspending when the client sets `Configure.accepts_streamed_calls` and the feed
+sets `Feed.stream_async_calls`; a client answering every call itself, as `feed_start` does, leaves the feed's flag unset.
 A call is eligible when its callee's `Function` value has `is_async` set, or when the call has no receiver and the
-feed lists its name in `Feed.async_functions` (the case of a bare name the parent never supplied a value for).
-A call the sandbox awaits at once with no other task to run still suspends, so the parent can answer it eagerly.
+feed lists its name in `Feed.async_functions` (the case of a bare name the client never supplied a value for).
+A call the sandbox awaits at once with no other task to run still suspends, so the client can answer it eagerly.
 The worker registers the call's future itself, sends the call in a `StreamedCalls` event and keeps running.
 `StreamedCalls`, like `Print`, does not end the turn, and every started call is sent before the turn-ending event that
-follows it, so a `ResolveFutures` only names calls the parent has received.
-The parent settles them through the usual `ResolveFutures` / `ResumeFutures` exchange.
-Without the flag the worker suspends with `FunctionCall` as before, which keeps an older parent, or a relay forwarding
+follows it, so a `ResolveFutures` only names calls the client has received.
+The client settles them through the usual `ResolveFutures` / `ResumeFutures` exchange.
+Without the flag the worker suspends with `FunctionCall` as before, which keeps an older client, or a relay forwarding
 for one, from seeing an event tag it does not know.
 Older workers ignore the flag, so it needs no protocol version change; a relay that cannot forward `StreamedCalls`
 must clear it.
@@ -155,7 +155,7 @@ must clear it.
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers. **this crate**
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers. **this crate**
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

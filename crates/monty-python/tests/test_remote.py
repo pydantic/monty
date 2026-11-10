@@ -201,12 +201,12 @@ async def _reaping_children(relay: ModuleType) -> AsyncGenerator[list[asyncio.su
 
 
 _LENGTH_PREFIX = struct.Struct('<I')
-# `ParentRequest.kind` and `ChildEvent.kind` field numbers, from `monty.proto`
+# `ClientRequest.kind` and `WorkerEvent.kind` field numbers, from `monty.proto`
 _REQUEST_CONFIGURE, _REQUEST_DUMP, _REQUEST_LOAD = 1, 7, 8
 # `Configure.first`'s `Load` arm
 _CONFIGURE_LOAD = 16
 _EVENT_PRINT, _EVENT_DUMP_RESULT, _EVENT_OK, _EVENT_SHUTDOWN = 1, 9, 10, 12
-# `ChildEvent.kind` arms own the tags below this; the message-level fields start here
+# `WorkerEvent.kind` arms own the tags below this; the message-level fields start here
 _FIRST_EVENT_FIELD = 20
 _EVENT_SESSION_ID = 28
 

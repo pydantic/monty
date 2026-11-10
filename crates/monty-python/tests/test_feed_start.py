@@ -457,7 +457,7 @@ def test_load_snapshot_mid_os_call_retains_payload(pool: Monty, tmp_path: Path):
 
 
 def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_path: Path):
-    # Mounts are host configuration serviced by the parent and never part of a
+    # Mounts are host configuration serviced by the client and never part of a
     # dump. A restore that omits them is not validated — the resumed feed's
     # filesystem calls simply surface as unhandled OS calls.
     (tmp_path / 'hello.txt').write_text('hi')

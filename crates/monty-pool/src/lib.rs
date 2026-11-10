@@ -34,8 +34,8 @@ pub use crate::{
 /// How the pool reaches its workers.
 #[derive(Debug, Clone)]
 pub enum MontyTransport {
-    /// Spawn a local `monty subprocess` child and talk to it over framed
-    /// stdio pipes. Takes path to the `monty` (or compatible child) binary.
+    /// Spawn a local `monty subprocess` worker and talk to it over framed
+    /// stdio pipes. Takes path to the `monty` (or compatible worker) binary.
     Subprocess(PathBuf),
     /// Connect *out* to a remote server speaking the protocol over gRPC: one
     /// HTTP/2 connection per pool, one `MontySession.Session` stream per
@@ -56,7 +56,7 @@ impl MontyTransport {
     }
 }
 
-/// Default grace on each of the two duration backstops: how long the parent
+/// Default grace on each of the two duration backstops: how long the client
 /// waits past a sandbox time limit for the worker to raise `TimeoutError`
 /// itself before killing it.
 pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
@@ -98,9 +98,9 @@ pub struct PoolConfig {
     /// stream on it, to `GOAWAY`. Defaults to [`DEFAULT_KEEP_ALIVE`]. Ignored
     /// by the subprocess transport.
     pub keep_alive: Option<Duration>,
-    /// Parent-side hard deadline per protocol turn: when it expires the
+    /// Client-side hard deadline per protocol turn: when it expires the
     /// worker is killed and the call fails with [`PoolError::Timeout`]. This
-    /// backstops the child-side `ResourceLimits` — it also catches a child
+    /// backstops the worker-side `ResourceLimits` — it also catches a worker
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
     /// On the remote transport it also bounds opening a stream, from a cold
@@ -121,7 +121,7 @@ pub struct PoolConfig {
     /// Each feed or resume starts a new turn allowance. `None` disables this backstop.
     pub turn_duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, bounding
-    /// how long a slow leak or a compromised child survives. Defaults to
+    /// how long a slow leak or a compromised worker survives. Defaults to
     /// [`DEFAULT_MAX_CHECKOUTS_PER_WORKER`]; `None` never recycles. With the
     /// subprocess transport, `Some(1)` (or `Some(0)`) gives every session a fresh process — the
     /// setting for mutually untrusted callers — usually spawned before it asked

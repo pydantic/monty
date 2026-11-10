@@ -2,7 +2,7 @@ use std::io::{self, Read};
 
 use monty_proto::{
     FrameError, FrameReader, OpeningRequest, encode_to_capped_vec, pb,
-    pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
+    pb::{client_request::Kind as RequestKind, worker_event::Kind as EventKind},
     write_frame,
 };
 
@@ -17,8 +17,8 @@ impl<R: Read> Read for OneByteReader<R> {
     }
 }
 
-fn feed() -> pb::ParentRequest {
-    pb::ParentRequest {
+fn feed() -> pb::ClientRequest {
+    pb::ClientRequest {
         kind: Some(RequestKind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![].into(),
@@ -36,14 +36,14 @@ fn feed() -> pb::ParentRequest {
 /// is set, for each request that can be first.
 #[test]
 fn an_opening_request_encodes_as_configure_with_first() {
-    let load = pb::ParentRequest {
+    let load = pb::ClientRequest {
         kind: Some(RequestKind::Load(pb::Load {
             state: b"dump".to_vec().into(),
         })),
         trace_parent: None,
     };
     for request in [feed(), load] {
-        let request = pb::ParentRequest {
+        let request = pb::ClientRequest {
             trace_parent: Some("00-trace".to_owned()),
             ..request
         };
@@ -57,7 +57,7 @@ fn an_opening_request_encodes_as_configure_with_first() {
             Some(RequestKind::Load(load)) => pb::configure::First::Load(load),
             other => panic!("not a first request: {other:?}"),
         };
-        let expected = pb::ParentRequest {
+        let expected = pb::ClientRequest {
             kind: Some(RequestKind::Configure(pb::Configure {
                 first: Some(first),
                 ..configure.clone()
@@ -69,7 +69,7 @@ fn an_opening_request_encodes_as_configure_with_first() {
             encode_to_capped_vec(&expected).unwrap()
         );
     }
-    let dump = pb::ParentRequest {
+    let dump = pb::ClientRequest {
         kind: Some(RequestKind::Dump(pb::Dump {})),
         trace_parent: None,
     };
@@ -82,7 +82,7 @@ fn frames_round_trip() {
     write_frame(&mut buf, &feed()).unwrap();
     write_frame(
         &mut buf,
-        &pb::ChildEvent {
+        &pb::WorkerEvent {
             kind: Some(EventKind::Ok(pb::Ok {})),
             ..Default::default()
         },
@@ -90,12 +90,12 @@ fn frames_round_trip() {
     .unwrap();
 
     let mut reader = FrameReader::new(buf.as_slice());
-    let req: pb::ParentRequest = reader.read().unwrap().expect("first frame");
+    let req: pb::ClientRequest = reader.read().unwrap().expect("first frame");
     assert_eq!(req, feed());
-    let event: pb::ChildEvent = reader.read().unwrap().expect("second frame");
+    let event: pb::WorkerEvent = reader.read().unwrap().expect("second frame");
     assert!(matches!(event.kind, Some(EventKind::Ok(_))));
     // clean EOF at the frame boundary
-    assert!(reader.read::<pb::ChildEvent>().unwrap().is_none());
+    assert!(reader.read::<pb::WorkerEvent>().unwrap().is_none());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn frames_round_trip_through_chunked_reads() {
     let mut buf = Vec::new();
     write_frame(&mut buf, &feed()).unwrap();
     let mut reader = FrameReader::new(OneByteReader(buf.as_slice()));
-    let req: pb::ParentRequest = reader.read().unwrap().expect("frame");
+    let req: pb::ClientRequest = reader.read().unwrap().expect("frame");
     assert_eq!(req, feed());
 }
 
@@ -112,7 +112,7 @@ fn oversized_frame_is_rejected_without_allocating() {
     // length prefix claims 4GiB-1; the reader must refuse before allocating
     let bytes = [0xFF, 0xFF, 0xFF, 0xFF];
     let mut reader = FrameReader::with_max_frame_len(bytes.as_slice(), 1024);
-    let err = reader.read::<pb::ParentRequest>().expect_err("oversized frame");
+    let err = reader.read::<pb::ClientRequest>().expect_err("oversized frame");
     assert!(matches!(
         err,
         FrameError::FrameTooLarge {
@@ -126,7 +126,7 @@ fn oversized_frame_is_rejected_without_allocating() {
 fn truncated_length_prefix_is_an_error() {
     let bytes = [1, 0]; // 2 of 4 length bytes, then EOF
     let mut reader = FrameReader::new(bytes.as_slice());
-    let err = reader.read::<pb::ParentRequest>().expect_err("truncated prefix");
+    let err = reader.read::<pb::ClientRequest>().expect_err("truncated prefix");
     assert!(matches!(err, FrameError::Truncated));
 }
 
@@ -136,7 +136,7 @@ fn truncated_body_is_an_error() {
     write_frame(&mut buf, &feed()).unwrap();
     buf.truncate(buf.len() - 1); // drop the last body byte
     let mut reader = FrameReader::new(buf.as_slice());
-    let err = reader.read::<pb::ParentRequest>().expect_err("truncated body");
+    let err = reader.read::<pb::ClientRequest>().expect_err("truncated body");
     assert!(matches!(err, FrameError::Truncated));
 }
 
@@ -147,6 +147,6 @@ fn garbage_body_is_a_decode_error() {
     buf.extend_from_slice(&8u32.to_le_bytes());
     buf.extend_from_slice(&body);
     let mut reader = FrameReader::new(buf.as_slice());
-    let err = reader.read::<pb::ParentRequest>().expect_err("garbage body");
+    let err = reader.read::<pb::ClientRequest>().expect_err("garbage body");
     assert!(matches!(err, FrameError::Decode(_)));
 }

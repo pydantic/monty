@@ -315,7 +315,7 @@ async fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     // a cyclic dict completes with a `Cycle` placeholder in the payload; the
-    // parent must decode it rather than discarding the worker as misbehaving
+    // client must decode it rather than discarding the worker as misbehaving
     let event = session
         .feed("d = {}\nd['self'] = d\nd", vec![], vec![], false, &mut no_print)
         .await
@@ -358,7 +358,7 @@ async fn deeply_nested_name_lookup_value_crosses_the_wire() {
 }
 
 /// A mount whose host path is not valid UTF-8 works: host paths never cross
-/// the wire (the parent services mount I/O itself), so the OS-native path is
+/// the wire (the client services mount I/O itself), so the OS-native path is
 /// used as-is. Linux-only: macOS (APFS) rejects non-UTF-8 filenames outright
 /// and they cannot be constructed portably elsewhere.
 #[cfg(target_os = "linux")]
@@ -607,11 +607,11 @@ async fn working_directory_survives_an_oversize_first_feed() {
     session.finish().await.unwrap();
 }
 
-/// Mount-covered filesystem OS calls are serviced by the parent and never
+/// Mount-covered filesystem OS calls are serviced by the client and never
 /// surface to the caller — the feed just completes. Covers read, write,
 /// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.
 #[tokio::test]
-async fn mounted_filesystem_ops_are_serviced_by_the_parent() {
+async fn mounted_filesystem_ops_are_serviced_by_the_client() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "mounted!").unwrap();
 
@@ -756,7 +756,7 @@ Path('/mnt/data.txt').read_text()";
     session.finish().await.unwrap();
 }
 
-/// The per-mount `write_bytes_limit` is enforced by the parent-side table and
+/// The per-mount `write_bytes_limit` is enforced by the client-side table and
 /// surfaces as a catchable `OSError` inside the sandbox.
 #[tokio::test]
 async fn mount_write_bytes_limit_is_enforced() {
@@ -791,7 +791,7 @@ msg";
     session.finish().await.unwrap();
 }
 
-/// A custom `MountSpec::memory_usage_limit` reaches the parent-side table and
+/// A custom `MountSpec::memory_usage_limit` reaches the client-side table and
 /// surfaces as a catchable `MemoryError` inside the sandbox.
 #[tokio::test]
 async fn mount_memory_usage_limit_is_enforced() {
@@ -895,7 +895,7 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
     // the re-announcement carries the full call payload, so the uncovered
     // call surfaces exactly like a fresh suspension — name and args intact;
     // answering it lets the feed continue, and its remaining mounted read is
-    // serviced by the parent
+    // serviced by the client
     let Some(TurnEvent::OsCall {
         function_name, args, ..
     }) = &event
@@ -968,7 +968,7 @@ async fn restored_os_call_is_serviced_by_restore_mounts() {
 /// An over-limit frame must fail as a clean, session-preserving error rather
 /// than crashing the worker: `Worker::send` rejects it before writing any
 /// bytes, so the stream stays synced. Covers both directions — a request the
-/// parent cannot send (a huge input) and a result the worker cannot send
+/// client cannot send (a huge input) and a result the worker cannot send
 /// back.
 ///
 /// Allocates ~257 MiB (just over the 256 MiB frame limit) in the test process
@@ -983,7 +983,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
 
-    // (1) parent -> child: an input larger than the frame limit cannot be
+    // (1) client -> worker: an input larger than the frame limit cannot be
     // sent. The worker never receives the request, so the session survives.
     let huge = MontyObject::string("x".repeat(OVERSIZE));
     let err = session
@@ -1005,7 +1005,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(2));
 
-    // (2) child -> parent: a result larger than the frame limit cannot be sent
+    // (2) worker -> client: a result larger than the frame limit cannot be sent
     // back. The worker answers with a clean error and keeps the session.
     let err = session
         .feed(&format!("'x' * {OVERSIZE}"), vec![], vec![], false, &mut no_print)
@@ -1026,8 +1026,8 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(2));
 
-    // (3) child -> parent suspension: external-call arguments larger than the
-    // frame limit cannot be announced to the parent. The child aborts that
+    // (3) worker -> client suspension: external-call arguments larger than the
+    // frame limit cannot be announced to the client. The worker aborts that
     // feed before entering the suspension, so the session remains usable.
     let err = session
         .feed(
@@ -1058,8 +1058,8 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
 
     session.finish().await.unwrap();
 
-    // (4) parent -> child resume: a return value too large to send leaves the
-    // suspension *answerable*. The child never saw the oversize frame, so it is
+    // (4) client -> worker resume: a return value too large to send leaves the
+    // suspension *answerable*. The worker never saw the oversize frame, so it is
     // still waiting — clearing the pending call here would strand it for ever.
     // A fresh checkout, so the earlier steps' namespace cannot interfere.
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
@@ -1092,7 +1092,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::int(5));
 
-    // (5) parent -> child name-lookup resume: same invariant as (4) — the
+    // (5) client -> worker name-lookup resume: same invariant as (4) — the
     // rejected answer leaves the lookup answerable.
     let event = session
         .feed("missing", vec![], vec![], false, &mut no_print)
@@ -1116,7 +1116,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::string("small".to_owned()));
 
-    // (6) parent -> child future resolution: the pending futures stay
+    // (6) client -> worker future resolution: the pending futures stay
     // resolvable after an oversize result is rejected.
     let code = "import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())";
     let event = session.feed(code, vec![], vec![], false, &mut no_print).await.unwrap();
@@ -1152,7 +1152,7 @@ async fn oversize_frames_are_rejected_without_killing_the_worker() {
 
 /// A `dump()` too large for the frame limit while the session is *suspended*
 /// must fail as a clean, session-preserving error — the suspension already
-/// announced its resume point, so the child stays suspended and resumable.
+/// announced its resume point, so the worker stays suspended and resumable.
 ///
 /// Allocates ~300 MiB in the worker (plus the dump copy), so it is
 /// memory-heavy; disable it if it proves flaky in CI.
@@ -1207,7 +1207,7 @@ async fn inputs_and_prints() {
 }
 
 /// A loop of small prints must not cost one `Print` event each: the worker
-/// batches them by size and elapsed time, which is what keeps the parent's
+/// batches them by size and elapsed time, which is what keeps the client's
 /// per-event work (telemetry included) proportional to output rather than to
 /// how often the sandbox called `print()`.
 #[tokio::test]
@@ -1509,13 +1509,13 @@ async fn worker_killed_while_idle_is_replaced_transparently() {
     session.finish().await.unwrap();
 }
 
-/// A deep postfix spine (`a.x.x.x…`) currently overflows the child's stack
+/// A deep postfix spine (`a.x.x.x…`) currently overflows the worker's stack
 /// (recursive AST handling) — a REAL memory crash, exactly what subprocess
 /// isolation exists for. If monty core gains AST-depth protection this
 /// becomes a `Runtime`/`Crashed` either way; the invariant under test is
-/// that the parent survives and the pool keeps serving.
+/// that the client survives and the pool keeps serving.
 #[tokio::test]
-async fn hard_child_crash_does_not_harm_the_pool() {
+async fn hard_worker_crash_does_not_harm_the_pool() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let mut code = String::with_capacity(300_002);
@@ -1580,7 +1580,7 @@ async fn deadline_kills_hung_worker_after_request_timeout() {
 }
 
 #[tokio::test]
-async fn child_resource_limits_do_not_kill_the_worker() {
+async fn worker_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     // a worker's start-up counts against its first feed's backstop, so warm it
     // up first: the limited feed below must end by the sandbox's own limit
@@ -1598,7 +1598,7 @@ async fn child_resource_limits_do_not_kill_the_worker() {
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
         .await
         .unwrap_err();
-    // the SANDBOX limit fired (TimeoutError exception), not the parent-side
+    // the SANDBOX limit fired (TimeoutError exception), not the client-side
     // deadline — the worker process is alive and finishable
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
@@ -1635,7 +1635,7 @@ async fn max_memory_leaves_normal_work_alone() {
 #[tokio::test]
 async fn unrecognised_exit_code_stays_an_opaque_death() {
     let dir = tempfile::tempdir().unwrap();
-    // outlives the parent's first write, so the death is always observed while
+    // outlives the client's first write, so the death is always observed while
     // waiting for the reply rather than racing with `sending a request`
     let fake = write_fake_monty(dir.path(), "#!/bin/sh\nsleep 0.2\nexit 64\n");
 
@@ -1659,9 +1659,9 @@ async fn unrecognised_exit_code_stays_an_opaque_death() {
     assert_snapshot!(err.to_string(), @"monty worker crashed while waiting for a reply (exit status: 64)");
 }
 
-/// A local child cannot pass a `ShutdownDump` off as a turn-ender on the raw
+/// A local worker cannot pass a `ShutdownDump` off as a turn-ender on the raw
 /// path: only a serving relay sends one, and accepting it would let a
-/// compromised child hand a dump it minted itself out through a relay that
+/// compromised worker hand a dump it minted itself out through a relay that
 /// signs whatever it forwards.
 #[cfg(unix)]
 #[tokio::test]
@@ -1669,15 +1669,15 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let dir = tempfile::tempdir().unwrap();
     // the frame the stand-in replays: a dump it forged
     let mut replies = Vec::new();
-    replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
+    replies.extend(framed(&worker_event(pb::worker_event::Kind::Shutdown(
         pb::ShutdownDump {
-            dump: Some(b"a dump the child minted itself".to_vec().into()),
+            dump: Some(b"a dump the worker minted itself".to_vec().into()),
         },
     ))));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    // the frame is written up front and the process stays alive; the parent
+    // the frame is written up front and the process stays alive; the client
     // reads it as the reply to the `Configure` carrying the raw request
     let fake = write_fake_monty(
         dir.path(),
@@ -1686,8 +1686,8 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let request = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -1696,9 +1696,9 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
             async_functions: Vec::new().into(),
             stream_async_calls: false,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
     let err = checkout
         .turn_raw(&request, &mut on_event)
         .await
@@ -1717,7 +1717,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
 async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let dir = tempfile::tempdir().unwrap();
     let mut replies = Vec::new();
-    replies.extend(framed(&pb::ChildEvent::default()));
+    replies.extend(framed(&pb::WorkerEvent::default()));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
@@ -1728,8 +1728,8 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let request = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -1738,9 +1738,9 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
             async_functions: Vec::new().into(),
             stream_async_calls: false,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
     let err = checkout
         .turn_raw(&request, &mut on_event)
         .await
@@ -1752,16 +1752,16 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
 }
 
 /// A `FatalError` ends a raw turn *and* the worker behind it: the frame is
-/// handed back for the driver to forward, but the dead child is reaped and
+/// handed back for the driver to forward, but the dead worker is reaped and
 /// discarded rather than holding its pool slot until the next failure.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let dir = tempfile::tempdir().unwrap();
     let mut replies = Vec::new();
-    replies.extend(framed(&child_event(pb::child_event::Kind::FatalError(
+    replies.extend(framed(&worker_event(pb::worker_event::Kind::FatalError(
         pb::FatalError {
-            message: "the child is done".to_owned(),
+            message: "the worker is done".to_owned(),
         },
     ))));
     let replies_path = dir.path().join("replies.bin");
@@ -1774,8 +1774,8 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let request = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -1784,17 +1784,17 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
             async_functions: Vec::new().into(),
             stream_async_calls: false,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
     let event = checkout
         .turn_raw(&request, &mut on_event)
         .await
         .expect("the fatal frame is the turn-ender");
-    let Some(pb::child_event::Kind::FatalError(fatal)) = event.kind else {
+    let Some(pb::worker_event::Kind::FatalError(fatal)) = event.kind else {
         panic!("expected the FatalError frame back, got {:?}", event.kind);
     };
-    assert_eq!(fatal.message, "the child is done");
+    assert_eq!(fatal.message, "the worker is done");
     // the worker was discarded with the frame, not kept until the next failure
     let err = checkout.turn_raw(&request, &mut on_event).await.unwrap_err();
     assert!(matches!(err, PoolError::Finished), "got {err:?}");
@@ -1802,18 +1802,18 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
 
 /// Length-prefixes one event exactly as a worker writes it.
 #[cfg(unix)]
-fn framed(event: &pb::ChildEvent) -> Vec<u8> {
+fn framed(event: &pb::WorkerEvent) -> Vec<u8> {
     let mut buf = Vec::new();
     encode_framed_into(event, &mut buf).expect("encode");
     buf
 }
 
-/// A `ChildEvent` carrying `kind` and nothing else.
+/// A `WorkerEvent` carrying `kind` and nothing else.
 #[cfg(unix)]
-fn child_event(kind: pb::child_event::Kind) -> pb::ChildEvent {
-    pb::ChildEvent {
+fn worker_event(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
+    pb::WorkerEvent {
         kind: Some(kind),
-        ..pb::ChildEvent::default()
+        ..pb::WorkerEvent::default()
     }
 }
 
@@ -1858,9 +1858,9 @@ async fn refused_allocation_is_a_memory_error_and_the_pool_recovers() {
 #[cfg(unix)]
 #[tokio::test]
 async fn special_files_in_mounts_are_rejected_without_blocking() {
-    // Mount I/O runs on the parent task servicing the sandbox, so reading a
+    // Mount I/O runs on the client task servicing the sandbox, so reading a
     // FIFO must fail fast (a real read would block until a writer appears —
-    // with no deadline able to rescue the parent). The sandbox sees a
+    // with no deadline able to rescue the client). The sandbox sees a
     // catchable PermissionError and the session stays usable.
     let dir = tempfile::tempdir().unwrap();
     let status = Command::new("mkfifo").arg(dir.path().join("pipe")).status().unwrap();
@@ -2403,8 +2403,8 @@ async fn raw_turns_forward_only_streamed_calls_within_the_suspension_limit() {
         })
         .await
         .unwrap();
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "import asyncio\ng()\nawait asyncio.gather(f(1), f(2))".to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -2413,12 +2413,12 @@ async fn raw_turns_forward_only_streamed_calls_within_the_suspension_limit() {
             async_functions: vec!["f".to_owned()].into(),
             stream_async_calls: true,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let forwarded = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&forwarded);
-    let mut on_event = move |event: &pb::ChildEvent| {
-        if let Some(pb::child_event::Kind::StreamedCalls(started)) = &event.kind {
+    let mut on_event = move |event: &pb::WorkerEvent| {
+        if let Some(pb::worker_event::Kind::StreamedCalls(started)) = &event.kind {
             sink.lock()
                 .unwrap()
                 .extend(started.calls.iter().map(|call| call.call_id));
@@ -2426,20 +2426,20 @@ async fn raw_turns_forward_only_streamed_calls_within_the_suspension_limit() {
         Box::pin(ready(())) as PrintFuture
     };
     let event = session.turn_raw(&feed, &mut on_event).await.unwrap();
-    let Some(pb::child_event::Kind::FunctionCall(call)) = event.kind else {
+    let Some(pb::worker_event::Kind::FunctionCall(call)) = event.kind else {
         panic!("expected g's call, got {event:?}");
     };
     let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(MontyObject::none()));
-    let resume = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+    let resume = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id: call.call_id,
             result: Some(result),
             values,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let event = session.turn_raw(&resume, &mut on_event).await.unwrap();
-    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+    let Some(pb::worker_event::Kind::Error(error)) = event.kind else {
         panic!("expected the suspension limit's error, got {event:?}");
     };
     assert_eq!(
@@ -2552,7 +2552,7 @@ fn collect_streamed_calls(session: &mut Checkout) -> Arc<Mutex<Vec<StreamedCall>
 }
 
 /// The `max_suspensions` budget travels in the dump and is re-adopted on
-/// restore, but the count is parent state and restarts at zero.
+/// restore, but the count is client state and restarts at zero.
 #[tokio::test]
 async fn restored_session_readopts_its_suspension_limit() {
     let pool = Pool::new(config()).await.unwrap();
@@ -2595,7 +2595,7 @@ async fn restored_session_readopts_its_suspension_limit() {
 #[tokio::test]
 async fn loaded_session_keeps_its_duration_budget() {
     // The `max_feed_duration` budget travels inside the dump — a session
-    // restored via `restore` keeps the original limits even though the parent
+    // restored via `restore` keeps the original limits even though the client
     // never saw the original `ReplConfig`.
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool
@@ -2773,7 +2773,7 @@ async fn workers_are_recycled_after_max_checkouts() {
 }
 
 /// Without an explicit setting a worker serves `DEFAULT_MAX_CHECKOUTS_PER_WORKER`
-/// sessions, then is retired so no child outlives that many tenants.
+/// sessions, then is retired so no worker outlives that many tenants.
 #[tokio::test]
 async fn workers_are_recycled_after_the_default_checkout_count() {
     let mut config = config();
@@ -3216,7 +3216,7 @@ async fn dump_survives_worker_death_and_loads_elsewhere() {
     // restore into a fresh worker by loading over its empty session
     let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
     let (event, script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
-    // the worker echoes the dump's adopted script name back to the parent
+    // the worker echoes the dump's adopted script name back to the client
     assert_eq!(script_name.as_deref(), Some("main.py"));
     let Some(TurnEvent::FunctionCall { ref function_name, .. }) = event else {
         panic!("expected re-announced FunctionCall, got {event:?}");
@@ -3389,7 +3389,7 @@ async fn max_turn_duration_bounds_a_runaway_turn() {
     assert_eq!(pool.idle_workers(), 1);
 }
 
-/// Budgets near `Duration::MAX` must not overflow the parent's backstop
+/// Budgets near `Duration::MAX` must not overflow the client's backstop
 /// arithmetic (remaining budget plus grace), in either scope.
 #[tokio::test]
 async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
@@ -3413,19 +3413,19 @@ async fn huge_feed_and_turn_budgets_do_not_overflow_the_backstop() {
 }
 
 /// A worker that reports less feed time than it already reported cannot rewind
-/// the parent's feed backstop.
+/// the client's feed backstop.
 ///
 /// The stand-in spends the whole 60s budget on its first suspension, then
 /// claims zero on the second and goes quiet. The ratchet keeps the spent
 /// figure, so the next turn is armed with the grace alone — without it the
-/// parent would hand a hostile worker the budget back, every turn, for free.
+/// client would hand a hostile worker the budget back, every turn, for free.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     let dir = tempfile::tempdir().unwrap();
-    let suspension = |feed_execution_micros| pb::ChildEvent {
+    let suspension = |feed_execution_micros| pb::WorkerEvent {
         feed_execution_micros,
-        ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+        ..worker_event(pb::worker_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
             position: Some(position()),
@@ -3457,8 +3457,8 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
         .await
         .expect("checkout");
 
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -3467,16 +3467,16 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             async_functions: Vec::new().into(),
             stream_async_calls: false,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let resume = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+    let resume = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
             kind: Some(pb::resume_name_lookup::Kind::Undefined(pb::Unit {})),
             values: None,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
     checkout.turn_raw(&feed, &mut on_event).await.unwrap();
     checkout.turn_raw(&resume, &mut on_event).await.unwrap();
 
@@ -3489,14 +3489,14 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
     assert_eq!(timeout, grace);
 }
 
-/// A child that predates the position field announces suspensions without
-/// it; the parent reports an unknown range rather than rejecting them.
+/// A worker that predates the position field announces suspensions without
+/// it; the client reports an unknown range rather than rejecting them.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_suspension_without_a_position_reads_as_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let mut replies = Vec::new();
-    replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
+    replies.extend(framed(&worker_event(pb::worker_event::Kind::NameLookup(
         pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
@@ -3520,7 +3520,7 @@ async fn a_suspension_without_a_position_reads_as_unknown() {
     assert_eq!(position, SourceRange::unknown());
 }
 
-/// A second raw `Feed` restarts the parent's feed clock, as `Checkout::feed`
+/// A second raw `Feed` restarts the client's feed clock, as `Checkout::feed`
 /// does — the previous feed's total must not shorten the new feed's backstop.
 ///
 /// The deadline is read off the `Timeout` error rather than timed, so the
@@ -3528,16 +3528,16 @@ async fn a_suspension_without_a_position_reads_as_unknown() {
 /// it the second feed would be armed with the grace alone.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_raw_feed_restarts_the_parent_feed_clock() {
+async fn a_raw_feed_restarts_the_client_feed_clock() {
     let dir = tempfile::tempdir().unwrap();
     let budget = Duration::from_millis(300);
     let grace = Duration::from_millis(100);
     // The suspension ends the first feed having spent the whole budget. The
     // second feed goes unanswered.
     let mut replies = Vec::new();
-    replies.extend(framed(&pb::ChildEvent {
+    replies.extend(framed(&pb::WorkerEvent {
         feed_execution_micros: u64::try_from(budget.as_micros()).unwrap(),
-        ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+        ..worker_event(pb::worker_event::Kind::NameLookup(pb::NameLookup {
             name: "x".to_owned(),
             object_id: None,
             position: Some(position()),
@@ -3576,8 +3576,8 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
         .await
         .expect("checkout");
 
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "x".to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -3586,9 +3586,9 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
             async_functions: Vec::new().into(),
             stream_async_calls: false,
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
     checkout.turn_raw(&feed, &mut on_event).await.unwrap();
     let err = checkout
         .turn_raw(&feed, &mut on_event)
@@ -3601,7 +3601,7 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
 }
 
 /// A `Load` reply claiming a looser feed budget than the checkout's cannot
-/// loosen the parent's feed backstop: the configured budget stays the ceiling.
+/// loosen the client's feed backstop: the configured budget stays the ceiling.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_load_reply_cannot_loosen_the_feed_backstop() {
@@ -3611,9 +3611,9 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
     // The Load's reply claims an hour's feed budget. The feed after it goes
     // unanswered.
     let mut replies = Vec::new();
-    replies.extend(framed(&pb::ChildEvent {
+    replies.extend(framed(&pb::WorkerEvent {
         max_feed_duration_micros: Some(3_600_000_000),
-        ..child_event(pb::child_event::Kind::Ok(pb::Ok {}))
+        ..worker_event(pb::worker_event::Kind::Ok(pb::Ok {}))
     }));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
@@ -3648,7 +3648,7 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
     assert_eq!(timeout, budget + grace);
 }
 
-/// With the grace turned off the parent does not backstop that budget at all,
+/// With the grace turned off the client does not backstop that budget at all,
 /// so the sandbox's own `TimeoutError` is what ends the feed — the worker must
 /// still come back alive.
 #[tokio::test]

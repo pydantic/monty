@@ -1,7 +1,7 @@
 //! Integration tests for `monty subprocess`: spawn the real binary and
 //! drive it over the wire protocol, including crash scenarios — the entire
-//! point of the subprocess mode is that a dead child is a recoverable event
-//! for the parent.
+//! point of the subprocess mode is that a dead worker is a recoverable event
+//! for the client.
 
 use std::{
     io::{Read, Write},
@@ -23,8 +23,8 @@ use monty_types::{
     unstable::{self, MontyNode},
 };
 
-/// How long a death-expecting helper waits for the child to exit. Generous:
-/// the regression it guards is "the child never dies", so the only cost of a
+/// How long a death-expecting helper waits for the worker to exit. Generous:
+/// the regression it guards is "the worker never dies", so the only cost of a
 /// long wait is how late that failure is reported on a slow CI machine.
 const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -41,7 +41,7 @@ fn configure() -> pb::Configure {
     }
 }
 
-/// The clock and the sleeps routed to the parent.
+/// The clock and the sleeps routed to the client.
 fn call_host() -> OsPolicy {
     OsPolicy {
         datetime: DateTimeSource::CallHost,
@@ -50,7 +50,7 @@ fn call_host() -> OsPolicy {
     }
 }
 
-/// A spawned `monty subprocess` child with framed pipes.
+/// A spawned `monty subprocess` worker with framed pipes.
 struct ChildProc {
     child: Child,
     writer: ChildStdin,
@@ -58,13 +58,13 @@ struct ChildProc {
 }
 
 impl ChildProc {
-    /// Spawns the child with its stderr inherited, so diagnostics show up in
+    /// Spawns the worker with its stderr inherited, so diagnostics show up in
     /// the test output.
     fn spawn() -> Self {
         Self::spawn_with(Stdio::inherit())
     }
 
-    /// Spawns the child with its stderr captured, for tests asserting on the
+    /// Spawns the worker with its stderr captured, for tests asserting on the
     /// diagnostics it prints before dying (see [`Self::reap_with_stderr`]).
     fn spawn_stderr_piped() -> Self {
         Self::spawn_with(Stdio::piped())
@@ -83,10 +83,10 @@ impl ChildProc {
         Self { child, writer, reader }
     }
 
-    fn send(&mut self, kind: pb::parent_request::Kind) {
+    fn send(&mut self, kind: pb::client_request::Kind) {
         write_frame(
             &mut self.writer,
-            &pb::ParentRequest {
+            &pb::ClientRequest {
                 kind: Some(kind),
                 trace_parent: None,
             },
@@ -100,8 +100,8 @@ impl ChildProc {
         &mut self,
         first: pb::configure::First,
         configure: pb::Configure,
-    ) -> (Vec<pb::Print>, pb::ChildEvent) {
-        self.send(pb::parent_request::Kind::Configure(pb::Configure {
+    ) -> (Vec<pb::Print>, pb::WorkerEvent) {
+        self.send(pb::client_request::Kind::Configure(pb::Configure {
             first: Some(first),
             ..configure
         }));
@@ -109,32 +109,32 @@ impl ChildProc {
         loop {
             let event = self
                 .reader
-                .read::<pb::ChildEvent>()
+                .read::<pb::WorkerEvent>()
                 .expect("failed to read event")
-                .expect("unexpected EOF from child");
+                .expect("unexpected EOF from worker");
             match event.kind {
-                Some(pb::child_event::Kind::Print(print)) => prints.push(print),
+                Some(pb::worker_event::Kind::Print(print)) => prints.push(print),
                 _ => return (prints, event),
             }
         }
     }
 
     /// Reads a single event.
-    fn recv(&mut self) -> pb::child_event::Kind {
+    fn recv(&mut self) -> pb::worker_event::Kind {
         self.reader
-            .read::<pb::ChildEvent>()
+            .read::<pb::WorkerEvent>()
             .expect("failed to read event")
-            .expect("unexpected EOF from child")
+            .expect("unexpected EOF from worker")
             .kind
             .expect("event has no kind")
     }
 
     /// Reads until the turn-ending event, collecting streamed prints.
-    fn recv_turn(&mut self) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn recv_turn(&mut self) -> (Vec<pb::Print>, pb::worker_event::Kind) {
         let mut prints = Vec::new();
         loop {
             match self.recv() {
-                pb::child_event::Kind::Print(print) => prints.push(print),
+                pb::worker_event::Kind::Print(print) => prints.push(print),
                 other => return (prints, other),
             }
         }
@@ -152,21 +152,21 @@ impl ChildProc {
     }
 
     fn create_repl_with(&mut self, create: pb::Configure) {
-        self.send(pb::parent_request::Kind::Configure(create));
+        self.send(pb::client_request::Kind::Configure(create));
         match self.recv() {
-            pb::child_event::Kind::Ok(_) => {}
+            pb::worker_event::Kind::Ok(_) => {}
             other => panic!("expected Ok for Configure, got {other:?}"),
         }
     }
 
     /// Feeds a snippet and returns `(prints, turn-ending event)`.
-    fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::worker_event::Kind) {
         self.feed_with(code, NamedValues::new())
     }
 
-    fn feed_with(&mut self, code: &str, inputs: NamedValues) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn feed_with(&mut self, code: &str, inputs: NamedValues) -> (Vec<pb::Print>, pb::worker_event::Kind) {
         let (inputs, values) = named_values_to_proto(inputs);
-        self.send(pb::parent_request::Kind::Feed(pb::Feed {
+        self.send(pb::client_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs,
             values: Some(values),
@@ -189,8 +189,8 @@ impl ChildProc {
         &mut self,
         call_id: u32,
         result: pb::ext_function_result::Kind,
-    ) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+    ) -> (Vec<pb::Print>, pb::worker_event::Kind) {
+        self.send(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
             result: Some(pb::ExtFunctionResult { kind: Some(result) }),
             values: None,
@@ -199,9 +199,9 @@ impl ChildProc {
     }
 
     /// Answers a suspended call with a returned value.
-    fn resume_return(&mut self, call_id: u32, value: MontyObject) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn resume_return(&mut self, call_id: u32, value: MontyObject) -> (Vec<pb::Print>, pb::worker_event::Kind) {
         let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(value));
-        self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        self.send(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
             result: Some(result),
             values,
@@ -209,11 +209,11 @@ impl ChildProc {
         self.recv_turn()
     }
 
-    /// Feeds a snippet expected to kill the child, asserting no turn-ending
+    /// Feeds a snippet expected to kill the worker, asserting no turn-ending
     /// event arrives — EOF (the usual case) or a truncated frame instead.
     #[track_caller]
     fn feed_expecting_death(&mut self, code: &str) {
-        self.send(pb::parent_request::Kind::Feed(pb::Feed {
+        self.send(pb::client_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs: vec![].into(),
             values: None,
@@ -226,8 +226,8 @@ impl ChildProc {
     }
 
     /// Writes a bare 200 MiB frame-length prefix — no body — and expects the
-    /// child to die buying the buffer: under the wire cap, over any limit a
-    /// test applies, and four bytes of writing, so the parent cannot block on a
+    /// worker to die buying the buffer: under the wire cap, over any limit a
+    /// test applies, and four bytes of writing, so the client cannot block on a
     /// pipe whose reader has already gone.
     #[track_caller]
     fn oversized_prefix_expecting_death(&mut self) {
@@ -237,9 +237,9 @@ impl ChildProc {
         self.expect_death();
     }
 
-    /// Asserts the child dies without a turn-ending event: EOF (the usual
+    /// Asserts the worker dies without a turn-ending event: EOF (the usual
     /// case) or a truncated frame. Waits for the exit *first* — a surviving
-    /// child writes nothing, so reading it would block forever and hang the
+    /// worker writes nothing, so reading it would block forever and hang the
     /// suite instead of failing it; once it is dead the read cannot block.
     #[track_caller]
     fn expect_death(&mut self) {
@@ -247,18 +247,18 @@ impl ChildProc {
         while self.child.try_wait().expect("failed to poll child").is_none() {
             assert!(
                 Instant::now() < deadline,
-                "expected the child to die, still alive after {DEATH_TIMEOUT:?}"
+                "expected the worker to die, still alive after {DEATH_TIMEOUT:?}"
             );
             thread::sleep(Duration::from_millis(10));
         }
-        match self.reader.read::<pb::ChildEvent>() {
+        match self.reader.read::<pb::WorkerEvent>() {
             Ok(None) | Err(_) => {}
-            Ok(Some(event)) => panic!("expected the child to die, got {:?}", event.kind),
+            Ok(Some(event)) => panic!("expected the worker to die, got {:?}", event.kind),
         }
     }
 
-    /// Waits for the child and returns its status with everything it wrote to
-    /// stderr. Only valid for a child spawned by [`Self::spawn_stderr_piped`].
+    /// Waits for the worker and returns its status with everything it wrote to
+    /// stderr. Only valid for a worker spawned by [`Self::spawn_stderr_piped`].
     fn reap_with_stderr(&mut self) -> (ExitStatus, String) {
         let mut stderr = String::new();
         self.child
@@ -271,11 +271,11 @@ impl ChildProc {
         (status, stderr)
     }
 
-    /// Tells the child to shut down and asserts a clean exit.
+    /// Tells the worker to shut down and asserts a clean exit.
     fn shutdown(mut self) {
-        self.send(pb::parent_request::Kind::Shutdown(pb::Shutdown {}));
+        self.send(pb::client_request::Kind::Shutdown(pb::Shutdown {}));
         match self.recv() {
-            pb::child_event::Kind::Ok(_) => {}
+            pb::worker_event::Kind::Ok(_) => {}
             other => panic!("expected Ok for Shutdown, got {other:?}"),
         }
         let status = self.child.wait().expect("failed to wait for child");
@@ -285,7 +285,7 @@ impl ChildProc {
 
 impl Drop for ChildProc {
     fn drop(&mut self) {
-        // don't leak children when a test fails mid-protocol
+        // don't leak workers when a test fails mid-protocol
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -293,24 +293,24 @@ impl Drop for ChildProc {
 
 /// The value of a `Complete` event.
 #[track_caller]
-fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
+fn expect_complete(event: pb::worker_event::Kind) -> MontyObject {
     match event {
-        pb::child_event::Kind::Complete(complete) => MontyObject::try_from(complete).expect("invalid complete value"),
+        pb::worker_event::Kind::Complete(complete) => MontyObject::try_from(complete).expect("invalid complete value"),
         other => panic!("expected Complete, got {other:?}"),
     }
 }
 
 #[track_caller]
-fn expect_refusal(event: pb::child_event::Kind) -> String {
+fn expect_refusal(event: pb::worker_event::Kind) -> String {
     match event {
-        pb::child_event::Kind::SessionRefused(refused) => refused.message,
+        pb::worker_event::Kind::SessionRefused(refused) => refused.message,
         other => panic!("expected SessionRefused, got {other:?}"),
     }
 }
 
-fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
+fn expect_error(event: pb::worker_event::Kind) -> pb::RaisedException {
     match event {
-        pb::child_event::Kind::Error(error) => error.exception.expect("error has no exception"),
+        pb::worker_event::Kind::Error(error) => error.exception.expect("error has no exception"),
         other => panic!("expected Error, got {other:?}"),
     }
 }
@@ -446,7 +446,7 @@ fn external_function_round_trip() {
     // calling an unknown name suspends at FunctionCall directly (NameLookup
     // is only emitted for bare name *reads*)
     let (_, event) = child.feed("add(1, 2)");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.function_name, "add");
@@ -465,10 +465,10 @@ fn abort_feed_round_trip() {
     child.create_repl();
     let (_, event) =
         child.feed("while True:\n    try:\n        open('/etc/passwd')\n    except Exception:\n        pass");
-    let pb::child_event::Kind::OsCall(_) = event else {
+    let pb::worker_event::Kind::OsCall(_) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    child.send(pb::parent_request::Kind::AbortFeed(pb::AbortFeed {
+    child.send(pb::client_request::Kind::AbortFeed(pb::AbortFeed {
         exception: Some(pb::RaisedException {
             exc_type: "RuntimeError".to_owned(),
             message: Some("suspension limit 3 exceeded".to_owned()),
@@ -494,14 +494,14 @@ fn abort_feed_round_trip() {
 /// A suspension announcement is size-checked *with* its session stamps: one
 /// that fits `MAX_FRAME_LEN` only before the stamps are added must be refused
 /// as the clean oversized-argument error, not fail at send time and kill the
-/// worker (the parent would never learn the resume point).
+/// worker (the client would never learn the resume point).
 ///
 /// Allocates ~256 MiB several times over (sizing here, the sandbox string, its
 /// wire copy), so it is memory-heavy; disable it if it proves flaky in CI.
 #[test]
 fn near_limit_suspension_is_refused_cleanly() {
-    let announcement = |arg_len: usize| pb::ChildEvent {
-        kind: Some(pb::child_event::Kind::FunctionCall(WireFunctionCall::new(
+    let announcement = |arg_len: usize| pb::WorkerEvent {
+        kind: Some(pb::worker_event::Kind::FunctionCall(WireFunctionCall::new(
             "f".to_owned(),
             CallArgs::from(vec![MontyObject::string("x".repeat(arg_len))]),
             1,
@@ -559,13 +559,13 @@ fn near_limit_suspension_is_refused_cleanly() {
 fn name_lookup_round_trip() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    // a bare name read suspends at NameLookup; the parent supplies the value
+    // a bare name read suspends at NameLookup; the client supplies the value
     let (_, event) = child.feed("answer + 1");
-    let pb::child_event::Kind::NameLookup(lookup) = event else {
+    let pb::worker_event::Kind::NameLookup(lookup) = event else {
         panic!("expected NameLookup, got {event:?}");
     };
     assert_eq!(lookup.name, "answer");
-    child.send(pb::parent_request::Kind::ResumeNameLookup(
+    child.send(pb::client_request::Kind::ResumeNameLookup(
         NameLookupResult::from(MontyObject::int(41)).into(),
     ));
     let (_, event) = child.recv_turn();
@@ -581,7 +581,7 @@ fn name_lookup_error_raises_in_sandbox() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("try:\n    secret\nexcept PermissionError as e:\n    caught = str(e)\ncaught");
-    let pb::child_event::Kind::NameLookup(lookup) = event else {
+    let pb::worker_event::Kind::NameLookup(lookup) = event else {
         panic!("expected NameLookup, got {event:?}");
     };
     assert_eq!(lookup.name, "secret");
@@ -591,7 +591,7 @@ fn name_lookup_error_raises_in_sandbox() {
         traceback: BudgetVec::new(),
         data: None,
     };
-    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+    child.send(pb::client_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
         values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(exc.clone())),
     }));
@@ -602,8 +602,8 @@ fn name_lookup_error_raises_in_sandbox() {
     );
 
     let (_, event) = child.feed("secret");
-    assert!(matches!(event, pb::child_event::Kind::NameLookup(_)));
-    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+    assert!(matches!(event, pb::worker_event::Kind::NameLookup(_)));
+    child.send(pb::client_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
         values: None,
         kind: Some(pb::resume_name_lookup::Kind::Error(exc)),
     }));
@@ -624,10 +624,10 @@ fn external_function_not_found_raises_name_error() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("undefined_fn()");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    // the parent has no handler for this name -> Python NameError
+    // the client has no handler for this name -> Python NameError
     let (_, event) = child.resume_call(
         call.call_id,
         pb::ext_function_result::Kind::NotFound("undefined_fn".to_owned()),
@@ -638,7 +638,7 @@ fn external_function_not_found_raises_name_error() {
     child.shutdown();
 }
 
-/// Default sleeps reach the parent capped at ten seconds; clock and entropy calls stay in the worker.
+/// Default sleeps reach the client capped at ten seconds; clock and entropy calls stay in the worker.
 #[test]
 fn clock_and_entropy_are_answered_in_the_worker_by_default() {
     let mut child = ChildProc::spawn();
@@ -655,7 +655,7 @@ abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
     ));
     assert_eq!(expect_complete(event), MontyObject::bool(true));
     let (_, event) = child.feed("import time\ntime.sleep(3600)");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(
@@ -668,7 +668,7 @@ abs(time.time() - {now}) < 60 and date.today().year == datetime.now().year"
         "import asyncio
 asyncio.run(asyncio.sleep(3600, 'woken'))",
     );
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(
@@ -745,7 +745,7 @@ random.random()",
 #[test]
 fn invalid_os_policy_is_rejected_on_configure() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+    child.send(pb::client_request::Kind::Configure(pb::Configure {
         os_policy: Some(pb::OsPolicy {
             datetime: Some(pb::os_policy::Datetime::Fixed(pb::FixedDateTime {
                 unix_seconds: 0,
@@ -765,7 +765,7 @@ fn invalid_os_policy_is_rejected_on_configure() {
 }
 
 #[test]
-fn clock_calls_bubble_to_parent_under_call_host() {
+fn clock_calls_bubble_to_client_under_call_host() {
     let mut child = ChildProc::spawn();
     child.create_repl_with_os_policy(&call_host());
 
@@ -775,7 +775,7 @@ fn clock_calls_bubble_to_parent_under_call_host() {
         day: 15,
     };
     let (_, event) = child.feed("from datetime import date\ndate.today()");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.call, Some(pb::os_call::Call::DateToday(pb::Unit {})));
@@ -794,7 +794,7 @@ fn clock_calls_bubble_to_parent_under_call_host() {
         timezone_name: None,
     };
     let (_, event) = child.feed("from datetime import datetime\ndatetime.now()");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(
@@ -805,7 +805,7 @@ fn clock_calls_bubble_to_parent_under_call_host() {
     assert_eq!(expect_complete(event), MontyObject::datetime(now));
 
     let (_, event) = child.feed("import time\ntime.time()");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(
@@ -820,14 +820,14 @@ fn clock_calls_bubble_to_parent_under_call_host() {
     child.shutdown();
 }
 
-/// `CallHost` lets the parent choose the wait; `time.sleep()` returns `None` regardless of its answer.
+/// `CallHost` lets the client choose the wait; `time.sleep()` returns `None` regardless of its answer.
 #[test]
-fn sleep_calls_bubble_to_parent_under_call_host() {
+fn sleep_calls_bubble_to_client_under_call_host() {
     let mut child = ChildProc::spawn();
     child.create_repl_with_os_policy(&call_host());
 
     let (_, event) = child.feed("import time\ntime.sleep(1.5)");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(
@@ -838,7 +838,7 @@ fn sleep_calls_bubble_to_parent_under_call_host() {
     assert_eq!(expect_complete(event), MontyObject::none());
 
     let (_, event) = child.feed("import asyncio\nasyncio.run(asyncio.sleep(0.25, 'woken'))");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(
@@ -852,11 +852,11 @@ fn sleep_calls_bubble_to_parent_under_call_host() {
 }
 
 #[test]
-fn os_call_bubbles_to_parent_without_mounts() {
+fn os_call_bubbles_to_client_without_mounts() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("from pathlib import Path\nPath('/data.txt').read_text()");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.call, Some(pb::os_call::Call::ReadText("/data.txt".to_owned())));
@@ -867,7 +867,7 @@ fn os_call_bubbles_to_parent_without_mounts() {
 }
 
 /// A suspension announcement is *lent* its payload rather than given a copy of
-/// it, so the child must have taken it back by the time anything else can see
+/// it, so the worker must have taken it back by the time anything else can see
 /// the suspension. Dumping straight after the announcement is what proves it:
 /// the dump is built from the stored call, so a payload left behind in the
 /// event would come back from `Load` as an argument-less call.
@@ -876,7 +876,7 @@ fn suspended_call_keeps_its_arguments_for_a_dump() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("ext('hello', 1, key='value')");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(
@@ -884,16 +884,16 @@ fn suspended_call_keeps_its_arguments_for_a_dump() {
         vec![MontyObject::string("hello".to_owned()), MontyObject::int(1)]
     );
 
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
-    let pb::child_event::Kind::FunctionCall(restored) = event else {
+    let pb::worker_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
     };
     assert_eq!(restored.args, call.args);
@@ -911,20 +911,20 @@ fn suspended_os_call_keeps_its_payload_for_a_dump() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("from pathlib import Path\nPath('/data.txt').write_text('contents')");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
 
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
-    let pb::child_event::Kind::OsCall(restored) = event else {
+    let pb::worker_event::Kind::OsCall(restored) = event else {
         panic!("expected re-emitted OsCall after Load, got {event:?}");
     };
     assert_eq!(restored.call, call.call);
@@ -943,7 +943,7 @@ fn os_call_error_resume_carries_exception() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("from pathlib import Path\nPath('/nope.txt').read_text()");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     let exc = pb::RaisedException {
@@ -955,7 +955,7 @@ fn os_call_error_resume_carries_exception() {
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc));
     let error = expect_error(event);
     assert_eq!(error.exc_type, "FileNotFoundError");
-    // the child's VM raised the exception inside the sandbox, so the
+    // the worker's VM raised the exception inside the sandbox, so the
     // traceback now includes the sandbox frame
     assert!(!error.traceback.is_empty());
     child.shutdown();
@@ -966,7 +966,7 @@ fn os_call_error_resume_carries_exception() {
 // =============================================================================
 
 #[test]
-fn child_enforces_time_limit() {
+fn worker_enforces_time_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
@@ -987,9 +987,9 @@ fn child_enforces_time_limit() {
     // the feed clock restarts, so the next feed gets the whole budget back —
     // the heap it runs against is what a host should not trust, not the budget
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
-    // the child process is reusable too: Reset + Configure starts a session over
-    child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-    let pb::child_event::Kind::Ok(_) = child.recv() else {
+    // the worker process is reusable too: Reset + Configure starts a session over
+    child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+    let pb::worker_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");
     };
     child.create_repl();
@@ -1222,7 +1222,7 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
     child.create_repl_with(configure_with_max_memory(8 * 1024 * 1024));
     let (_, event) = child.feed("import copy\nd = {i: i for i in range(100_000)}");
     assert!(
-        !matches!(event, pb::child_event::Kind::Error(_)),
+        !matches!(event, pb::worker_event::Kind::Error(_)),
         "the source must fit for this to test the copy, got {event:?}"
     );
     let (_, event) = child.feed("copy.deepcopy(d)");
@@ -1533,7 +1533,7 @@ fn dict_writer_rows_are_rejected_before_the_hard_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let (_, event) = child.feed(code);
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     let handle = MontyFileHandle {
@@ -1559,7 +1559,7 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let (_, event) = child.feed(code);
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     let environ = MontyObject::dict([(MontyObject::string("V"), MontyObject::string("x".repeat(1000)))]);
@@ -1588,7 +1588,7 @@ fn scan_results_are_charged_before_the_hard_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let (_, event) = child.feed("import os\nwalk = os.walk('/d')");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     let (_, event) = child.resume_return(call.call_id, scan_reply([entry("", true), entry("sub", true)]));
@@ -1607,7 +1607,7 @@ fn scan_results_are_charged_before_the_hard_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let (_, event) = child.feed("from pathlib import Path\nmatches = Path('/d').glob('**/*/**')");
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     let mut entries = vec![entry("", true)];
@@ -1774,7 +1774,7 @@ fn iterdir_joins_are_preflighted() {
     child.create_repl_with(configure_with_max_memory(1024 * 1024));
     let code = "from pathlib import Path\nlist(Path('/' + 'd' * 100_000).iterdir())";
     let (_, event) = child.feed(code);
-    let pb::child_event::Kind::OsCall(call) = event else {
+    let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     let entries = MontyObject::list(vec![MontyObject::string("x".to_owned()); 20]);
@@ -1801,7 +1801,7 @@ fn large_host_call_arguments_survive_being_announced() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(LIMIT as u64));
     let (_, event) = child.feed(&format!("s = 'A' * {ARG}\nfoobar(s)"));
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call_args(&call), vec![MontyObject::string("A".repeat(ARG))]);
@@ -1834,7 +1834,7 @@ fn a_returnable_value_can_also_be_passed_to_a_host_function() {
 
     // ...then passed to a host function, which must cost no more
     let (_, event) = child.feed("foobar(s)");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(string_len(&call_args(&call)[0]), ARG);
@@ -1954,7 +1954,7 @@ fn cycles_export_one_placeholder_each() {
 
 /// Export is not checkpointed against the soft limit. A value that fits the
 /// heap but whose arena (72 bytes a node against 16 for a heap value) crosses
-/// the hard ceiling exits the worker with the OOM code, which the parent
+/// the hard ceiling exits the worker with the OOM code, which the client
 /// classifies as a crash.
 #[test]
 fn an_export_that_outgrows_the_hard_limit_exits_with_the_oom_code() {
@@ -1975,7 +1975,7 @@ fn call_arguments_share_one_arena() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("x = [1, 2]\nf(x, x, y=x)");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.args.len(), 2);
@@ -2031,7 +2031,7 @@ fn host_call_arguments_over_the_limit_still_fail_gracefully() {
 ///
 /// The materialization is a single 16 MiB burst, four times the allocator's
 /// hard-limit headroom, so before the preflight in `check_clone_slots` this
-/// exited with `OOM_EXIT_CODE` mid-turn and the pool had to replace the child.
+/// exited with `OOM_EXIT_CODE` mid-turn and the pool had to replace the worker.
 #[test]
 fn reading_partial_args_cannot_kill_the_worker() {
     let mut child = ChildProc::spawn();
@@ -2127,7 +2127,7 @@ fn tomllib_table_growth_is_refused_before_the_hard_limit() {
         // Built in its own feed so a `MemoryError` can only come from parsing.
         let (_, event) = child.feed(&format!("import tomllib\ns = {source}\nNone"));
         assert!(
-            matches!(event, pb::child_event::Kind::Complete(_)),
+            matches!(event, pb::worker_event::Kind::Complete(_)),
             "{source}: {event:?}"
         );
         let (_, event) = child.feed("tomllib.loads(s)");
@@ -2430,7 +2430,7 @@ fn reported_usage(message: &str, code: &str) -> u64 {
         .unwrap_or_else(|_| panic!("{code}: unexpected message {message:?}"))
 }
 
-/// A refused allocation must leave the parent something it can classify: the
+/// A refused allocation must leave the client something it can classify: the
 /// dedicated exit code, not the `SIGABRT` Rust's allocation-error handler would
 /// raise (which a stack overflow also produces). Needs no limit: 1 EiB is
 /// thousands of times the usable address space on any 64-bit host, so `mmap`
@@ -2483,22 +2483,22 @@ fn a_first_request_counts_against_the_memory_limit() {
 }
 
 /// A dump carries its own limits, so restoring one must re-apply them: this
-/// `Load` lands on a child that was never configured with a limit, and the
+/// `Load` lands on a worker that was never configured with a limit, and the
 /// restored session's `max_memory` is all there is to bound it.
 #[test]
 fn loading_a_dump_applies_its_own_memory_limit() {
     let mut source = ChildProc::spawn();
     source.create_repl_with(configure_with_max_memory(64 * 1024));
     assert_eq!(source.feed_complete("x = 1"), MontyObject::none());
-    source.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = source.recv() else {
+    source.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = source.recv() else {
         panic!("expected DumpResult");
     };
     source.shutdown();
 
     let mut restored = ChildProc::spawn_stderr_piped();
-    restored.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
-    let pb::child_event::Kind::Ok(_) = restored.recv() else {
+    restored.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::worker_event::Kind::Ok(_) = restored.recv() else {
         panic!("expected Ok for Load");
     };
     restored.oversized_prefix_expecting_death();
@@ -2556,7 +2556,7 @@ fn expanding_codecs_fail_softly() {
 ///
 /// Each size sits in the window where the preflight passes but the doubling
 /// would not, so before the reservations every case exited the worker and the
-/// parent saw EOF instead of a turn-ending event.
+/// client saw EOF instead of a turn-ending event.
 #[test]
 fn expanding_codecs_reserve_what_they_preflight() {
     // (max_memory, code, the length CPython gives for the same call)
@@ -2642,7 +2642,7 @@ fn install_dependencies_is_rejected_but_session_survives() {
     child.create_repl();
     // The Monty sandbox has no host interpreter to install packages for, so it
     // refuses `InstallDependencies` with a recoverable error.
-    child.send(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+    child.send(pb::client_request::Kind::InstallDependencies(pb::InstallDependencies {
         requirements: vec!["numpy".to_owned()].into(),
     }));
     let error = expect_error(child.recv());
@@ -2670,7 +2670,7 @@ fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
         format!("x: '{}1{}'", "(".repeat(5000), ")".repeat(5000)),
         format!("x: {}", vec!["int"; 5000].join(" | ")),
     ] {
-        child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        child.send(pb::client_request::Kind::Configure(pb::Configure {
             type_check: true,
             type_check_stubs: Some(stubs),
             ..configure()
@@ -2777,7 +2777,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
-    let pb::child_event::Kind::TypingError(typing) = event else {
+    let pb::worker_event::Kind::TypingError(typing) = event else {
         panic!("expected TypingError, got {event:?}");
     };
     assert!(
@@ -2792,14 +2792,14 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
 
     // ... and the rejected snippet was never committed
     let (_, event) = child.feed("x");
-    let pb::child_event::Kind::TypingError(_) = event else {
+    let pb::worker_event::Kind::TypingError(_) = event else {
         panic!("expected TypingError for undefined x, got {event:?}");
     };
     child.shutdown();
 }
 
-/// The format is chosen on `Configure` because rendering happens in the child
-/// — only the rendered text crosses the wire, so a parent that wants anything
+/// The format is chosen on `Configure` because rendering happens in the worker
+/// — only the rendered text crosses the wire, so a client that wants anything
 /// other than `full` has to ask before the check runs.
 #[test]
 fn type_check_format_selects_the_rendering() {
@@ -2814,7 +2814,7 @@ fn type_check_format_selects_the_rendering() {
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
-    let pb::child_event::Kind::TypingError(typing) = event else {
+    let pb::worker_event::Kind::TypingError(typing) = event else {
         panic!("expected TypingError, got {event:?}");
     };
     // one line per diagnostic, with no `-->` source snippet as `full` has
@@ -2834,8 +2834,8 @@ fn reset_releases_type_checker_memory() {
         child.create_repl_with(configure_with_max_memory(4_000_000));
         assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
 
-        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::worker_event::Kind::Ok(_)));
 
         child.create_repl_with(pb::Configure {
             type_check: true,
@@ -2843,14 +2843,14 @@ fn reset_releases_type_checker_memory() {
         });
         assert_eq!(child.feed_complete(&program), MontyObject::none());
 
-        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::worker_event::Kind::Ok(_)));
 
         child.create_repl_with(configure_with_max_memory(4_000_000));
         assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
 
-        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::worker_event::Kind::Ok(_)));
 
         // A small allocation budget must still reject Python allocations after each reset.
         child.create_repl_with(configure_with_max_memory(1_000_000));
@@ -2858,8 +2858,8 @@ fn reset_releases_type_checker_memory() {
         let (_, event) = child.feed("'x' * 2_000_000");
         assert_eq!(expect_error(event).exc_type, "MemoryError");
 
-        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-        assert!(matches!(child.recv(), pb::child_event::Kind::Ok(_)));
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        assert!(matches!(child.recv(), pb::worker_event::Kind::Ok(_)));
     }
 
     child.shutdown();
@@ -2867,7 +2867,7 @@ fn reset_releases_type_checker_memory() {
 
 /// Security-critical: after `Reset`, the next session must not resolve the previous
 /// session's script or stubs, including nested and normalized script paths.
-/// Both sessions use the same child so a fresh worker cannot hide retained state.
+/// Both sessions use the same worker so a fresh worker cannot hide retained state.
 #[test]
 fn reset_isolates_type_check_state_from_the_next_session() {
     // (script_name of session A, module path session B tries to import)
@@ -2891,8 +2891,8 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         });
         assert_eq!(child.feed_complete("LEAKY = 'hunter2'"), MontyObject::none());
 
-        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-        let pb::child_event::Kind::Ok(_) = child.recv() else {
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        let pb::worker_event::Kind::Ok(_) = child.recv() else {
             panic!("expected Ok for Reset");
         };
 
@@ -2908,11 +2908,11 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         let mut probe = |code: String| {
             let (_, mut event) = child.feed(&code);
             // a host module name is asked about once; the stubs are declined here
-            if matches!(&event, pb::child_event::Kind::OsCall(call) if call.call_id == IMPORT_STUBS_CALL_ID) {
+            if matches!(&event, pb::worker_event::Kind::OsCall(call) if call.call_id == IMPORT_STUBS_CALL_ID) {
                 let reply = pb::ext_function_result::Kind::NotHandled(pb::Unit {});
                 event = child.resume_call(IMPORT_STUBS_CALL_ID, reply).1;
             }
-            let pb::child_event::Kind::TypingError(typing) = event else {
+            let pb::worker_event::Kind::TypingError(typing) = event else {
                 panic!("expected TypingError for {code:?} after {script_name:?}, got {event:?}");
             };
             typing.diagnostics
@@ -2929,8 +2929,8 @@ fn reset_isolates_type_check_state_from_the_next_session() {
         assert_eq!(child.feed_complete("x: int = 1\nx"), MontyObject::int(1));
 
         // back to unconfigured for the next case
-        child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-        let pb::child_event::Kind::Ok(_) = child.recv() else {
+        child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+        let pb::worker_event::Kind::Ok(_) = child.recv() else {
             panic!("expected Ok for the trailing Reset");
         };
     }
@@ -2938,7 +2938,7 @@ fn reset_isolates_type_check_state_from_the_next_session() {
 }
 
 /// The rendering choice lives in the dump envelope, so a session restored into
-/// a fresh worker keeps reporting diagnostics the way its parent asked for.
+/// a fresh worker keeps reporting diagnostics the way its client asked for.
 #[test]
 fn type_check_format_survives_dump_and_load() {
     let mut child = ChildProc::spawn();
@@ -2951,19 +2951,19 @@ fn type_check_format_survives_dump_and_load() {
         ..Default::default()
     });
     assert_eq!(child.feed_complete("y = 1"), MontyObject::none());
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
-    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::worker_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
     let (_, event) = fresh.feed("x: int = 'not an int'");
-    let pb::child_event::Kind::TypingError(typing) = event else {
+    let pb::worker_event::Kind::TypingError(typing) = event else {
         panic!("expected TypingError after Load, got {event:?}");
     };
     assert_eq!(
@@ -2978,31 +2978,31 @@ fn type_check_format_survives_dump_and_load() {
 // =============================================================================
 
 #[test]
-fn dump_then_load_into_fresh_child_resumes() {
+fn dump_then_load_into_fresh_worker_resumes() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     assert_eq!(child.feed_complete("base = 40"), MontyObject::none());
 
     // suspend at an external function call
     let (_, event) = child.feed("ext()");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.function_name, "ext");
 
-    // dump the suspended state, then kill this child outright
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    // dump the suspended state, then kill this worker outright
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     assert!(!dump.state.is_empty());
     drop(child); // SIGKILL via Drop
 
-    // a fresh child restores the dump and re-announces the suspension
+    // a fresh worker restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
-    let pb::child_event::Kind::FunctionCall(restored) = event else {
+    let pb::worker_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
     };
     assert_eq!(restored.function_name, "ext");
@@ -3030,20 +3030,20 @@ fn type_check_state_survives_dump_and_load() {
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::none());
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
-    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::worker_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
     // type-check enforcement survived the dump...
     let (_, event) = fresh.feed("x: int = 'not an int'");
-    let pb::child_event::Kind::TypingError(_) = event else {
+    let pb::worker_event::Kind::TypingError(_) = event else {
         panic!("expected TypingError after Load, got {event:?}");
     };
     // ... and so did the stubs committed before it
@@ -3065,15 +3065,15 @@ fn assert_annotation_option_survives_dump_and_load() {
         assert_message_annotations: Some(0),
         ..Default::default()
     });
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
-    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::worker_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
 
@@ -3098,15 +3098,15 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
         assert_message_annotations: Some(6),
         ..Default::default()
     });
-    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
-    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::client_request::Kind::Dump(pb::Dump {}));
+    let pb::worker_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
-    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+    fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::worker_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
 
@@ -3122,7 +3122,7 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
 // =============================================================================
 
 #[test]
-fn protocol_violations_keep_the_child_alive() {
+fn protocol_violations_keep_the_worker_alive() {
     let mut child = ChildProc::spawn();
 
     // feed without a session
@@ -3131,11 +3131,11 @@ fn protocol_violations_keep_the_child_alive() {
     assert_eq!(error.exc_type, "RuntimeError");
     assert!(error.message.unwrap().starts_with("protocol violation"));
 
-    // the child is still usable
+    // the worker is still usable
     child.create_repl();
 
     // double create
-    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+    child.send(pb::client_request::Kind::Configure(pb::Configure {
         script_name: "again.py".to_owned(),
         limits: None,
         type_check: false,
@@ -3150,7 +3150,7 @@ fn protocol_violations_keep_the_child_alive() {
 
     // resume with a bogus call id while suspended
     let (_, event) = child.feed("missing()");
-    let pb::child_event::Kind::FunctionCall(call) = event else {
+    let pb::worker_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     let (_, event) = child.resume_return(call.call_id + 1, MontyObject::int(0));
@@ -3181,11 +3181,11 @@ fn configure_with_protocol_version(protocol_version: u32, monty_version: &str) -
     }
 }
 
-/// Asserts the child rejected the session and exited non-zero, returning the
+/// Asserts the worker rejected the session and exited non-zero, returning the
 /// fatal message.
 fn expect_fatal_exit(mut child: ChildProc) -> String {
     let message = match child.recv() {
-        pb::child_event::Kind::FatalError(fatal) => fatal.message,
+        pb::worker_event::Kind::FatalError(fatal) => fatal.message,
         other => panic!("expected FatalError, got {other:?}"),
     };
     let status = child.child.wait().expect("wait");
@@ -3195,13 +3195,13 @@ fn expect_fatal_exit(mut child: ChildProc) -> String {
     message
 }
 
-/// A parent speaking a protocol this build does not serve must be rejected
+/// A client speaking a protocol this build does not serve must be rejected
 /// before any session exists, and told the range so it can downgrade — there
 /// is no handshake to discover it from.
 #[test]
 fn unsupported_protocol_version_on_create_is_a_fatal_error() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+    child.send(pb::client_request::Kind::Configure(configure_with_protocol_version(
         PROTOCOL_VERSION + 1,
         env!("CARGO_PKG_VERSION"),
     )));
@@ -3211,7 +3211,7 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
         "message should name the rejected version: {message}"
     );
     // Spelled out rather than taken from `check_protocol_version`, so rewording
-    // the refusal a parent actually reads fails here.
+    // the refusal a client actually reads fails here.
     let supported = if MIN_SUPPORTED_PROTOCOL_VERSION == PROTOCOL_VERSION {
         format!("server supports protocol version {PROTOCOL_VERSION}")
     } else {
@@ -3228,12 +3228,12 @@ fn unsupported_protocol_version_on_create_is_a_fatal_error() {
     );
 }
 
-/// Zero means the parent declared nothing — it predates the field, or is not a
-/// monty parent. Without in-band negotiation it cannot be assumed compatible.
+/// Zero means the client declared nothing — it predates the field, or is not a
+/// monty client. Without in-band negotiation it cannot be assumed compatible.
 #[test]
 fn undeclared_protocol_version_is_a_fatal_error() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+    child.send(pb::client_request::Kind::Configure(configure_with_protocol_version(
         0,
         env!("CARGO_PKG_VERSION"),
     )));
@@ -3251,32 +3251,32 @@ fn undeclared_protocol_version_is_a_fatal_error() {
 
 /// The oldest served version still works: the point of a bump is to refuse a
 /// peer that would silently drop a field, not to close the migration window on
-/// parents that never send one.
+/// clients that never send one.
 #[test]
 fn oldest_supported_protocol_version_is_accepted() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+    child.send(pb::client_request::Kind::Configure(configure_with_protocol_version(
         MIN_SUPPORTED_PROTOCOL_VERSION,
         env!("CARGO_PKG_VERSION"),
     )));
     assert!(
-        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
-        "a parent one version behind must still be served"
+        matches!(child.recv(), pb::worker_event::Kind::Ok(_)),
+        "a client one version behind must still be served"
     );
     child.shutdown();
 }
 
-/// The package version is informational: a parent from a different build is
+/// The package version is informational: a client from a different build is
 /// served as long as its protocol version is one this build speaks.
 #[test]
 fn differing_package_version_is_accepted() {
     let mut child = ChildProc::spawn();
-    child.send(pb::parent_request::Kind::Configure(configure_with_protocol_version(
+    child.send(pb::client_request::Kind::Configure(configure_with_protocol_version(
         PROTOCOL_VERSION,
         "0.0.0-not-a-real-version",
     )));
     assert!(
-        matches!(child.recv(), pb::child_event::Kind::Ok(_)),
+        matches!(child.recv(), pb::worker_event::Kind::Ok(_)),
         "a mismatched package version must not end the session"
     );
     child.shutdown();
@@ -3285,7 +3285,7 @@ fn differing_package_version_is_accepted() {
 #[test]
 fn garbage_stdin_is_a_fatal_error() {
     let mut child = ChildProc::spawn();
-    // valid length prefix followed by a truncated stream: the child reads a
+    // valid length prefix followed by a truncated stream: the worker reads a
     // mangled frame and must bail out with FatalError + EX_PROTOCOL
     let raw = &mut child.writer;
     raw.write_all(&[0xFF, 0xFF, 0xFF, 0x7F]).unwrap();
@@ -3293,7 +3293,7 @@ fn garbage_stdin_is_a_fatal_error() {
     drop_stdin(&mut child);
 
     match child.recv() {
-        pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("malformed request frame")),
+        pb::worker_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("malformed request frame")),
         other => panic!("expected FatalError, got {other:?}"),
     }
     let status = child.child.wait().expect("wait");
@@ -3303,11 +3303,11 @@ fn garbage_stdin_is_a_fatal_error() {
 }
 
 #[test]
-fn killed_child_is_detected_as_eof() {
+fn killed_worker_is_detected_as_eof() {
     let mut child = ChildProc::spawn();
     child.create_repl();
-    // run forever (no limits), then kill the child mid-execution
-    child.send(pb::parent_request::Kind::Feed(pb::Feed {
+    // run forever (no limits), then kill the worker mid-execution
+    child.send(pb::client_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![].into(),
         values: None,
@@ -3319,8 +3319,8 @@ fn killed_child_is_detected_as_eof() {
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");
 
-    // the parent observes EOF (or a truncated frame), never a hang
-    match child.reader.read::<pb::ChildEvent>() {
+    // the client observes EOF (or a truncated frame), never a hang
+    match child.reader.read::<pb::WorkerEvent>() {
         Ok(None) | Err(FrameError::Truncated | FrameError::Io(_)) => {}
         other => panic!("expected EOF after kill, got {other:?}"),
     }
@@ -3329,18 +3329,18 @@ fn killed_child_is_detected_as_eof() {
 }
 
 #[test]
-fn reset_returns_child_to_idle_for_reuse() {
+fn reset_returns_worker_to_idle_for_reuse() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     assert_eq!(child.feed_complete("x = 1"), MontyObject::none());
-    child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
-    let pb::child_event::Kind::Ok(_) = child.recv() else {
+    child.send(pb::client_request::Kind::Reset(pb::Reset {}));
+    let pb::worker_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");
     };
     // a fresh session has none of the previous session's state
     child.create_repl();
     let (_, event) = child.feed("x");
-    let pb::child_event::Kind::NameLookup(lookup) = event else {
+    let pb::worker_event::Kind::NameLookup(lookup) = event else {
         panic!("expected NameLookup for undefined x, got {event:?}");
     };
     assert_eq!(lookup.name, "x");

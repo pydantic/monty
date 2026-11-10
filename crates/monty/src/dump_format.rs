@@ -122,7 +122,7 @@ pub fn dump(
 ///
 /// The metadata travels with the state because a restored session is otherwise
 /// silently downgraded — losing `script_name` corrupts tracebacks, and losing
-/// `type_check` disables enforcement the parent asked for.
+/// `type_check` disables enforcement the client asked for.
 #[derive(Debug, Deserialize)]
 pub struct Dump {
     /// Script name used for tracebacks and type-check diagnostics.

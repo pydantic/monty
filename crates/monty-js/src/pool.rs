@@ -118,7 +118,7 @@ pub struct NativePoolOptions {
     pub max_processes: u32,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms).
+    /// Client-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
     /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
@@ -144,7 +144,7 @@ pub struct NativeRemotePoolOptions {
     pub max_processes: Option<u32>,
     /// How long `enter()` waits for capacity (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms). Absent: none.
+    /// Client-side hard deadline per protocol turn (ms). Absent: none.
     pub request_timeout_ms: Option<f64>,
     /// As [`NativePoolOptions::feed_duration_limit_grace_ms`].
     pub feed_duration_limit_grace_ms: Option<f64>,
