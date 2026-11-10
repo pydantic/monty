@@ -98,7 +98,7 @@ def main() -> None:
     if sys.implementation.name != 'cpython' or sys.version_info[:2] != (3, 14):
         sys.exit(f'run this with CPython 3.14, not {sys.implementation.name} {sys.version.split()[0]}')
     if not args.monty.is_file():
-        sys.exit(f'{args.monty} not found; build it with `cargo build -p monty-runtime --bin monty`')
+        sys.exit(f'{args.monty} not found; build it with `cargo build --release -p monty-runtime --bin monty`')
 
     lib = Path(sysconfig.get_path('stdlib'))
     by_outcome: dict[str, list[str]] = defaultdict(list)
@@ -112,9 +112,12 @@ def main() -> None:
 
 
 def default_monty() -> Path:
-    """The debug `monty` binary under the cargo target directory."""
+    """The release `monty` binary under the cargo target directory.
+
+    Not the debug one: debug builds cap source nesting at 30 levels (release: 200), which real stdlib code exceeds.
+    """
     target = Path(os.environ.get('CARGO_TARGET_DIR', REPO / 'target'))
-    return target / 'debug' / ('monty.exe' if sys.platform == 'win32' else 'monty')
+    return target / 'release' / ('monty.exe' if sys.platform == 'win32' else 'monty')
 
 
 def run_module(module: str, lib: Path, monty: Path, timeout: float) -> str:

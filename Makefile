@@ -269,7 +269,7 @@ check-stdlib: ## Verify the vendored CPython stdlib modules match the pinned CPy
 
 .PHONY: stdlib-candidates
 stdlib-candidates: ## Report which CPython stdlib modules Monty can load, and the first blocker of each
-	cargo build -p monty-runtime --bin monty
+	cargo build --release -p monty-runtime --bin monty
 	uv run scripts/stdlib_candidates.py
 
 .PHONY: check-unicode-type
