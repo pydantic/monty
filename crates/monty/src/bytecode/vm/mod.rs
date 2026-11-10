@@ -2995,6 +2995,6 @@ impl Drop for VM<'_> {
         self.json_string_cache.drop_all(self.heap);
         // Last: the cleanup above may itself drop `Owned` values.
         self.apply_releases();
-        exit_vm(self.outer_release_queue.take());
+        exit_vm(&self.release_queue, self.outer_release_queue.take());
     }
 }

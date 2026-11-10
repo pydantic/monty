@@ -100,8 +100,17 @@ pub(crate) fn enter_vm() -> (Rc<ReleaseQueue>, Option<Rc<ReleaseQueue>>) {
 }
 
 /// Reinstalls the enclosing VM's queue; called when a VM is dropped, after applying its own.
-pub(crate) fn exit_vm(outer: Option<Rc<ReleaseQueue>>) {
-    CURRENT.with_borrow_mut(|current| *current = outer);
+///
+/// VMs must be dropped in reverse creation order; otherwise the wrong queue is
+/// reinstalled and later releases leak, which debug builds catch here.
+pub(crate) fn exit_vm(own: &Rc<ReleaseQueue>, outer: Option<Rc<ReleaseQueue>>) {
+    CURRENT.with_borrow_mut(|current| {
+        debug_assert!(
+            current.as_ref().is_some_and(|current| Rc::ptr_eq(current, own)),
+            "VM dropped while a VM created after it is still live"
+        );
+        *current = outer;
+    });
 }
 
 /// Queues `id` for release by the innermost live VM.
@@ -285,5 +294,46 @@ impl Drop for OwnedKwargs {
             let kwargs = mem::replace(&mut self.0, KwargsValues::Empty);
             queue_values(kwargs.into_iter().flat_map(|(key, value)| [key, value]));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{CompileOptions, PrintWriter, ResourceTracker};
+
+    use crate::{
+        bytecode::VM,
+        heap::{Heap, HeapReader},
+        run::Executor,
+    };
+
+    /// The thread-local queue is a stack, so dropping the older of two live VMs first is caught.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "VM dropped while a VM created after it is still live")]
+    fn dropping_vms_out_of_order_is_caught() {
+        let executor = || Executor::new("1".to_owned(), "test.py", Vec::new(), CompileOptions::default()).unwrap();
+        let (mut first_executor, mut second_executor) = (executor(), executor());
+        let mut first_heap = Heap::new(16, ResourceTracker::default());
+        let mut second_heap = Heap::new(16, ResourceTracker::default());
+        HeapReader::with(&mut first_heap, &mut first_executor, |reader, executor| {
+            let first = VM::new(
+                Vec::new(),
+                &mut executor.tables,
+                &executor.program,
+                reader,
+                PrintWriter::Disabled,
+            );
+            HeapReader::with(&mut second_heap, &mut second_executor, |reader, executor| {
+                let _second = VM::new(
+                    Vec::new(),
+                    &mut executor.tables,
+                    &executor.program,
+                    reader,
+                    PrintWriter::Disabled,
+                );
+                drop(first);
+            });
+        });
     }
 }
