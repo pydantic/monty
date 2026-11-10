@@ -34,7 +34,10 @@ use crate::{
     },
     types::{
         Type,
-        hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
+        hash_table::{
+            CloneTableEntry, Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource,
+            TableWalk,
+        },
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -198,6 +201,17 @@ impl TableEntry for DictEntry {
 
     fn changed_keys_error() -> Option<RunError> {
         Some(ExcType::runtime_error_dict_changed_keys())
+    }
+}
+
+impl CloneTableEntry for DictEntry {
+    #[inline]
+    fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
+        Self {
+            key: self.key.clone_with_heap(heap),
+            value: self.value.clone_with_heap(heap),
+            hash: self.hash,
+        }
     }
 }
 
@@ -412,21 +426,12 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 impl<'h> HeapRead<'h, Dict> {
     /// Copies entries into a plain dict, leaving type/factory selection to the caller.
     /// `dict(special)` must discard that metadata, while `.copy()` preserves it.
-    pub(crate) fn copy_entries(&self, vm: &mut VM<'h>) -> RunResult<Dict> {
-        let mut copy = Dict::new();
-        copy.contains_refs = self.get(vm.heap).contains_refs;
-
-        // A timeout must release every key/value reference retained so far.
-        let mut copy_guard = DropGuard::new(copy, vm);
-        let (copy, vm) = copy_guard.as_parts_mut();
-        self.get(vm.heap)
-            .table
-            .copy_into(&mut copy.table, &vm.heap.tracker, |entry| DictEntry {
-                key: entry.key.clone_with_heap(vm.heap),
-                value: entry.value.clone_with_heap(vm.heap),
-                hash: entry.hash,
-            })?;
-        Ok(copy_guard.into_inner())
+    pub(crate) fn copy_plain(&self, vm: &mut VM<'h>) -> RunResult<Dict> {
+        Ok(Dict {
+            table: self.copy_table(vm)?,
+            contains_refs: self.get(vm.heap).contains_refs,
+            kind: DictKind::plain(),
+        })
     }
 
     /// Allocates an empty dict carrying this one's flavour — plain,
@@ -549,6 +554,8 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
     /// Returns Err if key is unhashable.
+    // Inlining lets callers eliminate the wrapper call and temporary Option.
+    #[inline]
     pub(crate) fn dict_get<'a>(&'a self, key: &Value, vm: &'a mut VM<'h>) -> RunResult<Option<Value>> {
         let (found, _hash) = self.find_index_hash(key, vm)?;
         if let Some(slot) = found {
@@ -774,7 +781,7 @@ impl Dict {
                 let mut source_guard = DropGuard::new(other_value, kwargs_guard.ctx());
                 let (source, vm) = source_guard.as_parts();
                 if let Some(HeapReadOutput::Dict(source)) = source.read_heap(vm) {
-                    let copy = source.copy_entries(vm)?;
+                    let copy = source.copy_plain(vm)?;
                     mem::replace(dict, copy).drop_with(vm);
                 } else {
                     let (source, vm) = source_guard.into_parts();
@@ -1520,16 +1527,16 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 .into());
             }
             StaticStrings::Get => {
-                // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", vm.heap)?;
-                defer_drop!(key, vm);
-                let default = default.unwrap_or(Value::None);
-                let mut default_guard = DropGuard::new(default, vm);
-                let vm = default_guard.ctx();
-                // Handle the lookup - may fail for unhashable keys
-                match self.dict_get(key, vm)? {
-                    Some(v) => Ok(v),
-                    None => Ok(default_guard.into_inner()),
+                // Guard both arguments through callbacks; release the default before the key.
+                let mut pending = DropGuard::new((default, key), vm);
+                let ((_, key), vm) = pending.as_parts();
+                if let Some(value) = self.dict_get(key, vm)? {
+                    Ok(value)
+                } else {
+                    let ((default, key), vm) = pending.into_parts();
+                    key.drop_with(vm);
+                    Ok(default.unwrap_or(Value::None))
                 }
             }
             StaticStrings::Keys => {
@@ -1695,8 +1702,8 @@ impl HeapItem for Dict {
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for Dict {
-    fn drop_with(mut self, heap: &mut C) {
-        self.table.take_entries().drop_with(heap);
+    fn drop_with(self, heap: &mut C) {
+        self.table.drop_with(heap);
         self.kind.drop_with(heap);
     }
 }
@@ -1730,7 +1737,7 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    let mut copy = dict.copy_entries(vm)?;
+    let mut copy = dict.copy_plain(vm)?;
     copy.set_kind(dict.get(vm.heap).cloned_kind(vm.heap));
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(copy))))
 }

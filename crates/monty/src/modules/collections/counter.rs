@@ -194,7 +194,7 @@ pub(crate) fn counter_update<'h>(
                 let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
                     unreachable!("mapping is a dict");
                 };
-                let mut copy = src.copy_entries(vm)?;
+                let mut copy = src.copy_plain(vm)?;
                 copy.set_kind(counter.get(vm.heap).cloned_kind(vm.heap));
                 mem::replace(counter.get_mut(vm.heap), copy).drop_with(vm);
             } else {

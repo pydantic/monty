@@ -1560,13 +1560,17 @@ fn timeout_in_shallow_copy_fill_loop() {
 
 /// Empty copies reserve no entry/index buffers, so their preflight must charge zero bytes.
 #[test]
-fn empty_dict_copies_do_not_charge_entry_storage() {
+fn empty_container_copies_do_not_charge_entry_storage() {
     for code in [
         "len({}.copy())",
         "len(dict({}))",
         "from collections import Counter\nlen(Counter({}))",
         "from collections import defaultdict\nlen(defaultdict(None, {}))",
         "from collections import Counter\nc = Counter()\nc.update({})\nlen(c)",
+        "s = set()\nlen(s.copy())",
+        "s = set()\nlen(set(s))",
+        "s = set()\nlen(frozenset(s))",
+        "import copy\ns = set()\nlen(copy.copy(s))",
     ] {
         let mut run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
         // This binary has no allocator probe; a zero limit isolates bulk-allocation preflights.
@@ -1605,6 +1609,58 @@ fn timeout_in_dict_copy_releases_partial_entries() {
             MontyObject::int(4_000_000)
         );
     }
+}
+
+/// Full set copies must stop mid-fill and release every retained member on failure.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn timeout_in_set_copy_releases_partial_entries() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("import copy\ntarget = set()", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let initial_entries = repl.heap_entry_count();
+    // Insert the heap-backed member first so a partial copy has retained it before timing out.
+    repl.feed_run(
+        "shared = ('a heap-backed set member',)\ns = {shared}\ns.update(range(4_000_000))",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    for code in [
+        "s.copy()",
+        "copy.copy(s)",
+        "set(s)",
+        "frozenset(s)",
+        "s | set()",
+        "s.issubset(s)",
+        "target |= s",
+    ] {
+        repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
+        let start = ThreadTime::now();
+        let exc = repl
+            .feed_run(code, vec![], PrintWriter::Disabled)
+            .expect_err("the copy must hit the time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{code}");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{code}: copy did not stop promptly"
+        );
+
+        repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+        assert_eq!(
+            repl.feed_run("len(s)", vec![], PrintWriter::Disabled).unwrap(),
+            MontyObject::int(4_000_001),
+            "{code}"
+        );
+    }
+    // In-place operations may retain a completed prefix when the budget expires.
+    repl.feed_run("target.clear()\ns = None\nshared = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "partial copies must release their members"
+    );
 }
 
 /// Feeds shorter than the dispatch-checkpoint interval never probe GC inside

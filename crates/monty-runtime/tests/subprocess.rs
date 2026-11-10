@@ -1611,18 +1611,21 @@ for _ in range(2000):
     child.shutdown();
 }
 
-/// `set(s)` and `frozenset(s)` copy a set's storage wholesale, so the whole
-/// copy runs between two execution checkpoints and has to be charged first.
-/// The source is sized as a fraction of the limit: uncharged, one that fits
-/// under the soft limit jumps the hard ceiling and the worker is killed where
-/// a catchable `MemoryError` belongs.
+/// Full set copies preflight entry and index storage while the source remains live.
 #[test]
 fn copying_a_large_set_fails_softly() {
-    for expr in ["set(s)", "frozenset(s)"] {
+    for expr in [
+        "set(s)",
+        "frozenset(s)",
+        "s.copy()",
+        "copy.copy(s)",
+        "s | set()",
+        "s.issubset(s)",
+    ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
         // the source fits; its copy is what crosses the limit
-        child.feed_complete("s = set(range(400_000))");
+        child.feed_complete("import copy\ns = set(range(400_000))");
 
         let (_, event) = child.feed(expr);
         let error = expect_error(event);
@@ -1642,13 +1645,16 @@ fn copying_an_emptied_set_costs_nothing() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
     // grown, then emptied: the entries are gone, the table that indexed them is not
-    child.feed_complete("s = set(range(200_000))\ns.clear()");
+    child.feed_complete("import copy\ns = set(range(200_000))\nfor i in range(200_000):\n    s.remove(i)");
 
-    assert_eq!(
-        child.feed_complete("copies = [set(s) for _ in range(20)]\nlen(copies)"),
-        MontyObject::int(20)
-    );
-    assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    for expr in ["set(s)", "frozenset(s)", "s.copy()", "copy.copy(s)"] {
+        assert_eq!(
+            child.feed_complete(&format!("copies = [{expr} for _ in range(20)]\nlen(copies)")),
+            MontyObject::int(20),
+            "{expr}"
+        );
+        assert_eq!(child.feed_complete("len(copies[0])"), MontyObject::int(0));
+    }
     child.shutdown();
 }
 
