@@ -91,8 +91,8 @@ for _day, _expected in [
     (date(1, 1, 1), (1, 1, 1)),
     (date(9999, 12, 31), (9999, 52, 5)),
 ]:
-    assert tuple(_day.isocalendar()) == _expected, _day
-    assert tuple(datetime(_day.year, _day.month, _day.day, 23, 59).isocalendar()) == _expected, _day
+    assert tuple(_day.isocalendar()) == _expected
+    assert tuple(datetime(_day.year, _day.month, _day.day, 23, 59).isocalendar()) == _expected
 assert repr(datetime(2026, 12, 31, 5, tzinfo=timezone.utc).isocalendar()) == (
     'datetime.IsoCalendarDate(year=2026, week=53, weekday=4)'
 )
@@ -136,8 +136,8 @@ for _args, _msg in [
     ((2026, 1), "TypeError: fromisocalendar() missing required argument 'day' (pos 3)"),
     ((2026, 1, 1, 1), 'TypeError: fromisocalendar() takes at most 3 arguments (4 given)'),
 ]:
-    assert _raises(lambda *a: date.fromisocalendar(*a), *_args) == _msg, _args
-    assert _raises(lambda *a: datetime.fromisocalendar(*a), *_args) == _msg, _args
+    assert _raises(lambda *a: date.fromisocalendar(*a), *_args) == _msg
+    assert _raises(lambda *a: datetime.fromisocalendar(*a), *_args) == _msg
 
 # === timetuple() ===
 _tt = date(2026, 11, 7).timetuple()

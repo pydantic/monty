@@ -34,4 +34,4 @@ for _ts, _msg in [
     (None, 'TypeError: argument must be int or float, not NoneType'),
     (1 + 0j, 'TypeError: argument must be int or float, not complex'),
 ]:
-    assert _raises(lambda *a, **k: datetime.utcfromtimestamp(*a, **k), _ts) == _msg, _ts
+    assert _raises(lambda *a, **k: datetime.utcfromtimestamp(*a, **k), _ts) == _msg
