@@ -60,14 +60,7 @@ impl VM<'_> {
 
     /// Binary division.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric_division(
-            |lhs, rhs| {
-                // Larger integers need exact division before rounding to a float.
-                (lhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && rhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS)
-                    .then(|| Value::Float(lhs as f64 / rhs as f64))
-            },
-            |lhs, rhs| lhs / rhs,
-        ) {
+        if self.binary_div_immediate() {
             return Ok(());
         }
 
@@ -76,10 +69,7 @@ impl VM<'_> {
 
     /// Binary floor division.
     pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric_division(
-            |lhs, rhs| floor_divmod(lhs, rhs).map(|(quotient, _)| Value::Int(quotient)),
-            |lhs, rhs| py_float_divmod(lhs, rhs).0,
-        ) {
+        if self.binary_floordiv_immediate() {
             return Ok(());
         }
 
@@ -88,15 +78,43 @@ impl VM<'_> {
 
     /// Binary modulo.
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
-        if self.binary_numeric_division(
-            // MIN % -1 is zero even though the quotient overflows i64.
-            |lhs, rhs| Some(Value::Int(floor_divmod(lhs, rhs).map_or(0, |(_, remainder)| remainder))),
-            py_float_mod,
-        ) {
+        if self.binary_mod_immediate() {
             return Ok(());
         }
 
         self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
+    }
+
+    /// Leaves operands untouched when the ordinary numeric path is needed.
+    #[inline]
+    pub(super) fn binary_div_immediate(&mut self) -> bool {
+        self.binary_numeric_division(
+            |lhs, rhs| {
+                // Larger integers need exact division before rounding to a float.
+                (lhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS && rhs.unsigned_abs() <= 1 << f64::MANTISSA_DIGITS)
+                    .then(|| Value::Float(lhs as f64 / rhs as f64))
+            },
+            |lhs, rhs| lhs / rhs,
+        )
+    }
+
+    /// Leaves operands untouched when the ordinary numeric path is needed.
+    #[inline]
+    pub(super) fn binary_floordiv_immediate(&mut self) -> bool {
+        self.binary_numeric_division(
+            |lhs, rhs| floor_divmod(lhs, rhs).map(|(quotient, _)| Value::Int(quotient)),
+            |lhs, rhs| py_float_divmod(lhs, rhs).0,
+        )
+    }
+
+    /// Leaves operands untouched when the ordinary numeric path is needed.
+    #[inline]
+    pub(super) fn binary_mod_immediate(&mut self) -> bool {
+        self.binary_numeric_division(
+            // MIN % -1 is zero even though the quotient overflows i64.
+            |lhs, rhs| Some(Value::Int(floor_divmod(lhs, rhs).map_or(0, |(_, remainder)| remainder))),
+            py_float_mod,
+        )
     }
 
     /// Binary power.
@@ -205,7 +223,7 @@ impl VM<'_> {
         }
     }
 
-    /// Handles immediate int/float pairs without reference-count guards or type dispatch.
+    /// Handles immediate pairs, promoting integer overflow through the heap path.
     #[inline]
     fn binary_numeric(
         &mut self,
@@ -213,13 +231,41 @@ impl VM<'_> {
         wide_op: impl FnOnce(i128, i128) -> i128,
         float_op: impl FnOnce(f64, f64) -> f64,
     ) -> bool {
+        if self.binary_numeric_immediate(int_op, float_op) {
+            return true;
+        }
+
         let len = self.stack.len();
+        let (Value::Int(lhs), Value::Int(rhs)) = (&self.stack[len - 2], &self.stack[len - 1]) else {
+            return false;
+        };
+        // Only integer overflow reaches this branch; sums, differences and products fit in i128.
+        let result = wide_i128_into_value(wide_op(i128::from(*lhs), i128::from(*rhs)), self.heap);
+        self.stack[len - 2] = result;
+        self.stack.truncate(len - 1);
+        true
+    }
+
+    /// Tries non-allocating numeric work so dispatch can keep promotion and errors outlined.
+    #[inline]
+    pub(super) fn binary_numeric_immediate(
+        &mut self,
+        int_op: impl FnOnce(i64, i64) -> Option<i64>,
+        float_op: impl FnOnce(f64, f64) -> f64,
+    ) -> bool {
+        let len = self.stack.len();
+        if let Value::Int(lhs) = &self.stack[len - 2]
+            && let Value::Int(rhs) = &self.stack[len - 1]
+        {
+            let Some(result) = int_op(*lhs, *rhs) else {
+                return false;
+            };
+            self.stack[len - 2] = Value::Int(result);
+            self.stack.truncate(len - 1);
+            return true;
+        }
+
         let result = match (&self.stack[len - 2], &self.stack[len - 1]) {
-            (Value::Int(lhs), Value::Int(rhs)) => Some(match int_op(*lhs, *rhs) {
-                Some(result) => Value::Int(result),
-                // Sums, differences and products of two i64 operands fit in i128.
-                None => wide_i128_into_value(wide_op(i128::from(*lhs), i128::from(*rhs)), self.heap),
-            }),
             (Value::Float(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs, *rhs))),
             (Value::Int(lhs), Value::Float(rhs)) => Some(Value::Float(float_op(*lhs as f64, *rhs))),
             (Value::Float(lhs), Value::Int(rhs)) => Some(Value::Float(float_op(*lhs, *rhs as f64))),

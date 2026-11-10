@@ -20,6 +20,17 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 
 See the [documentation](https://pydantic.dev/docs/monty/) for the motivation, latency measurements, comparison to alternatives and the supported Python subset.
 
+## Interpreter dispatch experiment
+
+Every opcode uses a threaded handler. A persistent trampoline receives a one-byte continuation status;
+only exits and errors write the larger result payload. Direct handlers keep instruction state in registers
+for stack operations, branches, immediate arithmetic and common iterators.
+Batches unwind after at most 256 instructions, or 16 inside VM re-entry, so correctness does not require tail-call optimization.
+Both paths retain the original resource-check cadence and checked instruction fetches.
+
+See the [experiment and benchmarks](../monty-bench/experiments/threaded-dispatch/README.md)
+and the [handler guide](../monty-bench/experiments/threaded-dispatch/HANDLERS.md).
+
 ## Basic usage
 
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
