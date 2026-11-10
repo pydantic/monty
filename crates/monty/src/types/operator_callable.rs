@@ -16,10 +16,10 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::FrozenFunction,
     hash::{HashValue, identity_hash},
-    heap::{ContainsHeap, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead},
     modules::operator::BinaryOp,
     types::{BuiltinType, LazyHeapSet, PyTrait, Type, list::repr_should_truncate, tuple::allocate_tuple},
     value::{EitherStr, VALUE_SIZE, Value},
@@ -111,8 +111,9 @@ impl OperatorCallable {
         let callable = Self { kind, items, keywords };
 
         let error = match kind {
-            OperatorKind::ItemGetter if callable.items.is_empty() => Some(arity_error(name, 0)),
-            OperatorKind::AttrGetter if callable.items.is_empty() => Some(arity_error(name, 0)),
+            OperatorKind::ItemGetter | OperatorKind::AttrGetter if callable.items.is_empty() => {
+                Some(ExcType::type_error_expected_exact(name, 1, 0))
+            }
             OperatorKind::MethodCaller if callable.items.is_empty() => Some(ExcType::type_error(
                 "methodcaller needs at least one argument, the method name",
             )),
@@ -168,11 +169,6 @@ impl OperatorCallable {
     }
 }
 
-/// CPython's "expected 1 argument" error for a call or construction with `count`.
-fn arity_error(name: &str, count: usize) -> RunError {
-    ExcType::type_error(format!("{name} expected 1 argument, got {count}"))
-}
-
 /// Extracts the one object a getter is called on, releasing everything on error.
 ///
 /// `itemgetter` and `attrgetter` reject keywords before counting arguments;
@@ -185,20 +181,66 @@ fn take_object(kind: OperatorKind, args: ArgValues, vm: &mut VM<'_>) -> RunResul
         args.reject_kwargs(name, vm.heap)?
     };
     let (positional, keywords) = args.into_parts();
+    defer_drop!(keywords, vm);
     let mut positional: Vec<Value> = positional.collect();
-    if positional.len() != 1 {
-        let count = positional.len();
+    let count = positional.len();
+    if count != 1 {
         positional.drop_with(vm);
-        keywords.drop_with(vm);
-        return Err(arity_error(name, count));
-    }
-    if !keywords.is_empty() {
+        Err(ExcType::type_error_expected_exact(name, 1, count))
+    } else if !keywords.is_empty() {
         positional.drop_with(vm);
-        keywords.drop_with(vm);
-        return Err(ExcType::type_error_no_kwargs(name));
+        Err(ExcType::type_error_no_kwargs(name))
+    } else {
+        Ok(positional.remove(0))
     }
-    keywords.drop_with(vm);
-    Ok(positional.remove(0))
+}
+
+/// `methodcaller(name, *args, **kwargs)(obj)`: calls `obj.name(*args, **kwargs)`.
+fn call_method<'h>(
+    callable: &HeapObjectRead<'h, OperatorCallable>,
+    obj: Value,
+    vm: &mut VM<'h>,
+) -> RunResult<CallResult> {
+    let mut obj = DropGuard::new(obj, vm);
+    let (attr, args) = {
+        let (_, vm) = obj.as_parts_mut();
+        let this = callable.get(vm.heap);
+        let name = this.items[0].try_to_str_heap(vm.heap, vm.interns).unwrap_or_default();
+        // The name copy and the keyword pairs are allocations of their own, so
+        // they are preflighted as `clone_items` does the positional slots.
+        vm.heap.tracker.check_allocation(
+            name.len()
+                .saturating_add(this.keywords.len().saturating_mul(2 * VALUE_SIZE)),
+        )?;
+        let attr = EitherStr::Heap(name.to_owned());
+        let items = this.clone_items(1, vm)?;
+        let pairs: Vec<(Value, Value)> = this
+            .keywords
+            .iter()
+            .map(|(key, value)| (key.clone_with_heap(vm), value.clone_with_heap(vm)))
+            .collect();
+        (
+            attr,
+            ArgValues::from_parts(items.into_vec(), KwargsValues::Pairs(pairs)),
+        )
+    };
+    let (obj, vm) = obj.into_parts();
+    // Forwarding is a native call that can reach this callable again, so it
+    // takes a re-entry level, as `functools.partial` does.
+    if let Err(err) = vm.enter_run_reentry() {
+        (obj, args).drop_with(vm);
+        return Err(err.into());
+    }
+    let mut guard = RunReentryGuard::new(vm);
+    let vm = &mut *guard;
+    // A name the program has interned goes through `VM::call_attr`, which
+    // owns the dunder dispatch (`__enter__`, `__exit__`) the syntax relies on.
+    if let Some(name_id) = vm.interns.get_string_id_by_name(attr.as_str(vm.interns)) {
+        vm.call_attr(obj, name_id, args)
+    } else {
+        defer_drop!(obj, vm);
+        obj.py_value(vm).py_call_attr(vm, &attr, args)
+    }
 }
 
 /// Releases the refs a callable owns, for one abandoned before it reaches the
@@ -227,13 +269,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OperatorCallable> {
     fn py_call(&mut self, args: ArgValues, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let kind = self.get(vm.heap).kind;
         let obj = take_object(kind, args, vm)?;
-        let items = match self.get(vm.heap).clone_items(0, vm) {
-            Ok(items) => items,
-            Err(err) => {
-                obj.drop_with(vm);
-                return Err(err);
-            }
+        if kind == OperatorKind::MethodCaller {
+            return call_method(self, obj, vm);
+        }
+        let mut obj = DropGuard::new(obj, vm);
+        let items = {
+            let (_, vm) = obj.as_parts_mut();
+            self.get(vm.heap).clone_items(0, vm)?
         };
+        let (obj, vm) = obj.into_parts();
         let tuple_type = Value::Builtin(Builtins::Type(BuiltinType::Tuple));
         let getattr = Value::Builtin(Builtins::Function(BuiltinsFunctions::Getattr));
         match kind {
@@ -256,49 +300,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, OperatorCallable> {
                 FrozenFunction::OperatorAttrgetterMany,
                 [obj, allocate_tuple(items, vm.heap), getattr, tuple_type],
             ),
-            OperatorKind::MethodCaller => {
-                let mut items = items;
-                let name = items.remove(0);
-                let name_len = name.try_to_str_heap(vm.heap, vm.interns).map_or(0, str::len);
-                let keyword_count = self.get(vm.heap).keywords.len();
-                // The name copy and the keyword pairs are allocations of their own, so
-                // they are preflighted as `clone_items` does the positional slots.
-                if let Err(err) = vm
-                    .heap
-                    .tracker
-                    .check_allocation(name_len.saturating_add(keyword_count.saturating_mul(2 * VALUE_SIZE)))
-                {
-                    name.drop_with(vm);
-                    obj.drop_with(vm);
-                    items.drop_with(vm);
-                    return Err(err.into());
-                }
-                let attr = EitherStr::Heap(name.try_to_str_heap(vm.heap, vm.interns).unwrap_or_default().to_owned());
-                name.drop_with(vm);
-                let pairs: Vec<(Value, Value)> = self
-                    .get(vm.heap)
-                    .keywords
-                    .iter()
-                    .map(|(key, value)| (key.clone_with_heap(vm), value.clone_with_heap(vm)))
-                    .collect();
-                let args = ArgValues::from_parts(items.into_vec(), KwargsValues::Pairs(pairs));
-                // Forwarding is a native call that can reach this callable again, so it
-                // takes a re-entry level, as `functools.partial` does.
-                if let Err(err) = vm.enter_run_reentry() {
-                    obj.drop_with(vm);
-                    args.drop_with(vm);
-                    return Err(err.into());
-                }
-                let mut guard = RunReentryGuard::new(vm);
-                let vm = &mut *guard;
-                // A name the program has interned goes through `VM::call_attr`, which
-                // owns the dunder dispatch (`__enter__`, `__exit__`) the syntax relies on.
-                if let Some(name_id) = vm.interns.get_string_id_by_name(attr.as_str(vm.interns)) {
-                    return vm.call_attr(obj, name_id, args);
-                }
-                defer_drop!(obj, vm);
-                obj.py_value(vm).py_call_attr(vm, &attr, args)
-            }
+            OperatorKind::MethodCaller => unreachable!("methodcaller is called above"),
         }
     }
 

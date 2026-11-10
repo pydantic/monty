@@ -12,6 +12,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, RunReentryGuard, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::FrozenFunction,
     heap::{DropWithContext, HeapData, HeapId},
@@ -402,8 +403,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: OperatorFunctions, args: ArgValues
             let (a, b) = args.get_two_args(&name, vm.heap)?;
             if !can_concatenate(&a, &b, vm) {
                 let err = ExcType::type_error(format!("'{}' object can't be concatenated", a.py_type_name(vm)));
-                a.drop_with(vm);
-                b.drop_with(vm);
+                (a, b).drop_with(vm);
                 return Err(err);
             }
             if inplace {
@@ -503,21 +503,19 @@ struct SetitemArgs {
 /// otherwise nest Rust frames until the stack overflows.
 fn call_call(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (positional, keywords) = args.into_parts();
-    let mut values: Vec<Value> = positional.collect();
-    if values.is_empty() {
+    let mut positional: Vec<Value> = positional.collect();
+    if positional.is_empty() {
         keywords.drop_with(vm);
         return Err(ExcType::type_error_at_least("call", 1, 0));
     }
-    let target = values.remove(0);
+    let target = positional.remove(0);
+    let args = ArgValues::from_parts(positional, keywords);
     if let Err(err) = vm.enter_run_reentry() {
-        target.drop_with(vm);
-        values.drop_with(vm);
-        keywords.drop_with(vm);
+        (target, args).drop_with(vm);
         return Err(err.into());
     }
     let mut guard = RunReentryGuard::new(vm);
     let vm = &mut *guard;
-    let result = vm.call_function(&target, ArgValues::from_parts(values, keywords));
-    target.drop_with(vm);
-    result
+    defer_drop!(target, vm);
+    vm.call_function(target, args)
 }
