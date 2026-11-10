@@ -31,7 +31,8 @@ use monty_pool::{
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
-use monty_proto::{encode_framed_into, ext_result_to_proto, pb};
+use monty_proto::encode_framed_into;
+use monty_proto::{ext_result_to_proto, pb};
 // only the off-Linux CPU rejection test names the clock; Linux CPU tests import their own
 #[cfg(not(target_os = "linux"))]
 use monty_types::ExecutionClock;
