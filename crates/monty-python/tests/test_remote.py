@@ -23,6 +23,7 @@ from pathlib import Path
 from types import MappingProxyType, ModuleType
 from typing import Any
 
+import anyio
 import grpc
 import pytest
 from grpc import aio
@@ -32,7 +33,10 @@ from pydantic_monty import (
     AsyncMontyRemote,
     AsyncMontyWebsocket,  # pyright: ignore[reportDeprecated]
     ExternalModule,
+    MontyConfigurationError,
+    MontyConnectError,
     MontyDisconnectError,
+    MontyError,
     MontyRefusedError,
     MontyRuntimeError,
     MontyShutdown,
@@ -102,8 +106,8 @@ async def storing_url() -> AsyncIterator[str]:
     """Serves a fake of a server that stores sessions, bridging each stream to a
     real `monty subprocess` child.
 
-    It names the session on the reply to `Configure` and to `Load`, and the third
-    request of the first stream is not run: the child is dumped, its state kept
+    It names the session on the reply to its first request and to `Load`, and the
+    second request of the first stream is not run: the child is dumped, its state kept
     under the session's ID, and the request answered with `ShutdownDump` naming
     that ID. A later `Load` of the ID gives the child the stored state.
     """
@@ -112,6 +116,61 @@ async def storing_url() -> AsyncIterator[str]:
         server, url = await storing.relay.start_server(storing.relay.SessionHandler(storing.handle), '127.0.0.1', 0)
         try:
             yield url
+        finally:
+            await server.stop(None)
+
+
+async def test_pool_exit_keeps_credentials_alive_until_server_close():
+    """Pool exit preserves a temporary grant while the server finishes a departed stream."""
+    relay = _load_relay_script()
+    credential_live = True
+    parking_started = anyio.Event()
+    allow_validation = anyio.Event()
+    lifetime_ended = anyio.Event()
+    authorized: list[bool] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        """Hold the server's final credential check behind an explicit gate."""
+
+        async def until_close() -> AsyncIterator[bytes]:
+            """Read the request EOF before checking the synthetic grant."""
+            async for request in requests:
+                yield request
+            parking_started.set()
+            await allow_validation.wait()
+            authorized.append(credential_live)
+
+        async with aclosing(relay.relay_behaviour(find_monty_binary())(until_close(), context)) as events:
+            async for event in events:
+                yield event
+
+    async def session_lifetime(url: str) -> None:
+        """Revoke the grant after both SDK contexts have exited."""
+        nonlocal credential_live
+        try:
+            async with AsyncMontyRemote(url, max_processes=1) as pool, pool.checkout() as session:
+                assert await session.feed_run('6 * 7') == snapshot(42)
+        finally:
+            credential_live = False
+            lifetime_ended.set()
+
+    async with _reaping_children(relay):
+        server, url = await relay.start_server(relay.SessionHandler(behaviour), '127.0.0.1', 0)
+        try:
+            with anyio.fail_after(5):
+                async with anyio.create_task_group() as tasks:
+                    tasks.start_soon(session_lifetime, url)
+                    await parking_started.wait()
+                    try:
+                        with anyio.move_on_after(0.05):
+                            await lifetime_ended.wait()
+                        assert lifetime_ended.is_set() == snapshot(False)
+                    finally:
+                        allow_validation.set()
+                assert authorized == snapshot([True])
+                assert credential_live == snapshot(False)
         finally:
             await server.stop(None)
 
@@ -143,7 +202,9 @@ async def _reaping_children(relay: ModuleType) -> AsyncGenerator[list[asyncio.su
 
 _LENGTH_PREFIX = struct.Struct('<I')
 # `ParentRequest.kind` and `ChildEvent.kind` field numbers, from `monty.proto`
-_REQUEST_DUMP, _REQUEST_LOAD = 7, 8
+_REQUEST_CONFIGURE, _REQUEST_DUMP, _REQUEST_LOAD = 1, 7, 8
+# `Configure.first`'s `Load` arm
+_CONFIGURE_LOAD = 16
 _EVENT_PRINT, _EVENT_DUMP_RESULT, _EVENT_OK, _EVENT_SHUTDOWN = 1, 9, 10, 12
 # `ChildEvent.kind` arms own the tags below this; the message-level fields start here
 _FIRST_EVENT_FIELD = 20
@@ -169,7 +230,8 @@ class _StoringServer:
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())  # admit the stream; see `admit` in the relay script
         self.streams += 1
-        drain_at = 3 if self.streams == 1 else None
+        # request 1 is the `Configure`, carrying the first feed; the first stream parks the next
+        drain_at = 2 if self.streams == 1 else None
         child = await self.relay.spawn_child(self.monty_bin)
         assert child.stdin is not None and child.stdout is not None
         stdin, stdout = child.stdin, child.stdout
@@ -197,11 +259,20 @@ class _StoringServer:
                     self.records[session_id] = _proto_fields(reply[_EVENT_DUMP_RESULT])[1]
                     yield _bytes_field(_EVENT_SHUTDOWN, _bytes_field(1, session_id))
                     return
-                names = request_count == 1 or _REQUEST_LOAD in fields
-                if _REQUEST_LOAD in fields:
+                # a `Load` comes alone or as the first request a `Configure` carries
+                configure = fields.get(_REQUEST_CONFIGURE)
+                load = fields.get(_REQUEST_LOAD)
+                if load is None and configure is not None:
+                    load = _proto_fields(configure).get(_CONFIGURE_LOAD)
+                names = request_count == 1 or load is not None
+                if load is not None:
                     # the child loads the stored bytes the ID stands for
-                    state = self.records[_proto_fields(fields[_REQUEST_LOAD])[1]]
-                    message = _bytes_field(_REQUEST_LOAD, _bytes_field(1, state))
+                    stored = _bytes_field(1, self.records[_proto_fields(load)[1]])
+                    if configure is None:
+                        message = _bytes_field(_REQUEST_LOAD, stored)
+                    else:
+                        # a repeated message field merges into the first, so this `Load` replaces its state
+                        message = _bytes_field(_REQUEST_CONFIGURE, configure + _bytes_field(_CONFIGURE_LOAD, stored))
                 await to_child(message)
                 while True:
                     reply = await from_child()
@@ -468,17 +539,13 @@ def raise_no_token() -> dict[str, str]:
         ),
         (
             lambda: {'bad header': 't'},
-            RuntimeError,
-            snapshot(
-                'failed to spawn monty worker: http://127.0.0.1:9: metadata entry "bad header": invalid gRPC metadata key name'
-            ),
+            MontyConfigurationError,
+            snapshot('http://127.0.0.1:9: metadata entry "bad header": invalid gRPC metadata key name'),
         ),
         (
             lambda: {'x-token': 'a\nb'},
-            RuntimeError,
-            snapshot(
-                'failed to spawn monty worker: http://127.0.0.1:9: metadata entry "x-token" value: failed to parse metadata value'
-            ),
+            MontyConfigurationError,
+            snapshot('http://127.0.0.1:9: metadata entry "x-token" value: failed to parse metadata value'),
         ),
         (raise_no_token, ValueError, snapshot('no token available')),
         # a `str` that is not encodable — a lone surrogate — cannot become a header
@@ -512,21 +579,23 @@ async def test_checkout_rejects_unknown_limits():
 async def test_an_unknown_url_scheme_is_refused():
     """Only `http`/`https` (and `ws`/`wss` as their aliases) are dialed; anything
     else would go out in plaintext, metadata included, so it is refused."""
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(MontyConnectError) as exc_info:
         async with AsyncMontyRemote('grpc://127.0.0.1:9'):
             pass
-    assert str(exc_info.value) == snapshot(
-        'failed to spawn monty worker: grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https'
-    )
+    assert str(exc_info.value) == snapshot('grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https')
 
 
 async def test_unreachable_server_fails_the_checkout():
     """Nothing is dialed until a checkout, which then reports the dial failure."""
     async with AsyncMontyRemote('http://127.0.0.1:9') as pool:
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(MontyError) as exc_info:
             async with pool.checkout():
                 pass
-    assert exc_info.value.args[0].startswith('failed to spawn monty worker: http://127.0.0.1:9: ')
+    err = exc_info.value
+    assert isinstance(err, MontyConnectError)
+    assert err.status_code == snapshot(None)
+    assert err.status_message == snapshot(None)
+    assert str(err) == f'http://127.0.0.1:9: {err.transport_error}'
 
 
 async def test_plain_relay_names_no_session(relay_url: str):
@@ -534,7 +603,7 @@ async def test_plain_relay_names_no_session(relay_url: str):
     async with AsyncMontyRemote(relay_url, request_timeout=30.0) as pool:
         for ephemeral in (None, True, False):
             async with pool.checkout(ephemeral=ephemeral) as session:
-                assert session.session_id is None
+                assert await session.get_session_id() is None
                 assert await session.feed_run('1 + 1') == snapshot(2)
 
 
@@ -554,7 +623,7 @@ async def test_loaded_session_has_no_id_on_a_plain_relay(relay_url: str):
             dump = await session.dump()
         async with pool.checkout() as session:
             await session.load_session(dump)
-            assert session.session_id is None
+            assert await session.get_session_id() is None
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -568,14 +637,41 @@ async def test_auto_resume_can_be_disabled(relay_url: str):
 async def test_storing_server_names_the_session_and_resumes_a_shutdown(storing_url: str):
     async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
         async with pool.checkout() as session:
-            assert session.session_id == snapshot(b'sess-1')
             await session.feed_run('x = 20')
+            assert await session.get_session_id() == snapshot(b'sess-1')
             # the fake parks the session instead of running this feed; the
             # client reloads the ID on a new stream and re-sends it
             assert await session.feed_run('x + 1') == snapshot(21)
         # the ID the resume adopted outlives the checkout, even when nothing
         # read it while the checkout was live
-        assert session.session_id == snapshot(b'sess-3')
+        assert await session.get_session_id() == snapshot(b'sess-2')
+
+
+async def test_get_session_id_opens_the_session(storing_url: str):
+    """Before any request, `get_session_id()` sends the configuration alone and waits for the ID."""
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            assert await session.get_session_id() == snapshot(b'sess-1')
+            assert await session.feed_run('x = 20') == snapshot(None)
+
+
+async def test_get_session_id_needs_an_entered_session(storing_url: str):
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        with pytest.raises(RuntimeError) as exc_info:
+            await pool.checkout().get_session_id()
+    assert exc_info.value.args[0] == snapshot(
+        'get_session_id() needs an entered session: use `async with pool.checkout() as session`'
+    )
+
+
+async def test_session_id_property_is_deprecated(storing_url: str):
+    """The property races the first request, so it warns; it still reads the ID once known."""
+    async with AsyncMontyRemote(storing_url, request_timeout=30.0) as pool:
+        async with pool.checkout() as session:
+            await session.feed_run('x = 20')
+            with pytest.warns(DeprecationWarning) as record:
+                assert session.session_id == snapshot(b'sess-1')  # pyright: ignore[reportDeprecated]
+    assert str(record[0].message) == snapshot('session_id is deprecated, use `await session.get_session_id()`')
 
 
 async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_url: str):
@@ -587,7 +683,7 @@ async def test_auto_resume_disabled_raises_shutdown_naming_the_session(storing_u
             assert exc_info.value.dump == snapshot(b'sess-1')
         async with pool.checkout() as session:
             await session.load_session(b'sess-1')
-            assert session.session_id == snapshot(b'sess-3')
+            assert await session.get_session_id() == snapshot(b'sess-2')
             assert await session.feed_run('x + 1') == snapshot(21)
 
 
@@ -670,13 +766,13 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # Configure, carrying the first feed
         if status is not None:
             assert message is not None
             trailers = () if cause is None else (('monty-cause', cause),)
             await context.abort(status, message, trailing_metadata=trailers)
+        return
+        yield b''
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
@@ -688,7 +784,8 @@ async def test_disconnect_details(status: grpc.StatusCode | None, message: str |
                 assert err.status_message == message
                 assert err.cause == cause
                 assert err.transport_error is None
-                assert str(err) == 'monty worker connection closed while waiting for a reply'
+                reason = 'OK' if status is None else f'{status.name}{f" ({cause})" if cause else ""}: {message}'
+                assert str(err) == f'monty worker connection closed while waiting for a reply: {reason}'
                 with pytest.raises(AttributeError):
                     setattr(err, 'status_code', 'OK')
 
@@ -711,14 +808,87 @@ async def test_refused_stream_fails_the_checkout():
                 async with pool.checkout():
                     pass
     assert str(exc_info.value) == snapshot(
-        f'failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity'
+        f'{url} refused the session: RESOURCE_EXHAUSTED (capacity): server at capacity'
     )
     assert exc_info.value.status_code == snapshot('RESOURCE_EXHAUSTED')
     assert exc_info.value.status_message == snapshot('server at capacity')
     assert exc_info.value.cause == snapshot('capacity')
     assert repr(exc_info.value) == snapshot(
-        f'MontyRefusedError(failed to spawn monty worker: {url}: RESOURCE_EXHAUSTED: server at capacity)'
+        f'MontyRefusedError({url} refused the session: RESOURCE_EXHAUSTED (capacity): server at capacity)'
     )
+
+
+@pytest.mark.parametrize(
+    'code,retryable',
+    [
+        (grpc.StatusCode.RESOURCE_EXHAUSTED, True),
+        (grpc.StatusCode.UNAVAILABLE, True),
+        (grpc.StatusCode.UNAUTHENTICATED, False),
+        (grpc.StatusCode.PERMISSION_DENIED, False),
+    ],
+)
+@pytest.mark.parametrize('header,delay', [('12', 12.0), ('invalid', None), (None, None)])
+async def test_refusal_retry_details(code: grpc.StatusCode, retryable: bool, header: str | None, delay: float | None):
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        trailers = () if header is None else (('retry-after', header),)
+        await context.abort(code, 'session unavailable', trailing_metadata=trailers)
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        with pytest.raises(MontyRefusedError) as caught:
+            async with pool.checkout():
+                pass
+    assert caught.value.retryable == retryable
+    assert caught.value.retry_after == delay
+    assert caught.value.status_code == code.name
+
+
+async def test_unexpected_server_status_is_a_connect_error():
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            'unknown service',
+            trailing_metadata=(('monty-cause', 'protocol_violation'),),
+        )
+        yield b''
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url) as pool:
+        with pytest.raises(MontyConnectError) as caught:
+            async with pool.checkout():
+                pass
+    assert caught.value.status_code == snapshot('UNIMPLEMENTED')
+    assert caught.value.status_message == snapshot('unknown service')
+    assert caught.value.cause == snapshot('protocol_violation')
+    assert caught.value.transport_error == snapshot(None)
+    assert str(caught.value) == f'{url}: UNIMPLEMENTED (protocol_violation): unknown service'
+    assert repr(caught.value) == f'MontyConnectError({url}: UNIMPLEMENTED (protocol_violation): unknown service)'
+
+
+async def test_cpu_server_requires_a_finite_request_timeout():
+    extra_requests: list[bytes] = []
+
+    async def behaviour(
+        requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
+    ) -> AsyncIterator[bytes]:
+        await context.send_initial_metadata(())
+        await anext(requests)
+        yield _bytes_field(_EVENT_OK, b'') + b'\xf0\x01\x01'
+        async for request in requests:
+            extra_requests.append(request)
+
+    async with _serve_behaviour(behaviour) as url, AsyncMontyRemote(url, request_timeout=None) as pool:
+        async with pool.checkout() as session:
+            with pytest.raises(MontyConfigurationError) as caught:
+                await session.feed_run('1 + 1')
+    assert str(caught.value) == snapshot('CPU execution clock requires a finite client request_timeout')
+    assert repr(caught.value) == snapshot(
+        'MontyConfigurationError(CPU execution clock requires a finite client request_timeout)'
+    )
+    assert extra_requests == snapshot([])
 
 
 async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
@@ -732,7 +902,7 @@ async def test_child_that_cannot_start_refuses_the_checkout(tmp_path: Path):
                 async with pool.checkout():
                     pass
         assert str(exc_info.value).startswith(
-            f'failed to spawn monty worker: {url}: UNAVAILABLE: cannot start the monty subprocess: '
+            f'{url} refused the session: UNAVAILABLE: cannot start the monty subprocess: '
         )
         assert exc_info.value.status_code == snapshot('UNAVAILABLE')
         assert exc_info.value.cause is None
@@ -751,9 +921,11 @@ async def test_child_exiting_with_a_status_ends_the_stream_with_internal(tmp_pat
     server, url = await relay.start_relay(str(script), '127.0.0.1', 0)
     try:
         async with AsyncMontyRemote(url, auto_resume=False) as pool:
-            with pytest.raises(MontyDisconnectError) as caught:
-                async with pool.checkout():
-                    pass
+            # the session's first request carries its configuration out, so
+            # that is where the child's death surfaces
+            async with pool.checkout() as session:
+                with pytest.raises(MontyDisconnectError) as caught:
+                    await session.feed_run('1 + 1')
         assert caught.value.status_code == 'INTERNAL'
         assert caught.value.status_message == 'monty subprocess exited with status 3'
     finally:
@@ -835,14 +1007,13 @@ async def test_out_of_memory_status_raises_memory_error():
         requests: AsyncIterator[bytes], context: aio.ServicerContext[bytes, bytes]
     ) -> AsyncIterator[bytes]:
         await context.send_initial_metadata(())
-        await anext(requests)  # Configure
-        yield _bytes_field(_EVENT_OK, b'')
-        await anext(requests)  # Feed
+        await anext(requests)  # Configure, carrying the first feed
         await context.abort(
             grpc.StatusCode.RESOURCE_EXHAUSTED,
             'worker exceeded its memory limit',
             trailing_metadata=(('monty-cause', 'out_of_memory'),),
         )
+        yield b''
 
     async with _serve_behaviour(behaviour) as url:
         async with AsyncMontyRemote(url) as pool:

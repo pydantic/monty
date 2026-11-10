@@ -25,7 +25,8 @@ use std::{
 };
 
 use monty_proto::{
-    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, decode_frame_with_budget, encode_framed_into, pb,
+    DEFAULT_MAX_DECODE_BYTES, FrameError, MAX_FRAME_LEN, OpeningRequest, decode_frame_with_budget, encode_framed_into,
+    pb,
 };
 use monty_types::ExecutionClock;
 use tokio::{
@@ -207,14 +208,24 @@ impl Worker {
     /// Sends one request, flushed to the wire — a reply is only ever read
     /// after a request, so an unflushed frame would deadlock both sides. An
     /// oversize frame is rejected *before* any I/O so the stream stays synced
-    /// (see `Checkout::request_turn`).
-    pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+    /// (see `Checkout::request_turn`). `opening` is the `Configure` opening the
+    /// session, which carries `request`, a `Feed` or `Load` (see [`OpeningRequest`]).
+    pub(crate) async fn send(
+        &mut self,
+        request: &pb::ParentRequest,
+        opening: Option<&pb::Configure>,
+    ) -> Result<(), FrameError> {
+        let frame = opening
+            .map(|configure| OpeningRequest::new(configure, request).expect("only a `Feed` or `Load` opens a session"));
         let result = match &mut self.kind {
             WorkerKind::Subprocess(w) => {
                 // prefix + body in one reused buffer: a single write syscall
                 // per request, no per-frame allocation, and a pipe write needs
                 // no flush
-                encode_framed_into(request, &mut w.send_buf)?;
+                match &frame {
+                    Some(frame) => encode_framed_into(frame, &mut w.send_buf),
+                    None => encode_framed_into(request, &mut w.send_buf),
+                }?;
                 w.stdin.write_all(&w.send_buf).await?;
                 // body only, matching the remote transport and both receive
                 // paths, which never see the 4-byte length prefix
@@ -225,17 +236,23 @@ impl Worker {
                 }
                 Ok(len)
             }
-            WorkerKind::Remote(w) => w.send(request).await,
+            WorkerKind::Remote(w) => w.send(request, frame.as_ref()).await,
         };
         // record only requests that hit the wire: a rejected oversize frame
         // leaves the turn (and any pending suspension) exactly where it was
         #[cfg(feature = "telemetry")]
         if let Ok(len) = result {
             if let Some(recorder) = &mut self.recorder {
+                if let Some(opening) = opening {
+                    recorder.begin_session(opening);
+                }
                 recorder.begin_turn(request);
             }
             if let Some(metrics) = &mut self.metrics {
                 metrics.frame("sent", len);
+                if opening.is_some() {
+                    metrics.begin_session();
+                }
                 metrics.begin_turn(request);
             }
             if matches!(
@@ -258,15 +275,16 @@ impl Worker {
     }
 
     /// Attaches the host's trace context, if it captured one, before this
-    /// worker starts a checkout.
+    /// worker starts a checkout. Replaces any recorder a previous checkout left:
+    /// one finished before its first request never sent the `Reset` that clears it.
     #[cfg(feature = "telemetry")]
     pub(crate) fn with_adapter_context(mut self, context: Option<TelemetryContext>) -> Self {
-        if let Some(context) = context {
-            let worker_pid = self.pid();
-            self.recorder
-                .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
-                .set_adapter_context(context);
-        }
+        let worker_pid = self.pid();
+        self.recorder = context.map(|context| {
+            let mut recorder = Box::new(Recorder::new(worker_pid));
+            recorder.set_adapter_context(context);
+            recorder
+        });
         self
     }
 

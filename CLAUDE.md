@@ -184,9 +184,9 @@ subprocesses:
     carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
     stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
     liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
-    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release: alone
-    for an additive change older peers can ignore (see its doc comment), together with `MIN_SUPPORTED` when the
-    whole protocol changes; never on your own.
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release, when a new parent
+    could not work with an old child; `MIN_SUPPORTED_PROTOCOL_VERSION` rises only when a new child can no longer
+    serve old parents (see their doc comments). Never bump either on your own.
     Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
     `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
     conversion there and host-only binding logic in `monty-python`.
@@ -200,7 +200,12 @@ subprocesses:
     `StreamedCalls` carries calls to async host functions the worker started
     without suspending; it is sent only to a parent that set
     `Configure.accepts_streamed_calls`, since forwarders may drop a session on an event
-    tag they do not know, and only in a feed that set `Feed.stream_async_calls`.
+    tag they do not know, and only in a feed that set `Feed.stream_async_calls`. The
+    session's `Configure` carries its first `Feed` or `Load` (`Configure.first`),
+    so one round trip opens the session and runs it; a refused `Configure` is
+    answered `SessionRefused`, and the request does not run. The child
+    arms the session's memory ceiling (`EventSink::session_opened`) before
+    running the request.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
@@ -246,7 +251,7 @@ discriminating operand would cost measurable dispatch time.
 
 ### Code owns its instruction and constant buffers
 
-Each `Code` (`crates/monty/src/bytecode/code.rs`) owns its bytecode, constants and metadata.
+Each `Code` (`crates/monty/src/bytecode/code/mod.rs`) owns its bytecode, constants and metadata.
 A `CallFrame` borrows the `Code` and caches its bytecode slice so instruction fetches avoid an extra dereference.
 Its `usize` instruction pointer, source locations and exception handlers all use body-relative offsets.
 
@@ -265,10 +270,13 @@ loading, while tuple structs and tuple variants are positional and may only grow
 persistence contract, so renaming a serialized field or variant needs `#[serde(alias = "old")]`, and `#[serde(deny_unknown_fields)]` must never go on a dumped type.
 Persisted `Vec<u8>` / `[u8; N]` data takes `#[serde(with = "serde_bytes")]` so it is written as one byte string.
 Types written many times (`Value`, `HeapEntry`, `CcColor`, the hot `HeapData` variants, `List`, `Tuple`, `Dict`,
-`DictEntry`, `SetEntry`, `CodeRange`, `LocationEntry`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
+`DictEntry`, `SetEntry`, `CodeRange`, `CodeLoc`, `Instance`, `Closure`, `FunctionDefaults`,
 `SerializedFrame`) or once per function (`Function`, `Signature`, `Identifier`, `NameScope`, `Code`, `ExceptionEntry`)
 rename every field and variant to one upper-case letter, since key strings otherwise dominate the dump; a new field
 or variant on them takes an unused letter.
+`Code`'s location table is the exception: `bytecode/code/location_table.rs` writes it as one byte string of
+delta-encoded varints led by a format byte, which serde attributes cannot evolve. A layout change takes a new format
+byte and keeps the old decoder; `LocationEntry`'s derived `Deserialize` only reads the per-entry maps of older dumps.
 `DUMP_VERSION` still bumps when the *meaning* of stored data changes: opcodes, `BuiltinsFunctions` order (its
 discriminants are bytecode operands), `CmpOperator` values, the compiler's constant layout, how a key hashes (dict and
 set entries persist their hash, which is why keys without a heap identity hash by name or a persisted id such as a
@@ -504,10 +512,12 @@ limit's job. The exception is a loop allocating per item, where a preflight on
 the result buffer cannot see what the items themselves cost:
 `tracker.check_memory_time_every(i)` is the amortized poll for that, as in
 `parse_json_array` and `re_pattern`'s match and split loops. `*args`, parsed
-JSON arrays and `re.findall` with at most one capture group are preflighted now
-— each killed the worker on ordinary code while listed as bounded-by-input
-above; a wider `findall` and `re.finditer` allocate per match between the checks
-and are still open. Test each graceful path in
+JSON arrays, `str`/`bytes` split pieces and `re.findall` with at most one capture
+group are preflighted now — each killed the worker on ordinary code while listed
+as bounded-by-input above. `re.finditer` scans spans under growth and time checks,
+then preflights the whole build pass with a per-match estimate, since it cannot
+stop part way; a wider `findall` allocates per match between the checks and is
+still open. Test each graceful path in
 `large_allocations_are_rejected_before_the_hard_limit`
 (`crates/monty-runtime/tests/subprocess.rs`) — the interpreter's own tests
 never arm the allocator, so only subprocess tests exercise `max_memory`.

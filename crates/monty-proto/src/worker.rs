@@ -57,6 +57,11 @@ use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 pub trait EventSink {
     /// Frames and emits one event.
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError>;
+
+    /// Called once a `Configure` carrying a first request is accepted, before
+    /// that request runs: a host bounding the process from outside (the
+    /// subprocess shell's allocator ceiling) must apply the session's budget first.
+    fn session_opened(&mut self, _budget: SessionBudget) {}
 }
 
 /// An [`EventSink`] that appends framed events to an in-memory buffer.
@@ -279,7 +284,7 @@ impl Child {
         };
 
         let mut event = match kind {
-            pb::parent_request::Kind::Configure(configure) => {
+            pb::parent_request::Kind::Configure(mut configure) => {
                 // An unsupported protocol version is fatal: the parent may frame
                 // or interpret later messages differently, so serving it risks a
                 // silent desync. Emit the fatal last gasp and stop the child.
@@ -287,7 +292,12 @@ impl Child {
                     sink.send(&self.fatal_event(&refusal))?;
                     return Ok(HandleOutcome::Fatal);
                 }
-                self.handle_configure(configure)
+                let first = configure.first.take();
+                let reply = self.handle_configure(configure);
+                match first {
+                    Some(first) => self.handle_first(first, reply, sink),
+                    None => reply,
+                }
             }
             pb::parent_request::Kind::Feed(feed) => self.handle_repl_feed(feed, sink),
             // The Monty sandbox has no host interpreter to install packages for;
@@ -478,7 +488,7 @@ impl Child {
 
     /// Stores the session config; the repl is built lazily by [`ensure_repl`]
     /// on the first feed/dump (or restored by `Load` instead). Valid only on a
-    /// not-yet-configured worker.
+    /// not-yet-configured worker; invalid settings are a `SessionRefused`.
     fn handle_configure(&mut self, configure: pb::Configure) -> pb::ChildEvent {
         if matches!(self.state, SessionState::Configured(None)) {
             // Applied on arrival rather than in `ensure_repl`, which a `Load`
@@ -493,23 +503,23 @@ impl Child {
             self.accepts_streamed_calls = configure.accepts_streamed_calls;
             if let Some(clock) = configure.execution_clock {
                 let Ok(clock) = pb::ExecutionClock::try_from(clock) else {
-                    return protocol_violation("invalid execution_clock");
+                    return session_refused("invalid execution_clock");
                 };
                 if !ExecutionClock::from(clock).is_available() {
-                    return protocol_violation("CPU execution clock is unavailable");
+                    return session_refused("CPU execution clock is unavailable");
                 }
             }
             // Reject invalid settings on the Configure turn.
             self.os_policy = match configure.os_policy.clone().map(OsPolicy::try_from) {
                 None => OsPolicy::default(),
                 Some(Ok(os_policy)) => os_policy,
-                Some(Err(err)) => return protocol_violation(&format!("invalid os_policy: {err}")),
+                Some(Err(err)) => return session_refused(&format!("invalid os_policy: {err}")),
             };
             // ty walks the stubs with every feed, unguarded.
             if let Some(stubs) = &configure.type_check_stubs
                 && type_check_nesting_exception(stubs, "repl_type_stubs.pyi", SOURCE_SCAN_THRESHOLD).is_err()
             {
-                return protocol_violation("invalid type_check_stubs: Source is too deeply nested");
+                return session_refused("invalid type_check_stubs: Source is too deeply nested");
             }
             let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
             self.state = SessionState::Configured(Some(Box::new(configure)));
@@ -517,8 +527,31 @@ impl Child {
             event.execution_clock = Some(clock);
             event
         } else {
+            // the child still holds a session, so this is the parent's bug, not a refusal
             protocol_violation("Configure while a session already exists")
         }
+    }
+
+    /// Runs the first request a `Configure` carried, given that `Configure`'s
+    /// reply: any other reply than `Ok` answers for the request, which never
+    /// runs, while an accepted session arms its budget first and lends its
+    /// clock to the reply.
+    fn handle_first(
+        &mut self,
+        first: pb::configure::First,
+        configured: pb::ChildEvent,
+        sink: &mut dyn EventSink,
+    ) -> pb::ChildEvent {
+        if !matches!(configured.kind, Some(pb::child_event::Kind::Ok(_))) {
+            return configured;
+        }
+        sink.session_opened(self.session_budget());
+        let mut event = match first {
+            pb::configure::First::Feed(feed) => self.handle_repl_feed(feed, sink),
+            pb::configure::First::Load(load) => self.handle_load(&load),
+        };
+        event.execution_clock = configured.execution_clock;
+        event
     }
 
     /// Materializes the repl from the stored config the first time the session
@@ -562,6 +595,8 @@ impl Child {
             profile: _,
             // applied when the `Configure` arrived, so a `Load` honors it too
             accepts_streamed_calls: _,
+            // taken and run when the `Configure` arrived
+            first: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -1249,6 +1284,14 @@ pub fn protocol_violation(message: &str) -> pb::ChildEvent {
             traceback: BudgetVec::new(),
             data: None,
         }),
+    }))
+}
+
+/// Builds the turn-ending refusal of a `Configure` whose settings are invalid:
+/// no session exists, and any `first` request does not run.
+fn session_refused(message: &str) -> pb::ChildEvent {
+    event(pb::child_event::Kind::SessionRefused(pb::SessionRefused {
+        message: message.to_owned(),
     }))
 }
 

@@ -50,6 +50,7 @@ OsFunction = Literal[
     'Path.is_dir',
     'Path.is_symlink',
     'open',
+    'Path.create_exclusive',
     'Path.read_text',
     'Path.read_bytes',
     'Path.write_text',
@@ -215,7 +216,9 @@ class AbstractOS(ABC):
     max_sleep: float | None = 10
     """Maximum seconds per host sleep; `None` waits the full requested time.
     Applies to `'call_host'` sleeps and manually dispatched `feed_start` sleeps.
-    Default `'system'` sleeps use the pool's `sleep_system_max` instead."""
+    Default `'system'` sleeps use the pool's `sleep_system_max` instead.
+    A capped sleep returns normally without a warning, even when the sandbox
+    requested a longer wait. This cap is independent of `request_timeout`."""
 
     def __call__(
         self,
@@ -285,6 +288,8 @@ class AbstractOS(ABC):
                 return self.path_is_symlink(*args)
             case 'open':
                 return self.path_open(*args)
+            case 'Path.create_exclusive':
+                return self.path_create_exclusive(*args, **kwargs)
             case 'Path.read_text':
                 return self.path_read_text(*args)
             case 'Path.read_bytes':
@@ -404,6 +409,14 @@ class AbstractOS(ABC):
         (and bytes variants) OS calls; `dispatch()` normalizes it back to the
         underlying `PurePosixPath` so the existing `path_*` handlers continue
         to work without modification.
+        """
+        raise NotImplementedError
+
+    def path_create_exclusive(self, path: PurePosixPath, mode: str, *, permissions: int) -> MontyFileHandle:
+        """Create a new empty file without replacing any existing entry.
+
+        Return a handle in `mode`. Disk handlers apply `permissions` at creation,
+        subject to host policy; unsupported handlers must not fall back to `path_open`.
         """
         raise NotImplementedError
 
@@ -1206,6 +1219,19 @@ class OSAccess(AbstractOS):
                 self._write_file(path, empty)
             elif _is_dir(self._get_entry(path)):
                 raise IsADirectoryError(f'[Errno 21] Is a directory: {str(path)!r}')
+        return handle
+
+    def path_create_exclusive(self, path: PurePosixPath, mode: str, *, permissions: int) -> MontyFileHandle:
+        """Reserve a new file in the virtual tree; an occupied name is never changed."""
+        handle = MontyFileHandle(str(path), mode)
+        if not 0 <= permissions <= 0o777:
+            raise ValueError('permissions must be between 0 and 0o777')
+        if permissions & 0o111:
+            raise ValueError('execute permission bits are not supported')
+        if self._get_entry(path) is not None:
+            raise FileExistsError(f'[Errno 17] File exists: {str(path)!r}')
+        self._write_file(path, b'' if handle.binary else '')
+        self._get_file(path).permissions = permissions
         return handle
 
     def path_read_text(self, path: PurePosixPath | MontyFileHandle) -> str:

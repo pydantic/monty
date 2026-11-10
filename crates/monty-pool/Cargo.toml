@@ -41,8 +41,10 @@ monty-fs = { workspace = true }
 # `worker::decode_event`.)
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
 # gRPC client for the remote transport: one HTTP/2 connection per pool, one
-# stream per session; rustls gives `https://` without a system TLS dependency.
-tonic = { workspace = true, features = ["channel", "tls-aws-lc", "tls-webpki-roots"] }
+# stream per session. rustls speaks `https://`; the server certificate is
+# verified by the OS (below), not against roots bundled into the binary.
+tonic = { workspace = true, features = ["channel", "tls-aws-lc"] }
+rustls-platform-verifier = { workspace = true }
 # to tell a stream the server never took (a `GOAWAY` as it drains, a request
 # cancelled by the connection closing) from a failed one
 h2 = "0.4"
@@ -52,6 +54,8 @@ monty-proto = { workspace = true, features = ["grpc"] }
 bytes = { workspace = true }
 tokio-stream = { workspace = true }
 http = { workspace = true }
+httpdate = "1"
+tower = { version = "0.5", default-features = false, features = ["util"] }
 # `join_all` for concurrent worker teardown.
 futures-util = { workspace = true }
 # Pulled in only so the pool can install a process-level rustls `CryptoProvider`
@@ -91,8 +95,9 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 # In-process scripted gRPC servers standing in for a remote child.
 tonic = { workspace = true, features = ["server", "router"] }
+# A self-signed certificate for the server the trust-store test dials.
+rcgen = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
-tower = { version = "0.5", default-features = false }
 # In-memory exporters for the telemetry recorder's structural tests.
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 

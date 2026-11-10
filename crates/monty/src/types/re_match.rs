@@ -77,46 +77,39 @@ pub(crate) struct ReMatch {
 }
 
 impl ReMatch {
-    /// Creates a `ReMatch` from a `fancy_regex::Captures` result.
+    /// Creates a `ReMatch` from the byte spans of one match: `spans[0]` is the full
+    /// match, then one entry per capture group (`None` if it took no part).
     ///
-    /// Stores byte offsets (converted to char offsets lazily — see the type docs).
-    /// `subject` is the already-refcounted subject `Value` this match keeps alive
-    /// (the caller clones it per match); `regex` supplies named-group mappings.
-    pub fn from_captures(
-        caps: &fancy_regex::Captures<'_>,
+    /// Taking spans rather than `fancy_regex::Captures` lets `finditer` hold a flat,
+    /// fixed-size span buffer while it scans. `text` is the searched string; `subject`
+    /// is its already-refcounted `Value` (the caller clones it per match); `regex`
+    /// supplies named-group mappings.
+    pub fn from_spans(
+        text: &str,
+        spans: &[Option<(usize, usize)>],
         subject: Value,
         all_ascii: bool,
         regex: &fancy_regex::Regex,
     ) -> Self {
-        let full = caps.get(0).expect("group 0 always exists on a successful match");
-        let full_match = full.as_str().to_owned();
-        let start = full.start();
-        let end = full.end();
+        let (start, end) = spans[0].expect("group 0 always exists on a successful match");
+        let group_spans = spans[1..].to_vec();
+        let groups = group_spans
+            .iter()
+            .map(|span| span.map(|(s, e)| text[s..e].to_owned()))
+            .collect();
 
-        let group_count = caps.len().saturating_sub(1);
-        let mut groups = Vec::with_capacity(group_count);
-        let mut group_spans = Vec::with_capacity(group_count);
-
-        for cap in caps.iter().skip(1) {
-            if let Some(m) = cap {
-                groups.push(Some(m.as_str().to_owned()));
-                group_spans.push(Some((m.start(), m.end())));
-            } else {
-                groups.push(None);
-                group_spans.push(None);
-            }
-        }
-
-        // Extract named group name→index mappings from the regex
-        let mut named_groups = Vec::new();
-        for (idx, name) in regex.capture_names().enumerate() {
-            if let Some(name) = name {
-                named_groups.push((name.to_owned(), idx));
-            }
-        }
+        // Extract named group name→index mappings from the regex, sized exactly as
+        // `estimated_size` charges: `filter_map` would `collect` into at least 4 slots.
+        let mut named_groups = Vec::with_capacity(regex.capture_names().flatten().count());
+        named_groups.extend(
+            regex
+                .capture_names()
+                .enumerate()
+                .filter_map(|(idx, name)| name.map(|name| (name.to_owned(), idx))),
+        );
 
         Self {
-            full_match,
+            full_match: text[start..end].to_owned(),
             start,
             end,
             groups,
@@ -126,6 +119,18 @@ impl ReMatch {
             all_ascii,
             char_span: OnceCell::new(),
         }
+    }
+
+    /// Estimates the bytes [`from_spans`](Self::from_spans) allocates for one match
+    /// with `group_count` groups and `names_len` bytes of group names over `name_count`
+    /// names, excluding its heap slot and the matched text it copies.
+    ///
+    /// `finditer` sums this over every match to preflight the pass that builds them.
+    pub fn estimated_size(group_count: usize, name_count: usize, names_len: usize) -> usize {
+        size_of::<Self>()
+            + group_count * (size_of::<Option<String>>() + size_of::<Option<(usize, usize)>>())
+            + name_count * size_of::<(String, usize)>()
+            + names_len
     }
 
     /// The subject `Value` this match keeps alive (its `.string`). Lets the heap

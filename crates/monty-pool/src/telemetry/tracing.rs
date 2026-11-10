@@ -107,15 +107,51 @@ impl Recorder {
         }
     }
 
+    /// Starts the session span for the `Configure` opening a session, sent
+    /// alone or carried by its first request.
+    pub(crate) fn begin_session(&mut self, c: &pb::Configure) {
+        let _logfire = self.logfire.clone().map(set_local_logfire);
+        let adapter_parent = self.adapter_context.take().and_then(TelemetryContext::into_parent);
+        // a stale session (impossible via the checkout state machine, but
+        // cheap to be safe against) is closed by the overwrite
+        self.pending = None;
+        self.clear_streamed_calls();
+        self.feed = None;
+        let limits = c.limits.as_ref();
+        let (script_name, script_name_cut) = truncate_str(&c.script_name);
+        let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
+        let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
+        let span = logfire::span!(
+            "session {script_name}",
+            script_name = script_name,
+            monty_version = monty_version,
+            type_check = c.type_check,
+            type_check_stubs = type_check_stubs,
+            length_limit_exceeded = (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
+            assert_message_annotations = c.assert_message_annotations,
+            max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros),
+            max_turn_duration_micros = limits.and_then(|l| l.max_turn_duration_micros),
+            max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
+            gc_interval = limits.and_then(|l| l.gc_interval),
+            max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
+            max_suspensions = limits.and_then(|l| l.max_suspensions),
+            // i64: `tracing` has no typed u32 value, so a u32 would be
+            // recorded as its debug string
+            worker_pid = self.worker_pid.map(i64::from),
+        );
+        let span = {
+            if let Some(parent) = adapter_parent {
+                let _ = span.set_parent(parent);
+            }
+            start_span(span)
+        };
+        self.session = Some(span);
+    }
+
     /// Starts recording one turn; called once the frame is on the wire, so a
     /// rejected oversize frame records nothing.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
         let _logfire = self.logfire.clone().map(set_local_logfire);
-        let adapter_parent = if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))) {
-            self.adapter_context.take().and_then(TelemetryContext::into_parent)
-        } else {
-            None
-        };
         // A restored suspended feed uses its `Load` turn as the feed span, so
         // resumes must preserve it until the eventual turn-ending event.
         let is_resume = matches!(
@@ -134,43 +170,7 @@ impl Recorder {
         }
         self.dump_turn = false;
         match &request.kind {
-            // a stale session (impossible via the checkout state machine, but
-            // cheap to be safe against) is closed by the overwrite
-            Some(pb::parent_request::Kind::Configure(c)) => {
-                self.pending = None;
-                self.clear_streamed_calls();
-                self.feed = None;
-                let limits = c.limits.as_ref();
-                let (script_name, script_name_cut) = truncate_str(&c.script_name);
-                let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
-                let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
-                let span = logfire::span!(
-                    "session {script_name}",
-                    script_name = script_name,
-                    monty_version = monty_version,
-                    type_check = c.type_check,
-                    type_check_stubs = type_check_stubs,
-                    length_limit_exceeded =
-                        (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
-                    assert_message_annotations = c.assert_message_annotations,
-                    max_feed_duration_micros = limits.and_then(|l| l.max_feed_duration_micros),
-                    max_turn_duration_micros = limits.and_then(|l| l.max_turn_duration_micros),
-                    max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
-                    gc_interval = limits.and_then(|l| l.gc_interval),
-                    max_recursion_depth = limits.and_then(|l| l.max_recursion_depth),
-                    max_suspensions = limits.and_then(|l| l.max_suspensions),
-                    // i64: `tracing` has no typed u32 value, so a u32 would be
-                    // recorded as its debug string
-                    worker_pid = self.worker_pid.map(i64::from),
-                );
-                let span = {
-                    if let Some(parent) = adapter_parent {
-                        let _ = span.set_parent(parent);
-                    }
-                    start_span(span)
-                };
-                self.session = Some(span);
-            }
+            Some(pb::parent_request::Kind::Configure(c)) => self.begin_session(c),
             Some(pb::parent_request::Kind::Load(l)) => {
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
@@ -477,6 +477,17 @@ impl Recorder {
                     message = message,
                     length_limit_exceeded = cut.then_some(true),
                 );
+            }
+            // the request a refused `Configure` carried never ran
+            Some(pb::child_event::Kind::SessionRefused(r)) => {
+                let (message, cut) = truncate_str(&r.message);
+                logfire::error!(
+                    parent: self.context_span(),
+                    "session refused",
+                    message = message,
+                    length_limit_exceeded = cut.then_some(true),
+                );
+                self.end_feed();
             }
             // liveness, not a turn (and answered by the transport, never seen here)
             Some(pb::child_event::Kind::Ping(_)) => {}
@@ -878,6 +889,12 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_feed_duration: Option<u64
             "open",
             args.path = string_arg!(&o.path),
             args.mode = string_arg!(&o.mode),
+        ),
+        Some(Call::CreateExclusive(c)) => os_call!(
+            "create_exclusive",
+            args.path = string_arg!(&c.path),
+            args.mode = string_arg!(&c.mode),
+            args.permissions = i64::from(c.permissions),
         ),
         Some(Call::Mkdir(m)) => os_call!(
             "mkdir",
@@ -1438,6 +1455,34 @@ mod tests {
             .filter(|span| !span.attributes.iter().any(|kv| kv.key.as_str() == "args"))
             .count();
         assert_eq!(unrecorded, capped);
+    }
+
+    /// A `Configure` carrying the first feed opens the session span before the
+    /// feed's own, which nests under it.
+    #[test]
+    fn a_feed_opening_its_session_nests_under_it() {
+        let (logfire, spans, _logs) = test_logfire();
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(Some(1));
+        recorder.begin_session(&pb::Configure::default());
+        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
+        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
+            MontyObject::int(1),
+        ))));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
+
+        let spans = spans.get_finished_spans().unwrap();
+        let names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
+        assert_eq!(names, ["run code", "session {script_name}"]);
+        assert_eq!(spans[0].parent_span_id, spans[1].span_context.span_id());
     }
 
     /// A suspension's answer is an attribute of the span it closes, and a cut

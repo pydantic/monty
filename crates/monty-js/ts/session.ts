@@ -34,6 +34,8 @@ import {
   MontyError,
   montyErrorFromNative,
   MontyRefusedError,
+  MontyConfigurationError,
+  MontyConnectError,
   MontyShutdown,
   MontyTypingError,
   notCallableMessage,
@@ -305,6 +307,8 @@ export class MontySession {
           throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
       }
       // Print failures take precedence. On a suspension the worker is waiting
       // for a resume we will never send — poison so the next feed fails cleanly
@@ -397,6 +401,8 @@ export class MontySession {
         throw await this.failedLoad(lostSessionError(turn))
       case 'protocol':
         throw await this.failedLoad(new ProtocolError(turn.message))
+      case 'configuration':
+        throw await this.failedLoad(new MontyConfigurationError(turn.message))
       case 'error':
         throw await this.failedLoad(montyErrorFromNative(turn.exception))
       default:
@@ -523,6 +529,8 @@ export class MontySession {
         throw this.poison(lostSessionError(turn))
       case 'protocol':
         throw this.poison(new ProtocolError(turn.message))
+      case 'configuration':
+        throw this.poison(new MontyConfigurationError(turn.message))
       default:
         throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
     }
@@ -542,8 +550,44 @@ export class MontySession {
    * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
    * to start a new session from the state stored under it. Changes when the
    * pool resumes the session after a server shutdown.
+   *
+   * Before any request this opens the session, costing one round trip and
+   * raising what a refused first request would. Waits for a running turn;
+   * after `close()`, resolves to the last ID seen.
+   */
+  async getSessionId(): Promise<Buffer | undefined> {
+    if (!this.closed) {
+      const turn = (await this.native.open(() => {})) as NativeTurn | OkTurn
+      switch (turn.kind) {
+        case 'ok':
+          break
+        case 'error':
+          throw this.poison(montyErrorFromNative(turn.exception))
+        case 'crashed':
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
+        case 'protocol':
+          throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
+        default:
+          throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
+      }
+    }
+    return this.cachedSessionId()
+  }
+
+  /**
+   * @deprecated `undefined` until the session's first request has been
+   * answered, so it races that request; use `await getSessionId()`.
    */
   get sessionId(): Buffer | undefined {
+    return this.cachedSessionId()
+  }
+
+  /** The ID as of the last completed turn, without opening the session. */
+  private cachedSessionId(): Buffer | undefined {
     const id = this.native.sessionId
     return id === undefined || id === null ? undefined : bufferFrom(id)
   }
@@ -1236,6 +1280,8 @@ class SnapshotDriver {
           throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
         case 'osCall':
           // Every OS call surfaces; mounts and the `os` callback are consulted
           // only by `resumeAuto`.
@@ -1811,6 +1857,9 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
 /** The OS call an import's candidate file is read with, as `open()`'s handler sees it. */
 const READ_TEXT_CALL = 'Path.read_text'
 
+/** The most search-path directories an import searches, as `MAX_SEARCH_DIRS` in monty-types. */
+const MAX_SEARCH_DIRS = 32
+
 /** Errors reading a candidate that mean its file is not there, so the search moves on. */
 const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 'IsADirectoryError', 'PermissionError'])
 
@@ -1818,7 +1867,8 @@ const MISSING_FILE_ERRORS = new Set(['FileNotFoundError', 'NotADirectoryError', 
  * An import's candidate files, mirroring `ImportArgs::candidates` in
  * monty-types: per directory, the package `name/__init__.py` before the module
  * `name.py`. The call comes from an untrusted worker, so a name that is not
- * dotted identifiers, or a directory that is not absolute, yields nothing. The
+ * dotted identifiers, or a directory that is not absolute, yields nothing, and
+ * only the first `MAX_SEARCH_DIRS` remaining directories are searched. The
  * paths are built one at a time, so a long name times many directories never
  * sits in memory, and kept as sent, so mounts check them before collapsing `..`.
  */
@@ -1827,8 +1877,13 @@ function* importCandidates(name: string, searchPath: unknown): Generator<string>
     return
   }
   const leaf = name.slice(name.lastIndexOf('.') + 1)
+  let searched = 0
   for (const dir of searchPath) {
+    if (searched === MAX_SEARCH_DIRS) {
+      return
+    }
     if (typeof dir === 'string' && dir.startsWith('/') && !dir.includes('\0')) {
+      searched++
       const base = dir.endsWith('/') ? dir.slice(0, -1) : dir
       yield `${base}/${leaf}/__init__.py`
       yield `${base}/${leaf}.py`
@@ -1863,7 +1918,8 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
  * the stream at all (no session existed, so retrying is safe),
  * `MontyCrashedError` / `MontyDisconnectError` / `MontyShutdown` when the worker
  * is lost, and a `TimeoutError` `DOMException` when no worker became available
- * within the checkout timeout. Anything else (a failed spawn or dial) is a plain `Error`.
+ * within the checkout timeout. Remote connection failures raise `MontyConnectError`;
+ * incompatible client settings raise `MontyConfigurationError`.
  */
 export async function enterSession(
   native: NativeSession,
@@ -1884,6 +1940,10 @@ export async function enterSession(
       throw lostSessionError(turn)
     case 'refused':
       throw new MontyRefusedError(turn.message, turn)
+    case 'connect':
+      throw new MontyConnectError(turn.message, turn)
+    case 'configuration':
+      throw new MontyConfigurationError(turn.message)
     case 'typingError':
       throw new Error(turn.diagnostics)
     case 'protocol':
@@ -1928,6 +1988,8 @@ async function dumpSession(
       throw poison(lostSessionError(turn))
     case 'protocol':
       throw poison(new ProtocolError(turn.message))
+    case 'configuration':
+      throw poison(new MontyConfigurationError(turn.message))
     default:
       throw poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
   }

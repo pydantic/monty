@@ -6,6 +6,8 @@
 
 use std::{str, sync::Arc};
 
+use ruff_text_size::TextSize;
+
 use crate::{
     args::{ArgValues, FromArgs, Signature},
     bytecode::{CallResult, Compiler, FrameGlobals, FrameNamespace, MissingNames, VM},
@@ -16,7 +18,10 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId},
     intern::{CompileInterns, FunctionId, StaticStrings},
     name_map::NameMap,
-    parse::{CodeRange, ParseError, ParsedModule, parse_expression_with_interner, parse_module_with_filename_id},
+    parse::{
+        CodeRange, ParseError, ParsedModule, parse_expression_with_interner, parse_module_with_filename_id,
+        reject_leading_bom,
+    },
     prepare::{SnippetNames, prepare_snippet},
     types::{Type, py_trait::PyTrait},
     value::Value,
@@ -289,7 +294,17 @@ fn compile_snippet<'h>(
         nodes,
         future_annotations,
     } = match kind {
-        SnippetSource::Exec | SnippetSource::File { .. } => parse_module_with_filename_id(
+        // A file read from disk may open with a BOM; an `exec()` string may not.
+        SnippetSource::Exec => reject_leading_bom(source, TextSize::default(), filename_id).and_then(|()| {
+            parse_module_with_filename_id(
+                source,
+                filename_id,
+                &mut overlay,
+                options.source_scan_threshold,
+                inherited_future,
+            )
+        }),
+        SnippetSource::File { .. } => parse_module_with_filename_id(
             source,
             filename_id,
             &mut overlay,
@@ -297,14 +312,12 @@ fn compile_snippet<'h>(
             inherited_future,
         ),
         SnippetSource::Eval => {
-            let trimmed = source.trim_start();
-            let skipped = u32::try_from(source.len() - trimmed.len()).unwrap_or(u32::MAX);
-            parse_expression_with_interner(trimmed, filename_id, &mut overlay, options.source_scan_threshold)
-                .map(|expr| ParsedModule {
+            parse_expression_with_interner(source, filename_id, &mut overlay, options.source_scan_threshold).map(
+                |expr| ParsedModule {
                     nodes: vec![Node::Return(Some(expr))],
                     future_annotations: inherited_future,
-                })
-                .map_err(|e| e.shifted(skipped))
+                },
+            )
         }
     }
     .map_err(compile_error)?;

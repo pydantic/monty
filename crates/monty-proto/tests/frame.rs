@@ -1,7 +1,7 @@
 use std::io::{self, Read};
 
 use monty_proto::{
-    FrameError, FrameReader, pb,
+    FrameError, FrameReader, OpeningRequest, encode_to_capped_vec, pb,
     pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
     write_frame,
 };
@@ -30,6 +30,50 @@ fn feed() -> pb::ParentRequest {
         })),
         trace_parent: None,
     }
+}
+
+/// An `OpeningRequest` encodes exactly as a `Configure` request whose `first`
+/// is set, for each request that can be first.
+#[test]
+fn an_opening_request_encodes_as_configure_with_first() {
+    let load = pb::ParentRequest {
+        kind: Some(RequestKind::Load(pb::Load {
+            state: b"dump".to_vec().into(),
+        })),
+        trace_parent: None,
+    };
+    for request in [feed(), load] {
+        let request = pb::ParentRequest {
+            trace_parent: Some("00-trace".to_owned()),
+            ..request
+        };
+        let configure = pb::Configure {
+            script_name: "main.py".to_owned(),
+            ..Default::default()
+        };
+        let opening = OpeningRequest::new(&configure, &request).expect("a first request");
+        let first = match request.kind.clone() {
+            Some(RequestKind::Feed(feed)) => pb::configure::First::Feed(feed),
+            Some(RequestKind::Load(load)) => pb::configure::First::Load(load),
+            other => panic!("not a first request: {other:?}"),
+        };
+        let expected = pb::ParentRequest {
+            kind: Some(RequestKind::Configure(pb::Configure {
+                first: Some(first),
+                ..configure.clone()
+            })),
+            trace_parent: request.trace_parent.clone(),
+        };
+        assert_eq!(
+            encode_to_capped_vec(&opening).unwrap(),
+            encode_to_capped_vec(&expected).unwrap()
+        );
+    }
+    let dump = pb::ParentRequest {
+        kind: Some(RequestKind::Dump(pb::Dump {})),
+        trace_parent: None,
+    };
+    assert!(OpeningRequest::new(&pb::Configure::default(), &dump).is_none());
 }
 
 #[test]

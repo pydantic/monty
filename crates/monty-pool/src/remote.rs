@@ -14,22 +14,23 @@ use std::{
     error::Error,
     fmt::Display,
     sync::{Arc, Once, OnceLock},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bytes::Bytes;
 use h2::Reason;
-use http::uri::PathAndQuery;
+use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
-    FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
+    FrameError, MAX_FRAME_LEN, OpeningRequest, encode_to_capped_vec,
     grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
-use rustls::crypto::aws_lc_rs::default_provider;
+use rustls::crypto::{CryptoProvider, aws_lc_rs::default_provider};
+use rustls_platform_verifier::Verifier;
 use tokio::{
     runtime::Handle,
     sync::{
-        Semaphore,
+        Notify, Semaphore,
         mpsc::{self, WeakSender},
     },
     task::JoinHandle,
@@ -38,10 +39,12 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     Code, Extensions, Request, Status, Streaming,
+    body::Body,
     client::Grpc,
     metadata::{MetadataKey, MetadataMap, MetadataValue},
     transport::{Channel, ClientTlsConfig, Endpoint},
 };
+use tower::ServiceExt;
 
 use crate::{
     PoolError, RemoteDisconnect,
@@ -66,9 +69,23 @@ pub(crate) struct Remote {
     /// at `max_processes`: past it a close resets the stream, so what peers
     /// can buffer on retired streams tracks the pool's size, not its churn.
     closing: Arc<Semaphore>,
+    closing_complete: Arc<Notify>,
 }
 
 impl Remote {
+    /// Wait for departed streams, without waiting for checkouts that are still live.
+    pub(crate) async fn wait_closed(&self, max_processes: usize) {
+        loop {
+            let changed = self.closing_complete.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.closing.available_permits() == max_processes.max(1) {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     /// Prepares the channel for `url` without connecting; the first stream
     /// dials. A URL tonic cannot parse fails here, so a pool with a bad URL
     /// fails at `Pool::new` rather than at its first checkout.
@@ -78,11 +95,11 @@ impl Remote {
         keep_alive: Option<Duration>,
         max_processes: usize,
     ) -> Result<Self, PoolError> {
-        let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
+        let connect_error = |err: &dyn Display| connection_failure(url, err.to_string());
         let mut endpoint = Endpoint::from_shared(dial_url(url)?)
-            .map_err(|err| spawn_error(&err))?
+            .map_err(|err| connect_error(&err))?
             .user_agent(USER_AGENT_VALUE)
-            .map_err(|err| spawn_error(&err))?
+            .map_err(|err| connect_error(&err))?
             .connect_timeout(dial_timeout)
             .tcp_nodelay(true)
             // fixed windows, the connection's well above a stream's: adaptive
@@ -101,10 +118,13 @@ impl Remote {
                 .keep_alive_while_idle(false);
         }
         if endpoint.uri().scheme_str() == Some("https") {
-            install_crypto_provider();
+            // The server certificate is checked against the OS trust store:
+            // macOS and Windows verify it themselves, revocation included; Linux
+            // reads the distro CA bundle now, and a host with none fails here.
+            let verifier = Verifier::new(install_crypto_provider()).map_err(|err| connect_error(&err))?;
             endpoint = endpoint
-                .tls_config(ClientTlsConfig::new().with_webpki_roots())
-                .map_err(|err| spawn_error(&err))?;
+                .tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))
+                .map_err(|err| connect_error(&err))?;
         }
         Ok(Self {
             url: url.to_owned(),
@@ -112,6 +132,7 @@ impl Remote {
             dial_timeout,
             decode_permits: Arc::new(Semaphore::new(max_processes.max(1))),
             closing: Arc::new(Semaphore::new(max_processes.max(1))),
+            closing_complete: Arc::new(Notify::new()),
         })
     }
 
@@ -120,8 +141,8 @@ impl Remote {
     /// admitted the stream — sent its response headers — so a refusal
     /// (capacity, authentication, no worker) surfaces here as a
     /// [`PoolError::Refused`] carrying the server's status, and a dial that
-    /// fails or times out as a [`PoolError::Spawn`], never as a worker that
-    /// fails its first turn.
+    /// fails, times out or reaches no gRPC server as a [`PoolError::Connect`],
+    /// never as a worker that fails its first turn.
     pub(crate) async fn open(
         &self,
         metadata: &[(String, String)],
@@ -129,19 +150,23 @@ impl Remote {
     ) -> Result<RemoteWorker, PoolError> {
         let url = &self.url;
         let mut map = MetadataMap::new();
-        // a malformed name/value is a caller bug: fail the dial
         for (name, value) in metadata {
             let key = MetadataKey::from_bytes(name.as_bytes())
-                .map_err(|err| PoolError::Spawn(format!("{url}: metadata entry {name:?}: {err}")))?;
+                .map_err(|err| PoolError::Configuration(format!("{url}: metadata entry {name:?}: {err}")))?;
             let value = MetadataValue::try_from(value.as_str())
-                .map_err(|err| PoolError::Spawn(format!("{url}: metadata entry {name:?} value: {err}")))?;
+                .map_err(|err| PoolError::Configuration(format!("{url}: metadata entry {name:?} value: {err}")))?;
             // never indexed: a token must not sit in the connection's HPACK
             // table, which every stream on it shares
             let mut value = value;
             value.set_sensitive(true);
             map.insert(key, value);
         }
-        let mut grpc = Grpc::new(self.channel.clone())
+        let channel = self.channel.clone().map_response(|mut response: Response<Body>| {
+            let status = response.status();
+            response.extensions_mut().insert(status);
+            response
+        });
+        let mut grpc = Grpc::new(channel)
             .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
         // an unrepresentable timeout (`Duration::MAX`) leaves the dial unbounded
@@ -160,6 +185,22 @@ impl Remote {
                 None => Ok(open.await),
             };
             match opened {
+                // tonic opens a stream on any response without a `grpc-status`,
+                // so a plain web server's error page would only fail later, mid-
+                // session, as an undecodable body: refuse it here as a misconfiguration
+                Ok(Ok(response)) if !is_grpc_response(response.metadata()) => {
+                    return Err(connection_failure(
+                        url,
+                        format!(
+                            "not a gRPC server: HTTP {}, the response's content-type is {}",
+                            response
+                                .extensions()
+                                .get::<StatusCode>()
+                                .map_or_else(|| "status unknown".to_owned(), ToString::to_string),
+                            describe_content_type(response.metadata())
+                        ),
+                    ));
+                }
                 Ok(Ok(response)) => break (requests, response),
                 // the server closed the connection under the stream before
                 // taking it (a GOAWAY as it drains, a refused stream): the
@@ -172,17 +213,24 @@ impl Remote {
                 Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
                     return Err(PoolError::Refused {
                         url: url.to_owned(),
-                        refusal: Box::new(RemoteDisconnect::from_status(&status)),
+                        refusal: Box::new(RemoteDisconnect::from_refusal(&status)),
                     });
                 }
                 Ok(Err(status)) => {
-                    return Err(PoolError::Spawn(format!("{url}: {}", describe_status(&status))));
+                    let details = RemoteDisconnect::from_connect_status(url, &status);
+                    return Err(PoolError::Connect {
+                        url: url.to_owned(),
+                        details: Box::new(details),
+                    });
                 }
                 Err(_) => {
-                    return Err(PoolError::Spawn(format!(
-                        "{url}: connect timed out after {:?}",
-                        self.dial_timeout
-                    )));
+                    return Err(connection_failure(
+                        url,
+                        format!(
+                            "the server did not accept the session within {:?} (request_timeout)",
+                            self.dial_timeout
+                        ),
+                    ));
                 }
             }
         };
@@ -203,6 +251,7 @@ impl Remote {
             reader: Some(reader),
             runtime: Handle::current(),
             closing: Arc::clone(&self.closing),
+            closing_complete: Arc::clone(&self.closing_complete),
         })
     }
 }
@@ -232,6 +281,35 @@ fn refuses_admission(code: Code) -> bool {
     )
 }
 
+/// Whether a response's headers are a gRPC server's: the protocol requires a
+/// `content-type` of `application/grpc`, optionally with a `+format` or
+/// `;params` suffix, on every response.
+fn is_grpc_response(metadata: &MetadataMap) -> bool {
+    metadata
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|value| {
+            value
+                .strip_prefix(GRPC_CONTENT_TYPE)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['+', ';']))
+        })
+}
+
+/// A response's `content-type` for an error message: quoted, or `missing`.
+fn describe_content_type(metadata: &MetadataMap) -> String {
+    metadata.get(CONTENT_TYPE).map_or_else(
+        || "missing".to_owned(),
+        |value| format!("{:?}", value.to_str().unwrap_or("<non-ASCII>")),
+    )
+}
+
+/// The `content-type` header, as tonic's metadata names it.
+const CONTENT_TYPE: &str = "content-type";
+
+/// The media type every gRPC response carries, before any suffix.
+const GRPC_CONTENT_TYPE: &str = "application/grpc";
+
 /// How many more times a stream the server never took is opened: once on the
 /// connection that was closing, once on the one the channel dials to replace it.
 const OPEN_RETRIES: u32 = 2;
@@ -254,6 +332,7 @@ pub(crate) struct RemoteWorker {
     runtime: Handle,
     /// See [`Remote::closing`].
     closing: Arc<Semaphore>,
+    closing_complete: Arc<Notify>,
 }
 
 impl RemoteWorker {
@@ -265,8 +344,15 @@ impl RemoteWorker {
     /// what it ended with — a final event such as a deadline's exception, then
     /// its status — is on the read side, so the turn goes on to [`Self::recv`]
     /// and reports the server's last word rather than a bare send failure.
-    pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<usize, FrameError> {
-        let body = encode_to_capped_vec(request)?;
+    pub(crate) async fn send(
+        &mut self,
+        request: &pb::ParentRequest,
+        opening: Option<&OpeningRequest<'_>>,
+    ) -> Result<usize, FrameError> {
+        let body = match opening {
+            Some(opening) => encode_to_capped_vec(opening)?,
+            None => encode_to_capped_vec(request)?,
+        };
         let len = body.len();
         match &self.requests {
             Some(requests) => {
@@ -299,8 +385,8 @@ impl RemoteWorker {
     /// Ends the stream: half-close the request side and leave the detached
     /// reader holding the response stream open until the server ends its side
     /// (bounded by [`CLOSE_GRACE`]), then call `on_closed`. Returns at once:
-    /// what the server does before ending — a relay parks the session — is not
-    /// the host's wait.
+    /// the checkout does not wait for the server's final work, such as parking.
+    /// [`crate::Pool::close`] waits for these detached readers.
     ///
     /// The half-close is what a *proxied* server sees: a bare stream reset may
     /// stop at a load balancer, leaving the session (and its capacity slot)
@@ -310,7 +396,11 @@ impl RemoteWorker {
         self.requests = None;
         // runs `on_closed` however this ends, including a runtime shut down
         // under the detached task
-        let closed = OnDrop(Some(on_closed));
+        let closing_complete = Arc::clone(&self.closing_complete);
+        let closed = OnDrop(Some(move || {
+            on_closed();
+            closing_complete.notify_waiters();
+        }));
         if let Some(reader) = self.reader.take() {
             let abort = reader.abort_handle();
             match Arc::clone(&self.closing).try_acquire_owned() {
@@ -477,6 +567,7 @@ async fn read_events(
                         status_message: None,
                         cause: None,
                         transport_error: None,
+                        retry_after: None,
                     });
                     break Err(FrameError::Truncated);
                 }
@@ -577,6 +668,29 @@ fn pong_body() -> Bytes {
 }
 
 impl RemoteDisconnect {
+    /// Adds a TLS hint to an HTTP/2 framing failure on a plaintext URL.
+    fn from_connect_status(url: &str, status: &Status) -> Self {
+        let mut details = Self::from_status(status);
+        if url
+            .split_once("://")
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("ws"))
+            && let Some(error) = &mut details.transport_error
+        {
+            let mut source = Error::source(status);
+            while let Some(cause) = source {
+                if cause
+                    .downcast_ref::<h2::Error>()
+                    .is_some_and(|err| err.reason() == Some(Reason::FRAME_SIZE_ERROR))
+                {
+                    error.push_str("; the server may require https:// instead of http://");
+                    break;
+                }
+                source = cause.source();
+            }
+        }
+        details
+    }
+
     /// Classifies a status that ended the stream: one the server sent carries
     /// its code, message and cause; one tonic synthesised for a transport
     /// failure (it has a source error) is recorded as that failure instead.
@@ -589,7 +703,21 @@ impl RemoteDisconnect {
                 status_message: Some(status.message().to_owned()),
                 cause: Cause::of(status),
                 transport_error: None,
+                retry_after: None,
             }
+        }
+    }
+
+    /// Classifies an admission refusal, keeping the server's `Retry-After`:
+    /// retry hints mean nothing once a session exists.
+    fn from_refusal(status: &Status) -> Self {
+        Self {
+            retry_after: status
+                .metadata()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| retry_after(value, SystemTime::now())),
+            ..Self::from_status(status)
         }
     }
 
@@ -600,7 +728,34 @@ impl RemoteDisconnect {
             status_message: None,
             cause: None,
             transport_error: Some(message.into()),
+            retry_after: None,
         }
+    }
+}
+
+/// Parses an HTTP delay or date without retaining invalid server metadata,
+/// capped at [`MAX_RETRY_AFTER`] so a host timer cannot overflow.
+fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let delay = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        // all digits but too long for a `u64` is still a valid, huge delay
+        Duration::from_secs(value.parse().unwrap_or(u64::MAX))
+    } else {
+        httpdate::parse_http_date(value)
+            .ok()?
+            .duration_since(now)
+            .unwrap_or_default()
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
+}
+
+/// The longest `Retry-After` delay reported; a server asking for more gets this.
+const MAX_RETRY_AFTER: Duration = Duration::from_hours(1);
+
+/// Records a connection failure for which the server sent no gRPC status.
+fn connection_failure(url: &str, message: impl Into<String>) -> PoolError {
+    PoolError::Connect {
+        url: url.to_owned(),
+        details: Box::new(RemoteDisconnect::failure(message)),
     }
 }
 
@@ -674,36 +829,42 @@ fn code_name(code: Code) -> &'static str {
 fn dial_url(url: &str) -> Result<String, PoolError> {
     let (scheme, rest) = url
         .split_once("://")
-        .ok_or_else(|| PoolError::Spawn(format!("{url}: invalid URI")))?;
+        .ok_or_else(|| connection_failure(url, "invalid URI"))?;
     let normalised = if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("ws") {
         "http"
     } else if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("wss") {
         "https"
     } else {
-        return Err(PoolError::Spawn(format!(
-            "{url}: unsupported URL scheme {scheme:?}, expected http or https"
-        )));
+        return Err(connection_failure(
+            url,
+            format!("unsupported URL scheme {scheme:?}, expected http or https"),
+        ));
     };
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     if !matches!(&rest[authority_end..], "" | "/") {
-        return Err(PoolError::Spawn(format!(
-            "{url}: a URL path, query or fragment is not supported; the session path is fixed"
-        )));
+        return Err(connection_failure(
+            url,
+            "a URL path, query or fragment is not supported; use only the scheme and host, with an optional port",
+        ));
     }
     Ok(format!("{normalised}://{rest}"))
 }
 
 /// Installs the process-level rustls `CryptoProvider` exactly once before the
-/// first `https://` dial. rustls 0.23 panics on first TLS use when it can't
+/// first `https://` dial and returns the one in force, for the verifier to
+/// check signatures with. rustls 0.23 panics on first TLS use when it can't
 /// pick a provider automatically (both `aws-lc-rs` and `ring`, or neither,
 /// compiled in), so we name `aws_lc_rs` explicitly. Idempotent via `Once`, and
 /// the install error is ignored: another part of the process (e.g. a host
 /// embedding the pool) may have already installed a provider, which is fine.
-fn install_crypto_provider() {
+fn install_crypto_provider() -> Arc<CryptoProvider> {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         let _ = default_provider().install_default();
     });
+    CryptoProvider::get_default()
+        .expect("a rustls CryptoProvider is installed above")
+        .clone()
 }
 
 #[cfg(test)]

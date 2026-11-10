@@ -13,7 +13,9 @@ use crate::{
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_value::PyValue,
-    resource_checks::{check_estimated_size, check_repeat_size, check_value_buffer_growth},
+    resource_checks::{
+        check_estimated_size, check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity,
+    },
     types::{
         LazyHeapSet, Type,
         list::repr_items_fmt,
@@ -559,8 +561,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Deque> {
             return Ok(None);
         };
         let maxlen = self.get(vm.heap).maxlen();
-        let mut items = self.clone_all_items(vm)?;
-        items.extend(other.clone_all_items(vm)?);
+        // The guard releases our clones if cloning `other` hits the memory limit.
+        let mut items = DropGuard::new(self.clone_all_items(vm)?, vm);
+        let (left, vm) = items.as_parts_mut();
+        left.extend(other.clone_all_items(vm)?);
+        let (items, vm) = items.into_parts();
         let (deque, evicted) = Deque::new(items, maxlen);
         evicted.drop_with(vm.heap);
         let id = vm.heap.allocate(HeapData::Deque(deque));
@@ -1156,8 +1161,9 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         }
         result.into_inner()
     } else {
+        let total = repeated_len(len, count, mem::size_of::<Value>())?;
         check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
-        let mut result = DropGuard::new(Vec::with_capacity(len * count), vm);
+        let mut result = DropGuard::new(try_vec_with_capacity(total)?, vm);
         for rep in 0..count {
             let (items, vm) = result.as_parts_mut();
             items.extend(source.iter().map(|v| v.clone_with_heap(vm.heap)));

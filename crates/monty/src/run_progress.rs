@@ -52,14 +52,14 @@ pub enum RunProgress {
 impl RunProgress {
     /// The execution heap and its interns for a dump upgrade, or `None` once
     /// execution has completed.
-    pub(crate) fn heap_and_interns(&mut self) -> Option<(&mut Heap, &Interns)> {
+    pub(crate) fn heap_and_interns(&mut self) -> Option<(&mut Heap, &mut Interns)> {
         match self {
             Self::FunctionCall(FunctionCall { snapshot, .. })
             | Self::OsCall(OsCall { snapshot, .. })
             | Self::NameLookup(NameLookup { snapshot, .. }) => {
-                Some((&mut snapshot.heap, &snapshot.executor.tables.interns))
+                Some((&mut snapshot.heap, &mut snapshot.executor.tables.interns))
             }
-            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &executor.tables.interns)),
+            Self::ResolveFutures(ResolveFutures { heap, executor, .. }) => Some((heap, &mut executor.tables.interns)),
             Self::Complete(_) => None,
         }
     }

@@ -432,3 +432,8 @@ assert_eq!(result, MontyObject::int(42));
 
 `PoolError::Disconnected` retains optional `remote` details with the gRPC status that ended the stream (code and message, plus the server's `RemoteCause` when it sent one), or the transport error.
 The peer reason is unverified text, and a disconnect does not establish whether the request ran.
+The display text includes that reason.
+`PoolError::Refused` identifies a server refusal before a session exists.
+Its details provide `retryable()` and `retry_after` (a `Duration` from `Retry-After`, capped at one hour), with no automatic retry.
+`PoolError::Connect` retains the status or transport error for other connection failures.
+`PoolError::Configuration` identifies invalid or incompatible settings, such as no finite `request_timeout` for a CPU-mode pool or server.

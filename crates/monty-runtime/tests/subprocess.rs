@@ -94,6 +94,31 @@ impl ChildProc {
         .expect("failed to write request");
     }
 
+    /// Sends a `Configure` carrying the session's first request, and reads
+    /// its streamed prints and its turn-ending event whole.
+    fn send_opening(
+        &mut self,
+        first: pb::configure::First,
+        configure: pb::Configure,
+    ) -> (Vec<pb::Print>, pb::ChildEvent) {
+        self.send(pb::parent_request::Kind::Configure(pb::Configure {
+            first: Some(first),
+            ..configure
+        }));
+        let mut prints = Vec::new();
+        loop {
+            let event = self
+                .reader
+                .read::<pb::ChildEvent>()
+                .expect("failed to read event")
+                .expect("unexpected EOF from child");
+            match event.kind {
+                Some(pb::child_event::Kind::Print(print)) => prints.push(print),
+                _ => return (prints, event),
+            }
+        }
+    }
+
     /// Reads a single event.
     fn recv(&mut self) -> pb::child_event::Kind {
         self.reader
@@ -276,6 +301,13 @@ fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
 }
 
 #[track_caller]
+fn expect_refusal(event: pb::child_event::Kind) -> String {
+    match event {
+        pb::child_event::Kind::SessionRefused(refused) => refused.message,
+        other => panic!("expected SessionRefused, got {other:?}"),
+    }
+}
+
 fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
     match event {
         pb::child_event::Kind::Error(error) => error.exception.expect("error has no exception"),
@@ -345,6 +377,61 @@ fn runtime_error_preserves_session() {
     // the session survives the error, including earlier globals
     assert_eq!(child.feed_complete("kept + 1"), MontyObject::int(42));
     child.shutdown();
+}
+
+/// A `Configure` can carry the session's first `Feed`: one reply, stamped with
+/// the acknowledged clock, under the session's limits.
+#[test]
+fn a_first_feed_opens_its_session() {
+    let mut child = ChildProc::spawn();
+    let configure = pb::Configure {
+        limits: Some(pb::ResourceLimits {
+            max_feed_duration_micros: Some(100_000),
+            ..Default::default()
+        }),
+        execution_clock: Some(pb::ExecutionClock::Wall as i32),
+        os_policy: Some((&OsPolicy::default()).into()),
+        ..configure()
+    };
+    let (_, event) = child.send_opening(first_feed("while True:\n    pass"), configure);
+    assert_eq!(event.execution_clock, Some(pb::ExecutionClock::Wall as i32));
+    let error = expect_error(event.kind.expect("event kind"));
+    assert_eq!(error.exc_type, "TimeoutError");
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A refused `Configure` is the reply, and the first request it carries never runs.
+#[test]
+fn a_refused_configure_runs_nothing() {
+    let mut child = ChildProc::spawn();
+    let configure = pb::Configure {
+        execution_clock: Some(99),
+        ..configure()
+    };
+    let (prints, event) = child.send_opening(first_feed("print('ran')"), configure);
+    assert!(prints.is_empty(), "the refused request ran: {prints:?}");
+    assert_eq!(
+        expect_refusal(event.kind.expect("event kind")),
+        "invalid execution_clock"
+    );
+    // nothing opened, so the worker can still be configured
+    child.create_repl();
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+    child.shutdown();
+}
+
+/// A first `Feed` of `code` with no inputs.
+fn first_feed(code: &str) -> pb::configure::First {
+    pb::configure::First::Feed(pb::Feed {
+        code: code.to_owned(),
+        inputs: vec![].into(),
+        values: None,
+        skip_type_check: false,
+        cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
+        stream_async_calls: false,
+    })
 }
 
 // =============================================================================
@@ -668,12 +755,9 @@ fn invalid_os_policy_is_rejected_on_configure() {
         }),
         ..configure()
     }));
-    let error = expect_error(child.recv());
     assert_eq!(
-        error.message.as_deref(),
-        Some(
-            "protocol violation: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
-        )
+        expect_refusal(child.recv()),
+        "invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
     );
     child.create_repl();
     child.feed_complete("1 + 1");
@@ -1162,137 +1246,147 @@ fn deep_copy_of_a_near_limit_dict_raises_rather_than_dying() {
 fn large_allocations_are_rejected_before_the_hard_limit() {
     // each case with the allocator usage it should be refused at
     let cases = [
-        ("'x' * 10_000_000", 10_041_930),
+        ("'x' * 10_000_000", 10_044_245),
         // Each formatter builder must fail softly before the worker reaches its hard ceiling.
-        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_242_361),
-        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_442_393),
-        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_242_398),
+        ("s = 'x' * 400_000\n'{0}{0}'.format(s)", 1_244_679),
+        ("s = 'x' * 400_000\n'{0:>1000000}'.format(s)", 1_444_711),
+        ("s = 'é' * 200_000\n'{0!a}'.format(s)", 1_244_716),
         // `%` formatting: padding, float digits, integer zero-extension and output growth.
-        ("'%*d' % (2_000_000, 1)", 2_042_087),
-        ("'%.*f' % (1_000_000, 1.0)", 1_171_127),
+        ("'%*d' % (2_000_000, 1)", 2_044_277),
+        ("'%.*f' % (1_000_000, 1.0)", 1_173_316),
         // A `%` presentation copies its digits into a builder to add the suffix, refused there.
-        ("f'{0.5:.700000%}'", 1_442_609),
-        ("'%.*d' % (2_000_000, 1)", 2_042_091),
-        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_642_547),
-        ("b'%*d' % (2_000_000, 1)", 2_050_309),
-        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_650_770),
-        ("b'x' * 10_000_000", 10_050_164),
-        ("[None] * 1_000_000", 16_042_085),
-        ("2 ** 10_000_000", 10_041_929),
-        ("1 << 10_000_000", 1_291_930),
+        ("f'{0.5:.700000%}'", 1_444_269),
+        ("'%.*d' % (2_000_000, 1)", 2_044_281),
+        ("s = 'x' * 400_000\n'%s%s' % (s, s)", 1_644_606),
+        ("b'%*d' % (2_000_000, 1)", 2_052_499),
+        ("s = b'x' * 400_000\nb'%s%s' % (s, s)", 1_652_829),
+        ("b'x' * 10_000_000", 10_052_479),
+        ("[None] * 1_000_000", 16_044_279),
+        ("2 ** 10_000_000", 10_044_244),
+        ("1 << 10_000_000", 1_294_245),
         // `int / int` scales one operand before dividing; both shift directions are
         // preflighted.
-        ("x = 1 << 3_000_000\nx / (x - 1)", 1_542_551),
-        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_542_534),
+        ("x = 1 << 3_000_000\nx / (x - 1)", 1_544_614),
+        ("x = 1 << 3_000_000\nx / (x >> 100)", 1_544_597),
         // `math.factorial`, `comb` and `perm` preflight their product's size.
-        ("import math\nmath.factorial(2_000_000)", 10_547_092),
+        ("import math\nmath.factorial(2_000_000)", 10_549_350),
         // A binomial is bounded by `2**n`, so `comb` needs a larger `n` to trip the check.
-        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_297_109),
-        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_047_109),
+        ("import math\nmath.comb(9_000_000, 4_500_000)", 2_299_492),
+        ("import math\nmath.perm(4_000_000, 2_000_000)", 11_049_492),
         // `math.lcm` of two large coprime ints is a product, preflighted like `*`.
-        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_297_439),
-        ("('a' * 1000).replace('a', 'b' * 2000)", 2_045_422),
+        ("import math\nx = 1 << 2_000_000\nmath.lcm(x + 1, x - 1)", 1_299_839),
+        ("('a' * 1000).replace('a', 'b' * 2000)", 2_047_539),
         // Every `%Z` copies the zone name into a `StringBuilder`, refused at a
         // capacity doubling like the formatter cases above: fixed-size pushes
         // make that step deterministic.
         (
             "from datetime import datetime, timezone, timedelta\ntz = timezone(timedelta(0), 'n' * 100_000)\ndatetime(2024, 1, 1, tzinfo=tz).strftime('%Z' * 5_000)",
-            1_254_024,
+            1_255_965,
         ),
         // Bulk container clones: `+=` preflights the temp clone plus the target
         // growth, `+` preflights each side's clone.
-        ("x = [None] * 40_000\nx += x", 1_962_551),
-        ("t = (None,) * 40_000\nt + t", 1_322_547),
-        ("x = [None] * 40_000\nx.copy()", 1_322_293),
+        ("x = [None] * 40_000\nx += x", 1_964_483),
+        ("t = (None,) * 40_000\nt + t", 1_324_611),
+        ("x = [None] * 40_000\nx.copy()", 1_324_613),
         // A container repr polls the limits between items: crossing the memory
         // limit raises rather than truncating the way a timeout does.
-        ("x = [None] * 50_000\nlen(repr(x))", 1_105_423),
+        ("x = [None] * 50_000\nlen(repr(x))", 1_106_811),
         // The other container reprs poll the same way, each from its own loop.
         (
             "s = 'x' * 200\nd = dict.fromkeys(range(5_000), s)\nlen(repr(d))",
-            1_493_714,
+            1_495_358,
         ),
         (
             "from collections import Counter\ns = 'x' * 200\nc = Counter({(i, s): 1 for i in range(4_000)})\nlen(repr(c))",
-            1_103_442,
+            1_104_574,
         ),
         (
             "import functools\ns = 'x' * 200\np = functools.partial(print, *([s] * 5_000))\nlen(repr(p))",
-            1_337_033,
+            1_338_165,
         ),
         (
             "import functools\ns = 'x' * 400\np = functools.partial(print, **{f'k{i}': s for i in range(2_500)})\nlen(repr(p))",
-            1_388_853,
+            1_389_801,
         ),
-        ("s = 'x' * 200\ng = list[(s,) * 5_000]\nlen(repr(g))", 1_172_136),
+        ("s = 'x' * 200\ng = list[(s,) * 5_000]\nlen(repr(g))", 1_173_780),
         (
             "import typing\ns = 'x' * 600\nu = typing.Union[tuple(list[i, s] for i in range(2_000))]\nlen(repr(u))",
-            1_527_745,
+            1_529_389,
         ),
         // `dict | dict` snapshots the left pairs and builds the merged dict
         // while that snapshot is live, so both are preflighted together.
-        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_805_423),
+        ("d = dict.fromkeys(range(12_000))\nd | {}", 1_807_474),
         // The right operand is snapshotted inside the same call, so that copy is
         // preflighted too. Only the copy: see the overlap test below.
-        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_229_423),
+        ("d = dict.fromkeys(range(12_000))\n{} | d", 1_231_474),
         // A partial re-clones its bound arguments on every call, so that clone
         // is preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [None] * 40_000\np()",
-            1_327_351,
+            1_328_267,
         ),
         // Reading `p.args` / `p.keywords` rebuilds them in full, so both are
         // preflighted like any other bulk container copy.
         (
             "import functools\ndef f(*a):\n    return 0\np = functools.partial(f, *range(20_000))\njunk = [0] * 40_000\np.args",
-            1_327_351,
+            1_328_267,
         ),
         (
             "import functools\ndef f(**k):\n    return 0\np = functools.partial(f, **{str(i): i for i in range(6_000)})\njunk = [0] * 30_000\np.keywords",
-            1_103_055,
+            1_104_447,
         ),
         // A `typing` alias copies its subscript into its `__args__`, and a class's
         // `__annotations__` copies the namespace into the dict the annotations
         // evaluate under; both are preflighted like any container copy.
-        ("from typing import Tuple\nTuple[(None,) * 40_000]", 1_323_877),
+        ("from typing import Tuple\nTuple[(None,) * 40_000]", 1_325_081),
         (
             "class C:\n    x: int\nfor i in range(16_000):\n    setattr(C, str(i), i)\nC.__annotations__",
-            1_146_458,
+            1_146_638,
         ),
         // `Literal` copies its values to deduplicate them, `Callable` its
         // parameter list; both copies are preflighted.
-        ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_323_889),
-        ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_323_909),
+        ("from typing import Literal\nLiteral[(None,) * 40_000]", 1_325_093),
+        ("from typing import Callable\nCallable[[None] * 40_000, int]", 1_325_113),
         // `__metadata__` copies an `Annotated` alias's metadata, preflighted too.
         (
             "from typing import Annotated\nmeta = (None,) * 12_000\na = Annotated[(int,) + meta]\njunk = [None] * 30_000\na.__metadata__",
-            1_170_898,
+            1_171_846,
         ),
         // Flattening a nested `Annotated` copies both aliases' arguments into
         // one buffer, preflighted as a whole.
         (
             "from typing import Annotated\nmeta = (None,) * 12_000\ninner = Annotated[(int,) + meta]\nAnnotated[(inner,) + meta]",
-            1_407_153,
+            1_408_101,
         ),
         // Comparing or hashing a `Literal` copies its values again, so an alias
         // that fits is refused when the copy would not.
         (
             "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nL == L",
-            1_106_815,
+            1_107_763,
         ),
         (
             "from typing import Literal\nL = Literal[tuple(range(10_000))]\njunk = [None] * 40_000\nhash(L)",
-            1_106_816,
+            1_107_764,
         ),
         // `deque.extend` preflights exact-hint iterators up front.
         (
             "from collections import deque\nd = deque()\nd.extend(range(1_000_000))",
-            16_042_653,
+            16_044_735,
         ),
+        // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_455),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_301),
+        // A split's piece buffer is grown under the same checks as `re.split`'s.
+        ("('ab,' * 100_000).split(',')", 1_392_992),
+        ("('ab,' * 100_000).rsplit(',')", 1_392_993),
+        ("(b'ab ' * 100_000).split()", 1_401_082),
+        ("(b'ab,' * 100_000).rsplit(b',')", 1_401_217),
+        // Empty lines allocate no heap entry, so only the line buffer's growth check sees them.
+        ("('\\n' * 200_000).splitlines()", 1_292_858),
         // The json encoder preflights each doubling of its output buffer.
-        ("import json\njson.dumps(['x' * 1000] * 2000)", 1_167_196),
+        ("import json\njson.dumps(['x' * 1000] * 2000)", 1_168_792),
         // `randbytes` charges its word buffer and the byte buffer it fills.
-        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_247_167),
+        ("import random\nrandom.seed(0)\nrandom.randbytes(600_000)", 1_249_287),
         // A `range` population can be as long as `i64::MAX` while costing nothing,
         // so `sample` must saturate its size arithmetic and refuse the pick buffer.
         (
@@ -1302,73 +1396,73 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // `itertools.batched` preflights one batch, capped at `n`.
         (
             "import itertools\nnext(itertools.batched(range(1_000_000), 1_000_000))",
-            16_044_751,
+            16_046_872,
         ),
         // The two combinatoric iterators whose width is not bounded by their
         // pool preflight that width: `r` repeats of a one-item pool, and
         // `repeat` copies of the argument list.
         (
             "import itertools\nnext(itertools.combinations_with_replacement('a', 1_000_000))",
-            24_044_563,
+            24_046_943,
         ),
         (
             "import itertools\nnext(itertools.product('ab', repeat=1_000_000))",
-            24_044_628,
+            24_047_005,
         ),
         // A SHAKE digest preflights its output; `hexdigest` also counts the raw
         // digest it keeps live while encoding, so a length whose hex alone
         // would fit is still refused.
-        ("import hashlib\nhashlib.shake_128().digest(2_000_000)", 2_045_903),
-        ("import hashlib\nhashlib.shake_128().hexdigest(400_000)", 1_245_904),
+        ("import hashlib\nhashlib.shake_128().digest(2_000_000)", 2_047_733),
+        ("import hashlib\nhashlib.shake_128().hexdigest(400_000)", 1_247_734),
         // A csv record copies its fields' text into the line, refused at a capacity
         // doubling like the formatter cases above.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\ns = 'x' * 400_000\ncsv.writer(S()).writerow([s, s])",
-            1_250_723,
+            1_251_359,
         ),
         // A `DictReader` row's dict is sized from `fieldnames` up front, preflighted like a
         // dict copy.
         (
             "import csv\nnames = list(range(30_000))\nnext(csv.DictReader(['x'], fieldnames=names))",
-            1_965_832,
+            1_967_962,
         ),
         // A list `fieldnames` is copied per row, and the keys of a row dict are copied for
         // the `extrasaction='raise'` check: both bulk copies are preflighted.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\nnames = [None] * 40_000\ncsv.DictWriter(S(), names).writerow({})",
-            1_331_169,
+            1_331_396,
         ),
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\nrow = {i: None for i in range(10_000)}\ncsv.DictWriter(S(), []).writerow(row)",
-            1_079_568,
+            1_079_933,
         ),
         // A key can return an existing repr; copying repeated reprs into the error
         // message must still respect the budget.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
-            1_254_593,
+            1_253_825,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
         // precision: an integer conversion, `f` formatting, and division, `sqrt`,
         // `quantize` and the largest finite value (`next_minus` from infinity) under
         // a large `prec`.
-        ("import decimal\nint(decimal.Decimal('1e3000000'))", 3_046_935),
-        ("import decimal\nf'{decimal.Decimal(\"1e3000000\"):f}'", 3_047_203),
+        ("import decimal\nint(decimal.Decimal('1e3000000'))", 3_048_538),
+        ("import decimal\nf'{decimal.Decimal(\"1e3000000\"):f}'", 3_048_429),
         (
             "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1) / 3",
-            3_047_228,
+            3_048_830,
         ),
         (
             "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(2).sqrt()",
-            6_047_262,
+            6_048_865,
         ),
         (
             "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal(1).quantize(decimal.Decimal('1e-2500000'))",
-            2_547_363,
+            2_548_965,
         ),
         (
             "import decimal\ndecimal.getcontext().prec = 3_000_000\ndecimal.Decimal('Infinity').next_minus()",
-            3_047_327,
+            3_048_930,
         ),
     ];
 
@@ -1382,7 +1476,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         "from dataclasses import dataclass\ns = 'x' * 6_000\n@dataclass\nclass C:\n{fields}c = C(*([s] * 200))\nlen(repr(c))"
     );
     let cases = cases.map(|(code, expected)| (code.to_owned(), expected));
-    for (code, expected) in cases.into_iter().chain([(dataclass, 1_264_003)]) {
+    for (code, expected) in cases.into_iter().chain([(dataclass, 1_248_099)]) {
         let code = code.as_str();
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(1024 * 1024));
@@ -1399,6 +1493,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         "a = [None] * 1_000_000\na *= 2",
         "a = [None] * 1_000_000\na += range(1_000_000)",
         "from collections import deque\nd = deque([None] * 500_000)\nd *= 4",
+        // The line buffer's next doubling would land past the hard headroom.
+        "('\\n' * 2_000_000).splitlines()",
     ] {
         let mut child = ChildProc::spawn();
         child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
@@ -1414,6 +1510,16 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
     assert_eq!(
         child.feed_complete("a = [None] * 1_000_000\nalias = a\na += [None]\nlen(alias)"),
         MontyObject::int(1_000_001),
+    );
+    child.shutdown();
+
+    // A result `finditer` preflights as fitting must build within that estimate: a
+    // named group's table once took 4 slots per match, killing the worker here.
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(24 * 1024 * 1024));
+    assert_eq!(
+        child.feed_complete("import re\nlen(re.finditer('(?P<x>)', 'a' * 60_000))"),
+        MontyObject::int(60_001),
     );
     child.shutdown();
 }
@@ -1439,7 +1545,7 @@ fn dict_writer_rows_are_rejected_before_the_hard_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError", "{code}");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 1_206_975, code);
+    assert_reported_usage(&message, 1_208_604, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
     child.shutdown();
 }
@@ -1461,7 +1567,7 @@ fn expandvars_growth_is_rejected_before_the_hard_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError", "{code}");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 1_371_504, code);
+    assert_reported_usage(&message, 1_372_668, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2), "{code}");
     child.shutdown();
 }
@@ -1676,7 +1782,7 @@ fn iterdir_joins_are_preflighted() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "MemoryError");
     let message = error.message.expect("MemoryError should have a message");
-    assert_reported_usage(&message, 2_245_291, code);
+    assert_reported_usage(&message, 2_247_009, code);
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
     child.shutdown();
 }
@@ -2363,6 +2469,19 @@ fn exceeding_the_memory_limit_exits_with_the_oom_code() {
     );
 }
 
+/// An opening `Configure` is decoded before its session's ceiling is armed,
+/// yet its first request must still count against `max_memory`: a snippet
+/// padded with a comment buys itself no headroom.
+#[test]
+fn a_first_request_counts_against_the_memory_limit() {
+    let mut child = ChildProc::spawn();
+    // the allocation fits the 3 MiB limit only if the 1.5 MiB comment is not charged
+    let code = format!("x = bytes(700_000)\n#{}", "x".repeat(1536 * 1024));
+    let (_, event) = child.send_opening(first_feed(&code), configure_with_max_memory(3 * 1024 * 1024));
+    assert_eq!(expect_error(event.kind.expect("event kind")).exc_type, "MemoryError");
+    child.shutdown();
+}
+
 /// A dump carries its own limits, so restoring one must re-apply them: this
 /// `Load` lands on a child that was never configured with a limit, and the
 /// restored session's `max_memory` is all there is to bound it.
@@ -2556,10 +2675,9 @@ fn deeply_nested_type_check_stubs_are_rejected_on_configure() {
             type_check_stubs: Some(stubs),
             ..configure()
         }));
-        let error = expect_error(child.recv());
         assert_eq!(
-            error.message.as_deref(),
-            Some("protocol violation: invalid type_check_stubs: Source is too deeply nested")
+            expect_refusal(child.recv()),
+            "invalid type_check_stubs: Source is too deeply nested"
         );
     }
     child.create_repl();

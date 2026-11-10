@@ -16,7 +16,7 @@ because the interpreter implements no such operation.
 
 !!! note
 
-    If you want Monty combined with OS-level isolation, see [Full Monty](server.md), the commercial version of Monty.
+    If you want Monty combined with OS-level isolation, see [Commercial Support](server.md), the commercial version of Monty.
 
 In practice that means:
 
@@ -337,6 +337,8 @@ See [random](limitations/random.md).
 
 Default system sleeps bypass your `os=` handler.
 The sandbox caps each delay at `sleep_system_max`, ten seconds by default (`--max-sleep` in the CLI).
+A longer sleep returns normally at the cap without a warning, unless the capped delay would exceed `max_total_sleep_secs`.
+This cap is independent of `PoolConfig::request_timeout` (`request_timeout` in Python, `requestTimeout` in JavaScript).
 The pool waits on the calling thread under `Monty`, or with a timer under `AsyncMonty` and JavaScript, including browsers.
 All pools answer `asyncio.sleep()` with futures, so gathered sleeps overlap and other sandbox tasks can run meanwhile.
 Manual suspension drivers receive capped `system.sleep` or `system.async_sleep` calls.
@@ -511,10 +513,15 @@ process. The Python and JavaScript APIs do not offer an in-process execution mod
 ### Remote workers
 
 [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] (Python), `MontyRemote` (JavaScript) and [`PoolConfig::remote`](api/rust/monty-pool.md#poolconfig) (Rust) reach a remote worker over gRPC instead of spawning a local one: one HTTP/2 connection per pool, one stream per session.
+An `https://` server's certificate is verified against the operating system's trust store, not roots bundled into the client, so a root the OS has distrusted is refused without a Monty release.
+macOS and Windows verify with the OS and apply its revocation data; Linux checks the chain against the distro CA bundle only, with no revocation checking, and a Linux host with no CA bundle cannot create an `https://` pool.
 **A remote peer need not be a Monty sandbox at all.** It may be real CPython with no sandbox, no resource limits and
 full host access, relying on deployment isolation — a container or VM per session — rather than on the interpreter.
 None of the guarantees on this page transfer across that boundary; they become properties of whatever is running on the
 other end.
+
+Closing a remote pool waits, up to one second each, for the server to end the streams of sessions already finished.
+If the server checks a session's credentials when it ends the stream, keep them valid until the pool's close returns.
 
 ### Pin the worker binary
 

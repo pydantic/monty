@@ -25,6 +25,24 @@ Each mount has a configurable aggregate memory budget that defaults to `DEFAULT_
 Retained in-memory overlay data and transient filesystem results share that
 budget; oversized operations return `MemoryError` before an unbounded read.
 
+## Exclusive creation
+
+`OsFunctionCall::CreateExclusive` reserves an empty file and returns a `MontyFileHandle` in one request.
+An occupied name, including a directory or dangling symlink, returns `FileExistsError` without changing it.
+Parent directories must already exist, and creation requires a writable mount even when the returned handle is read-only.
+The handle accepts the supported `r`, `rb`, `w`, `wb`, `a`, and `ab` modes; update modes are rejected.
+
+Native mounts use descriptor-relative exclusive creation, so checking and reserving the name are atomic.
+The `permissions` field accepts read/write access bits (`0o666` mask), applied on Unix subject to umask.
+Execute bits and bits outside the access mask are rejected with `ValueError` before creation.
+On Windows, Monty ignores the requested permission bits and uses the filesystem's default access rules,
+including inheritance from the parent directory.
+Overlay mounts insert an empty overlay file and never create or replace a backing file.
+Their exclusive check and insertion hold a mutable borrow of the overlay state; the host must not concurrently modify
+backing entries during creation.
+Overlay mounts ignore requested permission bits and report fixed stat modes.
+Python `OSAccess` reports the requested bits through `stat()`, but does not enforce them for access.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

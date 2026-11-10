@@ -4,6 +4,8 @@
 //! bytecode instructions, a constant pool, source location information for tracebacks,
 //! and an exception handler table.
 
+mod location_table;
+
 use std::ops::Not;
 
 use crate::{intern::StringId, parse::CodeRange, value::Value};
@@ -23,11 +25,12 @@ pub struct Code {
     #[serde(rename = "C")]
     constants: Vec<Value>,
 
-    /// Source location table for tracebacks.
+    /// Source location table for tracebacks, sorted by bytecode offset.
     ///
     /// Maps bytecode offsets to source locations. Used to generate Python-style
     /// tracebacks with line numbers and caret markers when exceptions occur.
-    #[serde(rename = "L")]
+    /// Dumped as one compact byte string, see [`location_table`].
+    #[serde(rename = "L", with = "location_table")]
     location_table: Vec<LocationEntry>,
 
     /// Exception handler table.
@@ -132,6 +135,16 @@ impl Code {
         after.checked_sub(1).map(|index| &self.location_table[index])
     }
 
+    /// Visits every source range in the location table, for a dump upgrade that rebases positions.
+    pub(crate) fn for_each_position_mut(&mut self, mut f: impl FnMut(&mut CodeRange)) {
+        for entry in &mut self.location_table {
+            f(&mut entry.range);
+            if let Some(focus) = &mut entry.focus {
+                f(focus);
+            }
+        }
+    }
+
     /// Finds an exception handler for the given bytecode offset.
     ///
     /// Searches the exception table for an entry whose protected range contains
@@ -170,7 +183,10 @@ impl Clone for Code {
 ///
 /// The `range` covers the full expression (`a + b`), while `focus` points
 /// to the specific operator (`+`) that caused the error.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Dumps write the table through [`location_table`]; the derived `Deserialize`
+/// only reads the per-entry maps that older dumps hold.
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct LocationEntry {
     /// Bytecode offset this entry applies to.
     ///
@@ -206,6 +222,12 @@ impl LocationEntry {
     #[must_use]
     pub fn range(&self) -> CodeRange {
         self.range
+    }
+
+    /// Whether this entry records exactly `range` and `focus`.
+    #[must_use]
+    pub fn has_location(&self, range: CodeRange, focus: Option<CodeRange>) -> bool {
+        self.range == range && self.focus == focus
     }
 }
 

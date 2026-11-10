@@ -68,6 +68,18 @@ impl StringId {
         self.0 as usize
     }
 
+    /// The raw ID, for compact encodings that persist it (the dumped location table).
+    #[inline]
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// Rebuilds an ID persisted with [`Self::raw`].
+    #[inline]
+    pub(crate) fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
     /// Returns the StringId for an ASCII byte.
     #[must_use]
     pub const fn from_ascii(byte: u8) -> Self {
@@ -3092,6 +3104,20 @@ impl Interns {
             .flatten()
             .and_then(|index| self.eval_sources.get(index))
             .map(AsRef::as_ref)
+    }
+
+    /// Every snippet source with its filename-only ID, for a dump upgrade that rewrites positions.
+    pub(crate) fn eval_sources(&self) -> impl Iterator<Item = (StringId, &str)> {
+        self.eval_sources.iter().enumerate().map(|(index, source)| {
+            let id = StringId((SOURCE_ID_BASE + index).try_into().expect("source ID overflow"));
+            (id, source.as_ref())
+        })
+    }
+
+    /// Mutates every committed function. Only a dump upgrade may call this:
+    /// a running session borrows function code from these entries.
+    pub(crate) fn for_each_function_mut(&mut self, mut f: impl FnMut(&mut Function)) {
+        self.functions.for_each_mut(|function| f(function));
     }
 
     /// Looks up an imported file's source by its filename-only ID.

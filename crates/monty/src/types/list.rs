@@ -20,7 +20,7 @@ use crate::{
     intern::StaticStrings,
     modules::copy::{Memo, PyDeepCopy, deep_copy},
     py_value::PyValue,
-    resource_checks::{check_repeat_size, check_value_buffer_growth},
+    resource_checks::{check_repeat_size, check_value_buffer_growth, repeated_len, try_vec_with_capacity},
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
@@ -642,8 +642,11 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        let mut items = self.clone_all_items(vm)?;
-        items.extend(other.clone_all_items(vm)?);
+        // The guard releases our clones if cloning `other` hits the memory limit.
+        let mut items = DropGuard::new(self.clone_all_items(vm)?, vm);
+        let (left, vm) = items.as_parts_mut();
+        left.extend(other.clone_all_items(vm)?);
+        let (items, vm) = items.into_parts();
         let id = vm.heap.allocate(HeapData::List(List::new(items)));
         Ok(Some(Value::Ref(id)))
     }
@@ -652,14 +655,23 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, List> {
         let Some(count) = other.py_value(vm).repeat_count(vm)? else {
             return Ok(None);
         };
-        let value = self.get(vm.heap);
-        check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
-        let mut result = Vec::with_capacity(value.len() * count);
+        let len = self.get(vm.heap).len();
+        let total = repeated_len(len, count, VALUE_SIZE)?;
+        check_repeat_size(len.saturating_mul(VALUE_SIZE), count, &vm.heap.tracker)?;
+        // The guard releases the clones built so far if the time poll trips.
+        let mut result = DropGuard::new(try_vec_with_capacity(total)?, vm);
         for rep in 0..count {
-            result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
+            let (items, vm) = result.as_parts_mut();
+            items.extend(
+                self.get(vm.heap)
+                    .as_slice()
+                    .iter()
+                    .map(|value| value.clone_with_heap(vm.heap)),
+            );
             vm.heap.tracker.check_time_every(rep)?;
         }
-        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result))))))
+        let (items, vm) = result.into_parts();
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(items))))))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

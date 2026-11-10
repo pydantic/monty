@@ -35,10 +35,10 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::copy::{Memo, PyDeepCopy, deep_copy_slots},
-    resource_checks::check_repeat_size,
+    resource_checks::{check_repeat_size, repeated_len},
     types::{
         Dict, Type, Union, allocate_tuple,
         iter::collect_owned_iterable,
@@ -425,21 +425,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     /// CPython (the field names describe one instance only, so they cannot
     /// survive concatenation). A non-tuple-like right operand returns `None`.
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(mut other_items) = cloned_tuple_like_items(other, vm)? else {
+        let Some(other_items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
-        let mut items = self.cloned_items(vm)?;
-        items.append(&mut other_items);
+        let mut other_items = DropGuard::new(other_items, vm);
+        let mut items = self.cloned_items(other_items.ctx())?;
+        items.extend(other_items.into_inner());
         Ok(Some(allocate_tuple(SmallVec::from_vec(items), vm.heap)))
     }
 
     /// Reflected concatenation (`tuple + namedtuple`), reached when the left
     /// tuple's `py_add_impl` declined the namedtuple right operand.
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(mut items) = cloned_tuple_like_items(other, vm)? else {
+        let Some(items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
-        let mut self_items = self.cloned_items(vm)?;
+        let mut items = DropGuard::new(items, vm);
+        let mut self_items = self.cloned_items(items.ctx())?;
+        let mut items = items.into_inner();
         items.append(&mut self_items);
         Ok(Some(allocate_tuple(SmallVec::from_vec(items), vm.heap)))
     }
@@ -454,16 +457,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         if count == 0 || len == 0 {
             return Ok(Some(vm.heap.get_empty_tuple()));
         }
+        let total = repeated_len(len, count, mem::size_of::<Value>())?;
         check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, &vm.heap.tracker)?;
-        let mut result: TupleVec = SmallVec::with_capacity(len * count);
+        let mut items = TupleVec::new();
+        items
+            .try_reserve_exact(total)
+            .map_err(|_| ExcType::allocation_too_large())?;
+        // The guard releases the clones built so far if the time poll trips.
+        let mut result = DropGuard::new(items, vm);
         for rep in 0..count {
-            for i in 0..len {
-                let item = self.get(vm.heap).as_vec()[i].clone_with_heap(vm.heap);
-                result.push(item);
+            let (items, vm) = result.as_parts_mut();
+            // Pushes, not `extend`: its per-call reserve dominates when each pass adds one item.
+            for value in self.get(vm.heap).as_vec() {
+                items.push(value.clone_with_heap(vm.heap));
             }
             vm.heap.tracker.check_time_every(rep)?;
         }
-        Ok(Some(allocate_tuple(result, vm.heap)))
+        let (items, vm) = result.into_parts();
+        Ok(Some(allocate_tuple(items, vm.heap)))
     }
 
     fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

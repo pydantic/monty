@@ -105,7 +105,7 @@ pub struct PoolConfig {
     /// telemetry callbacks prevent the timer from being polled while they run.
     /// On the remote transport it also bounds opening a stream, from a cold
     /// dial through the server's admission (30 s when `None`); that expiry
-    /// fails with [`PoolError::Spawn`] instead, and there is no worker to kill.
+    /// fails with [`PoolError::Connect`] instead, and there is no worker to kill.
     pub request_timeout: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
@@ -229,14 +229,24 @@ pub enum PoolError {
     Typing(String),
     /// No worker became available within `checkout_timeout`.
     Exhausted,
-    /// A worker process could not be spawned, or a remote stream could not
-    /// be opened for a reason other than the server refusing it: a dial that
-    /// failed or timed out, a malformed metadata entry.
+    /// A worker process could not be spawned.
     Spawn(String),
+    /// A remote connection or session stream could not be opened.
+    Connect {
+        /// The server's URL, as configured.
+        url: String,
+        /// The status or transport failure that prevented the connection.
+        details: Box<RemoteDisconnect>,
+    },
+    /// The pool or request configuration is invalid, or incompatible with the
+    /// server. A worker or server refusing a session's `Configure` raises it
+    /// (`session refused: …`) from the request that carried it, which did not
+    /// run, or from [`Checkout::open`] when it was sent alone.
+    Configuration(String),
     /// The remote server refused to open the session stream (remote transport
     /// only) with an admission code: `RESOURCE_EXHAUSTED`, `UNAVAILABLE`,
     /// `UNAUTHENTICATED`, `PERMISSION_DENIED` or `FAILED_PRECONDITION`; any
-    /// other status is [`Self::Spawn`]. `refusal` carries the status, so a
+    /// other status is [`Self::Connect`]. `refusal` carries the status, so a
     /// caller can act on its code and cause rather than on the message. No
     /// session existed, so nothing ran.
     Refused {
@@ -319,6 +329,37 @@ pub struct RemoteDisconnect {
     /// The transport or protocol error for this failure; absent when the
     /// server sent a status.
     pub transport_error: Option<String>,
+    /// The server's valid `Retry-After` delay on a refusal; always `None`
+    /// for a connection failure or disconnect.
+    pub retry_after: Option<Duration>,
+}
+
+impl RemoteDisconnect {
+    /// Whether a refusal can succeed later without changing the request.
+    /// This does not make replaying a disconnected session safe.
+    #[must_use]
+    pub fn retryable(&self) -> bool {
+        matches!(self.status_code, Some("RESOURCE_EXHAUSTED" | "UNAVAILABLE"))
+    }
+}
+
+impl fmt::Display for RemoteDisconnect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(code) = self.status_code {
+            f.write_str(code)?;
+            if let Some(cause) = self.cause {
+                write!(f, " ({})", cause.as_str())?;
+            }
+            if let Some(message) = &self.status_message
+                && !message.is_empty()
+            {
+                write!(f, ": {message}")?;
+            }
+            Ok(())
+        } else {
+            f.write_str(self.transport_error.as_deref().unwrap_or("unknown reason"))
+        }
+    }
 }
 
 impl fmt::Display for PoolError {
@@ -342,14 +383,17 @@ impl fmt::Display for PoolError {
             Self::Typing(diagnostics) => write!(f, "type checking failed:\n{diagnostics}"),
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
-            Self::Refused { url, refusal } => write!(
-                f,
-                "failed to spawn monty worker: {url}: {}: {}",
-                refusal.status_code.unwrap_or("UNKNOWN"),
-                refusal.status_message.as_deref().unwrap_or_default()
-            ),
+            Self::Connect { url, details } => write!(f, "{url}: {details}"),
+            Self::Configuration(message) => f.write_str(message),
+            Self::Refused { url, refusal } => write!(f, "{url} refused the session: {refusal}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
-            Self::Disconnected { context, .. } => write!(f, "monty worker connection closed while {context}"),
+            Self::Disconnected { context, remote } => {
+                write!(f, "monty worker connection closed while {context}")?;
+                if let Some(reason) = remote {
+                    write!(f, ": {reason}")?;
+                }
+                Ok(())
+            }
             Self::Shutdown { dump } => match dump {
                 Some(_) => {
                     f.write_str("monty server is shutting down; the request did not run (restorable state attached)")

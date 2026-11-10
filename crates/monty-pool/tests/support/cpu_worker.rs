@@ -11,7 +11,7 @@ fn main() {
     let mut output = io::stdout().lock();
     let mut call_id = 0;
     while let Some(request) = reader.read::<pb::ParentRequest>().unwrap() {
-        let kind = request.kind.unwrap();
+        let mut kind = request.kind.unwrap();
         let clock = match &kind {
             pb::parent_request::Kind::Configure(config) if config.script_name == "legacy" => {
                 assert_eq!(
@@ -23,8 +23,27 @@ fn main() {
             pb::parent_request::Kind::Configure(config) => config.execution_clock,
             _ => None,
         };
+        // a `Configure` carrying the session's first request is answered by that request
+        if let pb::parent_request::Kind::Configure(config) = &mut kind {
+            match config.first.take() {
+                Some(pb::configure::First::Feed(feed)) => kind = pb::parent_request::Kind::Feed(feed),
+                Some(pb::configure::First::Load(load)) => kind = pb::parent_request::Kind::Load(load),
+                None => {}
+            }
+        }
         let event = match kind {
             pb::parent_request::Kind::Feed(feed) if feed.code == "exit" => return,
+            pb::parent_request::Kind::Feed(feed) if feed.code == "fatal" => {
+                // a dying worker's last gasp reports no clock
+                let fatal = pb::ChildEvent {
+                    kind: Some(pb::child_event::Kind::FatalError(pb::FatalError {
+                        message: "synthetic fatal error".to_owned(),
+                    })),
+                    ..Default::default()
+                };
+                write_frame(&mut output, &fatal).unwrap();
+                return;
+            }
             pb::parent_request::Kind::Feed(feed) if feed.code == "spin" => loop {
                 black_box(42);
             },

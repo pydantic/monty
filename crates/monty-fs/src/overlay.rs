@@ -169,8 +169,46 @@ pub(super) fn execute(
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
             Ok(MontyObject::path(normalize_virtual_path(&path).into_owned()))
         }
+        FsRequest::CreateExclusive { path, mode, .. } => create_exclusive(state, &path, mode, ctx),
         FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }
+}
+
+/// Reserves an unoccupied visible name entirely in the overlay, including over a tombstone.
+fn create_exclusive(
+    state: &mut OverlayState,
+    path: &str,
+    mode: FileMode,
+    ctx: &mut MountContext<'_>,
+) -> Result<MontyObject, MountError> {
+    let relative = relative_path(path, ctx)?;
+    ensure_parent_exists(state, &relative, ctx, path)?;
+    // The mutable borrow prevents another overlay operation between checking and inserting.
+    // Concurrent changes to the host backing directory are unsupported.
+    let occupied = match state.get(&relative) {
+        Some(OverlayEntry::Deleted) => false,
+        Some(_) => true,
+        None => {
+            let target = resolve_virtual_path(path, ctx.mount_virtual)?;
+            !matches!(
+                classify_target(ctx.mount_dir, target.for_dir_op(), path)?,
+                RealTarget::Absent
+            )
+        }
+    };
+    if occupied {
+        return Err(MountError::io_err(ErrorKind::AlreadyExists, "File exists", path));
+    }
+    check_write_limit(0, ctx)?;
+    state.insert(
+        relative,
+        OverlayEntry::File(OverlayFile {
+            content: Vec::new(),
+            mtime: current_timestamp(),
+        }),
+        ctx.memory_usage_limit,
+    )?;
+    Ok(file_handle_result(path, mode))
 }
 
 /// Performs the open-time effect for `open()` against overlay state.

@@ -144,6 +144,7 @@ Differences from CPython:
     A module whose body raises is dropped from the cache, so the next import runs it again.
 - Each submodule of a file package is its own `import` call for the dotted name (`pkg.sub`), searching the package's
     `__path__` directories, joined to the working directory.
+    Only the first 32 directories of `__path__` are searched; later entries are ignored.
     Relative imports (`from . import x`) are rejected, so a package that uses them raises
     `ImportError: attempted relative import with no known parent package` when imported.
     Directories without an `__init__.py` (namespace packages) are not found.

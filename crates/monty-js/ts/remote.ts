@@ -6,7 +6,7 @@
 // `MontySession` a local pool hands out.
 
 import { NativePool } from '../native-addon.js'
-import { type CheckoutOptions, graceMs, nativeCheckoutOptions } from './pool.js'
+import { type CheckoutOptions, graceMs, nativeCheckoutOptions, startPool } from './pool.js'
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
@@ -26,7 +26,13 @@ export interface MontyRemoteOptions {
    * the stream but never answers blocks the turn until the far end ends it.
    * It also bounds opening the stream, including the server's admission (30s
    * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
-   * CPU-mode servers require a finite `requestTimeout`.
+   * CPU-mode servers require a finite `requestTimeout`, otherwise checkout
+   * throws `MontyConfigurationError`.
+   * This deadline does not set the sleep cap. System sleeps return normally
+   * after at most `sleepSystemMax` (default ten seconds), even when sandbox
+   * code asks for longer, unless the capped delay would exceed `maxTotalSleepSecs`.
+   * Set `osPolicy.sleepSystemMax: Infinity` on checkout
+   * to request uncapped sleeps, subject to the server's policy.
    */
   requestTimeout?: number | null
   /**
@@ -91,7 +97,8 @@ export interface RemoteCheckoutOptions extends CheckoutOptions {
 export class MontyRemote {
   private readonly native: NativePool
   private readonly metadata: MontyRemoteOptions['metadata']
-  private closed = false
+  /** The first `close()` call's promise, shared by every later call. */
+  private closing: Promise<void> | undefined
 
   private constructor(native: NativePool, metadata: MontyRemoteOptions['metadata']) {
     this.native = native
@@ -100,8 +107,9 @@ export class MontyRemote {
 
   /**
    * Creates the pool. `url` is the server's `http://` or `https://` URL
-   * (`ws://` and `wss://` are read as those two). Nothing is dialed until
-   * the first checkout.
+   * (`ws://` and `wss://` are read as those two); an `https://` certificate
+   * is verified against the operating system's trust store. Nothing is
+   * dialed until the first checkout.
    */
   static async create(url: string, options: MontyRemoteOptions = {}): Promise<MontyRemote> {
     if (options.connectHeaders !== undefined && options.metadata !== undefined) {
@@ -125,20 +133,21 @@ export class MontyRemote {
       autoResume: options.autoResume ?? true,
       streamAsyncCalls: options.streamAsyncCalls ?? true,
     })
-    await native.start()
+    await startPool(native)
     return new MontyRemote(native, metadata)
   }
 
   /**
    * Opens a session stream to the server and creates a REPL session there.
-   * Rejects with a plain `Error` when the connection fails;
+   * Rejects with `MontyConnectError` when the connection fails;
    * `MontyRefusedError` when the server refuses the stream, e.g. one at
-   * capacity; `MontyRuntimeError` when the server refuses the session; and
-   * `MontyDisconnectError` / `MontyShutdown` when it is lost while being
-   * created. Release the stream with `session.close()` (or `await using`).
+   * capacity; and `MontyDisconnectError` / `MontyShutdown` when it is lost
+   * while being created. A server refusing the session's configuration
+   * fails its first request with `MontyConfigurationError`. Release the
+   * stream with `session.close()` (or `await using`).
    */
   async checkout(options: RemoteCheckoutOptions = {}): Promise<MontySession> {
-    if (this.closed) {
+    if (this.closing !== undefined) {
       throw new Error('the pool is closed — create a new MontyRemote pool')
     }
     const modules = new HostModules(options.externalModules)
@@ -156,14 +165,12 @@ export class MontyRemote {
 
   /**
    * Shuts the pool down: pending and new checkouts reject. Sessions already
-   * checked out keep their streams until closed.
+   * checked out keep their streams until closed. Resolves once finished
+   * sessions' streams have closed (each bounded by a one-second grace).
    */
   async close(): Promise<void> {
-    if (this.closed) {
-      return
-    }
-    this.closed = true
-    await this.native.close()
+    this.closing ??= this.native.close()
+    return this.closing
   }
 
   async [Symbol.asyncDispose](): Promise<void> {

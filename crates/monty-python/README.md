@@ -43,9 +43,17 @@ if __name__ == '__main__':
 These fields preserve the status the server ended the stream with, or the transport or protocol failure, not proof that
 the request did or did not run.
 The client does not automatically replay a disconnected request.
+Disconnect messages include the server's status, cause and message, or the transport error.
 `MontyRefusedError`, with `status_code`, `status_message` and `cause`, is a server refusing to open the session at all;
-nothing ran, so retrying is safe.
+nothing ran.
 It subclasses `MontyError`, not `RuntimeError`, so a retry loop around `checkout()` must catch it by name.
+Its `retryable` attribute identifies temporary refusals, and `retry_after` gives the server's suggested delay in seconds, when present.
+Remote connection failures raise `MontyConnectError`, a `MontyError` subclass with `status_code`,
+`status_message`, `cause` and `transport_error` attributes.
+A CPU-mode remote server requires a finite client `request_timeout`; without one, checkout raises `MontyConfigurationError`.
+Malformed request metadata also raises `MontyConfigurationError` before any connection attempt.
+Creating a pool with invalid settings raises it too: `min_processes` above `max_processes`, or a local CPU clock
+off Linux or without a finite `request_timeout`.
 
 ## Host decode budget
 
@@ -209,6 +217,9 @@ Every `time` module clock then reaches `AbstractOS.time(caller)` as the one OS f
 naming the function that asked (`'time.monotonic'`, `'time.localtime'`, ...).
 A subclass that overrides `def time(self)` without the `caller` parameter raises `TypeError` on any clock read.
 `OSAccess` answers from the host process and caps each wait at `max_sleep`.
+When either cap shortens a sleep, the call returns normally without a warning.
+System sleeps that exceed `max_total_sleep_secs` instead raise an uncatchable `TimeoutError`.
+These caps are independent of `request_timeout`.
 
 A `random.Random` instance or the `random.Random` class returned from the sandbox converts to its repr string.
 Return the generated values or `rng.getstate()` instead.
@@ -222,7 +233,7 @@ Execution duration limits use wall time by default.
 Both clocks charge bytecode and native builtin execution, excluding host suspension.
 Enable CPU mode with `Monty(execution_clock='cpu', request_timeout=2)` or the same options on `AsyncMonty`.
 CPU mode needs Linux workers: on macOS or Windows, entering a CPU-mode `Monty` (`with`) or `AsyncMonty`
-(`async with`) raises `RuntimeError`.
+(`async with`) raises `MontyConfigurationError`.
 Remote clients on any platform adopt the server's clock.
 The clock applies to the whole pool; checkouts cannot override it.
 CPU mode uses the executing thread's CPU time, sampled with a cache of up to 1 ms.

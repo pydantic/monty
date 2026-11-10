@@ -501,6 +501,16 @@ impl TurnMetrics {
         );
     }
 
+    /// Resets for a new session on this worker, opened by a `Configure` sent
+    /// alone or carried by its first request. Its execution clock restarts, so
+    /// the delta ratchet has to as well.
+    pub(crate) fn begin_session(&mut self) {
+        self.feed = None;
+        self.run_active = false;
+        self.abandon_pending();
+        self.reported_micros = 0;
+    }
+
     /// Starts timing one turn; called once the request is on the wire.
     ///
     /// The resume family opens nothing — it *answers* the open suspension, so
@@ -509,14 +519,9 @@ impl TurnMetrics {
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
         let now = Instant::now();
         match &request.kind {
-            // a new session on this worker; its execution clock restarts, so
-            // the delta ratchet has to as well
             Some(pb::parent_request::Kind::Configure(_)) => {
-                self.feed = None;
-                self.run_active = false;
-                self.abandon_pending();
+                self.begin_session();
                 self.turn = Some(("configure", now));
-                self.reported_micros = 0;
             }
             Some(pb::parent_request::Kind::Feed(_)) => {
                 self.abandon_pending();
@@ -637,6 +642,12 @@ impl TurnMetrics {
                 self.end_turn("ok");
             }
             Some(pb::child_event::Kind::Ok(_)) => self.end_turn("ok"),
+            // the request a refused `Configure` carried never ran, so it is no run
+            Some(pb::child_event::Kind::SessionRefused(_)) => {
+                self.feed = None;
+                self.run_active = false;
+                self.end_turn("refused");
+            }
             // the worker is about to exit; the pool counts the termination
             Some(pb::child_event::Kind::FatalError(_)) => self.end_terminal("fatal_error", event),
             Some(pb::child_event::Kind::Shutdown(_)) => self.end_terminal("shutdown", event),
@@ -832,6 +843,7 @@ fn os_call(call: Option<&Call>) -> &'static str {
         Some(Call::WriteBytes(_)) => "write_bytes",
         Some(Call::AppendBytes(_)) => "append_bytes",
         Some(Call::Open(_)) => "open",
+        Some(Call::CreateExclusive(_)) => "create_exclusive",
         Some(Call::Mkdir(_)) => "mkdir",
         Some(Call::Rename(_)) => "rename",
         Some(Call::Getenv(_)) => "getenv",
@@ -1561,6 +1573,19 @@ mod tests {
                 ("turn".to_owned(), "install_dependencies".to_owned())
             ]]
         );
+        assert!(!capture.has("monty.run.duration"));
+        assert!(!capture.has("monty.run.execution_time"));
+    }
+
+    /// A refused `Configure` never ran the feed it carried, so no run records.
+    #[test]
+    fn a_refused_session_is_not_a_run() {
+        let (mut metrics, capture) = recorder();
+        metrics.begin_session();
+        metrics.begin_turn(&feed());
+        metrics.event(&event(pb::child_event::Kind::SessionRefused(pb::SessionRefused {
+            message: "invalid os_policy".to_owned(),
+        })));
         assert!(!capture.has("monty.run.duration"));
         assert!(!capture.has("monty.run.execution_time"));
     }
