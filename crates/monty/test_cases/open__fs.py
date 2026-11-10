@@ -830,3 +830,30 @@ try:
 except OSError as exc:
     assert str(exc) == 'not readable'
 w.close()
+
+# === seek() with a heap offset ===
+# guards a reference-count leak that only the memory-model-checks build detects
+with open(root / 'seek_leak.txt', 'w') as f:
+    f.write('hello')
+with open(root / 'seek_leak.txt', 'rb') as f:
+    try:
+        f.seek([2**70], 0)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "'list' object cannot be interpreted as an integer"
+    try:
+        f.seek(0, [2**70])
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "'list' object cannot be interpreted as an integer"
+
+
+# an `__index__` object is a heap value that reaches the success path
+class SeekIndex:
+    def __index__(self):
+        return 1
+
+
+with open(root / 'seek_leak.txt', 'rb') as f:
+    f.seek(SeekIndex(), 0)
+    assert f.read() == b'ello'

@@ -39,6 +39,7 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    owned::Owned,
     resource_checks::{check_mult_size, check_product_size},
     types::{LongInt, Module, PyTrait, allocate_tuple, decimal, long_int::bigint_to_f64_checked},
     value::Value,
@@ -1173,15 +1174,14 @@ fn falling_product(n: &BigInt, k: u64, binomial: bool, tracker: &ResourceTracker
 fn math_perm(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's arity errors name the bare function: `perm expected at most 2 arguments, got 3`.
     let (n_val, k_val) = args.get_one_two_args("perm", vm.heap)?;
-    defer_drop!(n_val, vm);
+    let (n_val, k_val) = (Owned::new(n_val), k_val.map(Owned::new));
 
-    let n = value_to_bigint(n_val, vm)?;
+    let n = value_to_bigint(&n_val, vm)?;
     // `perm(n)` is `n!`, argument errors included.
     let Some(k_val) = k_val else {
         return Ok(LongInt::new(factorial(&n, &vm.heap.tracker)?).into_value(vm.heap));
     };
-    defer_drop!(k_val, vm);
-    let k = value_to_bigint(k_val, vm)?;
+    let k = value_to_bigint(&k_val, vm)?;
 
     if n.is_negative() {
         return Err(SimpleException::new_msg(ExcType::ValueError, "n must be a non-negative integer").into());

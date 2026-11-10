@@ -19,7 +19,7 @@ mod pattern;
 mod recursion;
 mod scheduler;
 
-use std::{borrow::Cow, mem};
+use std::{borrow::Cow, mem, rc::Rc};
 
 pub(crate) use attr::PendingLookupEffect;
 pub(crate) use call::CallResult;
@@ -59,6 +59,7 @@ use crate::{
         PendingEffect, PostConversionEffect, PreConversionEffect, Reshaped, check_raw_call_paths,
         release_pending_effect, resolve_call_paths, urandom_reply_error,
     },
+    owned::{ReleaseQueue, enter_vm, exit_vm},
     parse::CodeRange,
     py_value::PyValue,
     run::{Program, SessionTables, VmEnv},
@@ -158,15 +159,26 @@ macro_rules! handle_load_result {
 /// recursion (`__repr__` calling `repr`) re-enters that loop once per level.
 macro_rules! handle_call_result {
     ($self:expr, $result:expr) => {
+        // A native callee's deferred frees become visible when it returns, as `drop_with` made
+        // them. Applied per arm: binding `$result` first measurably slows the dispatch loop.
         match $result {
-            Ok(CallResult::Value(result)) => $self.push(result),
+            Ok(CallResult::Value(result)) => {
+                $self.apply_releases();
+                $self.push(result)
+            }
             Ok(CallResult::FramePushed) => {}
-            Ok(other) => match $self.suspend_call_result(other) {
-                Ok(None) => {}
-                Ok(Some(exit)) => return Ok(exit),
-                Err(err) => catch!($self, err),
-            },
-            Err(err) => catch!($self, err),
+            Ok(other) => {
+                $self.apply_releases();
+                match $self.suspend_call_result(other) {
+                    Ok(None) => {}
+                    Ok(Some(exit)) => return Ok(exit),
+                    Err(err) => catch!($self, err),
+                }
+            }
+            Err(err) => {
+                $self.apply_releases();
+                catch!($self, err)
+            }
         }
     };
 }
@@ -892,6 +904,13 @@ pub struct VM<'h> {
     /// directory, which travels in the snapshot because `os.chdir` may have
     /// moved it.
     pub(crate) env: VmEnv<'h>,
+
+    /// Releases queued by this VM's dropped [`Owned`](crate::owned::Owned) values.
+    pub(crate) release_queue: Rc<ReleaseQueue>,
+
+    /// Queue of the VM that was live on this thread when this one was created;
+    /// reinstalled on drop so neither VM applies the other's releases.
+    outer_release_queue: Option<Rc<ReleaseQueue>>,
 }
 
 impl<'h> VM<'h> {
@@ -907,6 +926,7 @@ impl<'h> VM<'h> {
         print_writer: PrintWriter<'h>,
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
+        let (release_queue, outer_release_queue) = enter_vm();
         Self {
             stack: Vec::with_capacity(64),
             globals,
@@ -931,6 +951,8 @@ impl<'h> VM<'h> {
             random: SessionRandom::default(),
             modules: ModuleCache::default(),
             env: program.vm_env(),
+            release_queue,
+            outer_release_queue,
         }
     }
 
@@ -948,6 +970,7 @@ impl<'h> VM<'h> {
         print_writer: PrintWriter<'h>,
     ) -> Self {
         let SessionTables { global_names, interns } = tables;
+        let (release_queue, outer_release_queue) = enter_vm();
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
             .frames
@@ -1007,6 +1030,8 @@ impl<'h> VM<'h> {
                 env.cwd = Cow::Owned(snapshot.cwd);
                 env
             },
+            release_queue,
+            outer_release_queue,
         }
     }
 
@@ -1030,6 +1055,7 @@ impl<'h> VM<'h> {
             !self.current_frame.is_parked || self.suspended_frames.is_empty(),
             "parked frame has suspended callers"
         );
+        self.apply_releases();
 
         // Drop cached JSON strings before consuming the VM — they are not
         // included in the snapshot and their refcounts must be decremented.
@@ -1172,6 +1198,7 @@ impl<'h> VM<'h> {
         &mut self,
         result: Result<T, RunError>,
     ) -> Result<T, RunError> {
+        self.apply_releases();
         // A turn shorter than the dispatch-checkpoint interval never probes
         // GC inside the run loop, so a stream of tiny feeds could otherwise
         // accumulate eligible cyclic garbage indefinitely — and the memory
@@ -1261,6 +1288,7 @@ impl<'h> VM<'h> {
     /// GC-scheduling probe, and the print writer's flush poll.
     #[inline(never)]
     fn dispatch_checkpoint(&mut self, check_limits: bool, poll_print: bool) -> Result<(), RunError> {
+        self.apply_releases();
         if check_limits {
             self.heap.tracker.check_memory_time()?;
         }
@@ -2516,6 +2544,8 @@ impl<'h> VM<'h> {
     ///
     /// Returns the number of unreachable heap entries freed during the sweep.
     fn run_gc(&mut self) -> usize {
+        // Queued releases would read as live references to trial deletion.
+        self.apply_releases();
         self.heap.collect_cycles()
     }
 
@@ -2963,5 +2993,8 @@ impl Drop for VM<'_> {
         self.globals.drain(..).drop_with(self.heap);
         mem::take(&mut self.modules).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
+        // Last: the cleanup above may itself drop `Owned` values.
+        self.apply_releases();
+        exit_vm(self.outer_release_queue.take());
     }
 }

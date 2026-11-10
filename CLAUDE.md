@@ -441,6 +441,16 @@ iter.drop_with(self); // single path, no branching
 - The explicit call to `drop_with` produces more lines of code than `defer_drop!` or `DropGuard` would. The latter often avoid rightward drift and make the cleanup logic easier.
 - The value is part of a container (e.g. `Vec<Value>`). Ideally the container itself implements `DropWithContext` and so `defer_drop` or `DropGuard` can be used on the whole container. Consider if a `DropWithContext` implementation for the container might be missing.
 
+#### `Owned` locals (experimental, `crates/monty/src/owned.rs`)
+
+An `Owned` value releases its heap reference on a plain Rust `Drop`, so `?`, `_` patterns, drains and overwrites need no guard.
+Dropping one queues the `HeapId`; the VM applies the queue when each call returns, every 64 native iterator steps,
+at dispatch checkpoints, GC, snapshot and VM drop.
+`FromArgs` fields can be `Owned`, `Option<Owned>`, or `OwnedIntoIter` for `varargs`.
+Use `into_value()` to return a value or store it in a container: containers and VM state hold plain `Value`s.
+`Owned::release(vm)` frees immediately; it is optional, for loops that drop a heap value per item.
+`min`/`max`, `zip`, `map`, `print`, `math.perm`, `timezone`, `file.seek` and `dict.setdefault` use it so far.
+
 ### `#[strum(use_phf)]` only on large `EnumString` enums
 
 Add `use_phf` only to `EnumString` enums with more than ~100 variants, or ones that will clearly grow past that.

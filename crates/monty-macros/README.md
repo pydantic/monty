@@ -113,7 +113,7 @@ are all incompatible.
 Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
 runtime binder's fast paths skip the missing-keyword check, so required
 keyword-only params are rejected at derive time), `varargs` (must be
-`Vec<Value>` — elements are handed over unconverted), `varkwargs`,
+`Vec<Value>` or `OwnedIntoIter` — elements are handed over unconverted), `varkwargs`,
 `default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
 variant used for kwarg matching; neither applies to `varargs`/`varkwargs`
 fields). All are documented inline in

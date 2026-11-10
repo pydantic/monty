@@ -207,6 +207,31 @@ assert max([10, 20, 30, 40], key=lambda item: max_key_map[item]) == 20
 min_key_map = {10: 2, 20: 1, 30: 1, 40: 3}
 assert min([10, 20, 30, 40], key=lambda item: min_key_map[item]) == 20
 
+# === min()/max() failing before the last positional argument ===
+# guards a reference-count leak that only the memory-model-checks build detects
+long_str = 'a long heap string of more than twenty bytes' + str(1)
+try:
+    max(1, long_str, [2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'>' not supported between instances of 'str' and 'int'"
+try:
+    min(1, long_str, [2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'str' and 'int'"
+try:
+    min(1, long_str, [2**70], key=lambda x: x)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'str' and 'int'"
+# the key call itself raising on a later argument
+try:
+    max(1, long_str, [2**70], key=lambda x: x + 1)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == 'can only concatenate str (not "int") to str'
+
 # === sorted() ===
 # Basic sorted operations
 assert sorted([3, 1, 2]) == [1, 2, 3]
@@ -408,3 +433,11 @@ try:
     assert False, 'zip unexpected kwarg should raise TypeError'
 except TypeError as e:
     assert str(e) == "zip() got an unexpected keyword argument 'foo'"
+
+# === zip() with a non-iterable before the last argument ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    zip([1], 5, [2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"

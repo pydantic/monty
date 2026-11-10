@@ -6,6 +6,7 @@ use std::{
     str::{self, FromStr},
 };
 
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, Sign};
 use num_traits::{Signed, ToPrimitive};
 use serde::de::Error as _;
@@ -138,7 +139,12 @@ impl<'h> ValueRead<'h, '_> {
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
             Self::Heap { value, steps } => {
-                vm.heap.tracker.check_memory_time_every(*steps)?;
+                // Native loops never reach a dispatch checkpoint, so `Owned` releases
+                // queued per item are applied here too, before the memory check sees them.
+                if *steps % ResourceTracker::LOOP_CHECK_INTERVAL == ResourceTracker::LOOP_CHECK_INTERVAL - 1 {
+                    vm.apply_releases();
+                    vm.heap.tracker.check_memory_time()?;
+                }
                 *steps += 1;
                 value.py_next(vm)
             }

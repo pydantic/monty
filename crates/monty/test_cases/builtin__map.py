@@ -74,3 +74,11 @@ try:
     assert False, 'map() with single arg should fail'
 except TypeError as e:
     assert str(e) == 'map() must have at least two arguments.', f'map(fn) arity: {e}'
+
+# === map() with a non-iterable before the last iterable ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    map(abs, [1], 5, [2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"

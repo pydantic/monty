@@ -96,6 +96,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadMut, HeapReadOutput},
     intern::StaticStrings,
     os_dispatch::PostConversionEffect,
+    owned::Owned,
     py_value::PyValue,
     types::str::StringRepr,
     value::{EitherStr, Value},
@@ -1645,6 +1646,7 @@ fn populate_buffer_meta<'h>(file: &HeapReadMut<'h, OpenFile>, vm: &mut VM<'h>) -
 /// matches CPython's `invalid whence` message.
 fn parse_seek_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
     let (offset, maybe_whence) = args.get_one_two_args("seek", vm.heap)?;
+    let (offset, maybe_whence) = (Owned::new(offset), maybe_whence.map(Owned::new));
     let offset_int = offset.as_int(vm)?;
     let whence_int = match maybe_whence {
         Some(w) => w.as_int(vm)?,

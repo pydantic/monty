@@ -318,11 +318,11 @@ impl Signature {
         // what reproduces CPython's error orderings), so `*args` elements are
         // handed over unconverted.
         if let Some(idx) = self.varargs_idx
-            && !is_vec_of_value(&self.fields[idx].ty)
+            && !is_varargs_type(&self.fields[idx].ty)
         {
             return Err(syn::Error::new(
                 self.fields[idx].ident.span(),
-                "`varargs` fields must be `Vec<Value>` — coerce elements in the function body",
+                "`varargs` fields must be `Vec<Value>` or `OwnedIntoIter` — coerce elements in the function body",
             ));
         }
 
@@ -649,7 +649,8 @@ fn resolve_field_roles(fields: &mut [Field]) -> syn::Result<(Option<usize>, Opti
 fn render_build_field(field: &Field) -> TokenStream {
     let ident = &field.ident;
     match field.kind {
-        FieldKind::Varargs => quote! { #ident: __slots.raw.take_varargs(), },
+        // `Into` is the identity for `Vec<Value>` and builds an `OwnedIntoIter`.
+        FieldKind::Varargs => quote! { #ident: ::core::convert::Into::into(__slots.raw.take_varargs()), },
         FieldKind::Varkwargs => quote! { #ident: __slots.raw.take_varkwargs(), },
         _ => match &field.default {
             None => quote! {
@@ -730,9 +731,9 @@ fn snake_to_pascal(s: &str) -> String {
     out
 }
 
-/// True for a literal `Vec<Value>` type (by final path segments — the only
-/// spellings used in-crate are `Vec<Value>` / `std::vec::Vec<Value>`).
-fn is_vec_of_value(ty: &Type) -> bool {
+/// True for `OwnedIntoIter` or a literal `Vec<Value>` (by final path segments — the
+/// only spellings used in-crate); the build line converts with `Into::into`.
+fn is_varargs_type(ty: &Type) -> bool {
     fn last_segment(ty: &Type) -> Option<&syn::PathSegment> {
         match ty {
             Type::Path(p) => p.path.segments.last(),
@@ -740,14 +741,15 @@ fn is_vec_of_value(ty: &Type) -> bool {
         }
     }
     last_segment(ty).is_some_and(|seg| {
-        seg.ident == "Vec"
-            && match &seg.arguments {
-                syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
-                    syn::GenericArgument::Type(t) => last_segment(t).is_some_and(|s| s.ident == "Value"),
+        seg.ident == "OwnedIntoIter"
+            || seg.ident == "Vec"
+                && match &seg.arguments {
+                    syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
+                        syn::GenericArgument::Type(t) => last_segment(t).is_some_and(|s| s.ident == "Value"),
+                        _ => false,
+                    }),
                     _ => false,
-                }),
-                _ => false,
-            }
+                }
     })
 }
 
@@ -1103,7 +1105,7 @@ mod tests {
                 args: Vec<i64>,
             }
         });
-        assert_snapshot!(err, @"`varargs` fields must be `Vec<Value>` — coerce elements in the function body");
+        assert_snapshot!(err, @"`varargs` fields must be `Vec<Value>` or `OwnedIntoIter` — coerce elements in the function body");
     }
 
     #[test]

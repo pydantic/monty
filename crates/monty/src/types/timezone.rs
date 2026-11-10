@@ -20,6 +20,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    owned::Owned,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
@@ -72,19 +73,13 @@ impl TimeZone {
     /// Parses timezone constructor arguments.
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, vm)?;
-        // Keep `offset` and `name` alive across the validation helpers — they
-        // own the heap refs (TimeDelta / Str) we're reading from. `name` is
-        // an `Option<Value>` so we can distinguish "omitted" from an explicit
+        // `name` is an `Option` so we can distinguish "omitted" from an explicit
         // `None`: CPython accepts `timezone(td)` but rejects `timezone(td,
         // None)` with `TypeError: timezone() argument 2 must be str, not None`.
-        defer_drop!(offset, vm);
-        let offset_seconds = extract_offset_seconds(offset, vm.heap, vm.interns)?;
-        let name_str: Option<String> = match name {
+        let offset_seconds = extract_offset_seconds(&offset, vm.heap, vm.interns)?;
+        let name_str: Option<String> = match &name {
             None => None,
-            Some(name) => {
-                defer_drop!(name, vm);
-                extract_name(name, vm.heap, vm.interns)?
-            }
+            Some(name) => extract_name(name, vm.heap, vm.interns)?,
         };
 
         if offset_seconds == 0 && name_str.is_none() {
@@ -102,18 +97,18 @@ impl TimeZone {
 /// error messages (unlike `datetime`, which uses the bare `"function"`
 /// label). Hence `style = c_named`.
 ///
-/// Both `offset` and `name` are held as `Value` so the inner code can do its
+/// Both `offset` and `name` are held as raw values so the inner code can do its
 /// own custom validation (`offset` must be a `timedelta`; `name` must be a
 /// `str`). The macro only handles arg-count/keyword dispatch.
 #[derive(FromArgs)]
 #[from_args(name = "timezone", style = c_named, at_most_total)]
 struct TimezoneInitArgs {
-    offset: Value,
-    // `Option<Value>` (with `default`) preserves the distinction between
+    offset: Owned,
+    // `Option<Owned>` (with `default`) preserves the distinction between
     // omitted (`None`) and explicitly passed `None` (`Some(Value::None)`),
     // which `extract_name` needs to reject the latter.
     #[from_args(default)]
-    name: Option<Value>,
+    name: Option<Owned>,
 }
 
 impl PartialEq for TimeZone {
