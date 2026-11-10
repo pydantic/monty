@@ -11,6 +11,46 @@ fn get_parse_err(code: impl Into<String>) -> MontyException {
 }
 
 #[test]
+fn lazy_imports_return_syntax_error() {
+    for code in [
+        "lazy import math",
+        "lazy import math as m, json",
+        "lazy from math import sqrt",
+        "lazy from math import (sqrt as root, pi)",
+        "lazy from .math import sqrt",
+        "lazy from __future__ import annotations",
+        "def f():\n    lazy import math",
+        "def f():\n    lazy from math import sqrt",
+        "if False:\n    lazy import math",
+        "if False:\n    lazy from math import sqrt",
+        "class C:\n    lazy import math",
+        "class C:\n    lazy from math import sqrt",
+        "lazy import math as __debug__",
+    ] {
+        let err = get_parse_err(code);
+        assert_eq!(err.exc_type(), ExcType::SyntaxError, "{code}");
+        assert_eq!(err.message(), Some("invalid syntax"), "{code}");
+    }
+}
+
+#[test]
+fn exec_rejects_lazy_imports() {
+    for code in ["lazy import math", "lazy from math import sqrt"] {
+        let mut runner =
+            MontyRun::new(format!("exec({code:?})"), "test.py", vec![], CompileOptions::default()).unwrap();
+        let err = runner.run_no_limits(vec![]).unwrap_err();
+        assert_eq!(err.exc_type(), ExcType::SyntaxError);
+        assert_eq!(err.message(), Some("invalid syntax (<string>, line 1)"));
+    }
+}
+
+#[test]
+fn lazy_remains_a_valid_identifier() {
+    let code = "import math as lazy\nfrom math import sqrt as lazy\nlazy = 1\ndef f(lazy):\n    return lazy";
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+}
+
+#[test]
 fn yield_expressions_return_not_implemented_error() {
     let err = get_parse_err("def foo():\n    yield 1");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);

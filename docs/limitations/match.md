@@ -33,6 +33,7 @@ both.
 
 ## Parse-time checks
 
+- **Unary `+` in numeric patterns** is accepted, following Python 3.15 rather than 3.14.
 - **A pattern after `**rest`** reports `SyntaxError: Pattern cannot follow a double star pattern`
     (Ruff's wording) where CPython says `invalid syntax`.
 - **Bytecode operand limits.** A sequence, mapping or class pattern with more

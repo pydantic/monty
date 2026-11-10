@@ -305,6 +305,25 @@ fn session_state_persists_across_feeds() {
 }
 
 #[test]
+fn compiler_errors_leave_the_worker_session_unchanged() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    child.feed_complete("counter = 0");
+    for source in [
+        "return 42",
+        "missing((x)=1)",
+        "[(x := 1) for x in []]",
+        "class C:\n    def f(__x, _C__x): pass",
+    ] {
+        let (prints, event) = child.feed(&format!("print('unexpected')\ncounter = 1\n{source}"));
+        assert!(prints.is_empty(), "{source}");
+        assert_eq!(expect_error(event).exc_type, "SyntaxError", "{source}");
+        assert_eq!(child.feed_complete("counter"), MontyObject::int(0));
+    }
+    child.shutdown();
+}
+
+#[test]
 fn inputs_are_injected() {
     let mut child = ChildProc::spawn();
     child.create_repl();
@@ -1571,6 +1590,25 @@ fn rejected_snippets_are_not_retained() {
     child.shutdown();
 }
 
+#[test]
+fn semantic_rejections_do_not_accumulate_compiler_state() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024 * 1024));
+    let code = r"
+for _ in range(10_000):
+    for source in ['class C:\n    def f(__x, _C__x): pass', 'def transient():\n    return 42\nreturn 1']:
+        try:
+            exec(source)
+        except SyntaxError:
+            pass
+        else:
+            assert False, source
+1 + 1
+";
+    assert_eq!(child.feed_complete(code), MontyObject::int(2));
+    child.shutdown();
+}
+
 /// A snippet that compiles but is refused its frame — the recursion limit
 /// trips on the push — is dropped like one that failed to parse. `deep` is
 /// sized so the snippet's frame, not one of its own, is the one over the limit.
@@ -2651,6 +2689,9 @@ fn type_checked_session_rejects_deep_asts_from_flat_source() {
         format!("y = a{}", ".x".repeat(20_000)),
         format!("def f(a: {}) -> None: ...", vec!["int"; 5000].join(" | ")),
         format!("x: '{}' = 1", vec!["int"; 5000].join(" | ")),
+        format!("f'{}{{x}}{}'", "{x:".repeat(400), "}".repeat(400)),
+        format!("t'{}{{x}}{}'", "{x:".repeat(400), "}".repeat(400)),
+        format!("match x:\n    case {}y{}: pass", "[".repeat(250), "]".repeat(250)),
     ] {
         let (_, event) = child.feed(&source);
         let error = expect_error(event);

@@ -45,6 +45,212 @@ fn power_chain_is_rejected() {
 }
 
 #[test]
+fn yield_from_chain_keeps_recursive_operands_charged() {
+    let source = format!("{}value", "yield from ".repeat(10_000));
+    assert!(!source_within_nesting_bound(&source, 0));
+    assert_too_deeply_nested(source);
+}
+
+#[test]
+fn long_postfix_spines_are_rejected_before_ast_construction() {
+    for source in [
+        format!("value{}", ".x".repeat(10_000)),
+        format!("value{}", "()".repeat(10_000)),
+        format!("value{}", "[0]".repeat(10_000)),
+        format!("def f[T: value{}](): pass", ".x".repeat(10_000)),
+        format!("import a as b{}", ".x".repeat(10_000)),
+        format!("(value{}\n)", "()\n".repeat(10_000)),
+        format!("import a as b{}", format!("{}(0, 0)", ".x".repeat(32)).repeat(150)),
+    ] {
+        assert!(!source_within_nesting_bound(&source, 0));
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn grouping_keeps_completed_postfix_operands_charged() {
+    let groups = if cfg!(debug_assertions) { 29 } else { 199 };
+    for separator in [")", ", 0)", ", value=0)"] {
+        let mut source = if separator.contains("value=") {
+            "call(".repeat(groups)
+        } else {
+            "(".repeat(groups)
+        };
+        source.push_str("value");
+        for depth in 1..=groups {
+            source.push_str(&".x".repeat(depth));
+            source.push_str(separator);
+        }
+        source.push_str(&".x".repeat(groups + 1));
+        source.push_str("\n#");
+        source.push_str(&"padding".repeat(700));
+        assert!(!source_within_nesting_bound(&source, 0));
+        assert_too_deeply_nested(source);
+    }
+
+    let shallow = format!("{}value.x{}", "(".repeat(groups), ")".repeat(groups));
+    assert!(source_within_nesting_bound(&shallow, 0));
+}
+
+#[test]
+fn interpolated_string_closures_keep_operand_depth_charged() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    let groups = (limit - 2) / 2;
+    for prefix in ["f\"{", "t\"{"] {
+        let mut source = prefix.repeat(groups);
+        source.push_str("value");
+        for depth in 1..=groups {
+            source.push_str(&".x".repeat(2 * depth));
+            source.push_str("}\"");
+        }
+        source.push_str(&".x".repeat(limit));
+        source.push_str("\n#");
+        source.push_str(&"padding".repeat(700));
+        assert!(!source_within_nesting_bound(&source, 0), "{prefix}");
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn completed_container_roots_keep_operand_depth_charged() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    for container in ["[[value.x]]", "((value.x,),)", "{{value.x}}", "{0: {0: value.x}}"] {
+        let source = format!("{container}{}\n#{}", ".y".repeat(limit - 1), "padding".repeat(700));
+        assert!(!source_within_nesting_bound(&source, 0), "{container}");
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn sibling_interpolations_and_adjacent_literals_do_not_accumulate_depth() {
+    for prefix in ['f', 't'] {
+        let fields = format!("{prefix}'{}'", "{value}".repeat(1_000));
+        let literals = format!("{prefix}'{{value}}' ").repeat(1_000);
+        for source in [fields, literals] {
+            assert!(source_within_nesting_bound(&source, 0));
+            if prefix == 'f' {
+                assert_compiles(source);
+            }
+        }
+    }
+    assert_compiles("f'{value}' 'text' ".repeat(1_000));
+}
+
+#[test]
+fn adjacent_deep_literals_share_their_depth_budget() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    for prefix in ['f', 't'] {
+        let literal = format!("{prefix}'{{value{}}}'", ".x".repeat(limit - 6));
+        let source = format!("{literal} {literal}.y.y\n#{}", "padding".repeat(700));
+        assert!(source_within_nesting_bound(&source, 0));
+        if prefix == 'f' {
+            assert_compiles(source);
+        }
+    }
+}
+
+#[test]
+fn malformed_string_closures_do_not_reuse_literal_depth() {
+    let source = format!("{}\n#{}", r#"f'{f'':{:'f""#, "padding".repeat(50));
+    assert!(source_within_nesting_bound(&source, 0));
+}
+
+#[test]
+fn completed_operands_preserve_depth_at_the_scan_boundary() {
+    let limit = if cfg!(debug_assertions) { 30 } else { 200 };
+    for (operand, depth) in [
+        ("(value.x)", 1),
+        ("[[value.x]]", 3),
+        ("((value.x,),)", 3),
+        ("{{value.x}}", 3),
+        ("{0: {0: value.x}}", 3),
+        ("[]", 1),
+        ("()", 1),
+        ("{}", 1),
+        ("(value,)", 1),
+        ("(value for item in [])", 2),
+        ("(lambda a, b: value)", 2),
+        ("f'{value}'", 2),
+        ("t'{value}'", 2),
+        ("f'{value, other}'", 3),
+        ("t'{value, other}'", 3),
+        ("f'{value:{other}}'", 4),
+        ("f'{value.x}' f'{other}'", 3),
+        ("f'{value}' f'{other.x}'", 3),
+        ("f'{value.x}' 'text' f'{other}'", 3),
+        ("t'{value.x}' t'{other}'", 3),
+        ("t'{value}' t'{other.x}'", 3),
+    ] {
+        let allowed = format!("{operand}{}", ".y".repeat(limit - depth));
+        assert!(source_within_nesting_bound(&allowed, 0), "{allowed}");
+        let exceeded = format!("{allowed}.y");
+        assert!(!source_within_nesting_bound(&exceeded, 0), "{exceeded}");
+    }
+}
+
+#[test]
+fn recovered_keyword_attributes_keep_postfix_depth_charged() {
+    for keyword in [
+        "as", "from", "if", "for", "in", "is", "and", "or", "not", "else", "case", "await",
+    ] {
+        let source = format!("value{}", format!(".{keyword}").repeat(10_000));
+        assert!(!source_within_nesting_bound(&source, 0), "{keyword}");
+        assert_too_deeply_nested(source);
+    }
+}
+
+#[test]
+fn soft_keywords_end_postfix_operands() {
+    let depth = if cfg!(debug_assertions) { 18 } else { 110 };
+    for name in ["case", "lazy", "match", "type"] {
+        for suffix in [format!("().{name}"), format!("[0].{name}")] {
+            let source = format!("{name}{}", suffix.repeat(depth));
+            assert!(!source_within_nesting_bound(&source, 0), "{name}");
+        }
+    }
+}
+
+#[test]
+fn independent_postfix_expressions_do_not_accumulate_depth() {
+    let depth = if cfg!(debug_assertions) { 18 } else { 110 };
+    let left = format!("a{}", ".x".repeat(depth));
+    let right = format!("b{}", ".y".repeat(depth));
+    for source in [
+        format!("{left} = {right}"),
+        format!("{left} += {right}"),
+        format!("with {left} as {right}: pass"),
+        format!("raise {left} from {right}"),
+    ] {
+        assert!(source_within_nesting_bound(&source, 0), "{source}");
+        MontyRun::new(
+            source.clone(),
+            "test.py",
+            vec![],
+            CompileOptions {
+                source_scan_threshold: 0,
+                ..CompileOptions::default()
+            },
+        )
+        .expect(&source);
+    }
+}
+
+#[test]
+fn long_import_paths_are_not_postfix_spines() {
+    let component = "module".repeat(100);
+    let module = vec![component.as_str(); 32].join(".");
+    for source in [
+        format!("import {module}"),
+        format!("from {module} import value"),
+        format!("import {module}, {module} as alias, {module} as other"),
+    ] {
+        for prefix in ["", "\n", "# comment\n"] {
+            assert_compiles(format!("{prefix}{source}"));
+        }
+    }
+}
+
+#[test]
 fn lambda_chain_is_rejected() {
     assert_too_deeply_nested(format!("{}1", "lambda: ".repeat(1000)));
 }
@@ -263,6 +469,18 @@ fn type_check_rejects_deep_asts_from_flat_source() {
     assert_type_check_rejects(&format!("x: \"list['{}']\"", vec!["int"; 1000].join(" | ")));
     // ty also type-checks the AST it recovers from a syntax error
     assert_type_check_rejects(&format!("x = {} +", vec!["1"; 1000].join("+")));
+}
+
+#[test]
+fn type_check_bounds_short_format_specs_and_patterns() {
+    for prefix in ["f", "t"] {
+        let source = format!("{prefix}'{}{{x}}{}'", "{x:".repeat(400), "}".repeat(400));
+        assert!(source.len() < SOURCE_SCAN_THRESHOLD);
+        assert_type_check_rejects(&source);
+    }
+    let source = format!("match x:\n    case {}y{}: pass", "[".repeat(250), "]".repeat(250));
+    assert!(source.len() < SOURCE_SCAN_THRESHOLD);
+    assert_type_check_rejects(&source);
 }
 
 #[test]

@@ -9,6 +9,8 @@
 
 mod binary;
 mod common;
+#[path = "common/process.rs"]
+mod process;
 
 use std::{
     collections::HashMap,
@@ -20,7 +22,7 @@ use std::{
 
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
     telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
     telemetry_adapter,
 };
@@ -42,7 +44,7 @@ use opentelemetry_sdk::{
 use prost::Message;
 use tokio::time::{Instant, sleep};
 
-use crate::{binary::monty_binary, common::wait_for_idle};
+use crate::{binary::monty_binary, common::wait_for_idle, process::kill_pid};
 
 /// A cumulative aggregate exported from a test Logfire provider.
 struct Capture {
@@ -458,16 +460,22 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     config.max_processes = 1;
     let (pool, capture) = pool_with_metrics(config).await;
 
-    // an expression deep enough to overflow the child's stack, which aborts it
-    // mid-turn (the same trick `pool_test.rs` uses, and portable unlike a kill)
-    let mut code = String::with_capacity(300_002);
-    code.push('a');
-    for _ in 0..150_000 {
-        code.push_str(".x");
-    }
-    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let repl = ReplConfig {
+        print_flush_interval: Some(Duration::ZERO),
+        ..ReplConfig::default()
+    };
+    let mut checkout = pool.checkout(&repl).await.expect("checkout");
+    let pid = checkout.pid().expect("subprocess pid");
+
+    // Printing confirms execution has started before the parent kills the worker.
     let err = checkout
-        .feed(&code, vec![], vec![], false, &mut no_print)
+        .feed(
+            "print('ready');\nwhile True: pass",
+            vec![],
+            vec![],
+            false,
+            &mut on_print_sync(|_, _: &str| kill_pid(pid)),
+        )
         .await
         .expect_err("the worker should have died");
     assert!(matches!(err, PoolError::Crashed { .. }), "{err}");

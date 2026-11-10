@@ -30,6 +30,12 @@ Annotations are compiled and evaluated lazily, as in CPython 3.14 (see [Annotati
     [language.md](language.md#module-level-dunder-variables)). Functions and
     classes have theirs; see below.
 
+## Type parameters
+
+PEP 695 type-parameter lists on functions and classes are validated but do not create runtime type parameters.
+For example, `def f[T](): return T` compiles, but calling it raises `NameError` unless a global `T` exists.
+Bounds and defaults are not evaluated, and `__type_params__` is unavailable.
+
 ## Annotations
 
 Annotations follow CPython 3.14 (PEP 649): an annotated `def` or class body compiles its annotations into an

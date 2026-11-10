@@ -1,9 +1,12 @@
 # Python language / parser
 
 Monty parses Python source with Ruff's parser but rejects several constructs
-at parse time. Anything listed below raises `NotImplementedError` (prefixed
+at parse time. Unless stated otherwise, constructs listed below raise `NotImplementedError` (prefixed
 with "The monty syntax parser does not yet support ") at compile time, before
 any code runs.
+
+Python 3.15 lazy imports (`lazy import ...` and `lazy from ... import ...`) raise `SyntaxError: invalid syntax`,
+matching Monty's Python 3.14 target.
 
 ## Statements rejected at parse time
 
@@ -34,6 +37,18 @@ any code runs.
 
 - **Template strings (t-strings)** — PEP 750.
 
+Type-parameter lists on functions and classes are validated, but their runtime bindings are not implemented;
+see [typing.md](typing.md#type-parameters).
+
+## Accepted newer syntax
+
+Monty targets Python 3.14 but accepts selected Python 3.15 syntax:
+
+- Unary `+` in numeric `match` patterns; see [match.md](match.md).
+- Comprehension unpacking in postponed annotations (`from __future__ import annotations`), such as
+    `x: [*items for items in groups]`.
+    The annotation is stringized; executing an unpacking comprehension remains unsupported.
+
 ## Starred unpacking
 
 Anything Monty can iterate may follow a `*`, matching CPython: `[*xs]`,
@@ -60,6 +75,7 @@ exactly, except for the comprehension target restriction in
     see [with.md](with.md).
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`,
     `too many statically nested blocks`, …).
+- CPython's separate limit on statically nested blocks does not apply; Monty uses the shared AST budget above.
 - Class-body annotations count against the budget, as do class-variable values and method parameter defaults; all
     three are walked before being parsed.
 - A source longer than `CompileOptions::source_scan_threshold` bytes (4 KiB by default) is first scanned token by
@@ -67,17 +83,21 @@ exactly, except for the comprehension target restriction in
     The scan bounds how much native stack the parser grows on a long source, memory the sandbox allocator does not
     see; a shorter source cannot nest deeper than its length, so it skips the scan.
 - The scan counts open brackets, indented blocks, prefix operators, `**` right operands, lambda bodies, `else`
-    branches, f-string format specs and the `+` and `-` of `case` complex-literal patterns, so one expression holding
+    branches, f-string format specs, postfix attribute/call/subscript chains and the `+` and `-` of `case` complex-literal patterns, so one expression holding
     more than 200 of those open at once, with no comma, newline or lower-precedence operator between them, is rejected
     even where CPython would accept it.
     A long literal such as `[-1, -2, ...]` releases the count at every comma.
+    Closing a container, replacement field or interpolated string retains its deepest child's depth.
+    Sibling fields and implicitly concatenated string literals retain their maximum depth instead of adding together.
     A logical line starting with a variable named `case` counts its binary `+` and `-` the same way.
+    For sources that undergo this scan, excessively deep postfix chains are rejected before AST construction because
+    destroying a deeply nested AST can overflow the native stack.
 - The scan also enters string literals, because the type checker parses a forward-reference annotation such as
     `x: "list[int]"` from the text between the quotes; a string longer than 200 bytes holding more than 200 unbalanced
     brackets is rejected the same way even when it is plain data.
 - With type checking on, the whole AST is checked against the cap before the type checker runs, whatever the source's
     length.
-    That includes function parameter and return annotations.
+    That includes function parameter and return annotations, match patterns and nested format specifications.
     Every string literal longer than the remaining budget is parsed as a forward-reference annotation and counted
     from the depth it sits at, so a string that parses as a deeply nested expression is rejected even when it is data.
 - Only Rust hosts can change the threshold, with `CompileOptions { source_scan_threshold: n, ..CompileOptions::default() }`
@@ -137,17 +157,15 @@ extracted, and `__annotations__` is always an empty `dict` because
 module-level annotations are not stored (see [typing.md](typing.md)); CPython 3.14
 instead raises `NameError` when a module has no annotations (PEP 649).
 
-These names are **read-only**: assigning one at module or global scope (including
+These names are **read-only**: assigning one other than `__debug__` at module or global scope (including
 via `global __name__` inside a function, and augmented assignment like
 `__name__ += ...`) is rejected at compile time with
 `NotImplementedError: cannot reassign read-only module attribute '<name>'`.
-CPython instead *allows* rebinding most of them (it is how you set a module
-docstring), and rejects only `__debug__`, with a `SyntaxError`.
+CPython instead *allows* rebinding them (it is how you set a module docstring).
+Assignments to `__debug__` raise `SyntaxError` in every scope, as in CPython.
 
-Binding one of these names as a **function local** is allowed (it is an
-ordinary local in a separate namespace), matching CPython, except `__debug__`,
-which CPython rejects everywhere with `SyntaxError` but Monty permits as a
-local.
+Binding one of these names other than `__debug__` as a **function local** is allowed (it is an
+ordinary local in a separate namespace), matching CPython.
 
 `__file__` is the final path component of the session's script name placed
 under the virtual working directory the feed started in: `/main.py` by

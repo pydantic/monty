@@ -1,6 +1,5 @@
 use std::{borrow::Cow, cmp::Ordering, fmt};
 
-use ahash::AHashSet;
 use monty_types::{FormatComplex, FormatFloat, MontyException, StackFrame, StringRepr, bytes_repr};
 use num_bigint::BigInt;
 use num_traits::{Num, ToPrimitive};
@@ -31,13 +30,15 @@ use crate::{
     value::EitherStr,
 };
 
+mod validate;
+
 /// Maximum nesting depth for AST structures during parsing.
 /// Matches CPython's limit of ~200 for nested parentheses.
 /// This prevents stack overflow from deeply nested structures like `((((x,),),),)`.
 ///
 /// ruff itself no longer limits recursion, so this is Monty's single limit:
 /// enforced approximately by the pre-parse scan (`source_nesting`) on sources
-/// over `CompileOptions::source_scan_threshold`, and exactly by this converter.
+/// over `CompileOptions::source_scan_threshold`, then by AST validation and conversion.
 #[cfg(not(debug_assertions))]
 pub const MAX_NESTING_DEPTH: u16 = 200;
 /// In debug builds, we use a lower limit because stack frames are much larger
@@ -240,6 +241,9 @@ pub(crate) fn parse_module_with_filename_id(
     check_source_nesting(code, Mode::Module, filename_id, source_scan_threshold)?;
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+
+    validate::module(&parsed, filename_id, future_annotations)?;
+
     // Harvested before `into_syntax` drops the token stream.
     let class_keyword_offsets = parsed
         .tokens()
@@ -275,6 +279,9 @@ pub(crate) fn parse_expression_with_interner(
     reject_leading_bom(code, start, filename_id)?;
     let parsed = parse_expression_range(code, TextRange::new(start, end))
         .map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+
+    validate::expression(&parsed, filename_id)?;
+
     if let Some(range) = trailing_indent(code) {
         return Err(ParseError::syntax(
             "Unexpected indentation",
@@ -338,7 +345,7 @@ pub(crate) fn source_nesting_exception(
 }
 
 /// [`source_nesting_exception`] for a source about to be type-checked, which
-/// also rejects any expression nested deeper than [`MAX_NESTING_DEPTH`].
+/// also rejects AST structures nested deeper than [`MAX_NESTING_DEPTH`].
 ///
 /// The compiler bounds expression depth itself, but ty walks the whole AST
 /// first — annotations the compiler drops included — and a flat source such
@@ -774,18 +781,10 @@ impl<'a, 'i> Parser<'a, 'i> {
                     }),
                 }
             }
-            Stmt::AnnAssign(ast::StmtAnnAssign {
-                target,
-                annotation,
-                value,
-                ..
-            }) => {
-                self.check_annotation(&annotation)?;
-                match value {
-                    Some(value) => self.parse_assignment(*target, *value),
-                    None => Ok(Node::Pass),
-                }
-            }
+            Stmt::AnnAssign(ast::StmtAnnAssign { target, value, .. }) => match value {
+                Some(value) => self.parse_assignment(*target, *value),
+                None => Ok(Node::Pass),
+            },
             Stmt::For(ast::StmtFor {
                 is_async,
                 target,
@@ -1272,7 +1271,6 @@ impl<'a, 'i> Parser<'a, 'i> {
     ) -> Result<Vec<DictItem>, ParseError> {
         let mut items = Vec::with_capacity(annotations.len());
         for (name, mut annotation) in annotations {
-            self.check_annotation(&annotation)?;
             let key = ExprLoc::new(position, Expr::Literal(Literal::Str(name)));
             let value = if self.future_annotations {
                 let range = self.convert_range(annotation.range());
@@ -1321,15 +1319,13 @@ impl<'a, 'i> Parser<'a, 'i> {
         let position = self.class_keyword_range(&class);
         let decorators = self.parse_decorators(class.decorator_list)?;
         // `class.arguments` carries base classes and metaclass keywords.
-        if let Some(arguments) = &class.arguments {
-            // CPython rejects the repeat before it would consider the metaclass.
-            self.check_repeated_keywords(&arguments.keywords)?;
-            if !arguments.args.is_empty() || !arguments.keywords.is_empty() {
-                return Err(ParseError::not_implemented(
-                    "class inheritance and metaclasses",
-                    position,
-                ));
-            }
+        if let Some(arguments) = &class.arguments
+            && (!arguments.args.is_empty() || !arguments.keywords.is_empty())
+        {
+            return Err(ParseError::not_implemented(
+                "class inheritance and metaclasses",
+                position,
+            ));
         }
 
         let name = self.identifier(&class.name.id, class.name.range);
@@ -1589,19 +1585,6 @@ impl<'a, 'i> Parser<'a, 'i> {
             ))
         } else {
             Ok(())
-        }
-    }
-
-    /// Depth-checks an annotation and rejects what CPython's compiler refuses in
-    /// one: a walrus, `yield` or `await` evaluated in the annotation's own scope.
-    fn check_annotation(&self, annotation: &AstExpr) -> Result<(), ParseError> {
-        self.check_expression_depth(annotation)?;
-        match forbidden_in_annotation(annotation) {
-            Some((kind, range)) => Err(ParseError::syntax(
-                format!("{kind} cannot be used within an annotation"),
-                self.convert_range(range),
-            )),
-            None => Ok(()),
         }
     }
 
@@ -2009,7 +1992,6 @@ impl<'a, 'i> Parser<'a, 'i> {
                 let ast::ExprCall { func, arguments, .. } = call;
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let keywords_vec: Vec<_> = keywords.into_iter().collect();
-                self.check_repeated_keywords(&keywords_vec)?;
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
@@ -2293,24 +2275,6 @@ impl<'a, 'i> Parser<'a, 'i> {
         }
 
         Ok(ArgExprs::new_generalized(call_args, call_kwargs))
-    }
-
-    /// Rejects `f(x=1, x=2)` as CPython's compiler does, pointing at the repeat.
-    ///
-    /// ruff reports this from its semantic checker, which Monty does not run, so
-    /// the parser alone would accept the call.
-    fn check_repeated_keywords(&self, keywords: &[Keyword]) -> Result<(), ParseError> {
-        let mut seen = AHashSet::with_capacity(keywords.len());
-        keywords
-            .iter()
-            .filter_map(|keyword| keyword.arg.as_ref().map(|arg| (arg.id.as_str(), keyword.range())))
-            .find(|(name, _)| !seen.insert(*name))
-            .map_or(Ok(()), |(name, range)| {
-                Err(ParseError::syntax(
-                    format!("keyword argument repeated: {name}"),
-                    self.convert_range(range),
-                ))
-            })
     }
 
     /// Parses keyword arguments, separating regular kwargs from var_kwargs (`**expr`).
@@ -2623,24 +2587,7 @@ impl<'a, 'i> Parser<'a, 'i> {
         if has_interpolation {
             let mut parts = Vec::with_capacity(spec.elements.len());
             for element in &spec.elements {
-                match element {
-                    InterpolatedStringElement::Literal(lit) => {
-                        let string_id = self.interner.intern(&lit.value);
-                        parts.push(FStringPart::Literal(string_id));
-                    }
-                    InterpolatedStringElement::Interpolation(interp) => {
-                        let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
-                        let conversion = convert_conversion_flag(interp.conversion);
-                        // Format specs within format specs are not allowed in Python,
-                        // and debug_prefix doesn't apply to nested interpolations
-                        parts.push(FStringPart::Interpolation {
-                            expr,
-                            conversion,
-                            format_spec: None,
-                            debug_prefix: None,
-                        });
-                    }
-                }
+                parts.push(self.parse_fstring_element(element)?);
             }
             Ok(Some(FormatSpec::Dynamic(parts)))
         } else {
@@ -2744,39 +2691,13 @@ impl<'a, 'i> Parser<'a, 'i> {
     /// compile time. The check stops descending once the budget is exhausted, so
     /// its own depth is bounded by [`MAX_NESTING_DEPTH`].
     fn check_expression_depth(&self, expr: &AstExpr) -> Result<(), ParseError> {
-        /// Expression visitor that reports whether the walk ever ran out of budget.
-        struct DepthCheck {
-            remaining: u16,
-            too_deep: bool,
-        }
-        impl<'a> Visitor<'a> for DepthCheck {
-            fn visit_expr(&mut self, expr: &'a AstExpr) {
-                // Nothing is pruned (not even lambda bodies): the guarded walks
-                // reach everywhere, so the bound must too.
-                match self.remaining.checked_sub(1) {
-                    _ if self.too_deep => {}
-                    None => self.too_deep = true,
-                    Some(remaining) => {
-                        self.remaining = remaining;
-                        walk_expr(self, expr);
-                        self.remaining += 1;
-                    }
-                }
-            }
-        }
-
-        let mut check = DepthCheck {
-            remaining: self.depth_remaining,
-            too_deep: false,
-        };
-        check.visit_expr(expr);
-        if check.too_deep {
+        if validate::expression_within_depth(expr, self.depth_remaining) {
+            Ok(())
+        } else {
             Err(ParseError::syntax(
                 "Source is too deeply nested",
                 self.convert_range(expr.range()),
             ))
-        } else {
-            Ok(())
         }
     }
 }

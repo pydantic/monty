@@ -6,16 +6,17 @@
 //! ([`MAX_NESTING_DEPTH`]) ever runs. One lexer pass over-approximates the
 //! parser's recursion depth; a source of at most `source_scan_threshold` bytes
 //! skips it, its depth being bounded by its length.
+//! Completed postfix spines are bounded too: dropping a deeply nested AST is recursive.
 
 use ruff_python_ast::{
-    Expr, Mod, Stmt, StringLiteral,
+    Expr, InterpolatedStringElement, Mod, Pattern, Stmt, StringLiteral,
     token::TokenKind,
-    visitor::{Visitor, walk_expr, walk_stmt},
+    visitor::{Visitor, walk_expr, walk_interpolated_string_element, walk_pattern, walk_stmt},
 };
 use ruff_python_parser::{Mode, ParseOptions, lexer::lex, parse_string_annotation, parse_unchecked};
 use ruff_text_size::{Ranged, TextLen, TextRange};
 
-use crate::parse::MAX_NESTING_DEPTH;
+use crate::parse::{MAX_IMPORT_COMPONENTS, MAX_NESTING_DEPTH};
 
 /// Whether `source` can be handed to ruff (or ty) without the parser recursing
 /// past [`MAX_NESTING_DEPTH`]; a source of at most `source_scan_threshold`
@@ -98,7 +99,7 @@ fn string_literal_contents(literal: &str) -> Option<(&str, Mode)> {
     quoted.ends_with(closer).then_some((inner, mode))
 }
 
-/// Token-by-token model of the frames ruff's parser holds open.
+/// Token-by-token model of parser frames and completed postfix AST spines.
 ///
 /// ruff recurses on every bracketed expression, prefix operator, `**` right
 /// operand, lambda body, conditional `else` branch, f-string format spec,
@@ -114,22 +115,35 @@ struct Scanner {
     /// Whether the previous token can end an operand, making a following
     /// `-`, `+`, `*` or `not` binary rather than prefix.
     prev_ends_operand: bool,
+    previous: TokenKind,
     /// Whether a `case` began the current logical line, so `+` and `-` join
     /// complex-literal patterns, which recurse on their right operand.
     in_pattern: bool,
-    /// Open levels (excluding the bottom), indentation and every level's counts.
+    statement: StatementContext,
+    /// Open levels (excluding the bottom), indentation and active tight/loose counts.
     total: u32,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StatementContext {
+    Start,
+    Import(usize),
+    Other,
 }
 
 /// Frames open at one bracket level.
 struct Level {
     kind: LevelKind,
-    /// Prefix operators and `**` right operands: any lower-precedence binary
-    /// operator proves they have returned.
+    /// Prefix operators, `**` right operands and completed postfix nodes.
+    /// A lower-precedence binary operator ends the current operand.
     tight: u32,
     /// Lambda bodies, `else` branches and format specs: only the level's end
     /// or a comma, newline or statement colon proves they have returned.
     loose: u32,
+    /// Deepest operand completed before a comma or another expression separator.
+    completed_depth: u32,
+    /// Depth already charged for the preceding literal in an implicit concatenation.
+    literal_depth: u32,
     /// `lambda` keywords whose `:` has not arrived, so commas are still
     /// separating parameters rather than ending a body.
     pending_lambdas: u32,
@@ -140,12 +154,12 @@ enum LevelKind {
     /// The module or expression itself.
     Top,
     /// `(`, `[` or `{` outside an f-string.
-    Bracket,
+    Bracket { has_root: bool },
     /// Between `FStringStart` and `FStringEnd` (or the t-string pair).
-    FString,
+    FString { previous_depth: u32 },
     /// A `{...}` replacement field; `in_spec` once its format spec began,
     /// where a nested `{` opens another replacement field.
-    Interpolation { in_spec: bool },
+    Interpolation { in_spec: bool, has_tuple: bool },
 }
 
 impl Scanner {
@@ -155,30 +169,92 @@ impl Scanner {
             levels: vec![Level::new(LevelKind::Top)],
             indent: 0,
             prev_ends_operand: false,
+            previous: TokenKind::EndOfFile,
             in_pattern: false,
+            statement: StatementContext::Start,
             total: 0,
         }
     }
 
     /// Accounts for one token, returning whether the estimate now exceeds the limit.
     fn observe(&mut self, kind: TokenKind) -> bool {
+        if matches!(kind, TokenKind::Comment | TokenKind::NonLogicalNewline) {
+            return false;
+        }
+        // Ruff recovers keywords after `.` as attributes before reporting invalid syntax.
+        // They must keep the spine charged, including keywords that otherwise reset it.
+        if self.previous == TokenKind::Dot && kind.is_keyword() {
+            self.previous = kind;
+            self.prev_ends_operand = true;
+            return false;
+        }
+        if self.statement == StatementContext::Start && matches!(kind, TokenKind::Import | TokenKind::From) {
+            self.statement = StatementContext::Import(MAX_IMPORT_COMPONENTS);
+        }
+        let statement_colon = kind == TokenKind::Colon && self.levels.len() == 1 && self.top().pending_lambdas == 0;
+        if matches!(
+            kind,
+            TokenKind::As | TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace
+        ) && let StatementContext::Import(remaining) = &mut self.statement
+        {
+            *remaining = 0;
+        }
+        // Parameter commas belong to a lambda, while expression commas create tuple roots.
+        if matches!(kind, TokenKind::Comma | TokenKind::For) && self.top().pending_lambdas == 0 {
+            match &mut self.top().kind {
+                LevelKind::Bracket { has_root } => *has_root = true,
+                LevelKind::Interpolation {
+                    in_spec: false,
+                    has_tuple,
+                } if kind == TokenKind::Comma => *has_tuple = true,
+                _ => {}
+            }
+        }
+        if kind == TokenKind::Rpar
+            && self.previous == TokenKind::Lpar
+            && let LevelKind::Bracket { has_root } = &mut self.top().kind
+        {
+            *has_root = true;
+        }
         let exceeded = match kind {
-            TokenKind::Lpar | TokenKind::Lsqb => self.push(LevelKind::Bracket),
+            TokenKind::Lpar => self.push(LevelKind::Bracket {
+                has_root: self.prev_ends_operand,
+            }),
+            TokenKind::Lsqb => self.push(LevelKind::Bracket { has_root: true }),
             TokenKind::Lbrace => {
                 let kind = match self.top().kind {
-                    LevelKind::FString | LevelKind::Interpolation { in_spec: true } => {
-                        LevelKind::Interpolation { in_spec: false }
+                    LevelKind::FString { .. } | LevelKind::Interpolation { in_spec: true, .. } => {
+                        LevelKind::Interpolation {
+                            in_spec: false,
+                            has_tuple: false,
+                        }
                     }
-                    LevelKind::Top | LevelKind::Bracket | LevelKind::Interpolation { in_spec: false } => {
-                        LevelKind::Bracket
+                    LevelKind::Top | LevelKind::Bracket { .. } | LevelKind::Interpolation { in_spec: false, .. } => {
+                        LevelKind::Bracket { has_root: true }
                     }
                 };
                 self.push(kind)
             }
-            TokenKind::FStringStart | TokenKind::TStringStart => self.push(LevelKind::FString),
-            TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace | TokenKind::FStringEnd | TokenKind::TStringEnd => {
-                self.pop();
+            TokenKind::FStringStart | TokenKind::TStringStart => {
+                let previous_depth = if self.follows_string_literal() {
+                    self.top().literal_depth
+                } else {
+                    0
+                };
+                let parent = self.top();
+                parent.literal_depth = 0;
+                parent.tight -= previous_depth;
+                self.total -= previous_depth;
+                self.push(LevelKind::FString { previous_depth })
+            }
+            TokenKind::String => {
+                if !self.follows_string_literal() {
+                    self.top().literal_depth = 0;
+                }
                 false
+            }
+            TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace | TokenKind::FStringEnd | TokenKind::TStringEnd => {
+                self.pop()
             }
             TokenKind::Indent => {
                 self.indent += 1;
@@ -193,6 +269,18 @@ impl Scanner {
             }
             // `case 1+1+1:` parses each `+` or `-` as a nested complex literal.
             TokenKind::Minus | TokenKind::Plus if self.in_pattern => self.add_tight(1),
+            // These AST spines are parsed iteratively, but recursively dropping them can overflow.
+            TokenKind::Dot => {
+                // Cap the flat import allowance so malformed paths cannot hide postfix spines.
+                if let StatementContext::Import(remaining) = &mut self.statement
+                    && *remaining > 0
+                {
+                    *remaining -= 1;
+                    false
+                } else {
+                    self.add_tight(1)
+                }
+            }
             // Binary after an operand (`a - b`, `a * b`, `a not in b`), prefix otherwise.
             TokenKind::Minus | TokenKind::Plus | TokenKind::Star | TokenKind::Not => {
                 if self.prev_ends_operand {
@@ -223,6 +311,9 @@ impl Scanner {
             TokenKind::Comma if self.top().pending_lambdas > 0 => false,
             TokenKind::Comma => {
                 self.reset_level();
+                if self.levels.len() == 1 && matches!(self.statement, StatementContext::Import(_)) {
+                    self.statement = StatementContext::Import(MAX_IMPORT_COMPONENTS);
+                }
                 false
             }
             TokenKind::Newline | TokenKind::Semi => {
@@ -255,25 +346,56 @@ impl Scanner {
                 self.reset_tight();
                 false
             }
+            TokenKind::Equal
+            | TokenKind::PlusEqual
+            | TokenKind::MinusEqual
+            | TokenKind::StarEqual
+            | TokenKind::DoubleStarEqual
+            | TokenKind::SlashEqual
+            | TokenKind::DoubleSlashEqual
+            | TokenKind::PercentEqual
+            | TokenKind::AtEqual
+            | TokenKind::VbarEqual
+            | TokenKind::AmperEqual
+            | TokenKind::CircumflexEqual
+            | TokenKind::LeftShiftEqual
+            | TokenKind::RightShiftEqual
+            | TokenKind::As
+            | TokenKind::From
+            | TokenKind::Rarrow => {
+                // `yield from` recursively parses its operand; `raise ... from` starts a new one.
+                if kind != TokenKind::From || self.previous != TokenKind::Yield {
+                    self.reset_tight();
+                }
+                false
+            }
             _ => false,
         };
-        self.prev_ends_operand = matches!(
-            kind,
-            TokenKind::Name
-                | TokenKind::Int
-                | TokenKind::Float
-                | TokenKind::Complex
-                | TokenKind::String
-                | TokenKind::FStringEnd
-                | TokenKind::TStringEnd
-                | TokenKind::Rpar
-                | TokenKind::Rsqb
-                | TokenKind::Rbrace
-                | TokenKind::True
-                | TokenKind::False
-                | TokenKind::None
-                | TokenKind::Ellipsis
-        );
+        self.statement = match kind {
+            TokenKind::Newline | TokenKind::Semi | TokenKind::Indent | TokenKind::Dedent => StatementContext::Start,
+            TokenKind::Colon if statement_colon => StatementContext::Start,
+            _ if matches!(self.statement, StatementContext::Import(_)) => self.statement,
+            _ => StatementContext::Other,
+        };
+        self.previous = kind;
+        self.prev_ends_operand = kind.is_soft_keyword()
+            || matches!(
+                kind,
+                TokenKind::Name
+                    | TokenKind::Int
+                    | TokenKind::Float
+                    | TokenKind::Complex
+                    | TokenKind::String
+                    | TokenKind::FStringEnd
+                    | TokenKind::TStringEnd
+                    | TokenKind::Rpar
+                    | TokenKind::Rsqb
+                    | TokenKind::Rbrace
+                    | TokenKind::True
+                    | TokenKind::False
+                    | TokenKind::None
+                    | TokenKind::Ellipsis
+            );
         exceeded
     }
 
@@ -288,7 +410,7 @@ impl Scanner {
         } else {
             self.reset_level();
             let top = self.top();
-            if let LevelKind::Interpolation { in_spec } = &mut top.kind {
+            if let LevelKind::Interpolation { in_spec, .. } = &mut top.kind {
                 *in_spec = true;
                 self.add_loose(1)
             } else {
@@ -301,16 +423,46 @@ impl Scanner {
         self.levels.last_mut().expect("the bottom level is never popped")
     }
 
+    fn follows_string_literal(&self) -> bool {
+        matches!(
+            self.previous,
+            TokenKind::String | TokenKind::FStringEnd | TokenKind::TStringEnd
+        )
+    }
+
     fn push(&mut self, kind: LevelKind) -> bool {
         self.levels.push(Level::new(kind));
         self.add(1)
     }
 
-    fn pop(&mut self) {
+    fn pop(&mut self) -> bool {
         if self.levels.len() > 1 {
             let level = self.levels.pop().expect("length checked above");
             self.total -= 1 + level.tight + level.loose;
+            let child_depth = level.completed_depth.max(level.tight + level.loose);
+            self.top().literal_depth = 0;
+            return match level.kind {
+                LevelKind::Bracket { has_root } => self.add_tight(child_depth + u32::from(has_root)),
+                LevelKind::FString { previous_depth } => {
+                    let depth = child_depth + 1;
+                    // Adjacent literals share one expression root, so retain their maximum depth.
+                    self.top().literal_depth = previous_depth.max(depth);
+                    self.add_tight(previous_depth.max(depth))
+                }
+                LevelKind::Interpolation { has_tuple, .. } => {
+                    // Fields are siblings in their string or format spec, not a postfix spine.
+                    let parent = self.top();
+                    let active = parent.tight + parent.loose;
+                    parent.completed_depth = parent
+                        .completed_depth
+                        .max(active + child_depth + 1 + u32::from(has_tuple));
+                    let retained = parent.completed_depth - active;
+                    self.total + retained > self.limit
+                }
+                LevelKind::Top => false,
+            };
         }
+        false
     }
 
     fn add_tight(&mut self, frames: u32) -> bool {
@@ -325,16 +477,20 @@ impl Scanner {
 
     fn reset_tight(&mut self) {
         let top = self.top();
+        top.completed_depth = top.completed_depth.max(top.tight + top.loose);
         let released = top.tight;
         top.tight = 0;
+        top.literal_depth = 0;
         self.total -= released;
     }
 
     fn reset_level(&mut self) {
         let top = self.top();
         let released = top.tight + top.loose;
+        top.completed_depth = top.completed_depth.max(released);
         top.tight = 0;
         top.loose = 0;
+        top.literal_depth = 0;
         self.total -= released;
     }
 
@@ -350,15 +506,17 @@ impl Level {
             kind,
             tight: 0,
             loose: 0,
+            completed_depth: 0,
+            literal_depth: 0,
             pending_lambdas: 0,
         }
     }
 }
 
-/// Range of the first expression in `source` nested deeper than `limit`,
+/// Range of the first AST node in `source` nested deeper than `limit`,
 /// counting through the contents of string literals as the type checker does.
 ///
-/// ruff builds arbitrarily deep ASTs from flat source (`1+1+...`, `a.x.x...`,
+/// ruff builds arbitrarily deep ASTs from flat source (`1+1+...`,
 /// `A | B | ...`) without recursing itself, so [`nesting_bound_exceeded`]
 /// passes them; ty then recurses once per level. The caller must already have
 /// bounded ruff's own recursion with that scan.
@@ -387,23 +545,47 @@ struct AstDepth<'s> {
     exceeded: Option<TextRange>,
 }
 
+impl AstDepth<'_> {
+    fn enter(&mut self, range: TextRange) -> bool {
+        if self.exceeded.is_some() {
+            false
+        } else if let Some(remaining) = self.remaining.checked_sub(1) {
+            self.remaining = remaining;
+            true
+        } else {
+            self.exceeded = Some(range);
+            false
+        }
+    }
+}
+
 impl<'a> Visitor<'a> for AstDepth<'_> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
-        if self.exceeded.is_none() {
+        if self.enter(stmt.range()) {
             walk_stmt(self, stmt);
+            self.remaining += 1;
         }
     }
 
     fn visit_expr(&mut self, expr: &'a Expr) {
-        if self.exceeded.is_some() {
-            return;
-        }
-        if let Some(remaining) = self.remaining.checked_sub(1) {
-            self.remaining = remaining;
+        if self.enter(expr.range()) {
             walk_expr(self, expr);
             self.remaining += 1;
-        } else {
-            self.exceeded = Some(expr.range());
+        }
+    }
+
+    fn visit_pattern(&mut self, pattern: &'a Pattern) {
+        if self.enter(pattern.range()) {
+            walk_pattern(self, pattern);
+            self.remaining += 1;
+        }
+    }
+
+    fn visit_interpolated_string_element(&mut self, element: &'a InterpolatedStringElement) {
+        // Format specifications can recurse without an intervening Expr node.
+        if self.enter(element.range()) {
+            walk_interpolated_string_element(self, element);
+            self.remaining += 1;
         }
     }
 

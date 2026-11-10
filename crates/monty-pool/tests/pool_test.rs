@@ -4,6 +4,8 @@
 
 mod binary;
 mod common;
+#[path = "common/process.rs"]
+mod process;
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -45,7 +47,7 @@ use tokio::time::sleep;
 #[cfg(unix)]
 use tokio::time::timeout;
 
-use crate::{binary::monty_binary, common::wait_for_idle};
+use crate::{binary::monty_binary, common::wait_for_idle, process::kill_pid};
 
 fn config() -> PoolConfig {
     PoolConfig::subprocess(monty_binary())
@@ -93,23 +95,6 @@ fn try_symlink_dir(original: &Path, link: &Path) -> io::Result<()> {
     return symlink(original, link);
     #[cfg(windows)]
     return symlink_dir(original, link);
-}
-
-/// Kills a process by pid with SIGKILL — simulates a hard crash.
-fn kill_pid(pid: u32) {
-    #[cfg(unix)]
-    {
-        let status = Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap();
-        assert!(status.success());
-    }
-    #[cfg(windows)]
-    {
-        let status = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/F"])
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
 }
 
 /// Writes the executable stand-in for `monty` that a test drives, from a child shell rather than
@@ -1488,13 +1473,10 @@ async fn worker_killed_while_idle_is_replaced_transparently() {
     session.finish().await.unwrap();
 }
 
-/// A deep postfix spine (`a.x.x.x…`) currently overflows the child's stack
-/// (recursive AST handling) — a REAL memory crash, exactly what subprocess
-/// isolation exists for. If monty core gains AST-depth protection this
-/// becomes a `Runtime`/`Crashed` either way; the invariant under test is
-/// that the parent survives and the pool keeps serving.
+/// Postfix spines are rejected before Ruff can construct an AST whose drop
+/// overflows the worker's stack. The same checkout remains usable afterwards.
 #[tokio::test]
-async fn hard_child_crash_does_not_harm_the_pool() {
+async fn deep_postfix_syntax_does_not_harm_the_pool() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let mut code = String::with_capacity(300_002);
@@ -1506,20 +1488,12 @@ async fn hard_child_crash_does_not_harm_the_pool() {
         .feed(&code, vec![], vec![], false, &mut no_print)
         .await
         .unwrap_err();
-    assert!(
-        matches!(err, PoolError::Crashed { .. } | PoolError::Runtime(_)),
-        "got {err:?}"
-    );
-    // a stack overflow aborts with SIGABRT, which must never be mistaken for the
-    // allocator's dedicated out-of-memory exit — the reason that exit exists
-    if let PoolError::Runtime(exc) = &err {
-        assert_ne!(
-            exc.message(),
-            Some("the worker exceeded its memory limit and was terminated")
-        );
-    }
+    let PoolError::Runtime(exc) = err else {
+        panic!("got {err:?}")
+    };
+    assert_eq!(exc.exc_type(), ExcType::SyntaxError);
+    assert_eq!(exc.message(), Some("Source is too deeply nested"));
 
-    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(
         expect_complete(
             session
