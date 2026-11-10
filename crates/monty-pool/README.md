@@ -305,8 +305,10 @@ input so adapters that do not support metrics continue to work.
   cannot delay it. A ping over 64 bytes, or more than ten in any one second, ends the stream as
   a transport failure. `PoolConfig::keep_alive` (five minutes by default, the fastest cadence a
   gRPC server's default policy permits; `None` for none) adds an HTTP/2 `PING` on the first
-  hop while streams are open. `PoolConfig::request_timeout` (30 s when unset) also bounds
-  opening a stream, from a cold dial through the server's admission.
+  hop while streams are open. `PoolConfig::connect_timeout` (30 s by default) bounds
+  opening a stream, from a cold dial through the server's admission, separately from
+  `PoolConfig::request_timeout`, which `PoolConfig::remote` sets to 30 minutes: a last resort
+  behind the server's own turn limits, which should always end a turn first.
 
 A stream ended mid-session reports `PoolError::Disconnected`.
 Its optional `remote` details retain the first recorded failure: the gRPC status the server ended the stream with

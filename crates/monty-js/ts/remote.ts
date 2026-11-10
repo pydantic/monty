@@ -10,6 +10,12 @@ import { type CheckoutOptions, graceMs, nativeCheckoutOptions, startPool } from 
 import { enterSession, HostModules, MontySession } from './session.js'
 import { captureTelemetryContext } from './telemetry.js'
 
+/**
+ * `requestTimeout`'s default, matching `monty-pool`'s remote default: a last
+ * resort far above a server's own turn limits.
+ */
+const DEFAULT_REQUEST_TIMEOUT_SECS = 1800
+
 /** Options for [`MontyRemote.create`]. */
 export interface MontyRemoteOptions {
   /** Cap on concurrent session streams; checkouts beyond it wait (default: CPU count). */
@@ -20,12 +26,13 @@ export interface MontyRemoteOptions {
    */
   checkoutTimeout?: number
   /**
-   * Hard per-turn deadline in seconds (default 10, `null` disables): a turn
-   * that gets no answer in time has its stream ended and fails with
-   * `MontyCrashedError` (`timedOut: true`). Without it, a server that admits
-   * the stream but never answers blocks the turn until the far end ends it.
-   * It also bounds opening the stream, including the server's admission (30s
-   * when `null`). `installDependencies` is a turn too, and a real install can exceed 10s.
+   * Hard per-turn deadline in seconds (default 1800, 30 minutes; `null`
+   * disables): a turn that gets no answer in time has its stream ended and
+   * fails with `MontyCrashedError` (`timedOut: true`). A last resort: the
+   * server's own turn limits (five minutes by default for monty-server)
+   * should end a turn first, with their own error. Without it, a server that
+   * admits the stream but never answers blocks the turn until the far end
+   * ends it. `installDependencies` is a turn too.
    * CPU-mode servers require a finite `requestTimeout`, otherwise checkout
    * throws `MontyConfigurationError`.
    * This deadline does not set the sleep cap. System sleeps return normally
@@ -35,6 +42,11 @@ export interface MontyRemoteOptions {
    * to request uncapped sleeps, subject to the server's policy.
    */
   requestTimeout?: number | null
+  /**
+   * Seconds to wait for a stream to open, from a cold dial through the
+   * server's admission (default 30), before checkout throws `MontyConnectError`.
+   */
+  connectTimeout?: number
   /**
    * Called at each checkout for extra request metadata on that session's
    * stream, e.g. a short-lived auth token: lowercase ASCII names, ASCII
@@ -115,12 +127,13 @@ export class MontyRemote {
     if (metadata !== undefined && typeof metadata !== 'function') {
       throw new TypeError(`${option} must be a function returning a record of header names to values`)
     }
-    const requestTimeout = options.requestTimeout === undefined ? 10 : options.requestTimeout
+    const requestTimeout = options.requestTimeout === undefined ? DEFAULT_REQUEST_TIMEOUT_SECS : options.requestTimeout
     const native = NativePool.remote({
       url,
       ...(options.maxProcesses !== undefined ? { maxProcesses: options.maxProcesses } : {}),
       ...(options.checkoutTimeout !== undefined ? { checkoutTimeoutMs: options.checkoutTimeout * 1000 } : {}),
       ...(requestTimeout !== null ? { requestTimeoutMs: requestTimeout * 1000 } : {}),
+      ...(options.connectTimeout !== undefined ? { connectTimeoutMs: options.connectTimeout * 1000 } : {}),
       ...graceMs('feedDurationLimitGraceMs', options.feedDurationLimitGrace),
       ...graceMs('turnDurationLimitGraceMs', options.turnDurationLimitGrace),
       autoResume: options.autoResume ?? true,

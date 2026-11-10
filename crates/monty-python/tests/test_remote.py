@@ -585,6 +585,32 @@ async def test_an_unknown_url_scheme_is_refused():
     assert str(exc_info.value) == snapshot('grpc://127.0.0.1:9: unsupported URL scheme "grpc", expected http or https')
 
 
+async def test_connect_timeout_bounds_opening_the_stream():
+    """A server that takes the TCP connection but never speaks HTTP/2 fails the
+    checkout at `connect_timeout`, however long `request_timeout` allows a turn."""
+    held: list[asyncio.StreamWriter] = []
+
+    async def hold(_reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+
+    server = await asyncio.start_server(hold, '127.0.0.1', 0)
+    port = server.sockets[0].getsockname()[1]
+    url = f'http://127.0.0.1:{port}/'
+    try:
+        async with AsyncMontyRemote(url, connect_timeout=0.2) as pool:
+            start = time.monotonic()
+            with pytest.raises(MontyConnectError) as exc_info:
+                async with pool.checkout():
+                    pass
+            assert time.monotonic() - start < 5
+    finally:
+        # closing a server waits for its connections, so drop the held ones first
+        for writer in held:
+            writer.close()
+        server.close()
+    assert str(exc_info.value) == f'{url}: the server did not accept the session within 200ms (connect_timeout)'
+
+
 async def test_unreachable_server_fails_the_checkout():
     """Nothing is dialed until a checkout, which then reports the dial failure."""
     async with AsyncMontyRemote('http://127.0.0.1:9') as pool:

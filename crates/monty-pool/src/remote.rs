@@ -59,7 +59,7 @@ pub(crate) struct Remote {
     channel: Channel,
     /// Bounds opening a stream: the TCP+TLS dial on a cold channel plus the
     /// server's admission (which, for a relay, includes dialing a worker).
-    dial_timeout: Duration,
+    connect_timeout: Duration,
     /// Caps decodes of large frames at the pool's `max_processes`, across every
     /// reader. A dropped checkout frees its capacity slot at once, while its
     /// reader may be inside a decode an abort cannot interrupt, so without
@@ -91,7 +91,7 @@ impl Remote {
     /// fails at `Pool::new` rather than at its first checkout.
     pub(crate) fn connect(
         url: &str,
-        dial_timeout: Duration,
+        connect_timeout: Duration,
         keep_alive: Option<Duration>,
         max_processes: usize,
     ) -> Result<Self, PoolError> {
@@ -100,7 +100,7 @@ impl Remote {
             .map_err(|err| connect_error(&err))?
             .user_agent(USER_AGENT_VALUE)
             .map_err(|err| connect_error(&err))?
-            .connect_timeout(dial_timeout)
+            .connect_timeout(connect_timeout)
             .tcp_nodelay(true)
             // fixed windows, the connection's well above a stream's: adaptive
             // ones set both to one estimate, so a session whose host stopped
@@ -129,7 +129,7 @@ impl Remote {
         Ok(Self {
             url: url.to_owned(),
             channel: endpoint.connect_lazy(),
-            dial_timeout,
+            connect_timeout,
             decode_permits: Arc::new(Semaphore::new(max_processes.max(1))),
             closing: Arc::new(Semaphore::new(max_processes.max(1))),
             closing_complete: Arc::new(Notify::new()),
@@ -170,7 +170,7 @@ impl Remote {
             .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
         // an unrepresentable timeout (`Duration::MAX`) leaves the dial unbounded
-        let deadline = Instant::now().checked_add(self.dial_timeout);
+        let deadline = Instant::now().checked_add(self.connect_timeout);
         let mut retries = 0;
         let (requests, response) = loop {
             let (requests, request_body) = mpsc::channel::<Bytes>(REQUEST_CHANNEL_DEPTH);
@@ -227,8 +227,8 @@ impl Remote {
                     return Err(connection_failure(
                         url,
                         format!(
-                            "the server did not accept the session within {:?} (request_timeout)",
-                            self.dial_timeout
+                            "the server did not accept the session within {:?} (connect_timeout)",
+                            self.connect_timeout
                         ),
                     ));
                 }
