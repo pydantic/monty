@@ -72,13 +72,8 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 
 ## `OrderedDict`
 
-An `OrderedDict` is a `dict` that remembers its kind, so it keeps the dict
-surface and adds `move_to_end`, `popitem(last=...)`, an order-sensitive `==`
-against another `OrderedDict`, and `fromkeys`, `copy`, `|` and `|=` that keep
-the kind.
-
 - **The views are `dict_keys` / `dict_values` / `dict_items`**, where CPython's
-    are `odict_keys` / `odict_values` / `odict_items`. Contents and order match.
+    are `odict_keys` / `odict_values` / `odict_items`.
 - **Reordering during iteration is only caught when the iterator would revisit an entry**, as for a
     `dict` that has a key deleted and re-inserted. Then it raises
     `RuntimeError: dictionary keys changed during iteration`, where CPython always raises
@@ -87,8 +82,8 @@ the kind.
 - **Argument-count errors from `popitem` and `move_to_end` use Monty's wording**,
     such as `move_to_end() missing 1 required positional argument: 'key'` where
     CPython says `move_to_end() missing required argument 'key' (pos 1)`, and
-    `OrderedDict(1, 2)` says `expected at most 1 argument, got 2` like CPython
-    but `move_to_end('a', last=1, x=2)` reports the unexpected keyword.
+    `move_to_end('a', last=1, x=2)` reports the unexpected keyword where CPython says
+    `move_to_end() takes at most 2 arguments (3 given)`.
 - **A self-referencing `OrderedDict` prints its inner reference as `{...}`**,
     where CPython prints `...`.
 - **`move_to_end(key, last=False)` is O(n)**, since it compacts the table to put
