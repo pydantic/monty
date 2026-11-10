@@ -1450,6 +1450,8 @@ pub(crate) fn parse_repl_config(
         os_policy,
         persistence,
         profile,
+        // the pool's `stream_async_calls` alone decides for Python sessions
+        stream_async_calls: true,
     })
 }
 

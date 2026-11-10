@@ -422,6 +422,8 @@ impl NativePool {
                     Some(false) => Persistence::Stored,
                 },
                 profile: options.profile,
+                // the pool's `streamAsyncCalls` alone decides for JS sessions
+                stream_async_calls: true,
             },
 
             checkout: Arc::new(AsyncMutex::new(None)),

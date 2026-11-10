@@ -82,6 +82,10 @@ pub struct ReplConfig {
     /// The serving relay's profile to run the session under; `None` takes the
     /// relay's default. Subprocess workers ignore it.
     pub profile: Option<String>,
+    /// Lets this session stream calls to async host functions; it streams only
+    /// when [`PoolConfig::stream_async_calls`] is on too. On by default; a
+    /// forwarding worker sets it from its own client's `Configure.accepts_streamed_calls`.
+    pub stream_async_calls: bool,
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -124,6 +128,7 @@ impl Default for ReplConfig {
             os_policy: OsPolicy::default(),
             persistence: Persistence::default(),
             profile: None,
+            stream_async_calls: true,
         }
     }
 }
@@ -476,6 +481,8 @@ pub struct Checkout {
     /// Names sent as `Feed.async_functions` with every later feed, or `None`
     /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
     async_functions: Option<Vec<String>>,
+    /// The session's `Configure.accepts_streamed_calls`: without it no feed asks the worker to stream.
+    accepts_streamed_calls: bool,
     /// The handler the next feed adopts once accepted (see [`Checkout::set_streamed_call_handler`]).
     next_streamed_call_handler: Option<OnStreamedCall>,
     /// The in-flight feed's handler, set only when it asked the worker to stream
@@ -877,6 +884,7 @@ impl Checkout {
     /// `redial` is kept for [`PoolConfig::auto_resume`]; `None` disables it.
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig, redial: Option<Redial>) -> Self {
         let configure = configure_request(repl, &pool.config);
+        let accepts_streamed_calls = configure.accepts_streamed_calls;
         let streamed_args = StreamedArgs::new(streamed_args_limit(pool.config.max_decode_bytes));
         let mut budget = SessionBudget::from_config(repl);
         budget.execution_clock = pool.config.execution_clock;
@@ -892,6 +900,7 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             async_functions: Some(Vec::new()),
+            accepts_streamed_calls,
             next_streamed_call_handler: None,
             feed_handler: None,
             streamed_args,
@@ -1049,8 +1058,8 @@ impl Checkout {
         // adopted only here, past the checks above: a feed refused while another
         // is suspended must leave that feed's handler in place.
         let handler = self.next_streamed_call_handler.take();
-        // a pool that does not accept streamed calls never asks the worker for them
-        self.feed_handler = handler.filter(|_| self.pool.config.stream_async_calls && self.async_functions.is_some());
+        // a session that does not accept streamed calls never asks the worker for them
+        self.feed_handler = handler.filter(|_| self.accepts_streamed_calls && self.async_functions.is_some());
         let request = request(pb::client_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
@@ -2788,7 +2797,7 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
         // each feed still opts in, and only with a handler (`set_streamed_call_handler`)
-        accepts_streamed_calls: pool.stream_async_calls,
+        accepts_streamed_calls: pool.stream_async_calls && repl.stream_async_calls,
         // attached when the first request goes out (see `OpeningRequest`)
         first: None,
     }

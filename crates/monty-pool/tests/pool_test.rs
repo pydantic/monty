@@ -2269,6 +2269,70 @@ async fn async_calls_suspend_without_a_handler() {
     drop(session);
 }
 
+/// A session that opts out with `ReplConfig::stream_async_calls` suspends on a
+/// call to an async host function even in a streaming pool with a handler set.
+#[tokio::test]
+async fn async_calls_suspend_in_a_session_that_opts_out() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let opted_out = ReplConfig {
+        stream_async_calls: false,
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&opted_out).await.unwrap();
+    let started = collect_streamed_calls(&mut session);
+    let inputs = vec![("f".to_owned(), MontyObject::async_function("f", None))];
+    let event = session
+        .feed("a = f(1)\nawait a", inputs, vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { .. }),
+        "expected a suspension, got {event:?}"
+    );
+    assert!(started.lock().unwrap().is_empty());
+    drop(session);
+}
+
+/// An opted-out session's worker never streams, even when a raw `Feed` asks:
+/// `Configure.accepts_streamed_calls` stays false, so a forwarder passing on an
+/// old client's feeds cannot hand it a `StreamedCalls` it cannot read.
+#[tokio::test]
+async fn raw_feeds_of_an_opted_out_session_do_not_stream() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let opted_out = ReplConfig {
+        stream_async_calls: false,
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&opted_out).await.unwrap();
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
+            code: "import asyncio\nawait asyncio.gather(f(1), f(2))".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+            async_functions: vec!["f".to_owned()].into(),
+            stream_async_calls: true,
+        })),
+        ..pb::ClientRequest::default()
+    };
+    let streamed = Arc::new(Mutex::new(0));
+    let sink = Arc::clone(&streamed);
+    let mut on_event = move |event: &pb::WorkerEvent| {
+        if matches!(event.kind, Some(pb::worker_event::Kind::StreamedCalls(_))) {
+            *sink.lock().unwrap() += 1;
+        }
+        Box::pin(ready(())) as PrintFuture
+    };
+    let event = session.turn_raw(&feed, &mut on_event).await.unwrap();
+    assert!(
+        matches!(event.kind, Some(pb::worker_event::Kind::FunctionCall(_))),
+        "expected a suspension, got {event:?}"
+    );
+    assert_eq!(*streamed.lock().unwrap(), 0);
+    drop(session);
+}
+
 /// A streamed call reaches the handler while the turn is still running, so the
 /// host can start it before the sandbox's long loop ends.
 #[tokio::test]
