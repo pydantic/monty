@@ -109,12 +109,8 @@ impl SetStorage {
     /// The returned entries are owned: they implement [`DropWithContext`], so
     /// a caller that may abandon them partway must hold them in a guard.
     fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
-        // Removing every member can leave tombstones; an empty snapshot need not scan them.
-        if self.is_empty() {
-            return Vec::new();
-        }
-
-        self.live()
+        self.table
+            .copy_iter()
             .map(|e| SetEntry {
                 value: e.value.clone_with_heap(heap),
                 hash: e.hash,
@@ -240,11 +236,6 @@ impl SetStorage {
     /// Indexed from scratch rather than cloning `indices`, which `HashTable`
     /// would reproduce at the source's bucket count — see [`Self::from_entry_vec`].
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
-        // Return empty storage directly instead of rebuilding it from an empty snapshot.
-        if self.is_empty() {
-            return Self::new();
-        }
-
         Self::from_entry_vec(self.clone_entries(heap))
     }
 }

@@ -1240,18 +1240,18 @@ impl<'h> HeapRead<'h, Dict> {
         let len = self.get(vm.heap).len();
         vm.heap.tracker.check_allocation(len.saturating_mul(2 * VALUE_SIZE))?;
 
-        // An empty source can still retain tombstones after individual removals.
-        if len == 0 {
-            return Ok(Vec::new());
-        }
-
         let mut pairs = Vec::with_capacity(len);
         // One borrow for the whole snapshot, so no user code can run under it.
-        let polled = self.get(vm.heap).iter().enumerate().try_for_each(|(i, (key, value))| {
-            vm.heap.tracker.check_time_every(i)?;
-            pairs.push((key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)));
-            Ok::<_, RunError>(())
-        });
+        let polled = self
+            .get(vm.heap)
+            .table
+            .copy_iter()
+            .enumerate()
+            .try_for_each(|(i, entry)| {
+                vm.heap.tracker.check_time_every(i)?;
+                pairs.push((entry.key.clone_with_heap(vm.heap), entry.value.clone_with_heap(vm.heap)));
+                Ok::<_, RunError>(())
+            });
         match polled {
             Ok(()) => Ok(pairs),
             Err(err) => {
@@ -1716,15 +1716,12 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    // Removing every item can leave tombstones; an empty copy need not scan them.
-    let pairs: Vec<(Value, Value)> = if dict.get(vm.heap).is_empty() {
-        Vec::new()
-    } else {
-        dict.get(vm.heap)
-            .iter()
-            .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
-            .collect()
-    };
+    let pairs: Vec<(Value, Value)> = dict
+        .get(vm.heap)
+        .table
+        .copy_iter()
+        .map(|entry| (entry.key.clone_with_heap(vm), entry.value.clone_with_heap(vm)))
+        .collect();
 
     // `copy()` preserves the subclass: a defaultdict keeps its factory, a
     // Counter stays a Counter. `cloned_kind` clones that factory reference, so

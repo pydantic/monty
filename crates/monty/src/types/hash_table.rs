@@ -177,6 +177,16 @@ impl<E: TableEntry> PyHashTable<E> {
         table
     }
 
+    /// Live entries for a copy or snapshot, in insertion order.
+    /// An empty table can retain tombstones; omit those slots from the scan.
+    pub(crate) fn copy_iter(&self) -> Live<'_, E> {
+        let entries = if self.is_empty() { &[] } else { self.entries.as_slice() };
+        Live {
+            slots: entries.iter(),
+            remaining: self.len(),
+        }
+    }
+
     /// The live entries, in insertion order.
     ///
     /// The borrow is what makes this safe: nothing can mutate the table while
