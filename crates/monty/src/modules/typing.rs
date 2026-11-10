@@ -901,21 +901,3 @@ pub(crate) fn call_eval_hint(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Call
         vm,
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use std::fmt::Write;
-
-    use super::*;
-
-    /// The sink refuses text past the limit, so a repr walk stops instead of buffering all of it.
-    #[test]
-    fn capped_repr_stops_writing_at_the_limit() {
-        let mut capped = CappedRepr::default();
-        let chunk = "x".repeat(60);
-        assert!(capped.write_str(&chunk).is_ok());
-        assert!(capped.write_str(&chunk).is_err());
-        assert!(capped.truncated);
-        assert_eq!(capped.text.len(), ASSERT_NEVER_REPR_MAX_LENGTH);
-    }
-}

@@ -19,6 +19,9 @@ Annotations are compiled and evaluated lazily, as in CPython 3.14 (see [Annotati
 
 `TYPE_CHECKING` is `False`, as in CPython at runtime.
 
+- Passing both positional-only arguments of `assert_type` by keyword names only the first:
+    `got some positional-only arguments passed as keyword arguments: 'val'` where CPython reports `'val, typ'`.
+
 ## Not implemented
 
 - `get_args`, `get_origin`,
