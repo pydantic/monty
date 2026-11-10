@@ -1537,16 +1537,7 @@ async fn deadline_kills_hung_worker_after_request_timeout() {
     let mut config = config();
     config.request_timeout = Some(Duration::from_secs(1));
     let pool = Pool::new(config).await.unwrap();
-    // The checkout's Configure turn shares the pool-wide deadline, and a cold
-    // child on a fully loaded test machine has (rarely) missed it — retry so
-    // the setup is independent of the deadline actually under test below.
-    let mut session = loop {
-        match pool.checkout(&ReplConfig::default()).await {
-            Ok(session) => break session,
-            Err(PoolError::Timeout { .. }) => {}
-            Err(err) => panic!("checkout failed: {err:?}"),
-        }
-    };
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let err = session
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
         .await
@@ -1570,6 +1561,11 @@ async fn deadline_kills_hung_worker_after_request_timeout() {
 #[tokio::test]
 async fn child_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
+    // a worker's start-up counts against its first feed's backstop, so warm it
+    // up first: the limited feed below must end by the sandbox's own limit
+    let mut warm_up = pool.checkout(&ReplConfig::default()).await.unwrap();
+    warm_up.feed("1", vec![], vec![], false, &mut no_print).await.unwrap();
+    warm_up.finish().await.unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
             limits: Some(ResourceLimits::default().max_feed_duration(Duration::from_millis(100))),
@@ -1650,9 +1646,8 @@ async fn unrecognised_exit_code_stays_an_opaque_death() {
 #[tokio::test]
 async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let dir = tempfile::tempdir().unwrap();
-    // the two frames the stand-in replays, in order: `Ok` answers the
-    // `Configure` that establishes the session, then the forged dump
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    // the frame the stand-in replays: a dump it forged
+    let mut replies = Vec::new();
     replies.extend(framed(&child_event(pb::child_event::Kind::Shutdown(
         pb::ShutdownDump {
             dump: Some(b"a dump the child minted itself".to_vec().into()),
@@ -1661,18 +1656,15 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
 
-    // both frames are written up front and the process stays alive; the parent
-    // reads them in turn as it sends `Configure` and then the raw request
+    // the frame is written up front and the process stays alive; the parent
+    // reads it as the reply to the `Configure` carrying the raw request
     let fake = write_fake_monty(
         dir.path(),
         &format!("#!/bin/sh\ncat '{}'\nsleep 5\n", replies_path.display()),
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1701,8 +1693,7 @@ async fn a_subprocess_shutdown_dump_is_refused_on_the_raw_path() {
 #[tokio::test]
 async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     let dir = tempfile::tempdir().unwrap();
-    // `Ok` answers the establishing `Configure`, then the kindless frame
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    let mut replies = Vec::new();
     replies.extend(framed(&pb::ChildEvent::default()));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
@@ -1713,10 +1704,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1745,8 +1733,7 @@ async fn an_event_with_no_kind_is_refused_on_the_raw_path() {
 #[tokio::test]
 async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     let dir = tempfile::tempdir().unwrap();
-    // `Ok` answers the establishing `Configure`, then the fatal frame
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    let mut replies = Vec::new();
     replies.extend(framed(&child_event(pb::child_event::Kind::FatalError(
         pb::FatalError {
             message: "the child is done".to_owned(),
@@ -1761,10 +1748,7 @@ async fn a_fatal_error_on_the_raw_path_discards_the_worker() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let request = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
@@ -1985,6 +1969,44 @@ async fn os_policy_are_answered_in_the_worker() {
         ])
     );
     session.finish().await.unwrap();
+}
+
+/// A worker refusing the session's settings fails the first request, which
+/// never runs, with a configuration error, and the session ends.
+#[tokio::test]
+async fn a_refused_configure_is_a_configuration_error() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            os_policy: OsPolicy {
+                datetime: DateTimeSource::Fixed {
+                    unix_seconds: 0,
+                    microsecond: 1_000_000,
+                },
+                ..OsPolicy::default()
+            },
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = session
+        .feed("print('ran')", vec![], vec![], false, &mut |_, text| {
+            panic!("the refused request ran: {text}")
+        })
+        .await
+        .expect_err("the worker refuses the session");
+    let PoolError::Configuration(message) = err else {
+        panic!("got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "session refused: invalid os_policy: invalid value for FixedDateTime.microsecond: 1000000 is not below 1000000"
+    );
+    let err = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the session is over");
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
 }
 
 /// A checkout pinned to a fixed clock at `unix_seconds`.
@@ -3062,9 +3084,9 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             position: Some(position()),
         }))
     };
-    // `Ok` answers Configure, then the honest suspension and the rewound one.
-    // Nothing answers the third request: that is the turn the backstop must end.
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    // The honest suspension and the rewound one. Nothing answers the third
+    // request: that is the turn the backstop must end.
+    let mut replies = Vec::new();
     replies.extend(framed(&suspension(60_000_000)));
     replies.extend(framed(&suspension(0)));
     let replies_path = dir.path().join("replies.bin");
@@ -3086,7 +3108,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("checkout");
 
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -3124,7 +3146,7 @@ async fn a_rewound_feed_clock_cannot_loosen_the_feed_backstop() {
 #[tokio::test]
 async fn a_suspension_without_a_position_reads_as_unknown() {
     let dir = tempfile::tempdir().unwrap();
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    let mut replies = Vec::new();
     replies.extend(framed(&child_event(pb::child_event::Kind::NameLookup(
         pb::NameLookup {
             name: "x".to_owned(),
@@ -3140,10 +3162,7 @@ async fn a_suspension_without_a_position_reads_as_unknown() {
     );
 
     let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
-    let mut checkout = pool
-        .checkout(&ReplConfig::default())
-        .await
-        .expect("the stand-in answers Configure with Ok");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let event = checkout.feed("x", vec![], vec![], false, &mut no_print).await.unwrap();
     let TurnEvent::NameLookup { name, position, .. } = event else {
         panic!("expected a name lookup, got {event:?}");
@@ -3164,9 +3183,9 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     let dir = tempfile::tempdir().unwrap();
     let budget = Duration::from_millis(300);
     let grace = Duration::from_millis(100);
-    // `Ok` answers Configure; the suspension ends the first feed having spent
-    // the whole budget. The second feed goes unanswered.
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    // The suspension ends the first feed having spent the whole budget. The
+    // second feed goes unanswered.
+    let mut replies = Vec::new();
     replies.extend(framed(&pb::ChildEvent {
         feed_execution_micros: u64::try_from(budget.as_micros()).unwrap(),
         ..child_event(pb::child_event::Kind::NameLookup(pb::NameLookup {
@@ -3177,22 +3196,36 @@ async fn a_raw_feed_restarts_the_parent_feed_clock() {
     }));
     let replies_path = dir.path().join("replies.bin");
     fs::write(&replies_path, &replies).unwrap();
+    // the first feed's backstop also covers the stand-in's start-up, so the
+    // checkout waits for it to be up
+    let started = dir.path().join("started");
     let fake = write_fake_monty(
         dir.path(),
-        &format!("#!/bin/sh\ncat '{}'\nsleep 30\n", replies_path.display()),
+        &format!(
+            "#!/bin/sh\ncat '{}'\ntouch '{}'\nsleep 30\n",
+            replies_path.display(),
+            started.display()
+        ),
     );
 
     let mut config = PoolConfig::subprocess(&fake);
     config.feed_duration_limit_grace = Some(grace);
     config.request_timeout = None;
     let pool = Pool::new(config).await.unwrap();
+    timeout(Duration::from_secs(10), async {
+        while !started.exists() {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the stand-in did not start");
     let mut checkout = pool
         .checkout(&ReplConfig {
             limits: Some(ResourceLimits::default().max_feed_duration(budget)),
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("checkout");
 
     let feed = pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
@@ -3224,9 +3257,9 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
     let dir = tempfile::tempdir().unwrap();
     let budget = Duration::from_millis(300);
     let grace = Duration::from_millis(100);
-    // `Ok` answers Configure, then the Load, claiming an hour's feed budget.
-    // The feed after it goes unanswered.
-    let mut replies = framed(&child_event(pb::child_event::Kind::Ok(pb::Ok {})));
+    // The Load's reply claims an hour's feed budget. The feed after it goes
+    // unanswered.
+    let mut replies = Vec::new();
     replies.extend(framed(&pb::ChildEvent {
         max_feed_duration_micros: Some(3_600_000_000),
         ..child_event(pb::child_event::Kind::Ok(pb::Ok {}))
@@ -3248,7 +3281,7 @@ async fn a_load_reply_cannot_loosen_the_feed_backstop() {
             ..ReplConfig::default()
         })
         .await
-        .expect("the stand-in answers Configure with Ok");
+        .expect("checkout");
     let (event, _) = checkout.restore(vec![0], vec![], &mut no_print).await.unwrap();
     assert!(event.is_none());
 
@@ -3549,7 +3582,7 @@ async fn cpu_clock_is_rejected_off_linux() {
     };
     assert_eq!(
         error.to_string(),
-        "failed to spawn monty worker: CPU execution clock is only supported for subprocess workers on Linux"
+        "CPU execution clock is only supported for subprocess workers on Linux"
     );
 }
 

@@ -698,6 +698,13 @@ fn expect_error_message(event: pb::child_event::Kind) -> String {
     error.exception.unwrap().message.unwrap()
 }
 
+fn expect_refusal(event: pb::child_event::Kind) -> String {
+    let pb::child_event::Kind::SessionRefused(refused) = event else {
+        panic!("expected a SessionRefused event, got {event:?}");
+    };
+    refused.message
+}
+
 fn expect_typing_error(event: pb::child_event::Kind) -> String {
     let pb::child_event::Kind::TypingError(typing) = event else {
         panic!("expected a TypingError event, got {event:?}");
@@ -1121,10 +1128,7 @@ fn unknown_execution_clock_is_rejected_before_configuration() {
         ..Default::default()
     }));
     let (bytes, _) = dispatch_frame(&mut child, &configure);
-    assert_eq!(
-        expect_error_message(split_turn(&bytes).1),
-        "protocol violation: invalid execution_clock"
-    );
+    assert_eq!(expect_refusal(split_turn(&bytes).1), "invalid execution_clock");
     create_repl(&mut child);
     let (_, event) = feed(&mut child, "2 + 2");
     assert!(matches!(event, pb::child_event::Kind::Complete(_)));
@@ -1149,8 +1153,8 @@ fn configuration_acknowledges_the_selected_execution_clock() {
             assert_eq!(event.execution_clock, Some(clock as i32));
         } else {
             assert_eq!(
-                expect_error_message(event.kind.unwrap()),
-                "protocol violation: CPU execution clock is unavailable"
+                expect_refusal(event.kind.unwrap()),
+                "CPU execution clock is unavailable"
             );
         }
     }

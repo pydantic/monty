@@ -14,14 +14,14 @@ use std::{
     error::Error,
     fmt::Display,
     sync::{Arc, Once, OnceLock},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use bytes::Bytes;
 use h2::Reason;
-use http::uri::PathAndQuery;
+use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
-    FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
+    FrameError, MAX_FRAME_LEN, OpeningRequest, encode_to_capped_vec,
     grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
@@ -39,10 +39,12 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{
     Code, Extensions, Request, Status, Streaming,
+    body::Body,
     client::Grpc,
     metadata::{MetadataKey, MetadataMap, MetadataValue},
     transport::{Channel, ClientTlsConfig, Endpoint},
 };
+use tower::ServiceExt;
 
 use crate::{
     PoolError, RemoteDisconnect,
@@ -93,11 +95,11 @@ impl Remote {
         keep_alive: Option<Duration>,
         max_processes: usize,
     ) -> Result<Self, PoolError> {
-        let spawn_error = |err: &dyn Display| PoolError::Spawn(format!("{url}: {err}"));
+        let connect_error = |err: &dyn Display| connection_failure(url, err.to_string());
         let mut endpoint = Endpoint::from_shared(dial_url(url)?)
-            .map_err(|err| spawn_error(&err))?
+            .map_err(|err| connect_error(&err))?
             .user_agent(USER_AGENT_VALUE)
-            .map_err(|err| spawn_error(&err))?
+            .map_err(|err| connect_error(&err))?
             .connect_timeout(dial_timeout)
             .tcp_nodelay(true)
             // fixed windows, the connection's well above a stream's: adaptive
@@ -119,10 +121,10 @@ impl Remote {
             // The server certificate is checked against the OS trust store:
             // macOS and Windows verify it themselves, revocation included; Linux
             // reads the distro CA bundle now, and a host with none fails here.
-            let verifier = Verifier::new(install_crypto_provider()).map_err(|err| spawn_error(&err))?;
+            let verifier = Verifier::new(install_crypto_provider()).map_err(|err| connect_error(&err))?;
             endpoint = endpoint
                 .tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))
-                .map_err(|err| spawn_error(&err))?;
+                .map_err(|err| connect_error(&err))?;
         }
         Ok(Self {
             url: url.to_owned(),
@@ -139,7 +141,7 @@ impl Remote {
     /// admitted the stream — sent its response headers — so a refusal
     /// (capacity, authentication, no worker) surfaces here as a
     /// [`PoolError::Refused`] carrying the server's status, and a dial that
-    /// fails, times out or reaches no gRPC server as a [`PoolError::Spawn`],
+    /// fails, times out or reaches no gRPC server as a [`PoolError::Connect`],
     /// never as a worker that fails its first turn.
     pub(crate) async fn open(
         &self,
@@ -148,19 +150,23 @@ impl Remote {
     ) -> Result<RemoteWorker, PoolError> {
         let url = &self.url;
         let mut map = MetadataMap::new();
-        // a malformed name/value is a caller bug: fail the dial
         for (name, value) in metadata {
             let key = MetadataKey::from_bytes(name.as_bytes())
-                .map_err(|err| PoolError::Spawn(format!("{url}: metadata entry {name:?}: {err}")))?;
+                .map_err(|err| PoolError::Configuration(format!("{url}: metadata entry {name:?}: {err}")))?;
             let value = MetadataValue::try_from(value.as_str())
-                .map_err(|err| PoolError::Spawn(format!("{url}: metadata entry {name:?} value: {err}")))?;
+                .map_err(|err| PoolError::Configuration(format!("{url}: metadata entry {name:?} value: {err}")))?;
             // never indexed: a token must not sit in the connection's HPACK
             // table, which every stream on it shares
             let mut value = value;
             value.set_sensitive(true);
             map.insert(key, value);
         }
-        let mut grpc = Grpc::new(self.channel.clone())
+        let channel = self.channel.clone().map_response(|mut response: Response<Body>| {
+            let status = response.status();
+            response.extensions_mut().insert(status);
+            response
+        });
+        let mut grpc = Grpc::new(channel)
             .max_decoding_message_size(message_limit(max_decode_bytes))
             .max_encoding_message_size(MAX_FRAME_LEN as usize);
         // an unrepresentable timeout (`Duration::MAX`) leaves the dial unbounded
@@ -183,10 +189,17 @@ impl Remote {
                 // so a plain web server's error page would only fail later, mid-
                 // session, as an undecodable body: refuse it here as a misconfiguration
                 Ok(Ok(response)) if !is_grpc_response(response.metadata()) => {
-                    return Err(PoolError::Spawn(format!(
-                        "{url}: not a gRPC server, the response's content-type is {}",
-                        describe_content_type(response.metadata())
-                    )));
+                    return Err(connection_failure(
+                        url,
+                        format!(
+                            "not a gRPC server: HTTP {}, the response's content-type is {}",
+                            response
+                                .extensions()
+                                .get::<StatusCode>()
+                                .map_or_else(|| "status unknown".to_owned(), ToString::to_string),
+                            describe_content_type(response.metadata())
+                        ),
+                    ));
                 }
                 Ok(Ok(response)) => break (requests, response),
                 // the server closed the connection under the stream before
@@ -200,17 +213,24 @@ impl Remote {
                 Ok(Err(status)) if Error::source(&status).is_none() && refuses_admission(status.code()) => {
                     return Err(PoolError::Refused {
                         url: url.to_owned(),
-                        refusal: Box::new(RemoteDisconnect::from_status(&status)),
+                        refusal: Box::new(RemoteDisconnect::from_refusal(&status)),
                     });
                 }
                 Ok(Err(status)) => {
-                    return Err(PoolError::Spawn(format!("{url}: {}", describe_status(&status))));
+                    let details = RemoteDisconnect::from_connect_status(url, &status);
+                    return Err(PoolError::Connect {
+                        url: url.to_owned(),
+                        details: Box::new(details),
+                    });
                 }
                 Err(_) => {
-                    return Err(PoolError::Spawn(format!(
-                        "{url}: connect timed out after {:?}",
-                        self.dial_timeout
-                    )));
+                    return Err(connection_failure(
+                        url,
+                        format!(
+                            "the server did not accept the session within {:?} (request_timeout)",
+                            self.dial_timeout
+                        ),
+                    ));
                 }
             }
         };
@@ -324,8 +344,15 @@ impl RemoteWorker {
     /// what it ended with — a final event such as a deadline's exception, then
     /// its status — is on the read side, so the turn goes on to [`Self::recv`]
     /// and reports the server's last word rather than a bare send failure.
-    pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<usize, FrameError> {
-        let body = encode_to_capped_vec(request)?;
+    pub(crate) async fn send(
+        &mut self,
+        request: &pb::ParentRequest,
+        opening: Option<&OpeningRequest<'_>>,
+    ) -> Result<usize, FrameError> {
+        let body = match opening {
+            Some(opening) => encode_to_capped_vec(opening)?,
+            None => encode_to_capped_vec(request)?,
+        };
         let len = body.len();
         match &self.requests {
             Some(requests) => {
@@ -540,6 +567,7 @@ async fn read_events(
                         status_message: None,
                         cause: None,
                         transport_error: None,
+                        retry_after: None,
                     });
                     break Err(FrameError::Truncated);
                 }
@@ -640,6 +668,29 @@ fn pong_body() -> Bytes {
 }
 
 impl RemoteDisconnect {
+    /// Adds a TLS hint to an HTTP/2 framing failure on a plaintext URL.
+    fn from_connect_status(url: &str, status: &Status) -> Self {
+        let mut details = Self::from_status(status);
+        if url
+            .split_once("://")
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("ws"))
+            && let Some(error) = &mut details.transport_error
+        {
+            let mut source = Error::source(status);
+            while let Some(cause) = source {
+                if cause
+                    .downcast_ref::<h2::Error>()
+                    .is_some_and(|err| err.reason() == Some(Reason::FRAME_SIZE_ERROR))
+                {
+                    error.push_str("; the server may require https:// instead of http://");
+                    break;
+                }
+                source = cause.source();
+            }
+        }
+        details
+    }
+
     /// Classifies a status that ended the stream: one the server sent carries
     /// its code, message and cause; one tonic synthesised for a transport
     /// failure (it has a source error) is recorded as that failure instead.
@@ -652,7 +703,21 @@ impl RemoteDisconnect {
                 status_message: Some(status.message().to_owned()),
                 cause: Cause::of(status),
                 transport_error: None,
+                retry_after: None,
             }
+        }
+    }
+
+    /// Classifies an admission refusal, keeping the server's `Retry-After`:
+    /// retry hints mean nothing once a session exists.
+    fn from_refusal(status: &Status) -> Self {
+        Self {
+            retry_after: status
+                .metadata()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| retry_after(value, SystemTime::now())),
+            ..Self::from_status(status)
         }
     }
 
@@ -663,7 +728,34 @@ impl RemoteDisconnect {
             status_message: None,
             cause: None,
             transport_error: Some(message.into()),
+            retry_after: None,
         }
+    }
+}
+
+/// Parses an HTTP delay or date without retaining invalid server metadata,
+/// capped at [`MAX_RETRY_AFTER`] so a host timer cannot overflow.
+fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let delay = if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        // all digits but too long for a `u64` is still a valid, huge delay
+        Duration::from_secs(value.parse().unwrap_or(u64::MAX))
+    } else {
+        httpdate::parse_http_date(value)
+            .ok()?
+            .duration_since(now)
+            .unwrap_or_default()
+    };
+    Some(delay.min(MAX_RETRY_AFTER))
+}
+
+/// The longest `Retry-After` delay reported; a server asking for more gets this.
+const MAX_RETRY_AFTER: Duration = Duration::from_hours(1);
+
+/// Records a connection failure for which the server sent no gRPC status.
+fn connection_failure(url: &str, message: impl Into<String>) -> PoolError {
+    PoolError::Connect {
+        url: url.to_owned(),
+        details: Box::new(RemoteDisconnect::failure(message)),
     }
 }
 
@@ -737,21 +829,23 @@ fn code_name(code: Code) -> &'static str {
 fn dial_url(url: &str) -> Result<String, PoolError> {
     let (scheme, rest) = url
         .split_once("://")
-        .ok_or_else(|| PoolError::Spawn(format!("{url}: invalid URI")))?;
+        .ok_or_else(|| connection_failure(url, "invalid URI"))?;
     let normalised = if scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("ws") {
         "http"
     } else if scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("wss") {
         "https"
     } else {
-        return Err(PoolError::Spawn(format!(
-            "{url}: unsupported URL scheme {scheme:?}, expected http or https"
-        )));
+        return Err(connection_failure(
+            url,
+            format!("unsupported URL scheme {scheme:?}, expected http or https"),
+        ));
     };
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     if !matches!(&rest[authority_end..], "" | "/") {
-        return Err(PoolError::Spawn(format!(
-            "{url}: a URL path, query or fragment is not supported; the session path is fixed"
-        )));
+        return Err(connection_failure(
+            url,
+            "a URL path, query or fragment is not supported; use only the scheme and host, with an optional port",
+        ));
     }
     Ok(format!("{normalised}://{rest}"))
 }

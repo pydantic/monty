@@ -76,7 +76,8 @@ use crate::{
     build::{extract_metadata, extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     callback_context::{self, CallbackContext},
     exceptions::{
-        MontyCrashedError, MontyDisconnectError, MontyError, MontyRefusedError, MontyShutdown, MontyTypingError,
+        MontyConfigurationError, MontyConnectError, MontyCrashedError, MontyDisconnectError, MontyError,
+        MontyRefusedError, MontyShutdown, MontyTypingError,
     },
     external::{
         CallResult, ExternalLookup, HostModules, HostNames, is_coroutine, is_intercepted_os_call, resolve_object_attr,
@@ -654,6 +655,7 @@ impl PyAsyncMonty {
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
+            entered: AtomicBool::new(false),
         })
     }
 }
@@ -849,6 +851,7 @@ impl PyAsyncMontyRemote {
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
+            entered: AtomicBool::new(false),
         })
     }
 }
@@ -876,6 +879,8 @@ pub struct PyAsyncMontySession {
     /// The checkout's session ID, copied after `__aenter__` and each load so the
     /// getter never waits on the checkout lock a running turn holds.
     session_id: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Set once `__aenter__` has checked a worker out; `get_session_id` raises before then.
+    entered: AtomicBool,
 }
 
 #[pymethods]
@@ -900,14 +905,13 @@ impl PyAsyncMontySession {
         let options = CheckoutOptions::default()
             .with_telemetry(capture_telemetry_context(py))
             .with_metadata(metadata);
-        let session_id = Arc::clone(&this.session_id);
         future_into_py(py, async move {
             let checkout = pool
                 .checkout_with(&repl_config, options)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
-            *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
             *slot.lock().await = Some(checkout);
+            slf.get().entered.store(true, Ordering::Relaxed);
             Ok(slf)
         })
     }
@@ -1116,21 +1120,52 @@ impl PyAsyncMontySession {
         self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
 
-    /// The opaque ID a storing `monty-server` minted for this session, which
-    /// `load_session` / `load_snapshot` resume from any process. `None` for
-    /// local workers, ephemeral sessions and servers that store nothing.
+    /// Resolves to the opaque ID a storing `monty-server` minted for this
+    /// session, opening the session first if no request has yet. Waits for a
+    /// running turn; after exit, resolves to the last ID seen.
+    fn get_session_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        if !self.entered.load(Ordering::Relaxed) {
+            return Err(PyRuntimeError::new_err(
+                "get_session_id() needs an entered session: use `async with pool.checkout() as session`",
+            ));
+        }
+        let checkout = Arc::clone(&self.checkout);
+        let cache = Arc::clone(&self.session_id);
+        future_into_py(py, async move {
+            if let Some(checkout) = checkout.lock().await.as_mut() {
+                checkout
+                    .open()
+                    .await
+                    .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+                *lock(&cache) = checkout.session_id().map(<[u8]>::to_vec);
+            }
+            Ok(Python::attach(|py| {
+                lock(&cache).as_deref().map(|id| PyBytes::new(py, id).unbind())
+            }))
+        })
+    }
+
+    /// Deprecated: `None` until the session's first request opens it, so it
+    /// races that request. Use `get_session_id()`, which waits.
     ///
     /// Reads the checkout when its lock is free (so an auto-resume is seen),
     /// else the cached copy: blocking here could deadlock as `worker_pid` notes.
-    #[getter]
-    fn session_id<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+    // not `fn session_id`: pyo3 names that getter's wrapper `get_session_id`
+    #[getter(session_id)]
+    fn deprecated_session_id<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
+        PyErr::warn(
+            py,
+            &py.get_type::<PyDeprecationWarning>(),
+            c"session_id is deprecated, use `await session.get_session_id()`",
+            1,
+        )?;
         let mut cache = lock(&self.session_id);
         if let Ok(checkout) = self.checkout.try_lock()
             && let Some(checkout) = checkout.as_ref()
         {
             *cache = checkout.session_id().map(<[u8]>::to_vec);
         }
-        cache.as_deref().map(|id| PyBytes::new(py, id))
+        Ok(cache.as_deref().map(|id| PyBytes::new(py, id)))
     }
 }
 
@@ -2363,6 +2398,8 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
             MontyDisconnectError::new_err(py, message, remote.map(|details| *details))
         }
         PoolError::Refused { refusal, .. } => MontyRefusedError::new_err(py, message, *refusal),
+        PoolError::Connect { details, .. } => MontyConnectError::new_err(py, message, *details),
+        PoolError::Configuration(_) => MontyConfigurationError::new_err(py, message),
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),

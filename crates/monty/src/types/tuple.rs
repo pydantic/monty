@@ -128,6 +128,8 @@ impl Tuple {
                 // Use empty tuple singleton
                 Ok(vm.heap.get_empty_tuple())
             }
+            // Named tuples still need conversion to a plain tuple.
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::Tuple(_)) => Ok(v),
             Some(v) => {
                 let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap))

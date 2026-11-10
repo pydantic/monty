@@ -7,7 +7,7 @@ use std::{env, future::ready, path::PathBuf, sync::OnceLock, thread, time::Durat
 #[path = "binary/build.rs"]
 mod build;
 
-use monty_pool::{Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{CrashCause, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::pb;
 use monty_types::{ExecutionClock, IMPORT_STUBS_CALL_ID, ModuleFile, MontyObject, PrintStream, ResourceLimits};
 
@@ -62,12 +62,12 @@ async fn legacy_workers_accept_wall_mode_and_refuse_cpu_mode_before_execution() 
                 ..limits(100)
             })
             .await;
+        // the session opens with the first feed, so that is where a worker
+        // ignoring the configured clock is caught
+        let mut child = result.unwrap();
+        let result = child.feed("complete", vec![], vec![], false, &mut no_print).await;
         if clock == ExecutionClock::Wall {
-            let mut child = result.unwrap();
-            let event = child
-                .feed("complete", vec![], vec![], false, &mut no_print)
-                .await
-                .unwrap();
+            let event = result.unwrap();
             assert!(matches!(event, TurnEvent::Complete(ref result) if *result == MontyObject::int(42)));
             child.finish().await.unwrap();
         } else {
@@ -233,4 +233,21 @@ async fn raw_typing_errors_end_the_feed() {
         child.finish().await.unwrap();
         pool.close().await;
     }
+}
+
+/// A worker dying on its first request is reported as the crash it announced:
+/// the `FatalError` carries no clock, so it is not mistaken for a worker that
+/// ignored the configured one.
+#[tokio::test]
+async fn a_fatal_error_on_the_first_request_is_a_crash() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut child = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let err = child
+        .feed("fatal", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, PoolError::Crashed { cause: CrashCause::Announced { reason }, .. } if reason == "synthetic fatal error"),
+        "{err:?}"
+    );
 }

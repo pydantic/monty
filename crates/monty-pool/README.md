@@ -23,7 +23,14 @@ fails to spawn is retried with a doubling backoff. Remote pools never refill.
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
-state cannot be trusted back into the pool.
+state cannot be trusted back into the pool. The session's `Configure` carries its first `feed` /
+`restore` (`Configure.first`) rather than taking a turn of its own, so a worker refusing it (an
+invalid `os_policy`, a clock it cannot serve) replies `SessionRefused`: that request never runs,
+fails with `PoolError::Configuration`, and ends the session; a checkout that is finished without a
+request never configures its worker.
+`Checkout::open`, and a first `dump` or non-empty `install_dependencies`, send it alone and wait for
+the reply. The first request's duration backstop also covers a freshly spawned worker's start-up:
+the process is spawned before the checkout, but it may still be loading when the request goes out.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
@@ -239,7 +246,8 @@ pool health
 `monty.pool.session.duration` uses `ok` for a clean finish, `error` when the worker is lost, and `abandoned` when a
 live checkout is dropped.
 `monty.pool.session.resumed` counts auto-resume attempts: `ok`, or why the reload failed (`exhausted`,
-`disconnected`, `refused`, `shutdown`, `mismatch`, `timeout`).
+`disconnected`, `refused`, `shutdown`, `mismatch`, `configuration`, `timeout`, `cpu_limit`, `error`).
+`configuration` means the new server is incompatible with the client settings.
 
 Two differences from the spans above. Metrics cover **every** checkout, not only the ones a
 host gave a parent context — an aggregate over traced sessions alone would be misleading —
@@ -307,7 +315,15 @@ A server refusing a stream before admitting it — at capacity, or rejecting the
 (`unauthenticated`) or for a valid credential that does not allow the requested project or profile
 (`permission_denied`) — fails the checkout with
 `PoolError::Refused`, whose `refusal` keeps that status structured (code, message and `RemoteCause`); a dial that
-fails or times out is `PoolError::Spawn`.
+fails or times out is `PoolError::Connect`, with a status code when the server sent one.
+Disconnect messages include the server's status, `RemoteCause` and message, or the transport error.
+Refusal messages include the server's status, `RemoteCause` and message.
+Refusal details include `retry_after`, parsed from `Retry-After` delay-seconds or an HTTP date and capped at one hour.
+`retryable()` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not credential errors.
+No automatic retry is performed.
+An incompatible CPU-mode server configuration returns `PoolError::Configuration`, naming `request_timeout`.
+Malformed request metadata names or values also return `PoolError::Configuration` before any connection attempt,
+as does `Pool::new` for an invalid pool size or an unusable local CPU-clock setting.
 A status whose cause is `out_of_memory` is reported as the `MemoryError` a local out-of-memory kill raises, and one
 whose cause is `server_shutdown` as `PoolError::Shutdown` with nothing to load.
 The status message is unverified text, and a disconnect does not establish whether the request ran.
@@ -317,7 +333,8 @@ The interrupted request did not run, but restoring a suspended dump repeats its 
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
 
-A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`, set once the
+session opens (call `Checkout::open` to open it before any request);
 `ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
 `ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
 subprocess workers ignore it too.
