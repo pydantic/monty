@@ -2576,7 +2576,14 @@ async fn streamed_calls_during_a_reload_end_the_session() {
                 calls: vec![call].into(),
             }),
         );
-        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        // the checkout this test expects has already closed the stream on the
+        // streamed calls, so a failed send is the pass case
+        let ack = pb::WorkerEvent {
+            kind: Some(ok_event()),
+            session_id: Some(b"sess-2".to_vec().into()),
+            ..Default::default()
+        };
+        let _ = socket.send(encode_to_capped_vec(&ack).expect("encode event").into());
         // a checkout that took the calls re-sends the feed; answer it so the test fails rather than hangs
         if try_read_request(&mut socket).is_some() {
             send_complete(&mut socket);
