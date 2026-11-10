@@ -1752,6 +1752,62 @@ impl<'h> VM<'h> {
     // Variable Operations
     // ========================================================================
 
+    /// Replaces native subscript operands in place; fallback retains both owned operands.
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "keep native stack replacement in the dispatch loop")]
+    fn try_native_stack_subscript(&mut self) -> bool {
+        let len = self.stack.len();
+        let object = &self.stack[len - 2];
+        let key = &self.stack[len - 1];
+        let value = self.native_subscript_view(object, key);
+        let Some(value) = value else {
+            return false;
+        };
+        if let Value::Int(number) = value {
+            let number = *number;
+            let key = self.pop();
+            let object = mem::replace(&mut self.stack[len - 2], Value::Int(number));
+            object.drop_with(self);
+            key.drop_with(self);
+            return true;
+        }
+        let value = value.clone_with_heap(self.heap);
+        let key = self.pop();
+        let object = mem::replace(&mut self.stack[len - 2], value);
+        object.drop_with(self);
+        key.drop_with(self);
+        true
+    }
+
+    /// Reads native containers under one immutable VM borrow; no guest code can run.
+    #[inline(always)]
+    #[expect(
+        clippy::inline_always,
+        reason = "outlining the borrowed view regressed list access benchmarks"
+    )]
+    fn native_subscript_view<'a>(&'a self, object: &Value, key: &Value) -> Option<&'a Value> {
+        let Value::Ref(id) = object else {
+            return None;
+        };
+        let items = match self.heap.get(*id) {
+            HeapData::Dict(dict) => return dict.native_subscript(key, self),
+            HeapData::List(list) => list.as_slice(),
+            HeapData::Tuple(tuple) => tuple.as_slice(),
+            _ => return None,
+        };
+        let index = match key {
+            Value::Int(index) => *index,
+            Value::Bool(index) => i64::from(*index),
+            _ => return None,
+        };
+        let index = if index < 0 {
+            usize::try_from(index + i64::try_from(items.len()).ok()?).ok()?
+        } else {
+            usize::try_from(index).ok()?
+        };
+        items.get(index)
+    }
+
     /// Loads a local variable and pushes it onto the stack.
     ///
     /// Raises `UnboundLocalError` if the slot holds `Undefined` — every reachable

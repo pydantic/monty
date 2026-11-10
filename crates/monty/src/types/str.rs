@@ -72,6 +72,17 @@ impl Str {
         &self.0
     }
 
+    /// Shares the cached hash between protocol dispatch and native immutable lookup.
+    pub(crate) fn hash_value(&self) -> HashValue {
+        if let Some(hash) = self.1.get() {
+            hash
+        } else {
+            let hash = hash_python_str(self.as_str());
+            self.1.set(Some(hash));
+            hash
+        }
+    }
+
     /// Whether every character is ASCII, scanning the text only on the first call.
     pub fn is_ascii(&self) -> bool {
         if let Some(ascii) = self.2.get() {
@@ -494,16 +505,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Str> {
     }
 
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let s = self.get(vm.heap);
-        if let Some(cached) = s.1.get() {
-            return Ok(Some(cached));
-        }
-        // Delegates to the canonical helper used by both heap and intern paths;
-        // an interned `"foo"` and a heap `"foo"` must hash identically for dict
-        // lookup to work.
-        let hash = hash_python_str(s.as_str());
-        s.1.set(Some(hash));
-        Ok(Some(hash))
+        Ok(Some(self.get(vm.heap).hash_value()))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
