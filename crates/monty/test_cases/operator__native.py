@@ -16,7 +16,7 @@ for name in (
     'attrgetter',
     'methodcaller',
 ):
-    assert getattr(operator, name) is getattr(_operator, name), name
+    assert getattr(operator, name) is getattr(_operator, name)
 
 assert operator.add is _operator.add
 assert operator.itemgetter is _operator.itemgetter
