@@ -12,7 +12,7 @@ use strum::{Display, EnumString, FromRepr, IntoStaticStr, VariantNames};
 /// Uses strum derives for automatic `Display`, `FromStr`, and `IntoStaticStr` implementations.
 /// All variants serialize to lowercase (e.g., `Print` -> "print").
 /// Explicit discriminants are bytecode operands and identity codes; never change or reuse them.
-#[monty_macros::explicit_discriminants(checksum = 0x363c_1f03_edf2_19af)]
+#[monty_macros::explicit_discriminants(checksum = 0xdf1b_8d37_e622_22f1)]
 #[derive(
     Debug,
     Clone,

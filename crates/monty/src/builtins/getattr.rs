@@ -78,7 +78,7 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
                 object.clone_with_heap(vm.heap),
                 name,
                 default.clone_with_heap(vm.heap),
-                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+                Value::Builtin(Builtins::Type(ExcType::AttributeError.into())),
             ],
         );
     }

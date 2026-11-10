@@ -2,7 +2,7 @@ use std::{borrow::Cow, fmt::Write, mem};
 
 use monty_types::MontyUuid;
 
-use super::{Dict, LazyHeapSet, PyTrait, Type, descriptor, TypeRef};
+use super::{Dict, LazyHeapSet, PyTrait, Type, TypeRef, descriptor};
 use crate::{
     args::{ArgValues, KwargsValues},
     boundary_uuid::create_uuid,
@@ -678,14 +678,14 @@ fn instance_call_attr(id: HeapId, attr: &EitherStr, args: ArgValues, vm: &mut VM
             defer_drop!(member, vm);
             descriptor::call_member(member, id, args, vm)
         }
-        descriptor::AttributeResolution::Method(member) => {
+        descriptor::AttributeResolution::Method(member, receiver) => {
             let member = member.clone_with_heap(vm.heap);
             defer_drop!(member, vm);
-            vm.heap.inc_ref(id);
-            vm.call_function(member, args.prepend(Value::Ref(id)))
+            vm.heap.inc_ref(receiver);
+            vm.call_function(member, args.prepend(Value::Ref(receiver)))
         }
         resolution => {
-            if let Some(callable) = resolution.into_value(id, vm) {
+            if let Some(callable) = resolution.into_value(vm) {
                 defer_drop!(callable, vm);
                 vm.call_function(callable, args)
             } else {
@@ -714,7 +714,7 @@ fn resolved_instance_attr(id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResult<
             defer_drop!(member, vm);
             descriptor::get(member, Some(id), instance_class(id, vm), vm).map(Some)
         }
-        resolution => Ok(resolution.into_value(id, vm).map(CallResult::Value)),
+        resolution => Ok(resolution.into_value(vm).map(CallResult::Value)),
     }
 }
 
@@ -732,62 +732,23 @@ pub(crate) enum FastAttributeLookupResult {
 
 /// Share read precedence with bytecode while leaving Python getters to the caller.
 pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
-    if matches!(object, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClass(_) | HeapData::HostClassType(_)))
-    {
-        return FastAttributeLookupResult::HostLookup;
-    }
-    if let Value::Ref(id) = object
-        && matches!(vm.heap.get(*id), HeapData::Instance(_))
-    {
-        match descriptor::resolve_instance(*id, attr.as_str(vm.interns), vm) {
+    let Value::Ref(id) = object else {
+        return FastAttributeLookupResult::Inconclusive;
+    };
+
+    match vm.heap.get(*id) {
+        HeapData::HostClass(_) | HeapData::HostClassType(_) => FastAttributeLookupResult::HostLookup,
+        HeapData::Instance(_) => match descriptor::resolve_instance(*id, attr.as_str(vm.interns), vm) {
             descriptor::AttributeResolution::Getter(_) => FastAttributeLookupResult::Inconclusive,
-            resolution => match resolution.into_value(*id, vm) {
+            resolution => match resolution.into_value(vm) {
                 Some(value) => FastAttributeLookupResult::Found(value),
                 None => FastAttributeLookupResult::Missing,
             },
-        }
-    } else {
-        FastAttributeLookupResult::Inconclusive
+        },
+        _ => FastAttributeLookupResult::Inconclusive,
     }
 }
 
-/// A member `object` provides (`obj.__init__`), bound as CPython's slot
-/// wrappers bind: `__new__` stays a plain function, `__init_subclass__`
-/// binds the class and the rest bind the instance.
-fn object_member(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
-    let member = Type::Object.class_constant(attr, vm)?;
-    Some(match attr.as_str(vm.interns) {
-        "__new__" => member,
-        "__init_subclass__" => {
-            let class_id = instance_class(self_id, vm);
-            vm.heap.inc_ref(class_id);
-            BoundMethod::allocate(Value::Ref(class_id), member, vm.heap)
-        }
-        _ => {
-            vm.heap.inc_ref(self_id);
-            BoundMethod::allocate(Value::Ref(self_id), member, vm.heap)
-        }
-    })
-}
-
-/// Attribute lookup for native operations that require synchronous completion.
-/// Dataclass repr, comparison and hash use the same descriptor precedence as `obj.attr`.
-pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let HeapData::Instance(instance) = vm.heap.get(self_id) else {
-        unreachable!("instance_attr requires an instance")
-    };
-    if descriptor::class_descriptor_free(instance.class(), vm) {
-        return Ok(lookup_descriptor_free_instance_attr(self_id, attr, vm));
-    }
-    // Decide absence before dispatch: a present descriptor may itself raise AttributeError.
-    if attr != "__class__"
-        && !class_defines(instance.class(), attr, vm)
-        && instance.attrs().get_by_str(attr, vm.heap, vm.interns).is_none()
-    {
-        return Ok(None);
-    }
-    let attr = EitherStr::Heap(attr.to_owned());
-    instance_getattr(self_id, &attr, vm)?.require_synchronous(vm).map(Some)
 /// Native consumers use the same resolver, requiring getters to complete synchronously.
 pub(crate) fn instance_attr(id: HeapId, name: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     resolved_instance_attr(id, name, vm)?
@@ -1136,7 +1097,7 @@ fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut 
 /// What a function found on an instance's class binds to: the instance, except
 /// for the implicit staticmethod `__new__` (nothing) and the implicit
 /// classmethod `__init_subclass__` (the class).
-fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
+pub(super) fn implicit_receiver(attr: &str, self_id: HeapId, class_id: HeapId) -> Option<HeapId> {
     match attr {
         "__new__" => None,
         "__init_subclass__" => Some(class_id),

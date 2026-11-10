@@ -706,3 +706,34 @@ assert bound.method.__func__(bound, 1) == (bound, 1)
 assert Bound.make.__func__ is bound.make.__func__
 assert Bound.make.__self__ is Bound
 assert Bound.make.__func__(Bound, 2) == (Bound, 2)
+
+
+# Descriptor setup precedes the inherited subclass hook.
+class HookBase:
+    @classmethod
+    def __init_subclass__(cls, *, label):
+        assert cls.field.owner is cls
+        assert cls.field.name == '_field'
+        cls.label = label
+
+
+class HookChild(HookBase, label='child'):
+    field = Field()
+
+
+assert HookChild.label == 'child'
+child = HookChild()
+child.field = 5
+assert child.field == 10
+
+
+class HookGrandchild(HookChild, label='grandchild'):
+    field = Field()
+
+
+# A descriptor added to a base after class creation overrides an existing instance attribute.
+grandchild = HookGrandchild()
+grandchild.late = 'stored'
+HookBase.late = property(lambda self: 'inherited')
+assert grandchild.late == 'inherited'
+assert getattr(grandchild, 'late') == 'inherited'

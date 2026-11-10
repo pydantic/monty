@@ -1211,10 +1211,10 @@ native_types! {
     /// through `create_task`; calling the class directly is unsupported.
     Task("_asyncio.Task"),
     /// `asyncio.InvalidStateError`, raised by `Task.result()` / `Task.exception()` on a pending task.
-    ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
-    StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
     InvalidStateError("asyncio.exceptions.InvalidStateError", Exception)
         .exc(ExcType::InvalidStateError),
+    ClassMethod("classmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::classmethod_init)),
+    StaticMethod("staticmethod").builtin().basetype().ctor(Constructor::Value(builtin_descriptor::staticmethod_init)),
 }
 
 #[cfg(test)]

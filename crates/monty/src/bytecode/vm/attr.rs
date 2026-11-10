@@ -6,8 +6,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapReadOutput},
-    intern::{Interns, StringId},
-    types::{descriptor, Module},
+    intern::StringId,
+    types::{Module, descriptor},
     value::{EitherStr, Value},
 };
 

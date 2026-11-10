@@ -9,7 +9,6 @@ use crate::{
     bytecode::{CallResult, RunReentryGuard, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    frozen::FrozenFunctions,
     hash::{HashValue, identity_hash},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     modules::ModuleFunctions,
@@ -247,14 +246,15 @@ fn missing_accessor(id: HeapId, object: &Value, accessor: &str, vm: &mut VM<'_>)
 
 /// Builtin property accessors and descriptor protocol methods exposed as bound callables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[monty_macros::explicit_discriminants(checksum = 0xebda_e8ae_e713_97a7)]
 pub(crate) enum DescriptorMethod {
-    Getter,
-    Setter,
-    Deleter,
-    Get,
-    Set,
-    Delete,
-    SetName,
+    Getter = 0,
+    Setter = 1,
+    Deleter = 2,
+    Get = 3,
+    Set = 4,
+    Delete = 5,
+    SetName = 6,
 }
 
 impl fmt::Display for DescriptorMethod {
@@ -372,8 +372,8 @@ impl HeapItem for BuiltinDescriptor {
 }
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).kind()
+    fn py_type(&self, vm: &VM<'h>) -> super::TypeRef {
+        self.get(vm.heap).kind().into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {
@@ -436,7 +436,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
             },
         };
         Ok(Some(CallResult::Value(bind_method(
-            &Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Descriptor(method))),
+            &Value::ModuleFunction(ModuleFunctions::Descriptor(method)),
             self.id(),
             vm,
         ))))
@@ -446,7 +446,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, BuiltinDescriptor> {
         let mut guard = DropGuard::new(args, vm);
         let (_, vm) = guard.as_parts_mut();
         let Some(CallResult::Value(callable)) = self.py_getattr(attr, vm)? else {
-            return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                self.get(vm.heap).kind(),
+                attr.as_str(vm.interns),
+            ));
         };
         let (args, vm) = guard.into_parts();
         defer_drop!(callable, vm);

@@ -8,6 +8,7 @@ mod all;
 mod any;
 mod bin;
 mod chr;
+mod delattr;
 mod divmod;
 mod enumerate;
 pub(crate) mod eval_exec;
@@ -26,7 +27,6 @@ mod locals;
 pub(crate) mod map;
 mod min_max; // min and max share implementation
 pub(crate) use min_max::candidate_wins;
-mod delattr;
 pub(crate) mod next;
 pub(crate) mod object;
 pub(crate) mod object_setattr;

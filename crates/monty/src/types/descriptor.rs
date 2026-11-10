@@ -7,16 +7,17 @@
 use super::{
     Dict, Type,
     builtin_descriptor::{self, DescriptorMethod},
-    instance::{bind_method, class_defines, class_dunder, class_member, is_method_value},
+    instance::{bind_method, class_defines, class_dunder, class_member, implicit_receiver, is_method_value},
     tuple::allocate_tuple,
 };
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
+    builtins::{Builtins, BuiltinsFunctions, object::object_method, type_::run_init_subclass},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     frozen::{FrozenFunction, FrozenFunctions},
-    heap::{DropGuard, Heap, HeapData, HeapId},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId},
     modules::{ModuleFunctions, dataclasses},
     value::{EitherStr, Value},
 };
@@ -42,12 +43,13 @@ def _discard(function, args):
 
 /// Notify descriptors in namespace order, looking up each hook when it runs.
 pub(crate) const NAMES_SOURCE: &str = r"
-def _names(cls, members, lookup):
+def _names(cls, members, lookup, finish, kwargs):
     missing = []
     for descriptor, name in members:
         function = lookup(descriptor, missing)
         if function is not missing:
             function(cls, name)
+    finish(cls, **kwargs)
     return cls
 ";
 
@@ -130,7 +132,8 @@ pub(crate) enum AttributeResolution<'a> {
     /// Instance storage or a class value that needs no binding.
     Value(&'a Value),
     /// A native function that binds the instance when read or called.
-    Method(&'a Value),
+    Method(&'a Value, HeapId),
+    ObjectMethod(BuiltinsFunctions, Option<HeapId>),
     /// A descriptor whose getter may suspend.
     Getter(&'a Value),
     /// The synthesized instance __class__ attribute.
@@ -141,10 +144,17 @@ pub(crate) enum AttributeResolution<'a> {
 
 impl AttributeResolution<'_> {
     /// Complete a selection that needs no Python execution, binding methods only on reads.
-    pub(crate) fn into_value(self, instance: HeapId, vm: &VM<'_>) -> Option<Value> {
+    pub(crate) fn into_value(self, vm: &VM<'_>) -> Option<Value> {
         match self {
             Self::Value(value) => Some(value.clone_with_heap(vm.heap)),
-            Self::Method(value) => Some(bind_method(value, instance, vm)),
+            Self::Method(value, receiver) => Some(bind_method(value, receiver, vm)),
+            Self::ObjectMethod(f, receiver) => {
+                let method = Value::Builtin(Builtins::Function(f));
+                Some(match receiver {
+                    Some(id) => bind_method(&method, id, vm),
+                    None => method,
+                })
+            }
             Self::Class(class) => {
                 vm.heap.inc_ref(class);
                 Some(Value::Ref(class))
@@ -183,10 +193,15 @@ pub(crate) fn resolve_instance<'a>(id: HeapId, name: &str, vm: &'a VM<'_>) -> At
     } else {
         match member {
             Some(member) if getter => AttributeResolution::Getter(member),
-            Some(member) if is_method_value(member, vm) => AttributeResolution::Method(member),
+            Some(member) if is_method_value(member, vm) => match implicit_receiver(name, id, class_id) {
+                Some(receiver) => AttributeResolution::Method(member, receiver),
+                None => AttributeResolution::Value(member),
+            },
             Some(member) => AttributeResolution::Value(member),
             None if name == "__class__" => AttributeResolution::Class(class_id),
-            None => AttributeResolution::Missing,
+            None => object_method(name).map_or(AttributeResolution::Missing, |f| {
+                AttributeResolution::ObjectMethod(f, implicit_receiver(name, id, class_id))
+            }),
         }
     }
 }
@@ -312,19 +327,13 @@ fn pack_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Value, Value)> {
     let (pos, kwargs) = args.into_parts();
     let pos = allocate_tuple(pos.collect(), vm.heap);
     defer_drop!(pos, vm);
-    let pairs = match kwargs {
-        KwargsValues::Empty => vec![],
-        KwargsValues::Pairs(pairs) => pairs,
-        KwargsValues::Dict(dict) => dict.into_iter().collect(),
-        KwargsValues::Inline(pairs) => pairs
-            .into_iter()
-            .map(|(name, value)| (Value::InternString(name), value))
-            .collect(),
-    };
-    let kwargs = Dict::from_pairs(pairs, vm)?;
-    let pos = pos.clone_with_heap(vm.heap);
-    let kwargs = Value::Ref(vm.heap.allocate(HeapData::Dict(kwargs)));
-    Ok((pos, kwargs))
+    let kwargs = pack_kwargs(kwargs, vm)?;
+    Ok((pos.clone_with_heap(vm.heap), kwargs))
+}
+
+fn pack_kwargs(kwargs: KwargsValues, vm: &mut VM<'_>) -> RunResult<Value> {
+    let kwargs = Dict::from_pairs(kwargs.into_iter().collect(), vm)?;
+    Ok(Value::allocate(kwargs, vm.heap))
 }
 
 /// Bind the member selected by a frozen continuation after checking its receiver and owner.
@@ -458,7 +467,7 @@ pub(crate) fn mutate(
 }
 
 /// Notify the original namespace's descriptors, resolving each hook when it runs.
-pub(crate) fn finish_class(class: Value, vm: &mut VM<'_>) -> RunResult<CallResult> {
+pub(crate) fn finish_class(class: Value, kwargs: KwargsValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     defer_drop!(class, vm);
     let Value::Ref(id) = class else { unreachable!() };
     let HeapData::Class(cls) = vm.heap.get(*id) else {
@@ -476,8 +485,12 @@ pub(crate) fn finish_class(class: Value, vm: &mut VM<'_>) -> RunResult<CallResul
         })
         .collect::<Vec<_>>();
     if members.is_empty() {
+        run_init_subclass(*id, kwargs, vm)?;
         return Ok(CallResult::Value(class.clone_with_heap(vm.heap)));
     }
+    let mut members = DropGuard::new(members, vm);
+    let kwargs = pack_kwargs(kwargs, members.as_parts_mut().1)?;
+    let (members, vm) = members.into_parts();
     let members = allocate_tuple(members.into(), vm.heap);
     vm.call_frozen_exact(
         FrozenFunction::DescriptorNames,
@@ -485,8 +498,26 @@ pub(crate) fn finish_class(class: Value, vm: &mut VM<'_>) -> RunResult<CallResul
             class.clone_with_heap(vm.heap),
             members,
             Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::SetNameLookup)),
+            Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::InitSubclass)),
+            kwargs,
         ],
     )
+}
+
+/// Run the inherited hook after all name notifications have returned.
+pub(crate) fn init_subclass(args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
+    let (args, kwargs) = args.into_parts();
+    defer_drop!(args, vm);
+    let [Value::Ref(id)] = args.as_slice() else {
+        kwargs.drop_with(vm);
+        return Err(ExcType::type_error("expected a class"));
+    };
+    if !matches!(vm.heap.get(*id), HeapData::Class(_)) {
+        kwargs.drop_with(vm);
+        return Err(ExcType::type_error("expected a class"));
+    }
+    run_init_subclass(*id, kwargs, vm)?;
+    Ok(CallResult::Value(Value::None))
 }
 
 /// Earlier name hooks may replace a later descriptor type's hook.
@@ -498,9 +529,7 @@ pub(crate) fn lookup_set_name(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Cal
         && let HeapData::BuiltinDescriptor(d) = vm.heap.get(*id)
         && d.kind() == Type::Property
     {
-        let function = Value::ModuleFunction(ModuleFunctions::Frozen(FrozenFunctions::Descriptor(
-            DescriptorMethod::SetName,
-        )));
+        let function = Value::ModuleFunction(ModuleFunctions::Descriptor(DescriptorMethod::SetName));
         Ok(CallResult::Value(bind_method(&function, *id, vm)))
     } else if let Value::Ref(instance) = descriptor
         && let Some(owner) = descriptor_class(descriptor, vm)

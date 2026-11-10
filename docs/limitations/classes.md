@@ -35,7 +35,7 @@ CPython-matching features: instance methods, `__init__` (full parameter
 shapes), instance and class attribute get/set (including `setattr(Foo, ...)`
 and function-attributes-become-methods), bound methods, class variables
 (arbitrary expressions, evaluated in a real suspendable class-body scope),
-**class decorators** (`@deco class Foo`),
+class and method decorators (including `property`, `classmethod`, and `staticmethod`),
 `__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `__call__`, `__getitem__`/`__setitem__`, unary `+`/`-`, and binary numeric operators
 (including `@`, `divmod()` and `pow()`) with their reflected forms,
@@ -563,7 +563,7 @@ of `AttributeError`, so `except AttributeError:` catches it, as in CPython's
     `__doc__` and `__name__` cannot be reassigned on the property object.
 - `classmethod` and `staticmethod` expose `__func__`, `__wrapped__`, and `__name__`, but do not copy
     other function metadata (including `__doc__`) or expose a writable wrapper `__dict__`.
-- Descriptor types cannot be subclassed, since class inheritance is unsupported.
+- Descriptor types cannot be subclassed, since sandbox classes can only inherit from other sandbox classes and `object`.
 - Native operations that already run Python hooks synchronously, including dataclass comparison and repr,
     also require descriptor reads to finish synchronously.
     Data-descriptor setters in the synthesized dataclass initializer also cannot suspend; see [dataclasses.md](dataclasses.md).

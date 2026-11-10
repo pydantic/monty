@@ -20,10 +20,11 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
     modules::ModuleFunctions,
     types::{
-        Dict, PyTrait, Tuple, Type, TypeRef, type_ref::is_class_like, descriptor,
-        instance::{FastAttributeLookupResult, class_dunder, class_name, lookup_attribute_fast},
+        Dict, PyTrait, Tuple, Type, TypeRef, descriptor,
+        instance::{FastAttributeLookupResult, class_dunder, lookup_attribute_fast},
         key_hash::set_element_hash,
         tuple::allocate_tuple,
+        type_ref::is_class_like,
     },
     value::{EitherStr, Value},
 };
@@ -168,7 +169,7 @@ impl VM<'_> {
                 descriptor::attribute_helper(),
                 subject.clone_with_heap(this.heap),
                 name.clone_with_heap(this.heap),
-                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+                Value::Builtin(Builtins::Type(ExcType::AttributeError.into())),
             ],
         )?;
         this.current_frame_mut().result = FrameResult::MatchAttr;
@@ -186,7 +187,7 @@ impl VM<'_> {
                 cls.clone_with_heap(this.heap),
                 kwd_names.clone_with_heap(this.heap),
                 Value::Int(i64::try_from(nargs).expect("pattern count is a byte")),
-                Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+                Value::Builtin(Builtins::Type(ExcType::AttributeError.into())),
             ],
         )?
         else {
@@ -440,8 +441,7 @@ fn class_match_args(cls: &Value, nargs: usize, vm: &mut VM<'_>) -> RunResult<Mat
             return Ok(MatchArgs::Names(fields[..nargs].to_vec()));
         }
         HeapData::Class(class) => class
-            .namespace()
-            .get_by_str("__match_args__", vm.heap, vm.interns)
+            .lookup("__match_args__", vm.heap, vm.interns)
             .map(|value| value.clone_with_heap(vm.heap)),
         // A host class only has `__match_args__` if the host sent it as a class attribute.
         HeapData::HostClassType(class) => class

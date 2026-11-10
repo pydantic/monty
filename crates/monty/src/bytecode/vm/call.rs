@@ -30,7 +30,7 @@ use crate::{
     resource_checks::check_estimated_size,
     types::{
         Dict, Instance, PyTrait, Tuple, Type, TypeRef, descriptor,
-        instance::{class_name, class_defines, class_lookup},
+        instance::{class_defines, class_lookup},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };

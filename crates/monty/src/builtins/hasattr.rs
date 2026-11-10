@@ -67,7 +67,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
                     descriptor::attribute_helper(),
                     object.clone_with_heap(vm.heap),
                     name,
-                    Value::Builtin(Builtins::ExcType(ExcType::AttributeError)),
+                    Value::Builtin(Builtins::Type(ExcType::AttributeError.into())),
                 ],
             );
         }
