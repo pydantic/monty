@@ -689,22 +689,20 @@ pub(crate) enum FastAttributeLookupResult {
 
 /// Share read precedence with bytecode while leaving Python getters to the caller.
 pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
-    if matches!(object, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClass(_) | HeapData::HostClassType(_)))
-    {
-        return FastAttributeLookupResult::HostLookup;
-    }
-    if let Value::Ref(id) = object
-        && matches!(vm.heap.get(*id), HeapData::Instance(_))
-    {
-        match descriptor::resolve_instance(*id, attr.as_str(vm.interns), vm) {
+    let Value::Ref(id) = object else {
+        return FastAttributeLookupResult::Inconclusive;
+    };
+
+    match vm.heap.get(*id) {
+        HeapData::HostClass(_) | HeapData::HostClassType(_) => FastAttributeLookupResult::HostLookup,
+        HeapData::Instance(_) => match descriptor::resolve_instance(*id, attr.as_str(vm.interns), vm) {
             descriptor::AttributeResolution::Getter(_) => FastAttributeLookupResult::Inconclusive,
             resolution => match resolution.into_value(*id, vm) {
                 Some(value) => FastAttributeLookupResult::Found(value),
                 None => FastAttributeLookupResult::Missing,
             },
-        }
-    } else {
-        FastAttributeLookupResult::Inconclusive
+        },
+        _ => FastAttributeLookupResult::Inconclusive,
     }
 }
 
