@@ -20,15 +20,15 @@ use std::{
 
 use logfire::{Logfire, config::MetricsOptions};
 use monty_pool::{
-    Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
-    telemetry::{Metrics, TelemetryAdapter, configure_telemetry_adapter},
+    CheckoutOptions, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    telemetry::{Metrics, TelemetryAdapter, TelemetryContext, configure_telemetry_adapter},
     telemetry_adapter,
 };
 use monty_proto::pb;
 use monty_types::{ExcType, MontyException, MontyObject, PrintStream};
 use opentelemetry::{
     KeyValue,
-    trace::{SpanId, TraceId},
+    trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState},
 };
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_sdk::{
@@ -37,7 +37,7 @@ use opentelemetry_sdk::{
         InMemoryMetricExporter, PeriodicReader,
         data::{AggregatedMetrics, MetricData},
     },
-    trace::SpanData,
+    trace::{InMemorySpanExporter, SimpleSpanProcessor, SpanData},
 };
 use prost::Message;
 use tokio::time::{Instant, sleep};
@@ -303,7 +303,7 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
 
     capture.last("monty.run.duration", "outcome", "complete");
     capture.last("monty.pool.session.duration", "outcome", "ok");
-    capture.last("monty.turn.duration", "turn", "configure");
+    // the feed carried the `Configure`, so only the `Reset` is a turn of its own
     capture.last("monty.turn.duration", "turn", "reset");
     assert!(capture.has("monty.run.execution_time"));
     // `print` writes 3 bytes including its newline
@@ -323,6 +323,48 @@ async fn a_feed_records_the_pool_and_turn_instruments() {
     );
     assert_eq!(capture.total("monty.pool.workers.live"), 0);
     assert_eq!(capture.total("monty.pool.workers.idle"), 0);
+}
+
+/// A checkout finished before its first request never configures its worker,
+/// so the worker's next, untraced checkout must not open a span under its trace.
+#[tokio::test]
+async fn an_unconfigured_checkout_leaves_no_trace_parent_behind() {
+    let spans = InMemorySpanExporter::default();
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_additional_span_processor(SimpleSpanProcessor::new(spans.clone()))
+        .finish()
+        .expect("logfire");
+    let mut config = PoolConfig::subprocess(monty_binary());
+    config.min_processes = 1;
+    config.max_processes = 1;
+    let pool = Pool::new(config).await.expect("pool");
+
+    let parent = SpanContext::new(
+        TraceId::from(7_u128),
+        SpanId::from(7_u64),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    let traced = CheckoutOptions::default()
+        .with_telemetry(Some(TelemetryContext::for_logfire(logfire.clone()).with_parent(parent)));
+    let checkout = pool
+        .checkout_with(&ReplConfig::default(), traced)
+        .await
+        .expect("checkout");
+    checkout.finish().await.expect("finish");
+
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("feed");
+    checkout.finish().await.expect("finish");
+    pool.close().await;
+    // read while `logfire` lives: its provider's shutdown clears the exporter
+    assert_eq!(spans.get_finished_spans().unwrap().len(), 0);
 }
 
 /// A checkout that cannot be served, and a session abandoned rather than
@@ -458,7 +500,7 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     config.max_processes = 1;
     let (pool, capture) = pool_with_metrics(config).await;
 
-    // an expression deep enough to overflow the child's stack, which aborts it
+    // an expression deep enough to overflow the worker's stack, which aborts it
     // mid-turn (the same trick `pool_test.rs` uses, and portable unlike a kill)
     let mut code = String::with_capacity(300_002);
     code.push('a');
@@ -545,20 +587,20 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
     let (pool, capture) = pool_with_metrics(config).await;
 
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let event = checkout.turn_raw(&feed, &mut on_event).await.expect("raw feed");
     assert!(
-        matches!(event.kind, Some(pb::child_event::Kind::Complete(_))),
+        matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))),
         "{event:?}"
     );
     checkout.finish().await.expect("finish");

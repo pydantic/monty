@@ -1,6 +1,6 @@
 // The remote pool: `MontyRemote` holds one HTTP/2 connection to a gRPC
 // server and opens a session stream per checkout instead of spawning local
-// `monty subprocess` children. Dialing, framing, auto-resume after a server
+// `monty subprocess` workers. Dialing, framing, auto-resume after a server
 // drain and the per-turn watchdog all live in the native `monty-pool` crate
 // (shared with pydantic_monty's AsyncMontyRemote); sessions are the same
 // `MontySession` a local pool hands out.
@@ -133,9 +133,10 @@ export class MontyRemote {
    * Opens a session stream to the server and creates a REPL session there.
    * Rejects with `MontyConnectError` when the connection fails;
    * `MontyRefusedError` when the server refuses the stream, e.g. one at
-   * capacity; `MontyRuntimeError` when the server refuses the session; and
-   * `MontyDisconnectError` / `MontyShutdown` when it is lost while being
-   * created. Release the stream with `session.close()` (or `await using`).
+   * capacity; and `MontyDisconnectError` / `MontyShutdown` when it is lost
+   * while being created. A server refusing the session's configuration
+   * fails its first request with `MontyConfigurationError`. Release the
+   * stream with `session.close()` (or `await using`).
    */
   async checkout(options: RemoteCheckoutOptions = {}): Promise<MontySession> {
     if (this.closing !== undefined) {

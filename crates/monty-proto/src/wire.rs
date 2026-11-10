@@ -145,7 +145,7 @@ impl Message for WireArena {
 /// Wire form of `monty.v1.FunctionCall`: the call's argument arena plus the
 /// ids of its positional and keyword arguments.
 ///
-/// Installed with `prost_build::extern_path`, so generated `ChildEvent`
+/// Installed with `prost_build::extern_path`, so generated `WorkerEvent`
 /// decoding still handles the envelope while this payload keeps the argument
 /// vectors as bare ids and uses `WireArena`'s incremental node decoding.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -158,7 +158,7 @@ pub struct WireFunctionCall {
     pub args: BudgetVec<NodeId>,
     /// Keyword arguments as `(key, value)` ids, preserving wire order.
     pub kwargs: BudgetVec<(NodeId, NodeId)>,
-    /// Child-assigned call id used by the matching resume request.
+    /// Worker-assigned call id used by the matching resume request.
     pub call_id: u32,
     /// Uuid of the routed receiver (a host-backed instance, or a class type
     /// for `__call__`/classmethod calls); `None` for plain external function
@@ -167,7 +167,7 @@ pub struct WireFunctionCall {
     /// The worker accepts an eagerly settled coroutine via `ResumeFutures`.
     pub allow_eager_await: bool,
     /// Where the call expression is in the source; `None` for a frame from a
-    /// child that predates the field.
+    /// worker that predates the field.
     pub position: Option<SourceRange>,
 }
 
