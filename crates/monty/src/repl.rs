@@ -966,6 +966,7 @@ impl ReplOsCall {
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl {
+        self.refund_sleep();
         self.snapshot.into_repl()
     }
 
@@ -1010,10 +1011,15 @@ impl ReplOsCall {
 
     /// Always returns `Err` with a reusable session; see [`crate::OsCall::abort`].
     pub fn abort(self, exc: MontyException, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
+        self.refund_sleep();
+        self.snapshot.abort(exc, print)
+    }
+
+    /// Takes a system sleep that will never happen back off the session's slept total.
+    fn refund_sleep(&self) {
         if let Some(delay) = self.function_call.system_sleep() {
             self.snapshot.repl.tracker().refund_sleep(delay);
         }
-        self.snapshot.abort(exc, print)
     }
 }
 

@@ -372,7 +372,7 @@ Calling a loader after a feed or a previous load is rejected before restoration,
     getting a fresh budget.
     So does the time already slept against `max_total_sleep_secs`, including a sleep the dump is suspended on, which
     is not charged again when restoring re-announces it.
-    Dumps from releases that did not record it restore with nothing slept.
+    Dumps from releases that did not record it restore with only that suspended sleep counted.
 - **Only the suspension limit travels.** A restored session keeps `max_suspensions`, but the pool resets its count to
     zero, and a `max_suspensions` set on the restoring `checkout()` caps the dump's.
 - **Mounts do not travel.** Host paths are never part of a dump.

@@ -318,7 +318,13 @@ export class WorkerTransport {
     }
     const event = await this.run({ tag: 'load', val: state }, onPrint)
     if (!event) return this.crash()
-    return event.tag === 'ok' ? { kind: 'loaded' } : this.enforceLimits(this.toTurn(event), onPrint, true)
+    if (event.tag === 'ok') return { kind: 'loaded' }
+    const turn = this.toTurn(event)
+    // The dump's total counts a re-announced sleep: take it off so `chargeSleep` charges it again.
+    // Older dumps report nothing, and an aborted re-announcement is refunded by the worker.
+    const pending = sleepMicros(turn)
+    this.sleepUsedMicros = this.sleepUsedMicros > pending ? this.sleepUsedMicros - pending : 0n
+    return this.enforceLimits(turn, onPrint)
   }
 
   /** Resets a live worker for reuse and disposes a dead worker. */
@@ -349,16 +355,15 @@ export class WorkerTransport {
 
   /**
    * Counts a suspension and charges a `'system'` sleep, aborting the feed when
-   * either the suspension limit or the sleep budget is exceeded. A `restored`
-   * suspension's sleep is already in the dump's total, so it is only checked.
+   * either the suspension limit or the sleep budget is exceeded.
    */
-  private async enforceLimits(turn: NativeTurn, onPrint: OnPrint, restored = false): Promise<NativeTurn> {
+  private async enforceLimits(turn: NativeTurn, onPrint: OnPrint): Promise<NativeTurn> {
     if (isSuspension(turn)) {
       this.suspensionsSeen += 1n
       if (this.suspensionLimit !== undefined && this.suspensionsSeen > this.suspensionLimit) {
         turn = await this.abortFeed('RuntimeError', `suspension limit ${this.suspensionLimit} exceeded`, onPrint)
       } else {
-        const refused = this.chargeSleep(turn, restored)
+        const refused = this.chargeSleep(turn)
         if (refused !== null) turn = await this.abortFeed('TimeoutError', refused, onPrint)
       }
     }
@@ -385,10 +390,9 @@ export class WorkerTransport {
    * Charges the capped sleep duration, returning a refusal message if over budget, else `null`.
    * Matches monty-pool's `SessionBudget` errors.
    */
-  private chargeSleep(turn: NativeTurn, restored: boolean): string | null {
+  private chargeSleep(turn: NativeTurn): string | null {
     if (turn.kind !== 'osCall' || turn.systemSleepSecs === undefined) return null
-    const micros = restored ? 0n : BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
-    const total = this.sleepUsedMicros + micros
+    const total = this.sleepUsedMicros + sleepMicros(turn)
     if (this.sleepLimitMicros !== undefined && total > this.sleepLimitMicros) {
       return `sleep limit exceeded: ${durationDebug(total)} > ${durationDebug(this.sleepLimitMicros)}`
     }
@@ -668,6 +672,13 @@ function isSuspension(turn: NativeTurn): boolean {
     turn.kind === 'nameLookup' ||
     turn.kind === 'resolveFutures'
   )
+}
+
+/** The capped `'system'` sleep a turn asks for, in microseconds; zero for any other turn. */
+function sleepMicros(turn: NativeTurn): bigint {
+  return turn.kind === 'osCall' && turn.systemSleepSecs !== undefined
+    ? BigInt(Math.round(turn.systemSleepSecs * 1_000_000))
+    : 0n
 }
 
 /** Converts a host return value and its arena, turning conversion failures

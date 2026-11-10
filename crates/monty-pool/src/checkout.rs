@@ -517,7 +517,7 @@ pub struct Checkout {
 }
 
 /// Client-enforced limits from `Configure` or the first reply after `Load`.
-/// Restoring resets suspension and sleep totals, but keeps every limit as a ceiling:
+/// Restoring resets the suspension count and adopts the dump's sleep total, but keeps every limit as a ceiling:
 /// untrusted worker replies, including the `Load` reply, can only tighten them.
 #[derive(Clone, Copy)]
 struct SessionBudget {
@@ -643,11 +643,29 @@ impl SessionBudget {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
     }
 
+    /// Adopts the time a restored dump already slept, as reported by a `Load` reply.
+    /// The dump's total counts a re-announced sleep, so it is taken off here and charged again
+    /// by `charge_sleep`: older dumps report nothing, and an aborted re-announcement is refunded.
+    fn adopt_sleep_used(&mut self, event: &pb::WorkerEvent) {
+        let pending = self.system_sleep(event).unwrap_or_default();
+        self.sleep_used = Duration::from_micros(event.total_sleep_micros).saturating_sub(pending);
+    }
+
     /// Charges a capped system sleep; other events, including `CallHost` sleeps, are free.
     /// Returns `Some((limit, total))` without charging if the caller must refuse the sleep.
-    /// Invalid worker delays count as the ceiling. A sleep a `Load` reply re-announces is
-    /// `restored`: the dump's total already counts it, so it is only checked against the limit.
-    fn charge_sleep(&mut self, event: &pb::WorkerEvent, restored: bool) -> Option<(Duration, Duration)> {
+    fn charge_sleep(&mut self, event: &pb::WorkerEvent) -> Option<(Duration, Duration)> {
+        let total = self.sleep_used.saturating_add(self.system_sleep(event)?);
+        match self.sleep_limit {
+            Some(limit) if total > limit => Some((limit, total)),
+            _ => {
+                self.sleep_used = total;
+                None
+            }
+        }
+    }
+
+    /// The capped delay of a system sleep event; invalid worker delays count as the ceiling.
+    fn system_sleep(&self, event: &pb::WorkerEvent) -> Option<Duration> {
         let seconds = match &event.kind {
             Some(pb::worker_event::Kind::OsCall(call)) => match call.call {
                 Some(pb::os_call::Call::SystemSleep(pb::os_call::Sleep { seconds })) => seconds,
@@ -656,19 +674,7 @@ impl SessionBudget {
             },
             _ => return None,
         };
-        let delay = if restored {
-            Duration::ZERO
-        } else {
-            self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX))
-        };
-        let total = self.sleep_used.saturating_add(delay);
-        match self.sleep_limit {
-            Some(limit) if total > limit => Some((limit, total)),
-            _ => {
-                self.sleep_used = total;
-                None
-            }
-        }
+        Some(self.cap_system_sleep(Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX)))
     }
 
     fn cap_system_sleep(&self, delay: Duration) -> Duration {
@@ -1669,13 +1675,11 @@ impl Checkout {
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
-        let mut restored = false;
         if !is_print && let Some(saved) = self.pending_load_budget.take() {
             if matches!(event.kind, Some(pb::worker_event::Kind::Ok(_))) || is_suspension(event) {
                 // Restore seeds saved VM usage. Live turns use OS measurements.
                 self.budget.observed_feed_execution = Duration::from_micros(event.feed_execution_micros);
-                self.budget.sleep_used = Duration::from_micros(event.total_sleep_micros);
-                restored = true;
+                self.budget.adopt_sleep_used(event);
             } else {
                 self.budget = saved;
             }
@@ -1699,7 +1703,7 @@ impl Checkout {
             .map(suspension_limit_exceeded)
             .or_else(|| {
                 self.budget
-                    .charge_sleep(event, restored)
+                    .charge_sleep(event)
                     .map(|(limit, total)| sleep_limit_exceeded(limit, total))
             });
         let Some(exception) = exceeded else {

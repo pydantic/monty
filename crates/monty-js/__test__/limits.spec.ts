@@ -325,6 +325,44 @@ test('the sleep limit is a ceiling a restored dump can only tighten', async () =
   t.is(refused.display('msg'), 'sleep limit exceeded: 625ms > 250ms')
 })
 
+test('a restored sleep is charged when the dump reports none slept', async () => {
+  // dumps from before slept time was recorded report none
+  const transport = await WorkerTransport.create(
+    async (request) => {
+      const events =
+        request.tag === 'load'
+          ? [
+              {
+                tag: 'os-call' as const,
+                val: {
+                  functionName: 'sleep',
+                  values: { nodes: [] },
+                  args: new Uint32Array(),
+                  kwargs: [],
+                  callId: 1,
+                  allowEagerAwait: false,
+                  systemSleepSecs: 10,
+                  position: { filename: '<python-input-0>', start: 0, end: 15 },
+                },
+              },
+            ]
+          : request.tag === 'abort-feed'
+            ? [
+                {
+                  tag: 'error' as const,
+                  val: { excType: request.val.excType, message: request.val.message, traceback: '', frames: [] },
+                },
+              ]
+            : [{ tag: 'ok' as const }]
+      return { status: 'continue', events, feedExecutionMicros: 0n, totalSleepMicros: 0n }
+    },
+    { limits: { maxTotalSleepSecs: 0.25 } },
+  )
+  const turn = await transport.restore(new Uint8Array(), [], () => {})
+  t.is(turn.kind, 'error')
+  t.is(turn.kind === 'error' ? turn.exception.message : null, 'sleep limit exceeded: 10s > 250ms')
+})
+
 test('restored session keeps its suspension limit with a fresh count', async () => {
   const fetch = () => 'ok'
   let state: Buffer

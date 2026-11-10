@@ -2713,7 +2713,7 @@ async fn restored_session_keeps_the_time_it_slept() {
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).await.unwrap();
+    let (event, _script_name) = restored.restore(state.clone(), vec![], &mut no_print).await.unwrap();
     assert!(
         matches!(
             event,
@@ -2738,6 +2738,39 @@ async fn restored_session_keeps_the_time_it_slept() {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("sleep limit exceeded: 251ms > 250ms"));
+    restored.finish().await.unwrap();
+
+    // a tighter limit refuses the re-announced sleep, which then no longer counts
+    let mut restored = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_total_sleep(Duration::from_millis(200))),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let err = restored.restore(state, vec![], &mut no_print).await.unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 250ms > 200ms"));
+    let event = restored
+        .feed("time.sleep(0.075)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let event = restored
+        .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::none());
+    let err = restored
+        .feed("time.sleep(0.001)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.message(), Some("sleep limit exceeded: 201ms > 200ms"));
     restored.finish().await.unwrap();
 }
 

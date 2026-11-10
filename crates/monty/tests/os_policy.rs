@@ -5,10 +5,10 @@
 use std::time::{Duration, Instant};
 
 use insta::assert_snapshot;
-use monty::{Dump, MontyRepl, MontyRun, RunProgress, Session, SessionRef, dump};
+use monty::{Dump, MontyRepl, MontyRun, ReplProgress, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, DateTimeSource, MontyObject, OsFunctionCall, OsPolicy, PrintWriter, ProcessTime, ResourceLimits,
-    ResourceTracker, SandboxTimeZone, SleepMode,
+    CompileOptions, DateTimeSource, ExcType, MontyException, MontyObject, OsFunctionCall, OsPolicy, PrintWriter,
+    ProcessTime, ResourceLimits, ResourceTracker, SandboxTimeZone, SleepMode,
 };
 
 /// 2023-11-14 22:13:20 UTC, shared with the datatest fixtures.
@@ -855,6 +855,30 @@ fn system_sleeps_reach_the_host_cut_but_uncharged() {
         progress = call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap();
     }
     assert!(matches!(progress, RunProgress::Complete(_)), "got {progress:?}");
+}
+
+/// The session counts a system sleep as it is announced, and gives it back when the
+/// suspension is aborted or abandoned, since that sleep never happens.
+#[test]
+fn an_abandoned_sleep_is_not_counted_as_slept() {
+    let second = Duration::from_secs(1);
+    let mut repl = MontyRepl::new("<test>", ResourceTracker::default(), CompileOptions::default())
+        .with_os_policy(with_sleep(SleepMode::System(second)));
+    for abort in [true, false] {
+        let progress = repl.feed_start("import time\ntime.sleep(3600)", vec![], PrintWriter::Disabled);
+        let progress = progress.unwrap();
+        assert_eq!(progress.tracker().total_sleep(), second);
+        let ReplProgress::OsCall(call) = progress else {
+            panic!("expected time.sleep, got {progress:?}")
+        };
+        repl = if abort {
+            let exc = MontyException::new(ExcType::TimeoutError, Some("refused".to_owned()));
+            call.abort(exc, PrintWriter::Disabled).unwrap_err().repl
+        } else {
+            call.into_repl()
+        };
+        assert_eq!(repl.tracker().total_sleep(), Duration::ZERO);
+    }
 }
 
 /// Waiting starts at the call, so a later feed awaits an already-settled sleep.
