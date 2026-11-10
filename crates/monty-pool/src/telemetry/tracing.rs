@@ -168,6 +168,8 @@ impl Recorder {
                     // restored session runs under
                     script_name = Empty,
                     length_limit_exceeded = Empty,
+                    // filled in when a feed restored mid-suspension ends
+                    peak_memory_bytes = Empty,
                 )));
             }
             // ends the session: closing the spans is the whole record, since
@@ -212,6 +214,8 @@ impl Recorder {
                     output = Empty,
                     total_execution_micros = Empty,
                     max_feed_duration_micros = Empty,
+                    // filled in by whichever event ends the feed
+                    peak_memory_bytes = Empty,
                 ));
                 self.feed = Some(OpenSpan::new(span, cut));
             }
@@ -286,6 +290,7 @@ impl Recorder {
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
         let max_feed_duration = event.max_feed_duration_micros;
+        let peak_memory = event.feed_peak_memory_bytes;
         // only a `Load` reply carries this: the session span already exists with
         // the `Configure` name, so the dump's name goes on the load span
         if let (Some(script_name), Some(load)) = (&event.restored_script_name, &self.turn) {
@@ -383,6 +388,7 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::Complete(c)) => {
                 let (value, cut) = attr_value(arena_nodes(c.values.as_ref()), NodeId(c.value));
+                self.record_peak_memory(peak_memory);
                 self.record_complete(Some(value), cut, micros, max_feed_duration);
                 self.end_feed();
             }
@@ -393,6 +399,7 @@ impl Recorder {
                 if self.dump_turn {
                     self.turn = None;
                 } else {
+                    self.record_peak_memory(peak_memory);
                     self.end_feed();
                 }
             }
@@ -406,6 +413,7 @@ impl Recorder {
                     total_execution_micros = micros,
                     max_feed_duration_micros = max_feed_duration,
                 );
+                self.record_peak_memory(peak_memory);
                 self.end_feed();
             }
             // the dump span carries its own result, and closes on it
@@ -443,6 +451,7 @@ impl Recorder {
                     message = message,
                     length_limit_exceeded = cut.then_some(true),
                 );
+                self.record_peak_memory(peak_memory);
             }
             // liveness, not a turn (and answered by the transport, never seen here)
             Some(pb::child_event::Kind::Ping(_)) => {}
@@ -477,6 +486,16 @@ impl Recorder {
                 total_execution_micros = micros,
                 max_feed_duration_micros = max_feed_duration,
             ),
+        }
+    }
+
+    /// Records the peak memory of a feed that is ending on the span standing for
+    /// it: the feed's own, or the `load` span of a feed restored mid-suspension.
+    /// Other turns' spans never declare the field, so recording on them is a no-op.
+    fn record_peak_memory(&self, peak: Option<u64>) {
+        let span = self.feed.as_ref().map(OpenSpan::span).or(self.turn.as_ref());
+        if let (Some(peak), Some(span)) = (peak, span) {
+            span.record("peak_memory_bytes", int_attr(peak));
         }
     }
 
@@ -1222,6 +1241,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1303,6 +1323,62 @@ mod tests {
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 
+    /// The feed's peak memory lands on its span whichever event ends it, and
+    /// is left off when the worker could not measure it.
+    #[test]
+    fn peak_memory_lands_on_the_feed_span_however_it_ends() {
+        let endings = [
+            pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(1))),
+            pb::child_event::Kind::Error(pb::Error {
+                exception: Some(pb::RaisedException {
+                    exc_type: "MemoryError".to_owned(),
+                    message: None,
+                    traceback: vec![].into(),
+                    data: None,
+                }),
+            }),
+            pb::child_event::Kind::TypingError(pb::TypingError {
+                diagnostics: "error".to_owned(),
+            }),
+            pb::child_event::Kind::FatalError(pb::FatalError {
+                message: "fatal".to_owned(),
+            }),
+        ];
+        for ending in endings {
+            for peak in [Some(5_000_000), None] {
+                let (logfire, spans, _logs) = test_logfire();
+                let _guard = set_local_logfire(logfire);
+                let mut recorder = Recorder::new(None);
+                recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
+                    code: "x = [0] * 1_000_000".to_owned(),
+                    inputs: vec![].into(),
+                    values: None,
+                    skip_type_check: false,
+                    cwd: "/".to_owned(),
+                })));
+                recorder.event(&pb::ChildEvent {
+                    feed_peak_memory_bytes: peak,
+                    ..event(ending.clone())
+                });
+                // a fatal error leaves the feed span to close with the worker
+                drop(recorder);
+
+                let spans = spans.get_finished_spans().unwrap();
+                let feed = spans.iter().find(|span| span.name == "run code").unwrap();
+                let recorded = feed
+                    .attributes
+                    .iter()
+                    .find(|kv| kv.key.as_str() == "peak_memory_bytes")
+                    .map(|kv| kv.value.clone());
+                assert_eq!(
+                    recorded,
+                    peak.map(|peak| i64::try_from(peak).unwrap().into()),
+                    "{ending:?}"
+                );
+            }
+        }
+    }
+
     /// A suspension's answer is an attribute of the span it closes, and a cut
     /// answer flags `length_limit_exceeded` only once — the os call below is
     /// opened with the flag already set by its own oversize argument, and a
@@ -1373,6 +1449,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1429,6 +1506,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1451,8 +1529,8 @@ mod tests {
         assert_eq!(feed.parent_span_id, session.span_context.span_id());
     }
 
-    /// A `Load` span stands in for a restored suspended feed and remains the
-    /// parent across its resume until the restored feed completes.
+    /// A `Load` span stands in for a restored suspended feed: it remains the
+    /// parent across its resume and records the feed's peak memory.
     #[test]
     fn restored_feed_keeps_its_load_span_across_resume() {
         let (logfire, spans, logs) = test_logfire();
@@ -1470,14 +1548,18 @@ mod tests {
         recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
             NameLookupResult::from(MontyObject::int(1)).into(),
         )));
-        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete::from(
-            MontyObject::int(1),
-        ))));
+        recorder.event(&pb::ChildEvent {
+            feed_peak_memory_bytes: Some(1024),
+            ..event(pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(1))))
+        });
 
         let spans = spans.get_finished_spans().unwrap();
         let load = spans.iter().find(|span| span.name == "load").unwrap();
         let lookup = spans.iter().find(|span| span.name == "name lookup {name}").unwrap();
         assert_eq!(lookup.parent_span_id, load.span_context.span_id());
+        // the load span stands in for the feed, so it carries the feed's peak
+        let peak = load.attributes.iter().find(|kv| kv.key.as_str() == "peak_memory_bytes");
+        assert_eq!(peak.map(|kv| kv.value.clone()), Some(1024.into()));
         let records = logs.get_emitted_logs().unwrap();
         let complete = records
             .iter()

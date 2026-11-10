@@ -1024,6 +1024,16 @@ pub struct ChildEvent {
     /// boundaries against a clock it cannot see. Zero outside a session.
     #[prost(uint64, tag = "24")]
     pub feed_execution_micros: u64,
+    /// The most memory the feed in progress has used, in bytes: the quantity
+    /// `max_memory_bytes` limits (allocator-backed bytes above the worker's
+    /// baseline), whether or not a limit is set. The high-water mark restarts
+    /// when the worker accepts a `Feed`, so it includes compiling and type
+    /// checking, and at a `Load`, so a restored feed counts from the `Load` on,
+    /// including decoding the dump. Set on turn-ending events while a session
+    /// exists, but meaningful only on events that suspend or end a feed.
+    /// Absent from workers that cannot measure it; telemetry only.
+    #[prost(uint64, optional, tag = "31")]
+    pub feed_peak_memory_bytes: ::core::option::Option<u64>,
     /// The session's `max_feed_duration` and `max_turn_duration` limits in
     /// microseconds, when configured. Reported so a parent that restored a
     /// session via `Load` (where the limits travel inside the opaque state

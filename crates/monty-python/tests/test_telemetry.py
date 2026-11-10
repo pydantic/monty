@@ -299,6 +299,7 @@ def test_standard_meter_receives_metrics():
             'monty.print.bytes',
             'monty.run.duration',
             'monty.run.execution_time',
+            'monty.run.peak_memory.bytes',
             'monty.turn.duration',
             'monty.wire.frame.bytes',
         ]

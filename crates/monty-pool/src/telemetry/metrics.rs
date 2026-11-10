@@ -107,6 +107,14 @@ static RUN_EXECUTION: Instrument = Instrument {
     description: "Sandbox execution time of one feed using the pool's wall or CPU clock, excluding host round-trips.",
 };
 
+/// Peak memory of one execution turn, as the worker reports it.
+static RUN_PEAK_MEMORY: Instrument = Instrument {
+    kind: MetricKind::Histogram,
+    name: "monty.run.peak_memory.bytes",
+    unit: "By",
+    description: "Most memory one feed used, measured as max_memory measures it, whether or not a limit is set.",
+};
+
 /// Wall time of one housekeeping turn.
 static TURN_DURATION: Instrument = Instrument {
     kind: MetricKind::Histogram,
@@ -702,10 +710,12 @@ impl TurnMetrics {
         suspension
     }
 
-    /// Ends an execution turn: its wall time, and the sandbox time it consumed.
+    /// Ends an execution turn: its wall time, the sandbox time it consumed, and
+    /// its peak memory.
     ///
     /// A feed restored mid-suspension has no start instant in this process, so
-    /// it contributes execution time but no wall time.
+    /// it contributes execution time but no wall time. A worker that cannot
+    /// measure memory omits the peak, which then records nothing.
     fn end_run(&mut self, outcome: &'static str, event: &pb::ChildEvent) {
         self.run_active = false;
         self.abandon_pending();
@@ -724,6 +734,13 @@ impl TurnMetrics {
         self.reported_micros = self.reported_micros.max(total);
         self.metrics
             .record(&RUN_EXECUTION, MetricValue::seconds(Duration::from_micros(delta)), &[]);
+        if let Some(peak) = event.feed_peak_memory_bytes {
+            self.metrics.record(
+                &RUN_PEAK_MEMORY,
+                MetricValue::I64(i64::try_from(peak).unwrap_or(i64::MAX)),
+                &[],
+            );
+        }
     }
 
     /// Ends a terminal event as a run or housekeeping turn.
@@ -1115,6 +1132,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1346,6 +1364,7 @@ mod tests {
                 execution_clock: None,
                 feed_suspended: None,
                 feed_execution_micros: 0,
+                feed_peak_memory_bytes: None,
                 max_feed_duration_micros: None,
                 max_turn_duration_micros: None,
                 max_total_sleep_micros: None,
@@ -1360,6 +1379,48 @@ mod tests {
         assert_close(*sum, Duration::from_micros(250).as_secs_f64());
         assert_optional_close(*min, Some(Duration::from_micros(100).as_secs_f64()));
         assert_optional_close(*max, Some(Duration::from_micros(150).as_secs_f64()));
+    }
+
+    /// The worker stamps the feed's running peak on every turn-ending event,
+    /// but only the event ending the feed is a sample: one per feed, and none
+    /// from a worker that could not measure it or from a housekeeping turn.
+    #[test]
+    fn peak_memory_is_recorded_once_per_feed() {
+        let (mut metrics, capture) = recorder();
+        let with_peak = |peak, event: pb::ChildEvent| pb::ChildEvent {
+            feed_peak_memory_bytes: peak,
+            ..event
+        };
+        metrics.begin_turn(&feed());
+        metrics.event(&with_peak(Some(1_000), call_event("double")));
+        metrics.begin_turn(&resume_return(MontyObject::int(4)));
+        metrics.event(&with_peak(
+            Some(3_000_000),
+            event(pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(4)))),
+        ));
+        // a feed whose worker reported no peak, then a dump between feeds
+        metrics.begin_turn(&feed());
+        metrics.event(&with_peak(
+            None,
+            event(pb::child_event::Kind::Complete(pb::Complete::from(MontyObject::int(4)))),
+        ));
+        metrics.begin_turn(&request(pb::parent_request::Kind::Dump(pb::Dump {})));
+        metrics.event(&with_peak(
+            Some(3_000_000),
+            event(pb::child_event::Kind::DumpResult(pb::DumpResult {
+                state: vec![0; 16].into(),
+            })),
+        ));
+
+        let peaks = capture.histograms("monty.run.peak_memory.bytes");
+        let [(count, sum, min, max)] = peaks.as_slice() else {
+            panic!("expected one peak-memory series, got {}", peaks.len())
+        };
+        assert_eq!(*count, 1);
+        assert_close(*sum, 3_000_000.0);
+        assert_optional_close(*min, Some(3_000_000.0));
+        assert_optional_close(*max, Some(3_000_000.0));
+        assert_eq!(capture.histograms("monty.run.execution_time")[0].0, 2);
     }
 
     /// A raised exception ends the run and shows up as its outcome. The class
@@ -1445,6 +1506,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1459,6 +1521,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1493,6 +1556,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
@@ -1518,6 +1582,7 @@ mod tests {
             execution_clock: None,
             feed_suspended: None,
             feed_execution_micros: 0,
+            feed_peak_memory_bytes: None,
             max_feed_duration_micros: None,
             max_turn_duration_micros: None,
             max_total_sleep_micros: None,
