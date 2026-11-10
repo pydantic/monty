@@ -1752,6 +1752,125 @@ impl<'h> VM<'h> {
     // Variable Operations
     // ========================================================================
 
+    /// Combines local loads with subscripting while preserving generic fallback ownership.
+    #[inline(always)]
+    #[expect(
+        clippy::inline_always,
+        reason = "native subscription benchmarks benefit from dispatch-local code"
+    )]
+    fn subscript_locals(&mut self, object_slot: u16, key_slot: u16, flags: u8) -> RunResult<()> {
+        let base = self.current_frame.stack_base();
+        let object = &self.stack[base + usize::from(object_slot)];
+        let constant = if flags == 2 {
+            Value::Int(i64::from(key_slot.cast_signed()))
+        } else {
+            Value::InternString(StringId::from_index(key_slot))
+        };
+        let key = if flags != 0 {
+            &constant
+        } else {
+            &self.stack[base + usize::from(key_slot)]
+        };
+
+        if let Some(value) = self.native_subscript_view(object, key) {
+            if let Value::Int(number) = value {
+                let number = *number;
+                self.push(Value::Int(number));
+            } else if let Value::Ref(id) = value {
+                let id = *id;
+                self.heap.inc_ref(id);
+                self.push(Value::Ref(id));
+            } else {
+                let value = value.clone_with_heap(self.heap);
+                self.push(value);
+            }
+            return Ok(());
+        }
+
+        self.subscript_locals_fallback(object_slot, key_slot, flags)
+    }
+
+    /// Owns both operands before generic dispatch can execute Python.
+    #[inline(never)]
+    fn subscript_locals_fallback(&mut self, object_slot: u16, key_slot: u16, flags: u8) -> RunResult<()> {
+        let base = self.current_frame.stack_base();
+        let object = &self.stack[base + usize::from(object_slot)];
+        let constant = if flags == 2 {
+            Value::Int(i64::from(key_slot.cast_signed()))
+        } else {
+            Value::InternString(StringId::from_index(key_slot))
+        };
+        let key = if flags != 0 {
+            &constant
+        } else {
+            &self.stack[base + usize::from(key_slot)]
+        };
+
+        if matches!(object, Value::Undefined) {
+            self.instruction_ip += 1;
+            return Err(self.unbound_local_error(object_slot, self.current_frame.code.local_name(object_slot)));
+        }
+        if matches!(key, Value::Undefined) {
+            self.instruction_ip += 2;
+            return Err(self.unbound_local_error(key_slot, self.current_frame.code.local_name(key_slot)));
+        }
+
+        let object = object.clone_with_heap(self.heap);
+        let key = key.clone_with_heap(self.heap);
+        let result = object.py_getitem(&key, self);
+        object.drop_with(self);
+        key.drop_with(self);
+        self.push(result?);
+        Ok(())
+    }
+
+    /// Stores a native hit directly in the destination local; no guest code runs here.
+    #[inline(always)]
+    #[expect(
+        clippy::inline_always,
+        reason = "keep the direct local assignment in the dispatch loop"
+    )]
+    fn try_subscript_to_local(&mut self, object_slot: u8, key_slot: u8, destination: u8) -> bool {
+        let base = self.current_frame.stack_base();
+        let object = &self.stack[base + usize::from(object_slot)];
+        let key = &self.stack[base + usize::from(key_slot)];
+        let value = self.native_subscript_view(object, key);
+        let Some(value) = value else {
+            return false;
+        };
+
+        if let Value::Int(number) = value {
+            let number = *number;
+            let destination = &mut self.stack[base + usize::from(destination)];
+            if let Value::Int(previous) = destination {
+                *previous = number;
+            } else {
+                let old = mem::replace(destination, Value::Int(number));
+                old.drop_with(self);
+            }
+            return true;
+        }
+
+        if let Value::Ref(id) = value {
+            let id = *id;
+            // The destination already owns this exact object, so ownership does not change.
+            if let Value::Ref(previous) = &self.stack[base + usize::from(destination)]
+                && *previous == id
+            {
+                return true;
+            }
+            self.heap.inc_ref(id);
+            let old = mem::replace(&mut self.stack[base + usize::from(destination)], Value::Ref(id));
+            old.drop_with(self);
+            return true;
+        }
+
+        let value = value.clone_with_heap(self.heap);
+        let old = mem::replace(&mut self.stack[base + usize::from(destination)], value);
+        old.drop_with(self);
+        true
+    }
+
     /// Replaces native subscript operands in place; fallback retains both owned operands.
     #[inline(always)]
     #[expect(clippy::inline_always, reason = "keep native stack replacement in the dispatch loop")]
@@ -1777,6 +1896,17 @@ impl<'h> VM<'h> {
         object.drop_with(self);
         key.drop_with(self);
         true
+    }
+
+    /// Keeps temporary integer/string keys out of the handler's continuation frame.
+    #[inline(never)]
+    fn native_const_subscript_view<'a>(&'a self, object: &Value, key: u16, string: bool) -> Option<&'a Value> {
+        let key = if string {
+            Value::InternString(StringId::from_index(key))
+        } else {
+            Value::Int(i64::from(key.cast_signed()))
+        };
+        self.native_subscript_view(object, &key)
     }
 
     /// Reads native containers under one immutable VM borrow; no guest code can run.

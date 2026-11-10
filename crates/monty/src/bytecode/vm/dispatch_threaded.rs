@@ -1,6 +1,6 @@
 //! Threaded opcode dispatch with bounded batches and cold exit payloads.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
 use super::{
     AwaitResult, CallResult, CellValue, Closure, DropWithContext, ExcType, ExcTypeExt, FrameExit, FrameNamespace,
@@ -135,7 +135,7 @@ impl DispatchContext {
 #[repr(C)]
 struct DispatchTable {
     handlers: [Handler; 256],
-    checkpoints: [Handler; 4],
+    checkpoints: [Handler; 5],
 }
 
 // Preserve the scalar ABI while omitting repeated parameter types and continuation arguments.
@@ -243,7 +243,7 @@ macro_rules! opcode_handlers {
                 } )*
                 handlers
             },
-            checkpoints: [checkpoint::<0>, checkpoint::<1>, checkpoint::<2>, checkpoint::<3>],
+            checkpoints: [checkpoint::<0>, checkpoint::<1>, checkpoint::<2>, checkpoint::<3>, checkpoint::<4>],
         };
     };
 }
@@ -577,6 +577,32 @@ SetAdd => op_set_add {
 DictSetItem => op_dict_set_item {
     let depth = vm.current_frame.fetch_u8() as usize;
     try_catch!(vm, context, vm.dict_set_item(depth));
+}
+LoadSubscrLocal => op_load_subscr_local using native_subscript::<OP> {
+    let (object, key) = vm.current_frame.fetch_u8_u8();
+    try_catch!(vm, context, vm.subscript_locals(u16::from(object), u16::from(key), 0));
+}
+LoadSubscrConst => op_load_subscr_const using native_subscript::<OP> {
+    let (key, object_kind) = vm.current_frame.fetch_u16_u8();
+    let object = u16::from(object_kind & 127);
+    let flags = if object_kind & 128 != 0 { 1 } else { 2 };
+    try_catch!(vm, context, vm.subscript_locals(object, key, flags));
+}
+SubscrToLocal => op_subscr_to_local using native_subscript_store {
+    let (slots, destination) = vm.current_frame.fetch_u16_u8();
+    let [object, key] = slots.to_le_bytes();
+    if !vm.try_subscript_to_local(object, key, destination) {
+        match vm.subscript_locals_fallback(u16::from(object), u16::from(key), 0) {
+            Ok(()) => vm.store_local(u16::from(destination)),
+            Err(error) => catch!(vm, context, error),
+        }
+    }
+}
+LoadGlobalSubscr => op_load_global_subscr using native_global_subscript {
+    let operand = vm.current_frame.fetch_u16();
+    // Boundary fallback retains the original key-load/subscript continuation.
+    vm.instruction_ip += 1;
+    handle_load_result!(vm, context, vm.load_global(operand & 8191));
 }
 BinarySubscr => op_binary_subscr with inline {
     if !vm.try_native_stack_subscript() {
@@ -1657,4 +1683,133 @@ mod tests {
             );
         }
     }
+}
+
+direct_handler! {
+fn native_subscript_store(vm, bytes, ip, context, remaining, table) {
+    let object = bytes[ip];
+    let key = bytes[ip + 1];
+    let destination = bytes[ip + 2];
+    if vm.try_subscript_to_local(object, key, destination) {
+        return next!(4, ip + 3);
+    }
+    fallback!(Opcode::SubscrToLocal as u8)
+}
+}
+
+direct_handler! {
+fn native_subscript<const OP: u8>(vm, bytes, ip, context, remaining, table) {
+    let base = vm.current_frame.stack_base();
+    let (value, target) = if OP == Opcode::LoadSubscrLocal as u8 {
+        let object = &vm.stack[base + usize::from(bytes[ip])];
+        let key = &vm.stack[base + usize::from(bytes[ip + 1])];
+        (vm.native_subscript_view(object, key), ip + 2)
+    } else {
+        let key = u16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
+        let object_kind = bytes[ip + 2];
+        let object = &vm.stack[base + usize::from(object_kind & 127)];
+        (vm.native_const_subscript_view(object, key, object_kind & 128 != 0), ip + 3)
+    };
+    let Some(value) = value else {
+        return fallback!(OP);
+    };
+    let (target, remaining) = if let Value::Int(number) = value {
+        let number = *number;
+        publish_subscript_int(vm, bytes, target, remaining, number)
+    } else {
+        let value = value.clone_with_heap(vm.heap);
+        vm.push(value);
+        (target, remaining)
+    };
+    if remaining == 0 {
+        // A folded store makes the instruction width variable. Publish the
+        // source position only when the checkpoint needs it.
+        vm.instruction_ip = ip - 1;
+    }
+    next!(0, target, remaining)
+}
+}
+
+direct_handler! {
+fn native_global_subscript(vm, bytes, ip, context, remaining, table) {
+    if remaining < 2 {
+        return fallback!(Opcode::LoadGlobalSubscr as u8);
+    }
+    let operand = u16::from_le_bytes([bytes[ip], bytes[ip + 1]]);
+    let key_ip = ip + 2;
+    let base = vm.current_frame.stack_base();
+    let word = || u16::from_le_bytes([bytes[key_ip + 1], bytes[key_ip + 2]]);
+    let object = &vm.globals[usize::from(operand & 8191)];
+    let (value, width) = match operand >> 13 {
+        0 => (vm.native_subscript_view(object, &vm.globals[usize::from(word())]), 3),
+        1 => (vm.native_subscript_view(object, vm.current_frame.code.constant(word())), 3),
+        2 => {
+            let key = i16::from(bytes[key_ip + 1].cast_signed()).cast_unsigned();
+            (vm.native_const_subscript_view(object, key, false), 2)
+        }
+        3 => (vm.native_subscript_view(object, &vm.stack[base + usize::from(bytes[key_ip] - Opcode::LoadLocal0 as u8)]), 1),
+        4 => (vm.native_subscript_view(object, &vm.stack[base + usize::from(bytes[key_ip + 1])]), 2),
+        5 => (vm.native_subscript_view(object, &vm.stack[base + usize::from(word())]), 3),
+        _ => return fallback!(Opcode::LoadGlobalSubscr as u8),
+    };
+    debug_assert_eq!(bytes[key_ip + width], Opcode::BinarySubscr as u8);
+    let Some(value) = value else {
+        return fallback!(Opcode::LoadGlobalSubscr as u8);
+    };
+
+    // The original key load and subscript remain in the bytecode for fallback.
+    let target = key_ip + width + 1;
+    let remaining = remaining - 2;
+    let (target, remaining) = if let Value::Int(number) = value {
+        let number = *number;
+        publish_subscript_int(vm, bytes, target, remaining, number)
+    } else {
+        let value = value.clone_with_heap(vm.heap);
+        vm.push(value);
+        (target, remaining)
+    };
+    if remaining == 0 {
+        vm.instruction_ip = ip - 1;
+    }
+    next!(0, target, remaining)
+}
+}
+
+/// Folds an integer store using dispatch-local offsets; a checkpoint keeps the store pending.
+#[inline(always)]
+#[expect(
+    clippy::inline_always,
+    reason = "keep result publication and continuation in each handler"
+)]
+fn publish_subscript_int(vm: &mut VM<'_>, bytes: &[u8], ip: usize, remaining: u32, number: i64) -> (usize, u32) {
+    if remaining == 0 {
+        vm.push(Value::Int(number));
+        return (ip, remaining);
+    }
+
+    let (destination, width) = match bytes.get(ip).copied() {
+        Some(op) if op == Opcode::StoreLocal as u8 => {
+            let slot = usize::from(bytes[ip + 1]);
+            (&mut vm.stack[vm.current_frame.stack_base() + slot], 2)
+        }
+        Some(op) if op == Opcode::StoreLocalW as u8 => {
+            let slot = usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]));
+            (&mut vm.stack[vm.current_frame.stack_base() + slot], 3)
+        }
+        Some(op) if op == Opcode::StoreGlobal as u8 => {
+            let slot = usize::from(u16::from_le_bytes([bytes[ip + 1], bytes[ip + 2]]));
+            (&mut vm.globals[slot], 3)
+        }
+        _ => {
+            vm.push(Value::Int(number));
+            return (ip, remaining);
+        }
+    };
+    if let Value::Int(previous) = destination {
+        *previous = number;
+    } else {
+        let old = mem::replace(destination, Value::Int(number));
+        old.drop_with(vm);
+    }
+    (ip + width, remaining - 1)
 }

@@ -47,17 +47,17 @@ Use `mut ip` in the declaration when decoding operands. Const-generic families u
 
 The continuation macros expand directly to the scalar calls used by the dispatcher:
 
-| Operation | Meaning |
-| --- | --- |
-| `vm` | Stack, locals, heap and semantic operations |
-| `bytes`, `ip` | Checked bytecode access; entry IP points just after the opcode |
-| `next!(WIDTH)` | Continue at `ip`; `WIDTH` includes the opcode byte and operands |
-| `next!(WIDTH, target)` | Continue at a supplied instruction pointer |
-| `next!(WIDTH, target, budget)` | Continue after accounting for fused instructions |
-| `next_local!(OP, target)` | Select the width of a fixed, narrow or wide local opcode |
-| `fallback!(OP)` | Run the semantic handler with the original operands and entry IP |
-| `resume!()` | Reload the active frame after Python execution or a frame change |
-| `context` | Record an exit or uncaught error payload |
+| Operation                      | Meaning                                                          |
+| ------------------------------ | ---------------------------------------------------------------- |
+| `vm`                           | Stack, locals, heap and semantic operations                      |
+| `bytes`, `ip`                  | Checked bytecode access; entry IP points just after the opcode   |
+| `next!(WIDTH)`                 | Continue at `ip`; `WIDTH` includes the opcode byte and operands  |
+| `next!(WIDTH, target)`         | Continue at a supplied instruction pointer                       |
+| `next!(WIDTH, target, budget)` | Continue after accounting for fused instructions                 |
+| `next_local!(OP, target)`      | Select the width of a fixed, narrow or wide local opcode         |
+| `fallback!(OP)`                | Run the semantic handler with the original operands and entry IP |
+| `resume!()`                    | Reload the active frame after Python execution or a frame change |
+| `context`                      | Record an exit or uncaught error payload                         |
 
 Advance `ip` past decoded operands, or supply the target explicitly. `WIDTH` reconstructs the source position at a checkpoint;
 it does not advance the instruction pointer. Return the continuation's status immediately, as a tail expression or with `return`.
@@ -72,9 +72,12 @@ For a branch, set `vm.instruction_ip` to the source opcode when the countdown re
 The branch target cannot reconstruct the source position.
 For fused operations, account for every consumed opcode and preserve a checkpoint that falls between them.
 `for_iter` demonstrates the `ForIter` / `StoreLocal` case.
+Fused subscriptions also account for skipped key loads and stores.
+Four-byte instructions need the width-four checkpoint entry; variable-width continuations publish their source offset at the boundary.
 
 Keep the usual `Value` clone/drop ownership rules. A fast path must leave operands untouched when it declines an operation.
 Keep operation-local guards out of the continuation: release them before dispatching to another handler.
+Construct temporary literal keys outside the handler when passing their addresses to lookup helpers would block tail-call elimination.
 
 After changing a fast handler, run the dispatch tests and inspect release assembly or benchmarks.
 The NOP handler should still finish with an indirect tail branch; an aggregate argument or an outlined continuation

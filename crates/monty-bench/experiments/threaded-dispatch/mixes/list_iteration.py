@@ -5,4 +5,6 @@ def hot():
         for value in values:
             total += value
     return total
+
+
 assert hot() == 2_450_000

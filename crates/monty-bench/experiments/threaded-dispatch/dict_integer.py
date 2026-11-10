@@ -4,5 +4,7 @@ def hot():
     for _ in range(100_000):
         total += d[1] + d[2] + d[3]
     return total
+
+
 result = hot()
 print(result)

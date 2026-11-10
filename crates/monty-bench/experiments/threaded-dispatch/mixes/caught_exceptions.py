@@ -8,4 +8,6 @@ def hot():
         except ValueError:
             total += 2
     return total
+
+
 assert hot() == 50_500

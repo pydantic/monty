@@ -1,11 +1,14 @@
 # Threaded dispatch experiment
 
-Base: PR #1090, `ca6e09002fbbbad6f85a1b5bdacbd783f62d13c0`.
-The baseline and candidate both contain that PR's numeric fast paths.
-The candidate changes dispatch and its immediate handlers. Dictionary storage, hashing, lookup semantics and slot caching are unchanged.
+The branch combines bounded threaded dispatch, numeric handlers, borrowed native lookups and fused subscriptions.
+It is rebased onto main; [subscription measurements](SUBSCRIPTION_RESULTS.md) describe the local comparison before that rebase.
 The dispatcher is always enabled in this worktree; it has no feature switch.
 
-## Results
+## Historical dispatch-only results
+
+These measurements use PR #1090, `ca6e09002fbbbad6f85a1b5bdacbd783f62d13c0`, as the baseline.
+Both builds contain that PR's numeric fast paths, and the candidate changes dispatch and its immediate handlers.
+They predate the borrowed and fused subscription changes now included in this branch.
 
 The [handler ergonomics follow-up](HANDLER_RESULTS.md) checks the latest macro-based handlers on N-body and spectral norm.
 The measurements below describe the earlier 27-workload comparison.
@@ -110,11 +113,11 @@ Normal chains unwind after at most 256 instructions; nested VM re-entry chains u
 Both retain the baseline's first resource check after 255 instructions and subsequent checks every 256 instructions.
 Correctness therefore does not require Rust to guarantee tail calls.
 
-The unstripped experimental build shows indirect tail branches in 172 of 173 emitted opcode-handler functions.
+The historical dispatch-only build shows indirect tail branches in 172 of 173 emitted opcode-handler functions.
 The inlined subscription body retains an indirect call; its stack growth is still bounded by the trampoline.
 In that build, the NOP hot path has eight ARM64 instructions, ending in `br`, including its bounds and checkpoint checks.
 
-Validation on the final source: 1,074 core tests passed (two ignored), including 14 focused dispatch tests;
+Validation on the dispatch-only source: 1,074 core tests passed (two ignored), including 14 focused dispatch tests;
 all 103 runtime subprocess tests passed in the normal release profile. The tests cover deadlines, worker recovery,
 reference ownership, callback re-entry on a 2 MiB stack, caught errors, tracebacks, async tasks, wide locals,
 operand-stack growth, iterator mutation and arithmetic boundaries. Clippy passed with warnings denied;
@@ -181,4 +184,3 @@ cpython: 7af94281dcb14ba81b98e587d6e9b237ebf51986f0424bb4988d8568e914e9da
 ```
 
 The earlier PR-head experiment and its initial regressions are preserved in `/private/tmp/threaded-numeric-results/RESULTS.md`.
-The worktree changes remain uncommitted.

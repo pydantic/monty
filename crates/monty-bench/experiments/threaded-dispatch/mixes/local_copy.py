@@ -5,4 +5,6 @@ def hot():
         a = b
         b = a
     return a + b
+
+
 assert hot() == 46

@@ -1,6 +1,6 @@
 //! Subscription ownership, suspension, and execution limits.
 
-use std::time::Duration;
+use std::{fmt::Write, time::Duration};
 
 #[cfg(not(feature = "memory-model-checks"))]
 use monty::{Dump, Session, SessionRef, dump};
@@ -105,9 +105,16 @@ fn original_opcode_dump_still_resumes() {
 
 #[test]
 fn native_subscript_loops_observe_time_limit() {
-    for setup in ["values = [1]\nkey = 0", "values = {'key': 1}\nkey = 'key'"] {
+    for (setup, access) in [
+        ("values = [1]\nkey = 0", "values[key]"),
+        ("values = {'key': 1}\nkey = 'key'", "values[key]"),
+        ("values = [1]", "values[0]"),
+        ("values = {'key': 1}", "values['key']"),
+        ("global values\nvalues = [1]\nkey = 0", "values[key]"),
+        ("global values\nvalues = {'key': 1}", "values['key']"),
+    ] {
         let source = format!(
-            "def run():\n{}\n    while True:\n        result = values[key]\nrun()",
+            "def run():\n{}\n    while True:\n        result = {access}\nrun()",
             setup
                 .lines()
                 .map(|line| format!("    {line}"))
@@ -121,6 +128,62 @@ fn native_subscript_loops_observe_time_limit() {
             .expect_err("native hits must still reach dispatch checkpoints");
         assert_eq!(error.exc_type(), ExcType::TimeoutError);
     }
+}
+
+#[test]
+fn fused_subscripts_cross_dispatch_checkpoints_and_reentry() {
+    let mut source = String::from("global_values = [0]\ndef check(values, key):\n");
+    // Changing results expose a skipped store; repeated groups exercise both
+    // ordinary dispatch batches and the shorter chains used during __repr__.
+    for number in 1000..1260 {
+        writeln!(
+            source,
+            "    values[0] = {number}\n    global_values[0] = {number}\n    result = values[key]\n    literal = values[0]\n    external = global_values[0]\n    assert result == literal == external == {number}"
+        )
+        .unwrap();
+    }
+    source.push_str(
+        "    return result\nclass Probe:\n    def __repr__(self):\n        assert check([0], 0) == 1259\n        return 'checked'\nassert check([0], 0) == 1259\nassert repr(Probe()) == 'checked'\n",
+    );
+    let mut runner = MontyRun::new(source, "lookup.py", vec![], CompileOptions::default()).unwrap();
+    runner
+        .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+}
+
+#[test]
+fn global_and_literal_subscripts_replace_aliased_and_wide_destinations() {
+    let mut source = String::from("values = {'key': 1000}\nkey = 'key'\noutput = []\ndef run():\n    global output\n");
+    for slot in 0..300 {
+        writeln!(source, "    unused_{slot} = None").unwrap();
+    }
+    source.push_str(
+        r"
+    wide_key = 'key'
+    local_values = {'key': 1001}
+    for _ in range(300):
+        result = []
+        result = values[wide_key]
+        assert result == 1000
+        output = []
+        output = values[key]
+        assert output == 1000
+        output = local_values['key']
+        assert output == 1001
+        local_values = [local_values]
+        local_values = local_values[0]
+        assert local_values['key'] == 1001
+    return values['key']
+assert run() == 1000
+values = [1002]
+values = values[0]
+assert values == 1002
+",
+    );
+    let mut runner = MontyRun::new(source, "lookup.py", vec![], CompileOptions::default()).unwrap();
+    runner
+        .run(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
 }
 
 #[test]

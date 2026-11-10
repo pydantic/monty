@@ -8,4 +8,6 @@ def hot():
         if i == 99_999:
             total += 3
     return total
+
+
 assert hot() == 150_004
