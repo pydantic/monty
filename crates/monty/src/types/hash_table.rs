@@ -177,6 +177,41 @@ impl<E: TableEntry> PyHashTable<E> {
         table
     }
 
+    /// Copies live entries and cached hashes into an empty destination.
+    /// The caller guards the destination: on timeout it owns every entry copied so far.
+    /// `clone_entry` must retain the entry's key and cached hash without Python callbacks.
+    pub(crate) fn copy_into(
+        &self,
+        destination: &mut Self,
+        tracker: &ResourceTracker,
+        mut clone_entry: impl FnMut(&E) -> E,
+    ) -> RunResult<()> {
+        debug_assert!(destination.is_empty(), "copy_into takes an empty destination");
+        let len = self.len();
+        // Bucket rounding and control bytes fit within three words per entry,
+        // plus 32 bytes of padding for a nonempty index. Empty tables allocate neither buffer.
+        let entry_bytes = mem::size_of::<E>() + 3 * mem::size_of::<usize>();
+        let index_padding = if len == 0 { 0 } else { 32 };
+        tracker.check_allocation(len.saturating_mul(entry_bytes).saturating_add(index_padding))?;
+
+        *destination = Self::with_capacity(len);
+        for (index, entry) in self.copy_iter().enumerate() {
+            tracker.check_time_every(index)?;
+            destination.push(clone_entry(entry));
+        }
+        Ok(())
+    }
+
+    /// Live entries for a copy or snapshot, in insertion order.
+    /// An empty table can retain tombstones; omit those slots from the scan.
+    pub(crate) fn copy_iter(&self) -> Live<'_, E> {
+        let entries = if self.is_empty() { &[] } else { self.entries.as_slice() };
+        Live {
+            slots: entries.iter(),
+            remaining: self.len(),
+        }
+    }
+
     /// The live entries, in insertion order.
     ///
     /// The borrow is what makes this safe: nothing can mutate the table while

@@ -413,36 +413,19 @@ impl<'h> HeapRead<'h, Dict> {
     /// Copies entries into a plain dict, leaving type/factory selection to the caller.
     /// `dict(special)` must discard that metadata, while `.copy()` preserves it.
     pub(crate) fn copy_entries(&self, vm: &mut VM<'h>) -> RunResult<Dict> {
-        let len = self.get(vm.heap).len();
-        // Bucket rounding and control bytes fit within three words per entry,
-        // plus 32 bytes of padding for a non-empty index. Empty tables allocate neither buffer.
-        let entry_bytes = mem::size_of::<DictEntry>() + 3 * mem::size_of::<usize>();
-        let index_padding = if len == 0 { 0 } else { 32 };
-        vm.heap
-            .tracker
-            .check_allocation(len.saturating_mul(entry_bytes).saturating_add(index_padding))?;
-
-        // Copy entries with cached hashes directly into the new table, avoiding
-        // a temporary pair buffer, rehashing and Python __eq__ callbacks.
-        let mut copy = Dict::with_capacity(len);
+        let mut copy = Dict::new();
         copy.contains_refs = self.get(vm.heap).contains_refs;
-
-        // Individual removals can leave tombstones even when there are no entries to copy.
-        if len == 0 {
-            return Ok(copy);
-        }
 
         // A timeout must release every key/value reference retained so far.
         let mut copy_guard = DropGuard::new(copy, vm);
         let (copy, vm) = copy_guard.as_parts_mut();
-        for (index, entry) in self.get(vm.heap).table.live().enumerate() {
-            vm.heap.tracker.check_time_every(index)?;
-            copy.table.push(DictEntry {
+        self.get(vm.heap)
+            .table
+            .copy_into(&mut copy.table, &vm.heap.tracker, |entry| DictEntry {
                 key: entry.key.clone_with_heap(vm.heap),
                 value: entry.value.clone_with_heap(vm.heap),
                 hash: entry.hash,
-            });
-        }
+            })?;
         Ok(copy_guard.into_inner())
     }
 
