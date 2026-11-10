@@ -510,6 +510,8 @@ interface worker {
         ok,
         fatal-error(string),
         shutdown(option<list<u8>>),
+        /// The `configure` was refused: no session exists. Carries the reason.
+        session-refused(string),
     }
 
 

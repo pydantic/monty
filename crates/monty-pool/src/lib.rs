@@ -229,7 +229,10 @@ pub enum PoolError {
         /// The status or transport failure that prevented the connection.
         details: Box<RemoteDisconnect>,
     },
-    /// The pool or request configuration is invalid, or incompatible with the server.
+    /// The pool or request configuration is invalid, or incompatible with the
+    /// server. A worker or server refusing a session's `Configure` raises it
+    /// (`session refused: …`) from the request that carried it, which did not
+    /// run, or from [`Checkout::open`] when it was sent alone.
     Configuration(String),
     /// The remote server refused to open the session stream (remote transport
     /// only) with an admission code: `RESOURCE_EXHAUSTED`, `UNAVAILABLE`,

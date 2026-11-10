@@ -21,7 +21,7 @@ use bytes::Bytes;
 use h2::Reason;
 use http::{Response, StatusCode, uri::PathAndQuery};
 use monty_proto::{
-    FrameError, MAX_FRAME_LEN, encode_to_capped_vec,
+    FrameError, MAX_FRAME_LEN, OpeningRequest, encode_to_capped_vec,
     grpc::{BytesCodec, Cause, SESSION_PATH},
     pb,
 };
@@ -344,8 +344,15 @@ impl RemoteWorker {
     /// what it ended with — a final event such as a deadline's exception, then
     /// its status — is on the read side, so the turn goes on to [`Self::recv`]
     /// and reports the server's last word rather than a bare send failure.
-    pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<usize, FrameError> {
-        let body = encode_to_capped_vec(request)?;
+    pub(crate) async fn send(
+        &mut self,
+        request: &pb::ParentRequest,
+        opening: Option<&OpeningRequest<'_>>,
+    ) -> Result<usize, FrameError> {
+        let body = match opening {
+            Some(opening) => encode_to_capped_vec(opening)?,
+            None => encode_to_capped_vec(request)?,
+        };
         let len = body.len();
         match &self.requests {
             Some(requests) => {

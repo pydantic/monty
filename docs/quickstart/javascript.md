@@ -256,8 +256,12 @@ which ignores any argument:
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
 `retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
-`checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
-rejecting the session's configuration.
+`checkout()` rejects with the same classes when the session cannot be created.
+Options the binding can check, such as `osPolicy`, are rejected by `checkout()` itself.
+A worker or server rejecting the rest of the session's configuration (deeply nested `typeCheckStubs`, an unknown
+profile) raises `MontyConfigurationError` from the session's first request, which did not run, or from `getSessionId()`
+when it opens the session alone.
+On the WASM worker it is raised from `checkout()`, which configures the session there.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
@@ -421,9 +425,13 @@ No automatic retry is performed for these errors.
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
 It does not establish whether the request ran, so do not replay a disconnected request automatically.
-Either can also reject `checkout()` itself, while the session is being created.
-Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
-stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
+A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call with
+`MontyConfigurationError`.
+Against a server that stores sessions, `await session.getSessionId()` names the session, sending the configuration
+alone if no request has yet (one round trip); the `sessionId` getter is deprecated, since it is unset until then.
+`session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with the loader matching
+the stored state: `loadSession` for an idle session, `loadSnapshot` for one suspended mid-feed.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
 unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).

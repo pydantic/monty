@@ -184,9 +184,9 @@ subprocesses:
     carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
     stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
     liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
-    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release: alone
-    for an additive change older peers can ignore (see its doc comment), together with `MIN_SUPPORTED` when the
-    whole protocol changes; never on your own.
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release, when a new parent
+    could not work with an old child; `MIN_SUPPORTED_PROTOCOL_VERSION` rises only when a new child can no longer
+    serve old parents (see their doc comments). Never bump either on your own.
     Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
     `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
     conversion there and host-only binding logic in `monty-python`.
@@ -196,7 +196,12 @@ subprocesses:
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
     reads framed requests on stdin, writes framed events on stdout, serving one
     REPL session per checkout. Strict alternation: one request in, zero or more
-    streamed `Print` events out, then exactly one turn-ending event.
+    streamed `Print` events out, then exactly one turn-ending event. The
+    session's `Configure` carries its first `Feed` or `Load` (`Configure.first`),
+    so one round trip opens the session and runs it; a refused `Configure` is
+    answered `SessionRefused`, and the request does not run. The child
+    arms the session's memory ceiling (`EventSink::session_opened`) before
+    running the request.
 - `PoolConfig::execution_clock` selects wall time (default) or native thread CPU time for all local sessions.
     A remote gRPC server selects its own clock and reports it to clients; session limits cannot override it.
     CPU mode needs Linux workers, so it needs no `unsafe`: `Pool::new` rejects it for subprocess pools elsewhere and
