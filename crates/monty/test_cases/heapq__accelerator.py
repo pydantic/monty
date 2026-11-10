@@ -15,7 +15,7 @@ names = [
     'heapify_max',
 ]
 for name in names:
-    assert getattr(heapq, name) is getattr(_heapq, name), name
+    assert getattr(heapq, name) is getattr(_heapq, name)
 
 # The accelerator works on its own.
 h = []
@@ -43,13 +43,13 @@ assert m == [2, 1, 0]
 try:
     _heapq.heappush([], item=1)
 except TypeError as e:
-    assert str(e) == '_heapq.heappush() takes no keyword arguments', str(e)
+    assert str(e) == '_heapq.heappush() takes no keyword arguments'
 else:
     assert False, 'did not raise'
 
 try:
     _heapq.heappop(())
 except TypeError as e:
-    assert str(e) == 'heappop() argument must be list, not tuple', str(e)
+    assert str(e) == 'heappop() argument must be list, not tuple'
 else:
     assert False, 'did not raise'

@@ -5,7 +5,7 @@ def raises(exc, message, func, *args, **kwargs):
     try:
         func(*args, **kwargs)
     except exc as e:
-        assert str(e) == message, (str(e), message)
+        assert str(e) == message
     else:
         assert False, 'did not raise'
 
@@ -89,6 +89,6 @@ assert heapq.nsmallest(5, big) == sorted(big)[:5]
 # Exact layout of a heap just above the cache-friendly threshold matches CPython.
 layout = [(i * 31) % 2601 for i in range(2601)]
 heapq.heapify(layout)
-assert layout[:12] == [0, 3, 1, 8, 6, 15, 2, 13, 11, 12, 20, 26], layout[:12]
-assert layout[-6:] == [2415, 2446, 2480, 2508, 2539, 2570], layout[-6:]
+assert layout[:12] == [0, 3, 1, 8, 6, 15, 2, 13, 11, 12, 20, 26]
+assert layout[-6:] == [2415, 2446, 2480, 2508, 2539, 2570]
 assert sum(i * v for i, v in enumerate(layout)) == 5187294727
