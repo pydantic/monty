@@ -360,6 +360,48 @@ except json.JSONDecodeError as e:
     assert inner.doc == '[1,\n2,]'
 
 
+@pytest.mark.parametrize(
+    'doc,kept',
+    [
+        pytest.param('x' * 65536, True, id='ascii-at-cap'),
+        pytest.param('x' * 65537, False, id='ascii-over-cap'),
+        # under the cap in code points but over it in UTF-8 bytes
+        pytest.param('é' * 32769, False, id='multibyte-over-cap'),
+    ],
+)
+def test_external_function_json_decode_error_doc_cap(monty_run: RunMonty, doc: str, kept: bool):
+    """A host `JSONDecodeError` document over the 64 KiB UTF-8 cap is dropped,
+    surfacing as `''`, while its location attributes still cross."""
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise json.JSONDecodeError('Expecting value', doc, 3)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('fail()', external_lookup={'fail': fail})
+    inner = exc_info.value.exception()
+    assert type(inner) is json.JSONDecodeError
+    assert (inner.lineno, inner.colno, inner.pos) == snapshot((1, 4, 3))
+    assert inner.doc == (doc if kept else '')
+
+
+def test_external_function_json_decode_error_doc_len_override(monty_run: RunMonty):
+    """The doc cap measures the string itself, ignoring a `str` subclass's
+    `__len__`, so an override cannot drop the structured payload."""
+
+    class Doc(str):
+        def __len__(self) -> int:
+            raise RuntimeError('len called')
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise json.JSONDecodeError('Expecting value', Doc('[1,\n2,]'), 6)
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('fail()', external_lookup={'fail': fail})
+    inner = exc_info.value.exception()
+    assert type(inner) is json.JSONDecodeError
+    assert inner.doc == '[1,\n2,]'
+
+
 def test_external_function_json_decode_error_missing_attributes(monty_run: RunMonty):
     """A host `JSONDecodeError` stripped of one of its attributes crosses into
     the sandbox message-only (the structured capture is all-or-nothing), so it
