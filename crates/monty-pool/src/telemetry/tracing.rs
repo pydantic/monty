@@ -20,7 +20,7 @@ use std::{
 use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireArena, WireFunctionCall, pb, pb::os_call::Call};
 use monty_types::{
-    MontyUuid, SourceRange, bytes_repr,
+    DEFAULT_MAX_SUSPENSIONS, MontyUuid, SourceRange, bytes_repr,
     unstable::{MontyNode, NodeId},
 };
 use opentelemetry::Value as OtelValue;
@@ -61,6 +61,9 @@ pub(crate) struct Recorder {
     streamed_calls: BTreeMap<u32, OpenSpan>,
     /// Rendered argument bytes `streamed_calls` hold, capped at [`STREAMED_ARGS_ATTR_LIMIT`].
     streamed_arg_bytes: usize,
+    /// Most entries `streamed_calls` holds: the session's `max_suspensions`, since
+    /// the checkout drops calls past it, whose spans would never be settled.
+    max_streamed_calls: usize,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -85,6 +88,7 @@ impl Recorder {
             pending: None,
             streamed_calls: BTreeMap::new(),
             streamed_arg_bytes: 0,
+            max_streamed_calls: DEFAULT_MAX_SUSPENSIONS,
             feed: None,
             session: None,
             dump_turn: false,
@@ -118,6 +122,7 @@ impl Recorder {
         self.clear_streamed_calls();
         self.feed = None;
         let limits = c.limits.as_ref();
+        self.max_streamed_calls = streamed_call_cap(limits.and_then(|l| l.max_suspensions));
         let (script_name, script_name_cut) = truncate_str(&c.script_name);
         let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
         let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
@@ -322,6 +327,10 @@ impl Recorder {
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
         let max_feed_duration = event.max_feed_duration_micros;
+        // a `Load` reply carries the dump's limit, which the checkout re-adopts
+        if let Some(max_suspensions) = event.max_suspensions {
+            self.max_streamed_calls = streamed_call_cap(Some(max_suspensions));
+        }
         // only a `Load` reply carries this: the session span already exists with
         // the `Configure` name, so the dump's name goes on the load span
         if let (Some(script_name), Some(load)) = (&event.restored_script_name, &self.turn) {
@@ -350,6 +359,12 @@ impl Recorder {
             // feed, until the `ResumeFutures` carrying the call's result
             Some(pb::child_event::Kind::StreamedCalls(started)) => {
                 for c in &started.calls {
+                    // a worker can stream past the quota; those calls never run, so get no span
+                    if self.streamed_calls.len() >= self.max_streamed_calls
+                        && !self.streamed_calls.contains_key(&c.call_id)
+                    {
+                        continue;
+                    }
                     let (args, kwargs, cut) = render_call_arguments(c);
                     let bytes = args.as_ref().map_or(0, String::len) + kwargs.as_ref().map_or(0, String::len);
                     // open spans keep their attributes, so past the cap a call records none
@@ -1076,6 +1091,14 @@ const ATTR_SIZE_LIMIT: usize = 64 * 1024;
 /// otherwise keep 128 MiB of telemetry alive.
 const STREAMED_ARGS_ATTR_LIMIT: usize = 1024 * 1024;
 
+/// The open streamed-call span cap for a session's `max_suspensions`
+/// (absent means the default, as in `ResourceLimits`).
+fn streamed_call_cap(max_suspensions: Option<u64>) -> usize {
+    max_suspensions.map_or(DEFAULT_MAX_SUSPENSIONS, |limit| {
+        usize::try_from(limit).unwrap_or(usize::MAX)
+    })
+}
+
 /// Renders the value rooted at `id` in `nodes` as a typed OTel attribute:
 /// scalars keep their native attribute type, everything else becomes
 /// logfire-style JSON text. The bool is true when [`ATTR_SIZE_LIMIT`] cut the
@@ -1455,6 +1478,27 @@ mod tests {
             .filter(|span| !span.attributes.iter().any(|kv| kv.key.as_str() == "args"))
             .count();
         assert_eq!(unrecorded, capped);
+    }
+
+    /// Calls past the session's `max_suspensions` open no span: the checkout
+    /// drops them, so nothing would ever settle one.
+    #[test]
+    fn streamed_call_spans_stop_at_the_suspension_limit() {
+        let (logfire, _spans, _logs) = test_logfire();
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
+        recorder.begin_session(&pb::Configure {
+            limits: Some(pb::ResourceLimits {
+                max_suspensions: Some(2),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let call = |call_id| WireFunctionCall::new("f".to_owned(), CallArgs::new(), call_id, None, false, position());
+        recorder.event(&event(pb::child_event::Kind::StreamedCalls(pb::StreamedCalls {
+            calls: (0..5).map(call).collect::<Vec<_>>().into(),
+        })));
+        assert_eq!(recorder.streamed_calls.keys().copied().collect::<Vec<_>>(), [0, 1]);
     }
 
     /// A `Configure` carrying the first feed opens the session span before the
