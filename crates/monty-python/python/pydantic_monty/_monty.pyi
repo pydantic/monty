@@ -533,7 +533,7 @@ class MontyCrashedError(MontyError):
 
     @property
     def timed_out(self) -> bool:
-        """`True` when a parent-side elapsed-time or CPU watchdog killed the worker."""
+        """`True` when a client-side elapsed-time or CPU watchdog killed the worker."""
 
     @property
     def exit_status(self) -> int | None:
@@ -735,7 +735,7 @@ class Monty:
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
                 before raising `TimeoutError`. `None` waits forever.
-            request_timeout: Per-turn parent-side deadline in seconds — a worker
+            request_timeout: Per-turn client-side deadline in seconds — a worker
                 that exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
@@ -1122,7 +1122,7 @@ class AsyncMontyRemote:
     Async context manager owning a pool of remote `monty` workers reached over
     gRPC: one HTTP/2 connection to the configured URL, one stream per session.
     The intended peer is `monty-server` (the production server: one
-    `monty subprocess` child per stream, plus capacity/timeout policy and
+    `monty subprocess` worker per stream, plus capacity/timeout policy and
     graceful drain), but any server that admits the stream and bridges it to
     a worker fits — e.g. the dev relay `scripts/grpc_relay.py`.
 

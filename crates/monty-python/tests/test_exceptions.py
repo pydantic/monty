@@ -440,7 +440,7 @@ ValueError: test message\
 
 def test_multiline_span_traceback(monty_run: RunMonty):
     # Regression test for #631: a frame spanning multiple lines can end on a
-    # lower column than it starts (hanging-indent `)`); the parent-side wire
+    # lower column than it starts (hanging-indent `)`); the client-side wire
     # validation used to reject the whole exception payload as malformed.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('def f(a):\n    raise ValueError("boom")\n\nr = f(\n    a=1,\n)\n')

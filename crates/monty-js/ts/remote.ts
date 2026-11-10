@@ -1,6 +1,6 @@
 // The remote pool: `MontyRemote` holds one HTTP/2 connection to a gRPC
 // server and opens a session stream per checkout instead of spawning local
-// `monty subprocess` children. Dialing, framing, auto-resume after a server
+// `monty subprocess` workers. Dialing, framing, auto-resume after a server
 // drain and the per-turn watchdog all live in the native `monty-pool` crate
 // (shared with pydantic_monty's AsyncMontyRemote); sessions are the same
 // `MontySession` a local pool hands out.

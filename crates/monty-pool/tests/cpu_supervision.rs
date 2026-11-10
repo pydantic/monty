@@ -164,7 +164,7 @@ async fn suspensions_and_zero_reports_cannot_refund_the_feed_budget() {
                 .resume(ResumeValue::Return(MontyObject::none()), &mut no_print)
                 .await;
         }
-        assert!(turns >= 2, "host wait was charged to the child");
+        assert!(turns >= 2, "host wait was charged to the worker");
         assert!(matches!(outcome, Err(PoolError::CpuLimit { .. })), "{outcome:?}");
         assert_eq!(child.pid(), None);
         drop(child);
@@ -208,8 +208,8 @@ async fn raw_typing_errors_end_the_feed() {
             .unwrap_err();
         assert!(matches!(error, PoolError::Protocol(ref message)
             if message == "ModuleFile is only valid answering an import with a search path"));
-        let resume = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+        let resume = pb::ClientRequest {
+            kind: Some(pb::client_request::Kind::ResumeCall(pb::ResumeCall {
                 call_id: IMPORT_STUBS_CALL_ID,
                 result: Some(pb::ExtFunctionResult {
                     kind: Some(pb::ext_function_result::Kind::NotHandled(pb::Unit {})),
@@ -219,11 +219,13 @@ async fn raw_typing_errors_end_the_feed() {
             ..Default::default()
         };
         let event = child
-            .turn_raw(&resume, &mut |_: &pb::ChildEvent| Box::pin(ready(())))
+            .turn_raw(&resume, &mut |_: &pb::WorkerEvent| Box::pin(ready(())))
             .await
             .unwrap();
-        assert!(matches!(event.kind, Some(pb::child_event::Kind::TypingError(ref error))
-            if error.diagnostics == "synthetic typing rejection"));
+        assert!(
+            matches!(event.kind, Some(pb::worker_event::Kind::TypingError(ref error))
+            if error.diagnostics == "synthetic typing rejection")
+        );
         assert_eq!(event.feed_suspended, Some(false));
         let event = child
             .feed("complete", vec![], vec![], false, &mut no_print)

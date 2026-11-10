@@ -109,7 +109,7 @@ that sandboxed code cannot catch.
 
 On protobuf transports, the receiver also limits cumulative decoded allocation requests to 1 GiB per frame.
 A message can exceed this budget even if its final decoded values occupy less than 1 GiB.
-A parent receiving such a frame discards the worker with a protocol error.
+A client receiving such a frame discards the worker with a protocol error.
 The browser component separately limits its WIT value arenas to an estimated 1 GiB.
 Protocol validation and accounting are described in the
-[`monty-proto` README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#children-are-untrusted).
+[`monty-proto` README](https://github.com/pydantic/monty/blob/main/crates/monty-proto/README.md#workers-are-untrusted).
