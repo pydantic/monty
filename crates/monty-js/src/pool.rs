@@ -18,8 +18,8 @@
 //! mid-turn through a threadsafe function; the turn awaits each JS callback
 //! (`call_async`), preserving print ordering and backpressure. Calls to async
 //! host functions the worker streams are announced the same way and in order
-//! with prints, on the session's streamed-call sink (see
-//! [`NativeSession::set_streamed_call_sink`]), so the host starts them mid-turn. The checkout
+//! with prints, on the callback `feedRun` passes to [`NativeSession::feed`], so
+//! the host starts them mid-turn. The checkout
 //! mutex (a tokio mutex) is held for a whole turn: event-loop-thread methods
 //! must never block on it (`worker_pid` uses `try_lock`, everything else
 //! locks inside the spawned future).
@@ -75,12 +75,9 @@ type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
 /// threadsafe function.
 type PrintCallback<'env> = Function<'env, FnArgs<(String, String, Option<String>)>, UnknownReturnValue>;
 
-/// The JS callback announcing a streamed call: its call ID and the span key of
-/// its telemetry context.
-type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, u32, Option<String>)>, UnknownReturnValue>;
-/// Announces one streamed call to JS as `(feedId, callId, spanKey)` and resolves once the callback has run.
-type StreamedCallAnnouncer =
-    Arc<dyn Fn(u32, u32, Option<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+/// The per-feed JS callback announcing a streamed call: its call ID and the
+/// span key of its telemetry context.
+type StreamedCallCallback<'env> = Function<'env, FnArgs<(u32, Option<String>)>, UnknownReturnValue>;
 
 fn callback_span_key(context: &Context) -> Option<String> {
     let span = context.span();
@@ -235,7 +232,7 @@ pub struct NativeCheckoutOptions {
 /// Per-feed settings other than the mounts, passed by the TypeScript
 /// `MontySession` from its feed options.
 #[napi(object, js_name = "NativeFeedOptions")]
-pub struct NativeFeedOptions {
+pub struct NativeFeedOptions<'env> {
     /// Absolute virtual working directory; unset takes the first mount, else `/`.
     pub cwd: Option<String>,
     /// Skip type checking for this feed even when the session enables it.
@@ -244,9 +241,9 @@ pub struct NativeFeedOptions {
     /// starts without waiting; unset makes every call suspend, as `feedStart()`
     /// needs (see `Checkout::set_async_functions`).
     pub async_functions: Option<Vec<String>>,
-    /// Names this feed's streamed calls on the session's sink, so TypeScript
-    /// routes each to the `feedRun` that made it.
-    pub feed_id: Option<u32>,
+    /// Receives the feed's streamed calls through all its turns; only `feedRun`
+    /// passes one, and without it every call suspends.
+    pub on_streamed_call: Option<StreamedCallCallback<'env>>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -429,7 +426,6 @@ impl NativePool {
             checkout: Arc::new(AsyncMutex::new(None)),
             session_id: Arc::new(Mutex::new(None)),
             announced_calls: Arc::new(Mutex::new(HashMap::new())),
-            streamed_call_sink: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -517,30 +513,11 @@ pub struct NativeSession {
     /// Streamed calls announced mid-turn, by call ID, until TypeScript takes
     /// them with [`NativeSession::take_streamed_call`].
     announced_calls: Arc<Mutex<HashMap<u32, StreamedCall>>>,
-    /// Set by [`NativeSession::set_streamed_call_sink`]; without it no feed streams calls.
-    streamed_call_sink: Arc<Mutex<Option<StreamedCallAnnouncer>>>,
 }
 
 #[napi]
 impl NativeSession {
-    /// Installs the callback feeds given `asyncFunctions` announce their streamed
-    /// calls on, as `(feedId, callId, spanKey)` while the turn runs. The turn awaits each,
-    /// in order with prints, so TypeScript registers the call's future before the
-    /// next frame. Weak, so an idle session does not keep Node's event loop alive.
-    #[napi]
-    pub fn set_streamed_call_sink(&self, callback: StreamedCallCallback<'_>) -> Result<()> {
-        let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
-        let announcer: StreamedCallAnnouncer = Arc::new(move |feed_id, call_id, span_key| {
-            let tsfn = Arc::clone(&tsfn);
-            Box::pin(async move {
-                let _ = tsfn.call_async(FnArgs::from((feed_id, call_id, span_key))).await;
-            })
-        });
-        *lock(&self.streamed_call_sink) = Some(announcer);
-        Ok(())
-    }
-
-    /// Takes the streamed call announced mid-turn on the streamed-call sink,
+    /// Takes the streamed call announced mid-turn to a feed's `on_streamed_call`,
     /// converted to a JS object; `null` once taken.
     #[napi]
     pub fn take_streamed_call<'env>(&self, env: &'env Env, call_id: u32) -> Result<Option<Object<'env>>> {
@@ -617,7 +594,7 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<ClassInstance<'env, NativeMountDir>>,
-        options: NativeFeedOptions,
+        options: NativeFeedOptions<'env>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
@@ -626,13 +603,11 @@ impl NativeSession {
             cwd,
             skip_type_check,
             async_functions,
-            feed_id,
+            on_streamed_call,
         } = options;
-        // only a feed with `asyncFunctions` (`feedRun`) streams, to the session's sink
-        let handler = async_functions
-            .is_some()
-            .then(|| self.streamed_call_handler(feed_id.unwrap_or_default()))
-            .flatten();
+        let handler = on_streamed_call
+            .map(|callback| self.streamed_call_handler(callback))
+            .transpose()?;
         self.run_turn(
             env,
             on_print,
@@ -640,9 +615,12 @@ impl NativeSession {
                 Box::pin(async move {
                     checkout.set_async_functions(async_functions);
                     checkout.set_streamed_call_handler(handler);
-                    checkout
+                    let outcome = checkout
                         .feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, on_print)
-                        .await
+                        .await;
+                    // a refused feed never adopted its handler; drop it, as monty-python does
+                    checkout.set_streamed_call_handler(None);
+                    outcome
                 })
             }),
         )
@@ -1074,17 +1052,22 @@ impl NativeSession {
         )
     }
 
-    /// The checkout handler announcing each of feed `feed_id`'s streamed calls on
-    /// the session's sink: the call waits in `announced_calls` for
-    /// `take_streamed_call`. `None` before TypeScript installs a sink.
-    fn streamed_call_handler(&self, feed_id: u32) -> Option<OnStreamedCall> {
-        let announcer = lock(&self.streamed_call_sink).clone()?;
+    /// The checkout handler announcing each of one feed's streamed calls to
+    /// `callback`, awaited in order with prints so TypeScript registers the call's
+    /// future before the next frame; the call waits in `announced_calls` for
+    /// `take_streamed_call`. The checkout owns the handler, so `finish` releases
+    /// it, and weak, so an idle session does not keep Node's event loop alive.
+    fn streamed_call_handler(&self, callback: StreamedCallCallback<'_>) -> Result<OnStreamedCall> {
+        let tsfn = Arc::new(callback.build_threadsafe_function().weak::<true>().build()?);
         let announced_calls = Arc::clone(&self.announced_calls);
-        Some(Box::new(move |call: StreamedCall| {
+        Ok(Box::new(move |call: StreamedCall| {
             let call_id = call.call_id;
             let span_key = callback_span_key(&call.callback_context);
             lock(&announced_calls).insert(call_id, call);
-            announcer(feed_id, call_id, span_key)
+            let tsfn = Arc::clone(&tsfn);
+            Box::pin(async move {
+                let _ = tsfn.call_async(FnArgs::from((call_id, span_key))).await;
+            })
         }))
     }
 

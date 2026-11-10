@@ -145,12 +145,17 @@ export class WorkerTransport {
     return transport
   }
 
-  /** Feeds one snippet and eagerly converts its named inputs. */
+  /** Feeds one snippet and eagerly converts its named inputs. `options.onStreamedCall`
+   *  is never called: wasm workers suspend at every host call. */
   feed(
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    options: { cwd?: string; skipTypeCheck: boolean },
+    options: {
+      cwd?: string
+      skipTypeCheck: boolean
+      onStreamedCall?: (callId: number, parent?: string | null) => void
+    },
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -285,10 +290,6 @@ export class WorkerTransport {
     }))
     return this.turn({ tag: 'resume-futures', val: { results: settled, values: encoder.finish() } }, onPrint)
   }
-
-  /** A no-op matching `NativeSession.setStreamedCallSink`: wasm workers
-   *  suspend at every host call, so nothing is ever streamed. */
-  setStreamedCallSink(_callback: (feedId: number, callId: number, parent?: string | null) => void): void {}
 
   /** Dumps the current session into opaque bytes, or resolves to the failure
    *  turn; takes `onPrint` to match `NativeSession.dump`, never invoking it. */

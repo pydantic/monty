@@ -207,11 +207,6 @@ export class MontySession {
    *  wrapper sent through any boundary of this session lives here so method
    *  calls, lazy lookups and returns route back to the original object. */
   private readonly instances = new InstanceStore()
-  /** Starts a call the worker streamed mid-turn, by the ID of the running `feedRun` that made it;
-   *  each is bound to that feed's answerer and async context. */
-  private readonly streamedCallHandlers = new Map<number, (callId: number, parent?: string | null) => void>()
-  /** The last feed ID handed to the native session. */
-  private lastFeedId = 0
 
   /** @internal — sessions are created by `Monty.checkout`, which validates the modules first. */
   constructor(
@@ -221,16 +216,6 @@ export class MontySession {
   ) {
     this.native = native
     this.workerId = native.workerId ?? undefined
-    native.setStreamedCallSink((feedId, callId, parent) => {
-      const handler = this.streamedCallHandlers.get(feedId)
-      if (handler !== undefined) {
-        handler(callId, parent)
-      } else {
-        // only `feedRun` asks the worker to stream calls: drop the call and refuse the session
-        this.native.takeStreamedCall(callId)
-        this.poison(new ProtocolError('worker streamed a host call outside feedRun()'))
-      }
-    })
   }
 
   /**
@@ -248,7 +233,7 @@ export class MontySession {
     // Discard pending futures between feeds.
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
     const onPrint = bindPrintCallback((stream, text) => printTarget.write(stream, text))
-    // streamed calls arrive on the session's sink mid-turn, so each starts while the sandbox runs
+    // streamed calls arrive mid-turn, so each starts while the sandbox runs
     const onStreamedCall = bindStreamedCallCallback((callId) => {
       if (printTarget.hasFailed()) {
         // a failed print ends the feed, so no host call may start after one;
@@ -258,25 +243,17 @@ export class MontySession {
         answerer.startStreamedCall(callId)
       }
     })
-    // keyed by feed, so a second `feedRun` the worker refuses cannot take this one's calls
-    const feedId = ++this.lastFeedId
-    this.streamedCallHandlers.set(feedId, onStreamedCall)
-    try {
-      return await this.driveFeed(code, options, feedId, printTarget, answerer, onPrint)
-    } finally {
-      // later turns (`feedStart`, dumps) must not reach this feed's host functions
-      this.streamedCallHandlers.delete(feedId)
-    }
+    return this.driveFeed(code, options, printTarget, answerer, onPrint, onStreamedCall)
   }
 
   /** `feedRun`'s drive loop: feeds `code`, then answers each suspension until the turn ends. */
   private async driveFeed(
     code: string,
     options: FeedOptions,
-    feedId: number,
     printTarget: PrintTarget,
     answerer: TurnAnswerer,
     onPrint: ReturnType<typeof bindPrintCallback>,
+    onStreamedCall: ReturnType<typeof bindStreamedCallCallback>,
   ): Promise<unknown> {
     let turn = (await this.native.feed(
       code,
@@ -286,7 +263,8 @@ export class MontySession {
         cwd: options.cwd,
         skipTypeCheck: options.skipTypeCheck ?? false,
         asyncFunctions: asyncFunctionNames(options.externalLookup),
-        feedId,
+        // the native checkout keeps it for this feed's later turns and drops it with the session
+        onStreamedCall,
       },
       onPrint,
     )) as NativeTurn
@@ -472,14 +450,7 @@ export class MontySession {
   private newDriver(options: FeedStartOptions | LoadSnapshotOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
     const answerer = new TurnAnswerer(this.native, this.instances, options.externalLookup, this.modules, options.os)
-    return new SnapshotDriver(
-      this.native,
-      this.instances,
-      printTarget,
-      answerer,
-      (err) => this.poison(err),
-      () => this.broken,
-    )
+    return new SnapshotDriver(this.native, this.instances, printTarget, answerer, (err) => this.poison(err))
   }
 
   /**
@@ -764,8 +735,8 @@ class TurnAnswerer {
   }
 
   /**
-   * Starts a call the native session announced mid-turn on its streamed-call
-   * sink (see `setStreamedCallSink` in src/pool.rs), registering its future at once so a later `resolveFutures`
+   * Starts a call the native session announced mid-turn to the feed's streamed-call
+   * callback (see `NativeSession::feed` in src/pool.rs), registering its future at once so a later `resolveFutures`
    * finds it. Runs in the call's callback context, in order with the turn's prints.
    */
   startStreamedCall(callId: number): void {
@@ -1252,17 +1223,10 @@ class SnapshotDriver {
     private readonly printTarget: PrintTarget,
     private readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
-    /** The session's poison, set by its streamed-call sink when a call arrives during this drive. */
-    private readonly broken: () => Error | null,
   ) {}
 
   /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
-    // `feedStart` never streams calls; one announced anyway poisoned the session
-    const broken = this.broken()
-    if (broken !== null) {
-      throw broken
-    }
     for (;;) {
       switch (turn.kind) {
         case 'complete':
