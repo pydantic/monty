@@ -31,10 +31,10 @@ use super::{
 /// Most visits one scan may make (see [`ScanSource::visit`]), bounding the
 /// host work of one suspension, which no turn limit sees.
 ///
-/// A glob within [`check_wildcard_parts`] makes at most two per entry for each
-/// wildcard part, so one over the default memory limit's ~390K entries stays
-/// below this. It stops what that cap does not bound: the repeats of a final
-/// `**`, and literal parts listed for an explicit `case_sensitive`.
+/// [`check_wildcard_parts`] holds a glob to two per entry for each wildcard
+/// part, under this for the ~390K entries the default memory limit admits.
+/// This stops what that cap leaves unbounded: the repeats of a final `**`,
+/// and literal parts listed for an explicit `case_sensitive`.
 const MAX_SCAN_VISITS: u64 = 10_000_000;
 
 /// Runs a scan rooted in `mounts[root]`, replying with a glob's matches or the

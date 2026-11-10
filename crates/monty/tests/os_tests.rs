@@ -2031,7 +2031,13 @@ fn glob_refuses_too_many_wildcard_parts() {
         run_to_error(code),
         "ValueError: glob pattern has 9 wildcard parts, more than the 8 supported"
     );
-    // a run of `**` is one part, and `rglob` adds one
+    // `rglob` prepends a `**`, which counts as a part
+    let code = "from pathlib import Path\nPath('r').rglob('*/' * 7 + '*.py')";
+    assert_eq!(
+        run_to_error(code),
+        "ValueError: glob pattern has 9 wildcard parts, more than the 8 supported"
+    );
+    // unless the pattern leads with `**`: the run is one part, so this has 8
     let code = "from pathlib import Path\nlist(Path('r').rglob('**/' + '*/' * 6 + 'x*'))";
     assert_eq!(run_with_scan_reply(code, vec![entry("", 'd')]), MontyObject::list([]));
 }

@@ -114,9 +114,10 @@ Consequences of the shared budget that have no CPython analogue:
     directory it reaches a bounded number of times whatever the tree holds.
 - A scan may examine at most 10,000,000 entries, counting each entry at each pattern part that lists it and each
     directory a glob lists, then raises `RuntimeError: directory scan examined more than 10000000 entries`.
-    A glob within the wildcard cap stays below that on a tree the default memory limit admits.
-    CPython has no such cap; it bounds a final `**` after other wildcards (`**/*/**` yields an entry once per
-    ancestor), literal parts listed for an explicit `case_sensitive`, and walks through symlink cycles.
+    Each wildcard part costs at most two per entry read, so a glob reaches the cap on a tree the default memory
+    limit admits only through what the wildcard cap leaves unbounded: a final `**` after other wildcards
+    (`**/*/**` yields an entry once per ancestor) and literal parts listed for an explicit `case_sensitive`.
+    A walk reaches it through symlink cycles. CPython has no such cap.
 - Paths deeper than [64 components](#at-most-64-path-components) are not listed, so a walk stops there.
 - `OverlayMemory` never follows symlinks, so a scan there reports them as neither files nor directories.
 - A symlink whose target is missing or outside the mount is left out, as `iterdir()` leaves it out and the

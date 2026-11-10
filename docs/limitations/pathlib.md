@@ -91,8 +91,8 @@ Pattern semantics follow CPython 3.14's: hidden files match `*`, `**` descends o
     One that climbs above the directory being globbed matches nothing.
     Leading `..` parts work as in CPython, including their spelling.
 - **At most 8 wildcard parts**: parts containing `*`, `?` or `[`, a run of `**` counting once, and `rglob()` adding
-    one. More raises `ValueError: glob pattern has 9 wildcard parts, more than the 8 supported` when the method is
-    called, whatever host serves the scan. CPython has no such cap.
+    one. More raises `ValueError` naming the count (`glob pattern has 9 wildcard parts, more than the 8 supported`)
+    when the method is called, whatever host serves the scan. CPython has no such cap.
 - **Duplicates** that CPython yields for overlapping recursive patterns (`'**/*/**'`) may not be repeated.
 - **Unreadable subdirectories read as empty**, so `walk(on_error=...)` is only called for the top directory, or for
     a name added to `dirnames` that is not a directory.
