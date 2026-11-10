@@ -259,6 +259,19 @@ complete-tests: ## Fill in incomplete test expectations using CPython
 generate-unicode-type: ## Regenerate the str character-property tables from the current CPython
 	uv run scripts/gen_unicode_type.py
 
+.PHONY: vendor-stdlib
+vendor-stdlib: ## Download the CPython stdlib modules listed in crates/monty/stdlib/vendor.toml
+	uv run scripts/vendor_stdlib.py
+
+.PHONY: check-stdlib
+check-stdlib: ## Verify the vendored CPython stdlib modules match the pinned CPython release
+	uv run scripts/vendor_stdlib.py --check
+
+.PHONY: stdlib-candidates
+stdlib-candidates: ## Report which CPython stdlib modules Monty can load, and the first blocker of each
+	cargo build -p monty-runtime --bin monty
+	uv run scripts/stdlib_candidates.py
+
 .PHONY: check-unicode-type
 check-unicode-type: generate-unicode-type ## Verify the checked-in str character-property tables match the current CPython
 	git diff --exit-code crates/monty/src/types/unicode_type_data.rs

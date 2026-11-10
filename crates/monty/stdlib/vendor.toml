@@ -1,0 +1,15 @@
+# CPython stdlib modules Monty bundles as CPython's own Python source.
+# Edit this file, then run `make vendor-stdlib`; `make check-stdlib` verifies the vendored copies.
+# `patches/*.patch` are applied in file-name order: to add one, edit `Lib/`, then run
+# `uv run scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'`.
+# Run `make stdlib-candidates` to see which modules Monty can load, and what blocks the rest.
+
+# The CPython release the files below are copied from.
+tag = "v3.14.10"
+
+# Paths under CPython's `Lib/`; `pkg/__init__.py` makes `pkg` a package.
+files = [
+    "colorsys.py",
+    "keyword.py",
+    "stat.py",
+]

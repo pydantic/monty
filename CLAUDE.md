@@ -52,6 +52,20 @@ borrowed/owned storage access are exported only through `monty_types::unstable`.
 These representation APIs carry no API compatibility guarantee; prefer value constructors and accessors elsewhere.
 The unstable `object_from_graph`, `call_args_from_parts` and `named_values_from_parts` constructors check the roots.
 
+## Vendored CPython stdlib (`crates/monty/stdlib/`)
+
+Pure-Python stdlib modules are bundled as CPython's own source rather than ported to Rust (#1275).
+`crates/monty/stdlib/vendor.toml` pins a CPython tag and lists the files under `Lib/`; `make vendor-stdlib` downloads
+them and CPython's `LICENSE`, applies the patches, and generates `crates/monty/src/modules/bundled/sources.rs`.
+Never edit those by hand: `make check-stdlib` (CI) fails on any difference from the pinned release.
+Prefer fixing Monty to patching CPython's source. When a patch is unavoidable, edit `Lib/` and save the edit with
+`scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'` into `crates/monty/stdlib/patches/`, applied in
+file-name order with no fuzz; a patch that changes behaviour also needs a `limitations/` entry.
+An import finds them after the native `StandardLib` modules and before the host (`module_finder.rs`), running them like
+a module from a file with no OS call. A newly vendored module also goes in `SANDBOX_MODULE_NAMES`, the typeshed
+`COPY_FILES`/`VERSIONS`, `limitations/modules.md` and a `test_cases` file.
+Only list modules that load: `make stdlib-candidates` reports each candidate's first blocker.
+
 ## Cross-Platform Requirements
 
 Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
@@ -561,6 +575,9 @@ make testcov              Run Rust tests with coverage, print table, and generat
 make complete-tests       Fill in incomplete test expectations using CPython
 make generate-unicode-type Regenerate the str character-property tables from the current CPython
 make check-unicode-type   Verify the checked-in str character-property tables match the current CPython
+make vendor-stdlib        Download the CPython stdlib modules listed in crates/monty/stdlib/vendor.toml
+make check-stdlib         Verify the vendored CPython stdlib modules match the pinned CPython release
+make stdlib-candidates    Report which CPython stdlib modules Monty can load, and the first blocker of each
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
 make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)

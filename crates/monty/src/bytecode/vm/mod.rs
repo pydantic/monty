@@ -2090,7 +2090,7 @@ impl<'h> VM<'h> {
                     let module_id = self.current_frame.fetch_u16();
                     // for the `LoadAttrImport`s of a `from ... import`; harmless for a bare `import`
                     self.current_frame.import_from_module = Some(StringId::from_index(module_id));
-                    handle_call_result!(self, Ok(self.load_module(module_id)));
+                    handle_call_result!(self, self.load_module(module_id));
                 }
                 // Context Managers
                 Opcode::BeforeWith => {
@@ -2106,14 +2106,14 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a top-level built-in or a cached file module, or suspends with
-    /// [`OsFunctionCall::Import`]: the host's value becomes the module, and a
-    /// host with no such module falls back to a `.py` file (see `module_finder`).
-    /// `LoadSubmodule` resolves the remaining dotted components.
-    fn load_module(&mut self, module_id: u16) -> CallResult {
+    /// Loads a top-level built-in, a cached file module or a vendored CPython
+    /// module, or suspends with [`OsFunctionCall::Import`]: the host's value
+    /// becomes the module, and a host with no such module falls back to a `.py`
+    /// file (see `module_finder`). `LoadSubmodule` resolves the remaining dotted components.
+    fn load_module(&mut self, module_id: u16) -> RunResult<CallResult> {
         let name_id = StringId::from_index(module_id);
         match self.interns.static_string(name_id).and_then(StandardLib::from_static) {
-            Some(module) => CallResult::Value(Value::Ref(module.create(self))),
+            Some(module) => Ok(CallResult::Value(Value::Ref(module.create(self)))),
             None => self.import_top_level(self.interns.get_str(name_id)),
         }
     }
