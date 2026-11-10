@@ -26,32 +26,21 @@ mod wire;
 #[cfg(feature = "worker")]
 pub mod worker;
 
-/// Version of the wire schema this build speaks, sent in
-/// [`pb::Configure::protocol_version`] and range-checked by the child.
+/// The protocol version a parent built from this code declares in
+/// [`pb::Configure::protocol_version`], and the newest a child built from it serves.
 ///
-/// Bump on any change a peer at the previous version could mis-read: removing
-/// or repurposing a field, changing a field's meaning, or adding one the child
-/// requires. Purely additive changes an older peer can ignore do not need a
-/// bump.
-///
-/// `Configure.persistence`, `Configure.profile` and `ChildEvent.session_id` did not bump it: a
-/// serving relay and its client act on them, children ignore them, and a
-/// child that drops them loses nothing. Version 6 added the `import` and
-/// `import_stubs` OS calls, which version 5 parents cannot answer. Version 7
-/// moved the remote transport from one WebSocket per session to one gRPC
-/// stream per session, with `Ping`/`Pong` liveness and status-ended streams.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// Only the child checks, so this guards new parents against old children:
+/// increment it when a parent from this build could not work with a child
+/// built before the change. Old children then refuse the new parent with a
+/// version error instead of misbehaving. A change old children can safely
+/// ignore needs no increment.
+pub const PROTOCOL_VERSION: u32 = 8;
 
-/// Oldest [`PROTOCOL_VERSION`] this build still serves.
+/// The oldest parent [`PROTOCOL_VERSION`] a child built from this code serves.
 ///
-/// Raising this cuts off every deployed peer at the older versions, so avoid
-/// it: an additive wire change bumps [`PROTOCOL_VERSION`] alone and older
-/// peers keep working for everything but the new thing. Raising it is a
-/// breaking change that requires a major version bump.
-///
-/// Version 6 and below are not served: their remote transport was a WebSocket
-/// per session, which no version 7 server speaks, and a version 6 parent would
-/// neither answer `Ping` nor read the status a dropped stream ends with.
+/// Guards new children against old parents: raise it only when this child can
+/// no longer work with parents that old. Raising it cuts off every deployed
+/// parent below it, so it is a breaking change needing a major version bump.
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 7;
 
 /// How long the child holds buffered `print()` output before emitting it as a

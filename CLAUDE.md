@@ -184,9 +184,9 @@ subprocesses:
     carrying the same messages with no length prefix; a server sends its response headers as soon as it admits a
     stream (the client sends nothing until it sees them), refuses one with a trailers-only status, and probes
     liveness with in-band `Ping` events the client's transport answers with `Pong` (HTTP/2 PING frames are
-    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release: alone
-    for an additive change older peers can ignore (see its doc comment), together with `MIN_SUPPORTED` when the
-    whole protocol changes; never on your own.
+    hop-local and stop at a proxy). `PROTOCOL_VERSION` is the maintainer's to bump, at most once per release, when a new parent
+    could not work with an old child; `MIN_SUPPORTED_PROTOCOL_VERSION` rises only when a new child can no longer
+    serve old parents (see their doc comments). Never bump either on your own.
     Its `python` feature (`monty_proto::python`, PyO3 value conversion) serves `monty-python` and also
     `monty-cpython`, an embedded-CPython worker in the private `monty-private` repository, so keep shared
     conversion there and host-only binding logic in `monty-python`.
