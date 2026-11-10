@@ -579,14 +579,16 @@ DictSetItem => op_dict_set_item {
     try_catch!(vm, context, vm.dict_set_item(depth));
 }
 BinarySubscr => op_binary_subscr with inline {
-    let index = vm.pop();
-    let obj = vm.pop();
-    let result = obj.py_getitem(&index, vm);
-    obj.drop_with(vm);
-    index.drop_with(vm);
-    match result {
-        Ok(v) => vm.push(v),
-        Err(e) => catch!(vm, context, e),
+    if !vm.try_native_stack_subscript() {
+        let index = vm.pop();
+        let obj = vm.pop();
+        let result = obj.py_getitem(&index, vm);
+        obj.drop_with(vm);
+        index.drop_with(vm);
+        match result {
+            Ok(v) => vm.push(v),
+            Err(e) => catch!(vm, context, e),
+        }
     }
 }
 StoreSubscr => op_store_subscr {
