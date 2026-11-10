@@ -2210,7 +2210,8 @@ impl Checkout {
                     }
                 }
                 Some(pb::worker_event::Kind::StreamedCalls(started)) => {
-                    if self.feed_handler.is_none() {
+                    // a reload's `Load` only restores, and runs on a zeroed suspension count
+                    if self.reloading || self.feed_handler.is_none() {
                         return Err(self.protocol_violation("worker streamed calls the feed did not ask for"));
                     }
                     // `update_from` already counted these. Keep only the calls the
@@ -2595,8 +2596,7 @@ impl Checkout {
     /// worker's own account lands in [`CrashCause::Announced`].
     async fn fatal_error(&mut self, message: &str) -> PoolError {
         let status = self.reap_announced_exit().await;
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         PoolError::Crashed {
             status,
             cause: CrashCause::Announced {
@@ -2639,8 +2639,7 @@ impl Checkout {
         };
         #[cfg(feature = "telemetry")]
         self.record_finish("error");
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         let remote = self.pool.config.transport.is_remote();
         // guard, not a trailing release: a caller dropping this future
         // mid-reap must still release the slot and count the death. Its reason
@@ -2724,8 +2723,7 @@ impl Checkout {
             worker.kill_and_reap().await;
             drop(worker);
         }
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         error
     }
 
@@ -2752,10 +2750,20 @@ impl Checkout {
             self.record_finish("error");
         }
         self.release_worker();
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         self.turn_in_flight = false;
         self.abort_in_flight = false;
+    }
+
+    /// Forgets the in-flight feed once the session can no longer run: its
+    /// suspension, mounts, and the streamed-call handlers and held arguments,
+    /// so a broken session that is never finished does not keep the host's callbacks.
+    fn end_feed_state(&mut self) {
+        self.pending = None;
+        self.feed_mounts = None;
+        self.next_streamed_call_handler = None;
+        self.feed_handler = None;
+        self.streamed_args.clear();
     }
 
     /// Drops the worker and frees its pool slot, leaving the session state to

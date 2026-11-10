@@ -2554,6 +2554,51 @@ async fn shutdown_resumes_a_streaming_feed_with_its_handler() {
     join_server(server).await;
 }
 
+/// The reload's `Load` only restores and re-announces, so a `StreamedCalls`
+/// before its reply is a violation: it must not reach the handler while the
+/// reload has zeroed the suspension count, and the ended session drops the handler.
+#[tokio::test]
+async fn streamed_calls_during_a_reload_end_the_session() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_streaming_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"parked-1");
+        let call = WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), 1, None, false, position());
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+                calls: vec![call].into(),
+            }),
+        );
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        // a checkout that took the calls re-sends the feed; answer it so the test fails rather than hangs
+        if try_read_request(&mut socket).is_some() {
+            send_complete(&mut socket);
+        }
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let (started_tx, started_rx) = mpsc::channel();
+    checkout.set_streamed_call_handler(Some(Box::new(move |call| {
+        started_tx.send(call.call_id).expect("started");
+        Box::pin(ready(()))
+    })));
+    let result = checkout.feed("fetch()", vec![], vec![], false, &mut no_print).await;
+    assert!(matches!(result, Err(PoolError::Shutdown { .. })), "got {result:?}");
+    // no call ran, and the ended session released the handler (and its sender) before being dropped
+    let received = started_rx.recv_timeout(Duration::from_secs(1));
+    assert_eq!(received, Err(mpsc::RecvTimeoutError::Disconnected));
+    drop(checkout);
+    join_server(server).await;
+}
+
 /// Asserts the next request is a `Feed` of `code` that asks the worker to stream calls.
 fn expect_streaming_feed(socket: &mut MockStream, code: &str) {
     let request = try_read_request(socket).expect("feed");
