@@ -14,8 +14,8 @@ use std::{borrow::Cow, fmt::Write};
 use monty_types::{
     MontyObject, MontyPath, OsFunctionCall, ResourceError, ResourceTracker, ScanArgs, StringRepr,
     scan::{
-        EntryInfo, GlobSelector, Listing, ScanReply, ScanSource, ScanTree, indexed_size, normalize_relative,
-        parse_scan_reply, split_literal_prefix,
+        EntryInfo, GlobSelector, Listing, ScanReply, ScanSource, ScanTree, check_wildcard_parts, indexed_size,
+        normalize_relative, parse_scan_reply, split_literal_prefix,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -1026,6 +1026,7 @@ pub(crate) fn glob_call(
     if pattern.ends_with('/') {
         parts.push(String::new());
     }
+    check_wildcard_parts(&parts).map_err(ExcType::value_error)?;
     let last_part = parts.last().cloned().unwrap_or_default();
     let (prefix, rest) = split_literal_prefix(&parts, case_sensitive);
     let require_dir = prefix.ends_with('/');

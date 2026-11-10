@@ -23,7 +23,7 @@ use std::{
     sync::Arc,
 };
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashSet;
 
 use crate::{
     graph::{MontyGraph, MontyNode, NodeId},
@@ -610,6 +610,36 @@ pub fn split_literal_prefix(parts: &[String], case_sensitive: Option<bool>) -> (
     (prefix, rest)
 }
 
+/// Most wildcard parts a glob pattern may have (see [`check_wildcard_parts`]).
+///
+/// Each lists every directory the pattern reaches at it, so the cap bounds a
+/// glob's work to a fixed multiple of the entries it reads.
+pub const MAX_WILDCARD_PARTS: usize = 8;
+
+/// Refuses a pattern with more than [`MAX_WILDCARD_PARTS`] parts holding a
+/// wildcard character, a run of `**` counting once; the error is the message
+/// of the `ValueError` to raise.
+///
+/// The sandbox checks when a glob is created and a host must check again,
+/// since it cannot trust the pattern a worker sends.
+pub fn check_wildcard_parts(parts: &[String]) -> Result<(), String> {
+    let mut previous = "";
+    let mut count = 0;
+    for part in parts {
+        if has_magic(part) && !(part == "**" && previous == "**") {
+            count += 1;
+        }
+        previous = part;
+    }
+    if count > MAX_WILDCARD_PARTS {
+        Err(format!(
+            "glob pattern has {count} wildcard parts, more than the {MAX_WILDCARD_PARTS} supported"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Selects the paths a `Path.glob` pattern matches, relative to the scan root.
 ///
 /// Mirrors CPython 3.14's selectors part for part — literal parts are looked up
@@ -687,13 +717,13 @@ impl<'p> GlobSelector<'p> {
     /// `pathlib` does.
     ///
     /// `None` when the matches outgrew [`ScanSource::match_capacity`]: the run
-    /// then stops collecting them but still reads everything it would have, so
-    /// a host can reply with what it read instead.
+    /// then stops collecting them but still reads every directory it would
+    /// have, so a host can reply with what it read instead.
     pub fn select<E>(&self, source: &mut impl ScanSource<Error = E>) -> Result<Option<Vec<String>>, E> {
         let mut run = Run {
             stack: Vec::new(),
             seen: AHashSet::new(),
-            walked: self.steps.iter().map(|_| AHashMap::new()).collect(),
+            walked: self.steps.iter().map(|_| AHashSet::new()).collect(),
             deferred: BTreeMap::new(),
             out: Some(Vec::new()),
         };
@@ -782,6 +812,8 @@ impl<'p> GlobSelector<'p> {
     /// With more parts to come, a directory this step already walked is skipped
     /// (see [`Run::claim_walk`]): its states are queued, and re-walking it from
     /// every ancestor would cost depth × entries per step (`**/..` repeated).
+    /// A final `**` re-walks, as CPython yields its repeats (`**/*/**` gives
+    /// `a/b` twice), until the matches are no longer collected.
     fn select_recursive<E>(
         &self,
         index: usize,
@@ -802,8 +834,8 @@ impl<'p> GlobSelector<'p> {
         let mut dirs = vec![path.to_owned()];
         while let Some(dir) = dirs.pop() {
             let dir_key = dir.trim_end_matches('/');
-            // A final `**` emits rather than queues, and CPython yields its repeats, so it walks every time.
-            if dir_only && !run.claim_walk(index, dir_key, match_pos, matcher.is_some(), source)? {
+            let walked = !run.claim_walk(index, dir_key, source)?;
+            if walked && (dir_only || run.out.is_none()) {
                 continue;
             }
             source.visit()?;
@@ -842,8 +874,8 @@ type State = (usize, Rc<str>, bool);
 /// the seen set, plus the path's reference counts.
 const STATE_OVERHEAD: usize = 2 * size_of::<State>() + 2 * size_of::<usize>();
 
-/// Bytes a [`Run::walked`] entry holds beside its path: the key and origin length.
-const WALKED_OVERHEAD: usize = size_of::<(String, usize)>();
+/// Bytes a [`Run::walked`] entry holds beside its path.
+const WALKED_OVERHEAD: usize = size_of::<String>();
 
 /// Bytes a [`Run::deferred`] entry holds beside its shared path.
 const DEFERRED_OVERHEAD: usize = size_of::<(Rc<str>, bool)>();
@@ -854,9 +886,8 @@ struct Run {
     stack: Vec<State>,
     /// Every state ever queued, so each is processed once.
     seen: AHashSet<State>,
-    /// Per `**` step, each directory it has walked, with the length of the
-    /// shortest walk origin it was reached from (see [`Self::claim_walk`]).
-    walked: Vec<AHashMap<String, usize>>,
+    /// Per `**` step, each directory it has walked (see [`Self::claim_walk`]).
+    walked: Vec<AHashSet<String>>,
     /// Walk origins of merged `**` steps by step index, held until the stack drains.
     deferred: BTreeMap<usize, Vec<(Rc<str>, bool)>>,
     /// Matches, until they outgrow the source's [`ScanSource::match_capacity`].
@@ -864,33 +895,21 @@ struct Run {
 }
 
 impl Run {
-    /// Whether `**` step `step`, walking from an origin `origin_len` bytes
-    /// long, should list `dir`; if so, records that it did.
+    /// Records that `**` step `step` is listing `dir`; `false` if it already did.
     ///
     /// A walk lists every descendant before returning, so a directory already
-    /// walked has queued every state below it. With a `merged` matcher, matches
-    /// depend on the origin, but a leading `**` absorbs any prefix: a shorter
-    /// origin on the same path matches a superset, so only that skips.
-    fn claim_walk<E>(
-        &mut self,
-        step: usize,
-        dir: &str,
-        origin_len: usize,
-        merged: bool,
-        source: &mut impl ScanSource<Error = E>,
-    ) -> Result<bool, E> {
+    /// walked has queued every state below it. A merged matcher's matches
+    /// depend on the walk's origin, but its leading `**` absorbs any prefix, so
+    /// an earlier walk covers a later one only from an origin no deeper:
+    /// [`GlobSelector::run`] orders those walks shortest origin first.
+    fn claim_walk<E>(&mut self, step: usize, dir: &str, source: &mut impl ScanSource<Error = E>) -> Result<bool, E> {
         let walked = &mut self.walked[step];
-        Ok(match walked.get_mut(dir) {
-            Some(walked_from) if !merged || *walked_from <= origin_len => false,
-            Some(walked_from) => {
-                *walked_from = origin_len;
-                true
-            }
-            None => {
-                source.charge(WALKED_OVERHEAD + dir.len())?;
-                walked.insert(dir.to_owned(), origin_len);
-                true
-            }
+        Ok(if walked.contains(dir) {
+            false
+        } else {
+            source.charge(WALKED_OVERHEAD + dir.len())?;
+            walked.insert(dir.to_owned());
+            true
         })
     }
 

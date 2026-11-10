@@ -15,7 +15,7 @@ use std::io::{self, ErrorKind};
 use cap_std::fs::{Dir, Metadata, ReadDir};
 use monty_types::{
     MontyObject, ScanArgs,
-    scan::{EntryInfo, Listing, ScanSource, collect_scan},
+    scan::{EntryInfo, Listing, ScanSource, check_wildcard_parts, collect_scan},
 };
 
 use super::{
@@ -28,12 +28,14 @@ use super::{
     path_security::{reject_drive_or_unc_segments, reject_overlong_path, resolve_virtual_path},
 };
 
-/// Most entries one scan may examine, counting each time a pattern state
-/// revisits a listing, plus one per glob listing.
+/// Most visits one scan may make (see [`ScanSource::visit`]), bounding the
+/// host work of one suspension, which no turn limit sees.
 ///
-/// This bounds the host work of one suspension, which no turn limit sees.
-/// The default memory limit lets a scan read about 390K entries.
-const MAX_SCAN_VISITS: u64 = 1_000_000;
+/// A glob within [`check_wildcard_parts`] makes at most two per entry for each
+/// wildcard part, so one over the default memory limit's ~390K entries stays
+/// below this. It stops what that cap does not bound: the repeats of a final
+/// `**`, and literal parts listed for an explicit `case_sensitive`.
+const MAX_SCAN_VISITS: u64 = 10_000_000;
 
 /// Runs a scan rooted in `mounts[root]`, replying with a glob's matches or the
 /// entries it read (see [`collect_scan`]).
@@ -44,6 +46,7 @@ const MAX_SCAN_VISITS: u64 = 1_000_000;
 pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Result<MontyObject, MountError> {
     if let Some(parts) = &args.pattern {
         reject_overlong_pattern(parts)?;
+        check_wildcard_parts(parts).map_err(MountError::InvalidArgument)?;
     }
     // Overlay data retained against the same limit leaves less for the reply.
     let budget = {
@@ -108,7 +111,7 @@ struct MountSource<'a> {
     budget: MemoryBudget,
     /// Bytes charged so far.
     used: u64,
-    /// Entries examined so far (see [`MAX_SCAN_VISITS`]).
+    /// Visits so far (see [`MAX_SCAN_VISITS`]).
     visits: u64,
     /// Directories of direct mounts kept open to list their descendants through.
     handles: DirHandles,

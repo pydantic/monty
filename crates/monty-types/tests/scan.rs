@@ -8,8 +8,8 @@ use std::{convert::Infallible, iter::repeat_n, rc::Rc};
 use monty_types::{
     MontyObject, ScanArgs,
     scan::{
-        EntryInfo, GlobSelector, Listing, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern, collect_scan,
-        parse_scan_reply, split_literal_prefix,
+        EntryInfo, GlobSelector, Listing, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern,
+        check_wildcard_parts, collect_scan, parse_scan_reply, split_literal_prefix,
     },
 };
 
@@ -352,6 +352,67 @@ fn merged_recursive_steps_walk_each_directory_once() {
     let (matches, visits) = visits(chains(10, 20), &pattern, true);
     assert_eq!(matches, chain_parents(10, 20));
     assert!(visits < 2 * 10 * (10 * 21 + 1), "{visits} visits");
+}
+
+/// A final `**` repeats its walks for CPython's repeated matches, but only
+/// while a host still collects them: past its capacity the reply is the tree.
+#[test]
+fn final_recursive_walks_stop_once_matches_overflow() {
+    let parts: Vec<String> = "**/*/**".split('/').map(str::to_owned).collect();
+    let selector = GlobSelector::new(&parts, None, false);
+    let mut source = Visiting(chains(10, 20), 0);
+    let repeated = selector.select(&mut source).unwrap().unwrap();
+    // each chain's 21 directories, once per ancestor below the root and once for itself
+    assert_eq!(repeated.len(), 10 * (21 * 22 / 2));
+    let unbounded = source.1;
+    let mut source = Capped(Visiting(chains(10, 20), 0));
+    assert_eq!(selector.select(&mut source).unwrap(), None);
+    // three steps, each visiting a directory and its entry once, beside the repeats that filled the capacity
+    assert!(source.0.1 < 2 * 3 * (10 * 21 + 1) + 4 * 50, "{} visits", source.0.1);
+    assert!(unbounded > 3 * source.0.1, "{unbounded} visits uncapped");
+}
+
+/// A [`Visiting`] source that collects at most 50 matches, as a host caps them.
+struct Capped(Visiting);
+
+impl ScanSource for Capped {
+    type Error = Infallible;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
+        self.0.list(dir)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
+        self.0.lookup(path)
+    }
+
+    fn visit(&mut self) -> Result<(), Infallible> {
+        self.0.visit()
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<(), Infallible> {
+        self.0.charge(bytes)
+    }
+
+    fn match_capacity(&self) -> usize {
+        50
+    }
+}
+
+/// Wildcard parts are counted as the steps that list: a run of `**` is one,
+/// literal and special parts none.
+#[test]
+fn wildcard_parts_are_capped() {
+    let check = |pattern: &str| {
+        let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
+        check_wildcard_parts(&parts)
+    };
+    assert_eq!(check("a/../b/c/d/e/f/g/h/i/j"), Ok(()));
+    assert_eq!(check("*/?/[a]/**/**/**/x*/**/y?/*/"), Ok(()));
+    assert_eq!(
+        check("*/*/*/*/**/*/**/*/*"),
+        Err("glob pattern has 9 wildcard parts, more than the 8 supported".to_owned())
+    );
 }
 
 /// A source that totals what a scan charges it and fails past `cap` bytes.

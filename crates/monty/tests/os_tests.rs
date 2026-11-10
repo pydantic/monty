@@ -2022,6 +2022,20 @@ fn glob_collapses_dot_dot_after_a_wildcard() {
     );
 }
 
+/// A pattern with more wildcard parts than a scan supports is refused when the
+/// glob is created, before any host call.
+#[test]
+fn glob_refuses_too_many_wildcard_parts() {
+    let code = "from pathlib import Path\nPath('r').glob('*/' * 8 + '*.py')";
+    assert_eq!(
+        run_to_error(code),
+        "ValueError: glob pattern has 9 wildcard parts, more than the 8 supported"
+    );
+    // a run of `**` is one part, and `rglob` adds one
+    let code = "from pathlib import Path\nlist(Path('r').rglob('**/' + '*/' * 6 + 'x*'))";
+    assert_eq!(run_with_scan_reply(code, vec![entry("", 'd')]), MontyObject::list([]));
+}
+
 /// A literal glob only matches when the reply actually described the root.
 #[test]
 fn literal_glob_needs_a_described_root() {

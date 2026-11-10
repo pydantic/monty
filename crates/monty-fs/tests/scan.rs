@@ -177,16 +177,15 @@ fn amplifying_globs_reply_with_the_tree() {
     assert_eq!(shallow, entries(&[("y/", 'm'), ("y/e.py", 'm')]));
 }
 
-/// `**/..` re-queues every parent, so a recursive step that walked each subtree
-/// once per ancestor cost depth × entries per step: on 40 chains of 60
-/// directories, more than the visit cap, all host time outside every turn limit.
+/// `**/..` re-queues every parent at each of its steps; each directory is still
+/// matched once, in every mode.
 #[test]
 fn recursive_steps_after_dot_dot_walk_each_directory_once() {
     let dir = TempDir::new().unwrap();
     for chain in 0..40 {
         fs::create_dir_all(dir.path().join(format!("c{chain}")).join(["d"; 60].join("/"))).unwrap();
     }
-    let parts = [["**", ".."]; 31].concat();
+    let parts = [["**", ".."]; 8].concat();
     for mode in all_modes() {
         let mut table = mount(&dir, mode);
         let reply = scan(&mut table, glob("/mnt", &parts)).unwrap();
@@ -416,8 +415,8 @@ fn glob_states_are_charged_to_the_mount_memory_limit() {
     // reading every entry, and matching them, fits
     assert_eq!(scan(&mut table, glob("/mnt", &["*"])).unwrap().len(), 500);
     assert_eq!(scan(&mut table, glob("/mnt", &["*", "..", "*"])).unwrap().len(), 500);
-    // 31 wildcards hold the 500 entries' paths 62 times over
-    let pattern = "*/../".repeat(31) + "*";
+    // 8 wildcards hold the 500 entries' paths 16 times over
+    let pattern = "*/../".repeat(7) + "*";
     let parts: Vec<&str> = pattern.split('/').collect();
     let err = scan(&mut table, glob("/mnt", &parts)).unwrap_err();
     assert_eq!(err.into_exception().exc_type(), ExcType::MemoryError);
@@ -440,6 +439,27 @@ fn overlong_patterns_are_refused() {
     parts.push("*");
     let err = scan(&mut table, glob("/mnt", &parts)).unwrap_err();
     assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
+}
+
+/// A wildcard part lists every directory the pattern reaches, so their number is
+/// capped whatever the tree holds; literal and `..` parts are not counted.
+#[test]
+fn patterns_with_too_many_wildcard_parts_are_refused() {
+    let dir = create_tree();
+    let mut table = mount(&dir, MountMode::ReadOnly);
+    let pattern = "*/../".repeat(8) + "*";
+    let parts: Vec<&str> = pattern.split('/').collect();
+    let exc = scan(&mut table, glob("/mnt", &parts)).unwrap_err().into_exception();
+    assert_eq!(exc.exc_type(), ExcType::ValueError);
+    assert_eq!(
+        exc.message(),
+        Some("glob pattern has 9 wildcard parts, more than the 8 supported")
+    );
+    // 8 wildcard parts: the run of `**` is one
+    let pattern = "**/**/s*/../s?b/../*/[d]eep/../../*/d*/?.py";
+    let parts: Vec<&str> = pattern.split('/').collect();
+    let reply = scan(&mut table, glob("/mnt", &parts)).unwrap();
+    assert_eq!(reply, entries(&[("sub/deep/d.py", 'm')]));
 }
 
 /// A scan crossing into a mount nested below its root reads that mount, as
