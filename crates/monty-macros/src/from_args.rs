@@ -651,7 +651,8 @@ fn render_build_field(field: &Field) -> TokenStream {
     match field.kind {
         // `Into` is the identity for `Vec<Value>` and builds an `OwnedIntoIter`.
         FieldKind::Varargs => quote! { #ident: ::core::convert::Into::into(__slots.raw.take_varargs()), },
-        FieldKind::Varkwargs => quote! { #ident: __slots.raw.take_varkwargs(), },
+        // Likewise the identity for `KwargsValues`, and builds an `OwnedKwargs`.
+        FieldKind::Varkwargs => quote! { #ident: ::core::convert::Into::into(__slots.raw.take_varkwargs()), },
         _ => match &field.default {
             None => quote! {
                 #ident: __slots.#ident.take().expect("required FromArgs slot checked before build"),

@@ -33,6 +33,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
+    owned::OwnedKwargs,
     types::{
         BuiltinType, Dict, Module, NamedTupleClass, PyTrait,
         iter::collect_owned_iterable,
@@ -94,6 +95,7 @@ pub(super) fn call(vm: &mut VM<'_>, function: CollectionsFunctions, args: ArgVal
 /// is exposed as the type object, so `type(c) is Counter` holds.
 pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
+    let kwargs = OwnedKwargs::from(kwargs);
     let total = pos.len();
     let source = (total > 0).then(|| pos.next().expect("len checked"));
 
@@ -101,7 +103,6 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
     if total > 1 {
         source.drop_with(vm);
         pos.drop_with(vm);
-        kwargs.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(
             "Counter.__init__",
             1,

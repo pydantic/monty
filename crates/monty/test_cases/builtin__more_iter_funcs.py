@@ -309,6 +309,14 @@ assert sorted([3, -1, 2, -4], key=abs, reverse=True) == [-4, 3, 2, -1]
 assert sorted(['banana', 'apple', 'cherry'], key=len, reverse=True) == ['banana', 'cherry', 'apple']
 assert sorted([3, 1, 2], key=None, reverse=True) == [3, 2, 1]
 
+# === sorted() with a non-iterable and heap keyword values ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    sorted(5, key=[2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
 # === reversed() ===
 # Basic reversed operations
 assert list(reversed([1, 2, 3])) == [3, 2, 1]

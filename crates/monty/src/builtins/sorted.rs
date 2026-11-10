@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
+    owned::OwnedKwargs,
     sorting::parse_and_sort,
     types::{List, iter::collect_owned_iterable},
     value::Value,
@@ -22,10 +23,11 @@ use crate::{
 /// argument 'X'` without any wording overrides.
 pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (mut pos_iter, kwargs) = args.into_parts();
+    // Owned until `sort` takes them: collecting the iterable below can raise.
+    let kwargs = OwnedKwargs::from(kwargs);
     let pos_count = pos_iter.len();
     if pos_count != 1 {
         pos_iter.drop_with(vm);
-        kwargs.drop_with(vm);
         return Err(ExcType::type_error_expected_exact("sorted", 1, pos_count));
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
@@ -37,7 +39,7 @@ pub fn builtin_sorted(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let sort_args = if kwargs.is_empty() {
         ArgValues::Empty
     } else {
-        ArgValues::Kwargs(kwargs)
+        ArgValues::Kwargs(kwargs.into_inner())
     };
     parse_and_sort(items, sort_args, vm)?;
 

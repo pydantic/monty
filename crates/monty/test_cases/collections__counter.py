@@ -631,3 +631,19 @@ mc_target = Counter({'a': (MostCommonRebind(),), 'b': (MostCommonRebind(),)})
 assert [key for key, _ in mc_target.most_common()] == ['a', 'b']
 assert [key for key, _ in mc_target.most_common(1)] == ['a']
 assert mc_target['a'] == (0,)
+
+# === Counter() with a non-iterable source and heap keyword values ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    Counter(5, a=[2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
+# === update() with a non-iterable source and heap keyword values ===
+# guards a reference-count leak that only the memory-model-checks build detects
+try:
+    Counter().update(5, a=[2**70])
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"

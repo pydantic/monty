@@ -19,6 +19,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
+    owned::OwnedKwargs,
     py_value::PyValue,
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
@@ -169,7 +170,7 @@ fn counter_bump<'h>(
 pub(crate) fn counter_update<'h>(
     counter: &mut HeapObjectRead<'h, Dict>,
     source: Option<Value>,
-    kwargs: KwargsValues,
+    kwargs: OwnedKwargs,
     subtract: bool,
     vm: &mut VM<'h>,
 ) -> RunResult<()> {
@@ -211,7 +212,7 @@ pub(crate) fn counter_update<'h>(
     // Keyword counts, e.g. `Counter(a=2)` / `c.update(a=5)`. CPython recurses
     // via `self.update(kwds)`, so these follow the mapping path — including the
     // empty-Counter fast path, re-evaluated after the iterable was folded in.
-    let kwarg_pairs = counter_kwarg_deltas(kwargs);
+    let kwarg_pairs = counter_kwarg_deltas(kwargs.into_inner());
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())
 }
@@ -276,6 +277,8 @@ pub(crate) fn counter_update_method<'h>(
     vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
+    // Owned so that a failure while folding in `source` releases them.
+    let kwargs = OwnedKwargs::from(kwargs);
     let total = pos.len();
     let source = (total > 0).then(|| pos.next().expect("len checked"));
     // CPython names the specific method (with the `Counter.` qualifier) here.
@@ -283,7 +286,6 @@ pub(crate) fn counter_update_method<'h>(
     if total > 1 {
         source.drop_with(vm);
         pos.drop_with(vm);
-        kwargs.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(name, 1, 2, total + 1, 0));
     }
     counter_update(counter, source, kwargs, subtract, vm)?;

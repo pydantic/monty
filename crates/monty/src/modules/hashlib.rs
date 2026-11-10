@@ -18,7 +18,7 @@ use num_bigint::Sign;
 use num_traits::ToPrimitive;
 
 use crate::{
-    args::{ArgValues, FromArgs, KwargsValues, LaxBool, StrArg, long_int},
+    args::{ArgValues, FromArgs, LaxBool, StrArg, long_int},
     builtins::Builtins,
     bytecode::VM,
     defer_drop,
@@ -26,6 +26,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
+    owned::OwnedKwargs,
     types::{
         BuiltinType, Module, Set, allocate_string,
         bytes::allocate_bytes,
@@ -240,7 +241,7 @@ struct HashNewArgs {
     #[from_args(varargs)]
     args: Vec<Value>,
     #[from_args(varkwargs)]
-    kwargs: KwargsValues,
+    kwargs: OwnedKwargs,
 }
 
 /// `_hashlib.new(name, data=b'', *, usedforsecurity=True, string=None)`.
@@ -264,7 +265,7 @@ fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let blake2 = name.as_str(vm).and_then(Blake2Kind::from_name);
     if let Some(kind) = blake2 {
         name.drop_with(vm);
-        return blake2_init(kind, vm, ArgValues::from_parts(args, kwargs));
+        return blake2_init(kind, vm, ArgValues::from_parts(args, kwargs.into_inner()));
     }
     // The name rejoins the binder's own vector; `insert` may still grow it,
     // but nothing is copied into a fresh buffer before the parser's checks.
@@ -275,7 +276,7 @@ fn call_new(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         data,
         usedforsecurity,
         string,
-    } = OpensslNewArgs::from_args(ArgValues::from_parts(positional, kwargs), vm)?;
+    } = OpensslNewArgs::from_args(ArgValues::from_parts(positional, kwargs.into_inner()), vm)?;
     defer_drop!(name, vm);
     defer_drop!(data, vm);
     defer_drop!(usedforsecurity, vm);

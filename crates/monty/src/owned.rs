@@ -31,6 +31,7 @@ use std::{
 };
 
 use crate::{
+    args::KwargsValues,
     bytecode::VM,
     heap::{ContainsHeap, HeapId},
     value::Value,
@@ -111,6 +112,23 @@ fn queue_release(id: HeapId) {
     CURRENT.with_borrow(|current| match current {
         Some(queue) => queue.push(id),
         None => debug_assert!(false, "`Owned` heap value dropped outside a VM; its reference leaks"),
+    });
+}
+
+/// Queues every heap reference in `values` with one thread-local access, for owning containers.
+fn queue_values(values: impl IntoIterator<Item = Value>) {
+    CURRENT.with_borrow(|current| match current {
+        Some(queue) => {
+            let mut pending = queue.pending.borrow_mut();
+            for value in values {
+                if let Value::Ref(id) = value {
+                    pending.push(id);
+                    discard_released(value);
+                }
+            }
+            queue.dirty.set(true);
+        }
+        None => debug_assert!(false, "owned heap values dropped outside a VM; their references leak"),
     });
 }
 
@@ -228,11 +246,47 @@ impl ExactSizeIterator for OwnedIntoIter {}
 
 impl Drop for OwnedIntoIter {
     fn drop(&mut self) {
-        for value in self.0.by_ref() {
-            if let Value::Ref(id) = value {
-                queue_release(id);
-                discard_released(value);
-            }
+        if self.0.len() > 0 {
+            queue_values(self.0.by_ref());
+        }
+    }
+}
+
+/// Keyword arguments owned by Rust code; dropping them releases every key and value.
+///
+/// The [`KwargsValues`] counterpart of [`Owned`]: declare it as a `FromArgs`
+/// `varkwargs` field, or wrap the kwargs from `ArgValues::into_parts`.
+/// Use [`into_inner`](Self::into_inner) to pass them on.
+#[derive(Debug)]
+pub(crate) struct OwnedKwargs(KwargsValues);
+
+impl OwnedKwargs {
+    /// Releases ownership of the kwargs, e.g. to hand them to another parser.
+    #[must_use]
+    pub fn into_inner(mut self) -> KwargsValues {
+        mem::replace(&mut self.0, KwargsValues::Empty)
+    }
+}
+
+impl From<KwargsValues> for OwnedKwargs {
+    fn from(kwargs: KwargsValues) -> Self {
+        Self(kwargs)
+    }
+}
+
+impl Deref for OwnedKwargs {
+    type Target = KwargsValues;
+
+    fn deref(&self) -> &KwargsValues {
+        &self.0
+    }
+}
+
+impl Drop for OwnedKwargs {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            let kwargs = mem::replace(&mut self.0, KwargsValues::Empty);
+            queue_values(kwargs.into_iter().flat_map(|(key, value)| [key, value]));
         }
     }
 }

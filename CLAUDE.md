@@ -446,10 +446,12 @@ iter.drop_with(self); // single path, no branching
 An `Owned` value releases its heap reference on a plain Rust `Drop`, so `?`, `_` patterns, drains and overwrites need no guard.
 Dropping one queues the `HeapId`; the VM applies the queue when each call returns, every 64 native iterator steps,
 at dispatch checkpoints, GC, snapshot and VM drop.
-`FromArgs` fields can be `Owned`, `Option<Owned>`, or `OwnedIntoIter` for `varargs`.
-Use `into_value()` to return a value or store it in a container: containers and VM state hold plain `Value`s.
+`FromArgs` fields can be `Owned`, `Option<Owned>`, `OwnedIntoIter` for `varargs`, or `OwnedKwargs` for `varkwargs`.
+Use `into_value()` (`into_inner()` for kwargs) to return a value, store it in a container or pass it on:
+containers and VM state hold plain `Value`s.
 `Owned::release(vm)` frees immediately; it is optional, for loops that drop a heap value per item.
-`min`/`max`, `zip`, `map`, `print`, `math.perm`, `timezone`, `file.seek` and `dict.setdefault` use it so far.
+`min`/`max`, `zip`, `map`, `print`, `sorted`, `Counter`, `math.perm`, `timezone`, `file.seek`, `dict.setdefault` and
+`hashlib.new` use it so far.
 
 ### `#[strum(use_phf)]` only on large `EnumString` enums
 

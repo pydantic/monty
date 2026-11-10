@@ -118,8 +118,10 @@ fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     `static_string = "ExistingVariant"` at an existing one.
 - `Value` / `StrArg` / `Option<Value>` fields hold heap references: bind
     them with `defer_drop!` in the body, or otherwise guarantee
-    `drop_with` on every path.
-- `varargs` fields must be `Vec<Value>`; convert elements in the body.
+    `drop_with` on every path. `Owned` / `Option<Owned>` fields release
+    themselves when dropped (see `crates/monty/src/owned.rs`).
+- `varargs` fields must be `Vec<Value>` or `OwnedIntoIter`; convert elements in the body.
+- `varkwargs` fields are `KwargsValues` or `OwnedKwargs`.
 
 ### 4. Tests and docs
 
