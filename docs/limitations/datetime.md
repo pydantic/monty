@@ -124,10 +124,8 @@ Class methods supported: `now(tz=None)`, `utcnow()`, `fromtimestamp(timestamp, t
 - `today()` is not implemented.
 - `utcnow()` and `utcfromtimestamp()` are deprecated in CPython 3.12+ and emit a `DeprecationWarning` there; Monty has
     no `warnings` mechanism, so none is emitted.
-    `utcfromtimestamp()` rounds half to even and raises CPython's range errors on Linux and macOS, like
-    `fromtimestamp()`.
-    On Windows it returns a result for negative timestamps and years after 3000, where CPython raises `OSError`
-    (see the `fromtimestamp()` bullets below).
+    On Windows `utcfromtimestamp()` returns a result for negative timestamps and years after 3000, where CPython
+    raises `OSError` (see the `fromtimestamp()` bullets below).
     `utcnow()` reads the clock like `now()` (see "Reading the clock" below); with `'call_host'` it is answered through
     the same `time.time` call as `time.time()`, so the embedder's handler for that call supplies it.
 - `now()`, `strptime()`, `fromisoformat()` and `combine()` can only be called on the class:
