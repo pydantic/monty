@@ -25,7 +25,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HEAP_ENTRY_SIZE, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
+    modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE, VERBOSE},
     resource_checks::check_estimated_size,
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple, re_syntax,
@@ -48,7 +48,7 @@ use crate::{
 pub(crate) struct RePattern {
     /// The original Python regex pattern string.
     pattern: String,
-    /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16, ASCII=256).
+    /// Python regex flags bitmask (IGNORECASE=2, MULTILINE=8, DOTALL=16, VERBOSE=64, ASCII=256).
     flags: u16,
     /// The compiled Rust regex, unanchored.
     compiled: Regex,
@@ -539,7 +539,7 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
         write!(f, "re.compile(")?;
         string_repr_fmt(&this.pattern, f)?;
         if this.flags != 0 {
-            let mut flag_parts = SmallVec::<[&'static str; 4]>::new();
+            let mut flag_parts = SmallVec::<[&'static str; 5]>::new();
             if this.flags & IGNORECASE != 0 {
                 flag_parts.push("re.IGNORECASE");
             }
@@ -548,6 +548,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, RePattern> {
             }
             if this.flags & DOTALL != 0 {
                 flag_parts.push("re.DOTALL");
+            }
+            if this.flags & VERBOSE != 0 {
+                flag_parts.push("re.VERBOSE");
             }
             if this.flags & ASCII != 0 {
                 flag_parts.push("re.ASCII");

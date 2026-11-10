@@ -47,6 +47,7 @@ mod re_syntax;
 pub mod set;
 pub mod slice;
 pub mod str;
+mod str_translate;
 pub mod time;
 pub mod timedelta;
 pub mod timezone;

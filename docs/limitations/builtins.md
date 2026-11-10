@@ -42,6 +42,9 @@ These raise `NameError`:
     `AttributeError`, so `[1].append`, `'a'.upper`, `{}.get`, `dict.fromkeys`
     and `list.__class_getitem__` cannot be assigned, passed as a callback or
     reached through `getattr`. Call them directly (`list.__class_getitem__(int)`).
+- **`str.translate()` and `str.maketrans()`** — a table entry that maps to a surrogate code point (`0xD800`–`0xDFFF`)
+    raises `ValueError: character mapping must be in range(0x110000)`, because Monty strings cannot hold lone surrogates.
+    `bytes.translate()` and `bytes.maketrans()` are not implemented.
 - **Large integer literal identity** — separate occurrences of the same literal outside the `i64` range are not
     deduplicated, so `a = 18446744073709551616; b = 18446744073709551616; a is b` is `False` where CPython may reuse a
     single constant and return `True`.

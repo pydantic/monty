@@ -7,6 +7,7 @@ use smallvec::smallvec;
 use super::{
     Bytes, CmpOrder, PyTrait,
     inline_str::InlineStr,
+    str_translate::{str_maketrans, str_translate},
     unicode_type::{casefold, is_space, lowercase, type_record, uppercase},
     unicode_type_data::TypeRecord,
 };
@@ -714,6 +715,13 @@ fn call_str_method_impl<'h>(
         StaticStrings::Rjust => str_rjust(s, args, vm),
         StaticStrings::Zfill => str_zfill(s, args, vm),
         StaticStrings::Expandtabs => str_expandtabs(s, args, vm),
+        StaticStrings::Translate => {
+            // Copied once here: the table lookups can run user code that re-enters the heap.
+            let text = copy_format_template(s.get(vm.heap), &vm.heap.tracker);
+            str_translate(&text?, args, vm)
+        }
+        // A static method, also reachable on instances.
+        StaticStrings::Maketrans => str_maketrans(args, vm),
         StaticStrings::Format => {
             let template = match copy_format_template(s.get(vm.heap), &vm.heap.tracker) {
                 Ok(template) => template,
