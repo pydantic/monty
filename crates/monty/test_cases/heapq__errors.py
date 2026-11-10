@@ -1,4 +1,5 @@
 import heapq
+from collections import namedtuple
 
 
 def raises(exc, message, func, *args, **kwargs):
@@ -13,6 +14,9 @@ def raises(exc, message, func, *args, **kwargs):
 # Non-list heaps and empty heaps.
 raises(TypeError, 'heappush() argument 1 must be list, not tuple', heapq.heappush, (1,), 2)
 raises(TypeError, 'heappush() argument 1 must be list, not None', heapq.heappush, None, 2)
+Point = namedtuple('Point', 'x')
+raises(TypeError, 'heappush() argument 1 must be list, not Point', heapq.heappush, Point(1), 2)
+raises(TypeError, 'heappop() argument must be list, not Point', heapq.heappop, Point(1))
 raises(TypeError, 'heappop() argument must be list, not tuple', heapq.heappop, (1,))
 raises(TypeError, 'heapify() argument must be list, not str', heapq.heapify, 'abc')
 raises(TypeError, 'heapreplace() argument 1 must be list, not int', heapq.heapreplace, 1, 2)

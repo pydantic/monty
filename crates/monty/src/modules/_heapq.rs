@@ -5,7 +5,7 @@
 //! `<`, and no list borrow is held across one: a comparison may run user code that resizes the heap,
 //! which CPython reports as `RuntimeError: list changed size during iteration`.
 
-use std::mem;
+use std::{borrow::Cow, mem};
 
 use HeapqFunctions as F;
 
@@ -188,7 +188,12 @@ fn heap_list(heap: &Value, vm: &VM<'_>, function: HeapqFunctions, numbered: bool
         Value::Ref(id) if matches!(heap.py_type(vm), Type::List) => Ok(*id),
         _ => {
             let name = function.to_string();
-            let got = heap.py_type(vm).cpython_arg_name(vm.heap, vm.interns);
+            // `py_type_name` names a named tuple or host instance by its class, as CPython does.
+            let got = if matches!(heap, Value::None) {
+                Cow::Borrowed("None")
+            } else {
+                heap.py_type_name(vm)
+            };
             Err(if numbered {
                 ExcType::type_error_bad_arg_pos(&name, 1, "list", got)
             } else {
