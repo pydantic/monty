@@ -568,7 +568,7 @@ try:
     asyncio.gather(xxx=True)
     assert False, 'gather with unknown kwarg should raise'
 except TypeError as e:
-    assert str(e) == "gather() got an unexpected keyword argument 'xxx'", f'gather-kwarg: {e}'
+    assert str(e) == "gather() got an unexpected keyword argument 'xxx'"
 
 # =====================================================================
 # === Binding vs conversion ordering (per style family)              ===

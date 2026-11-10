@@ -101,4 +101,4 @@ try:
     asyncio.gather(timeout=1)
     assert False, 'should raise'
 except TypeError as e:
-    assert str(e) == "gather() got an unexpected keyword argument 'timeout'", str(e)
+    assert str(e) == "gather() got an unexpected keyword argument 'timeout'"
