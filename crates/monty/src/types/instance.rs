@@ -681,12 +681,18 @@ pub(crate) enum FastAttributeLookupResult {
     Found(Value),
     /// The instance and its class have no such member.
     Missing,
-    /// General lookup may suspend or consult another object's protocol.
+    /// Host objects return eager values or a lazy host request, never execute a sandbox getter.
+    HostLookup,
+    /// Install a continuation before general lookup: it may execute or forward to a getter.
     Inconclusive,
 }
 
 /// Share read precedence with bytecode while leaving Python getters to the caller.
 pub(crate) fn lookup_attribute_fast(object: &Value, attr: &EitherStr, vm: &VM<'_>) -> FastAttributeLookupResult {
+    if matches!(object, Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::HostClass(_) | HeapData::HostClassType(_)))
+    {
+        return FastAttributeLookupResult::HostLookup;
+    }
     if let Value::Ref(id) = object
         && matches!(vm.heap.get(*id), HeapData::Instance(_))
     {

@@ -142,11 +142,6 @@ These raise `NameError`:
     (`encode`, `decode`,
     `expandtabs`, `splitlines`, `replace`, …) already match; the remainder
     need a per-function `at_most_total` audit.
-- **`getattr(obj, name)`** — if the resolved attribute would be an async
-    coroutine, external function, or OS call, raises `TypeError: "getattr(): attribute is not a simple value"` rather
-    than returning a
-    bound method object. Use direct attribute access (`obj.name(...)`) for
-    these.
 - **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
     CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
     which Monty rejects with `invalid literal for int() with base 10`.

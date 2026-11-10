@@ -9,6 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     frozen::FrozenFunction,
+    heap::DropWithContext,
     types::{
         descriptor,
         instance::{FastAttributeLookupResult, lookup_attribute_fast},
@@ -54,19 +55,21 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
         );
     };
 
-    match lookup_attribute_fast(object, &attr, vm) {
+    let host_lookup = match lookup_attribute_fast(object, &attr, vm) {
         FastAttributeLookupResult::Found(value) => return Ok(CallResult::Value(value)),
         FastAttributeLookupResult::Missing => {
             return default
                 .map(|default| CallResult::Value(default.clone_with_heap(vm.heap)))
                 .ok_or_else(|| ExcType::attribute_error(object.py_type_name(vm), attr.as_str(vm.interns)));
         }
-        FastAttributeLookupResult::Inconclusive => {}
-    }
+        FastAttributeLookupResult::HostLookup => true,
+        FastAttributeLookupResult::Inconclusive => false,
+    };
 
     if let Some(default) = default
-        && descriptor::attribute_uses_descriptor(object, &attr, vm)
+        && !host_lookup
     {
+        // Forwarding reads can reach a getter even when the object is not a sandbox instance.
         let name = attr.as_value(vm.heap);
         return vm.call_frozen_exact(
             FrozenFunction::DescriptorGetattr,
@@ -79,35 +82,31 @@ pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult
             ],
         );
     }
+    // Native host lookups keep their Undefined/default protocol; reads without a default propagate directly.
     match object.py_getattr(&attr, vm) {
         Ok(CallResult::Value(value)) => Ok(CallResult::Value(value)),
-        // A frame computes the attribute (`__annotations__`). Without a default
-        // its result is the value; with one the frame runs here, so an
-        // `AttributeError` it raises selects the default as in CPython.
-        Ok(CallResult::FramePushed) => match default {
-            None => Ok(CallResult::FramePushed),
-            Some(d) => match CallResult::FramePushed.require_synchronous(vm) {
-                Ok(value) => Ok(CallResult::Value(value)),
-                Err(RunError::Exc(e)) if e.exc.exc_type() == ExcType::AttributeError => {
-                    Ok(CallResult::Value(d.clone_with_heap(vm)))
-                }
-                Err(e) => Err(e),
-            },
-        },
+        // A forwarded getter may already own a lazy lookup's default or result effect.
+        Ok(other) if default.is_none() => Ok(other),
         Ok(CallResult::AttrLookup {
             name,
             class_name,
             object_id,
             type_object,
-            effect: _,
-        }) => Ok(CallResult::AttrLookup {
-            name,
-            class_name,
-            object_id,
-            type_object,
-            effect: default.map(|d| PendingLookupEffect::Default(d.clone_with_heap(vm))),
-        }),
-        Ok(other) => Ok(other),
+            effect,
+        }) => {
+            effect.drop_with(vm);
+            Ok(CallResult::AttrLookup {
+                name,
+                class_name,
+                object_id,
+                type_object,
+                effect: default.map(|d| PendingLookupEffect::Default(d.clone_with_heap(vm))),
+            })
+        }
+        Ok(other) => {
+            other.drop_with(vm);
+            Err(RunError::internal("getattr() default lookup escaped its continuation"))
+        }
         Err(RunError::Exc(e))
             if let Some(d) = default
                 && e.exc.exc_type() == ExcType::AttributeError =>

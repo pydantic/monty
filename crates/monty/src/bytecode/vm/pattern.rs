@@ -274,10 +274,8 @@ impl VM<'_> {
                 this.push(Value::None);
                 return Ok(CallResult::Value(Value::Bool(false)));
             }
-            FastAttributeLookupResult::Inconclusive => {}
-        }
-        if descriptor::attribute_uses_descriptor(subject, &attr, this) {
-            return this.match_descriptor_attr(subject, name);
+            FastAttributeLookupResult::HostLookup => {}
+            FastAttributeLookupResult::Inconclusive => return this.match_descriptor_attr(subject, name),
         }
         match subject.py_getattr(&attr, this) {
             Ok(CallResult::Value(value)) => {
@@ -302,10 +300,7 @@ impl VM<'_> {
             }
             Ok(other) => {
                 other.drop_with(this);
-                Err(ExcType::type_error(format!(
-                    "class pattern attribute '{}' is not a plain attribute",
-                    attr.as_str(this.interns)
-                )))
+                Err(RunError::internal("class pattern lookup escaped its continuation"))
             }
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
                 this.push(Value::None);
