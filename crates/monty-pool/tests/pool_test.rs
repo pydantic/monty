@@ -31,16 +31,16 @@ use monty_pool::{
 };
 // only the unix-gated raw-path test forges worker frames
 #[cfg(unix)]
-use monty_proto::{encode_framed_into, pb};
+use monty_proto::{encode_framed_into, ext_result_to_proto, pb};
 // only the off-Linux CPU rejection test names the clock; Linux CPU tests import their own
 #[cfg(not(target_os = "linux"))]
 use monty_types::ExecutionClock;
 #[cfg(unix)]
 use monty_types::SourceRange;
 use monty_types::{
-    CallArgs, DateTimeSource, ExcType, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, ModuleFile, ModuleRead,
-    MontyException, MontyObject, MontyUuid, NameLookupResult, OsPolicy, PrintStream, RandomSeed, RandomStart,
-    ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
+    CallArgs, DateTimeSource, ExcType, ExtFunctionResult, IMPORT_CALL, IMPORT_STUBS_CALL, ImportArgs, ModuleFile,
+    ModuleRead, MontyException, MontyObject, MontyUuid, NameLookupResult, OsPolicy, PrintStream, RandomSeed,
+    RandomStart, ResourceLimits, SleepMode, TypeCheckingConfig, TypeCheckingFormat,
     unstable::{self, MontyNode},
 };
 #[cfg(unix)]
@@ -2386,6 +2386,66 @@ async fn streamed_calls_count_against_the_suspension_limit() {
     assert_eq!(exc.message(), Some("suspension limit 3 exceeded"));
     // the worker started three, then suspended on the fourth
     assert_eq!(started.lock().unwrap().len(), 3);
+    session.finish().await.unwrap();
+}
+
+/// A raw turn forwards only the streamed calls the suspension limit has room
+/// for, as the typed path starts only those: `g`'s suspension leaves room for
+/// one of the two calls to `f`.
+#[tokio::test]
+async fn raw_turns_forward_only_streamed_calls_within_the_suspension_limit() {
+    let pool = Pool::new(streaming_config()).await.unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_suspensions(2)),
+            ..ReplConfig::default()
+        })
+        .await
+        .unwrap();
+    let feed = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "import asyncio\ng()\nawait asyncio.gather(f(1), f(2))".to_owned(),
+            inputs: vec![].into(),
+            values: None,
+            skip_type_check: false,
+            cwd: "/".to_owned(),
+            async_functions: vec!["f".to_owned()].into(),
+            stream_async_calls: true,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let forwarded = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&forwarded);
+    let mut on_event = move |event: &pb::ChildEvent| {
+        if let Some(pb::child_event::Kind::StreamedCalls(started)) = &event.kind {
+            sink.lock()
+                .unwrap()
+                .extend(started.calls.iter().map(|call| call.call_id));
+        }
+        Box::pin(ready(())) as PrintFuture
+    };
+    let event = session.turn_raw(&feed, &mut on_event).await.unwrap();
+    let Some(pb::child_event::Kind::FunctionCall(call)) = event.kind else {
+        panic!("expected g's call, got {event:?}");
+    };
+    let (result, values) = ext_result_to_proto(ExtFunctionResult::Return(MontyObject::none()));
+    let resume = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id: call.call_id,
+            result: Some(result),
+            values,
+        })),
+        ..pb::ParentRequest::default()
+    };
+    let event = session.turn_raw(&resume, &mut on_event).await.unwrap();
+    let Some(pb::child_event::Kind::Error(error)) = event.kind else {
+        panic!("expected the suspension limit's error, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.and_then(|exc| exc.message).as_deref(),
+        Some("suspension limit 2 exceeded")
+    );
+    assert_eq!(forwarded.lock().unwrap().len(), 1);
     session.finish().await.unwrap();
 }
 

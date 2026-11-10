@@ -619,6 +619,14 @@ impl SessionBudget {
         self.observed_feed_execution = Duration::ZERO;
     }
 
+    /// How many of the `streamed` calls just counted by `update_from` fit the
+    /// suspension limit. The suspension after an overrun is aborted, so the rest
+    /// are dropped rather than started or forwarded.
+    fn streamed_call_room(&self, streamed: usize) -> usize {
+        let seen_before = self.suspensions_seen.saturating_sub(streamed as u64);
+        usize::try_from(self.suspension_limit.saturating_sub(seen_before)).unwrap_or(usize::MAX)
+    }
+
     /// Reports when this event exceeds the suspension limit.
     fn over_suspension_limit(&self, event: &pb::ChildEvent) -> Option<u64> {
         (is_suspension(event) && self.suspensions_seen > self.suspension_limit).then_some(self.suspension_limit)
@@ -2030,6 +2038,15 @@ impl Checkout {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
             }
+            // as the typed path: calls past the suspension limit are not forwarded
+            if let Some(pb::child_event::Kind::StreamedCalls(started)) = &mut event.kind {
+                started
+                    .calls
+                    .truncate(self.budget.streamed_call_room(started.calls.len()));
+                if started.calls.is_empty() {
+                    continue;
+                }
+            }
             // strict alternation: zero or more mid-turn events, then exactly
             // one turn-ender — so anything else ends the turn
             if is_mid_turn(&event) {
@@ -2181,11 +2198,8 @@ impl Checkout {
                     // `update_from` already counted these. Keep only the calls the
                     // budget had room for: the suspension after an overrun is
                     // aborted, so more would only let a worker grow host memory.
-                    let calls = started.calls.into_inner();
-                    let seen_before = self.budget.suspensions_seen.saturating_sub(calls.len() as u64);
-                    let room = self.budget.suspension_limit.saturating_sub(seen_before);
-                    let room = usize::try_from(room).unwrap_or(usize::MAX);
-                    let calls: Vec<_> = calls.into_iter().take(room).collect();
+                    let mut calls = started.calls.into_inner();
+                    calls.truncate(self.budget.streamed_call_room(calls.len()));
                     let call_ids: Vec<u32> = calls.iter().map(|call| call.call_id).collect();
                     let frame_len = self.worker.as_ref().map_or(0, Worker::last_frame_len);
                     if !call_ids.is_empty() && !self.streamed_args.charge(frame_len, &call_ids) {
