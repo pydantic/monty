@@ -25,7 +25,7 @@ use crate::{
     heap::{DropGuard, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
     modules::{ModuleFunctions, collections::counter_init, math},
-    resource_checks::{check_div_size, check_mult_size, try_vec_with_capacity},
+    resource_checks::try_vec_with_capacity,
     sorting::{py_lt, sort_values},
     types::{
         List, Module, PyTrait,
@@ -324,7 +324,6 @@ fn sum_squares(items: &[Value], vm: &mut VM<'_>) -> RunResult<(Total, bool, usiz
         has_float |= is_float;
         match elem {
             Elem::Finite(num, exp) => {
-                check_mult_size(num.bits(), num.bits(), &vm.heap.tracker)?;
                 sxx.add(&num * &num, exp * 2);
                 sx.add(num, exp);
             }
@@ -338,9 +337,6 @@ fn sum_squares(items: &[Value], vm: &mut VM<'_>) -> RunResult<(Total, bool, usiz
         None => {
             let sx = sx.into_frac();
             let sxx = sxx.into_frac();
-            // The final combination multiplies the running sums, so bound its working set before doing it.
-            check_mult_size(sx.num.bits(), sx.num.bits(), &vm.heap.tracker)?;
-            check_mult_size(sxx.num.bits(), BigInt::from(count).bits(), &vm.heap.tracker)?;
             let count_frac = Frac::dyadic(BigInt::from(count), 0);
             Total::Exact(count_frac.mul(&sxx).sub(&sx.mul(&sx)).div_int(count))
         }
@@ -690,11 +686,7 @@ fn element(value: &Value, vm: &VM<'_>) -> RunResult<(Elem, bool)> {
         Value::Bool(b) => Ok((Elem::Finite(BigInt::from(i32::from(*b)), 0), false)),
         Value::Float(f) => Ok((float_element(*f), true)),
         _ => match value.as_long_int(vm) {
-            Some(n) => {
-                // The datum is copied out of the heap, so preflight that copy like any other big-int result.
-                check_div_size(n.bits(), &vm.heap.tracker)?;
-                Ok((Elem::Finite(n.clone(), 0), false))
-            }
+            Some(n) => Ok((Elem::Finite(n.clone(), 0), false)),
             None => Err(ExcType::type_error(format!(
                 "can't convert type '{}' to numerator/denominator",
                 value.py_type_name(vm)

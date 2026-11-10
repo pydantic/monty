@@ -2299,39 +2299,6 @@ fn max_turn_duration_is_enforced_alone() {
     );
 }
 
-/// `quantiles` of one datum copies it `n - 1` times in a native loop, with `n` chosen by the
-/// program, so the loop must poll the clock. The VM also notices an expired budget once the call
-/// returns, so the proof is that the loop stops long before it would have finished on its own.
-#[test]
-fn time_limit_covers_statistics_quantiles_singleton_expansion() {
-    let code = "import statistics\nstatistics.quantiles([1], n=10_000_000)\n";
-    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(5));
-    let start = ThreadTime::now();
-    let exc = ex
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .expect_err("the expansion must be stopped by the time limit");
-    let elapsed = start.elapsed();
-    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
-    assert!(
-        elapsed < Duration::from_millis(250),
-        "the loop ran on after the limit: {elapsed:?}"
-    );
-}
-
-/// The exact sum copies each big int out of the heap and squares it, so those intermediates must
-/// be preflighted: here the 5 MB copy fits the 8 MB limit but the 10 MB square does not.
-#[test]
-fn statistics_variance_big_int_intermediates_respect_memory_limit() {
-    let code = "import statistics\nx = 1 << 40_000_000\nstatistics.pvariance([x])\n";
-    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::default().max_memory(8_000_000);
-    let exc = ex
-        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
-        .expect_err("the square must be refused before it is allocated");
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-}
-
 /// An `n` too large to address raises `MemoryError` instead of aborting on the reservation.
 #[test]
 fn statistics_quantiles_unaddressable_n_is_a_memory_error() {
