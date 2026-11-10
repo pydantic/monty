@@ -2508,6 +2508,64 @@ async fn shutdown_resumes_transparently() {
     join_server(server).await;
 }
 
+/// The reload is the same session, so a re-sent streaming `Feed` keeps its
+/// streamed-call handler: the reloaded worker's started calls reach it.
+#[tokio::test]
+async fn shutdown_resumes_a_streaming_feed_with_its_handler() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_streaming_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"parked-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_streaming_feed(&mut socket, "fetch()");
+        let call = WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), 1, None, false, position());
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+                calls: vec![call].into(),
+            }),
+        );
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let (started_tx, started_rx) = mpsc::channel();
+    checkout.set_streamed_call_handler(Some(Box::new(move |call| {
+        started_tx.send(call.call_id).expect("started");
+        Box::pin(ready(()))
+    })));
+    let event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the drain is invisible to the caller");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    assert_eq!(started_rx.try_iter().collect::<Vec<_>>(), [1]);
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// Asserts the next request is a `Feed` of `code` that asks the worker to stream calls.
+fn expect_streaming_feed(socket: &mut MockStream, code: &str) {
+    let request = try_read_request(socket).expect("feed");
+    match request.kind {
+        Some(pb::client_request::Kind::Feed(feed)) => {
+            assert_eq!(feed.code, code);
+            assert!(feed.stream_async_calls, "the feed must ask the worker to stream");
+        }
+        other => panic!("expected Feed, got {other:?}"),
+    }
+}
+
 /// The redial re-sends the session's `Configure`, so the resumed session keeps
 /// the profile the first one asked for.
 #[tokio::test]

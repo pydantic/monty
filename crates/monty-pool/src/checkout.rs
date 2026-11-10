@@ -489,8 +489,11 @@ pub struct Checkout {
     /// calls: a `StreamedCalls` event in any other feed is a protocol violation.
     feed_handler: Option<OnStreamedCall>,
     /// Argument bytes the host holds for streamed calls; cleared once a `Feed`,
-    /// `Load` or `Reset` is sent.
+    /// `Load` or `Reset` is sent, except an auto-resume reload's `Load`.
     streamed_args: StreamedArgs,
+    /// Set while an auto-resume reload sends its `Load`: the reload carries on
+    /// the same session, so its feed's handler and held arguments stay.
+    reloading: bool,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Client-side mount table for the in-flight feed, built from the
@@ -904,6 +907,7 @@ impl Checkout {
             next_streamed_call_handler: None,
             feed_handler: None,
             streamed_args,
+            reloading: false,
             session_id: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
@@ -1850,7 +1854,8 @@ impl Checkout {
     /// The reply must match the state at the shutdown: `Ok` when idle, or the
     /// same pending suspension re-announced when mid-feed. The session's budget
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
-    /// reply can only tighten its limits, and a shutdown grants nothing.
+    /// reply can only tighten its limits, and a shutdown grants nothing. For the
+    /// same reason the feed's streamed-call handler and held arguments survive the `Load`.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
         let worker = self.pool.acquire_worker(&redial.metadata).await?;
@@ -1871,7 +1876,9 @@ impl Checkout {
         let load = request(pb::client_request::Kind::Load(pb::Load {
             state: state.to_vec().into(),
         }));
+        self.reloading = true;
         let reply = self.request_turn(&load, timeout, &mut no_print).await;
+        self.reloading = false;
         // the session's script name is the one it already had
         self.restored_script_name = None;
         let matches = match reply? {
@@ -2504,14 +2511,16 @@ impl Checkout {
                         self.streamed_args.release(result.call_id);
                     }
                 }
-                if matches!(
-                    request.kind,
-                    Some(
-                        pb::client_request::Kind::Feed(_)
-                            | pb::client_request::Kind::Load(_)
-                            | pb::client_request::Kind::Reset(_)
+                if !self.reloading
+                    && matches!(
+                        request.kind,
+                        Some(
+                            pb::client_request::Kind::Feed(_)
+                                | pb::client_request::Kind::Load(_)
+                                | pb::client_request::Kind::Reset(_)
+                        )
                     )
-                ) {
+                {
                     self.streamed_args.clear();
                     // a restored or reset session runs no streaming feed until the next `Feed`
                     if !matches!(request.kind, Some(pb::client_request::Kind::Feed(_))) {
