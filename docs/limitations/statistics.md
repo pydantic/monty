@@ -19,5 +19,5 @@
     [exceptions.md](exceptions.md)).
 - **`quantiles()` with an `n` too large to allocate raises `MemoryError`** before computing any cut point, where CPython
     appends cut points until it runs out of memory.
-- **The module has no `__all__`**, and its functions carry no attributes, as on every built-in module (see
-    [modules.md](modules.md)).
+- **The module has no `__all__`, and its functions carry none of the attributes CPython's Python functions have**,
+    as on every built-in module (see [modules.md](modules.md)).

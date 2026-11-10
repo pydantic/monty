@@ -6,9 +6,10 @@ def check(exc_type, message, fn, *args, **kwargs):
     try:
         fn(*args, **kwargs)
     except exc_type as e:
+        assert str(type(e)) == str(exc_type)
         assert str(e) == message
     else:
-        assert False, f'{fn.__name__} did not raise'
+        assert False, 'did not raise'
 
 
 # === empty and too-short data ===
@@ -36,6 +37,30 @@ check(StatisticsError, 'data and weights must be the same length', statistics.fm
 check(StatisticsError, 'data and weights must be the same length', statistics.fmean, [1], [1, 2])
 check(StatisticsError, 'sum of weights must be non-zero', statistics.fmean, [1, 2], [0, 0])
 check(StatisticsError, 'sum of weights must be non-zero', statistics.fmean, [1, 2], [1, -1])
+
+# a list of weights is read live by `sumprod`, so one that grows while `data` is read no longer matches it
+grown = [1, 1, 1]
+
+
+class Grow:
+    """Yields 1.0, 2.0, 3.0 and appends to `grown` partway through."""
+
+    def __init__(self):
+        self.i = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.i += 1
+        if self.i == 2:
+            grown.append(5)
+        if self.i > 3:
+            raise StopIteration
+        return float(self.i)
+
+
+check(StatisticsError, 'data and weights must be the same length', statistics.fmean, Grow(), grown)
 
 # === quantiles arguments ===
 check(ValueError, "Unknown method: 'linear'", statistics.quantiles, [1, 2, 3], method='linear')

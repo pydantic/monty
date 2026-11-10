@@ -28,7 +28,7 @@ use crate::{
     resource_checks::try_vec_with_capacity,
     sorting::{py_lt, sort_values},
     types::{
-        List, Module, PyTrait,
+        List, Module, PyTrait, Type,
         iter::collect_owned_iterable,
         long_int::{LongInt, bigint_true_divide},
     },
@@ -131,11 +131,15 @@ data_args!(MeanArgs, "mean");
 fn fmean(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let FmeanArgs { data, weights } = FmeanArgs::from_args(args, vm)?;
     if matches!(weights, Value::None) {
-        let items: Vec<Value> = collect_owned_iterable(data, vm)?;
-        let n = items.len();
-        let items = list_value(items, vm);
-        let total = math::fsum(vm, ArgValues::One(items))?;
-        match total {
+        // CPython divides `fsum(data)` by `len(data)` when there is one, and otherwise counts the items.
+        let (data, n) = if let Some(n) = data.py_len(vm) {
+            (data, n)
+        } else {
+            let items: Vec<Value> = collect_owned_iterable(data, vm)?;
+            let n = items.len();
+            (list_value(items, vm), n)
+        };
+        match math::fsum(vm, ArgValues::One(data))? {
             _ if n == 0 => Err(ExcType::statistics_error("fmean requires at least one data point")),
             Value::Float(total) => Ok(Value::Float(total / n as f64)),
             _ => unreachable!("math.fsum returns a float"),
@@ -157,12 +161,17 @@ struct FmeanArgs {
 /// `fmean(data, weights)`: `sum(x * w) / sum(w)`.
 ///
 /// CPython runs `list(weights)` before `sumprod` consumes `data`, so a one-shot iterator shared by
-/// both is read in that order; `data` is handed to `sumprod` as it is, never copied.
+/// both is read in that order. A list or tuple of weights, and `data`, are handed on as they are,
+/// never copied.
 fn weighted_fmean(data: Value, weights: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut data_guard = DropGuard::new(data, vm);
     let (_, vm) = data_guard.as_parts_mut();
-    let weights: Vec<Value> = collect_owned_iterable(weights, vm)?;
-    let weights = list_value(weights, vm);
+    let weights = if matches!(weights.py_type(vm), Type::List | Type::Tuple) {
+        weights
+    } else {
+        let weights: Vec<Value> = collect_owned_iterable(weights, vm)?;
+        list_value(weights, vm)
+    };
     let (data, vm) = data_guard.into_parts();
     defer_drop!(weights, vm);
     let weights_for_sum = weights.clone_with_heap(vm.heap);
@@ -505,8 +514,8 @@ fn inclusive_method(method: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
 /// CPython's two `quantiles` loops over at least two sorted values: each cut point interpolates between the
 /// pair of data points `i * m / n` falls between, with exact integer weights.
 fn cut_points(items: &[Value], n: i64, inclusive: bool, vm: &mut VM<'_>) -> RunResult<Value> {
-    // `range(1, n)` is empty for `n <= 1`.
-    let count = usize::try_from(n.saturating_sub(1)).unwrap_or(0);
+    // `n >= 1` here; a count past `usize` saturates so the reservation refuses it on 32-bit targets too.
+    let count = usize::try_from(n - 1).unwrap_or(usize::MAX);
     let mut points = DropGuard::new(reserve_values(count, vm)?, vm);
     let (values, vm) = points.as_parts_mut();
     let ld = i128::try_from(items.len()).expect("a length fits in i128");

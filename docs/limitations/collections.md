@@ -83,7 +83,7 @@ except `repr(Counter)`, which is `<class 'collections.Counter'>` where Monty
 writes `<class 'Counter'>`. Everywhere else — `__name__`, the `cannot use ...`
 unhashable clause, other type-naming errors — the bare name matches.
 
-Counting an unhashable element (`Counter([[1]])`, `Counter.update([[1]])`) raises
+Counting an unhashable element (`Counter([[1]])`, `Counter().update([[1]])`) raises
 `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`, where CPython's `_count_elements` says only
 `unhashable type: 'list'`.
 `Counter.subtract()` matches CPython, which counts through `dict.get()` there.
