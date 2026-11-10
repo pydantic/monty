@@ -732,9 +732,15 @@ fn snake_to_pascal(s: &str) -> String {
     out
 }
 
-/// True for `OwnedIntoIter` or a literal `Vec<Value>` (by final path segments — the
-/// only spellings used in-crate); the build line converts with `Into::into`.
+/// True for `OwnedIntoIter` or a literal `Vec<Value>`; the build line converts either with `Into::into`.
 fn is_varargs_type(ty: &Type) -> bool {
+    is_vec_of_value(ty)
+        || matches!(ty, Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "OwnedIntoIter"))
+}
+
+/// True for a literal `Vec<Value>` type (by final path segments — the only
+/// spellings used in-crate are `Vec<Value>` / `std::vec::Vec<Value>`).
+fn is_vec_of_value(ty: &Type) -> bool {
     fn last_segment(ty: &Type) -> Option<&syn::PathSegment> {
         match ty {
             Type::Path(p) => p.path.segments.last(),
@@ -742,15 +748,14 @@ fn is_varargs_type(ty: &Type) -> bool {
         }
     }
     last_segment(ty).is_some_and(|seg| {
-        seg.ident == "OwnedIntoIter"
-            || seg.ident == "Vec"
-                && match &seg.arguments {
-                    syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
-                        syn::GenericArgument::Type(t) => last_segment(t).is_some_and(|s| s.ident == "Value"),
-                        _ => false,
-                    }),
+        seg.ident == "Vec"
+            && match &seg.arguments {
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(t) => last_segment(t).is_some_and(|s| s.ident == "Value"),
                     _ => false,
-                }
+                }),
+                _ => false,
+            }
     })
 }
 

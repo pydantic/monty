@@ -1941,9 +1941,9 @@ fn dict_setdefault<'h>(dict: &HeapReadMut<'h, Dict>, args: ArgValues, vm: &mut V
         // Key doesn't exist - insert default and return it (cloned before insertion,
         // and owned until returned since the insert can still raise).
         let return_value = Owned::new(default.clone_with_heap(vm));
-        // A replaced value is only possible when `__eq__` answers differently on the second lookup.
         if let Some(old_value) = dict.set(key.into_value(), default.into_value(), vm)? {
-            Owned::new(old_value).release(vm);
+            // This shouldn't happen since we checked, but handle it anyway
+            old_value.drop_with(vm);
         }
         Ok(return_value.into_value())
     }

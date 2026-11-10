@@ -25,7 +25,7 @@
 use std::{
     cell::{Cell, RefCell},
     mem,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     rc::Rc,
     vec,
 };
@@ -109,25 +109,28 @@ pub(crate) fn exit_vm(outer: Option<Rc<ReleaseQueue>>) {
 /// `Owned` values only exist inside native code, which only runs under a VM.
 #[inline]
 fn queue_release(id: HeapId) {
-    CURRENT.with_borrow(|current| match current {
-        Some(queue) => queue.push(id),
-        None => debug_assert!(false, "`Owned` heap value dropped outside a VM; its reference leaks"),
-    });
+    with_current_queue(|queue| queue.push(id));
 }
 
 /// Queues every heap reference in `values` with one thread-local access, for owning containers.
 fn queue_values(values: impl IntoIterator<Item = Value>) {
-    CURRENT.with_borrow(|current| match current {
-        Some(queue) => {
-            let mut pending = queue.pending.borrow_mut();
-            for value in values {
-                if let Value::Ref(id) = value {
-                    pending.push(id);
-                    discard_released(value);
-                }
+    with_current_queue(|queue| {
+        let mut pending = queue.pending.borrow_mut();
+        for value in values {
+            if let Value::Ref(id) = value {
+                pending.push(id);
+                discard_released(value);
             }
-            queue.dirty.set(true);
         }
+        queue.dirty.set(true);
+    });
+}
+
+/// Runs `f` on the innermost live VM's queue; with no live VM the references leak.
+#[inline]
+fn with_current_queue(f: impl FnOnce(&ReleaseQueue)) {
+    CURRENT.with_borrow(|current| match current {
+        Some(queue) => f(queue),
         None => debug_assert!(false, "owned heap values dropped outside a VM; their references leak"),
     });
 }
@@ -199,12 +202,6 @@ impl Deref for Owned {
 
     fn deref(&self) -> &Value {
         &self.0
-    }
-}
-
-impl DerefMut for Owned {
-    fn deref_mut(&mut self) -> &mut Value {
-        &mut self.0
     }
 }
 
