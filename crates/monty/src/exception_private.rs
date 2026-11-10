@@ -1006,6 +1006,17 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// `{name}() argument must be {expected}, not {got}`: `_PyArg_BadArgument`'s wording for a
+    /// single-argument (`METH_O`) C function such as `_heapq.heappop`.
+    #[must_use]
+    fn type_error_bad_arg(name: &str, expected: &str, got: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() argument must be {expected}, not {got}"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for **kwargs argument that is not a mapping.
     ///
     /// Matches CPython's format: `{name}() argument after ** must be a mapping, not {type_name}`
@@ -1643,7 +1654,19 @@ pub(crate) trait ExcTypeExt: Sized {
     /// Matches CPython's format: `IndexError('index out of range')`
     #[must_use]
     fn bytes_index_error() -> RunError {
+        Self::index_error_out_of_range()
+    }
+
+    /// The bare `IndexError: index out of range`, raised by `bytes` indexing and `_heapq` on an empty heap.
+    #[must_use]
+    fn index_error_out_of_range() -> RunError {
         SimpleException::new_msg(ExcType::IndexError, "index out of range").into()
+    }
+
+    /// `RuntimeError: list changed size during iteration`, which `_heapq` raises when a comparison resizes the heap.
+    #[must_use]
+    fn runtime_error_list_changed_size() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "list changed size during iteration").into()
     }
 
     /// Creates an IndexError for range index out of range.

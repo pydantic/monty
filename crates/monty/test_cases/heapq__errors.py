@@ -38,6 +38,13 @@ raises(TypeError, "'int' object is not iterable", heapq.nsmallest, 2, 5)
 raises(TypeError, "'int' object is not callable", heapq.nlargest, 2, [1, 2, 3], 2)
 raises(TypeError, "'int' object is not callable", heapq.nsmallest, 2, [1, 2, 3], key=2)
 
+# `n` is compared with 1 and then with the length before it is used as an integer, as in `Lib/heapq.py`.
+raises(TypeError, 'slice indices must be integers or None or have an __index__ method', heapq.nsmallest, 5.0, [3, 1, 2])
+raises(TypeError, "'>=' not supported between instances of 'NoneType' and 'int'", heapq.nsmallest, None, [3, 1, 2])
+raises(TypeError, "'>=' not supported between instances of 'str' and 'int'", heapq.nlargest, 'a', [3, 1, 2])
+raises(TypeError, "'float' object cannot be interpreted as an integer", heapq.nsmallest, 2.0, [3, 1, 2])
+raises(TypeError, "'float' object cannot be interpreted as an integer", heapq.nlargest, 2.0, iter([3, 1, 2]))
+
 # Errors from comparisons and keys propagate.
 raises(TypeError, "'<' not supported between instances of 'str' and 'int'", heapq.heappush, [1], 'a')
 raises(TypeError, "'<' not supported between instances of 'str' and 'int'", heapq.heapify, [1, 'a', 2])

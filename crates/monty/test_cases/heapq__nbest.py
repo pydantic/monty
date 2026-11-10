@@ -70,3 +70,7 @@ assert calls == [4, 2, 6]
 calls.clear()
 assert heapq.nlargest(2, iter([4, 2, 6, 1]), key=key) == [1, 2]
 assert calls == [4, 2, 6, 1]
+
+# `n == 1` takes the `min` / `max` path before `n` is used as an integer, so `1.0` works, as in CPython.
+assert heapq.nsmallest(1.0, [3, 1, 2]) == [1]
+assert heapq.nlargest(1.0, [3, 1, 2]) == [3]
