@@ -36,4 +36,4 @@ for _ in range(20):
 # The loop above is bounded, so assert the sibling really ran: a scheduler change
 # that stops driving it should fail here, not as an unexplained ref-count leak.
 assert completed == 1
-# ref-counts={'asyncio': 1}
+# ref-counts={'asyncio': 1, 'leaf': 1, 'survivor': 1, 'task_fail': 1}

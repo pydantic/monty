@@ -450,8 +450,7 @@ pub(crate) struct Closure {
     pub globals: Option<HeapId>,
 }
 
-/// A `def` that needs a heap object but captures nothing: it has evaluated
-/// default values, an explicit globals dict, or both.
+/// A function object that captures no cells, with optional defaults and globals.
 ///
 /// When the function is called, defaults are cloned for missing optional
 /// parameters and the frame resolves globals through the dict. When dropped,
@@ -524,20 +523,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Closure> {
         None
     }
 
-    /// Two closures over the same `def` are equal only if they captured the
-    /// same cells; the defaults play no part, as in CPython.
+    /// Capturing the same cells does not make distinct function objects equal.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::Closure(other)) => {
-                let this = self.get(vm.heap);
-                let other = other.get(vm.heap);
-                Some(this.func_id == other.func_id && this.cells == other.cells)
-            }
+            Some(HeapReadOutput::Closure(other)) => Some(self.id() == other.id()),
             _ => None,
         })
     }
 
-    /// Hashes by `def`, so a closure and its equal share a bucket.
+    /// Retain the persisted code-based hash; distinct objects may share a bucket.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         Ok(Some(hash_func_id(self.get(vm.heap).func_id)))
     }
@@ -581,13 +575,10 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
         None
     }
 
-    /// Equal when they decorate the same `def`: with no captured scope, the
-    /// defaults are all that could differ and CPython ignores those too.
+    /// Evaluating the same `def` again still creates a distinct function object.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(match other.read_heap(vm) {
-            Some(HeapReadOutput::FunctionDefaults(other)) => {
-                Some(self.get(vm.heap).func_id == other.get(vm.heap).func_id)
-            }
+            Some(HeapReadOutput::FunctionDefaults(other)) => Some(self.id() == other.id()),
             _ => None,
         })
     }
@@ -626,7 +617,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, FunctionDefaults> {
     }
 }
 
-/// Hashes a function identity, the hash both `def` representations report.
+/// Hashes compiled code without changing the hashes stored in existing dumps.
+/// Function equality uses object identity; unequal functions may have equal hashes.
 fn hash_func_id(func_id: FunctionId) -> HashValue {
     let mut hasher = DefaultHasher::new();
     func_id.hash(&mut hasher);

@@ -47,4 +47,5 @@ for compute in [
 # The trailing expression adds a second reference to `big`. A leaked operand
 # would show up as an unreachable heap object before these counts are compared.
 big
-# ref-counts={'datetime': 1, 'delta': 1, 'big': 2, 'neg_big': 1, 'zero_delta': 1, 'divisor': 1}
+# The loop binding `compute` keeps the final heap-allocated lambda alive.
+# ref-counts={'datetime': 1, 'delta': 1, 'big': 2, 'neg_big': 1, 'zero_delta': 1, 'divisor': 1, 'compute': 1}

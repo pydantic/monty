@@ -27,4 +27,4 @@ except ValueError as e:
 
 # The temporary argument container for max() and the current winner slots in
 # both builtin code paths must be released after the handled exception.
-# ref-counts={'item_iter': 1, 'item_multi': 1, 'other_multi': 1}
+# ref-counts={'item_iter': 1, 'item_multi': 1, 'other_multi': 1, 'raising_key': 1}

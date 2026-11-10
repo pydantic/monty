@@ -245,6 +245,12 @@ tuple comparison, so the same `NaN` held as several counts can come back in
 another order (`Counter(a=x, b=x, c=x).most_common(2)` is
 `[('a', x), ('b', x)]` in CPython, `[('b', x), ('a', x)]` in Monty).
 
+## Function hashes
+
+Distinct functions created from the same `def` share a hash value in Monty.
+Dicts and sets still distinguish these function objects.
+Inserting many of them as keys has quadratic worst-case cost because they share a hash bucket.
+
 ## What *does* work
 
 - Functions (`def`, `async def`), nested functions, closures, and decorators on

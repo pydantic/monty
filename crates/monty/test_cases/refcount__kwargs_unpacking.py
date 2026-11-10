@@ -24,4 +24,4 @@ assert result2 is list_a
 # result: 5 refs (same object as list_a)
 # result2: 5 refs (same object as list_a)
 result2
-# ref-counts={'list_a': 5, 'list_c': 2, 'kwargs_dict': 1, 'result': 5, 'result2': 5}
+# ref-counts={'list_a': 5, 'list_c': 2, 'kwargs_dict': 1, 'result': 5, 'result2': 5, 'receive_kwargs': 1}

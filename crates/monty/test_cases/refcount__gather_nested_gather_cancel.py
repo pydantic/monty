@@ -21,4 +21,4 @@ try:
     result = await asyncio.gather(task_with_gather_item(), task_fail())  # pyright: ignore
 except ValueError:
     pass
-# ref-counts={'asyncio': 1}
+# ref-counts={'asyncio': 1, 'leaf': 1, 'task_with_gather_item': 1, 'task_fail': 1}

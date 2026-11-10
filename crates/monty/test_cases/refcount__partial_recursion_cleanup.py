@@ -39,4 +39,5 @@ else:
         deep(arg)
 
 len(arg)
-# ref-counts={'functools': 1, 'sys': 1, 'arg': 1, 'bound': 31, 'deep': 1}
+# `target` is held by its global binding and the innermost partial; `chain` only by its binding.
+# ref-counts={'functools': 1, 'sys': 1, 'arg': 1, 'bound': 31, 'deep': 1, 'target': 2, 'chain': 1}

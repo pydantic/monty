@@ -22,4 +22,4 @@ try:
     assert False, 'expected the reused coroutine to raise'
 except RuntimeError as exc:
     assert str(exc) == 'cannot reuse already awaited coroutine'
-# ref-counts={'asyncio': 1, 'spent': 2, 'outer': 1, 'inner': 2}
+# ref-counts={'asyncio': 1, 'spent': 2, 'outer': 1, 'inner': 2, 'leaf': 1, 'slow': 1}

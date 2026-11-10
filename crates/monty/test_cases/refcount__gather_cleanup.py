@@ -13,4 +13,4 @@ async def task2():
 
 result = await asyncio.gather(task1(), task2())  # pyright: ignore
 result
-# ref-counts={'result': 2, 'asyncio': 1}
+# ref-counts={'result': 2, 'asyncio': 1, 'task1': 1, 'task2': 1}

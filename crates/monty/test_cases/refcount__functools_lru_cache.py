@@ -82,4 +82,5 @@ colliding(Reentrant(2))
 assert reentered == [True], 'expected the insertion to be re-entered'
 
 len(held)
-# ref-counts={'functools': 1, 'wrapped': 3, 'cached': 1, 'key': 3, 'held': 2, 'small': 1, 'evicted': 1, 'cyclic': 2, 'shared': 3, 'colliding': 1, 'calls': 1, 'reentered': 1, 'Reentrant': 3}
+# `constant` has two references: its global binding and the `colliding` wrapper.
+# ref-counts={'functools': 1, 'wrapped': 3, 'cached': 1, 'key': 3, 'held': 2, 'small': 1, 'evicted': 1, 'cyclic': 2, 'shared': 3, 'colliding': 1, 'calls': 1, 'reentered': 1, 'Reentrant': 3, 'constant': 2}
