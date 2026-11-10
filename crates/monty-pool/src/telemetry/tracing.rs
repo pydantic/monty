@@ -64,6 +64,8 @@ pub(crate) struct Recorder {
     /// Most entries `streamed_calls` holds: the session's `max_suspensions`, since
     /// the checkout drops calls past it, whose spans would never be settled.
     max_streamed_calls: usize,
+    /// The `Configure`'s `max_suspensions`, which a worker-reported limit may only lower.
+    configured_streamed_calls: usize,
     /// The in-flight feed's span, held across suspension round-trips so the
     /// whole feed is one span. Closed by the turn-ending event.
     feed: Option<OpenSpan>,
@@ -89,6 +91,7 @@ impl Recorder {
             streamed_calls: BTreeMap::new(),
             streamed_arg_bytes: 0,
             max_streamed_calls: DEFAULT_MAX_SUSPENSIONS,
+            configured_streamed_calls: DEFAULT_MAX_SUSPENSIONS,
             feed: None,
             session: None,
             dump_turn: false,
@@ -122,7 +125,8 @@ impl Recorder {
         self.clear_streamed_calls();
         self.feed = None;
         let limits = c.limits.as_ref();
-        self.max_streamed_calls = streamed_call_cap(limits.and_then(|l| l.max_suspensions));
+        self.configured_streamed_calls = streamed_call_cap(limits.and_then(|l| l.max_suspensions));
+        self.max_streamed_calls = self.configured_streamed_calls;
         let (script_name, script_name_cut) = truncate_str(&c.script_name);
         let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
         let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
@@ -327,9 +331,10 @@ impl Recorder {
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
         let max_feed_duration = event.max_feed_duration_micros;
-        // a `Load` reply carries the dump's limit, which the checkout re-adopts
+        // a `Load` reply carries the dump's limit, which the checkout re-adopts;
+        // the worker reports it, so it may tighten the configured cap but not lift it
         if let Some(max_suspensions) = event.max_suspensions {
-            self.max_streamed_calls = streamed_call_cap(Some(max_suspensions));
+            self.max_streamed_calls = streamed_call_cap(Some(max_suspensions)).min(self.configured_streamed_calls);
         }
         // only a `Load` reply carries this: the session span already exists with
         // the `Configure` name, so the dump's name goes on the load span
@@ -1495,6 +1500,12 @@ mod tests {
             ..Default::default()
         });
         let call = |call_id| WireFunctionCall::new("f".to_owned(), CallArgs::new(), call_id, None, false, position());
+        // a worker reporting a larger limit cannot lift the configured one
+        recorder.event(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+            max_suspensions: Some(10),
+            ..Default::default()
+        });
         recorder.event(&event(pb::child_event::Kind::StreamedCalls(pb::StreamedCalls {
             calls: (0..5).map(call).collect::<Vec<_>>().into(),
         })));
