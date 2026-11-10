@@ -439,7 +439,7 @@ fn math_isqrt(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let n = value_to_bigint(value, vm)?;
     if n.is_negative() {
-        Err(SimpleException::new_msg(ExcType::ValueError, "isqrt() argument must be nonnegative").into())
+        Err(ExcType::isqrt_negative_error())
     } else if let Some(n) = n.to_i64() {
         Ok(Value::Int(isqrt_i64(n)))
     } else {

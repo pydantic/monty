@@ -1,4 +1,5 @@
 import statistics
+from collections import Counter
 from statistics import (
     StatisticsError,
     fmean,
@@ -46,6 +47,11 @@ assert multimode('') == []
 assert multimode(iter([2, 1, 1, 2])) == [2, 1]
 assert multimode([(1, 2), (1, 2), (3,)]) == [(1, 2)]
 assert multimode([None, None, 0]) == [None]
+# a mapping is iterated for its keys, as `Counter(iter(data))` sees it, not read as counts
+assert mode({'a': 1, 'b': 5}) == 'a'
+assert multimode({'a': 1, 'b': 5}) == ['a', 'b']
+assert mode(Counter({'x': 1, 'y': 3})) == 'x'
+assert multimode(Counter({'x': 1, 'y': 3})) == ['x', 'y']
 
 # === fmean ===
 assert fmean([1, 2, 3, 4]) == 2.5
@@ -60,6 +66,29 @@ assert fmean([1, 2, 3], weights=iter([0, 0, 1])) == 3.0
 assert fmean([10, 20], weights=(1, 3)) == 17.5
 assert fmean([float('inf'), 1]) == float('inf')
 
+
+# weights are read before data, so a one-shot iterator feeding both is split in that order
+class Draw:
+    """A lazy iterator that pulls `count` values from `source` only when it is iterated."""
+
+    def __init__(self, source, count):
+        self.source = source
+        self.count = count
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.count == 0:
+            raise StopIteration
+        self.count -= 1
+        return next(self.source)
+
+
+shared = iter([1.0, 2.0, 3.0, 4.0])
+assert fmean(shared, Draw(shared, 2)) == (3.0 * 1.0 + 4.0 * 2.0) / 3.0
+
+
 # === quantiles ===
 data = [105, 129, 87, 86, 111, 111, 89, 81, 108, 92, 110, 100, 75, 105, 103, 109, 76, 119, 99, 91, 103, 129]
 assert len(quantiles(data)) == 3
@@ -69,6 +98,10 @@ assert quantiles([1, 2, 3, 4, 5], method='inclusive') == [2.0, 3.0, 4.0]
 assert quantiles([1, 2, 3, 4, 5], n=2) == [3.0]
 assert quantiles([1, 2, 3, 4, 5], n=10) == quantiles([5, 4, 3, 2, 1], n=10)
 assert quantiles([1, 2, 3, 4, 5], n=1) == []
+assert quantiles([1, 2], n=True) == []
+# a single datum is `data * (n - 1)`, returned before `method` is looked at
+assert quantiles([7], n=3) == [7, 7]
+assert quantiles([7], n=3, method='bad') == [7, 7]
 assert quantiles([1, 2, 3, 4, 5], n=100, method='inclusive')[49] == 3.0
 assert len(quantiles([1, 2, 3, 4, 5], n=100)) == 99
 assert quantiles([7], n=4) == [7, 7, 7]

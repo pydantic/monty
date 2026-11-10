@@ -44,6 +44,16 @@ check(ValueError, 'Unknown method: None', statistics.quantiles, [1, 2, 3], metho
 check(ValueError, "Unknown method: 'Inclusive'", statistics.quantiles, [1, 2, 3], method='Inclusive')
 check(TypeError, 'quantiles() takes 1 positional argument but 2 were given', statistics.quantiles, [1, 2], 4)
 
+# === quantiles uses `n` as CPython does: compared with `<`, used as a repeat count, then as a `range` bound ===
+check(StatisticsError, 'must have at least one data point', statistics.quantiles, [], n=2**70)
+check(StatisticsError, 'n must be at least 1', statistics.quantiles, [], n=0.5)
+check(TypeError, "'<' not supported between instances of 'str' and 'int'", statistics.quantiles, [1, 2], n='a')
+check(TypeError, "'<' not supported between instances of 'NoneType' and 'int'", statistics.quantiles, [1, 2], n=None)
+check(TypeError, "can't multiply sequence by non-int of type 'float'", statistics.quantiles, [1], n=3.0)
+check(OverflowError, "cannot fit 'int' into an index-sized integer", statistics.quantiles, [1], n=2**70)
+check(TypeError, "'float' object cannot be interpreted as an integer", statistics.quantiles, [1, 2], n=2.0)
+check(ValueError, "Unknown method: 'bad'", statistics.quantiles, [1, 2], n=2.0, method='bad')
+
 # === unsupported element types ===
 check(TypeError, "can't convert type 'str' to numerator/denominator", statistics.mean, ['a', 'b'])
 check(TypeError, "can't convert type 'NoneType' to numerator/denominator", statistics.mean, [1, None])

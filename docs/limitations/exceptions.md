@@ -65,7 +65,8 @@ not supported; passing more than one argument raises an internal error.
     `repr()` uses the generic single-message form instead.
 
 - The dotted exception classes — `json.JSONDecodeError`, `tomllib.TOMLDecodeError`, `re.PatternError`,
-    `binascii.Error`, `binascii.Incomplete`, `_csv.Error` — repr under their qualified name:
+    `binascii.Error`, `binascii.Incomplete`, `_csv.Error`, `statistics.StatisticsError` — repr under their qualified
+    name:
     `binascii.Error('bad')` where CPython gives `Error('bad')`.
     `type(exc).__name__` and `str(type(exc))` match CPython.
 

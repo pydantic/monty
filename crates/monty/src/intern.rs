@@ -1347,8 +1347,6 @@ pub enum StaticStrings {
     /// `typing.Generic` marker.
     #[strum(serialize = "Generic")]
     Generic,
-    /// `statistics.geometric_mean()` function.
-    GeometricMean,
     /// `dict.get()` method.
     Get,
     /// `annotationlib.get_annotations()` function.
@@ -1396,8 +1394,6 @@ pub enum StaticStrings {
     Grouper,
     /// `match.groups()` method
     Groups,
-    /// `statistics.harmonic_mean()` function.
-    HarmonicMean,
     /// `field(hash=...)`.
     Hash,
     /// `hash_name` parameter of `hashlib.pbkdf2_hmac()`.
@@ -1490,8 +1486,6 @@ pub enum StaticStrings {
     Interactive,
     /// `set.intersection()` method.
     Intersection,
-    /// `interval` parameter of `statistics.median_grouped()`.
-    Interval,
     /// `decimal.InvalidContext` condition.
     #[strum(serialize = "InvalidContext")]
     InvalidContext,
@@ -1763,8 +1757,6 @@ pub enum StaticStrings {
     Mean,
     /// `statistics.median()` function.
     Median,
-    /// `statistics.median_grouped()` function.
-    MedianGrouped,
     /// `statistics.median_high()` function.
     MedianHigh,
     /// `statistics.median_low()` function.

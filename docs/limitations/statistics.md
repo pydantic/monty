@@ -1,7 +1,7 @@
 # `statistics` module
 
 `mean`, `fmean`, `median`, `median_low`, `median_high`, `mode`, `multimode`, `pstdev`, `pvariance`, `stdev`,
-`variance`, `quantiles` and `StatisticsError` are available, with CPython's signatures, results and error messages.
+`variance`, `quantiles` and `StatisticsError` are available.
 
 - **`NormalDist`, `kde`, `kde_random`, `geometric_mean`, `harmonic_mean`, `median_grouped`, `covariance`,
     `correlation` and `linear_regression` are not provided.** They are missing from the module namespace, so they fail
@@ -14,8 +14,9 @@
 - **`mode()` and `multimode()` of unhashable data raise**
     `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')` where CPython says only
     `unhashable type: 'list'`.
-- **`StatisticsError` is a `ValueError` subclass**, and its `repr` is `statistics.StatisticsError(...)`, as for the
-    other module-specific exceptions such as `json.JSONDecodeError`.
-- **`quantiles()` needs an `int` for `n`**; a `float` raises `TypeError`.
+- **`StatisticsError` reprs as `statistics.StatisticsError(...)`**, as the other dotted exception classes do (see
+    [exceptions.md](exceptions.md)).
+- **`quantiles()` with an `n` too large to allocate raises `MemoryError`** before computing any cut point, where
+    CPython appends cut points until it runs out of memory.
 - **The module has no `__all__`**, and its functions carry no attributes, as on every built-in module
     (see [modules.md](modules.md)).
