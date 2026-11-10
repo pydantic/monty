@@ -3,13 +3,13 @@
 //! Expectations for single segments come from CPython's `fnmatch` (case
 //! sensitive) and `re.IGNORECASE` over `fnmatch.translate` (insensitive).
 
-use std::{convert::Infallible, iter::repeat_n, rc::Rc};
+use std::{convert::Infallible, iter::repeat_n};
 
 use monty_types::{
     MontyObject, ScanArgs,
     scan::{
-        EntryInfo, GlobSelector, Listing, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern,
-        check_wildcard_parts, collect_scan, parse_scan_reply, split_literal_prefix,
+        EntryInfo, GlobSelector, Listing, ScanEntry, ScanReply, ScanSource, ScanTree, SegmentPattern, collect_scan,
+        parse_scan_reply, split_literal_prefix,
     },
 };
 
@@ -228,7 +228,7 @@ impl ScanSource for Counting {
         self.0.lookup(path)
     }
 
-    fn visit(&mut self) -> Result<(), Infallible> {
+    fn spend(&mut self, _units: usize) -> Result<(), Infallible> {
         Ok(())
     }
 
@@ -267,30 +267,6 @@ fn dot_dot_routes_collapse() {
     assert!(source.1 < 100, "listed {} times", source.1);
 }
 
-/// A source that counts the visits a scan reports, the work a host caps.
-struct Visiting(ScanTree, usize);
-
-impl ScanSource for Visiting {
-    type Error = Infallible;
-
-    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
-        self.0.list(dir)
-    }
-
-    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
-        self.0.lookup(path)
-    }
-
-    fn visit(&mut self) -> Result<(), Infallible> {
-        self.1 += 1;
-        Ok(())
-    }
-
-    fn charge(&mut self, _bytes: usize) -> Result<(), Infallible> {
-        Ok(())
-    }
-}
-
 /// `chains` directories, each holding a chain of `depth` nested `d` directories.
 fn chains(chains: usize, depth: usize) -> ScanTree {
     let mut paths = vec![String::new()];
@@ -315,18 +291,18 @@ fn chain_parents(chains: usize, depth: usize) -> Vec<String> {
     parents
 }
 
-/// Globs `pattern` over `tree`, returning its sorted matches and the visits it cost.
-fn visits(tree: ScanTree, pattern: &str, recurse_symlinks: bool) -> (Vec<String>, usize) {
+/// Globs `pattern` over `tree`, returning its sorted matches and how many listings it read.
+fn listings(tree: ScanTree, pattern: &str, recurse_symlinks: bool) -> (Vec<String>, usize) {
     let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
-    let mut source = Visiting(tree, 0);
+    let mut source = Counting(tree, 0);
     let mut matches = all_matches(&GlobSelector::new(&parts, None, recurse_symlinks), &mut source);
     matches.sort();
     (matches, source.1)
 }
 
 /// Each `**` step walks a directory once, rather than once per ancestor it was
-/// reached from: `**/..` re-queues every parent, so repeating it cost
-/// depth × entries per step, hours of host time across a session's suspensions.
+/// reached from: `**/..` re-queues every parent, so repeating it would cost
+/// depth × entries per step.
 #[test]
 fn recursive_steps_walk_each_directory_once() {
     let entries = 10 * 21 + 1;
@@ -334,84 +310,112 @@ fn recursive_steps_walk_each_directory_once() {
     let mut expected = chain_parents(10, 20);
     expected.insert(0, String::new());
     for recurse_symlinks in [false, true] {
-        let (matches, visits) = visits(chains(10, 20), &pattern, recurse_symlinks);
+        let (matches, listings) = listings(chains(10, 20), &pattern, recurse_symlinks);
         assert_eq!(matches, expected, "recurse_symlinks={recurse_symlinks}");
-        // two visits per directory per step: its listing and its entry in its parent's
         assert!(
-            visits < 2 * 10 * entries,
-            "recurse_symlinks={recurse_symlinks}: {visits} visits"
+            listings <= 10 * entries,
+            "recurse_symlinks={recurse_symlinks}: {listings} listings"
         );
     }
 }
 
 /// Following symlinks, the parts after `**` merge into one matcher relative to
-/// each walk's origin, so walks run shortest origin first and deeper ones skip.
+/// each walk's origin, so every origin is walked and none is skipped.
 #[test]
-fn merged_recursive_steps_walk_each_directory_once() {
+fn merged_recursive_steps_match_from_every_origin() {
     let pattern = ["**/d/.."; 10].join("/");
-    let (matches, visits) = visits(chains(10, 20), &pattern, true);
+    let (matches, _) = listings(chains(10, 20), &pattern, true);
     assert_eq!(matches, chain_parents(10, 20));
-    assert!(visits < 2 * 10 * (10 * 21 + 1), "{visits} visits");
 }
 
-/// A final `**` repeats its walks for CPython's repeated matches, but only
-/// while a host still collects them: past its capacity the reply is the tree.
+/// A source that totals the work a scan reports and fails past `cap` units, as a host does.
+struct Working {
+    tree: ScanTree,
+    work: usize,
+    cap: usize,
+}
+
+impl ScanSource for Working {
+    type Error = usize;
+
+    fn list(&mut self, dir: &str) -> Result<Option<Listing>, usize> {
+        let Ok(listing) = self.tree.list(dir);
+        Ok(listing)
+    }
+
+    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, usize> {
+        let Ok(info) = self.tree.lookup(path);
+        Ok(info)
+    }
+
+    fn spend(&mut self, units: usize) -> Result<(), usize> {
+        self.work += units;
+        if self.work > self.cap { Err(self.work) } else { Ok(()) }
+    }
+
+    fn charge(&mut self, _bytes: usize) -> Result<(), usize> {
+        Ok(())
+    }
+}
+
+/// The work `pattern` reports over `tree`, or the total that passed `cap`.
+fn work(tree: ScanTree, pattern: &str, recurse_symlinks: bool, cap: usize) -> Result<usize, usize> {
+    let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
+    let mut source = Working { tree, work: 0, cap };
+    GlobSelector::new(&parts, None, recurse_symlinks).select(&mut source)?;
+    Ok(source.work)
+}
+
+/// A match reports the steps it took, so a pattern built to backtrack costs
+/// pattern length × name length where a plain one costs the name's length.
 #[test]
-fn final_recursive_walks_stop_once_matches_overflow() {
-    let parts: Vec<String> = "**/*/**".split('/').map(str::to_owned).collect();
-    let selector = GlobSelector::new(&parts, None, false);
-    let mut source = Visiting(chains(10, 20), 0);
-    let repeated = selector.select(&mut source).unwrap().unwrap();
-    // each chain's 21 directories, once per ancestor below the root and once for itself
-    assert_eq!(repeated.len(), 10 * (21 * 22 / 2));
-    let unbounded = source.1;
-    let mut source = Capped(Visiting(chains(10, 20), 0));
-    assert_eq!(selector.select(&mut source).unwrap(), None);
-    // three steps, each visiting a directory and its entry once, beside the repeats that filled the capacity
-    assert!(source.0.1 < 2 * 3 * (10 * 21 + 1) + 4 * 50, "{} visits", source.0.1);
-    assert!(unbounded > 3 * source.0.1, "{unbounded} visits uncapped");
-}
-
-/// A [`Visiting`] source that collects at most 50 matches, as a host caps them.
-struct Capped(Visiting);
-
-impl ScanSource for Capped {
-    type Error = Infallible;
-
-    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
-        self.0.list(dir)
-    }
-
-    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
-        self.0.lookup(path)
-    }
-
-    fn visit(&mut self) -> Result<(), Infallible> {
-        self.0.visit()
-    }
-
-    fn charge(&mut self, bytes: usize) -> Result<(), Infallible> {
-        self.0.charge(bytes)
-    }
-
-    fn match_capacity(&self) -> usize {
-        50
-    }
-}
-
-/// Wildcard parts are counted as the steps that list: a run of `**` is one,
-/// literal and special parts none.
-#[test]
-fn wildcard_parts_are_capped() {
-    let check = |pattern: &str| {
-        let parts: Vec<String> = pattern.split('/').map(str::to_owned).collect();
-        check_wildcard_parts(&parts)
+fn segment_matches_count_their_steps() {
+    let name = "a".repeat(200);
+    let steps = |pattern: &str| {
+        let mut work = 0;
+        SegmentPattern::new(pattern, true).matches_counted(&name, &mut work);
+        work
     };
-    assert_eq!(check("a/../b/c/d/e/f/g/h/i/j"), Ok(()));
-    assert_eq!(check("*/?/[a]/**/**/**/x*/**/y?/*/"), Ok(()));
-    assert_eq!(
-        check("*/*/*/*/**/*/**/*/*"),
-        Err("glob pattern has 9 wildcard parts, more than the 8 supported".to_owned())
+    // one step per character, and one to take up the `*`
+    assert_eq!(steps("a*"), 201);
+    assert_eq!(steps("b*"), 1);
+    let backtracking = steps(&("*".to_owned() + &"a".repeat(100) + "b"));
+    assert!(backtracking > 100 * 100, "{backtracking} steps");
+}
+
+/// A scan reports work in proportion to what it does, whichever of the names,
+/// the parts or the repeated walks a pattern multiplies, and a cap stops it.
+#[test]
+fn scans_report_the_work_a_pattern_multiplies() {
+    let names: Vec<String> = (0..50).map(|i| format!("{i:0200}")).collect();
+    let mut entries = vec![(String::new(), 'd')];
+    entries.extend(names.iter().map(|name| (name.clone(), 'd')));
+    let entries: Vec<(&str, char)> = entries.iter().map(|(path, kind)| (path.as_str(), *kind)).collect();
+    let plain = work(tree(&entries), "*", false, usize::MAX).unwrap();
+    // each entry's path is built once
+    assert!(plain < 50 * 2 * 210, "{plain} units");
+
+    // a backtracking matcher costs its steps
+    let slow = "*".to_owned() + &"0".repeat(100) + "x";
+    let backtracking = work(tree(&entries), &slow, false, usize::MAX).unwrap();
+    assert!(backtracking > 50 * 100 * 90, "{backtracking} units");
+
+    // parts that return to the same directories cost each visit
+    let returning = work(tree(&entries), &("*/../".repeat(20) + "*"), false, usize::MAX).unwrap();
+    assert!(returning > 20 * plain, "{returning} units");
+
+    // a final `**` re-walks each chain from every ancestor
+    let single = work(chains(10, 20), "**", false, usize::MAX).unwrap();
+    let repeated = work(chains(10, 20), "**/*/**", false, usize::MAX).unwrap();
+    assert!(repeated > 5 * single, "{repeated} units against {single}");
+    // as a merged `**` does from every origin
+    let merged = work(chains(10, 20), "**/d/../**/d/..", true, usize::MAX).unwrap();
+    assert!(merged > 5 * single, "{merged} units against {single}");
+
+    let stopped = work(chains(10, 20), "**/*/**", false, repeated / 2).unwrap_err();
+    assert!(
+        stopped > repeated / 2 && stopped < repeated / 2 + 1000,
+        "{stopped} units"
     );
 }
 
@@ -435,7 +439,7 @@ impl ScanSource for Charging {
         Ok(info)
     }
 
-    fn visit(&mut self) -> Result<(), usize> {
+    fn spend(&mut self, _units: usize) -> Result<(), usize> {
         Ok(())
     }
 
@@ -473,43 +477,6 @@ fn glob_states_are_charged_to_the_source() {
     assert!(crafted > 31 * 50 * 200, "charged {crafted}");
     assert!(single < 50 * 2 * 200, "charged {single}");
     assert!(charged(&("*/../".repeat(31) + "*"), crafted / 2).is_err());
-}
-
-/// A source that records each charge a scan makes, in order.
-struct Recording(ScanTree, Vec<usize>);
-
-impl ScanSource for Recording {
-    type Error = Infallible;
-
-    fn list(&mut self, dir: &str) -> Result<Option<Listing>, Infallible> {
-        self.0.list(dir)
-    }
-
-    fn lookup(&mut self, path: &str) -> Result<Option<EntryInfo>, Infallible> {
-        self.0.lookup(path)
-    }
-
-    fn visit(&mut self) -> Result<(), Infallible> {
-        Ok(())
-    }
-
-    fn charge(&mut self, bytes: usize) -> Result<(), Infallible> {
-        self.1.push(bytes);
-        Ok(())
-    }
-}
-
-/// A merged `**` walk deferred until the stack drains holds a slot for its
-/// origin, beside the state already charged, so that slot is charged too.
-#[test]
-fn deferred_walk_origins_are_charged() {
-    let mut source = Recording(tree(&[("", 'd'), ("d", 'd')]), Vec::new());
-    let parts: Vec<String> = "**/d/..".split('/').map(str::to_owned).collect();
-    let matches = all_matches(&GlobSelector::new(&parts, None, true), &mut source);
-    assert_eq!(matches, [""]);
-    // the root state, its deferred origin, the walk of `` and `d`, then `d/` and `d/..`
-    assert_eq!(source.1.len(), 6);
-    assert_eq!(source.1[1], size_of::<(Rc<str>, bool)>());
 }
 
 /// Following symlinks, a merged trailing `**` needs a segment, as CPython's `.*` after `/` does.

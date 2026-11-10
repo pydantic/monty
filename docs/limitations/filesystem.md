@@ -110,13 +110,13 @@ Consequences of the shared budget that have no CPython analogue:
     so walking or globbing a tree with millions of entries raises `MemoryError` where CPython would stream it.
 - A glob also charges each directory it reaches at each wildcard part, so a pattern that returns to the same
     directories many times (`'*/../' * 30 + '*'`) can raise `MemoryError` on a tree its single-part form reads.
-- A glob pattern may have at most [8 wildcard parts](pathlib.md#glob-rglob-and-walk), so a glob lists each
-    directory it reaches a bounded number of times whatever the tree holds.
-- A scan may examine at most 10,000,000 entries, counting each entry at each pattern part that lists it and each
-    directory a glob lists, then raises `RuntimeError: directory scan examined more than 10000000 entries`.
-    Each wildcard part costs at most two per entry read, so a glob reaches the cap on a tree the default memory
-    limit admits only through what the wildcard cap leaves unbounded: a final `**` after other wildcards
-    (`**/*/**` yields an entry once per ancestor) and literal parts listed for an explicit `case_sensitive`.
+- A scan may do at most 200,000,000 steps of work, then raises
+    `RuntimeError: directory scan exceeded its work limit of 200000000 steps`.
+    A step is about one byte of a name matched or a path built, so the limit holds one scan to about a second of host
+    time whatever the pattern, and `'**/*.py'` over 350,000 entries takes about 11% of it.
+    A glob reaches it by multiplying work: a part built to backtrack over long names (`'*' + 'a' * 120 + 'b'`),
+    many parts that return to the same directories, or `**` walks repeated from every ancestor of a deep tree
+    (`'**/*/**'`, and with `recurse_symlinks=True` any `**` with more parts after it).
     A walk reaches it through symlink cycles. CPython has no such cap.
 - Paths deeper than [64 components](#at-most-64-path-components) are not listed, so a walk stops there.
 - `OverlayMemory` never follows symlinks, so a scan there reports them as neither files nor directories.

@@ -441,27 +441,6 @@ fn overlong_patterns_are_refused() {
     assert_eq!(err.into_exception().exc_type(), ExcType::OSError);
 }
 
-/// A wildcard part lists every directory the pattern reaches, so their number is
-/// capped whatever the tree holds; literal and `..` parts are not counted.
-#[test]
-fn patterns_with_too_many_wildcard_parts_are_refused() {
-    let dir = create_tree();
-    let mut table = mount(&dir, MountMode::ReadOnly);
-    let pattern = "*/../".repeat(8) + "*";
-    let parts: Vec<&str> = pattern.split('/').collect();
-    let exc = scan(&mut table, glob("/mnt", &parts)).unwrap_err().into_exception();
-    assert_eq!(exc.exc_type(), ExcType::ValueError);
-    assert_eq!(
-        exc.message(),
-        Some("glob pattern has 9 wildcard parts, more than the 8 supported")
-    );
-    // 8 wildcard parts: the run of `**` is one
-    let pattern = "**/**/s*/../s?b/../*/[d]eep/../../*/d*/?.py";
-    let parts: Vec<&str> = pattern.split('/').collect();
-    let reply = scan(&mut table, glob("/mnt", &parts)).unwrap();
-    assert_eq!(reply, entries(&[("sub/deep/d.py", 'm')]));
-}
-
 /// A scan crossing into a mount nested below its root reads that mount, as
 /// single-path lookups of the same paths do, and never the directory it shadows.
 #[test]
@@ -570,7 +549,10 @@ fn huge_pattern_parts_are_refused_without_copying_them() {
 fn scan_limit_is_a_runtime_error() {
     let exc = MountError::ScanLimitExceeded(10).into_exception();
     assert_eq!(exc.exc_type(), ExcType::RuntimeError);
-    assert_eq!(exc.message(), Some("directory scan examined more than 10 entries"));
+    assert_eq!(
+        exc.message(),
+        Some("directory scan exceeded its work limit of 10 steps")
+    );
 }
 
 /// A link leaving its own directory but not the mount is listed through the

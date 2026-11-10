@@ -15,7 +15,7 @@ use std::io::{self, ErrorKind};
 use cap_std::fs::{Dir, Metadata, ReadDir};
 use monty_types::{
     MontyObject, ScanArgs,
-    scan::{EntryInfo, Listing, ScanSource, check_wildcard_parts, collect_scan},
+    scan::{EntryInfo, Listing, ScanSource, collect_scan},
 };
 
 use super::{
@@ -28,14 +28,14 @@ use super::{
     path_security::{reject_drive_or_unc_segments, reject_overlong_path, resolve_virtual_path},
 };
 
-/// Most visits one scan may make (see [`ScanSource::visit`]), bounding the
-/// host work of one suspension, which no turn limit sees.
+/// Most work one scan may do, in [`ScanSource::spend`] units, bounding the
+/// host time of one suspension, which no turn limit sees, to about a second.
 ///
-/// [`check_wildcard_parts`] holds a glob to two per entry for each wildcard
-/// part, under this for the ~390K entries the default memory limit admits.
-/// This stops what that cap leaves unbounded: the repeats of a final `**`,
-/// and literal parts listed for an explicit `case_sensitive`.
-const MAX_SCAN_VISITS: u64 = 10_000_000;
+/// Work is what a pattern can multiply: a part lists every directory the
+/// pattern reaches at it, a final `**` repeats its walks, and a name is
+/// matched in up to pattern length × name length steps. Reading the entries
+/// themselves is bounded by the mount's memory limit.
+const MAX_SCAN_WORK: u64 = 200_000_000;
 
 /// Runs a scan rooted in `mounts[root]`, replying with a glob's matches or the
 /// entries it read (see [`collect_scan`]).
@@ -46,7 +46,6 @@ const MAX_SCAN_VISITS: u64 = 10_000_000;
 pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Result<MontyObject, MountError> {
     if let Some(parts) = &args.pattern {
         reject_overlong_pattern(parts)?;
-        check_wildcard_parts(parts).map_err(MountError::InvalidArgument)?;
     }
     // Overlay data retained against the same limit leaves less for the reply.
     let budget = {
@@ -61,7 +60,7 @@ pub(super) fn execute(args: &ScanArgs, mounts: &mut [Mount], root: usize) -> Res
         mounts,
         budget,
         used: 0,
-        visits: 0,
+        work: 0,
         handles: DirHandles::default(),
     };
     match collect_scan(args, &mut source)? {
@@ -111,8 +110,8 @@ struct MountSource<'a> {
     budget: MemoryBudget,
     /// Bytes charged so far.
     used: u64,
-    /// Visits so far (see [`MAX_SCAN_VISITS`]).
-    visits: u64,
+    /// Work so far (see [`MAX_SCAN_WORK`]).
+    work: u64,
     /// Directories of direct mounts kept open to list their descendants through.
     handles: DirHandles,
 }
@@ -268,10 +267,10 @@ impl ScanSource for MountSource<'_> {
         self.charge_bytes(as_u64(bytes))
     }
 
-    fn visit(&mut self) -> Result<(), MountError> {
-        self.visits += 1;
-        if self.visits > MAX_SCAN_VISITS {
-            Err(MountError::ScanLimitExceeded(MAX_SCAN_VISITS))
+    fn spend(&mut self, units: usize) -> Result<(), MountError> {
+        self.work = self.work.saturating_add(as_u64(units));
+        if self.work > MAX_SCAN_WORK {
+            Err(MountError::ScanLimitExceeded(MAX_SCAN_WORK))
         } else {
             Ok(())
         }
