@@ -42,8 +42,9 @@ use std::{
 };
 
 use monty_pool::{
-    Checkout, CheckoutOptions, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER, MountSpec, OnPrint,
-    Persistence, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_CONNECT_TIMEOUT, DEFAULT_DURATION_LIMIT_GRACE, DEFAULT_MAX_CHECKOUTS_PER_WORKER,
+    DEFAULT_REMOTE_REQUEST_TIMEOUT, MountSpec, OnPrint, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
+    ReplConfig, ResumeValue, TurnEvent,
 };
 use monty_proto::{
     DEFAULT_MAX_DECODE_BYTES,
@@ -685,22 +686,19 @@ impl PyAsyncMontyRemote {
     /// Creates the pool configuration; the connection is made by the first
     /// checkout (no workers are pre-warmed).
     ///
-    /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
-    /// server that admits the stream but never answers would otherwise leave
-    /// each turn blocked until the far end ends it. Pass `None` to wait
-    /// indefinitely.
-    ///
-    /// Note that `install_dependencies` is also a turn, so the default 10.0 is
-    /// often too low for it — a real `uv pip install` (e.g. `numpy`) can exceed
-    /// it and surface as `MontyCrashedError`. Raise `request_timeout` (or pass
-    /// `None`) when installing dependencies over the remote transport.
+    /// `request_timeout` is the per-turn deadline in seconds, a last resort
+    /// (default 30 minutes): a server that admits the stream but never answers
+    /// would otherwise leave each turn blocked until the far end ends it. The
+    /// server's own turn limits should fire long before it. Pass `None` to wait
+    /// indefinitely. `connect_timeout` separately bounds opening the stream.
     #[new]
     #[pyo3(signature = (
         url,
         *,
         max_processes = None,
         checkout_timeout = None,
-        request_timeout = 10.0,
+        request_timeout = 1800.0,
+        connect_timeout = 30.0,
         metadata = None,
         feed_duration_limit_grace = 1.0,
         turn_duration_limit_grace = 1.0,
@@ -715,6 +713,7 @@ impl PyAsyncMontyRemote {
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
+        connect_timeout: f64,
         metadata: Option<Py<PyAny>>,
         feed_duration_limit_grace: Option<f64>,
         turn_duration_limit_grace: Option<f64>,
@@ -744,6 +743,7 @@ impl PyAsyncMontyRemote {
             max_processes,
             checkout_timeout,
             request_timeout,
+            connect_timeout,
             GraceArgs {
                 feed: feed_duration_limit_grace,
                 turn: turn_duration_limit_grace,
@@ -1348,6 +1348,7 @@ fn parse_remote_config(
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
+    connect_timeout: f64,
     graces: GraceArgs,
     auto_resume: bool,
 ) -> PyResult<PoolConfig> {
@@ -1362,10 +1363,22 @@ fn parse_remote_config(
     config.request_timeout = request_timeout
         .map(|secs| duration_from_secs("request_timeout", secs))
         .transpose()?;
+    config.connect_timeout = duration_from_secs("connect_timeout", connect_timeout)?;
     graces.apply(&mut config)?;
     config.metrics = pool_metrics();
     Ok(config)
 }
+
+// `AsyncMontyRemote` defaults its timeouts to literals for the same reason as
+// the graces below; these pin them to `monty-pool`'s own defaults.
+const _: () = assert!(
+    DEFAULT_REMOTE_REQUEST_TIMEOUT.as_secs() == 1800 && DEFAULT_REMOTE_REQUEST_TIMEOUT.subsec_nanos() == 0,
+    "the pool's remote request timeout changed: update the `1800.0` literal in `AsyncMontyRemote`'s signature"
+);
+const _: () = assert!(
+    DEFAULT_CONNECT_TIMEOUT.as_secs() == 30 && DEFAULT_CONNECT_TIMEOUT.subsec_nanos() == 0,
+    "the pool's connect timeout changed: update the `30.0` literal in `AsyncMontyRemote`'s signature"
+);
 
 // The pool constructors default their graces to a literal `1.0` second because
 // pyo3 renders a non-literal `signature` default as `...`, which stubtest then

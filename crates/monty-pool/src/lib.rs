@@ -65,6 +65,15 @@ pub const DEFAULT_DURATION_LIMIT_GRACE: Duration = Duration::from_secs(1);
 /// pings closer than five minutes apart and answer with `GOAWAY` after two).
 pub const DEFAULT_KEEP_ALIVE: Duration = Duration::from_mins(5);
 
+/// Default [`PoolConfig::connect_timeout`]: long enough for a cold TCP+TLS dial
+/// and a relay's admission, short enough to fail over to another server.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default [`PoolConfig::request_timeout`] on the remote transport: a last
+/// resort far above a server's own turn limits (monty-worker's default is five
+/// minutes), so the server always times a turn out first, with its own error.
+pub const DEFAULT_REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_mins(30);
+
 /// Default [`PoolConfig::max_checkouts_per_worker`]: bounds how many sessions
 /// one worker serves while amortising its respawn over many checkouts.
 pub const DEFAULT_MAX_CHECKOUTS_PER_WORKER: u32 = 1000;
@@ -89,6 +98,11 @@ pub struct PoolConfig {
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
+    /// How long the remote transport waits to open a stream, from a cold
+    /// TCP+TLS dial through the server's admission, before the checkout fails
+    /// with [`PoolError::Connect`]. Defaults to [`DEFAULT_CONNECT_TIMEOUT`];
+    /// ignored by the subprocess transport.
+    pub connect_timeout: Duration,
     /// How often the remote transport sends an HTTP/2 `PING` on its
     /// connection while a stream is open, to notice a dead TCP peer on the
     /// first hop; `None` sends none. Liveness through proxies is the server's
@@ -102,9 +116,9 @@ pub struct PoolConfig {
     /// backstops the child-side `ResourceLimits` — it also catches a child
     /// that hangs in ways the sandbox limits cannot see. Synchronous host
     /// telemetry callbacks prevent the timer from being polled while they run.
-    /// On the remote transport it also bounds opening a stream, from a cold
-    /// dial through the server's admission (30 s when `None`); that expiry
-    /// fails with [`PoolError::Connect`] instead, and there is no worker to kill.
+    /// `None` by default for subprocess workers; [`PoolConfig::remote`] sets
+    /// [`DEFAULT_REMOTE_REQUEST_TIMEOUT`]. Opening a remote stream is bounded
+    /// by [`Self::connect_timeout`] instead.
     pub request_timeout: Option<Duration>,
     /// Per-frame decode allocation budget, capped at [`DEFAULT_MAX_DECODE_BYTES`].
     /// Excludes wire buffers and host-language conversion, and does not change
@@ -154,6 +168,9 @@ impl PoolConfig {
     pub fn remote(url: impl Into<String>) -> Self {
         let mut config = Self::with_transport(MontyTransport::Remote(url.into()));
         config.min_processes = 0;
+        // a turn the server never ends must still end: the server's own limits
+        // fire long before this, and a `cpu` server needs it to be finite
+        config.request_timeout = Some(DEFAULT_REMOTE_REQUEST_TIMEOUT);
         config
     }
 
@@ -165,6 +182,7 @@ impl PoolConfig {
             transport,
             execution_clock: ExecutionClock::Wall,
             checkout_timeout: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
             keep_alive: Some(DEFAULT_KEEP_ALIVE),
             request_timeout: None,
             feed_duration_limit_grace: Some(DEFAULT_DURATION_LIMIT_GRACE),

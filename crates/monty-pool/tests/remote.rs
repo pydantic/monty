@@ -25,8 +25,9 @@ use http::{Response as HttpResponse, StatusCode};
 #[cfg(feature = "telemetry")]
 use monty_pool::telemetry::{TelemetryAdapter, configure_telemetry_adapter};
 use monty_pool::{
-    Checkout, CheckoutOptions, MountSpec, MountSpecMode, Persistence, Pool, PoolConfig, PoolError, PrintFuture,
-    RemoteCause, RemoteDisconnect, ReplConfig, ResumeValue, TurnEvent,
+    Checkout, CheckoutOptions, DEFAULT_CONNECT_TIMEOUT, DEFAULT_REMOTE_REQUEST_TIMEOUT, MountSpec, MountSpecMode,
+    Persistence, Pool, PoolConfig, PoolError, PrintFuture, RemoteCause, RemoteDisconnect, ReplConfig, ResumeValue,
+    TurnEvent,
 };
 use monty_proto::{
     MAX_FRAME_LEN, WireFunctionCall, decode_frame, encode_to_capped_vec, grpc::Cause, pb, resume_call_from_proto,
@@ -365,10 +366,22 @@ async fn malformed_metadata_are_configuration_errors() {
     }
 }
 
-/// `request_timeout` bounds opening a stream too: a server that takes the TCP
-/// connection but never speaks HTTP/2 fails the checkout at that deadline.
+/// A remote pool bounds every turn by default, far above a server's own
+/// limits, and opening a stream separately and much sooner.
+#[test]
+fn remote_defaults_bound_turns_and_stream_opening() {
+    let config = PoolConfig::remote("http://127.0.0.1:1/");
+    assert_eq!(config.request_timeout, Some(DEFAULT_REMOTE_REQUEST_TIMEOUT));
+    assert_eq!(config.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
+    assert_eq!(DEFAULT_REMOTE_REQUEST_TIMEOUT, Duration::from_mins(30));
+    assert_eq!(DEFAULT_CONNECT_TIMEOUT, Duration::from_secs(30));
+}
+
+/// `connect_timeout`, not `request_timeout`, bounds opening a stream: a
+/// server that takes the TCP connection but never speaks HTTP/2 fails the
+/// checkout at that deadline, however long a turn may take.
 #[tokio::test]
-async fn request_timeout_bounds_opening_the_stream() {
+async fn connect_timeout_bounds_opening_the_stream() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let url = format!("http://{}/", listener.local_addr().expect("addr"));
     let silent = tokio::spawn(async move {
@@ -379,7 +392,7 @@ async fn request_timeout_bounds_opening_the_stream() {
     });
 
     let mut config = PoolConfig::remote(&url);
-    config.request_timeout = Some(Duration::from_millis(200));
+    config.connect_timeout = Duration::from_millis(200);
     let pool = Pool::new(config).await.expect("pool");
     let start = Instant::now();
     let Err(err) = pool.checkout(&ReplConfig::default()).await else {
@@ -389,7 +402,7 @@ async fn request_timeout_bounds_opening_the_stream() {
     let message = connect_message(&err);
     assert_eq!(
         message,
-        format!("{url}: the server did not accept the session within 200ms (request_timeout)")
+        format!("{url}: the server did not accept the session within 200ms (connect_timeout)")
     );
     silent.abort();
 }
@@ -906,6 +919,9 @@ async fn malformed_os_call_is_a_protocol_error() {
 #[tokio::test]
 async fn duration_backstop_kills_an_unresponsive_worker() {
     let (mock, mut config) = mock_pool_config().await;
+    // a remote pool's default `request_timeout` would stand in for the backstop
+    // while the server's clock is unknown, so it is cleared here
+    config.request_timeout = None;
     config.feed_duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = mock.accept();

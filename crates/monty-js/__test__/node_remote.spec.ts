@@ -3,6 +3,7 @@
 // mirroring crates/monty-python/tests/test_remote.py.
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { type AddressInfo, createServer, type Socket } from 'node:net'
 
 import { Metadata, status } from '@grpc/grpc-js'
 import { afterEach, test } from 'vitest'
@@ -187,6 +188,25 @@ test('a refused connection rejects the checkout', async () => {
   t.is(error.statusCode, null)
   t.is(error.statusMessage, null)
   t.is(error.message, `http://127.0.0.1:9: ${error.transportError}`)
+})
+
+test('connectTimeout bounds opening the stream', async () => {
+  // takes the TCP connection but never speaks HTTP/2
+  const held: Socket[] = []
+  const server = createServer((socket) => held.push(socket))
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address() as AddressInfo
+  const url = `http://127.0.0.1:${port}/`
+  try {
+    await using pool = await MontyRemote.create(url, { connectTimeout: 0.2 })
+    const start = Date.now()
+    const error = await t.throwsAsync(() => pool.checkout(), { instanceOf: MontyConnectError })
+    t.true(Date.now() - start < 5000)
+    t.is(error.message, `${url}: the server did not accept the session within 200ms (connect_timeout)`)
+  } finally {
+    for (const socket of held) socket.destroy()
+    server.close()
+  }
 })
 
 test('a URL validation error carries its reason as the transport failure', async () => {

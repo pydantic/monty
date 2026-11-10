@@ -103,7 +103,7 @@ impl Pool {
         let remote = match &config.transport {
             MontyTransport::Remote(url) => Some(Remote::connect(
                 url,
-                config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT),
+                config.connect_timeout,
                 config.keep_alive,
                 config.max_processes,
             )?),
@@ -250,9 +250,6 @@ impl Drop for Pool {
 /// How long [`Pool::close`] waits for a worker to exit on its own after the
 /// `Shutdown` request before killing it.
 const SHUTDOWN_EXIT_GRACE: Duration = Duration::from_millis(500);
-
-/// Bounds opening a remote stream when `request_timeout` is `None`.
-const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh

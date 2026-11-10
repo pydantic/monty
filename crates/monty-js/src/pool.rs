@@ -132,6 +132,8 @@ pub struct NativeRemotePoolOptions {
     pub checkout_timeout_ms: Option<f64>,
     /// Parent-side hard deadline per protocol turn (ms). Absent: none.
     pub request_timeout_ms: Option<f64>,
+    /// How long opening a stream may take (ms). Absent: the pool's default.
+    pub connect_timeout_ms: Option<f64>,
     /// As [`NativePoolOptions::feed_duration_limit_grace_ms`].
     pub feed_duration_limit_grace_ms: Option<f64>,
     /// As [`NativePoolOptions::turn_duration_limit_grace_ms`].
@@ -336,6 +338,9 @@ impl NativePool {
             options.feed_duration_limit_grace_ms,
             options.turn_duration_limit_grace_ms,
         )?;
+        if let Some(ms) = options.connect_timeout_ms {
+            config.connect_timeout = duration_from_ms("connectTimeout", ms)?;
+        }
         config.auto_resume = options.auto_resume;
         Self::from_config(config, "MontyRemote")
     }

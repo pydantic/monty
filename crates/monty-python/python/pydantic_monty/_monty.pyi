@@ -1159,7 +1159,8 @@ class AsyncMontyRemote:
         *,
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
-        request_timeout: float | None = 10.0,
+        request_timeout: float | None = 1800.0,
+        connect_timeout: float = 30.0,
         metadata: Callable[[], Mapping[str, str]] | None = None,
         feed_duration_limit_grace: float | None = 1.0,
         turn_duration_limit_grace: float | None = 1.0,
@@ -1180,12 +1181,13 @@ class AsyncMontyRemote:
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
-            request_timeout: Hard per-turn deadline in seconds (default 10.0) — a
-                worker that exceeds it has its connection killed and the call
-                raises `MontyCrashedError` with `timed_out=True`. It also bounds
-                opening the stream, including the server's admission (30
-                seconds when `None`). CPU-mode servers require a finite value;
-                otherwise checkout raises `MontyConfigurationError`.
+            request_timeout: Hard per-turn deadline in seconds (default 1800.0,
+                30 minutes) — a worker that exceeds it has its connection killed
+                and the call raises `MontyCrashedError` with `timed_out=True`. A
+                last resort: the server's own turn limits (five minutes by
+                default for monty-server) should end a turn first, with their
+                own error. CPU-mode servers require a finite value; otherwise
+                checkout raises `MontyConfigurationError`.
                 Pass `None` to wait indefinitely with wall-mode servers.
                 Under contention, this wall deadline can expire before a server
                 CPU budget. Choose it for the expected budgets and scheduling delays.
@@ -1196,10 +1198,11 @@ class AsyncMontyRemote:
                 would be exceeded. Use `os_policy` with
                 `sleep='call_host'` and `OSAccess(max_sleep=None)` to handle full sleeps.
 
-                Note that `install_dependencies` is a turn too, so the default
-                10.0 is often too low for it — a real `uv pip install` can exceed
-                it. Raise `request_timeout` when installing dependencies over
-                the remote transport.
+                Note that `install_dependencies` is a turn too, bounded by this
+                deadline like any other.
+            connect_timeout: Seconds to wait for a stream to open, from a cold
+                dial through the server's admission (default 30.0), before
+                checkout raises `MontyConnectError`.
             max_decode_bytes: Per-frame host allocation budget in bytes. `None`
                 keeps the protocol's 1 GiB ceiling. Values above 1 GiB are rejected
                 at construction. Excludes wire buffers and Python conversion.
