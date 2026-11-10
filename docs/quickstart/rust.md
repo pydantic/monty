@@ -25,7 +25,7 @@ cargo add monty monty-types --features monty-types/tzdb
 | [`monty-fs`](https://crates.io/crates/monty-fs)                       | Host-side filesystem mounts                                 |
 | [`monty-runtime`](https://crates.io/crates/monty-runtime)             | The `monty` binary: REPL, file runner, subprocess worker    |
 | [`monty-pool`](https://crates.io/crates/monty-pool)                   | Elastic pool of crash-isolated worker subprocesses          |
-| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between pools and workers        |
+| [`monty-proto`](https://crates.io/crates/monty-proto)                 | The protobuf wire protocol between clients and workers      |
 | [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | Type checking, powered by ty                                |
 | [`monty-typeshed`](https://crates.io/crates/monty-typeshed)           | Trimmed typeshed stubs for Monty's stdlib subset            |
 

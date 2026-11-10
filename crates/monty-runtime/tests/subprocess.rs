@@ -759,7 +759,7 @@ fn invalid_os_policy_is_rejected_on_configure() {
 }
 
 #[test]
-fn clock_calls_bubble_to_parent_under_call_host() {
+fn clock_calls_bubble_to_client_under_call_host() {
     let mut child = ChildProc::spawn();
     child.create_repl_with_os_policy(&call_host());
 
@@ -816,7 +816,7 @@ fn clock_calls_bubble_to_parent_under_call_host() {
 
 /// `CallHost` lets the client choose the wait; `time.sleep()` returns `None` regardless of its answer.
 #[test]
-fn sleep_calls_bubble_to_parent_under_call_host() {
+fn sleep_calls_bubble_to_client_under_call_host() {
     let mut child = ChildProc::spawn();
     child.create_repl_with_os_policy(&call_host());
 
@@ -846,7 +846,7 @@ fn sleep_calls_bubble_to_parent_under_call_host() {
 }
 
 #[test]
-fn os_call_bubbles_to_parent_without_mounts() {
+fn os_call_bubbles_to_client_without_mounts() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("from pathlib import Path\nPath('/data.txt').read_text()");
@@ -960,7 +960,7 @@ fn os_call_error_resume_carries_exception() {
 // =============================================================================
 
 #[test]
-fn child_enforces_time_limit() {
+fn worker_enforces_time_limit() {
     let mut child = ChildProc::spawn();
     child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
@@ -2972,7 +2972,7 @@ fn type_check_format_survives_dump_and_load() {
 // =============================================================================
 
 #[test]
-fn dump_then_load_into_fresh_child_resumes() {
+fn dump_then_load_into_fresh_worker_resumes() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     assert_eq!(child.feed_complete("base = 40"), MontyObject::none());
@@ -3116,7 +3116,7 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
 // =============================================================================
 
 #[test]
-fn protocol_violations_keep_the_child_alive() {
+fn protocol_violations_keep_the_worker_alive() {
     let mut child = ChildProc::spawn();
 
     // feed without a session
@@ -3297,7 +3297,7 @@ fn garbage_stdin_is_a_fatal_error() {
 }
 
 #[test]
-fn killed_child_is_detected_as_eof() {
+fn killed_worker_is_detected_as_eof() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     // run forever (no limits), then kill the worker mid-execution
@@ -3321,7 +3321,7 @@ fn killed_child_is_detected_as_eof() {
 }
 
 #[test]
-fn reset_returns_child_to_idle_for_reuse() {
+fn reset_returns_worker_to_idle_for_reuse() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     assert_eq!(child.feed_complete("x = 1"), MontyObject::none());

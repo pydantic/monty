@@ -592,7 +592,7 @@ async fn working_directory_survives_an_oversize_first_feed() {
 /// surface to the caller — the feed just completes. Covers read, write,
 /// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.
 #[tokio::test]
-async fn mounted_filesystem_ops_are_serviced_by_the_parent() {
+async fn mounted_filesystem_ops_are_serviced_by_the_client() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "mounted!").unwrap();
 
@@ -1494,7 +1494,7 @@ async fn worker_killed_while_idle_is_replaced_transparently() {
 /// becomes a `Runtime`/`Crashed` either way; the invariant under test is
 /// that the client survives and the pool keeps serving.
 #[tokio::test]
-async fn hard_child_crash_does_not_harm_the_pool() {
+async fn hard_worker_crash_does_not_harm_the_pool() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let mut code = String::with_capacity(300_002);
@@ -1559,7 +1559,7 @@ async fn deadline_kills_hung_worker_after_request_timeout() {
 }
 
 #[tokio::test]
-async fn child_resource_limits_do_not_kill_the_worker() {
+async fn worker_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
     // a worker's start-up counts against its first feed's backstop, so warm it
     // up first: the limited feed below must end by the sandbox's own limit
@@ -3179,7 +3179,7 @@ async fn a_suspension_without_a_position_reads_as_unknown() {
 /// it the second feed would be armed with the grace alone.
 #[cfg(unix)]
 #[tokio::test]
-async fn a_raw_feed_restarts_the_parent_feed_clock() {
+async fn a_raw_feed_restarts_the_client_feed_clock() {
     let dir = tempfile::tempdir().unwrap();
     let budget = Duration::from_millis(300);
     let grace = Duration::from_millis(100);

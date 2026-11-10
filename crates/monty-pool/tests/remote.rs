@@ -706,7 +706,7 @@ fn event_kind(kind: pb::worker_event::Kind) -> pb::WorkerEvent {
 /// filesystem — the mock worker emits the `OsCall` and `resume_from_mounts`
 /// answers it with the file's contents, no host path ever crossing the wire.
 #[tokio::test]
-async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
+async fn mounted_reads_are_serviced_from_the_client_filesystem() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "client-side bytes").unwrap();
 
@@ -1363,7 +1363,7 @@ fn serve_endless_suspensions(socket: &mut MockStream, expected_calls: u32) {
 
 /// The client replaces an over-budget suspension with `AbortFeed`.
 #[tokio::test]
-async fn suspension_limit_is_enforced_by_the_parent() {
+async fn suspension_limit_is_enforced_by_the_client() {
     let (mock, config) = mock_pool_config().await;
     let server = thread::spawn(move || {
         let mut socket = mock.accept();
