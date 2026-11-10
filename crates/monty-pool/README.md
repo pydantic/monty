@@ -105,18 +105,18 @@ Invalid snapshots have no correctness or availability guarantees.
 - **Crash isolation** — a segfault, stack-overflow abort, or allocator abort in the sandbox
   kills only the worker. The pool observes the death as `PoolError::Crashed`, discards the
   worker, and spawns a replacement; the parent process and every other session stay healthy.
-- **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
+- **Hard timeouts** — a client-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. Synchronous host telemetry processors delay
   enforcement while they run because the timer cannot be polled. When a session has a
-  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the child,
+  `max_feed_duration` or `max_turn_duration` budget, the default deadline also enforces it from outside the worker,
   each with its own grace (`feed_duration_limit_grace`, `turn_duration_limit_grace`, 1s by default;
   `None` disables that backstop).
   A `max_suspensions` budget is enforced by the pool alone: it counts the suspensions it services
   and ends the feed past the budget with an uncatchable `RuntimeError` in the sandbox.
   `PoolConfig::subprocess` sets neither `request_timeout` nor `checkout_timeout` by
   default; set `request_timeout` yourself for untrusted code.
-- **Untrusted children** — the parent treats every frame from a (possibly compromised)
+- **Untrusted workers** — the client treats every frame from a (possibly compromised)
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.
   `PoolConfig::max_decode_bytes` can lower the default 1 GiB per-frame decode
@@ -124,7 +124,7 @@ Invalid snapshots have no correctness or availability guarantees.
   process-memory limit. Exhaustion discards the worker without replaying the request.
   On the remote transport it also caps each message, clamped between 64 KiB and the
   256 MiB frame limit, so a larger one is refused before it is buffered.
-- **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
+- **Worker recycling** — `max_checkouts_per_worker` recycles long-lived workers to bound
   how long a slow leak or a compromised worker survives. It defaults to
   `Some(DEFAULT_MAX_CHECKOUTS_PER_WORKER)` (1000); `None` never recycles. With the
   subprocess transport, `Some(1)` runs every session in a fresh process, which with
@@ -274,10 +274,10 @@ input so adapters that do not support metrics continue to work.
 
 ## Transports
 
-- **Subprocess** (`PoolConfig::subprocess`) — spawn local `monty subprocess` children over
+- **Subprocess** (`PoolConfig::subprocess`) — spawn local `monty subprocess` workers over
   framed stdio. These are the poolable workers: prewarmed, reused across checkouts, and
   replaced on crash.
-- **Remote** (`PoolConfig::remote`) — reach a remote child through a relay over gRPC at an
+- **Remote** (`PoolConfig::remote`) — reach a remote worker through a relay over gRPC at an
   `http://`/`https://` URL (`ws://`/`wss://` are read as those two). The pool holds one
   HTTP/2 connection, dialed lazily and reconnected by tonic when it drops, and each
   checkout opens one `MontySession.Session` stream on it. An `https://` server's certificate
@@ -365,7 +365,7 @@ naming the function or the `ClassType` id; answer with a dict of hints, or `NotH
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses. **this crate**
-- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between clients and workers.
 - [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
 - [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
 - [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

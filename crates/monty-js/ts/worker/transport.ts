@@ -195,7 +195,7 @@ export class WorkerTransport {
     return this.resumeCall({ tag: 'not-found', val: this.pendingFunctionName }, onPrint)
   }
 
-  /** Lets the child apply the pending OS call's no-handler semantics. */
+  /** Lets the worker apply the pending OS call's no-handler semantics. */
   resumeNotHandled(onPrint: OnPrint): Promise<NativeTurn> {
     return this.resumeCall({ tag: 'not-handled' }, onPrint)
   }

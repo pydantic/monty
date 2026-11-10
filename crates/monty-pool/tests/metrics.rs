@@ -500,7 +500,7 @@ async fn a_crashed_worker_is_counted_as_it_is_torn_down() {
     config.max_processes = 1;
     let (pool, capture) = pool_with_metrics(config).await;
 
-    // an expression deep enough to overflow the child's stack, which aborts it
+    // an expression deep enough to overflow the worker's stack, which aborts it
     // mid-turn (the same trick `pool_test.rs` uses, and portable unlike a kill)
     let mut code = String::with_capacity(300_002);
     code.push('a');
@@ -587,20 +587,20 @@ async fn raw_turns_are_instrumented_like_typed_ones() {
     let (pool, capture) = pool_with_metrics(config).await;
 
     let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
-    let mut on_event = |_: &pb::ChildEvent| Box::pin(ready(())) as PrintFuture;
-    let feed = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
+    let mut on_event = |_: &pb::WorkerEvent| Box::pin(ready(())) as PrintFuture;
+    let feed = pb::ClientRequest {
+        kind: Some(pb::client_request::Kind::Feed(pb::Feed {
             code: "print('hi')\n6 * 7".to_owned(),
             inputs: vec![].into(),
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
         })),
-        ..pb::ParentRequest::default()
+        ..pb::ClientRequest::default()
     };
     let event = checkout.turn_raw(&feed, &mut on_event).await.expect("raw feed");
     assert!(
-        matches!(event.kind, Some(pb::child_event::Kind::Complete(_))),
+        matches!(event.kind, Some(pb::worker_event::Kind::Complete(_))),
         "{event:?}"
     );
     checkout.finish().await.expect("finish");

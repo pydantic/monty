@@ -1,12 +1,12 @@
 package pydantic:monty;
 
-/// Drives one persistent Monty child through semantic component calls.
+/// Drives one persistent Monty worker through semantic component calls.
 interface worker {
     /// Whether the component can accept another request after this turn.
     enum status {
-        /// The child remains ready for another turn.
+        /// The worker remains ready for another turn.
         continue,
-        /// The child reached a fatal error or clean shutdown.
+        /// The worker reached a fatal error or clean shutdown.
         shutdown,
     }
 
@@ -302,7 +302,7 @@ interface worker {
         assert-message-annotations: option<u32>,
         type-check-format: type-check-format,
         type-check-color: bool,
-        /// How long the child may hold buffered print output. Absent takes its
+        /// How long the worker may hold buffered print output. Absent takes its
         /// default; zero restores line buffering, one event per completed line.
         print-flush-interval-ms: option<u32>,
         /// The session's `os-policy`; absent uses every default.
@@ -383,7 +383,7 @@ interface worker {
         values: arena,
     }
 
-    /// A semantic request to the retained protocol child.
+    /// A semantic request to the retained protocol worker.
     variant request {
         configure(configure-request),
         feed(feed-request),
@@ -414,7 +414,7 @@ interface worker {
     /// byte offsets, exclusive end. `filename` names the source as a traceback
     /// frame does: `<python-input-N>` for the session's N-th feed, or
     /// `<string>` inside an `eval()` / `exec()` string. An empty filename means
-    /// the child reported no position.
+    /// the worker reported no position.
     record source-range {
         filename: string,
         start: u32,
@@ -484,7 +484,7 @@ interface worker {
         /// with `resume-futures`. Only ever set on `asyncio.sleep`.
         allow-eager-await: bool,
         /// System sleep duration for the host to await directly, in seconds.
-        /// The child caps it; the host must cap it again and charge `max-total-sleep` before waiting.
+        /// The worker caps it; the host must cap it again and charge `max-total-sleep` before waiting.
         system-sleep-secs: option<f64>,
         /// Where the call expression is in the source.
         position: source-range,
@@ -496,7 +496,7 @@ interface worker {
         value: u32,
     }
 
-    /// A semantic event emitted by the child.
+    /// A semantic event emitted by the worker.
     variant event {
         print(print-event),
         function-call(function-call-event),
@@ -517,7 +517,7 @@ interface worker {
 
     /// All output produced by one request.
     record dispatch-result {
-        /// Whether the child remains usable.
+        /// Whether the worker remains usable.
         status: status,
         /// Buffered prints followed by exactly one turn-ending event.
         events: list<event>,
@@ -533,7 +533,7 @@ interface worker {
         max-turn-duration-micros: option<u64>,
     }
 
-    /// Handles one semantic request using the retained child.
+    /// Handles one semantic request using the retained worker.
     dispatch: func(request: request) -> dispatch-result;
 }
 

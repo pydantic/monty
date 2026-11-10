@@ -95,7 +95,7 @@ num-bigint = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
-# In-process scripted gRPC servers standing in for a remote child.
+# In-process scripted gRPC servers standing in for a remote worker.
 tonic = { workspace = true, features = ["server", "router"] }
 # A self-signed certificate for the server the trust-store test dials.
 rcgen = { workspace = true }
