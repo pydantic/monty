@@ -2858,6 +2858,7 @@ dependencies = [
  "monty-proto",
  "monty-types",
  "nix 0.31.3",
+ "num-bigint",
  "num-traits",
  "opentelemetry",
  "opentelemetry-proto",
