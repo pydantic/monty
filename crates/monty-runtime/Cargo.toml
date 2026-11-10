@@ -23,6 +23,7 @@ default = ["standalone"]
 # The standalone CLI (`run.rs`) and its terminal stack. Drop it to build the
 # worker `monty subprocess` alone, which is all a pool ever spawns.
 standalone = ["dep:anstream", "dep:anstyle", "dep:rustyline"]
+legacy-location-table-dumps = ["monty/legacy-location-table-dumps"]
 # CLI spans to Logfire. Off by default: its exporter links MBs of TLS that
 # `monty subprocess` — which never exports — would otherwise carry.
 telemetry = ["standalone", "dep:logfire", "dep:tracing"]

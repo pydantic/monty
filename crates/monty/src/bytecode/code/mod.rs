@@ -29,7 +29,7 @@ pub struct Code {
     ///
     /// Maps bytecode offsets to source locations. Used to generate Python-style
     /// tracebacks with line numbers and caret markers when exceptions occur.
-    /// Dumped as one compact byte string, see [`location_table`].
+    /// See [`location_table`] for the dump format.
     #[serde(rename = "L", with = "location_table")]
     location_table: Vec<LocationEntry>,
 
@@ -184,9 +184,8 @@ impl Clone for Code {
 /// The `range` covers the full expression (`a + b`), while `focus` points
 /// to the specific operator (`+`) that caused the error.
 ///
-/// Dumps write the table through [`location_table`]; the derived `Deserialize`
-/// only reads the per-entry maps that older dumps hold.
-#[derive(Debug, Clone, serde::Deserialize)]
+/// Dumps can also contain compact tables. See [`location_table`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LocationEntry {
     /// Bytecode offset this entry applies to.
     ///

@@ -4,13 +4,14 @@
 //! a map per entry, which is about seven times smaller and is written in one call.
 //! The string starts with a format byte: a layout change takes a new format byte and
 //! keeps the decoder for every older one, since serde's field evolution cannot see
-//! inside the string. Dumps written before this encoding hold a sequence of entry
-//! maps, which [`deserialize`] still reads.
+//! inside the string. Older runtimes expect a sequence of entry maps.
+//! The `legacy-location-table-dumps` feature writes that sequence.
+//! [`deserialize`] accepts both formats in every build.
 
 use std::fmt;
 
 use serde::{
-    Deserializer, Serializer,
+    Deserializer, Serialize, Serializer,
     de::{Error, SeqAccess, Visitor},
 };
 
@@ -37,8 +38,11 @@ const FOCUS_FILENAME: u64 = 1 << 2;
 /// Low bits of an entry header holding its flags.
 const FLAG_BITS: u32 = 3;
 
-/// Writes `table` as one byte string in the [`FORMAT_V1`] layout.
+/// Write `table` as a compact byte string or a sequence of entry maps.
 pub(super) fn serialize<S: Serializer>(table: &[LocationEntry], serializer: S) -> Result<S::Ok, S::Error> {
+    if cfg!(feature = "legacy-location-table-dumps") {
+        return table.serialize(serializer);
+    }
     // a typical entry takes 3 or 4 bytes
     let mut bytes = Vec::with_capacity(1 + table.len() * 4);
     bytes.push(FORMAT_V1);

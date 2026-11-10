@@ -7,7 +7,12 @@ struct Table(#[serde(with = "super")] Vec<LocationEntry>);
 #[test]
 fn empty_table_round_trips() {
     let bytes = minicbor_serde::to_vec(Table(Vec::new())).unwrap();
-    assert_eq!(bytes, [0x41, 1]);
+    let expected: &[u8] = if cfg!(feature = "legacy-location-table-dumps") {
+        &[0x80]
+    } else {
+        &[0x41, 1]
+    };
+    assert_eq!(bytes, expected);
     let restored: Table = minicbor_serde::from_slice(&bytes).unwrap();
     assert!(restored.0.is_empty());
 }
@@ -25,8 +30,10 @@ fn v1_bytes_preserve_focus_and_filename_changes() {
         1, 3, 7, 200, 1, 10, 4, 1, 165, 1, 39, 10, 9, 1, 2, 10, 8, 0, 0, 9, 2, 1, 0, 1,
     ];
     assert_entries(&decode(&v1).unwrap(), &entries);
-    let encoded = minicbor_serde::to_vec(Table(entries)).unwrap();
-    assert_eq!(encoded, minicbor_serde::to_vec(serde_bytes::Bytes::new(&v1)).unwrap());
+    if !cfg!(feature = "legacy-location-table-dumps") {
+        let encoded = minicbor_serde::to_vec(Table(entries)).unwrap();
+        assert_eq!(encoded, minicbor_serde::to_vec(serde_bytes::Bytes::new(&v1)).unwrap());
+    }
 }
 
 #[test]
@@ -88,8 +95,11 @@ fn legacy_maps_preserve_focus() {
     let bytes = minicbor_serde::to_vec(&legacy).unwrap();
     let restored: Table = minicbor_serde::from_slice(&bytes).unwrap();
     assert_entries(&restored.0, &entries);
-    let bytes = minicbor_serde::to_vec(&restored).unwrap();
-    let restored: Table = minicbor_serde::from_slice(&bytes).unwrap();
+    let reencoded = minicbor_serde::to_vec(&restored).unwrap();
+    if cfg!(feature = "legacy-location-table-dumps") {
+        assert_eq!(reencoded, bytes);
+    }
+    let restored: Table = minicbor_serde::from_slice(&reencoded).unwrap();
     assert_entries(&restored.0, &entries);
 }
 

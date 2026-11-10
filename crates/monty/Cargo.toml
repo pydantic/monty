@@ -60,6 +60,8 @@ itertools = "0.14.0"
 jiter = { version = "0.17.0", features = ["num-bigint"] }
 
 [features]
+# Write location tables that runtimes without the compact decoder can read.
+legacy-location-table-dumps = []
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only
 ref-count-return = ["test-hooks"]
