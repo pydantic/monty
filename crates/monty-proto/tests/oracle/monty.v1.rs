@@ -4,6 +4,7 @@
     clippy::pedantic,
     clippy::use_self,
     clippy::absolute_paths,
+    clippy::large_enum_variant,
     missing_docs,
     dead_code
 )]
@@ -767,10 +768,10 @@ pub mod parent_request {
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
-/// when the worker is checked out. The session's repl is materialized lazily on
-/// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
-/// worker can still be initialized by `Load` instead. Valid only when the
-/// worker has no session yet.
+/// per session, normally carrying its first request (see `first`). The
+/// session's repl is materialized lazily on the first `Feed` (or restored by
+/// `Load`), so a configured-but-unfed worker can still be initialized by `Load`
+/// instead. Valid only when the worker has no session yet.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Configure {
     #[prost(string, tag = "1")]
@@ -842,6 +843,28 @@ pub struct Configure {
     /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// The session's first request, so that one round trip opens the session and
+    /// runs it. If the `Configure` is refused, the request does not run and the
+    /// reply is `SessionRefused`; otherwise the reply is the request's own,
+    /// carrying the acknowledgement's `execution_clock`. Absent, the reply is the
+    /// acknowledgement alone.
+    #[prost(oneof = "configure::First", tags = "15, 16")]
+    pub first: ::core::option::Option<configure::First>,
+}
+/// Nested message and enum types in `Configure`.
+pub mod configure {
+    /// The session's first request, so that one round trip opens the session and
+    /// runs it. If the `Configure` is refused, the request does not run and the
+    /// reply is `SessionRefused`; otherwise the reply is the request's own,
+    /// carrying the acknowledgement's `execution_clock`. Absent, the reply is the
+    /// acknowledgement alone.
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum First {
+        #[prost(message, tag = "15")]
+        Feed(super::Feed),
+        #[prost(message, tag = "16")]
+        Load(super::Load),
+    }
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
@@ -1023,10 +1046,11 @@ pub struct ChildEvent {
     /// machine. Parents must preserve an outstanding suspension when unknown.
     #[prost(bool, optional, tag = "29")]
     pub feed_suspended: ::core::option::Option<bool>,
-    /// Configure acknowledgment. Local CPU-mode parents require this before execution.
+    /// Configure acknowledgment, on the reply to `Configure` (its `first` request's
+    /// reply, when it carries one). Local CPU-mode parents require this.
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13")]
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -1059,6 +1083,8 @@ pub mod child_event {
         Shutdown(super::ShutdownDump),
         #[prost(message, tag = "13")]
         Ping(super::Ping),
+        #[prost(message, tag = "14")]
+        SessionRefused(super::SessionRefused),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1482,6 +1508,16 @@ pub struct DumpResult {
     /// Opaque versioned snapshot; see `Dump`.
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
+}
+/// Turn end: the `Configure` was refused, so no session exists and its `first`
+/// request did not run. Sent by a child rejecting its settings or a relay
+/// rejecting its profile; the reply to `Configure` whether or not it carried a
+/// request.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SessionRefused {
+    /// Why, for the caller: e.g. "invalid os_policy: …" or "unknown profile: …".
+    #[prost(string, tag = "1")]
+    pub message: ::prost::alloc::string::String,
 }
 /// Generic acknowledgement for Configure / Load (idle) / Reset / Shutdown.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

@@ -412,6 +412,9 @@ pub struct Checkout {
     /// `None` after `finish()` or after the worker was discarded on error.
     worker: Option<Worker>,
     pool: Arc<PoolInner>,
+    /// The `Configure` opening the session, which carries its first `Feed` /
+    /// `Load` (see [`Self::request_turn`]) or goes alone from [`Checkout::open`].
+    pending_configure: Option<Box<pb::Configure>>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
     /// Set while a turn's I/O is in flight; still set on the next call only
@@ -671,6 +674,36 @@ fn is_execution_turn(request: &pb::ParentRequest) -> bool {
     )
 }
 
+/// Recognizes the requests the `Configure` opening a session can carry.
+fn opens_session(request: &pb::ParentRequest) -> bool {
+    matches!(
+        request.kind,
+        Some(pb::parent_request::Kind::Feed(_) | pb::parent_request::Kind::Load(_))
+    )
+}
+
+/// Whether `event` ends its turn: anything but a streamed `Print` or a liveness `Ping`.
+fn ends_turn(event: &pb::ChildEvent) -> bool {
+    !matches!(
+        event.kind,
+        Some(pb::child_event::Kind::Print(_) | pb::child_event::Kind::Ping(_))
+    )
+}
+
+/// Whether a turn-ending reply to a `Configure` carries its acknowledgement:
+/// a refusal, a worker dying (`FatalError`) or a relay shutting down reports
+/// no clock, and is classified as such instead.
+fn acknowledges_configure(event: &pb::ChildEvent) -> bool {
+    !matches!(
+        event.kind,
+        Some(
+            pb::child_event::Kind::SessionRefused(_)
+                | pb::child_event::Kind::FatalError(_)
+                | pb::child_event::Kind::Shutdown(_)
+        )
+    )
+}
+
 /// Recognizes turn-ending events that await a host answer.
 fn is_suspension(event: &pb::ChildEvent) -> bool {
     matches!(
@@ -775,22 +808,20 @@ pub(crate) struct Redial {
 }
 
 impl Checkout {
-    /// Sends `Configure` on a fresh worker (the worker materializes the repl
-    /// lazily on the first feed, or restores one via `load_snapshot` instead).
+    /// Prepares `Configure` for a fresh worker without sending it: it carries
+    /// the first request, so a refused configuration surfaces as that
+    /// request's error. The worker materializes the repl lazily on the first
+    /// feed, or restores one via `load_snapshot` instead.
     ///
     /// `redial` is kept for [`PoolConfig::auto_resume`]; `None` disables it.
-    pub(crate) async fn create(
-        worker: Worker,
-        pool: Arc<PoolInner>,
-        repl: &ReplConfig,
-        redial: Option<Redial>,
-    ) -> Result<Self, PoolError> {
-        let request = configure_request(repl, &pool.config);
+    pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig, redial: Option<Redial>) -> Self {
+        let configure = configure_request(repl, &pool.config);
         let mut budget = SessionBudget::from_config(repl);
         budget.execution_clock = pool.config.execution_clock;
-        let mut this = Self {
+        Self {
             worker: Some(worker),
             pool,
+            pending_configure: Some(Box::new(configure)),
             pending: None,
             turn_in_flight: false,
             abort_in_flight: false,
@@ -805,18 +836,13 @@ impl Checkout {
             request_sent: false,
             #[cfg(feature = "telemetry")]
             started: Some(Instant::now()),
-        };
-        let mut no_print = on_print_sync(|_, _| {});
-        let deadline = this.pool.config.request_timeout;
-        match this.request_turn(&request, deadline, &mut no_print).await? {
-            ControlEvent::Ok => Ok(this),
-            other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
     }
 
-    /// Restores a dumped session into this checkout's freshly configured (but
-    /// not-yet-fed) worker, returning the re-announced suspension event when the
-    /// dump was taken mid-feed (`None` for an idle, between-feeds dump).
+    /// Restores a dumped session into this checkout's not-yet-fed worker (the
+    /// session's `Configure` carries the `Load` when it is the first request),
+    /// returning the re-announced suspension event when the dump was taken
+    /// mid-feed (`None` for an idle, between-feeds dump).
     ///
     /// This is the low-level restore both `session.load_session` (idle dumps) and
     /// `session.load_snapshot` (suspended dumps) drive: the caller inspects the
@@ -1256,6 +1282,7 @@ impl Checkout {
         for requirement in &requirements {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
+        self.open().await?;
         let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
             requirements: requirements.into(),
         }));
@@ -1271,6 +1298,7 @@ impl Checkout {
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
+        self.open().await?;
         let request = request(pb::parent_request::Kind::Dump(pb::Dump {}));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
@@ -1321,6 +1349,15 @@ impl Checkout {
             }
             return Ok(());
         }
+        // never fed: the worker never saw `Configure`, so there is no session
+        // to reset — it goes back as it came
+        if self.pending_configure.take().is_some() {
+            if let Some(mut worker) = self.worker.take() {
+                worker.checkouts_served += 1;
+                self.pool.release_worker(worker);
+            }
+            return Ok(());
+        }
         let request = request(pb::parent_request::Kind::Reset(pb::Reset {}));
         let mut no_print = on_print_sync(|_, _| {});
         let deadline = self.pool.config.request_timeout;
@@ -1358,10 +1395,33 @@ impl Checkout {
     }
 
     /// The opaque session ID a storing relay minted, which [`Checkout::restore`]
-    /// resumes from any process. `None` for local workers and ephemeral sessions.
+    /// resumes from any process. `None` for local workers and ephemeral sessions,
+    /// and until the session opens: call [`Checkout::open`] first to wait for it.
     #[must_use]
     pub fn session_id(&self) -> Option<&[u8]> {
         self.session_id.as_deref()
+    }
+
+    /// Opens the session now, sending its `Configure` alone and waiting for the
+    /// reply, which is where a storing relay names the session. A no-op once the
+    /// session is open, even if its worker has since gone. Otherwise the
+    /// `Configure` carries the first `Feed` / `Load`, saving this round trip.
+    pub async fn open(&mut self) -> Result<(), PoolError> {
+        let Some(configure) = self.pending_configure.take() else {
+            return Ok(());
+        };
+        let request = request(pb::parent_request::Kind::Configure(*configure));
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await {
+            Ok(ControlEvent::Ok) => Ok(()),
+            Ok(other) => Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
+            // the session never opened, so the worker goes with the refusal
+            Err(err) => {
+                self.discard_worker();
+                Err(err)
+            }
+        }
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -1383,7 +1443,13 @@ impl Checkout {
 
     /// The duration backstop deadline; see [`SessionBudget::backstop_deadline`].
     fn backstop_deadline(&self) -> Option<Duration> {
-        if self.budget.execution_clock == ExecutionClock::Cpu {
+        // A remote server reports its clock only with the first request's
+        // reply. One using CPU time requires a finite `request_timeout`, which
+        // then bounds that request in place of a wall-time backstop.
+        let clock_unknown = self.pending_configure.is_some()
+            && self.pool.config.transport.is_remote()
+            && self.pool.config.request_timeout.is_some();
+        if self.budget.execution_clock == ExecutionClock::Cpu || clock_unknown {
             return None;
         }
         self.budget
@@ -1528,7 +1594,7 @@ impl Checkout {
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
-        match worker.send(&abort).await {
+        match worker.send(&abort, None).await {
             Ok(()) => {
                 self.abort_in_flight = true;
                 Ok(true)
@@ -1547,6 +1613,9 @@ impl Checkout {
     ///
     /// A `Shutdown` naming what to load is resumed on a new worker (see
     /// [`PoolConfig::auto_resume`]); any other ends the session.
+    ///
+    /// A session's `Configure` carries its first `Feed` / `Load`, so one round
+    /// trip opens the session and runs the request.
     async fn request_turn(
         &mut self,
         request: &pb::ParentRequest,
@@ -1554,13 +1623,16 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
         self.ensure_ready()?;
+        let opening = self.pending_configure.take_if(|_| opens_session(request));
         let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         let monitor = self.cpu_monitor(request).await?;
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
-        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io(request, &mut *on_print)).await;
+        let turn = self.turn_io(request, opening.as_deref(), &mut *on_print);
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, turn).await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
+        self.keep_unsent_configure(opening);
         match outcome {
             // boxed: it recurses into this turn, and its state machine must not
             // enlarge every turn's future for a path taken once per shutdown.
@@ -1568,6 +1640,15 @@ impl Checkout {
             // of it here is a copy of the generator's state on the hot path.
             Err(PoolError::Shutdown { dump }) => Box::pin(self.after_shutdown(dump, request, deadline, on_print)).await,
             outcome => outcome,
+        }
+    }
+
+    /// Puts back a `Configure` whose request never reached the worker (an
+    /// oversize frame is rejected before any byte is written), so the next
+    /// request still opens the session.
+    fn keep_unsent_configure(&mut self, opening: Option<Box<pb::Configure>>) {
+        if !self.request_sent && self.worker.is_some() {
+            self.pending_configure = opening;
         }
     }
 
@@ -1665,13 +1746,11 @@ impl Checkout {
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(redial.telemetry.clone());
         self.worker = Some(worker);
+        // the `Load` below carries it, opening the new worker's session
+        self.pending_configure = Some(Box::new(configure));
         let expected = self.pending.as_ref().map(PendingKey::of);
         let timeout = self.pool.config.request_timeout;
         let mut no_print = on_print_sync(|_, _| {});
-        match self.request_turn(&configure, timeout, &mut no_print).await? {
-            ControlEvent::Ok => {}
-            other => return Err(self.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
-        }
         // a re-announced suspension counts and charges itself again on arrival,
         // as after `restore`: let it through on zeroed totals, then put the
         // session's true totals back
@@ -1764,6 +1843,10 @@ impl Checkout {
         {
             return Err(PoolError::Protocol("AbortFeed requires a valid exception".into()));
         }
+        // the first raw request opens the session like a typed one: the
+        // `Configure` carries a `Feed` / `Load`, or goes alone before anything else
+        let opening = self.pending_configure.take_if(|_| opens_session(request));
+        self.open().await?;
         // As `restore`: forget the Configure-time budget and re-adopt the
         // dump's from the reply's budget fields (see `pending_load_budget`).
         let is_load = matches!(request.kind, Some(pb::parent_request::Kind::Load(_)));
@@ -1788,9 +1871,11 @@ impl Checkout {
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         let wall_deadline = deadline.and_then(|limit| DeadlineInstant::now().checked_add(limit));
         self.armed_deadline = deadline;
-        let outcome = cpu::run(monitor.as_ref(), wall_deadline, self.turn_io_raw(request, on_event)).await;
+        let turn = self.turn_io_raw(request, opening.as_deref(), on_event);
+        let outcome = cpu::run(monitor.as_ref(), wall_deadline, turn).await;
         let outcome = self.finish_cpu_turn(monitor, wall_deadline, outcome).await;
         self.turn_in_flight = false;
+        self.keep_unsent_configure(opening);
         if is_load {
             self.end_load();
         }
@@ -1805,9 +1890,10 @@ impl Checkout {
     async fn turn_io_raw(
         &mut self,
         request: &pb::ParentRequest,
+        mut opening: Option<&pb::Configure>,
         on_event: OnRawEvent<'_>,
     ) -> Result<pb::ChildEvent, PoolError> {
-        self.send_request(request).await?;
+        self.send_request(request, opening).await?;
         loop {
             let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
@@ -1820,6 +1906,18 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
+            // only the first turn-ending reply answers the `Configure`, not an abort's after it
+            if ends_turn(&event) && opening.take().is_some() {
+                // a refusal is forwarded as `FatalError` is: no session opened,
+                // so the worker goes, but the driver's client hears why
+                if matches!(event.kind, Some(pb::child_event::Kind::SessionRefused(_))) {
+                    self.discard_worker();
+                    return Ok(event);
+                }
+                if acknowledges_configure(&event) {
+                    self.adopt_execution_clock(&event)?;
+                }
+            }
             let explicit_abort = matches!(request.kind, Some(pb::parent_request::Kind::AbortFeed(_)));
             let aborting = self.abort_in_flight || explicit_abort;
             let feed_ended = is_execution_turn(request)
@@ -1903,8 +2001,13 @@ impl Checkout {
     /// One request/reply exchange: send the request, stream prints, classify
     /// the turn-ending event. All failure paths discard the worker except
     /// `Runtime` / `Typing`, which are sandbox-level outcomes.
-    async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
-        self.send_request(request).await?;
+    async fn turn_io(
+        &mut self,
+        request: &pb::ParentRequest,
+        mut opening: Option<&pb::Configure>,
+        on_print: OnPrint<'_>,
+    ) -> Result<ControlEvent, PoolError> {
+        self.send_request(request, opening).await?;
         loop {
             let mut event = match self.worker.as_mut().expect("checked by send_request").recv().await {
                 Ok(event) => event,
@@ -1921,30 +2024,15 @@ impl Checkout {
                 }
                 Err(_) => return Err(self.poison("waiting for a reply").await),
             };
-            if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)))
-                && matches!(event.kind, Some(pb::child_event::Kind::Ok(_)))
+            // the first turn-ending reply to a `Configure` carrying `request`
+            // answers both, not an abort's after it
+            let opened = ends_turn(&event) && opening.take().is_some();
+            let lone_configure = matches!(request.kind, Some(pb::parent_request::Kind::Configure(_)));
+            let configuring = opened || lone_configure;
+            if (opened && acknowledges_configure(&event))
+                || (lone_configure && matches!(event.kind, Some(pb::child_event::Kind::Ok(_))))
             {
-                let clock = match pb::ExecutionClock::try_from(event.execution_clock.unwrap_or_default()) {
-                    Ok(clock) => ExecutionClock::from(clock),
-                    Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
-                };
-                if self.pool.config.transport.is_remote() {
-                    if clock == ExecutionClock::Cpu
-                        && self
-                            .pool
-                            .config
-                            .request_timeout
-                            .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
-                    {
-                        self.discard_worker();
-                        return Err(PoolError::Configuration(
-                            "CPU execution clock requires a finite client request_timeout".to_owned(),
-                        ));
-                    }
-                    self.budget.execution_clock = clock;
-                } else if clock != self.pool.config.execution_clock {
-                    return Err(self.protocol_violation("worker did not acknowledge the configured execution clock"));
-                }
+                self.adopt_execution_clock(&event)?;
             }
             // Only a storing relay sets this, on its reply to `Configure` or
             // `Load`. Taken before the budget check: a re-announced suspension
@@ -2162,10 +2250,56 @@ impl Checkout {
                         dump: shutdown.dump.map(Into::into),
                     });
                 }
+                Some(pb::child_event::Kind::SessionRefused(refused)) => {
+                    if !configuring {
+                        return Err(self.protocol_violation("SessionRefused reply to a request that opens no session"));
+                    }
+                    // no session opened and the request it carried never ran
+                    self.discard_worker();
+                    return Err(PoolError::Configuration(format!(
+                        "session refused: {}",
+                        refused.message
+                    )));
+                }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
                 }
             }
+        }
+    }
+
+    /// Adopts the execution clock a `Configure` acknowledgement reports: a remote
+    /// server chooses its own (CPU needs a finite `request_timeout` to be
+    /// supervised here), while a subprocess must acknowledge the configured one.
+    fn adopt_execution_clock(&mut self, event: &pb::ChildEvent) -> Result<(), PoolError> {
+        let clock = match pb::ExecutionClock::try_from(event.execution_clock.unwrap_or_default()) {
+            Ok(clock) => ExecutionClock::from(clock),
+            Err(_) => return Err(self.protocol_violation("worker reported an unknown execution clock")),
+        };
+        if self.pool.config.transport.is_remote() {
+            if clock == ExecutionClock::Cpu
+                && self
+                    .pool
+                    .config
+                    .request_timeout
+                    .is_none_or(|limit| DeadlineInstant::now().checked_add(limit).is_none())
+            {
+                self.discard_worker();
+                return Err(PoolError::Configuration(
+                    "CPU execution clock requires a finite client request_timeout".to_owned(),
+                ));
+            }
+            self.budget.execution_clock = clock;
+            // a refused first `Load` restores the budget it snapshotted, which
+            // must keep the clock the server chose
+            if let Some(saved) = &mut self.pending_load_budget {
+                saved.execution_clock = clock;
+            }
+            Ok(())
+        } else if clock == self.pool.config.execution_clock {
+            Ok(())
+        } else {
+            Err(self.protocol_violation("worker did not acknowledge the configured execution clock"))
         }
     }
 
@@ -2177,12 +2311,16 @@ impl Checkout {
     /// (nothing overwrites it on this path), so the suspension stays
     /// answerable with a smaller value. Every other send failure is a real
     /// I/O break (dead worker / closed pipe).
-    async fn send_request(&mut self, request: &pb::ParentRequest) -> Result<(), PoolError> {
+    async fn send_request(
+        &mut self,
+        request: &pb::ParentRequest,
+        opening: Option<&pb::Configure>,
+    ) -> Result<(), PoolError> {
         self.request_sent = false;
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
-        match worker.send(request).await {
+        match worker.send(request, opening).await {
             Ok(()) => {
                 self.request_sent = true;
                 Ok(())
@@ -2429,8 +2567,8 @@ impl Drop for Checkout {
 }
 
 /// Builds the `Configure` that creates `repl`'s session on a fresh worker.
-fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest {
-    request(pb::parent_request::Kind::Configure(pb::Configure {
+fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
+    pb::Configure {
         script_name: repl.script_name.clone(),
         execution_clock: (!pool.transport.is_remote()).then(|| pb::ExecutionClock::from(pool.execution_clock) as i32),
         limits: repl.limits.as_ref().map(Into::into),
@@ -2450,7 +2588,9 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::ParentRequest 
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
-    }))
+        // attached when the first request goes out (see `OpeningRequest`)
+        first: None,
+    }
 }
 
 /// The `monty.pool.session.resumed` outcome for a failed reload: `exhausted`

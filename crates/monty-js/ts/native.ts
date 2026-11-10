@@ -168,7 +168,8 @@ export interface ConnectTurn extends Omit<DisconnectedTurn, 'kind'> {
   kind: 'connect'
 }
 
-/** The client configuration is incompatible with the remote server. */
+/** The client configuration is incompatible with the remote server; reported
+ *  by the session's first request, which carries its `Configure`. */
 export interface ConfigurationTurn {
   kind: 'configuration'
   message: string
@@ -251,6 +252,7 @@ export type NativeTurn =
   | TypingErrorTurn
   | CrashedTurn
   | ProtocolTurn
+  | ConfigurationTurn
   | DisconnectedTurn
   | ShutdownTurn
 

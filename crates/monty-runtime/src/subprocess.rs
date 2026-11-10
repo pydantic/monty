@@ -17,7 +17,7 @@ use std::{io, panic, process::ExitCode, thread};
 
 use monty_proto::{
     FrameError, FrameReader, pb,
-    worker::{Child, EventSink, HandleOutcome, fatal_error_event, protocol_violation},
+    worker::{Child, EventSink, HandleOutcome, SessionBudget, fatal_error_event, protocol_violation},
     write_frame,
 };
 use monty_types::memory_limit_with_headroom;
@@ -52,6 +52,9 @@ fn serve() -> ExitCode {
     let mut reader = FrameReader::new(io::stdin().lock());
     let mut child = Child::default();
     let mut sink = StdoutSink;
+    // set the memory baseline on the pristine worker: a session's first request
+    // is decoded before its ceiling is armed, and must not count as overhead
+    apply_memory_limit(&child);
 
     loop {
         match reader.read::<pb::ParentRequest>() {
@@ -102,8 +105,8 @@ fn serve() -> ExitCode {
     }
 }
 
-/// Applies the hard memory limit of whatever session the child now holds,
-/// after every request.
+/// Applies the hard memory limit of whatever session the child now holds, at
+/// start-up and after every request.
 ///
 /// Reading the child's state rather than the request is what keeps the limit
 /// honest: a rejected `Configure` changes nothing, a `Load` brings the dump's
@@ -111,7 +114,11 @@ fn serve() -> ExitCode {
 /// in the shared state machine because each entry point declares its own
 /// allocator: the wasm worker does the same thing in its own turn loop.
 fn apply_memory_limit(child: &Child) {
-    let budget = child.session_budget();
+    apply_budget(child.session_budget());
+}
+
+/// Sets the allocator's hard ceiling for `budget`.
+fn apply_budget(budget: SessionBudget) {
     let hard_memory_limit = memory_limit_with_headroom(budget.max_memory, budget.type_check);
     monty_alloc::set_hard_limit(hard_memory_limit).expect("monty-runtime must install LimitedAllocator globally");
 }
@@ -125,6 +132,11 @@ struct StdoutSink;
 impl EventSink for StdoutSink {
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), FrameError> {
         write_frame(&mut io::stdout(), event)
+    }
+
+    /// A session opened by its first request runs under its ceiling, not the unconfigured one.
+    fn session_opened(&mut self, budget: SessionBudget) {
+        apply_budget(budget);
     }
 }
 

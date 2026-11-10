@@ -174,7 +174,7 @@ impl Pool {
         });
         #[cfg(feature = "telemetry")]
         let worker = worker.with_adapter_context(options.telemetry);
-        Checkout::create(worker, Arc::clone(&self.inner), repl, redial).await
+        Ok(Checkout::create(worker, Arc::clone(&self.inner), repl, redial))
     }
 
     /// Asks idle workers to exit cleanly and reaps them, capping the wait per
@@ -206,7 +206,7 @@ impl Pool {
         }
         for (worker, _) in &mut idle {
             let _ = worker
-                .send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})))
+                .send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})), None)
                 .await;
         }
         // Reap concurrently: a *nonresponsive* worker costs the full grace, so

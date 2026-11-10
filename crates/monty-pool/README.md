@@ -23,7 +23,14 @@ fails to spawn is retried with a doubling backoff. Remote pools never refill.
 and answers suspension events (`TurnEvent` — external function calls, OS calls, name lookups,
 async futures) until the snippet completes, then `Checkout::finish` returns the worker to the
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
-state cannot be trusted back into the pool.
+state cannot be trusted back into the pool. The session's `Configure` carries its first `feed` /
+`restore` (`Configure.first`) rather than taking a turn of its own, so a worker refusing it (an
+invalid `os_policy`, a clock it cannot serve) replies `SessionRefused`: that request never runs,
+fails with `PoolError::Configuration`, and ends the session; a checkout that is finished without a
+request never configures its worker.
+`Checkout::open`, and a first `dump` or non-empty `install_dependencies`, send it alone and wait for
+the reply. The first request's duration backstop also covers a freshly spawned worker's start-up:
+the process is spawned before the checkout, but it may still be loading when the request goes out.
 
 Use `Checkout::terminate` when cleanup must wait for subprocess exit.
 It discards the worker and returns `Some(ExitStatus)` only after the OS confirms exit.
@@ -326,7 +333,8 @@ The interrupted request did not run, but restoring a suspended dump repeats its 
 had side effects; callbacks used this way should be idempotent.
 A local subprocess claiming shutdown is a protocol violation.
 
-A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`;
+A remote that supports persistence names sessions with an opaque ID, `Checkout::session_id`, set once the
+session opens (call `Checkout::open` to open it before any request);
 `ReplConfig::persistence` asks it to store the session or not, and subprocess workers ignore both.
 `ReplConfig::profile` names a server-side profile to run the session under; it is sent in `Configure` as-is, and
 subprocess workers ignore it too.

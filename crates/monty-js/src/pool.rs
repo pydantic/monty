@@ -507,7 +507,6 @@ impl NativeSession {
         let pool_name = self.pool_name;
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
-        let session_id = Arc::clone(&self.session_id);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         let metadata = metadata
@@ -538,7 +537,6 @@ impl NativeSession {
                 };
                 let outcome = match checkout {
                     Ok(checkout) => {
-                        *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                         *slot.lock().await = Some(checkout);
                         TurnOutcome::Ok
                     }
@@ -909,6 +907,25 @@ impl NativeSession {
             outcome_fn(move |checkout, _on_print| {
                 Box::pin(async move {
                     match checkout.install_dependencies(requirements).await {
+                        Ok(()) => TurnOutcome::Ok,
+                        Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                    }
+                })
+            }),
+        )
+    }
+
+    /// Opens the session if no request has yet, sending its `Configure` alone,
+    /// so a storing server's `sessionId` is set once this resolves. Resolves to
+    /// an `ok` turn, or what a refused first request would.
+    #[napi]
+    pub fn open<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, _on_print| {
+                Box::pin(async move {
+                    match checkout.open().await {
                         Ok(()) => TurnOutcome::Ok,
                         Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
                     }

@@ -41,6 +41,7 @@ fn reaped(pid: u32) {
 }
 
 /// Emits chosen protocol frames without interpreting their contents.
+/// Its first read is the `Configure` carrying the session's first request, so `count` starts at 1 there.
 fn stand_in(action: &str, reported: u64) -> (tempfile::TempDir, PoolConfig) {
     // Resolve Python before the worker clears PATH, so CI's configured interpreter is used.
     static PYTHON: OnceLock<PathBuf> = OnceLock::new();
@@ -53,9 +54,6 @@ fn stand_in(action: &str, reported: u64) -> (tempfile::TempDir, PoolConfig) {
         PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
     });
     let dir = tempfile::Builder::new().prefix("monty cpu '").tempdir().unwrap();
-    let mut configured = child_event(pb::child_event::Kind::Ok(pb::Ok {}));
-    configured.execution_clock = Some(pb::ExecutionClock::Cpu as i32);
-    let ok = framed(&configured);
     let mut suspended = child_event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
         function_name: "pause".to_owned(),
         ..WireFunctionCall::default()
@@ -87,14 +85,14 @@ def read():
         data.extend(chunk)
     return data
 def send(data):
-    sys.stdout.buffer.write(bytes(data))
+    # append `execution_clock = CPU` (field 30) to acknowledge the opening `Configure`
+    body = bytes(data)[4:] + b'\xf0\x01\x01'
+    sys.stdout.buffer.write(struct.pack('<I', len(body)) + body)
     sys.stdout.buffer.flush()
 def burn(ms):
     start = time.process_time_ns()
     while time.process_time_ns() - start < ms * 1000000: pass
 open(os.path.join(os.path.dirname(__file__), 'ready'), 'w').close()
-read()
-send({ok:?})
 count = 0
 while True:
     read()
