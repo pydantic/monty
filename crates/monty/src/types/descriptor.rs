@@ -211,20 +211,6 @@ pub(crate) fn data_member(class: HeapId, name: &str, vm: &VM<'_>) -> Option<Valu
     }
 }
 
-/// Whether resolving this particular attribute can execute a descriptor getter.
-pub(crate) fn attribute_uses_descriptor(object: &Value, name: &EitherStr, vm: &VM<'_>) -> bool {
-    let Value::Ref(id) = object else { return false };
-    let name = name.as_str(vm.interns);
-    match vm.heap.get(*id) {
-        HeapData::Class(_) => {
-            !matches!(name, "__name__" | "__annotations__")
-                && matches!(resolve_class(*id, name, vm), AttributeResolution::Getter(_))
-        }
-        HeapData::Instance(_) => matches!(resolve_instance(*id, name, vm), AttributeResolution::Getter(_)),
-        _ => false,
-    }
-}
-
 /// The sandbox class whose namespace supplies an instance's descriptor hooks.
 pub(crate) fn descriptor_class(value: &Value, vm: &VM<'_>) -> Option<HeapId> {
     match value {

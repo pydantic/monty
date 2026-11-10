@@ -5,7 +5,8 @@ use std::time::Duration;
 use insta::assert_snapshot;
 use monty::{Dump, MontyRepl, ReplProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, ExcType, MontyObject, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, NameLookupResult, PrintWriter,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Start an independent session for suspension and persistence checks.
@@ -31,6 +32,152 @@ fn restore_idle(repl: MontyRepl) -> MontyRepl {
         panic!("expected idle state")
     };
     *repl
+}
+
+/// Forwarded annotation getters retain the caller's fallback across a host error and restore.
+#[test]
+fn bound_method_attribute_errors_survive_suspension_and_restore() {
+    let code = r"
+class Ann:
+    __annotations__ = property(host_get)
+class C:
+    m = classmethod(Ann())
+
+assert getattr(C.m, '__annotations__', ['default']) == ['default']
+assert not hasattr(C.m, '__annotations__')
+M = type(C.m)
+match C.m:
+    case M(__annotations__=value):
+        assert False, 'expected a missing attribute'
+    case _:
+        pass
+try:
+    getattr(C.m, '__annotations__')
+    assert False, 'expected AttributeError without a default'
+except AttributeError as error:
+    assert str(error) == 'from host'
+42
+";
+    for name in ["__annotations__", "__annotate__"] {
+        for getter in ["host_get", "lambda obj: host_get(obj)"] {
+            let code = code
+                .replace("__annotations__", name)
+                .replace("property(host_get)", &format!("property({getter})"));
+            let mut progress = repl().feed_start(&code, vec![], PrintWriter::Disabled).unwrap();
+            let mut calls = 0;
+            loop {
+                progress = match restore(progress) {
+                    ReplProgress::NameLookup(lookup) => {
+                        let function = MontyObject::function(lookup.name.clone(), None);
+                        lookup
+                            .resume(NameLookupResult::Value(function), PrintWriter::Disabled)
+                            .unwrap()
+                    }
+                    ReplProgress::FunctionCall(call) => {
+                        calls += 1;
+                        let error = MontyException::new(ExcType::AttributeError, Some("from host".to_owned()));
+                        call.resume(ExtFunctionResult::Error(error), PrintWriter::Disabled)
+                            .unwrap()
+                    }
+                    complete => {
+                        assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(42));
+                        break;
+                    }
+                };
+            }
+            assert_eq!(calls, 4);
+        }
+    }
+}
+
+/// OS calls from a forwarded getter suspend for all three attribute consumers.
+#[test]
+fn bound_method_attribute_os_calls_survive_restore() {
+    let code = r"
+import functools
+import os
+
+class Ann:
+    __annotations__ = property(functools.partial(os.getenv, 'HOME'))
+class C:
+    m = classmethod(Ann())
+
+assert hasattr(C.m, '__annotations__')
+assert getattr(C.m, '__annotations__', None) == 'sandbox home'
+M = type(C.m)
+match C.m:
+    case M(__annotations__=value):
+        assert value == 'sandbox home'
+    case _:
+        assert False, 'expected a matching attribute'
+42
+";
+    let mut progress = repl().feed_start(code, vec![], PrintWriter::Disabled).unwrap();
+    let mut calls = 0;
+    loop {
+        progress = match restore(progress) {
+            ReplProgress::OsCall(call) => {
+                calls += 1;
+                assert_eq!(call.function_call.name(), "os.getenv");
+                call.resume(MontyObject::string("sandbox home"), PrintWriter::Disabled)
+                    .unwrap()
+            }
+            complete => {
+                assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(42));
+                break;
+            }
+        };
+    }
+    assert_eq!(calls, 3);
+}
+
+/// A forwarded native getter can install its own host-lookup default, which the outer read must retain.
+#[test]
+fn forwarded_host_lookup_defaults_survive_restore() {
+    let host = MontyObject::class_instance(
+        MontyObject::class_type("Host", MontyUuid::from_u128(7), true, false, []),
+        MontyUuid::from_u128(42),
+        [],
+    );
+    let code = r"
+import functools
+class Ann:
+    __annotations__ = property(functools.partial(getattr, host, 'missing'))
+class C:
+    m = classmethod(Ann())
+
+assert type(getattr(C.m, '__annotations__')) is Ann
+assert type(getattr(C.m, '__annotations__', 'outer default')) is Ann
+assert hasattr(C.m, '__annotations__')
+M = type(C.m)
+match C.m:
+    case M(__annotations__=value):
+        assert type(value) is Ann
+    case _:
+        assert False, 'expected the inner default'
+42
+";
+    let mut progress = repl()
+        .feed_start(code, vec![("host".to_owned(), host)], PrintWriter::Disabled)
+        .unwrap();
+    let mut lookups = 0;
+    loop {
+        progress = match restore(progress) {
+            ReplProgress::NameLookup(lookup) => {
+                lookups += 1;
+                assert_eq!(lookup.name, "missing");
+                assert_eq!(lookup.object_id(), Some(MontyUuid::from_u128(42)));
+                lookup
+                    .resume(NameLookupResult::Undefined, PrintWriter::Disabled)
+                    .unwrap()
+            }
+            complete => {
+                assert_eq!(complete.into_complete().unwrap().1, MontyObject::int(42));
+                break;
+            }
+        };
+    }
+    assert_eq!(lookups, 4);
 }
 
 /// Native descriptor cycles must hit recursion accounting before the time-limit backstop.
