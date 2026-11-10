@@ -14,7 +14,6 @@ The `asyncio` module exposes exactly three functions:
     an exception raised by a coroutine or a host function is stored in the
     list at its position and every other awaitable still completes. Only
     exceptions are collected this way: a resource-limit error still ends the run.
-    Any other keyword raises `TypeError`, as in CPython.
 - `asyncio.sleep(delay, result=None)` — waits as the session's `sleep` setting
     says, then produces `result`. See
     [below](#asynciosleep-waits-at-the-call-not-at-the-await).
