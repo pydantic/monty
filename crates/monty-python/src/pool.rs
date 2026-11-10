@@ -450,7 +450,7 @@ impl PyMontySession {
             self.instances.clone_ref(py),
             print_target,
             // the dump's own script name, falling back to the session config
-            // only if the worker did not report one (e.g. an older child)
+            // only if the worker did not report one (e.g. an older worker)
             script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
             names,
             os,
@@ -655,13 +655,14 @@ impl PyAsyncMonty {
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
+            entered: AtomicBool::new(false),
         })
     }
 }
 
 /// Async context manager owning a pool of remote `monty` workers reached over
 /// gRPC: one HTTP/2 connection to the configured URL, one stream per session.
-/// The intended peer is `monty-server` (one child per stream plus
+/// The intended peer is `monty-server` (one worker per stream plus
 /// timeout/capacity/drain policy); any server that bridges a stream to a
 /// worker fits, e.g. the dev relay script.
 ///
@@ -850,6 +851,7 @@ impl PyAsyncMontyRemote {
             used: AtomicBool::new(false),
             drive_abandoned: Arc::new(AtomicBool::new(false)),
             session_id: Arc::new(Mutex::new(None)),
+            entered: AtomicBool::new(false),
         })
     }
 }
@@ -877,6 +879,8 @@ pub struct PyAsyncMontySession {
     /// The checkout's session ID, copied after `__aenter__` and each load so the
     /// getter never waits on the checkout lock a running turn holds.
     session_id: Arc<Mutex<Option<Vec<u8>>>>,
+    /// Set once `__aenter__` has checked a worker out; `get_session_id` raises before then.
+    entered: AtomicBool,
 }
 
 #[pymethods]
@@ -901,14 +905,13 @@ impl PyAsyncMontySession {
         let options = CheckoutOptions::default()
             .with_telemetry(capture_telemetry_context(py))
             .with_metadata(metadata);
-        let session_id = Arc::clone(&this.session_id);
         future_into_py(py, async move {
             let checkout = pool
                 .checkout_with(&repl_config, options)
                 .await
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
-            *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
             *slot.lock().await = Some(checkout);
+            slf.get().entered.store(true, Ordering::Relaxed);
             Ok(slf)
         })
     }
@@ -1071,7 +1074,7 @@ impl PyAsyncMontySession {
                 ));
             };
             // the dump's own script name, falling back to the session config
-            // only if the worker did not report one (e.g. an older child)
+            // only if the worker did not report one (e.g. an older worker)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
                 let ctx = DriveContext::new(checkout, instances, print_target, script_name, names, os, trace_context);
@@ -1117,21 +1120,52 @@ impl PyAsyncMontySession {
         self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
 
-    /// The opaque ID a storing `monty-server` minted for this session, which
-    /// `load_session` / `load_snapshot` resume from any process. `None` for
-    /// local workers, ephemeral sessions and servers that store nothing.
+    /// Resolves to the opaque ID a storing `monty-server` minted for this
+    /// session, opening the session first if no request has yet. Waits for a
+    /// running turn; after exit, resolves to the last ID seen.
+    fn get_session_id<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        if !self.entered.load(Ordering::Relaxed) {
+            return Err(PyRuntimeError::new_err(
+                "get_session_id() needs an entered session: use `async with pool.checkout() as session`",
+            ));
+        }
+        let checkout = Arc::clone(&self.checkout);
+        let cache = Arc::clone(&self.session_id);
+        future_into_py(py, async move {
+            if let Some(checkout) = checkout.lock().await.as_mut() {
+                checkout
+                    .open()
+                    .await
+                    .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+                *lock(&cache) = checkout.session_id().map(<[u8]>::to_vec);
+            }
+            Ok(Python::attach(|py| {
+                lock(&cache).as_deref().map(|id| PyBytes::new(py, id).unbind())
+            }))
+        })
+    }
+
+    /// Deprecated: `None` until the session's first request opens it, so it
+    /// races that request. Use `get_session_id()`, which waits.
     ///
     /// Reads the checkout when its lock is free (so an auto-resume is seen),
     /// else the cached copy: blocking here could deadlock as `worker_pid` notes.
-    #[getter]
-    fn session_id<'py>(&self, py: Python<'py>) -> Option<Bound<'py, PyBytes>> {
+    // not `fn session_id`: pyo3 names that getter's wrapper `get_session_id`
+    #[getter(session_id)]
+    fn deprecated_session_id<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyBytes>>> {
+        PyErr::warn(
+            py,
+            &py.get_type::<PyDeprecationWarning>(),
+            c"session_id is deprecated, use `await session.get_session_id()`",
+            1,
+        )?;
         let mut cache = lock(&self.session_id);
         if let Ok(checkout) = self.checkout.try_lock()
             && let Some(checkout) = checkout.as_ref()
         {
             *cache = checkout.session_id().map(<[u8]>::to_vec);
         }
-        cache.as_deref().map(|id| PyBytes::new(py, id))
+        Ok(cache.as_deref().map(|id| PyBytes::new(py, id)))
     }
 }
 
@@ -2312,7 +2346,7 @@ pub(crate) enum OsDispatch {
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,
-/// which services mount I/O on the parent side — nothing crosses the process
+/// which services mount I/O on the client side — nothing crosses the process
 /// boundary, and overlay writes are discarded when the feed ends.
 fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSpec>> {
     let Some(mount) = mount else {

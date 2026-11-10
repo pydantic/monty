@@ -533,7 +533,7 @@ class MontyCrashedError(MontyError):
 
     @property
     def timed_out(self) -> bool:
-        """`True` when a parent-side elapsed-time or CPU watchdog killed the worker."""
+        """`True` when a client-side elapsed-time or CPU watchdog killed the worker."""
 
     @property
     def exit_status(self) -> int | None:
@@ -605,6 +605,12 @@ class MontyConfigurationError(MontyError):
     """Raised for invalid pool settings, malformed request metadata, or settings incompatible with the remote server.
 
     CPU-mode pools and servers require a finite client `request_timeout`.
+    A worker or server refusing the session's configuration (deeply nested
+    `type_check_stubs`, an unknown profile) raises it as `session refused: …`
+    from the session's first request, which did not run, or from
+    `get_session_id()` when it opens the session alone; the session is lost.
+    Options the binding checks itself, such as `os_policy`, raise `TypeError`
+    or `ValueError` from `checkout()` instead.
     Cannot be constructed directly from Python.
     """
 
@@ -729,7 +735,7 @@ class Monty:
                 checkouts beyond it wait for a worker to be returned.
             checkout_timeout: Seconds `checkout()` waits for a free worker
                 before raising `TimeoutError`. `None` waits forever.
-            request_timeout: Per-turn parent-side deadline in seconds — a worker
+            request_timeout: Per-turn client-side deadline in seconds — a worker
                 that exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Trusted synchronous span and log callbacks
                 delay enforcement while they run. Backstops sandbox `limits`.
@@ -1116,7 +1122,7 @@ class AsyncMontyRemote:
     Async context manager owning a pool of remote `monty` workers reached over
     gRPC: one HTTP/2 connection to the configured URL, one stream per session.
     The intended peer is `monty-server` (the production server: one
-    `monty subprocess` child per stream, plus capacity/timeout policy and
+    `monty subprocess` worker per stream, plus capacity/timeout policy and
     graceful drain), but any server that admits the stream and bridges it to
     a worker fits — e.g. the dev relay `scripts/grpc_relay.py`.
 
@@ -1132,7 +1138,7 @@ class AsyncMontyRemote:
     status and raises `MontyDisconnectError` naming its `cause`; a stream it
     refuses to open raises `MontyRefusedError` the same way.
 
-    A server that stores sessions gives each one an ID (`session.session_id`)
+    A server that stores sessions gives each one an ID (`await session.get_session_id()`)
     instead of handing state back: `dump()` writes the current state to a
     record that never changes and returns its ID, and `load_session` /
     `load_snapshot` start a new session from either ID, in any process.
@@ -1472,13 +1478,26 @@ class AsyncMontySession:
         on another thread (the getter never blocks on a running turn).
         """
 
-    @property
-    def session_id(self) -> bytes | None:
+    async def get_session_id(self) -> bytes | None:
         """The opaque ID a server that stores sessions gave this session.
 
         Pass it to `load_session` / `load_snapshot` to start a new session from
         the state as of this one's last park, from any process. `None` for local
         workers, ephemeral sessions and servers that store nothing.
+
+        Opens the session if no request has yet, which costs one round trip and
+        raises what that request would on a refused configuration. Waits for a
+        running turn, and after the session exits returns the last ID seen.
+        Raises `RuntimeError` before the session is entered.
+        """
+
+    @property
+    @deprecated('`session_id` is `None` until the first request opens the session; use `await get_session_id()`.')
+    def session_id(self) -> bytes | None:
+        """Deprecated: use `get_session_id()`.
+
+        The ID as last seen, which is `None` until the session's first request
+        (`feed_run`, `feed_start`, `load_*`, ...) opens it.
         """
 
 @final

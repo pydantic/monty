@@ -107,7 +107,7 @@ pub struct NativePoolOptions {
     pub max_processes: u32,
     /// How long `enter()` waits for a free worker (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms).
+    /// Client-side hard deadline per protocol turn (ms).
     pub request_timeout_ms: Option<f64>,
     /// Grace for the automatic `maxFeedDurationSecs` backstop (ms). Absent:
     /// backstop disabled.
@@ -130,7 +130,7 @@ pub struct NativeRemotePoolOptions {
     pub max_processes: Option<u32>,
     /// How long `enter()` waits for capacity (ms). Absent: forever.
     pub checkout_timeout_ms: Option<f64>,
-    /// Parent-side hard deadline per protocol turn (ms). Absent: none.
+    /// Client-side hard deadline per protocol turn (ms). Absent: none.
     pub request_timeout_ms: Option<f64>,
     /// As [`NativePoolOptions::feed_duration_limit_grace_ms`].
     pub feed_duration_limit_grace_ms: Option<f64>,
@@ -507,7 +507,6 @@ impl NativeSession {
         let pool_name = self.pool_name;
         let repl_config = self.repl_config.clone();
         let slot = Arc::clone(&self.checkout);
-        let session_id = Arc::clone(&self.session_id);
         let telemetry_context =
             telemetry_context.and_then(|context| configured_tracing_adapter().map(|adapter| context.parse(adapter)));
         let metadata = metadata
@@ -538,7 +537,6 @@ impl NativeSession {
                 };
                 let outcome = match checkout {
                     Ok(checkout) => {
-                        *lock(&session_id) = checkout.session_id().map(<[u8]>::to_vec);
                         *slot.lock().await = Some(checkout);
                         TurnOutcome::Ok
                     }
@@ -909,6 +907,25 @@ impl NativeSession {
             outcome_fn(move |checkout, _on_print| {
                 Box::pin(async move {
                     match checkout.install_dependencies(requirements).await {
+                        Ok(()) => TurnOutcome::Ok,
+                        Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+                    }
+                })
+            }),
+        )
+    }
+
+    /// Opens the session if no request has yet, sending its `Configure` alone,
+    /// so a storing server's `sessionId` is set once this resolves. Resolves to
+    /// an `ok` turn, or what a refused first request would.
+    #[napi]
+    pub fn open<'env>(&self, env: &'env Env, on_print: PrintCallback<'env>) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(
+            env,
+            on_print,
+            outcome_fn(move |checkout, _on_print| {
+                Box::pin(async move {
+                    match checkout.open().await {
                         Ok(()) => TurnOutcome::Ok,
                         Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
                     }

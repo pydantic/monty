@@ -250,6 +250,8 @@ export class MontySession {
           throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
       }
       // Print failures take precedence. On a suspension the worker is waiting
       // for a resume we will never send — poison so the next feed fails cleanly
@@ -338,6 +340,8 @@ export class MontySession {
         throw await this.failedLoad(lostSessionError(turn))
       case 'protocol':
         throw await this.failedLoad(new ProtocolError(turn.message))
+      case 'configuration':
+        throw await this.failedLoad(new MontyConfigurationError(turn.message))
       case 'error':
         throw await this.failedLoad(montyErrorFromNative(turn.exception))
       default:
@@ -457,6 +461,8 @@ export class MontySession {
         throw this.poison(lostSessionError(turn))
       case 'protocol':
         throw this.poison(new ProtocolError(turn.message))
+      case 'configuration':
+        throw this.poison(new MontyConfigurationError(turn.message))
       default:
         throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
     }
@@ -476,8 +482,44 @@ export class MontySession {
    * store nothing. Pass it to `loadSession` / `loadSnapshot` on a fresh session
    * to start a new session from the state stored under it. Changes when the
    * pool resumes the session after a server shutdown.
+   *
+   * Before any request this opens the session, costing one round trip and
+   * raising what a refused first request would. Waits for a running turn;
+   * after `close()`, resolves to the last ID seen.
+   */
+  async getSessionId(): Promise<Buffer | undefined> {
+    if (!this.closed) {
+      const turn = (await this.native.open(() => {})) as NativeTurn | OkTurn
+      switch (turn.kind) {
+        case 'ok':
+          break
+        case 'error':
+          throw this.poison(montyErrorFromNative(turn.exception))
+        case 'crashed':
+        case 'disconnected':
+        case 'shutdown':
+          throw this.poison(lostSessionError(turn))
+        case 'protocol':
+          throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
+        default:
+          throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
+      }
+    }
+    return this.cachedSessionId()
+  }
+
+  /**
+   * @deprecated `undefined` until the session's first request has been
+   * answered, so it races that request; use `await getSessionId()`.
    */
   get sessionId(): Buffer | undefined {
+    return this.cachedSessionId()
+  }
+
+  /** The ID as of the last completed turn, without opening the session. */
+  private cachedSessionId(): Buffer | undefined {
     const id = this.native.sessionId
     return id === undefined || id === null ? undefined : bufferFrom(id)
   }
@@ -1109,6 +1151,8 @@ class SnapshotDriver {
           throw this.poison(lostSessionError(turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+        case 'configuration':
+          throw this.poison(new MontyConfigurationError(turn.message))
         case 'osCall':
           // Every OS call surfaces; mounts and the `os` callback are consulted
           // only by `resumeAuto`.
@@ -1790,6 +1834,8 @@ async function dumpSession(
       throw poison(lostSessionError(turn))
     case 'protocol':
       throw poison(new ProtocolError(turn.message))
+    case 'configuration':
+      throw poison(new MontyConfigurationError(turn.message))
     default:
       throw poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
   }

@@ -301,7 +301,7 @@ impl Signature {
                 }
             }
 
-            return self.wrong_arg_count_error(actual_count, vm.interns, func_name);
+            return self.wrong_arg_count_error(actual_count, vm.interns, func_name.name_id);
         }
 
         // Full binding algorithm for complex signatures or kwargs. Convert
@@ -661,8 +661,9 @@ impl Signature {
     /// # Arguments
     /// * `actual_count` - Number of arguments actually provided
     /// * `interns` - String storage for looking up interned names
-    fn wrong_arg_count_error<T>(&self, actual_count: usize, interns: &Interns, func_name: Identifier) -> RunResult<T> {
-        let name_str = interns.get_str(func_name.name_id);
+    /// * `func_name_id` - Function name for the message; the VM supplies the traceback frame
+    fn wrong_arg_count_error<T>(&self, actual_count: usize, interns: &Interns, func_name_id: StringId) -> RunResult<T> {
+        let name_str = interns.get_str(func_name_id);
         let param_count = self.param_count();
         // Only reached from the Simple/SimpleWithDefaults fast paths, so there
         // are no pos-only, kw-only, or `*args` params: every param is
@@ -682,8 +683,8 @@ impl Signature {
         } else {
             ExcType::too_many_positional_range_msg(name_str, required, param_count, actual_count, 0)
         };
-        Err(SimpleException::new_msg(ExcType::TypeError, msg)
-            .with_position(func_name.position)
-            .into())
+        // No position: the VM attaches the calling frame, so the traceback
+        // points at the call, as CPython's does, not at the `def`.
+        Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
     }
 }

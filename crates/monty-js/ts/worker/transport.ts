@@ -5,7 +5,7 @@
 // converts only between public JavaScript values and the component's flat value
 // arena; protobuf is now entirely internal to Rust.
 
-import { MontyCrashedError } from '../errors.js'
+import { MontyConfigurationError, MontyCrashedError } from '../errors.js'
 import type { CrashedTurn, DumpedTurn, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import {
   type EncodedOsPolicy,
@@ -195,7 +195,7 @@ export class WorkerTransport {
     return this.resumeCall({ tag: 'not-found', val: this.pendingFunctionName }, onPrint)
   }
 
-  /** Lets the child apply the pending OS call's no-handler semantics. */
+  /** Lets the worker apply the pending OS call's no-handler semantics. */
   resumeNotHandled(onPrint: OnPrint): Promise<NativeTurn> {
     return this.resumeCall({ tag: 'not-handled' }, onPrint)
   }
@@ -251,6 +251,11 @@ export class WorkerTransport {
   resumeNameLookupError(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
     const request: NameLookupRequest = { outcome: { tag: 'error', val: { excType, message } }, values: EMPTY_ARENA }
     return this.turn({ tag: 'resume-name-lookup', val: request }, onPrint)
+  }
+
+  /** Opens the session: a no-op, since a WASM checkout already waited for its `Configure` reply. */
+  async open(_onPrint: OnPrint): Promise<{ kind: 'ok' }> {
+    return { kind: 'ok' }
   }
 
   /** Reports the sandbox worker's lack of dependency installation. */
@@ -393,7 +398,9 @@ export class WorkerTransport {
       throw new MontyCrashedError(failure.message, failure)
     }
     if (event.tag === 'fatal-error') throw new MontyCrashedError(event.val, { exitStatus: this.exitStatus })
-    // the worker's own reason, e.g. a zone name its tz database lacks
+    // invalid settings, e.g. a zone name the worker's tz database lacks
+    if (event.tag === 'session-refused') throw new MontyConfigurationError(`session refused: ${event.val}`)
+    // the worker's own reason for refusing the request
     if (event.tag === 'error' && kind !== 'error') throw new Error(`${what} failed: ${event.val.message}`)
     if (event.tag !== kind) throw new Error(`${what} expected event ${kind}, got ${event.tag}`)
     return event
