@@ -13,15 +13,19 @@ Annotations are compiled and evaluated lazily, as in CPython 3.14 (see [Annotati
 `Callable`, `Type`, `Sequence`, `Mapping`, `Iterable`, `Iterator`,
 `Generator`, `ClassVar`, `Final`, `Literal`, `TypeVar`, `Generic`,
 `Protocol`, `Annotated`, `Self`, `Never`, `NoReturn`, `TYPE_CHECKING`,
-`ForwardRef` (the [`annotationlib`](annotationlib.md) type) and
+`ForwardRef` (the [`annotationlib`](annotationlib.md) type),
+`cast`, `assert_type`, `assert_never` and
 [`get_type_hints`](#get_type_hints).
 
 `TYPE_CHECKING` is `False`, as in CPython at runtime.
 
+- Passing both positional-only arguments of `assert_type` by keyword names only the first:
+    `got some positional-only arguments passed as keyword arguments: 'val'` where CPython reports `'val, typ'`.
+
 ## Not implemented
 
-- `get_args`, `get_origin`, `cast`, `assert_type`,
-    `assert_never`, `overload`, `final`, `runtime_checkable`, `NewType`,
+- `get_args`, `get_origin`,
+    `overload`, `final`, `runtime_checkable`, `NewType`,
     `NamedTuple`, `TypedDict`, `dataclass_transform`, `ParamSpec`,
     `Concatenate`, `Unpack`, `TypeAlias`, `TypeAliasType`, `LiteralString`,
     `evaluate_forward_ref`.
