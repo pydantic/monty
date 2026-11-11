@@ -18,6 +18,7 @@ use std::str;
 
 use ahash::AHashSet;
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use smallvec::SmallVec;
 
 use crate::{
@@ -173,14 +174,25 @@ impl<'a> Serializer<'a> {
                     self.value(*inner, value, sink, vm)
                 }
             }
-            Validator::Union(choices) => match choices.iter().find(|choice| self.fits(**choice, value, vm)) {
-                Some(choice) => self.value(*choice, value, sink, vm),
+            Validator::Union(choices) => match self.choose(choices, value, vm) {
+                Some(choice) => self.value(choice, value, sink, vm),
                 None => self.infer(value, sink, vm),
             },
             // A typed float stays a float in JSON mode even when it is not
-            // finite; inference writes `None` for it.
+            // finite (inference writes `None`), and an int or bool becomes one.
             Validator::Float => match value {
                 Value::Float(f) => sink.float(*f),
+                _ if self.options.mode == Mode::Json => match int_as_float(value, vm) {
+                    Some(Ok(float)) => sink.float(float),
+                    // `mode='json'` overflows on an int past `f64`; `dump_json` writes it as an int.
+                    Some(Err(err)) if !self.json_text => Err(err),
+                    _ => self.infer(value, sink, vm),
+                },
+                _ => self.infer(value, sink, vm),
+            },
+            // JSON mode writes a bool under an `int` hint as its number.
+            Validator::Int if self.options.mode == Mode::Json => match value {
+                Value::Bool(b) => sink.int(i64::from(*b)),
                 _ => self.infer(value, sink, vm),
             },
             Validator::List(item) => match heap_data(value, vm) {
@@ -216,10 +228,25 @@ impl<'a> Serializer<'a> {
                 }
                 _ => self.infer(value, sink, vm),
             },
-            // Every scalar validator writes what inference writes for a value
-            // of its type, and inference is the fallback for any other.
+            // Every other scalar validator writes what inference writes for a
+            // value of its type, and inference is the fallback for any other.
             _ => self.infer(value, sink, vm),
         }
+    }
+
+    /// The union member that writes `value`: an exact fit anywhere wins, then
+    /// an `int` or `float` member claims a bool, as pydantic's lax pass does.
+    fn choose(&self, choices: &[ValidatorId], value: &Value, vm: &VM<'_>) -> Option<ValidatorId> {
+        choices
+            .iter()
+            .copied()
+            .find(|choice| self.fits(*choice, value, vm))
+            .or_else(|| {
+                choices.iter().copied().find(|choice| {
+                    matches!(value, Value::Bool(_))
+                        && matches!(self.arena.get(*choice), Validator::Int | Validator::Float)
+                })
+            })
     }
 
     /// Whether `value` is what the validator `id` describes, for choosing a
@@ -227,7 +254,8 @@ impl<'a> Serializer<'a> {
     fn fits(&self, id: ValidatorId, value: &Value, vm: &VM<'_>) -> bool {
         let data = heap_data(value, vm).map(|(_, data)| data);
         match self.arena.get(id) {
-            Validator::Any | Validator::Literal(_) => true,
+            Validator::Any => true,
+            Validator::Literal(literal) => literal.choices.iter().any(|choice| literal_equal(choice, value, vm)),
             Validator::None => matches!(value, Value::None),
             Validator::Bool => matches!(value, Value::Bool(_)),
             Validator::Int => {
@@ -655,6 +683,56 @@ fn is_class(dataclass: &DataclassValidator, class_id: HeapId) -> bool {
 fn heap_data<'v>(value: &Value, vm: &'v VM<'_>) -> Option<(HeapId, &'v HeapData)> {
     match value {
         Value::Ref(id) => Some((*id, vm.heap.get(*id))),
+        _ => None,
+    }
+}
+
+/// The float JSON mode writes for an int or bool under a `float` hint; `None`
+/// for any other value, and an `OverflowError` for an int past `f64`'s range.
+fn int_as_float(value: &Value, vm: &VM<'_>) -> Option<RunResult<f64>> {
+    match value {
+        Value::Bool(b) => Some(Ok(f64::from(u8::from(*b)))),
+        Value::Int(i) => Some(Ok(*i as f64)),
+        Value::InternLongInt(id) => Some(big_as_float(vm.interns.get_long_int(*id))),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::LongInt(big) => Some(big_as_float(big.inner())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn big_as_float(big: &BigInt) -> RunResult<f64> {
+    big.to_f64()
+        .filter(|float| float.is_finite())
+        .ok_or_else(ExcType::overflow_int_to_float)
+}
+
+/// Whether `value` is the `Literal` choice `choice`: the same type and value,
+/// as the literal validator matches exactly.
+fn literal_equal(choice: &Value, value: &Value, vm: &VM<'_>) -> bool {
+    match (choice, value) {
+        (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::None, Value::None) => true,
+        (Value::Ref(a), Value::Ref(b)) if a == b => true,
+        _ => match (choice.as_str(vm), value.as_str(vm)) {
+            (Some(a), Some(b)) => a == b,
+            _ => bytes_of(choice, vm)
+                .zip(bytes_of(value, vm))
+                .is_some_and(|(a, b)| a == b),
+        },
+    }
+}
+
+/// The contents of a `bytes` value.
+fn bytes_of<'v>(value: &Value, vm: &'v VM<'_>) -> Option<&'v [u8]> {
+    match value {
+        Value::InternBytes(id) => Some(vm.interns.get_bytes(*id)),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Bytes(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        },
         _ => None,
     }
 }

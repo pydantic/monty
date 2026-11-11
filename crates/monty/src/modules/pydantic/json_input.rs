@@ -31,7 +31,7 @@ use crate::{
                 parse_datetime, parse_time, str_as_bool, str_as_float, str_as_int, time_value,
             },
             errors::{ValError, ValResult},
-            input::{Input, InputKind, Mapping, Match, SeqKind, Sequence},
+            input::{ArgumentsShape, Input, InputKind, Mapping, Match, SeqKind, Sequence},
         },
     },
     types::{
@@ -440,8 +440,12 @@ impl<'j, 'a> Input for JsonInput<'j, 'a> {
         }
     }
 
-    fn is_mapping(&self, _vm: &VM<'_>) -> bool {
-        matches!(self, Self::Token { peek: Peek::Object, .. })
+    fn arguments_shape(&self, _vm: &VM<'_>) -> ArgumentsShape {
+        match self {
+            Self::Token { peek: Peek::Object, .. } => ArgumentsShape::Keywords,
+            Self::Token { peek: Peek::Array, .. } => ArgumentsShape::Positional,
+            _ => ArgumentsShape::Other,
+        }
     }
 
     fn key_value(&self) -> Option<&Value> {

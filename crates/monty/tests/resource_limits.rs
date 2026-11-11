@@ -482,6 +482,42 @@ fn time_limit_covers_pydantic_serialization() {
     }
 }
 
+/// A `ValidationError` snapshots its inputs under one budget per exception, so
+/// a shared sub-list repeated across the input and across line errors is cut
+/// off with `'...'` instead of being copied once per reference.
+#[test]
+fn pydantic_error_snapshots_share_one_budget() {
+    let code = r"
+from pydantic import TypeAdapter, ValidationError
+big = list(range(5000))
+try:
+    TypeAdapter(int).validate_python([big] * 3000)
+except ValidationError as e:
+    whole = e.errors()[0]['input']
+try:
+    TypeAdapter(list[int]).validate_python([big] * 3000)
+except ValidationError as e:
+    lines = e.errors()
+(len(whole), whole[0] == big, whole[-1], len(lines), lines[0]['input'] == big, lines[-1]['input'])
+";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_secs(5));
+    let result = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(
+        result,
+        MontyObject::tuple(vec![
+            MontyObject::int(8),
+            MontyObject::bool(true),
+            MontyObject::string("..."),
+            MontyObject::int(3000),
+            MontyObject::bool(true),
+            MontyObject::string("..."),
+        ])
+    );
+}
+
 /// `DictReader` skips blank rows in a native loop over the source, which must poll the
 /// clock: an endless source of blank lines never reaches a Python-level checkpoint.
 #[test]

@@ -28,7 +28,7 @@ use crate::{
             parse_time, str_as_bool, str_as_float, str_as_int, time_value,
         },
         errors::{ValError, ValResult},
-        input::{Input, InputKind, Mapping, Match, SeqKind, Sequence},
+        input::{ArgumentsShape, Input, InputKind, Mapping, Match, SeqKind, Sequence},
     },
     types::{
         allocate_string,
@@ -462,8 +462,12 @@ impl Input for PyInput {
         }
     }
 
-    fn is_mapping(&self, vm: &VM<'_>) -> bool {
-        matches!(self.heap_data(vm), Some(HeapData::Dict(_)))
+    fn arguments_shape(&self, vm: &VM<'_>) -> ArgumentsShape {
+        match self.heap_data(vm) {
+            Some(HeapData::Dict(_)) => ArgumentsShape::Keywords,
+            Some(HeapData::List(_) | HeapData::Tuple(_) | HeapData::NamedTuple(_)) => ArgumentsShape::Positional,
+            _ => ArgumentsShape::Other,
+        }
     }
 
     fn key_value(&self) -> Option<&Value> {

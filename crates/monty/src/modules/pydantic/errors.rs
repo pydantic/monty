@@ -21,7 +21,7 @@ use crate::{
     modules::pydantic::{
         catalogue::ErrorType,
         json_writer::{InfNan, JsonWriter},
-        snapshot::{repr_string, restore_value, snapshot_value, type_name},
+        snapshot::{Snapshotter, repr_string, restore_value, type_name},
     },
     types::{Dict, List, PyTrait, allocate_string, allocate_tuple},
     value::{EitherStr, Value},
@@ -134,7 +134,7 @@ impl<C: ContainsHeap> DropWithContext<C> for LineError {
     }
 }
 
-/// Builds the `ValidationError` for `lines`, snapshotting each input.
+/// Builds the `ValidationError` for `lines`, snapshotting each input under one shared budget.
 fn build(
     title: &str,
     input_type: ValidationInputType,
@@ -142,6 +142,7 @@ fn build(
     hide_input: bool,
     vm: &mut VM<'_>,
 ) -> SimpleException {
+    let mut snapshotter = Snapshotter::new();
     let line_errors = lines
         .into_iter()
         .map(|line| {
@@ -162,7 +163,7 @@ fn build(
                 error_type: error_type.type_str().to_owned(),
                 loc,
                 input_type_name: type_name(input, vm),
-                input: snapshot_value(input, vm),
+                input: snapshotter.snapshot(input, vm),
             }
         })
         .collect();

@@ -1,4 +1,4 @@
-from collections import namedtuple
+from collections import deque, namedtuple
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -272,6 +272,12 @@ assert errors(PointAdapter, {'x': 1}) == [
 assert errors(PointAdapter, 5) == [
     {'type': 'arguments_type', 'loc': (), 'msg': 'Arguments must be a tuple, list or a dictionary', 'input': 5}
 ]
+# only a list or tuple supplies positional arguments
+for args in [{1, 2}, frozenset({1}), 'ab', b'ab']:
+    assert errors(PointAdapter, args) == [
+        {'type': 'arguments_type', 'loc': (), 'msg': 'Arguments must be a tuple, list or a dictionary', 'input': args}
+    ]
+assert [e['type'] for e in errors(PointAdapter, deque([1, 2]))] == ['arguments_type']
 try:
     PointAdapter.validate_python((1,))
     assert False, 'expected a ValidationError'

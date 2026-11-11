@@ -5,10 +5,9 @@
 //! error's input therefore crosses into the exception as a [`MontyObject`]
 //! built here, and comes back out as a fresh value when `errors()` reads it.
 //! Scalars, containers, temporal values and decimals survive the round trip;
-//! anything else (an instance, a function) is kept as its repr, as is any
-//! value past the node budget, so an exception holds at most a few thousand
-//! nodes plus one repr, whose size is bounded by the (tracker-allocated)
-//! input it describes.
+//! anything else (an instance, a function) is kept as its repr.
+//! One [`Snapshotter`] serves a whole exception, so shared sub-objects and
+//! many line errors cannot multiply its size past the node and text budgets.
 
 use std::mem;
 
@@ -22,52 +21,214 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, HeapData, HeapId, HeapReadOutput},
     object_bridge::MontyObjectExt,
     types::{PyTrait, date as date_type, datetime as datetime_type, time as time_type, timedelta as timedelta_type},
     value::Value,
 };
 
-/// Nodes one snapshot may hold before the rest degrades to a repr.
-const NODE_BUDGET: usize = 4096;
+/// Nodes one exception's snapshots may hold before the rest is cut off.
+const NODE_BUDGET: usize = 32_768;
 
-/// Snapshots `value`, spending from a fresh [`NODE_BUDGET`].
+/// Bytes of string, bytes and repr text one exception's snapshots may copy;
+/// the leaf that crosses it is kept whole.
+const TEXT_BUDGET: usize = 4 * 1024 * 1024;
+
+/// The marker that stands in for whatever a spent budget cut off.
+const TRUNCATED: &str = "...";
+
+/// Snapshots `value` with a fresh budget, for a one-off value such as a context entry.
 pub(crate) fn snapshot_value(value: &Value, vm: &mut VM<'_>) -> MontyObject {
-    let mut walk = Walk {
-        budget: NODE_BUDGET,
-        in_progress: AHashSet::new(),
-    };
-    snapshot(value, &mut walk, vm)
+    Snapshotter::new().snapshot(value, vm)
 }
 
-/// The walk's state: the nodes left and the containers being descended, so a
-/// container that holds itself is cut at the reference back.
-struct Walk {
-    budget: usize,
+/// The budget shared by every snapshot of one exception, plus the containers
+/// being descended, so a container that holds itself is cut at the reference back.
+pub(crate) struct Snapshotter {
+    nodes: usize,
+    text: usize,
     in_progress: AHashSet<HeapId>,
 }
 
-/// One level of the snapshot walk.
-fn snapshot(value: &Value, walk: &mut Walk, vm: &mut VM<'_>) -> MontyObject {
-    if walk.budget == 0 {
-        return repr_object(value, vm);
-    }
-    walk.budget -= 1;
-    let Ok(mut guard) = vm.recursion_guard() else {
-        return repr_object(value, vm);
-    };
-    let vm = &mut *guard;
-    if let Value::Ref(id) = value {
-        if walk.in_progress.contains(id) {
-            return MontyObject::repr(cycle_placeholder(vm.heap.get(*id)));
+impl Snapshotter {
+    pub(crate) fn new() -> Self {
+        Self {
+            nodes: NODE_BUDGET,
+            text: TEXT_BUDGET,
+            in_progress: AHashSet::new(),
         }
-        walk.in_progress.insert(*id);
     }
-    let object = snapshot_node(value, walk, vm);
-    if let Value::Ref(id) = value {
-        walk.in_progress.remove(id);
+
+    /// Snapshots `value`, or returns the [`TRUNCATED`] marker once the budget is spent.
+    pub(crate) fn snapshot(&mut self, value: &Value, vm: &mut VM<'_>) -> MontyObject {
+        if self.spent() {
+            return truncated();
+        }
+        self.nodes -= 1;
+        let Ok(mut guard) = vm.recursion_guard() else {
+            return truncated();
+        };
+        let vm = &mut *guard;
+        if let Value::Ref(id) = value {
+            if self.in_progress.contains(id) {
+                return MontyObject::repr(cycle_placeholder(vm.heap.get(*id)));
+            }
+            self.in_progress.insert(*id);
+        }
+        let object = self.snapshot_node(value, vm);
+        if let Value::Ref(id) = value {
+            self.in_progress.remove(id);
+        }
+        object
     }
-    object
+
+    fn spent(&self) -> bool {
+        self.nodes == 0 || self.text == 0
+    }
+
+    /// Charges `len` bytes of copied text against the budget.
+    fn charge(&mut self, len: usize) {
+        self.text = self.text.saturating_sub(len);
+    }
+
+    /// The node for `value`, its children snapshotted through `self`.
+    fn snapshot_node(&mut self, value: &Value, vm: &mut VM<'_>) -> MontyObject {
+        match value {
+            Value::None => MontyObject::none(),
+            Value::Bool(b) => MontyObject::bool(*b),
+            Value::Int(i) => MontyObject::int(*i),
+            Value::Float(f) => MontyObject::float(*f),
+            Value::InternString(id) => self.string(vm.interns.get_str(*id)),
+            Value::InlineString(text) => self.string(text.as_str()),
+            Value::InternBytes(id) => self.bytes(vm.interns.get_bytes(*id)),
+            Value::InternLongInt(id) => MontyObject::bigint(vm.interns.get_long_int(*id).clone()),
+            Value::Ref(id) => match vm.heap.read(*id) {
+                HeapReadOutput::Str(s) => self.string(s.get(vm.heap).as_str()),
+                HeapReadOutput::Bytes(b) => self.bytes(b.get(vm.heap).as_slice()),
+                HeapReadOutput::LongInt(li) => MontyObject::bigint(li.get(vm.heap).inner().clone()),
+                HeapReadOutput::List(list) => {
+                    let items = list.get(vm.heap).as_slice();
+                    let (len, children) = (items.len(), self.clone_prefix(items.iter(), vm.heap));
+                    MontyObject::list(self.snapshot_all(children, len, vm))
+                }
+                HeapReadOutput::Tuple(tuple) => {
+                    let items = tuple.get(vm.heap).as_slice();
+                    let (len, children) = (items.len(), self.clone_prefix(items.iter(), vm.heap));
+                    MontyObject::tuple(self.snapshot_all(children, len, vm))
+                }
+                HeapReadOutput::Set(set) => {
+                    let set = set.get(vm.heap);
+                    let (len, children) = (set.len(), self.clone_prefix(set.iter(), vm.heap));
+                    MontyObject::set(self.snapshot_all(children, len, vm))
+                }
+                HeapReadOutput::FrozenSet(set) => {
+                    let set = set.get(vm.heap);
+                    let (len, children) = (set.len(), self.clone_prefix(set.storage().iter(), vm.heap));
+                    MontyObject::frozenset(self.snapshot_all(children, len, vm))
+                }
+                HeapReadOutput::Dict(dict) => {
+                    let dict = dict.get(vm.heap);
+                    let len = dict.len();
+                    let pairs: Vec<(Value, Value)> = dict
+                        .iter()
+                        .take(self.nodes)
+                        .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
+                        .collect();
+                    MontyObject::dict(self.snapshot_pairs(pairs, len, vm))
+                }
+                HeapReadOutput::NamedTuple(nt) => {
+                    let nt = nt.get(vm.heap);
+                    let type_name = nt.name(vm.interns).to_owned();
+                    let field_names: Vec<String> = nt
+                        .field_names()
+                        .iter()
+                        .map(|name| name.as_str(vm.interns).to_owned())
+                        .collect();
+                    let items = nt.items();
+                    let (len, children) = (items.len(), self.clone_prefix(items.iter(), vm.heap));
+                    let items = self.snapshot_all(children, len, vm);
+                    if items.len() == field_names.len() {
+                        MontyObject::named_tuple(type_name, field_names, items)
+                    } else {
+                        // Cut short, it no longer fits its fields.
+                        MontyObject::tuple(items)
+                    }
+                }
+                HeapReadOutput::Date(d) => MontyObject::date(date_type::to_monty_date(*d.get(vm.heap))),
+                HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
+                    Some(datetime) => MontyObject::datetime(datetime),
+                    None => self.repr(value, vm),
+                },
+                HeapReadOutput::Time(t) => MontyObject::time(time_type::to_monty_time(t.get(vm.heap), vm.heap)),
+                HeapReadOutput::TimeDelta(td) => {
+                    MontyObject::timedelta(timedelta_type::to_monty_timedelta(td.get(vm.heap)))
+                }
+                HeapReadOutput::Decimal(d) => MontyObject::decimal(d.get(vm.heap).to_sci_string(false, true)),
+                _ => self.repr(value, vm),
+            },
+            _ => self.repr(value, vm),
+        }
+    }
+
+    /// Clones the children the node budget can still reach; the rest are never visited.
+    fn clone_prefix<'a>(&self, items: impl Iterator<Item = &'a Value>, heap: &impl ContainsHeap) -> Vec<Value> {
+        items.take(self.nodes).map(|item| item.clone_with_heap(heap)).collect()
+    }
+
+    /// Snapshots `children`, the first of `len` items, ending with one
+    /// [`TRUNCATED`] marker if the budget stops it short.
+    fn snapshot_all(&mut self, children: Vec<Value>, len: usize, vm: &mut VM<'_>) -> Vec<MontyObject> {
+        defer_drop!(children, vm);
+        let mut out = Vec::with_capacity(children.len() + 1);
+        for child in children {
+            if self.spent() {
+                break;
+            }
+            out.push(self.snapshot(child, vm));
+        }
+        if out.len() < len {
+            out.push(truncated());
+        }
+        out
+    }
+
+    /// [`Self::snapshot_all`] for a dict, a cut-off tail becoming one marker pair.
+    fn snapshot_pairs(
+        &mut self,
+        pairs: Vec<(Value, Value)>,
+        len: usize,
+        vm: &mut VM<'_>,
+    ) -> Vec<(MontyObject, MontyObject)> {
+        defer_drop!(pairs, vm);
+        let mut out = Vec::with_capacity(pairs.len() + 1);
+        for (key, value) in pairs {
+            if self.spent() {
+                break;
+            }
+            out.push((self.snapshot(key, vm), self.snapshot(value, vm)));
+        }
+        if out.len() < len {
+            out.push((truncated(), truncated()));
+        }
+        out
+    }
+
+    fn string(&mut self, text: &str) -> MontyObject {
+        self.charge(text.len());
+        MontyObject::string(text)
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) -> MontyObject {
+        self.charge(bytes.len());
+        MontyObject::bytes(bytes.to_owned())
+    }
+
+    /// The repr fallback: a value with no snapshot form keeps the text Python would print for it.
+    fn repr(&mut self, value: &Value, vm: &mut VM<'_>) -> MontyObject {
+        let text = repr_string(value, vm);
+        self.charge(text.len());
+        MontyObject::repr(text)
+    }
 }
 
 /// The text Python prints for a container reached again while printing it.
@@ -80,112 +241,8 @@ fn cycle_placeholder(data: &HeapData) -> &'static str {
     }
 }
 
-/// The node for `value`, its children snapshotted through `walk`.
-fn snapshot_node(value: &Value, walk: &mut Walk, vm: &mut VM<'_>) -> MontyObject {
-    let budget = walk;
-    match value {
-        Value::None => MontyObject::none(),
-        Value::Bool(b) => MontyObject::bool(*b),
-        Value::Int(i) => MontyObject::int(*i),
-        Value::Float(f) => MontyObject::float(*f),
-        Value::InternString(id) => MontyObject::string(vm.interns.get_str(*id)),
-        Value::InlineString(text) => MontyObject::string(text.as_str()),
-        Value::InternBytes(id) => MontyObject::bytes(vm.interns.get_bytes(*id).to_owned()),
-        Value::InternLongInt(id) => MontyObject::bigint(vm.interns.get_long_int(*id).clone()),
-        Value::Ref(id) => match vm.heap.read(*id) {
-            HeapReadOutput::Str(s) => MontyObject::string(s.get(vm.heap).as_str()),
-            HeapReadOutput::Bytes(b) => MontyObject::bytes(b.get(vm.heap).as_slice().to_owned()),
-            HeapReadOutput::LongInt(li) => MontyObject::bigint(li.get(vm.heap).inner().clone()),
-            HeapReadOutput::List(list) => {
-                let children: Vec<Value> = list
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|item| item.clone_with_heap(vm.heap))
-                    .collect();
-                defer_drop!(children, vm);
-                MontyObject::list(snapshot_all(children, budget, vm))
-            }
-            HeapReadOutput::Tuple(tuple) => {
-                let children: Vec<Value> = tuple
-                    .get(vm.heap)
-                    .as_slice()
-                    .iter()
-                    .map(|item| item.clone_with_heap(vm.heap))
-                    .collect();
-                defer_drop!(children, vm);
-                MontyObject::tuple(snapshot_all(children, budget, vm))
-            }
-            HeapReadOutput::Set(set) => {
-                let children: Vec<Value> = set.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect();
-                defer_drop!(children, vm);
-                MontyObject::set(snapshot_all(children, budget, vm))
-            }
-            HeapReadOutput::FrozenSet(set) => {
-                let children: Vec<Value> = set
-                    .get(vm.heap)
-                    .storage()
-                    .iter()
-                    .map(|v| v.clone_with_heap(vm.heap))
-                    .collect();
-                defer_drop!(children, vm);
-                MontyObject::frozenset(snapshot_all(children, budget, vm))
-            }
-            HeapReadOutput::Dict(dict) => {
-                let pairs: Vec<(Value, Value)> = dict
-                    .get(vm.heap)
-                    .iter()
-                    .map(|(k, v)| (k.clone_with_heap(vm.heap), v.clone_with_heap(vm.heap)))
-                    .collect();
-                defer_drop!(pairs, vm);
-                let pairs = pairs
-                    .iter()
-                    .map(|(k, v)| (snapshot(k, budget, vm), snapshot(v, budget, vm)))
-                    .collect::<Vec<_>>();
-                MontyObject::dict(pairs)
-            }
-            HeapReadOutput::NamedTuple(nt) => {
-                let type_name = nt.get(vm.heap).name(vm.interns).to_owned();
-                let field_names: Vec<String> = nt
-                    .get(vm.heap)
-                    .field_names()
-                    .iter()
-                    .map(|name| name.as_str(vm.interns).to_owned())
-                    .collect();
-                let children: Vec<Value> = nt
-                    .get(vm.heap)
-                    .items()
-                    .iter()
-                    .map(|item| item.clone_with_heap(vm.heap))
-                    .collect();
-                defer_drop!(children, vm);
-                MontyObject::named_tuple(type_name, field_names, snapshot_all(children, budget, vm))
-            }
-            HeapReadOutput::Date(d) => MontyObject::date(date_type::to_monty_date(*d.get(vm.heap))),
-            HeapReadOutput::DateTime(dt) => match datetime_type::to_monty_datetime(dt.get(vm.heap)) {
-                Some(datetime) => MontyObject::datetime(datetime),
-                None => repr_object(value, vm),
-            },
-            HeapReadOutput::Time(t) => MontyObject::time(time_type::to_monty_time(t.get(vm.heap), vm.heap)),
-            HeapReadOutput::TimeDelta(td) => {
-                MontyObject::timedelta(timedelta_type::to_monty_timedelta(td.get(vm.heap)))
-            }
-            HeapReadOutput::Decimal(d) => MontyObject::decimal(d.get(vm.heap).to_sci_string(false, true)),
-            _ => repr_object(value, vm),
-        },
-        _ => repr_object(value, vm),
-    }
-}
-
-/// Snapshots each of `children` in order through the shared walk.
-fn snapshot_all(children: &[Value], walk: &mut Walk, vm: &mut VM<'_>) -> Vec<MontyObject> {
-    children.iter().map(|child| snapshot(child, walk, vm)).collect()
-}
-
-/// The repr fallback: a value with no snapshot form keeps the text Python
-/// would print for it.
-fn repr_object(value: &Value, vm: &mut VM<'_>) -> MontyObject {
-    MontyObject::repr(repr_string(value, vm))
+fn truncated() -> MontyObject {
+    MontyObject::repr(TRUNCATED)
 }
 
 /// `repr(value)` as a Rust string, or the type name when the repr itself fails.
