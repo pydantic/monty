@@ -296,7 +296,9 @@ fn classify(output: &HeapReadOutput<'_>) -> Copyability {
         | HeapReadOutput::DecimalContext(_) => Copyability::Rebuilt,
         // A shallow copy of an immutable container holds the same items, so
         // CPython hands back the original; only `deepcopy` rebuilds these.
-        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => Copyability::ImmutableContainer,
+        HeapReadOutput::Tuple(_) | HeapReadOutput::FrozenSet(_) => {
+            Copyability::ImmutableContainer
+        }
         // CPython's cache wrappers share their state through both copy operations.
         HeapReadOutput::LruCache(_) => Copyability::Shared,
         // Leaves and immutable containers Monty can never mutate, so a copy

@@ -6,7 +6,7 @@ use crate::{
     exception_private::RunResult,
     hash::{HashValue, identity_hash},
     heap::HeapObjectRead,
-    types::{LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type, TypeRef},
     value::{EitherStr, Value},
 };
 
@@ -81,8 +81,8 @@ impl From<DumpedExtFunction> for ExtFunction {
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, ExtFunction> {
     /// Indistinguishable from a sandbox `def` to Python code, which is the
     /// point: a host function is passed around like any other function.
-    fn py_type(&self, _: &VM<'h>) -> Type {
-        Type::Function
+    fn py_type(&self, _: &VM<'h>) -> TypeRef {
+        Type::Function.into()
     }
 
     fn py_len(&self, _: &VM<'h>) -> Option<usize> {

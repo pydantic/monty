@@ -75,7 +75,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             {
                 PyErr::from_value(exc_instance)
             } else {
-                // Fall back to OSError — the parent we model in `is_subclass_of`.
+                // Fall back to OSError, its first base.
                 exceptions::PyOSError::new_err(msg)
             }
         }
@@ -94,7 +94,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
             {
                 PyErr::from_value(exc_instance)
             } else {
-                // Fall back to ValueError — the parent we model in `is_subclass_of`.
+                // Fall back to ValueError, its base.
                 exceptions::PyValueError::new_err(msg)
             }
         }
@@ -612,7 +612,7 @@ fn get_json_decode_error(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 /// is a subclass of both `OSError` and `ValueError` in CPython. Monty raises
 /// the real CPython class here so user code can `isinstance(e,
 /// io.UnsupportedOperation)`; both parents are modelled by
-/// [`ExcType::is_subclass_of`], so `except OSError:` and `except ValueError:`
+/// the interpreter's type table, so `except OSError:` and `except ValueError:`
 /// catch it just like in CPython.
 fn get_unsupported_operation(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static UNSUPPORTED_OPERATION: PyOnceLock<Py<PyAny>> = PyOnceLock::new();

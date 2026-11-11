@@ -308,6 +308,8 @@ reportUntypedNamedTuple = false
 # `break`/`return`/`continue` inside `with` tests bind through Optional outer
 # variables that pyright can't narrow.
 reportOptionalMemberAccess = false
+# inheritance tests deliberately derive from dynamic bases (`class Wrapped(cls)`, `*bases`)
+reportUntypedBaseClass = false
 
 [[tool.pyright.executionEnvironments]]
 root = "crates/monty-type-checking"

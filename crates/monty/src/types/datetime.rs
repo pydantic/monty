@@ -27,7 +27,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     py_value::PyValue,
     types::{
-        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
+        CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type, TypeRef,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         time::{self, Time, TimeSpec},
@@ -295,6 +295,32 @@ struct DatetimeInitArgs {
     tzinfo: Value,
     #[from_args(kw_only, default = 0)]
     fold: i32,
+}
+
+/// `datetime.min`, `datetime.max` and `datetime.resolution`.
+pub(crate) fn class_attr(attr: &EitherStr, vm: &mut VM<'_>) -> Option<Value> {
+    Some(match attr.static_string(vm.interns)? {
+        StaticStrings::Min => allocate_naive(1, 1, 1, 0, 0, 0, 0, vm.heap),
+        StaticStrings::Max => allocate_naive(9999, 12, 31, 23, 59, 59, 999_999, vm.heap),
+        StaticStrings::Resolution => timedelta::allocate_micros(1, vm.heap),
+        _ => return None,
+    })
+}
+
+/// `datetime.now()`, `fromtimestamp()`, `strptime()`, `fromisoformat()` and `combine()`.
+pub(crate) fn class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    Ok(match attr.static_string(vm.interns) {
+        Some(StaticStrings::Now) => class_now(vm, args),
+        Some(StaticStrings::Fromtimestamp) => class_fromtimestamp(vm, args).map(CallResult::Value),
+        Some(StaticStrings::Strptime) => class_strptime(vm.heap, args, vm.interns).map(CallResult::Value),
+        Some(StaticStrings::Fromisoformat) => class_fromisoformat(vm.heap, args, vm.interns).map(CallResult::Value),
+        Some(StaticStrings::Combine) => class_combine(vm, args).map(CallResult::Value),
+        _ => return Err(args),
+    })
 }
 
 /// Reads `datetime.now(tz=None)` from the session clock, preserving `tz` identity.
@@ -658,7 +684,9 @@ fn reject_bad_strptime_directive(fmt: &str) -> RunResult<()> {
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
 pub(crate) fn class_fromisoformat(heap: &mut Heap, args: ArgValues, interns: &Interns) -> RunResult<Value> {
-    let value = args.get_one_arg("datetime.fromisoformat", heap)?;
+    let value = args
+        .reject_kwargs("datetime.fromisoformat", heap)?
+        .get_one_arg("datetime.fromisoformat", heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
     value.drop_with(heap);
     let s = s?;
@@ -1122,7 +1150,7 @@ pub(crate) fn tzinfo_from_value(
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
             other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
         },
-        _ => Err(ExcType::type_error_tzinfo(&value.py_type_shallow().name(heap, interns))),
+        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name())),
     }
 }
 
@@ -1364,8 +1392,8 @@ impl HeapItem for DateTime {
 /// `HeapRead`-based dispatch for `DateTime`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident datetimes.
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, DateTime> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::DateTime
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::DateTime.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

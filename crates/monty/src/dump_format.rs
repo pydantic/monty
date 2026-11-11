@@ -7,9 +7,9 @@
 //! and [`Dump::load`]; whether the session was idle or suspended is the
 //! [`Session`] discriminant, not a separate tag.
 //!
-//! Inline builtin types serialize through `Type`, preserving the names and payloads
-//! written before `BuiltinType` was split out. Its own enum order is not the wire
-//! order: postcard encoding for builtin `id()` retains `Type::Instance`'s slot.
+//! Inline builtin types serialize as `Type` variant names; `Type::legacy_index`
+//! keeps the postcard order `id()` relies on, and `Builtins` reads the shapes
+//! written before exception classes and `type` joined the native type table.
 //! See `builtin_type_tests` in `types/builtin_type.rs` and the legacy serialization fixture.
 //!
 //! # Naming contract
@@ -359,9 +359,7 @@ mod tests {
     use strum::VariantNames;
 
     use super::DUMP_VERSION;
-    use crate::{
-        bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, heap::HeapId, types::Type,
-    };
+    use crate::{bytecode::opcode_fingerprint, expressions::comparison_operators_fingerprint, types::Type};
 
     /// If a component changes incompatibly, bump `DUMP_VERSION` before updating its
     /// expected fingerprint. Compatible changes only require a fingerprint update.
@@ -382,23 +380,15 @@ mod tests {
             "comparison operators changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(comparison_operators_fingerprint())
         );
-        // `VariantNames` keeps the `#[strum(disabled)]` variants that `EnumString`
-        // drops, so the counts below cover every serialized variant once the
-        // disabled ones are supplied by hand. Asserted rather than assumed, so a
-        // strum upgrade that changed it says so instead of quietly narrowing the guard.
-        assert!(Type::VARIANTS.contains(&"instance"));
         assert!(MontyType::VARIANTS.contains(&"exception"));
 
-        let type_names = serde_variant_names(
-            Type::VARIANTS,
-            &[
-                Type::Instance(HeapId::from_index(0)),
-                Type::Exception(ExcType::ValueError),
-            ],
-        );
+        let type_names: Vec<String> = Type::ALL
+            .iter()
+            .map(|ty| encoded_variant_name(&minicbor_serde::to_vec(ty).unwrap()))
+            .collect();
         assert_eq!(
             variant_name_fingerprint(&type_names),
-            0x4db8_c44f_dbcb_fb2a,
+            0x6c_683f_6955_670c,
             "Type variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_name_fingerprint(&type_names))
         );
@@ -413,7 +403,7 @@ mod tests {
         // is append-only: a new builtin goes after the last variant.
         assert_eq!(
             variant_order_fingerprint(BuiltinsFunctions::VARIANTS),
-            0xcdd8_09b1_2adc_3852,
+            0x6b10_e9c8_fe10_7b2d,
             "BuiltinsFunctions variants changed for dump version {DUMP_VERSION}, actual: {}",
             grouped_hex(variant_order_fingerprint(BuiltinsFunctions::VARIANTS))
         );

@@ -4,7 +4,7 @@ use ahash::{AHashMap, AHashSet, RandomState};
 use indexmap::IndexMap;
 
 use crate::{
-    args::{ArgExprs, CallArg, CallKwarg, Signature},
+    args::{ArgExprs, CallArg, CallKwarg, Kwarg, Signature},
     builtins::Builtins,
     expressions::{
         AssignTarget, Callable, CaptureSource, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName,
@@ -205,6 +205,9 @@ struct Prepare<'i, 'g> {
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
+    /// Aliased class-body local slot holding the implicit `__class__` cell when a
+    /// method or nested closure in this class references `__class__`.
+    class_cell_slot: Option<NamespaceId>,
     /// Whether the annotation expressions of a synthesized `__annotate__` scope
     /// are being prepared: every name, even the scope's `format` parameter,
     /// resolves by name at run time (`NameScope::Name`), through the class
@@ -346,6 +349,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
                 locals.extend(state.enclosing_locals.iter().copied());
                 locals.retain(|name| !state.global_names.contains(name));
+                if let Some(dunder_class_id) = self.interner.get_string_id_by_name("__class__") {
+                    locals.insert(dunder_class_id);
+                }
                 locals
             }
             PrepareState::Function(state) => {
@@ -386,6 +392,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 binding.captured = true;
                 return CaptureSource::CompVar(binding.slot);
             }
+        }
+        if self.is_class_scope
+            && self.interner.get_str(name_id) == "__class__"
+            && let Some(slot) = self.class_cell_slot
+        {
+            return CaptureSource::Namespace(slot);
         }
         if let PrepareState::Function(state) = &self.state {
             if let Some(&slot) = state.cell_var_map.get(&name_id) {
@@ -431,6 +443,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let PrepareState::Function(state) = &mut self.state else {
             return Ok(());
         };
+
+        if self.is_class_scope && self.interner.get_str(captured_name) == "__class__" {
+            if self.class_cell_slot.is_none() {
+                let slot = state.locals.push_aliased_slot(captured_name, position)?;
+                self.class_cell_slot = Some(slot);
+            }
+            return Ok(());
+        }
 
         if state.cell_var_map.contains_key(&captured_name) || state.free_var_map.contains_key(&captured_name) {
             return Ok(());
@@ -527,6 +547,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
+            class_cell_slot: None,
             is_annotate: false,
         }
     }
@@ -642,6 +663,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             module_global_names: AHashSet::new(),
             is_class_scope: false,
             bound_class_members: AHashSet::new(),
+            class_cell_slot: None,
             is_annotate: false,
         })
     }
@@ -882,12 +904,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ClassDef {
                     name,
+                    bases,
+                    keywords,
                     body,
                     members,
                     decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, body, members, decorators, position)?);
+                    let prepared =
+                        self.prepare_class_def(name, bases, keywords, body, members, decorators, position)?;
+                    new_nodes.push(prepared);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1941,9 +1967,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///   assembly) from the inner preparer's locals.
     ///
     /// The class name itself binds in the **enclosing** scope, exactly like a `def`.
+    #[expect(clippy::too_many_arguments)]
     fn prepare_class_def(
         &mut self,
         name: Identifier,
+        bases: Vec<SequenceItem>,
+        keywords: Vec<Kwarg>,
         body: RawFunctionDef,
         members: Vec<Identifier>,
         decorators: Vec<ExprLoc>,
@@ -1952,6 +1981,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // The class name binds in the enclosing scope, exactly like a `def`.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+
+        let bases = bases
+            .into_iter()
+            .map(|item| match item {
+                SequenceItem::Value(e) => Ok(SequenceItem::Value(self.prepare_expression(e)?)),
+                SequenceItem::Unpack(e) => Ok(SequenceItem::Unpack(self.prepare_expression(e)?)),
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
+
+        let keywords = keywords
+            .into_iter()
+            .map(|kw| {
+                Ok(Kwarg {
+                    key: kw.key,
+                    value: self.prepare_expression(kw.value)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
         // Decorators evaluate in the enclosing scope, not the class body.
         let decorators = decorators
@@ -2014,6 +2061,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             ..
         } = *inner_state;
         let namespace_size = inner_locals.len();
+        let class_cell_slot = inner_prepare.class_cell_slot;
         drop(inner_prepare);
 
         // Resolve each member to its class-body-local slot. Every member is
@@ -2050,9 +2098,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let FinalizedScope {
             free_var_enclosing_slots,
             free_var_slots,
-            cell_var_slots,
-            cell_param_indices,
+            mut cell_var_slots,
+            mut cell_param_indices,
         } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
+        if let Some(slot) = class_cell_slot {
+            cell_var_slots.push(slot);
+            cell_param_indices.push(None);
+        }
 
         // The class body is a synthetic, never-registered zero-arg function. Its
         // name reuses the class `name_id` (for tracebacks) with a placeholder slot.
@@ -2083,6 +2135,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
 
         Ok(Node::ClassDef {
             name,
+            bases,
+            keywords,
             body: body_def,
             members,
             decorators,
@@ -2728,10 +2782,26 @@ fn collect_scope_info_from_node(
                 collect_assigned_names_from_expr(default, assigned_names, interner);
             }
         }
-        Node::ClassDef { name, decorators, .. } => {
+        Node::ClassDef {
+            name,
+            bases,
+            keywords,
+            decorators,
+            ..
+        } => {
             // A class definition binds the class name in this scope, just like a `def`.
             // The class body is a separate scope (handled by the cell-var pass).
             assigned_names.insert(name.name_id);
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_assigned_names_from_expr(e, assigned_names, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_assigned_names_from_expr(&kw.value, assigned_names, interner);
+            }
             // Decorators evaluate in *this* scope, so a walrus in one binds here.
             for decorator in decorators {
                 collect_assigned_names_from_expr(decorator, assigned_names, interner);
@@ -3043,7 +3113,23 @@ fn collect_cell_vars_from_node(
                 collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
             }
         }
-        Node::ClassDef { body, decorators, .. } => {
+        Node::ClassDef {
+            bases,
+            keywords,
+            body,
+            decorators,
+            ..
+        } => {
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_cell_vars_from_expr(e, our_locals, cell_vars, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_cell_vars_from_expr(&kw.value, our_locals, cell_vars, interner);
+            }
             // The class body is a nested scope of *this* scope, like a `def`: any
             // of our locals referenced from the class-var values or (transitively)
             // the method bodies becomes a cell var. `collect_cell_vars_from_function`
@@ -3650,6 +3736,10 @@ fn collect_referenced_names_from_node(
             def: RawFunctionDef { signature, body, .. },
             decorators,
         } => {
+            // Default parameter expressions evaluate in *our* scope at function-definition time.
+            for default in signature.default_exprs() {
+                collect_referenced_names_from_expr(default, referenced, interner);
+            }
             // Recurse into the nested function's body so transitively-captured
             // names propagate out of it. Without this, an intermediate scope
             // that doesn't itself reference a deep capture would not see it
@@ -3660,7 +3750,22 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_expr(decorator, referenced, interner);
             }
         }
-        Node::ClassDef { decorators, .. } => {
+        Node::ClassDef {
+            bases,
+            keywords,
+            decorators,
+            ..
+        } => {
+            for base in bases {
+                match base {
+                    SequenceItem::Value(e) | SequenceItem::Unpack(e) => {
+                        collect_referenced_names_from_expr(e, referenced, interner);
+                    }
+                }
+            }
+            for kw in keywords {
+                collect_referenced_names_from_expr(&kw.value, referenced, interner);
+            }
             // The class body is a separate scope and the name is a binding, so
             // neither is a reference here — but decorators evaluate in *our*
             // scope, so their names are ours to collect.

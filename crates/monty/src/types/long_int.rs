@@ -34,7 +34,7 @@ use crate::{
     intern::LongIntId,
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
     types::{
-        LazyHeapSet, PyTrait, Type,
+        LazyHeapSet, PyTrait, Type, TypeRef,
         numeric::{round_bigint, round_digits, round_int},
         py_trait::PyObjectIdentity,
         str::allocate_string,
@@ -228,8 +228,8 @@ impl<'h> PyTrait<'h> for PyInt<'h> {
         }
     }
 
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Int
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Int.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
@@ -780,8 +780,8 @@ fn int_max_str_digits_threshold() -> &'static BigInt {
 // === Trait Implementations ===
 
 impl<'h> PyTrait<'h> for HeapObjectRead<'h, LongInt> {
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Int
+    fn py_type(&self, _vm: &VM<'h>) -> TypeRef {
+        Type::Int.into()
     }
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {

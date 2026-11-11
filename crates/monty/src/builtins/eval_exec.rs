@@ -419,8 +419,8 @@ fn globals_dict(globals: &Value, builtin: Builtin, vm: &mut VM<'_>) -> RunResult
                 // CPython distinguishes a non-dict mapping (anything subscriptable) from the rest.
                 Builtin::Eval
                     if matches!(
-                        ty,
-                        Type::List | Type::Tuple | Type::Str | Type::Bytes | Type::Range | Type::Deque
+                        ty.native(),
+                        Some(Type::List | Type::Tuple | Type::Str | Type::Bytes | Type::Range | Type::Deque)
                     ) =>
                 {
                     ExcType::type_error("globals must be a real dict; try eval(expr, {}, mapping)")

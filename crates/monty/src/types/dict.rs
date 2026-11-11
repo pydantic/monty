@@ -33,7 +33,7 @@ use crate::{
         copy::{Memo, PyDeepCopy, deep_copy, deep_copy_pair},
     },
     types::{
-        Type,
+        Type, TypeRef,
         hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
@@ -1198,7 +1198,7 @@ impl<'h> HeapRead<'h, Dict> {
         // cannot be ordered: it catches the `TypeError` from `most_common()`.
         let order = match counter_order(counts, vm) {
             Ok(order) => order,
-            Err(RunError::Exc(raise)) if raise.exc.exc_type().is_subclass_of(ExcType::TypeError) => {
+            Err(RunError::Exc(raise)) if Type::from(raise.exc.exc_type()).is_subclass_of(Type::TypeError) => {
                 (0..pairs.len()).collect()
             }
             Err(err) => return Err(err),
@@ -1269,9 +1269,9 @@ impl<'h> HeapReadMut<'h, Dict> {
                 Ok(self.get_mut(vm.heap).replace_default_factory(Some(value)))
             }
         } else {
-            let type_name = self.get(vm.heap).kind_type().name(vm.heap, vm.interns);
+            let type_name = self.get(vm.heap).kind_type().name();
             value.drop_with(vm);
-            Err(ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(type_name, attr.as_str(vm.interns)))
         }
     }
 }
@@ -1291,8 +1291,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
         self.contains_key(item, vm).map(Some)
     }
 
-    fn py_type(&self, vm: &VM<'h>) -> Type {
-        self.get(vm.heap).kind_type()
+    fn py_type(&self, vm: &VM<'h>) -> TypeRef {
+        self.get(vm.heap).kind_type().into()
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -1997,6 +1997,19 @@ impl<'de> serde::Deserialize<'de> for Dict {
     }
 }
 
+/// `dict.fromkeys(...)` called on the type, so the result is a plain dict.
+pub(crate) fn dict_class_method(
+    attr: &EitherStr,
+    args: ArgValues,
+    vm: &mut VM<'_>,
+) -> Result<RunResult<CallResult>, ArgValues> {
+    if attr.static_string(vm.interns) == Some(StaticStrings::Fromkeys) {
+        Ok(dict_fromkeys(args, DictKind::plain(), vm).map(CallResult::Value))
+    } else {
+        Err(args)
+    }
+}
+
 /// Implements Python's `dict.fromkeys(iterable[, value])` classmethod.
 ///
 /// Creates a new dictionary with keys from `iterable` and all values set to `value`
@@ -2110,8 +2123,8 @@ macro_rules! impl_dict_iterator {
                 true
             }
 
-            fn py_type(&self, _: &VM<'h>) -> Type {
-                $python_type
+            fn py_type(&self, _: &VM<'h>) -> TypeRef {
+                $python_type.into()
             }
 
             fn py_len(&self, _: &VM<'h>) -> Option<usize> {

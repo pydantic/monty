@@ -36,7 +36,7 @@ use crate::{
         PreConversionEffect, Reshaped, bool_reply, invalid_reply, stat_result_field, value_to_owned_bytes,
         value_to_owned_string,
     },
-    types::{Bytes, Module, PyTrait, Slice, Type, allocate_tuple, collect_iterable, str::allocate_string},
+    types::{Bytes, Module, PyTrait, Slice, Type, TypeRef, allocate_tuple, collect_iterable, str::allocate_string},
     value::Value,
     virtual_path::posix_join,
 };
@@ -215,7 +215,7 @@ fn join(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         match PathText::fspath(part, vm) {
             Ok(text) if text.is_bytes == parts[0].is_bytes => parts.push(text),
             _ => {
-                let kinds = iter::once(parts[0].py_type()).chain(p.iter().map(|arg| arg.py_type_heap(vm.heap)));
+                let kinds = iter::once(parts[0].py_type().into()).chain(p.iter().map(|arg| arg.py_type_heap(vm.heap)));
                 return Err(check_arg_types("join", kinds, vm));
             }
         }
@@ -478,7 +478,7 @@ fn commonprefix(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     let first = m.py_getitem(&Value::Int(0), vm)?;
     defer_drop!(first, vm);
-    let nested = matches!(first.py_type_heap(vm.heap), Type::List | Type::Tuple);
+    let nested = matches!(first.py_type_heap(vm.heap).native(), Some(Type::List | Type::Tuple));
     let raw_items = collect_iterable(m, vm)?;
     defer_drop!(raw_items, vm);
     // Guarded before conversion so a later `os.fspath` failure releases the
@@ -515,8 +515,8 @@ fn extreme<'a>(items: &'a [Value], is_min: bool, vm: &mut VM<'_>) -> RunResult<&
 /// anything else is iterated and indexed like CPython does it (so a dict's
 /// int keys raise `TypeError`), with `==` on the elements.
 fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    match (s1.py_type_heap(vm.heap), s2.py_type_heap(vm.heap)) {
-        (Type::Str, Type::Str) => {
+    match (s1.py_type_heap(vm.heap).native(), s2.py_type_heap(vm.heap).native()) {
+        (Some(Type::Str), Some(Type::Str)) => {
             let a = value_to_owned_string(s1, vm.heap, vm.interns).expect("checked str");
             let b = value_to_owned_string(s2, vm.heap, vm.interns).expect("checked str");
             let mismatch = a.char_indices().zip(b.chars()).find(|((_, x), y)| x != y);
@@ -525,7 +525,7 @@ fn common_leading_slice(s1: &Value, s2: &Value, vm: &mut VM<'_>) -> RunResult<Va
                 None => s1.clone_with_heap(vm),
             })
         }
-        (Type::Bytes, Type::Bytes) => {
+        (Some(Type::Bytes), Some(Type::Bytes)) => {
             let a = value_to_owned_bytes(s1, vm.heap, vm.interns).expect("checked bytes");
             let b = value_to_owned_bytes(s2, vm.heap, vm.interns).expect("checked bytes");
             Ok(match a.iter().zip(&b).position(|(x, y)| x != y) {
@@ -1235,10 +1235,10 @@ fn allocate_text(bytes: Vec<u8>, is_bytes: bool, heap: &Heap) -> Value {
 /// `str` nor `bytes` is named, else the arguments mixed `str` and `bytes`.
 /// Callers pass the type `os.fspath` produced for the arguments CPython
 /// rebinds before the check, and the raw type (a `Path` included) otherwise.
-fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = Type>, vm: &VM<'_>) -> RunError {
+fn check_arg_types(func: &str, kinds: impl IntoIterator<Item = TypeRef>, vm: &VM<'_>) -> RunError {
     for kind in kinds {
         match kind {
-            Type::Str | Type::Bytes => {}
+            TypeRef::Native(Type::Str | Type::Bytes) => {}
             other => return ExcType::type_error_path_argument(func, &other.dunder_name(vm.heap, vm.interns)),
         }
     }
