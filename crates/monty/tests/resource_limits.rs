@@ -1634,6 +1634,7 @@ fn timeout_in_set_copy_releases_partial_entries() {
         "s | set()",
         "s.issubset(s)",
         "target |= s",
+        "target.update(s)",
     ] {
         repl.tracker_mut().set_max_feed_duration(Duration::from_millis(50));
         let start = ThreadTime::now();
@@ -1660,6 +1661,35 @@ fn timeout_in_set_copy_releases_partial_entries() {
         repl.heap_entry_count(),
         initial_entries,
         "partial copies must release their members"
+    );
+}
+
+/// Pair snapshots must release retained values when the deadline expires before ordering begins.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn timeout_in_counter_snapshot_releases_pairs() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run("from collections import Counter", vec![], PrintWriter::Disabled)
+        .unwrap();
+    let initial_entries = repl.heap_entry_count();
+    repl.feed_run(
+        "shared = []\nsource = Counter(dict.fromkeys(range(1_000_000), shared))",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    repl.tracker_mut().set_max_feed_duration(Duration::from_millis(10));
+    let error = repl
+        .feed_run("source.most_common()", vec![], PrintWriter::Disabled)
+        .expect_err("snapshotting must hit the deadline");
+    assert_eq!(error.exc_type(), ExcType::TimeoutError);
+    repl.tracker_mut().set_max_feed_duration(Duration::from_secs(5));
+    repl.feed_run("source = None\nshared = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "the partial snapshot must release its pairs"
     );
 }
 

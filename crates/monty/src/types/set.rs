@@ -103,17 +103,6 @@ impl SetStorage {
         self.table.live()
     }
 
-    /// Clones entries with proper reference counting.
-    ///
-    /// The returned entries are owned: they implement [`DropWithContext`], so
-    /// a caller that may abandon them partway must hold them in a guard.
-    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<SetEntry> {
-        self.table
-            .copy_iter()
-            .map(|entry| entry.clone_with_heap(heap))
-            .collect()
-    }
-
     /// Returns the number of elements in the set.
     fn len(&self) -> usize {
         self.table.len()
@@ -860,20 +849,27 @@ impl Set {
     }
 }
 
+/// Borrows set/frozenset storage without reader handles; the heap borrow excludes mutation.
+fn borrow_set_storage<'a>(value: &Value, heap: &'a impl ContainsHeap) -> Option<&'a SetStorage> {
+    let Value::Ref(id) = value else {
+        return None;
+    };
+    match heap.heap().get(*id) {
+        HeapData::Set(set) => Some(&set.0),
+        HeapData::FrozenSet(set) => Some(&set.storage),
+        _ => None,
+    }
+}
+
 /// Copies set/frozenset storage without iterating or calling member hash/equality methods.
 #[inline]
 fn copy_storage_from_set(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<SetStorage>> {
-    let storage = match value {
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Set(set) => &set.0,
-            HeapData::FrozenSet(set) => &set.storage,
-            _ => return Ok(None),
-        },
-        _ => return Ok(None),
+    let Some(storage) = borrow_set_storage(value, vm.heap) else {
+        return Ok(None);
     };
     // An empty copy retains nothing, so it needs no typed reader handles.
-    if let Some(table) = storage.table.copy_if_empty(vm.heap)? {
-        return Ok(Some(SetStorage { table }));
+    if storage.is_empty() {
+        return Ok(Some(SetStorage::new()));
     }
 
     match value.read_heap(vm) {
@@ -969,24 +965,29 @@ impl<'h> HeapReadMut<'h, Set> {
 
     /// Updates from a snapshotted set or an arbitrary iterable.
     fn hr_update(&self, other: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        // Try direct extraction from Set/FrozenSet
-        let entries_opt = {
-            match &other {
-                Value::Ref(id) => match vm.heap.get(*id) {
-                    HeapData::Set(s) => Some(s.0.clone_entries(vm.heap)),
-                    HeapData::FrozenSet(fs) => Some(fs.storage.clone_entries(vm.heap)),
-                    _ => None,
-                },
-                _ => None,
+        // Empty set updates retain nothing and run no callbacks.
+        if borrow_set_storage(&other, vm.heap).is_some_and(SetStorage::is_empty) {
+            other.drop_with(vm);
+            return Ok(());
+        }
+        let mut guard = DropGuard::new(other, vm);
+        let (other, vm) = guard.as_parts();
+        let entries = match other.read_heap(vm) {
+            Some(HeapReadOutput::Set(set)) => {
+                Some(set.storage().snapshot_entries(vm, CloneTableEntry::clone_with_heap)?)
             }
+            Some(HeapReadOutput::FrozenSet(set)) => {
+                Some(set.storage().snapshot_entries(vm, CloneTableEntry::clone_with_heap)?)
+            }
+            _ => None,
         };
-
-        if let Some(entries) = entries_opt {
+        let (other, vm) = guard.into_parts();
+        if let Some(entries) = entries {
             other.drop_with(vm);
             return self.extend_from_entries(entries, vm);
         }
 
-        // Fall back to iterable
+        // Arbitrary iterables must finish collecting before the destination is mutated.
         let mut temp_set = Set::from_iterable(other, vm)?;
         self.extend_from_entries(temp_set.0.table.take_entries(), vm)
     }

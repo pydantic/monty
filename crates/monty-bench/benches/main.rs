@@ -65,6 +65,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("session_dump__monty", session_dump);
     c.bench_function("session_load__monty", session_load);
     container_copy_and_lookup(c);
+    dictionary_fastpaths_and_snapshots(c);
 }
 
 /// Builds the source once so retained capacity and tombstone scans stay visible in copy timings.
@@ -128,6 +129,61 @@ fn container_copy_and_lookup(c: &mut Criterion) {
             &format!("total = 0\nfor i in range(10000):\n    total += {expression}\nassert total == 30000"),
         );
     }
+}
+
+/// Retain sources so self-merges and drained snapshot scans are measured without setup.
+fn dictionary_fastpaths_and_snapshots(c: &mut Criterion) {
+    for size in [0, 128, 2048] {
+        bench_repl_snippet(
+            c,
+            &format!("dict_self_update{size}__monty"),
+            &format!("source = dict.fromkeys(range({size}), 3)"),
+            "for _ in range(1000):\n    source.update(source)",
+        );
+    }
+    for (keys, setup) in [
+        ("int", "keys = list(range(128))"),
+        ("heap", "keys = [(i, 'heap-backed key') for i in range(128)]"),
+    ] {
+        bench_repl_snippet(
+            c,
+            &format!("dict_setdefault_{keys}_hits__monty"),
+            &format!("{setup}\nsource = dict.fromkeys(keys, 3)"),
+            "total = 0\nfor i in range(5000):\n    total += source.setdefault(keys[i % 128], 4)\nassert total == 15000",
+        );
+        bench_repl_snippet(
+            c,
+            &format!("dict_setdefault_{keys}_misses__monty"),
+            &format!("{setup}\nsource = {{}}"),
+            "for _ in range(30):\n    source.clear()\n    for key in keys:\n        source.setdefault(key, 3)\nassert len(source) == 128",
+        );
+    }
+    for (shape, setup) in [
+        ("empty", "source = set()"),
+        (
+            "drained",
+            "source = set(range(2048))\nfor i in range(2048):\n    source.remove(i)",
+        ),
+        (
+            "sparse",
+            "source = set(range(2048))\nfor i in range(1, 2048):\n    source.remove(i)",
+        ),
+        ("dense128", "source = set(range(128))"),
+        ("heap128", "source = {(i, 'heap-backed member') for i in range(128)}"),
+    ] {
+        bench_repl_snippet(
+            c,
+            &format!("set_update_{shape}__monty"),
+            &format!("{setup}\ntarget = set()"),
+            "for _ in range(500):\n    target.clear()\n    target.update(source)\nassert target == source",
+        );
+    }
+    bench_repl_snippet(
+        c,
+        "dict_pair_snapshot__monty",
+        "from collections import Counter\nsource = Counter(range(128))",
+        "for _ in range(300):\n    result = source.most_common()\nassert len(result) == 128",
+    );
 }
 
 /// Times repeated snippets while excluding source construction and process startup.

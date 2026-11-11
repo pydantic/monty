@@ -27,7 +27,7 @@
 //!   Compaction removes holes but retains capacity; it does not shrink the source's allocations.
 //! - Clearing removes every slot; the bucket allocation can remain for reuse.
 //! - Copies and snapshot vectors contain only live entries, in source order, and reserve by live count.
-//!   Reading or copying a source never compacts it; `copy_iter` skips a drained source's slots.
+//!   Reading or copying a source never compacts it; empty sources skip their retained slots.
 //! - Dumps preserve every slot, including tombstones, because serialized cursors use physical positions.
 //! - Explicit reordering may renumber slots; it must use the container's mutation-detection contract.
 //!
@@ -48,7 +48,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapReader},
     identity::Identity,
     resource_checks::check_entry_table_growth,
     types::dict::{eq_is_native, probe_native_eq},
@@ -184,80 +184,45 @@ impl<E: TableEntry> PyHashTable<E> {
         }
     }
 
-    /// Returns a checked empty copy without allocating or retaining entries.
+    /// Visits live entries without Python callbacks, polling across physical slots, including tombstones.
     #[inline]
-    pub(crate) fn copy_if_empty(&self, heap: &impl ContainsHeap) -> RunResult<Option<Self>> {
-        if self.is_empty() {
-            heap.heap().tracker.check_allocation(0)?;
-            Ok(Some(Self::default()))
-        } else {
-            Ok(None)
+    fn for_each_copy_entry(&self, tracker: &ResourceTracker, visit: impl FnMut(&E)) -> RunResult<()> {
+        let dense = self.entries.len() == self.len();
+        // Dense tables need neither tombstone checks nor a remaining-entry counter.
+        match (tracker.has_time_limit(), dense) {
+            (false, true) => self.visit_copy_slots::<false, true>(tracker, visit),
+            (false, false) => self.visit_copy_slots::<false, false>(tracker, visit),
+            (true, true) => self.visit_copy_slots::<true, true>(tracker, visit),
+            (true, false) => self.visit_copy_slots::<true, false>(tracker, visit),
         }
     }
 
-    /// Copies live entries and cached hashes into an empty destination.
-    /// The caller guards the destination: on timeout it owns every entry copied so far.
-    /// Source hashes and indices must be initialized; entry cloning runs no Python callbacks.
-    pub(crate) fn copy_into(&self, destination: &mut Self, heap: &impl ContainsHeap) -> RunResult<()>
-    where
-        E: CloneTableEntry,
-    {
-        debug_assert!(destination.is_empty(), "copy_into takes an empty destination");
-        let tracker = &heap.heap().tracker;
-        let len = self.len();
-        // Bucket rounding and control bytes fit within three words per entry,
-        // plus 32 bytes of padding for a nonempty index. Empty tables allocate neither buffer.
-        let entry_bytes = mem::size_of::<E>() + 3 * mem::size_of::<usize>();
-        let index_padding = if len == 0 { 0 } else { 32 };
-        tracker.check_allocation(len.saturating_mul(entry_bytes).saturating_add(index_padding))?;
-
-        *destination = Self::with_capacity(len);
-        if tracker.has_time_limit() {
-            self.copy_slots_into::<true>(destination, heap)
-        } else {
-            self.copy_slots_into::<false>(destination, heap)
-        }
-    }
-
-    /// Specialize polling away for unrestricted copies, keeping both scans in one implementation.
+    /// Specialize polling away for unrestricted copies and snapshots.
     #[inline(never)]
-    fn copy_slots_into<const POLL_DEADLINE: bool>(
+    fn visit_copy_slots<const POLL_DEADLINE: bool, const DENSE: bool>(
         &self,
-        destination: &mut Self,
-        heap: &impl ContainsHeap,
-    ) -> RunResult<()>
-    where
-        E: CloneTableEntry,
-    {
+        tracker: &ResourceTracker,
+        mut visit: impl FnMut(&E),
+    ) -> RunResult<()> {
+        let mut remaining = self.len();
         for (slot, entry) in self.copy_slots().iter().enumerate() {
             // Tombstones consume scan time too; never key polling on live entries alone.
             if POLL_DEADLINE {
-                heap.heap().tracker.check_time_every(slot)?;
+                tracker.check_time_every(slot)?;
             }
-            if !entry.is_live() {
-                continue;
+            if DENSE || entry.is_live() {
+                visit(entry);
+                if DENSE {
+                    continue;
+                }
+                remaining -= 1;
+                // Once every live entry is copied, trailing tombstones need no scan.
+                if remaining == 0 {
+                    break;
+                }
             }
-            let cloned = entry.clone_with_heap(heap);
-            debug_assert!(cloned.is_live());
-            debug_assert_eq!(cloned.hash(), entry.hash());
-
-            // Fresh copies have no tombstones, so appending needs no compaction check.
-            let index = destination.entries.len();
-            destination.entries.push(cloned);
-            destination
-                .indices
-                .insert_unique(entry.hash(), index, |&i| destination.entries[i].hash());
         }
         Ok(())
-    }
-
-    /// Live entries for a copy or snapshot, in insertion order.
-    /// An empty table can retain tombstones; omit those slots from the scan.
-    pub(crate) fn copy_iter(&self) -> Live<'_, E> {
-        Live {
-            slots: self.copy_slots().iter(),
-            remaining: self.len(),
-        }
     }
 
     /// Empty copies must not scan retained tombstones.
@@ -591,11 +556,32 @@ pub(crate) trait TableSource<'h> {
     where
         Self::Entry: CloneTableEntry + DropWithContext<VM<'h>>,
     {
-        if let Some(copy) = self.table(vm).copy_if_empty(vm.heap)? {
-            Ok(copy)
+        if self.table(vm).is_empty() {
+            Ok(PyHashTable::default())
         } else {
             copy_nonempty_table(self, vm)
         }
+    }
+
+    /// Retains a projection of live entries before later Python callbacks can mutate the source.
+    /// Preflights the output buffer and releases a partial snapshot on timeout.
+    fn snapshot_entries<T: DropWithContext<VM<'h>>>(
+        &self,
+        vm: &mut VM<'h>,
+        mut clone: impl FnMut(&Self::Entry, &HeapReader<'h>) -> T,
+    ) -> RunResult<Vec<T>> {
+        let len = self.table(vm).len();
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        vm.heap
+            .tracker
+            .check_allocation(len.saturating_mul(mem::size_of::<T>()))?;
+        let mut guard = DropGuard::new(Vec::with_capacity(len), vm);
+        let (entries, vm) = guard.as_parts_mut();
+        self.table(vm)
+            .for_each_copy_entry(&vm.heap.tracker, |entry| entries.push(clone(entry, vm.heap)))?;
+        Ok(guard.into_inner())
     }
 }
 
@@ -605,9 +591,30 @@ fn copy_nonempty_table<'h, S: TableSource<'h> + ?Sized>(source: &S, vm: &mut VM<
 where
     S::Entry: CloneTableEntry + DropWithContext<VM<'h>>,
 {
-    let mut guard = DropGuard::new(PyHashTable::default(), vm);
+    let len = source.table(vm).len();
+    // Bucket rounding and control bytes fit within three words per entry, plus 32 bytes of padding.
+    let entry_bytes = mem::size_of::<S::Entry>() + 3 * mem::size_of::<usize>();
+    vm.heap
+        .tracker
+        .check_allocation(len.saturating_mul(entry_bytes).saturating_add(32))?;
+    let mut guard = DropGuard::new(PyHashTable::<S::Entry>::with_capacity(len), vm);
     let (copy, vm) = guard.as_parts_mut();
-    source.table(vm).copy_into(copy, vm.heap)?;
+    // Keep insertion in the scan: an outlined callback adds a call for every entry.
+    source.table(vm).for_each_copy_entry(
+        &vm.heap.tracker,
+        #[inline(always)]
+        |entry| {
+            let cloned = entry.clone_with_heap(vm.heap);
+            debug_assert!(cloned.is_live());
+            debug_assert_eq!(cloned.hash(), entry.hash());
+
+            // Fresh copies have no tombstones, so appending needs no compaction check.
+            let index = copy.entries.len();
+            copy.entries.push(cloned);
+            copy.indices
+                .insert_unique(entry.hash(), index, |&i| copy.entries[i].hash());
+        },
+    )?;
     Ok(guard.into_inner())
 }
 
@@ -1017,15 +1024,39 @@ impl TableCursor {
 mod tests {
     use std::{thread, time::Duration};
 
-    use monty_types::{ResourceLimits, ResourceTracker};
+    use monty_types::{PrintWriter, ResourceLimits, ResourceTracker};
 
-    use super::{CloneTableEntry, PyHashTable, TableCursor, TableEntry};
+    use super::{CloneTableEntry, PyHashTable, TableCursor, TableEntry, TableSource};
     use crate::{
-        exception_private::RunError,
-        heap::{ContainsHeap, DropWithContext, Heap},
+        bytecode::VM,
+        exception_private::{RunError, RunResult},
+        heap::{ContainsHeap, DropWithContext, Heap, HeapReader},
+        run::{Program, SessionTables},
         types::set::SetEntry,
         value::Value,
     };
+
+    // Raw tables in these tests are owned outside the VM and cannot be mutated by callbacks.
+    impl<'h, E: TableEntry> TableSource<'h> for &PyHashTable<E> {
+        type Entry = E;
+
+        fn table<'r>(&'r self, _vm: &'r VM<'h>) -> &'r PyHashTable<E> {
+            self
+        }
+    }
+
+    fn copy_in_vm<E>(source: &PyHashTable<E>, heap: &mut Heap) -> RunResult<PyHashTable<E>>
+    where
+        E: CloneTableEntry,
+        for<'h> E: DropWithContext<VM<'h>>,
+    {
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(heap, &mut (&program, &mut tables), |reader, (program, tables)| {
+            let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+            source.copy_table(&mut vm)
+        })
+    }
 
     /// Compact output must not renumber the source or a cursor restored alongside it.
     #[test]
@@ -1038,8 +1069,7 @@ mod tests {
         let mut cursor = TableCursor::new(source.len());
         assert_eq!(source.step(&mut cursor).unwrap().unwrap().hash, 1);
 
-        let mut copy = PyHashTable::default();
-        source.copy_into(&mut copy, &heap).unwrap();
+        let copy = copy_in_vm(&source, &mut heap).unwrap();
         assert_eq!(copy.entries.len(), 8);
         assert_eq!(copy.entries.capacity(), 8);
         assert_eq!(source.entries.len(), 16);
@@ -1059,10 +1089,9 @@ mod tests {
         for hash in (1..16).step_by(2) {
             remove(&mut source, hash, &mut heap);
         }
-        let mut empty_copy = PyHashTable::default();
-        source.copy_into(&mut empty_copy, &heap).unwrap();
+        let empty_copy = copy_in_vm(&source, &mut heap).unwrap();
         assert_eq!(source.entries.len(), 16);
-        assert_eq!(source.copy_iter().slots.len(), 0);
+        assert_eq!(source.copy_slots().len(), 0);
         assert_eq!(empty_copy.entries.capacity(), 0);
         assert_eq!(empty_copy.indices.capacity(), 0);
 
@@ -1072,7 +1101,7 @@ mod tests {
         restored.drop_with(&mut heap);
     }
 
-    /// Expiring after the first clone must interrupt the following tombstones, not await another live entry.
+    /// Expiring after the first clone must interrupt a tombstone run before the next live entry.
     #[test]
     fn sparse_copy_polls_while_skipping_tombstones() {
         let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::ZERO));
@@ -1085,19 +1114,66 @@ mod tests {
                 hash: u64::try_from(value).unwrap(),
             }));
         }
-        for hash in 1..slots {
+        for hash in 1..slots - 1 {
             let slot = source.find(u64::try_from(hash).unwrap(), |_| true).unwrap();
             source.remove(slot).drop_with(&mut heap);
         }
-        let mut copy = PyHashTable::default();
-        let result = source.copy_into(&mut copy, &heap);
+        let result = copy_in_vm(&source, &mut heap);
         heap.tracker.on_execution_stop();
         assert!(matches!(result, Err(RunError::UncatchableExc(_))));
-        assert_eq!(copy.entries.len(), 1);
         assert_eq!(source.entries.len(), slots);
-        assert_eq!(source.len(), 1);
+        assert_eq!(source.len(), 2);
         source.drop_with(&mut heap);
-        copy.drop_with(&mut heap);
+    }
+
+    /// A drained suffix needs no scan once the snapshot owns every live entry.
+    #[test]
+    fn snapshot_skips_trailing_tombstones() {
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::ZERO));
+        let mut heap = Heap::new(16, tracker);
+        let mut source = table_with_entries();
+        for hash in 1..16 {
+            remove(&mut source, hash, &mut heap);
+        }
+        source
+            .entries
+            .resize_with(2 * ResourceTracker::LOOP_CHECK_INTERVAL, SetEntry::tombstone);
+        let result = source.for_each_copy_entry(&heap.tracker, |_| {
+            heap.tracker.on_execution_start();
+            thread::sleep(Duration::from_millis(1));
+        });
+        heap.tracker.on_execution_stop();
+        assert!(result.is_ok());
+        source.drop_with(&mut heap);
+    }
+
+    /// Snapshot polling must count the tombstones between live entries.
+    #[test]
+    fn sparse_snapshot_polls_while_skipping_tombstones() {
+        let tracker = ResourceTracker::new(ResourceLimits::default().max_feed_duration(Duration::ZERO));
+        let mut heap = Heap::new(16, tracker);
+        let slots = 2 * ResourceTracker::LOOP_CHECK_INTERVAL;
+        let mut source = PyHashTable::with_capacity(slots);
+        for value in 0..slots {
+            source.push(SetEntry {
+                value: Value::Int(i64::try_from(value).unwrap()),
+                hash: u64::try_from(value).unwrap(),
+            });
+        }
+        for hash in 1..slots - 1 {
+            remove(&mut source, u64::try_from(hash).unwrap(), &mut heap);
+        }
+        let mut retained = 0;
+        let result = source.for_each_copy_entry(&heap.tracker, |_| {
+            retained += 1;
+            heap.tracker.on_execution_start();
+            thread::sleep(Duration::from_millis(1));
+        });
+        heap.tracker.on_execution_stop();
+        assert!(matches!(result, Err(RunError::UncatchableExc(_))));
+        assert_eq!(retained, 1);
+        assert_eq!(source.len(), 2);
+        source.drop_with(&mut heap);
     }
 
     /// Expires the clock on the first clone, without latency assertions.
@@ -1134,8 +1210,8 @@ mod tests {
         }
     }
 
-    impl DropWithContext<Heap> for StartsClockOnClone {
-        fn drop_with(self, heap: &mut Heap) {
+    impl<C: ContainsHeap> DropWithContext<C> for StartsClockOnClone {
+        fn drop_with(self, heap: &mut C) {
             self.0.drop_with(heap);
         }
     }

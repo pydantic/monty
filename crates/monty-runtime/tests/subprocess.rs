@@ -1637,6 +1637,21 @@ fn copying_a_large_set_fails_softly() {
     }
 }
 
+/// Updating from a set snapshots its members before equality callbacks can mutate the source.
+#[test]
+fn set_update_snapshot_fails_softly() {
+    for kind in ["set", "frozenset"] {
+        let mut child = ChildProc::spawn();
+        child.create_repl_with(configure_with_max_memory(20 * 1024 * 1024));
+        child.feed_complete(&format!("s = {kind}(range(400_000))"));
+        let (_, event) = child.feed("set().update(s)");
+        assert_eq!(expect_error(event).exc_type, "MemoryError", "{kind}");
+        assert_eq!(child.feed_complete("len(s)"), MontyObject::int(400_000), "{kind}");
+        assert_eq!(child.feed_complete("1 + 1"), MontyObject::int(2));
+        child.shutdown();
+    }
+}
+
 /// A set keeps the index table it grew to when its elements go, so copying one
 /// must index the copy afresh rather than reproduce that table: twenty copies
 /// of an emptied set hold nothing and must cost nothing.
