@@ -144,6 +144,7 @@ impl Snapshotter {
                         .iter()
                         .map(|name| name.as_str(vm.interns).to_owned())
                         .collect();
+                    self.charge(type_name.len() + field_names.iter().map(String::len).sum::<usize>());
                     let items = nt.items();
                     let (len, children) = (items.len(), self.clone_prefix(items.iter(), vm.heap));
                     let items = self.snapshot_all(children, len, vm);
@@ -163,7 +164,11 @@ impl Snapshotter {
                 HeapReadOutput::TimeDelta(td) => {
                     MontyObject::timedelta(timedelta_type::to_monty_timedelta(td.get(vm.heap)))
                 }
-                HeapReadOutput::Decimal(d) => MontyObject::decimal(d.get(vm.heap).to_sci_string(false, true)),
+                HeapReadOutput::Decimal(d) => {
+                    let text = d.get(vm.heap).to_sci_string(false, true);
+                    self.charge(text.len());
+                    MontyObject::decimal(text)
+                }
                 _ => self.repr(value, vm),
             },
             _ => self.repr(value, vm),

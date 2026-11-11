@@ -601,7 +601,9 @@ impl<'a> Serializer<'a> {
     /// pydantic's JSON object key for a value: strings as they are, `None`
     /// for `None` and non-finite floats, `true` / `false`, a number's digits,
     /// ISO text for temporal values, a tuple's keys joined by commas.
-    fn key_text(&self, key: &Value, vm: &VM<'_>) -> RunResult<String> {
+    fn key_text(&mut self, key: &Value, vm: &VM<'_>) -> RunResult<String> {
+        // A tuple key shared within itself expands once per reference, so keys count as steps too.
+        self.step(vm)?;
         if let Some(text) = key.as_str(vm) {
             return Ok(text.to_owned());
         }
@@ -629,7 +631,7 @@ impl<'a> Serializer<'a> {
     }
 
     /// A tuple key's items as keys, comma-separated.
-    fn joined_keys(&self, items: &[Value], vm: &VM<'_>) -> RunResult<String> {
+    fn joined_keys(&mut self, items: &[Value], vm: &VM<'_>) -> RunResult<String> {
         let parts: Vec<String> = items
             .iter()
             .map(|item| self.key_text(item, vm))
