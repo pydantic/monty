@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{cell::Cell, fmt::Write};
 
 use monty_types::MontyUuid;
 
@@ -42,8 +42,9 @@ pub(crate) struct Class {
     namespace: Dict,
     /// Boundary identity, generated lazily the first time the class (or one of
     /// its instances) crosses to the host; dumped with the heap so it stays
-    /// stable across restores.
-    uuid: Option<MontyUuid>,
+    /// stable across restores. Interior-mutable so generating it needs no
+    /// `&mut` into heap storage, which would invalidate live `HeapRead` tags.
+    uuid: Cell<Option<MontyUuid>>,
 }
 
 impl Class {
@@ -53,21 +54,25 @@ impl Class {
         Self {
             name,
             namespace,
-            uuid: None,
+            uuid: Cell::new(None),
         }
     }
 
     /// Boundary identity of the class, generated and stored on first use so
     /// repeated crossings (and dump/restore) observe the same id. Only
     /// `Heap::boundary_uuid` may call this: it also indexes the new id.
-    pub(crate) fn boundary_uuid(&mut self) -> MontyUuid {
-        *self.uuid.get_or_insert_with(create_uuid)
+    pub(crate) fn boundary_uuid(&self) -> MontyUuid {
+        self.uuid.get().unwrap_or_else(|| {
+            let uuid = create_uuid();
+            self.uuid.set(Some(uuid));
+            uuid
+        })
     }
 
     /// The boundary identity, if the class (or an instance) has crossed to the host.
     #[must_use]
     pub fn uuid(&self) -> Option<MontyUuid> {
-        self.uuid
+        self.uuid.get()
     }
 
     /// Returns the class name (interned or heap-owned).

@@ -561,6 +561,11 @@ make test-no-features     Run rust tests without any features enabled
 make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
+make miri                 Run heap/lib inline tests under Miri, Stacked Borrows
+make miri-tree            Same under Tree Borrows
+make miri-heap-model      Run the heap refcount model under both borrow models
+make miri-integration     Run the bounded asyncio integration tests under Miri
+make miri-test-cases-filtered FILTER=refcount__  Run one corpus slice under Miri
 make test-type-checking   Run rust tests on monty-type-checking
 make pytest               Run Python tests with pytest
 make test-py              Build the python package (debug profile) and run tests

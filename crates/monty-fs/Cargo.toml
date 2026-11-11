@@ -15,6 +15,11 @@ repository = { workspace = true }
 [lib]
 name = "monty_fs"
 
+[features]
+# Exposes `test_util` hooks that fuzz Monty's path policy without host I/O.
+# Unstable: not part of the public API.
+test-util = []
+
 [dependencies]
 monty-types = { workspace = true }
 ahash = { workspace = true }

@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Write};
+use std::{borrow::Cow, cell::Cell, fmt::Write};
 
 use monty_types::MontyUuid;
 
@@ -41,8 +41,12 @@ pub(crate) struct Instance {
     attrs: Dict,
     /// Boundary identity, generated lazily the first time the instance crosses
     /// to the host; dumped with the heap so it stays stable across restores.
+    ///
+    /// Interior-mutable so generating it needs no `&mut` into heap storage: a
+    /// `&mut HeapData` retag would invalidate every live `HeapRead` tag on the
+    /// slot while a guard is open.
     #[serde(rename = "U")]
-    uuid: Option<MontyUuid>,
+    uuid: Cell<Option<MontyUuid>>,
 }
 
 impl Instance {
@@ -52,21 +56,25 @@ impl Instance {
         Self {
             class,
             attrs,
-            uuid: None,
+            uuid: Cell::new(None),
         }
     }
 
     /// Boundary identity of the instance, generated and stored on first use
     /// so repeated crossings (and dump/restore) observe the same id. Only
     /// `Heap::boundary_uuid` may call this: it also indexes the new id.
-    pub(crate) fn boundary_uuid(&mut self) -> MontyUuid {
-        *self.uuid.get_or_insert_with(create_uuid)
+    pub(crate) fn boundary_uuid(&self) -> MontyUuid {
+        self.uuid.get().unwrap_or_else(|| {
+            let uuid = create_uuid();
+            self.uuid.set(Some(uuid));
+            uuid
+        })
     }
 
     /// The boundary identity, if the instance has crossed to the host.
     #[must_use]
     pub fn uuid(&self) -> Option<MontyUuid> {
-        self.uuid
+        self.uuid.get()
     }
 
     /// Returns the `HeapId` of the instance's class object.

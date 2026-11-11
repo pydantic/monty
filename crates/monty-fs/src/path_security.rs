@@ -49,6 +49,15 @@ impl MountRelativePath {
         if self.relative.is_empty() { "." } else { &self.relative }
     }
 
+    /// The raw mount-relative path, empty for the mount root.
+    ///
+    /// `for_dir_op` maps the root to `.`, which hides the distinction the
+    /// path-policy fuzz target asserts on.
+    #[cfg(feature = "test-util")]
+    pub fn as_relative_str(&self) -> &str {
+        &self.relative
+    }
+
     /// Whether this refers to the mount root rather than something inside it.
     pub fn is_mount_root(&self) -> bool {
         self.relative.is_empty()

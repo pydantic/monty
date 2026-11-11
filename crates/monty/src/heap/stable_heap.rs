@@ -14,7 +14,23 @@ const PAGE_SIZE: usize = 256;
 /// `MaybeUninit` slots — only slots at indices below `HeapEntries::len` are
 /// initialized.
 type Page<T> = Box<[Slot<T>; PAGE_SIZE]>;
-type Slot<T> = MaybeUninit<Option<T>>;
+type Slot<T> = MaybeUninit<HeapSlot<T>>;
+
+/// One initialized slot: its payload plus the generation that invalidates
+/// pointers minted while an earlier payload occupied the slot.
+///
+/// `generation` is bumped by [`stable_heap_entry::StableHeapEntry::free`], the
+/// only free path, so a [`HeapPtr`](super::HeapPtr) held across a free and a
+/// later reuse is detectable even though the page memory stays valid. It is not
+/// persisted: a restored heap starts every generation at zero, and no pointer
+/// survives a dump. The counter wraps, so detection is best-effort after 2^32
+/// frees of the same slot.
+pub(crate) struct HeapSlot<T> {
+    /// Bumped on every free; compared against a `HeapPtr`'s recorded value.
+    pub(crate) generation: u32,
+    /// The payload, `None` while the slot sits on the free list.
+    pub(crate) entry: Option<T>,
+}
 
 /// Paged storage for heap entries that guarantees address stability. This also
 /// has other conveniences like only needing `&self` to allocate, and a free list
@@ -99,20 +115,20 @@ impl<T> StableHeap<T> {
         // SAFETY: [DH] - this call panics rather than expose free slots which could be invalidated
         // by calls to `.allocate()`.
         let slot = unsafe { self.slot_at(id) };
-        let Some(entry) = slot else {
+        let Some(slot) = slot else {
             panic!("StableHeap::get - {id:?} out of bounds");
         };
-        entry.as_ref().expect("HeapEntries::get - data already freed")
+        slot.entry.as_ref().expect("HeapEntries::get - data already freed")
     }
 
-    /// Returns a mutable reference to the entry at `index`. Entries can also be
-    /// freed via the returned `StableHeapEntry`'s `free` method.
+    /// Returns a mutable handle to the entry at `id`, which can free it.
     ///
-    /// Does *not* go through [`Self::entry_ptr`]: that path derives its pointer via
-    /// `&self` so it only carries Shared / SharedReadOnly provenance under SB/TB,
-    /// and dereferencing it as `&mut` is UB. Instead this method takes the safe
-    /// `&mut self` → `pages.get_mut()` route, producing a `&mut Option<T>` with
-    /// Unique provenance suitable for `StableHeapEntry::free`'s `value.take()`.
+    /// Derives the handle through `pages.get_mut()`: the `&mut self` receiver
+    /// yields `Unique` provenance, which is what lets
+    /// [`StableHeapEntry::free`] take the payload and bump the slot generation.
+    /// It also means an arena write pops the borrow tags `slot_at` handed out
+    /// for that page, so a [`HeapPtr`](super::HeapPtr) must not be dereferenced
+    /// after one — see its documentation.
     ///
     /// # Panics
     /// Panics if `index >= len`.
@@ -124,8 +140,8 @@ impl<T> StableHeap<T> {
         let pages = self.pages.get_mut();
         let slot = &mut pages[page_idx][slot_idx];
         // SAFETY: [DH] - all slots at indices < self.len have been initialized via `allocate`.
-        let value = unsafe { slot.assume_init_mut() };
-        StableHeapEntry::new(id, value, &mut self.free_list)
+        let slot = unsafe { slot.assume_init_mut() };
+        StableHeapEntry::new(id, slot, &mut self.free_list)
     }
 
     /// Allocates a slot — reusing from the free list or appending — and returns its ID.
@@ -141,7 +157,7 @@ impl<T> StableHeap<T> {
     ///
     /// The slot lets the heap immediately project a newly allocated payload
     /// without repeating the page and slot lookup.
-    pub fn allocate_with_slot(&self, value: T) -> (HeapId, &Option<T>) {
+    pub fn allocate_with_slot(&self, value: T) -> (HeapId, &HeapSlot<T>) {
         // SAFETY: [DH]
         // - This is the only `&self` method which uses `pages.get()` to create a mutable reference to `pages`.
         // - This method is not re-entrant, and not `Sync`, so cannot have a global `StableHeap` where
@@ -152,29 +168,35 @@ impl<T> StableHeap<T> {
         //
         // TODO: use `UnsafeCell::as_mut_unchecked` when stable.
         let pages = unsafe { self.pages.get().as_mut_unchecked() };
-        let (id, slot) = if let Some(id) = self.free_list.pop() {
+        let (id, generation) = if let Some(id) = self.free_list.pop() {
             let (page_idx, slot_idx) = Self::page_slot_indices(id);
-            let slot = &mut pages[page_idx][slot_idx];
+            // SAFETY: [DH] - previously freed slots must have previously been initialized.
+            let slot = unsafe { pages[page_idx][slot_idx].assume_init_ref() };
             debug_assert!(
-                // SAFETY: [DH] - previously freed slots must have previously been initialized.
-                unsafe { slot.assume_init_ref() }.is_none(),
+                slot.entry.is_none(),
                 "allocate - popped free slot {id:?} is not actually free"
             );
-            (id, slot)
+            // The generation bumped by `free` stays: a pointer minted while the
+            // previous payload occupied this slot must never resolve again.
+            (id, slot.generation)
         } else {
             let id = HeapId::from_index(self.len.get());
-            let (page_idx, slot_idx) = Self::page_slot_indices(id);
+            let page_idx = id.index() / PAGE_SIZE;
             if page_idx >= pages.len() {
                 pages.push(create_page());
             }
             self.len.set(id.index() + 1);
-            (id, &mut pages[page_idx][slot_idx])
+            (id, 0)
         };
 
-        // Write to the new slot. No need to worry about initializedness / the destructor - either the slot was
-        // free (in which case the slot is `None` and has no meaningful destructor), or the slot is not
-        // initialized yet.
-        let slot = slot.write(Some(value));
+        // Write the whole slot. No need to worry about the previous value's
+        // destructor - either the slot was free (its `entry` is `None` and has
+        // nothing to drop), or the slot is not initialized yet.
+        let (page_idx, slot_idx) = Self::page_slot_indices(id);
+        let slot = pages[page_idx][slot_idx].write(HeapSlot {
+            generation,
+            entry: Some(value),
+        });
 
         (id, slot)
     }
@@ -192,10 +214,10 @@ impl<T> StableHeap<T> {
     /// is out of bounds.
     ///
     /// # Safety:
-    /// - Caller must ensure that `Some(&None)` references do not overlap with any calls to `allocate()`,
-    ///   as these will be invalidated by the reuse of freed slots.
+    /// - Caller must ensure that a reference to a freed slot's `None` entry does
+    ///   not overlap with any call to `allocate()`, which would reuse the slot.
     #[track_caller]
-    pub unsafe fn slot_at(&self, id: HeapId) -> Option<&Option<T>> {
+    pub unsafe fn slot_at(&self, id: HeapId) -> Option<&HeapSlot<T>> {
         if id.index() >= self.len.get() {
             return None;
         }
@@ -228,37 +250,40 @@ fn create_page<T>() -> Box<[Slot<T>; PAGE_SIZE]> {
 mod stable_heap_entry {
     use std::ops::{Deref, DerefMut};
 
-    use crate::heap::{HeapId, free_list::FreeList};
+    use crate::heap::{HeapId, free_list::FreeList, stable_heap::HeapSlot};
 
     pub struct StableHeapEntry<'a, T> {
         id: HeapId,
-        value: &'a mut Option<T>,
+        slot: &'a mut HeapSlot<T>,
         free_list: &'a mut FreeList,
     }
 
     impl<'a, T> StableHeapEntry<'a, T> {
         // Only way to construct a `StableHeapEntry`. Returns `None` if the slot is already freed.
-        pub fn new(id: HeapId, value: &'a mut Option<T>, free_list: &'a mut FreeList) -> Option<Self> {
-            value.is_some().then_some(Self { id, value, free_list })
+        pub fn new(id: HeapId, slot: &'a mut HeapSlot<T>, free_list: &'a mut FreeList) -> Option<Self> {
+            slot.entry.is_some().then_some(Self { id, slot, free_list })
         }
 
         pub fn free(self) -> T {
             self.free_list.push(self.id);
+            // Bump before taking the payload: any `HeapPtr` minted while this slot
+            // held the old payload must be detectable after `allocate` reuses it.
+            self.slot.generation = self.slot.generation.wrapping_add(1);
             // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
             // is the only constructor
-            unsafe { self.value.take().unwrap_unchecked() }
+            unsafe { self.slot.entry.take().unwrap_unchecked() }
         }
 
         pub fn get(&self) -> &T {
             // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
             // is the only constructor
-            unsafe { self.value.as_ref().unwrap_unchecked() }
+            unsafe { self.slot.entry.as_ref().unwrap_unchecked() }
         }
 
         pub fn get_mut(&mut self) -> &mut T {
             // SAFETY: [DH] - impossible to get a `StableHeapEntry` with `None` slot - `new`
             // is the only constructor
-            unsafe { self.value.as_mut().unwrap_unchecked() }
+            unsafe { self.slot.entry.as_mut().unwrap_unchecked() }
         }
     }
 
@@ -313,11 +338,12 @@ where
         // Set the initialized region
         this.len.set(entries.len());
 
-        // Write all pages from the entries vec
+        // Write all pages from the entries vec. Generations restart at zero: they
+        // are diagnostic only, and no `HeapPtr` survives a dump.
         let pages = this.pages.get_mut();
         for (index, entry) in entries.into_iter().enumerate() {
             let (page_idx, slot_idx) = Self::page_slot_indices(HeapId::from_index(index));
-            pages[page_idx][slot_idx].write(entry);
+            pages[page_idx][slot_idx].write(HeapSlot { generation: 0, entry });
         }
         Ok(this)
     }
@@ -365,9 +391,9 @@ mod iter {
         fn next(&mut self) -> Option<Self::Item> {
             let current_index = self.index;
             // SAFETY: [DH] - caller guaranteed no aliasing when calling `HeapEntriesIter::new`
-            let entry = unsafe { self.entries.slot_at(HeapId::from_index(current_index)) }?;
+            let slot = unsafe { self.entries.slot_at(HeapId::from_index(current_index)) }?;
             self.index += 1;
-            Some((current_index, entry.as_ref()))
+            Some((current_index, slot.entry.as_ref()))
         }
 
         fn size_hint(&self) -> (usize, Option<usize>) {
@@ -469,6 +495,23 @@ mod tests {
         assert_eq!(*ref_first_page, "filler");
         assert_eq!(*ref_second_page, "filler");
         assert_eq!(*entries.get(new_id), "new");
+    }
+
+    #[test]
+    fn free_then_reuse_bumps_the_slot_generation() {
+        let mut entries = StableHeap::with_capacity(4);
+        let first = entries.allocate("a");
+        // SAFETY: no allocation happens while this reference is live.
+        let generation = unsafe { entries.slot_at(first) }.expect("allocated").generation;
+
+        assert_eq!(entries.entry(first).expect("live").free(), "a");
+        let second = entries.allocate("b");
+        assert_eq!(second, first, "the free list reuses the freed slot");
+
+        // SAFETY: no allocation happens while this reference is live.
+        let slot = unsafe { entries.slot_at(second) }.expect("allocated");
+        assert_eq!(slot.entry, Some("b"));
+        assert_eq!(slot.generation, generation.wrapping_add(1));
     }
 
     #[test]
