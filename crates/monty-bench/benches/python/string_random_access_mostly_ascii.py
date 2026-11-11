@@ -4,8 +4,8 @@
 # ///
 """Run 4,096 random character reads per size in mostly-ASCII prose.
 
-Repeat 256 seeded offsets 16 times on 512/2,048/6,472-character inputs; includes slicing, indexing and ord().
-The harness times setup (JSON, text and offsets), the workload and assertions.
+Repeat 256 seeded offsets 16 times on 16K/64K/128K-character inputs; includes slicing, indexing and ord().
+The harness times setup (JSON, text generation and expansion, and offsets), the workload and assertions.
 """
 
 import json
@@ -29,6 +29,10 @@ while characters < 6472:
 
 text = ''.join(parts)[:6472]
 
+# Setup: expand the generated prose into a 128K-character document.
+copies = 131072 // len(text) + 1
+text = '\n\n'.join(f'Notebook entry {number}\n\n{text}' for number in range(copies))[:131072]
+
 # Setup: use an independent RNG stream to generate 256 lookup offsets.
 state = 123
 offsets = []
@@ -40,7 +44,7 @@ for _ in range(256):
 # Benchmark: repeat the 256-offset pass 16 times for 4,096 reads per prefix.
 checksum = 0
 
-for size in (512, 2048, len(text)):
+for size in (16384, 65536, len(text)):
     sample = text[:size]
     length = len(sample)
 
@@ -49,4 +53,5 @@ for size in (512, 2048, len(text)):
             checksum += ord(sample[offset % length])
 
 # Validation: included in the timed execution.
-assert checksum == 1157008
+assert len(text) == 131072
+assert checksum == 1137408
