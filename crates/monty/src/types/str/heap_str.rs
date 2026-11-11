@@ -12,17 +12,19 @@ use crate::{
 /// ASCII text has one byte per character, so length and indexing take O(1) time.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(crate) struct HeapStr(
-    Box<str>,
-    #[serde(skip)] pub(super) Cell<Option<HashValue>>,
-    #[serde(skip)] Cell<Option<bool>>,
-);
+pub(crate) struct HeapStr {
+    text: Box<str>,
+    #[serde(skip)]
+    pub(super) cached_hash: Cell<Option<HashValue>>,
+    #[serde(skip)]
+    cached_ascii: Cell<Option<bool>>,
+}
 
 impl PartialEq for HeapStr {
     /// Compares only the string content — the cached fields are pure
     /// optimisations and must not affect equality.
     fn eq(&self, other: &Self) -> bool {
-        self.0 == other.0
+        self.text == other.text
     }
 }
 
@@ -30,34 +32,38 @@ impl HeapStr {
     /// Creates heap storage; use [`super::allocate_string`] or [`super::allocate_string_no_interning`] for values.
     #[must_use]
     pub(super) fn new(s: impl Into<Box<str>>) -> Self {
-        Self(s.into(), Cell::new(None), Cell::new(None))
+        Self {
+            text: s.into(),
+            cached_hash: Cell::new(None),
+            cached_ascii: Cell::new(None),
+        }
     }
 
     /// Returns a reference to the inner string.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
     }
 
     /// Returns the Python string hash, computing it only on the first call.
     pub fn hash(&self) -> HashValue {
-        if let Some(hash) = self.1.get() {
+        if let Some(hash) = self.cached_hash.get() {
             hash
         } else {
             // Use the same hash as inline and interned strings for dictionary lookup.
             let hash = hash_python_str(self.as_str());
-            self.1.set(Some(hash));
+            self.cached_hash.set(Some(hash));
             hash
         }
     }
 
     /// Whether every character is ASCII, scanning the text only on the first call.
     pub fn is_ascii(&self) -> bool {
-        if let Some(ascii) = self.2.get() {
+        if let Some(ascii) = self.cached_ascii.get() {
             ascii
         } else {
-            let ascii = self.0.is_ascii();
-            self.2.set(Some(ascii));
+            let ascii = self.text.is_ascii();
+            self.cached_ascii.set(Some(ascii));
             ascii
         }
     }
@@ -65,9 +71,9 @@ impl HeapStr {
     /// The length in Unicode code points, as Python's `len()` reports it.
     pub fn char_len(&self) -> usize {
         if self.is_ascii() {
-            self.0.len()
+            self.text.len()
         } else {
-            self.0.chars().count()
+            self.text.chars().count()
         }
     }
 }
@@ -76,7 +82,7 @@ impl ops::Deref for HeapStr {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.text
     }
 }
 

@@ -1998,7 +1998,7 @@ mod tests {
                     assert_eq!(value.py_hash(vm).unwrap(), expected_hash);
                     assert!(string.py_is_iterable(vm));
                     if let PyStr::Heap(heap_string) = &string {
-                        assert_eq!(heap_string.get(vm.heap).1.get(), expected_hash);
+                        assert_eq!(heap_string.get(vm.heap).cached_hash.get(), expected_hash);
                         let mut read = crate::py_value::PyValue::from(vm.heap.read(heap_string.id()));
                         assert_eq!(read.py_len(vm), Some(text.chars().count()));
                         assert_eq!(read.py_hash(vm).unwrap(), expected_hash);
