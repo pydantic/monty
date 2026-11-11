@@ -121,7 +121,7 @@ pub(crate) enum SeqKind {
 }
 
 /// How an input supplies a namedtuple's arguments: pydantic accepts a dict
-/// as keywords and a list or tuple (a JSON object or array) as positionals.
+/// (a JSON object) as keywords and a list or tuple (a JSON array) as positionals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArgumentsShape {
     Keywords,

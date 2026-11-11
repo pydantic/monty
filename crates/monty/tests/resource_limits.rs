@@ -482,9 +482,51 @@ fn time_limit_covers_pydantic_serialization() {
     }
 }
 
+/// A generic alias that names another twice is walked once per reference, so
+/// doubling `tuple[h, h]` builds exponentially many validators: the builder polls the clock.
+#[test]
+fn time_limit_covers_pydantic_schema_building() {
+    let code = "from pydantic import TypeAdapter\nh = int\nfor _ in range(40):\n    h = tuple[h, h]\nTypeAdapter(h)\n";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+    let start = Instant::now();
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("should exceed time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "the builder should notice the limit promptly, took {:?}",
+        start.elapsed()
+    );
+}
+
+/// A tuple dict key shared within itself is rendered once per reference in
+/// JSON mode, so key rendering polls the clock like values do.
+#[test]
+fn time_limit_covers_pydantic_tuple_keys() {
+    for dump in ["dump_python(x, mode='json')", "dump_json(x)"] {
+        let code = format!(
+            "from typing import Any\nfrom pydantic import TypeAdapter\nk = ()\nfor _ in range(40):\n    k = (k, k)\nx = {{k: 1}}\nTypeAdapter(Any).{dump}\n"
+        );
+        let mut ex = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_feed_duration(Duration::from_millis(50));
+        let start = Instant::now();
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .expect_err("should exceed time limit");
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{dump}");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{dump} should notice the limit promptly, took {:?}",
+            start.elapsed()
+        );
+    }
+}
+
 /// A `ValidationError` snapshots its inputs under one budget per exception, so
-/// a shared sub-list repeated across the input and across line errors is cut
-/// off with `'...'` instead of being copied once per reference.
+/// a shared sub-list, decimal or namedtuple repeated across the input and across
+/// line errors is cut off with `'...'` instead of being copied once per reference.
 #[test]
 fn pydantic_error_snapshots_share_one_budget() {
     let code = r"
@@ -498,6 +540,16 @@ try:
     TypeAdapter(list[int]).validate_python([big] * 3000)
 except ValidationError as e:
     lines = e.errors()
+from collections import namedtuple
+from decimal import Decimal
+Wide = namedtuple('Wide', ['a' * 100_000])
+for shared in [Decimal('1' * 4000), Wide(1)]:
+    try:
+        TypeAdapter(int).validate_python([shared] * 3000)
+    except ValidationError as e:
+        texts = e.errors()[0]['input']
+    assert len(texts) < 2000, len(texts)
+    assert texts[-1] == '...', texts[-1]
 (len(whole), whole[0] == big, whole[-1], len(lines), lines[0]['input'] == big, lines[-1]['input'])
 ";
     let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();

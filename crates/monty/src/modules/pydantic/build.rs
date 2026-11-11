@@ -44,6 +44,7 @@ pub(crate) fn build(hint: &Value, arena: &mut Arena, vm: &mut VM<'_>) -> RunResu
     let mut builder = Builder {
         arena,
         classes: AHashMap::new(),
+        steps: 0,
     };
     builder.walk(hint, vm)
 }
@@ -52,10 +53,15 @@ pub(crate) fn build(hint: &Value, arena: &mut Arena, vm: &mut VM<'_>) -> RunResu
 struct Builder<'a> {
     arena: &'a mut Arena,
     classes: AHashMap<HeapId, ValidatorId>,
+    /// Hints walked so far, keying the limit poll: a generic alias that names
+    /// another twice (`tuple[h, h]`) is walked once per reference.
+    steps: usize,
 }
 
 impl Builder<'_> {
     fn walk(&mut self, hint: &Value, vm: &mut VM<'_>) -> RunResult<ValidatorId> {
+        self.steps = self.steps.wrapping_add(1);
+        vm.heap.tracker.check_memory_time_every(self.steps)?;
         let mut guard = vm.recursion_guard()?;
         let vm = &mut *guard;
         match hint {

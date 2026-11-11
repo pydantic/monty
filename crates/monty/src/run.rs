@@ -627,6 +627,8 @@ impl Executor {
             // leak check to what survives that.
             vm.__finalize_tasks_for_tests();
             vm.__force_gc_for_tests();
+            // The JSON string cache keeps parsed strings for reuse; they are not leaks.
+            vm.json_string_cache.drop_all(vm.heap);
 
             // Take globals out of the VM so we can inspect them, but keep VM alive
             // for heap access and later conversion.

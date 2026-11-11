@@ -8,10 +8,11 @@
 # the validator took from the arena's copy. `Foo` ends at 3: its binding, the
 # arena's reference and the built instance's class reference. Validated
 # outputs are fresh objects, so `built` ends at 1.
+from collections import namedtuple
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 choice = 'a'
 chooser = TypeAdapter(Literal[choice, 'b'])
@@ -41,5 +42,14 @@ cyclic = None
 dropped = TypeAdapter(Literal[[4, 5]])
 dropped = None
 
+# A namedtuple whose JSON ends mid-arguments releases the arguments it read.
+Point = namedtuple('Point', ['x', 'y'])
+for document in ['{"x": "%s", "y": ' % ('a' * 40), '["%s", ' % ('a' * 40)]:
+    try:
+        TypeAdapter(Point).validate_json(document)
+        assert False, 'expected a ValidationError'
+    except ValidationError:
+        pass
+
 len(choice)
-# ref-counts={'default': 6, 'Foo': 3, 'adapter': 1, 'built': 1, 'chooser': 1}
+# ref-counts={'default': 6, 'Foo': 3, 'adapter': 1, 'built': 1, 'chooser': 1, 'Point': 1, 'document': 1}
