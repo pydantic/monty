@@ -15,12 +15,12 @@ This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `cra
 and sync the `pydantic-monty` metapackage's version and its exact pins on
 `pydantic-monty-client`/`pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
-## 2. Commit and Push
+## 2. Commit and Push a new branch
 
 ```bash
 git checkout -b prepare-release-vX.Y.Z
 git commit -am "Bump version to vX.Y.Z"
-git push
+git push --set-upstream origin $(git branch-name)
 ```
 
 ## 3. Create Release via GitHub UI
