@@ -101,6 +101,7 @@ The following modules are present:
 | `tomllib`       | [tomllib.md](tomllib.md)             |
 | `typing`        | [typing.md](typing.md)               |
 | `unicodedata`   | [unicodedata.md](unicodedata.md)     |
+| `urllib`        | [urllib.md](urllib.md)               |
 
 Each covers only part of its CPython surface — often a small part. `itertools`,
 `hashlib`, `tomllib` and `fnmatch` are the exceptions: `itertools` implements every name it exports, `hashlib` every
@@ -109,7 +110,7 @@ The absent names are missing from the module namespace rather than stubbed, so t
 raising `AttributeError` at runtime.
 
 Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
-`inspect`, `logging`, `traceback`, `uuid`, `urllib`.
+`inspect`, `logging`, `traceback`, `uuid`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.
 

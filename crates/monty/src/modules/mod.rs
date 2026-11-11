@@ -43,6 +43,7 @@ pub(crate) mod time;
 pub(crate) mod tomllib;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;
+pub(crate) mod urllib;
 
 /// Built-in modules that can be imported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +108,10 @@ pub(crate) enum StandardLib {
     Fnmatch,
     /// The `annotationlib` module: `Format`, `ForwardRef` and `get_annotations()`.
     Annotationlib,
+    /// The `urllib` package, carrying only its `parse` submodule.
+    Urllib,
+    /// The `urllib.parse` module: URL splitting, joining and quoting.
+    UrllibParse,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -145,6 +150,8 @@ impl StandardLib {
             StaticStrings::DecimalMod => Some(Self::Decimal),
             StaticStrings::Fnmatch => Some(Self::Fnmatch),
             StaticStrings::Annotationlib => Some(Self::Annotationlib),
+            StaticStrings::Urllib => Some(Self::Urllib),
+            StaticStrings::UrllibParse => Some(Self::UrllibParse),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -189,6 +196,8 @@ impl StandardLib {
             Self::Decimal => decimal::create_module(vm),
             Self::Fnmatch => fnmatch::create_module(vm),
             Self::Annotationlib => annotationlib::create_module(vm),
+            Self::Urllib => urllib::create_package(vm),
+            Self::UrllibParse => urllib::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -227,6 +236,7 @@ pub(crate) enum ModuleFunctions {
     Fnmatch(fnmatch::FnmatchFunctions),
     Typing(typing::TypingFunctions),
     Annotationlib(annotationlib::AnnotationlibFunctions),
+    Urllib(urllib::UrllibFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
     /// See [`gc`] for why it is gated; as in [`StandardLib`], the gated block
     /// goes last and new variants are appended ahead of it.
@@ -268,6 +278,7 @@ impl fmt::Display for ModuleFunctions {
             Self::Fnmatch(func) => write!(f, "{func}"),
             Self::Typing(func) => write!(f, "{func}"),
             Self::Annotationlib(func) => write!(f, "{func}"),
+            Self::Urllib(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
             Self::Gc(func) => write!(f, "{func}"),
             #[cfg(feature = "test-hooks")]
@@ -308,6 +319,7 @@ impl ModuleFunctions {
             Self::Fnmatch(functions) => fnmatch::call(vm, functions, args).map(CallResult::Value),
             Self::Typing(functions) => typing::call(vm, functions, args),
             Self::Annotationlib(functions) => annotationlib::call(vm, functions, args),
+            Self::Urllib(functions) => urllib::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
             Self::Gc(functions) => gc::call(vm, functions, args).map(CallResult::Value),
             #[cfg(feature = "test-hooks")]
