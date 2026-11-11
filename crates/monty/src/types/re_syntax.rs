@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
+    modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE, VERBOSE},
     types::str::{StringRepr, str_isidentifier},
 };
 
@@ -22,8 +22,6 @@ use crate::{
 const LOCALE: u16 = 4;
 /// `re.UNICODE`, incompatible with `re.ASCII`.
 const UNICODE: u16 = 32;
-/// `re.VERBOSE`: whitespace and `#` comments outside classes are ignored.
-const VERBOSE: u16 = 64;
 /// The flags that pick how character classes behave; at most one may be set.
 const TYPE_FLAGS: u16 = ASCII | LOCALE | UNICODE;
 

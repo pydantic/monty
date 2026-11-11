@@ -190,7 +190,7 @@ impl Error for ModuleStubError {}
 
 /// Sandbox module names, excluding the dotted name `os.path`.
 /// Imports of these modules never reach the host, so host modules cannot use these names.
-/// Keep in sync with the runtime's `StandardLib`.
+/// Keep in sync with the runtime's `StandardLib` and the vendored modules in `crates/monty/stdlib/vendor.toml`.
 pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "annotationlib",
     "asyncio",
@@ -198,6 +198,7 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "binascii",
     "bisect",
     "collections",
+    "colorsys",
     "copy",
     "csv",
     "dataclasses",
@@ -209,13 +210,16 @@ pub const SANDBOX_MODULE_NAMES: &[&str] = &[
     "hashlib",
     "itertools",
     "json",
+    "keyword",
     "math",
     "os",
     "pathlib",
     "posixpath",
     "random",
     "re",
+    "stat",
     "sys",
+    "textwrap",
     "time",
     "tomllib",
     "typing",
@@ -230,6 +234,7 @@ pub const CHECKER_MODULE_NAMES: &[&str] = &[
     "__main__",
     "_collections_abc",
     "_io",
+    "_stat",
     "_typeshed",
     "abc",
     "builtins",

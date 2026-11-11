@@ -7,8 +7,8 @@ There is no `sys.path` or site-packages.
 
 `os.path` (also importable as `posixpath`) is the only submodule.
 
-Every bundled import builds a fresh module object; there is no `sys.modules` cache, except for
-[modules from files](#modules-from-files).
+Every import of a native module builds a fresh module object; there is no `sys.modules` cache, except for
+[vendored CPython modules](#vendored-cpython-modules) and [modules from files](#modules-from-files).
 Thus `import math as a; import math as b` leaves `a is not b`, and changes such as `sys.argv.append(...)` do not
 survive the next import.
 Assigning a bundled module's attributes raises `AttributeError`, as in `sys.x = 1`.
@@ -19,36 +19,40 @@ in the next feed, and after a dump (see [random.md](random.md)).
 
 ## Modules available
 
-| Module          | See                                  |
-| --------------- | ------------------------------------ |
-| `annotationlib` | [annotationlib.md](annotationlib.md) |
-| `asyncio`       | [asyncio.md](asyncio.md)             |
-| `base64`        | [base64.md](base64.md)               |
-| `binascii`      | [base64.md](base64.md)               |
-| `bisect`        | [bisect.md](bisect.md)               |
-| `collections`   | [collections.md](collections.md)     |
-| `copy`          | [copy.md](copy.md)                   |
-| `csv`           | [csv.md](csv.md)                     |
-| `dataclasses`   | [dataclasses.md](dataclasses.md)     |
-| `datetime`      | [datetime.md](datetime.md)           |
-| `decimal`       | [decimal.md](decimal.md)             |
-| `fnmatch`       | [fnmatch.md](fnmatch.md)             |
-| `functools`     | [functools.md](functools.md)         |
-| `hashlib`       | [hashlib.md](hashlib.md)             |
-| `itertools`     | [itertools.md](itertools.md)         |
-| `json`          | [json.md](json.md)                   |
-| `math`          | [math.md](math.md)                   |
-| `os`            | [os.md](os.md)                       |
-| `os.path`       | [os.md](os.md)                       |
-| `pathlib`       | [pathlib.md](pathlib.md)             |
-| `posixpath`     | [os.md](os.md)                       |
-| `random`        | [random.md](random.md)               |
-| `re`            | [re.md](re.md)                       |
-| `sys`           | [sys.md](sys.md)                     |
-| `time`          | [time.md](time.md)                   |
-| `tomllib`       | [tomllib.md](tomllib.md)             |
-| `typing`        | [typing.md](typing.md)               |
-| `unicodedata`   | [unicodedata.md](unicodedata.md)     |
+| Module          | See                                   |
+| --------------- | ------------------------------------- |
+| `annotationlib` | [annotationlib.md](annotationlib.md)  |
+| `asyncio`       | [asyncio.md](asyncio.md)              |
+| `base64`        | [base64.md](base64.md)                |
+| `binascii`      | [base64.md](base64.md)                |
+| `bisect`        | [bisect.md](bisect.md)                |
+| `collections`   | [collections.md](collections.md)      |
+| `colorsys`      | [vendored](#vendored-cpython-modules) |
+| `copy`          | [copy.md](copy.md)                    |
+| `csv`           | [csv.md](csv.md)                      |
+| `dataclasses`   | [dataclasses.md](dataclasses.md)      |
+| `datetime`      | [datetime.md](datetime.md)            |
+| `decimal`       | [decimal.md](decimal.md)              |
+| `fnmatch`       | [fnmatch.md](fnmatch.md)              |
+| `functools`     | [functools.md](functools.md)          |
+| `hashlib`       | [hashlib.md](hashlib.md)              |
+| `itertools`     | [itertools.md](itertools.md)          |
+| `json`          | [json.md](json.md)                    |
+| `keyword`       | [vendored](#vendored-cpython-modules) |
+| `math`          | [math.md](math.md)                    |
+| `os`            | [os.md](os.md)                        |
+| `os.path`       | [os.md](os.md)                        |
+| `pathlib`       | [pathlib.md](pathlib.md)              |
+| `posixpath`     | [os.md](os.md)                        |
+| `random`        | [random.md](random.md)                |
+| `re`            | [re.md](re.md)                        |
+| `stat`          | [vendored](#vendored-cpython-modules) |
+| `sys`           | [sys.md](sys.md)                      |
+| `textwrap`      | [vendored](#vendored-cpython-modules) |
+| `time`          | [time.md](time.md)                    |
+| `tomllib`       | [tomllib.md](tomllib.md)              |
+| `typing`        | [typing.md](typing.md)                |
+| `unicodedata`   | [unicodedata.md](unicodedata.md)      |
 
 `collections` is importable and exposes `deque`, `Counter`, `defaultdict`,
 and `namedtuple`; `OrderedDict`, `ChainMap`, and the `UserDict` / `UserList`
@@ -83,12 +87,46 @@ raising `AttributeError` at runtime; see each module's page for the specifics.
 
 ## Modules the type checker resolves but the runtime does not
 
-`abc`, `enum`, `io`, `_io`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the vendored
-stubs, so their imports pass type checking.
+`abc`, `enum`, `io`, `_io`, `_stat`, `types`, `typing_extensions`, `_collections_abc` and `_typeshed` support the
+vendored stubs, so their imports pass type checking.
 `io` and `_io` declare the file objects `open()` returns.
 At runtime, the host must provide them or the import raises `ModuleNotFoundError`.
 The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
 typeshed's `abc` declarations.
+
+## Vendored CPython modules
+
+`colorsys`, `keyword`, `stat` and `textwrap` run CPython 3.14's own `Lib/*.py`, copied from the release pinned in
+`crates/monty/stdlib/vendor.toml`, so they match CPython wherever the language features they use do.
+They differ from CPython's modules in how they are loaded:
+
+- Each is compiled the first time a session imports it, then cached by name for the rest of the session, like a
+    [module from a file](#modules-from-files); a session dump keeps it.
+- `__file__` is `<stdlib>/<name>.py`, which is not a path in the sandbox's filesystem, and tracebacks through
+    the module show that name where CPython shows its installation path.
+- Their globals are those of a [module from a file](#modules-from-files): `__spec__`, `__loader__`, `__cached__`,
+    `__builtins__` and `__doc__` are not defined.
+- The host is never asked for these names, so neither a host module nor a same-named `.py` file in the working
+    directory can shadow them; in CPython a script's directory comes before the standard library on `sys.path`.
+
+`keyword`, `stat` and `textwrap` are patched (`crates/monty/stdlib/patches/`), with these consequences:
+
+- `keyword.iskeyword` and `keyword.issoftkeyword` are Python functions, where CPython binds
+    `frozenset.__contains__`: a wrong argument count raises
+    `TypeError: iskeyword() missing 1 required positional argument: 's'` (CPython:
+    `frozenset.__contains__() takes exactly one argument (0 given)`), and their `repr()` differs.
+- `stat` is CPython's pure-Python definitions without the C `_stat` accelerator CPython loads over them, so:
+    - Its functions are Python functions with Python's argument errors.
+    - A non-`int` mode raises `TypeError: unsupported operand type(s) for &: 'str' and 'int'`
+        (CPython: `'str' object cannot be interpreted as an integer`).
+    - Negative and oversized modes are masked rather than rejected: `stat.S_ISDIR(-1)` returns `False` where CPython
+        raises `OverflowError: can't convert negative value to unsigned int`.
+    - Platform-specific constants take `stat.py`'s portable values on every host: `S_IFWHT` is `0` and
+        `SF_SETTABLE` is `0xffff0000`, where CPython on macOS reports `0o160000` and `0x3fff0000`.
+- `textwrap` is patched because Monty does not parse `del` yet: the class-body `del` that CPython uses to remove the
+    regex building blocks is dropped, so `TextWrapper.word_punct`, `TextWrapper.letter`, `TextWrapper.nowhitespace`
+    and `TextWrapper.whitespace` exist as class attributes (CPython deletes them), and the statements `del chunks[-1]` and
+    `del cur_line[-1]` are `.pop()` calls with the same effect.
 
 ## Host modules
 

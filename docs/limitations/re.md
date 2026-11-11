@@ -56,9 +56,7 @@ Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
 
 `ASCII` is accepted but has no effect: `\w`, `\d` and `\s` stay Unicode-aware, with or without `(?a)`.
 
-Not implemented: `VERBOSE` / `X`, `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U`
-(Unicode is always on). `re.VERBOSE` / `re.X` are not exposed, but the inline `(?x)` flag and the bit value `64`
-enable verbose mode.
+Not implemented: `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U` (Unicode is always on).
 Unknown flag bits within the accepted `u16` range are
 silently accepted; bits above that range are rejected by the integer range
 check.

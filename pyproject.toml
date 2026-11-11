@@ -53,6 +53,8 @@ include = [
 # Exclude files with intentional syntax errors or special formatting requirements
 extend-exclude = [
     "crates/monty-bench/benches/python",
+    # CPython source, vendored by `make vendor-stdlib` with documented patches
+    "crates/monty/stdlib",
     "crates/monty/test_cases/function__err_duplicate_param.py",
     "crates/monty/test_cases/function__err_repeated_keyword.py",
     "crates/monty/test_cases/nonlocal__error_module_level.py",
@@ -335,6 +337,7 @@ skip = [
     "crates/monty-bench/benches/python/pyperformance_*.py",
 
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
+    "crates/monty/stdlib/*",
     "crates/monty/src/types/str.rs",
 ]
 

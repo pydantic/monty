@@ -2126,6 +2126,74 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a TypeError for `str.translate()` when a mapping returns something other than an int, `None` or str.
+    ///
+    /// Matches CPython's format: `TypeError: character mapping must return integer, None or str`
+    #[must_use]
+    fn type_error_translate_value() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "character mapping must return integer, None or str").into()
+    }
+
+    /// Creates a ValueError for `str.translate()` when a mapped int is not a code point.
+    ///
+    /// Matches CPython's format: `ValueError: character mapping must be in range(0x110000)`
+    #[must_use]
+    fn value_error_translate_range() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "character mapping must be in range(0x110000)").into()
+    }
+
+    /// Creates a ValueError for `str.maketrans(x, y)` when `x` and `y` differ in length.
+    ///
+    /// Matches CPython's format: `ValueError: the first two maketrans arguments must have equal length`
+    #[must_use]
+    fn value_error_maketrans_lengths() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "the first two maketrans arguments must have equal length",
+        )
+        .into()
+    }
+
+    /// Creates a ValueError for a `str.maketrans(dict)` key that is not one character long (typo is CPython's).
+    ///
+    /// Matches CPython's format: `ValueError: string keys in translatetable must be of length 1`
+    #[must_use]
+    fn value_error_maketrans_key_length() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "string keys in translatetable must be of length 1").into()
+    }
+
+    /// Creates a TypeError for `str.maketrans(x)` when `x` is not a dict.
+    ///
+    /// Matches CPython's format: `TypeError: if you give only one argument to maketrans it must be a dict`
+    #[must_use]
+    fn type_error_maketrans_dict() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "if you give only one argument to maketrans it must be a dict",
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `str.maketrans(x, y)` when `x` is not a str.
+    ///
+    /// Matches CPython's format: `TypeError: first maketrans argument must be a string if there is a second argument`
+    #[must_use]
+    fn type_error_maketrans_first_str() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "first maketrans argument must be a string if there is a second argument",
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a `str.maketrans(dict)` key that is neither a str nor an int (typo is CPython's).
+    ///
+    /// Matches CPython's format: `TypeError: keys in translate table mustbe strings or integers`
+    #[must_use]
+    fn type_error_maketrans_key_type() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "keys in translate table mustbe strings or integers").into()
+    }
+
     /// Creates a TypeError for str.join() when the argument is not iterable.
     ///
     /// Matches CPython's format: `TypeError: can only join an iterable`

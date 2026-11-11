@@ -98,6 +98,10 @@ jobs:
       - name: Check vendored typeshed stubs are in sync
         run: make check-typeshed
 
+      # the vendored CPython modules must be the pinned release's files, unmodified
+      - name: Check vendored CPython stdlib modules are in sync
+        run: make check-stdlib
+
       # packaging resolves every crate's dependencies against crates.io, which
       # catches manifests that only break at release time (e.g. a versioned
       # path dependency on a crate that is not published yet)
