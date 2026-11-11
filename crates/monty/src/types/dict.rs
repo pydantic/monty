@@ -147,6 +147,11 @@ impl DictKind {
     pub fn counter() -> Self {
         Self(Some(Box::new(DictSpecial::Counter)))
     }
+
+    /// Whether its factory retains an object in the interpreter heap.
+    fn contains_refs(&self) -> bool {
+        matches!(self.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(_)))))
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -284,9 +289,7 @@ impl Dict {
     /// Adopts a kind produced by [`cloned_kind`], taking ownership of any
     /// factory reference it carries.
     pub fn set_kind(&mut self, kind: DictKind) {
-        if matches!(kind.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(_))))) {
-            self.contains_refs = true;
-        }
+        self.contains_refs |= kind.contains_refs();
         self.kind = kind;
     }
 
@@ -424,13 +427,16 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap, interns: &Inter
 }
 
 impl<'h> HeapRead<'h, Dict> {
-    /// Copies entries into a plain dict, leaving type/factory selection to the caller.
-    /// `dict(special)` must discard that metadata, while `.copy()` preserves it.
-    pub(crate) fn plain_copy(&self, vm: &mut VM<'h>) -> RunResult<Dict> {
+    /// Copies cached entries with the requested kind, taking ownership of its factory.
+    /// A failed table copy releases the kind and any factory reference it owns.
+    #[inline]
+    pub(crate) fn copy_as(&self, kind: DictKind, vm: &mut VM<'h>) -> RunResult<Dict> {
+        let contains_refs = self.get(vm.heap).contains_refs || kind.contains_refs();
+        let mut kind_guard = DropGuard::new(kind, vm);
         Ok(Dict {
-            table: self.copy_table(vm)?,
-            contains_refs: self.get(vm.heap).contains_refs,
-            kind: DictKind::plain(),
+            table: self.copy_table(kind_guard.ctx())?,
+            contains_refs,
+            kind: kind_guard.into_inner(),
         })
     }
 
@@ -781,7 +787,7 @@ impl Dict {
                 let (source, vm) = source_guard.as_parts();
                 if let Some(HeapReadOutput::Dict(source)) = source.read_heap(vm) {
                     // Reuse cached hashes without key callbacks; dict() discards Counter/defaultdict metadata.
-                    let copy = source.plain_copy(vm)?;
+                    let copy = source.copy_as(DictKind::plain(), vm)?;
                     mem::replace(dict, copy).drop_with(vm);
                 } else {
                     let (source, vm) = source_guard.into_parts();
@@ -1720,9 +1726,8 @@ fn dict_clear<'h>(dict: &HeapReadMut<'h, Dict>, vm: &mut VM<'h>) {
 ///
 /// Returns a shallow copy of the dict.
 fn dict_copy<'h>(dict: &HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Value> {
-    let mut copy = dict.plain_copy(vm)?;
     // Preserve Counter/defaultdict types and retain the defaultdict factory.
-    copy.set_kind(dict.get(vm.heap).cloned_kind(vm.heap));
+    let copy = dict.copy_as(dict.get(vm.heap).cloned_kind(vm.heap), vm)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(copy))))
 }
 
@@ -2241,5 +2246,41 @@ impl<'h> PyDeepCopy<'h> for HeapRead<'h, Dict> {
         }
         let (copy, _) = guard.into_parts();
         Ok(copy)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monty_types::{PrintWriter, ResourceTracker};
+
+    use super::{Dict, DictKind};
+    use crate::{
+        bytecode::VM,
+        heap::{DropWithContext, Heap, HeapData, HeapReader},
+        run::{Program, SessionTables},
+        types::List,
+        value::Value,
+    };
+
+    /// The requested kind can add heap references that were absent from the source table.
+    #[test]
+    fn copy_as_tracks_the_requested_factory_for_gc() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        let factory = Value::Ref(heap.allocate(HeapData::List(List::new(Vec::new()))));
+        let kind = DictKind::defaultdict(Some(factory));
+        let source = Dict::new();
+        let mut tables = SessionTables::default();
+        let program = Program::for_tests();
+        HeapReader::with(
+            &mut heap,
+            &mut (&program, &mut tables, &source),
+            |reader, (program, tables, source)| {
+                let mut vm = VM::new(Vec::new(), tables, program, reader, PrintWriter::Disabled);
+                let copy = vm.heap.protect(*source).copy_as(kind, &mut vm).unwrap();
+                assert!(copy.contains_refs);
+                assert!(copy.is_defaultdict());
+                copy.drop_with(&mut vm);
+            },
+        );
     }
 }

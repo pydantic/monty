@@ -194,8 +194,7 @@ pub(crate) fn counter_update<'h>(
                 let Some(src) = vm.heap.read_as::<Dict>(*src_id) else {
                     unreachable!("mapping is a dict");
                 };
-                let mut copy = src.plain_copy(vm)?;
-                copy.set_kind(counter.get(vm.heap).cloned_kind(vm.heap));
+                let copy = src.copy_as(counter.get(vm.heap).cloned_kind(vm.heap), vm)?;
                 mem::replace(counter.get_mut(vm.heap), copy).drop_with(vm);
             } else {
                 // Snapshot first so `c.update(c)` is well-defined, then release the read guard before callbacks.

@@ -1611,6 +1611,39 @@ fn timeout_in_dict_copy_releases_partial_entries() {
     }
 }
 
+/// A refused copy must release the factory reference retained by its requested kind.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn refused_dict_copy_releases_default_factory() {
+    let mut repl = MontyRepl::new("test.py", ResourceTracker::default(), CompileOptions::default());
+    repl.feed_run(
+        "from collections import defaultdict\ndef make_factory():\n    captured = []\n    def factory():\n        return captured\n    return factory",
+        vec![],
+        PrintWriter::Disabled,
+    ).unwrap();
+    let initial_entries = repl.heap_entry_count();
+    repl.feed_run(
+        "factory = make_factory()\nsource = defaultdict(factory, {1: 2})",
+        vec![],
+        PrintWriter::Disabled,
+    )
+    .unwrap();
+    // Without an allocator probe, zero isolates the nonempty table-copy preflight.
+    repl.tracker_mut()
+        .tighten_limits(&ResourceLimits::default().max_memory(0));
+    let error = repl
+        .feed_run("source.copy()", vec![], PrintWriter::Disabled)
+        .expect_err("the table-copy preflight must reject the copy");
+    assert_eq!(error.exc_type(), ExcType::MemoryError);
+    repl.feed_run("source = None\nfactory = None", vec![], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(
+        repl.heap_entry_count(),
+        initial_entries,
+        "the rejected kind must not retain its factory"
+    );
+}
+
 /// Full set copies must stop mid-fill and release every retained member on failure.
 #[test]
 #[cfg(feature = "ref-count-return")]
