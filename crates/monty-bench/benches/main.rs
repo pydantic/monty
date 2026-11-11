@@ -6,6 +6,8 @@
 //! `[bench]` table of a script's `# /// monty` header (`monty_fixture::Bench`) takes:
 //!
 //! - `data = '<path>'`: bind `DATA` to the contents of `<path>`, relative to the script
+//! - `data = { corpus = 'mostly-ascii', chars = 6472, offsets = 256 }`: generate `DATA` and optional
+//!   seeded `OFFSETS` before timing; `multilingual` is the other corpus
 //! - `mount = true`: bind `DATA` to the root of the mounted [`scan_tree`]
 //! - `overlay = true`: with `mount`, also register `<name>_overlay__monty` over an overlay mount
 //! - `limits = true`: also register `<name>_limits__monty` with resource limits armed
@@ -22,14 +24,17 @@ use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, 
 #[cfg(not(feature = "codspeed"))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
-use monty_fixture::{Bench, Header};
+use monty_fixture::{Bench, BenchData, BenchInput, Header};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{CompileOptions, ExtFunctionResult, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 #[cfg(all(not(feature = "codspeed"), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
 #[cfg(not(feature = "codspeed"))]
-use pyo3::{prelude::*, types::PyDict};
+use pyo3::{
+    prelude::*,
+    types::{PyDict, PyTuple},
+};
 use tempfile::TempDir;
 
 // The real worker allocator, so the interpreter benchmarks can price it:
@@ -83,8 +88,8 @@ struct Script {
 /// What a script's `DATA` global is bound to.
 enum Input {
     None,
-    /// The contents of the file `data` names.
-    Data(String),
+    /// File-backed or generated text, with optional precomputed lookup offsets.
+    Data(BenchInput),
     /// The scan tree's root: `/data` for Monty's mount, the host path for CPython.
     Mount,
 }
@@ -116,7 +121,11 @@ impl Script {
         );
         let input = match (data, mount) {
             (Some(_), true) => panic!("{}: `data` with `mount`", path.display()),
-            (Some(data), false) => Input::Data(fs::read_to_string(path.parent().unwrap().join(data)).unwrap()),
+            (Some(BenchData::File(data)), false) => Input::Data(BenchInput {
+                text: fs::read_to_string(path.parent().unwrap().join(data)).unwrap(),
+                offsets: Vec::new(),
+            }),
+            (Some(BenchData::Generated(data)), false) => Input::Data(data.generate()),
             (None, true) => Input::Mount,
             (None, false) => Input::None,
         };
@@ -140,7 +149,7 @@ impl Script {
         let filename = &self.filename;
         let data = match &self.input {
             Input::None => None,
-            Input::Data(data) => Some(data.as_str()),
+            Input::Data(data) => Some(data),
             Input::Mount => None,
         };
         if matches!(self.input, Input::Mount) {
@@ -163,12 +172,14 @@ impl Script {
         }
         #[cfg(not(feature = "codspeed"))]
         {
-            let host_root = tree.to_str().expect("temporary directories have UTF-8 paths");
-            let data = if matches!(self.input, Input::Mount) {
-                Some(host_root)
-            } else {
-                data
-            };
+            let host_data = matches!(self.input, Input::Mount).then(|| BenchInput {
+                text: tree
+                    .to_str()
+                    .expect("temporary directories have UTF-8 paths")
+                    .to_owned(),
+                offsets: Vec::new(),
+            });
+            let data = host_data.as_ref().or(data);
             c.bench_function(&format!("{name}__cpython"), |b| run_cpython(b, code, filename, data));
         }
     }
@@ -188,14 +199,14 @@ fn file_stem(path: &Path) -> &str {
 }
 
 /// Parses once, then benchmarks repeated execution, binding `DATA` when `data` is given.
-fn run_monty(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>) {
+fn run_monty(bench: &mut Bencher, code: &str, filename: &str, data: Option<&BenchInput>) {
     let mut ex = parse_with_data(code, filename, data);
     bench.iter(|| black_box(ex.run_no_limits(data_inputs(data)).unwrap()));
 }
 
 /// Runs with production-shaped resource limits armed (generous budgets that never trip),
 /// measuring the amortized limit-checking path sandboxes run rather than the no-limits path.
-fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>) {
+fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Option<&BenchInput>) {
     let mut ex = parse_with_data(code, filename, data);
     let limits = ResourceLimits::default()
         .max_feed_duration(Duration::from_mins(10))
@@ -206,16 +217,28 @@ fn run_monty_limits(bench: &mut Bencher, code: &str, filename: &str, data: Optio
     });
 }
 
-/// Parses `code`, declaring a `DATA` input when `data` is given.
-fn parse_with_data(code: &str, filename: &str, data: Option<&str>) -> MontyRun {
-    let input_names = data.map(|_| vec!["DATA".to_owned()]).unwrap_or_default();
+/// Parses `code`, declaring `DATA` and optional `OFFSETS` inputs.
+fn parse_with_data(code: &str, filename: &str, data: Option<&BenchInput>) -> MontyRun {
+    let mut input_names = Vec::new();
+    if let Some(data) = data {
+        input_names.push("DATA".to_owned());
+        if !data.offsets.is_empty() {
+            input_names.push("OFFSETS".to_owned());
+        }
+    }
     MontyRun::new(code.to_owned(), filename, input_names, CompileOptions::default()).unwrap()
 }
 
 /// The input values matching [`parse_with_data`]'s declaration.
-fn data_inputs(data: Option<&str>) -> Vec<MontyObject> {
-    data.map(|data| vec![MontyObject::string(data.to_owned())])
-        .unwrap_or_default()
+fn data_inputs(data: Option<&BenchInput>) -> Vec<MontyObject> {
+    let mut inputs = Vec::new();
+    if let Some(data) = data {
+        inputs.push(MontyObject::string(data.text.clone()));
+        if !data.offsets.is_empty() {
+            inputs.push(MontyObject::tuple(data.offsets.iter().copied().map(MontyObject::int)));
+        }
+    }
+    inputs
 }
 
 /// Runs with `host_root` mounted at `/data` in `mode`, bound to `DATA`, answering every
@@ -279,7 +302,7 @@ fn scan_tree() -> TempDir {
 /// Compiles once, then benchmarks executing the module in fresh globals, at module scope as
 /// Monty runs it, binding `DATA` when `data` is given.
 #[cfg(not(feature = "codspeed"))]
-fn run_cpython(bench: &mut Bencher, code: &str, filename: &str, data: Option<&str>) {
+fn run_cpython(bench: &mut Bencher, code: &str, filename: &str, data: Option<&BenchInput>) {
     Python::attach(|py| {
         let builtins = py.import("builtins").unwrap();
         let compiled = builtins.call_method1("compile", (code, filename, "exec")).unwrap();
@@ -287,7 +310,12 @@ fn run_cpython(bench: &mut Bencher, code: &str, filename: &str, data: Option<&st
         bench.iter(|| {
             let globals = PyDict::new(py);
             if let Some(data) = data {
-                globals.set_item("DATA", data).unwrap();
+                globals.set_item("DATA", &data.text).unwrap();
+                if !data.offsets.is_empty() {
+                    globals
+                        .set_item("OFFSETS", PyTuple::new(py, &data.offsets).unwrap())
+                        .unwrap();
+                }
             }
             exec.call1((&compiled, &globals)).unwrap();
             black_box(globals);

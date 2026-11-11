@@ -1,21 +1,19 @@
 # /// monty
 # [bench]
-# data = '../data/string_paragraphs_128k.txt'
+# data = { corpus = 'mostly-ascii', chars = 131072 }
 # ///
-# Index paragraph boundaries for chunking or highlighting a 128K-character document (~99.12% ASCII).
-# Normalize line endings so the offsets also match on Windows checkouts.
-text = DATA.replace('\r\n', '\n')
-length = len(text)
+# Index paragraph boundaries for chunking or highlighting a 128K-character document (~99% ASCII).
+length = len(DATA)
 start = 0
 boundaries = []
 
 while start < length:
-    end = text.find('\n\n', start)
+    end = DATA.find('\n\n', start)
     if end < 0:
         end = length
     boundaries.append((start, end))
     start = end + 2
 
-assert len(boundaries) == 507
-assert sum(end - start for start, end in boundaries) == 130060
-assert sum(start for start, end in boundaries) == 33171634
+assert len(boundaries) == 687
+assert sum(end - start for start, end in boundaries) == 129700
+assert sum(start for start, end in boundaries) == 44973213

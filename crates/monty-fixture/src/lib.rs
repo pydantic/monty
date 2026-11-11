@@ -17,6 +17,10 @@ use std::{error::Error, fmt};
 
 use serde::Deserialize;
 
+mod generated_data;
+
+pub use generated_data::{BenchData, BenchInput, Corpus, GeneratedData};
+
 /// The line that opens a monty header block.
 const BLOCK_START: &str = "# /// monty";
 /// The line that closes any PEP 723 block.
@@ -80,8 +84,8 @@ pub enum Interpreter {
 #[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Bench {
-    /// Bind `DATA` to the contents of this file, relative to the script.
-    pub data: Option<String>,
+    /// Bind `DATA` from a file path or a generated-text table; offsets also bind `OFFSETS`.
+    pub data: Option<BenchData>,
     /// Bind `DATA` to the root of the benchmarks' mounted scan tree.
     pub mount: bool,
     /// With `mount`, also benchmark over an overlay mount.

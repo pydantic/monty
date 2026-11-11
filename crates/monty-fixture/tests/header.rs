@@ -1,5 +1,5 @@
 use insta::assert_snapshot;
-use monty_fixture::{Bench, Header, Interpreter};
+use monty_fixture::{Bench, BenchData, Corpus, GeneratedData, Header, Interpreter};
 
 /// The error message from parsing `source`, which must fail.
 fn parse_error(source: &str) -> String {
@@ -36,7 +36,7 @@ x = 1
             gc_interval: Some(200),
             timezone: Some("Europe/London".to_owned()),
             bench: Bench {
-                data: Some("../input.json".to_owned()),
+                data: Some(BenchData::File("../input.json".to_owned())),
                 limits: true,
                 ..Bench::default()
             },
@@ -66,6 +66,33 @@ fn rejects_unknown_bench_key() {
       | ^^^^^^^^
     unknown field `mount-fs`, expected one of `data`, `mount`, `overlay`, `limits`
     ");
+}
+
+#[test]
+fn reads_generated_benchmark_data() {
+    let header = Header::parse(
+        "# /// monty\n# [bench]\n# data = { corpus = 'mostly-ascii', chars = 6472, offsets = 256 }\n# ///\n",
+    )
+    .unwrap();
+    assert_eq!(
+        header.bench.data,
+        Some(BenchData::Generated(GeneratedData {
+            corpus: Corpus::MostlyAscii,
+            chars: 6472,
+            offsets: 256,
+        }))
+    );
+}
+
+#[test]
+fn generated_data_rejects_invalid_settings() {
+    for data in [
+        "{ corpus = 'unknown', chars = 6472 }",
+        "{ corpus = 'mostly-ascii', chars = -1 }",
+        "{ corpus = 'mostly-ascii', chars = 6472, offests = 256 }",
+    ] {
+        assert!(Header::parse(&format!("# /// monty\n# [bench]\n# data = {data}\n# ///\n")).is_err());
+    }
 }
 
 #[test]
