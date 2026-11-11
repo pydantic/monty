@@ -972,6 +972,16 @@ fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Hash
     }
 }
 
+/// Whether an instance's class defines `name`, which is how CPython decides a
+/// class takes part in a protocol (`operator.concat` asks for `__getitem__`).
+pub(crate) fn instance_class_defines(self_id: HeapId, name: &'static str, vm: &mut VM<'_>) -> bool {
+    let class_id = instance_class(self_id, vm);
+    class_member(class_id, name, vm).is_some_and(|member| {
+        member.drop_with(vm);
+        true
+    })
+}
+
 /// Looks up a member in a class namespace and clones it out, or `None` if absent.
 fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     match vm.heap.get(class_id) {

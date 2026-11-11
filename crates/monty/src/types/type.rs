@@ -18,13 +18,14 @@ use crate::{
     },
     py_value::PyValue,
     types::{
-        Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, Partial, Path, PyTrait, Random, Range,
-        Set, Slice, Str, TimeZone, Tuple,
+        Bytes, Deque, Dict, ForwardRef, FrozenSet, GenericAlias, List, LongInt, OperatorCallable, Partial, Path,
+        PyTrait, Random, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         complex, date, datetime, decimal,
         dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
+        operator_callable::OperatorKind,
         path,
         str::{StringRepr, allocate_string},
         time,
@@ -345,6 +346,15 @@ pub enum Type {
     /// `annotationlib.ForwardRef`, an unevaluated annotation.
     #[strum(serialize = "annotationlib.ForwardRef")]
     ForwardRef,
+    /// `operator.itemgetter`, qualified like `functools.partial`.
+    #[strum(serialize = "operator.itemgetter")]
+    ItemGetter,
+    /// `operator.attrgetter`.
+    #[strum(serialize = "operator.attrgetter")]
+    AttrGetter,
+    /// `operator.methodcaller`.
+    #[strum(serialize = "operator.methodcaller")]
+    MethodCaller,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -837,6 +847,9 @@ impl Type {
             Self::Path => Path::init(vm, args),
             Self::ForwardRef => ForwardRef::init(vm, args),
             Self::Partial => Partial::init(vm, args),
+            Self::ItemGetter => OperatorCallable::init(OperatorKind::ItemGetter, vm, args),
+            Self::AttrGetter => OperatorCallable::init(OperatorKind::AttrGetter, vm, args),
+            Self::MethodCaller => OperatorCallable::init(OperatorKind::MethodCaller, vm, args),
             Self::Random => Random::init(vm, args),
             Self::Blake2b => hashlib::blake2_init(Blake2Kind::Blake2b, vm, args),
             Self::Blake2s => hashlib::blake2_init(Blake2Kind::Blake2s, vm, args),

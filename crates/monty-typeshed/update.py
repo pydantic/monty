@@ -168,6 +168,7 @@ VERSIONS = """\
 # which monty's minimimal typeshed includes
 
 _collections_abc: 3.3-
+_operator: 3.0-
 _io: 3.0-  # not importable at runtime, only for type checking
 _typeshed: 3.0-  # not present at runtime, only for type checking
 abc: 3.0-  # not importable at runtime, only for type checking
@@ -191,6 +192,7 @@ io: 3.0-  # not importable at runtime, only for type checking
 itertools: 3.0-
 json: 3.0-
 math: 3.0-
+operator: 3.0-
 os: 3.0-
 os.path: 3.0-
 pathlib: 3.4-

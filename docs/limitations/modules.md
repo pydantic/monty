@@ -38,6 +38,8 @@ in the next feed, and after a dump (see [random.md](random.md)).
 | `itertools`     | [itertools.md](itertools.md)         |
 | `json`          | [json.md](json.md)                   |
 | `math`          | [math.md](math.md)                   |
+| `_operator`     | [operator.md](operator.md)           |
+| `operator`      | [operator.md](operator.md)           |
 | `os`            | [os.md](os.md)                       |
 | `os.path`       | [os.md](os.md)                       |
 | `pathlib`       | [pathlib.md](pathlib.md)             |
@@ -64,13 +66,13 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `contextlib`,
 `ctypes`, `enum`, `fractions`,
 `heapq`, `hmac`, `http`, `inspect`, `io`,
-`logging`, `multiprocessing`, `operator`, `pickle`, `queue`,
+`logging`, `multiprocessing`, `pickle`, `queue`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.
 
 `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` are
-excluded because they would breach the sandbox. Others (`enum`, `operator`)
+excluded because they would breach the sandbox. Others (such as `enum`)
 are unimplemented and may appear over time.
 
 Some available modules cover only part of their CPython surface: `functools`

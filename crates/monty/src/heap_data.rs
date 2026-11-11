@@ -161,6 +161,8 @@ macro_rules! heap_payloads {
             Time(inline $crate::types::time::Time),
             /// A `functools.partial` object.
             Partial(boxed $crate::types::Partial),
+            /// An `operator.itemgetter`, `attrgetter` or `methodcaller` object.
+            Operator(boxed $crate::types::OperatorCallable),
             /// A `types.GenericAlias` such as `list[int]`.
             GenericAlias(inline $crate::types::GenericAlias),
             /// A `typing.Union` such as `int | None`.
@@ -271,6 +273,7 @@ impl HeapData {
             | Self::GatherFuture(_)
             | Self::ExternalFuture(_)
             | Self::Partial(_)
+            | Self::Operator(_)
             | Self::GenericAlias(_)
             | Self::Union(_)
             | Self::ForwardRef(_)
@@ -327,6 +330,7 @@ impl HeapData {
                 | Self::FunctionDefaults(_)
                 | Self::ExtFunction(_)
                 | Self::Partial(_)
+                | Self::Operator(_)
                 | Self::GenericAlias(_)
                 | Self::LruCache(_)
         )
@@ -348,6 +352,7 @@ impl HeapData {
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::Partial(_) => Type::Partial,
+            Self::Operator(callable) => callable.kind().py_type(),
             Self::Random(_) => Type::Random,
             Self::HashObject(hash) => hash.algorithm().py_type(),
             Self::GenericAlias(_) => Type::GenericAlias,

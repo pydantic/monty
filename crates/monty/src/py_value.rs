@@ -146,6 +146,7 @@ macro_rules! forward_py_value {
             Self::DirScan($value) => $body,
             Self::Csv($value) => $body,
             Self::Partial($value) => $body,
+            Self::Operator($value) => $body,
             Self::Random($value) => $body,
             Self::HashObject($value) => $body,
             Self::GenericAlias($value) => $body,

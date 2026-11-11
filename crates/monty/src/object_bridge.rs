@@ -839,7 +839,10 @@ impl MontyTypeExt for MontyType {
             | Type::DecimalContext
             | Type::DecimalSignalDict
             | Type::DecimalContextManager
-            | Type::ForwardRef => return None,
+            | Type::ForwardRef
+            | Type::ItemGetter
+            | Type::AttrGetter
+            | Type::MethodCaller => return None,
             Type::Decimal => Self::Decimal,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

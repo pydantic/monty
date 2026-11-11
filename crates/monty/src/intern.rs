@@ -552,6 +552,8 @@ pub enum StaticStrings {
     A85Encode,
     /// `sys.abiflags` attribute.
     Abiflags,
+    /// `operator.abs()` function.
+    Abs,
     /// Kwarg name `abs_tol` — `math.isclose(abs_tol=...)`.
     AbsTol,
     /// `Path.absolute()` method — yields a host call.
@@ -585,6 +587,9 @@ pub enum StaticStrings {
     Altsep,
     /// `time.altzone` constant.
     Altzone,
+    /// `operator.and_()` function.
+    #[strum(serialize = "and_")]
+    AndUnderscore,
     /// `typing.Annotated` marker.
     #[strum(serialize = "Annotated")]
     Annotated,
@@ -630,6 +635,8 @@ pub enum StaticStrings {
     Atan2,
     /// `math.atanh()` function.
     Atanh,
+    /// `operator.attrgetter` type.
+    Attrgetter,
     /// `base64.b16decode()` function.
     #[strum(serialize = "b16decode")]
     B16Decode,
@@ -734,6 +741,8 @@ pub enum StaticStrings {
     CacheInfoName,
     /// Cached callable's `cache_parameters()` method.
     CacheParameters,
+    /// `operator.call()` function.
+    Call,
     /// `typing.Callable` marker.
     #[strum(serialize = "Callable")]
     Callable,
@@ -810,8 +819,12 @@ pub enum StaticStrings {
     Compile,
     /// `itertools.compress()` function.
     Compress,
+    /// `operator.concat()` function.
+    Concat,
     /// `complex.conjugate()` method.
     Conjugate,
+    /// `operator.contains()` function.
+    Contains,
     /// Kwarg name `context` — the `decimal` methods.
     Context,
     /// `decimal.Context` class.
@@ -835,6 +848,9 @@ pub enum StaticStrings {
     /// The `collections.Counter` type/factory.
     #[strum(serialize = "Counter")]
     Counter,
+    /// `operator.countOf()` function.
+    #[strum(serialize = "countOf")]
+    Countof,
     /// `counts` parameter of `random.sample()`.
     Counts,
     /// `crc` parameter of `binascii.crc32()`.
@@ -1261,6 +1277,8 @@ pub enum StaticStrings {
     FloatReprStyle,
     /// `math.floor()` function.
     Floor,
+    /// `operator.floordiv()` function.
+    Floordiv,
     /// `file.flush()` method.
     Flush,
     /// `math.fma()` function.
@@ -1339,6 +1357,8 @@ pub enum StaticStrings {
     Gc,
     /// `math.gcd()` function.
     Gcd,
+    /// `operator.ge()` function.
+    Ge,
     /// `typing.Generator` marker.
     #[strum(serialize = "Generator")]
     Generator,
@@ -1365,6 +1385,8 @@ pub enum StaticStrings {
     Getcwdb,
     /// `os.getenv()` function.
     Getenv,
+    /// `operator.getitem()` function.
+    Getitem,
     /// `os.path.getmtime()` function.
     Getmtime,
     /// `random.getrandbits()` function.
@@ -1392,6 +1414,8 @@ pub enum StaticStrings {
     Grouper,
     /// `match.groups()` method
     Groups,
+    /// `operator.gt()` function.
+    Gt,
     /// `field(hash=...)`.
     Hash,
     /// `hash_name` parameter of `hashlib.pbkdf2_hmac()`.
@@ -1433,12 +1457,20 @@ pub enum StaticStrings {
     Hours,
     /// `math.hypot()` function.
     Hypot,
+    /// `operator.iadd()` function.
+    Iadd,
+    /// `operator.iand()` function.
+    Iand,
+    /// `operator.iconcat()` function.
+    Iconcat,
     /// `decimal.IEEEContext()` function.
     #[strum(serialize = "IEEEContext")]
     IeeeContext,
     /// `decimal.IEEE_CONTEXT_MAX_BITS` constant.
     #[strum(serialize = "IEEE_CONTEXT_MAX_BITS")]
     IeeeContextMaxBits,
+    /// `operator.ifloordiv()` function.
+    Ifloordiv,
     /// `sys.flags.ignore_environment` field.
     IgnoreEnvironment,
     /// `re.IGNORECASE` flag
@@ -1447,8 +1479,14 @@ pub enum StaticStrings {
     /// `ignorechars` parameter of `base64.a85decode()`.
     #[strum(serialize = "ignorechars")]
     Ignorechars,
+    /// `operator.ilshift()` function.
+    Ilshift,
     /// `complex.imag` attribute.
     Imag,
+    /// `operator.imod()` function.
+    Imod,
+    /// `operator.imul()` function.
+    Imul,
     /// `include_extras` parameter of `typing.get_type_hints()`.
     IncludeExtras,
     /// `binascii.Incomplete` exception class.
@@ -1458,6 +1496,9 @@ pub enum StaticStrings {
     Indent,
     /// `index()` method, shared by `str`, `bytes`, `list`, `tuple` and `deque`.
     Index,
+    /// `operator.indexOf()` function.
+    #[strum(serialize = "indexOf")]
+    Indexof,
     /// `decimal.Inexact` signal.
     #[strum(serialize = "Inexact")]
     Inexact,
@@ -1490,6 +1531,14 @@ pub enum StaticStrings {
     /// `decimal.InvalidOperation` signal.
     #[strum(serialize = "InvalidOperation")]
     InvalidOperation,
+    /// `operator.invert()` function.
+    Invert,
+    /// `operator.ior()` function.
+    Ior,
+    /// `operator.ipow()` function.
+    Ipow,
+    /// `operator.irshift()` function.
+    Irshift,
     /// `Path.is_absolute()` method, answered without host I/O.
     IsAbsolute,
     /// `is_argument` parameter of `annotationlib.ForwardRef()`.
@@ -1507,8 +1556,13 @@ pub enum StaticStrings {
     /// `unicodedata.is_normalized()` function.
     #[strum(serialize = "is_normalized")]
     IsNormalized,
+    /// `operator.is_not()` function.
+    IsNot,
     /// `Path.is_symlink()` method — yields a host call.
     IsSymlink,
+    /// `operator.is_()` function.
+    #[strum(serialize = "is_")]
+    IsUnderscore,
     /// `os.path.isabs()` function.
     Isabs,
     /// `isalnum()` method, shared by `str` and `bytes`.
@@ -1572,8 +1626,12 @@ pub enum StaticStrings {
     Istext,
     /// `istitle()` method, shared by `str` and `bytes`.
     Istitle,
+    /// `operator.isub()` function.
+    Isub,
     /// `isupper()` method, shared by `str` and `bytes`.
     Isupper,
+    /// `operator.itemgetter` type.
+    Itemgetter,
     /// `dict.items()` method.
     Items,
     /// `typing.Iterable` marker.
@@ -1593,6 +1651,10 @@ pub enum StaticStrings {
     Iterdir,
     /// Module name for `import itertools`.
     Itertools,
+    /// `operator.itruediv()` function.
+    Itruediv,
+    /// `operator.ixor()` function.
+    Ixor,
     /// `join()` method, shared by `str` and `bytes`.
     Join,
     /// `Path.joinpath()` method, answered without host I/O.
@@ -1622,6 +1684,8 @@ pub enum StaticStrings {
     Lcm,
     /// `math.ldexp()` function.
     Ldexp,
+    /// `operator.le()` function.
+    Le,
     /// `leaf_size` parameter of `hashlib.blake2b()`.
     LeafSize,
     /// `length` parameter of a SHAKE `digest()`.
@@ -1684,8 +1748,12 @@ pub enum StaticStrings {
     Lower,
     /// `functools.lru_cache()` function.
     LruCache,
+    /// `operator.lshift()` function.
+    Lshift,
     /// `lstrip()` method, shared by `str` and `bytes`.
     Lstrip,
+    /// `operator.lt()` function.
+    Lt,
     /// `sys.version_info.major` field.
     Major,
     /// `os.makedirs()` function.
@@ -1716,6 +1784,8 @@ pub enum StaticStrings {
     /// `math.nan` constant
     #[strum(serialize = "nan")]
     MathNan,
+    /// `operator.matmul()` function.
+    Matmul,
     /// `sys.float_info.max` field; also the `max` class constant of the `datetime` classes.
     Max,
     /// `sys.float_info.max_10_exp` field.
@@ -1755,6 +1825,8 @@ pub enum StaticStrings {
     Memo,
     /// `field(metadata=...)`.
     Metadata,
+    /// `operator.methodcaller` type.
+    Methodcaller,
     /// `sys.version_info.micro` field.
     Micro,
     /// `datetime` / `time` `microsecond` attribute and constructor kwarg.
@@ -1794,6 +1866,8 @@ pub enum StaticStrings {
     Mkdir,
     /// `time.mktime()` function.
     Mktime,
+    /// `operator.mod()` function.
+    Mod,
     /// `file.mode` attribute and the `open(mode=...)` kwarg.
     Mode,
     /// `math.modf()` function.
@@ -1825,6 +1899,8 @@ pub enum StaticStrings {
     MostCommon,
     /// `mu` parameter of `random.gauss()` and the other normal variates.
     Mu,
+    /// `operator.mul()` function.
+    Mul,
     /// `re.MULTILINE` flag
     #[strum(serialize = "MULTILINE")]
     MultilineFlag,
@@ -1836,6 +1912,10 @@ pub enum StaticStrings {
     Names,
     /// Kwarg name `ndigits` — `round(ndigits=...)`.
     Ndigits,
+    /// `operator.ne()` function.
+    Ne,
+    /// `operator.neg()` function.
+    Neg,
     /// `typing.Never` marker.
     #[strum(serialize = "Never")]
     Never,
@@ -1878,6 +1958,9 @@ pub enum StaticStrings {
     /// Python's `NotImplemented` singleton representation.
     #[strum(serialize = "NotImplemented")]
     NotImplementedRepr,
+    /// `operator.not_()` function.
+    #[strum(serialize = "not_")]
+    NotUnderscore,
     /// `datetime.now()` classmethod.
     Now,
     /// Kwarg name `num` — `Context.create_decimal()`.
@@ -1902,11 +1985,19 @@ pub enum StaticStrings {
     Open,
     /// Kwarg name `opener` — `open(opener=...)`.
     Opener,
+    /// Module name for `import operator`.
+    Operator,
+    /// Module name for `import _operator`, the native accelerator behind `operator`.
+    #[strum(serialize = "_operator")]
+    UOperator,
     /// `sys.flags.optimize` field.
     Optimize,
     /// `typing.Optional` marker.
     #[strum(serialize = "Optional")]
     Optional,
+    /// `operator.or_()` function.
+    #[strum(serialize = "or_")]
+    OrUnderscore,
     /// `@dataclass(order=...)`.
     Order,
     /// Module name for `import os`.
@@ -2008,6 +2099,8 @@ pub enum StaticStrings {
     Popleft,
     /// `population` parameter of `random.choices()` and `random.sample()`.
     Population,
+    /// `operator.pos()` function.
+    Pos,
     /// Value of `os.name`.
     Posix,
     /// Module name for `import posixpath`, and the name `os.path` reports.
@@ -2189,6 +2282,8 @@ pub enum StaticStrings {
     Rounds,
     /// `rpartition()` method, shared by `str` and `bytes`.
     Rpartition,
+    /// `operator.rshift()` function.
+    Rshift,
     /// `rsplit()` method, shared by `str` and `bytes`.
     Rsplit,
     /// `rstrip()` method, shared by `str` and `bytes`.
@@ -2249,6 +2344,8 @@ pub enum StaticStrings {
     Setcontext,
     /// `dict.setdefault()` method.
     Setdefault,
+    /// `operator.setitem()` function.
+    Setitem,
     /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
     Setrecursionlimit,
     /// `random.setstate()` function.
@@ -2521,8 +2618,12 @@ pub enum StaticStrings {
     /// `repr()`/`str()` text of `True`, interned so rendering allocates nothing.
     #[strum(serialize = "True")]
     TrueRepr,
+    /// `operator.truediv()` function.
+    Truediv,
     /// `math.trunc()` function.
     Trunc,
+    /// `operator.truth()` function.
+    Truth,
     /// `typing.Tuple` marker.
     #[strum(serialize = "Tuple")]
     TupleType,
@@ -2674,6 +2775,8 @@ pub enum StaticStrings {
     Writerow,
     /// `writerows()` method of the `csv` writers.
     Writerows,
+    /// `operator.xor()` function.
+    Xor,
     /// `date` / `datetime` `year` attribute and constructor kwarg.
     Year,
     /// `base64.z85decode()` function.

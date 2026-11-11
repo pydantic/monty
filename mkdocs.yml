@@ -76,6 +76,7 @@ nav:
       - itertools: 'limitations/itertools.md'
       - json: 'limitations/json.md'
       - math: 'limitations/math.md'
+      - operator: 'limitations/operator.md'
       - os: 'limitations/os.md'
       - pathlib: 'limitations/pathlib.md'
       - random: 'limitations/random.md'

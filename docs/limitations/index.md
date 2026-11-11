@@ -90,6 +90,8 @@ The following modules are present:
 | `itertools`     | [itertools.md](itertools.md)         |
 | `json`          | [json.md](json.md)                   |
 | `math`          | [math.md](math.md)                   |
+| `_operator`     | [operator.md](operator.md)           |
+| `operator`      | [operator.md](operator.md)           |
 | `os`            | [os.md](os.md)                       |
 | `os.path`       | [os.md](os.md)                       |
 | `pathlib`       | [pathlib.md](pathlib.md)             |
@@ -108,7 +110,7 @@ guaranteed algorithm, and `tomllib` and `fnmatch` their whole three- and four-na
 The absent names are missing from the module namespace rather than stubbed, so they fail type checking as well as
 raising `AttributeError` at runtime.
 
-Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`, `operator`,
+Notably absent: `enum`, `contextlib`, `io`, `string`, `struct`,
 `inspect`, `logging`, `traceback`, `uuid`, `urllib`.
 Some of those are absent by design — `socket`, `subprocess`, `multiprocessing`, `threading` and `ctypes` would breach
 the sandbox — and others are simply not implemented yet.

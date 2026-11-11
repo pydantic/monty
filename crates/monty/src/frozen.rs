@@ -14,11 +14,11 @@ use crate::{
     bytecode::{CallResult, Compiler, VM},
     exception_private::RunResult,
     intern::{CompileInterns, FunctionId, Interns},
-    modules::{functools, typing},
+    modules::{functools, operator, typing},
     name_map::NameMap,
     parse::parse_with_interner,
     prepare::prepare_with_existing_names,
-    types::{forward_ref, generic_alias, iter, lru_cache},
+    types::{forward_ref, generic_alias, iter, lru_cache, operator_callable},
 };
 
 /// Identifies an internal implementation with one authoritative source definition.
@@ -46,6 +46,33 @@ pub(crate) enum FrozenFunction {
     /// Evaluate and cache a class's `__annotations__` from its `__annotate__`.
     #[serde(rename = "type.__annotations__")]
     ClassAnnotations,
+    /// `operator.add` and the other two-operand function forms.
+    #[serde(rename = "operator.binary")]
+    OperatorBinary,
+    /// `operator.neg` and the other one-operand function forms.
+    #[serde(rename = "operator.unary")]
+    OperatorUnary,
+    /// `operator.iadd` and the other in-place function forms.
+    #[serde(rename = "operator.inplace")]
+    OperatorInplace,
+    /// `operator.setitem`.
+    #[serde(rename = "operator.setitem")]
+    OperatorSetitem,
+    /// `operator.countOf`.
+    #[serde(rename = "operator.countOf")]
+    OperatorCountOf,
+    /// `operator.indexOf`.
+    #[serde(rename = "operator.indexOf")]
+    OperatorIndexOf,
+    /// An `itemgetter` of several items.
+    #[serde(rename = "operator.itemgetter")]
+    OperatorItemgetterMany,
+    /// An `attrgetter` of one name.
+    #[serde(rename = "operator.attrgetter")]
+    OperatorAttrgetterOne,
+    /// An `attrgetter` of several names.
+    #[serde(rename = "operator.attrgetter_many")]
+    OperatorAttrgetterMany,
 }
 
 impl FrozenFunction {
@@ -87,6 +114,15 @@ impl FrozenFunction {
             Self::GetAnnotations => typing::GET_ANNOTATIONS_SOURCE,
             Self::ForwardRefEvaluate => forward_ref::EVALUATE_SOURCE,
             Self::ClassAnnotations => annotations::CLASS_ANNOTATIONS_SOURCE,
+            Self::OperatorBinary => operator::BINARY_SOURCE,
+            Self::OperatorUnary => operator::UNARY_SOURCE,
+            Self::OperatorInplace => operator::INPLACE_SOURCE,
+            Self::OperatorSetitem => operator::SETITEM_SOURCE,
+            Self::OperatorCountOf => operator::COUNT_OF_SOURCE,
+            Self::OperatorIndexOf => operator::INDEX_OF_SOURCE,
+            Self::OperatorItemgetterMany => operator_callable::ITEMGETTER_SOURCE,
+            Self::OperatorAttrgetterOne => operator_callable::ATTRGETTER_ONE_SOURCE,
+            Self::OperatorAttrgetterMany => operator_callable::ATTRGETTER_MANY_SOURCE,
         }
     }
 }
