@@ -576,6 +576,9 @@ assert errors(PointAdapter, '1') == [
 assert errors(PointAdapter, '[1, 2, 3]') == [
     {'type': 'unexpected_positional_argument', 'loc': (2,), 'msg': 'Unexpected positional argument', 'input': 3}
 ]
+# a document cut off after an argument releases the arguments read so far
+assert invalid(PointAdapter, '{"x": "%s", "y": ' % ('a' * 40)) == 'EOF while parsing a value at line 1 column 55'
+assert invalid(PointAdapter, '["%s", ' % ('a' * 40)) == 'EOF while parsing a value at line 1 column 45'
 assert errors(PointAdapter, '{"x": 1, "z": 2}') == [
     {'type': 'missing_argument', 'loc': ('y',), 'msg': 'Missing required argument', 'input': {'x': 1, 'z': 2}},
     {'type': 'unexpected_keyword_argument', 'loc': ('z',), 'msg': 'Unexpected keyword argument', 'input': 2},

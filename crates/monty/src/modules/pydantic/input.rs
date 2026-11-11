@@ -120,6 +120,15 @@ pub(crate) enum SeqKind {
     FrozenSet,
 }
 
+/// How an input supplies a namedtuple's arguments: pydantic accepts a dict
+/// as keywords and a list or tuple (a JSON object or array) as positionals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArgumentsShape {
+    Keywords,
+    Positional,
+    Other,
+}
+
 /// One value under validation, in either input mode.
 pub(crate) trait Input: Sized {
     /// Items of a sequence input, each an `Input` of the same mode.
@@ -185,8 +194,8 @@ pub(crate) trait Input: Sized {
     /// A coarse kind for pruning union members before they run.
     fn kind(&self) -> InputKind;
 
-    /// Whether the input is a mapping, which a namedtuple reads as keyword arguments.
-    fn is_mapping(&self, vm: &VM<'_>) -> bool;
+    /// How a namedtuple reads the input as its arguments.
+    fn arguments_shape(&self, vm: &VM<'_>) -> ArgumentsShape;
 
     /// The heap object the input is, for the recursion guard; `None` for JSON
     /// and for immediate values.

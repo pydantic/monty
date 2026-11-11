@@ -2,7 +2,7 @@ from collections import namedtuple
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import TypeAdapter
 
@@ -55,6 +55,36 @@ assert TypeAdapter(float).dump_python(float('inf'), mode='json') == float('inf')
 assert TypeAdapter(list[float]).dump_python([float('inf')], mode='json') == [float('inf')]
 assert TypeAdapter(float | int).dump_python(float('inf'), mode='json') == float('inf')
 assert Any_.dump_python(10**30, mode='json') == 10**30
+# JSON mode writes an int or bool as a float under a `float` hint, and a bool as an int under `int`
+assert TypeAdapter(float).dump_json(1) == b'1.0'
+assert TypeAdapter(float).dump_json(True) == b'1.0'
+assert TypeAdapter(float).dump_json(10**20) == b'1e+20'
+assert TypeAdapter(float).dump_python(-3, mode='json') == -3.0
+assert type(TypeAdapter(float).dump_python(-3, mode='json')) is float
+assert TypeAdapter(list[float]).dump_json([1, 2.5, True]) == b'[1.0,2.5,1.0]'
+assert TypeAdapter(Optional[float]).dump_json(3) == b'3.0'
+assert TypeAdapter(dict[str, float]).dump_json({'a': 1}) == b'{"a":1.0}'
+assert TypeAdapter(int).dump_json(True) == b'1'
+assert TypeAdapter(int).dump_python(False, mode='json') == 0
+assert type(TypeAdapter(int).dump_python(False, mode='json')) is int
+assert TypeAdapter(tuple[float, int]).dump_json((1, True)) == b'[1.0,1]'
+# Python mode keeps them as they are
+assert TypeAdapter(float).dump_python(1) == 1
+assert TypeAdapter(int).dump_python(True) is True
+# an int past a float's range: `dump_json` writes the int, `mode='json'` overflows
+assert TypeAdapter(float).dump_json(10**400) == str(10**400).encode()
+try:
+    TypeAdapter(float).dump_python(10**400, mode='json')
+    assert False, 'expected an OverflowError'
+except OverflowError as exc:
+    assert str(exc) == 'int too large to convert to float'
+# a union prefers an exact member, then lets `int` or `float` claim a bool
+assert TypeAdapter(int | bool).dump_json(True) == b'true'
+assert TypeAdapter(float | bool).dump_json(True) == b'true'
+assert TypeAdapter(int | str).dump_json(True) == b'1'
+assert TypeAdapter(float | int).dump_json(True) == b'1.0'
+assert TypeAdapter(float | int).dump_json(1) == b'1'
+assert TypeAdapter(str | float).dump_json(1) == b'1'
 assert Any_.dump_python(datetime(2020, 1, 1), mode='json') == '2020-01-01T00:00:00'
 assert (
     TypeAdapter(datetime).dump_python(
@@ -225,6 +255,13 @@ assert Any_.dump_python(Foo(1), exclude_none=True) == {'x': 1, 'y': None, 'z': [
 assert TypeAdapter(dict[str, Any]).dump_python({'a': None, 'b': 1}, exclude_none=True) == {'a': None, 'b': 1}
 assert TypeAdapter(list[Any]).dump_python([None, 1], exclude_none=True) == [None, 1]
 assert Any_.dump_python({'a': {'b': None}, 'c': [None]}, exclude_none=True) == {'a': {'b': None}, 'c': [None]}
+# a `Literal` member only claims its own values, so a later dataclass member still writes the instance
+assert TypeAdapter(Literal['x'] | Foo).dump_python(Foo(1), exclude_none=True) == {'x': 1, 'z': []}
+assert TypeAdapter(Literal['x'] | Foo).dump_json(Foo(1), exclude_none=True) == b'{"x":1,"z":[]}'
+assert TypeAdapter(Literal['x'] | Foo).dump_python('x') == 'x'
+assert TypeAdapter(Literal[1] | Foo).dump_python(Foo(1), exclude_none=True) == {'x': 1, 'z': []}
+# `Any` claims every value, so the dataclass is written by inference
+assert TypeAdapter(Any | Foo).dump_python(Foo(1), exclude_none=True) == {'x': 1, 'y': None, 'z': []}
 
 # === namedtuple and deque ===
 Point = namedtuple('Point', ['x', 'y'])

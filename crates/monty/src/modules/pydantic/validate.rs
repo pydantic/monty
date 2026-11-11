@@ -25,7 +25,7 @@ use crate::{
         catalogue::ErrorType,
         coerce::datetime_is_midnight,
         errors::{LineError, ValError, ValResult},
-        input::{Exactness, Input, InputKind, Mapping, SeqKind, Sequence, State},
+        input::{ArgumentsShape, Exactness, Input, InputKind, Mapping, SeqKind, Sequence, State},
         snapshot::repr_string,
     },
     types::{
@@ -899,7 +899,7 @@ fn build_instance(
     Ok(guard.into_inner())
 }
 
-/// A namedtuple built from positional (sequence) or keyword (dict)
+/// A namedtuple built from positional (list or tuple) or keyword (dict)
 /// arguments, with pydantic's `arguments` errors.
 fn validate_named_tuple<I: Input>(
     named_tuple: &NamedTupleValidator,
@@ -907,89 +907,116 @@ fn validate_named_tuple<I: Input>(
     state: &mut State,
     vm: &mut VM<'_>,
 ) -> ValResult<Value> {
-    let field_count = named_tuple.field_names.len();
-    let mut slots: Vec<Option<Value>> = (0..field_count).map(|_| None).collect();
-    let mut errors: Vec<LineError> = Vec::new();
-    if input.is_mapping(vm) {
-        {
-            let map = input.validate_dict(state.strict, vm)?.value;
-            defer_drop_mut!(map, vm);
-            loop {
-                let Some((mut key, mut value)) = map.next(vm)? else {
-                    break;
-                };
-                let key_value = match key.to_value(vm) {
-                    Ok(k) => k,
-                    Err(err) => {
-                        map.finish_entry(key, value, vm);
-                        release_named(slots, errors, vm);
-                        return Err(err);
-                    }
-                };
-                let position = key_value
-                    .as_str(vm)
-                    .and_then(|name| named_tuple.field_names.iter().position(|field| field == name));
-                let key_text = key_value.as_str(vm).map(str::to_owned);
-                key_value.drop_with(vm);
-                let item = match value.to_value(vm) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        map.finish_entry(key, value, vm);
-                        release_named(slots, errors, vm);
-                        return Err(err);
-                    }
-                };
-                map.finish_entry(key, value, vm);
-                match position {
-                    Some(position) if slots[position].is_none() => slots[position] = Some(item),
-                    _ => errors.push(
-                        LineError::owned(ErrorType::UnexpectedKeywordArgument {}, item)
-                            .with_outer_loc(LocItem::Key(key_text.unwrap_or_default())),
-                    ),
-                }
-            }
+    let slots: Vec<Option<Value>> = (0..named_tuple.field_names.len()).map(|_| None).collect();
+    // One guard over the filled slots and the argument errors, released together on every failure path.
+    let mut collected = DropGuard::new((slots, Vec::<LineError>::new()), vm);
+    {
+        let ((slots, errors), vm) = collected.as_parts_mut();
+        match input.arguments_shape(vm) {
+            ArgumentsShape::Keywords => read_keyword_arguments(named_tuple, input, state.strict, slots, errors, vm)?,
+            ArgumentsShape::Positional => read_positional_arguments(input, slots, errors, vm)?,
+            ArgumentsShape::Other => return input.error(ErrorType::ArgumentsType {}, vm),
         }
+        fill_missing_arguments(named_tuple, input, slots, errors, vm)?;
+    }
+    let ((slots, errors), vm) = collected.into_parts();
+    if errors.is_empty() {
+        state.floor_exactness(Exactness::Strict);
+        let items: Vec<Value> = slots
+            .into_iter()
+            .map(|slot| slot.expect("every field is set"))
+            .collect();
+        let Value::Ref(class_id) = named_tuple.class else {
+            unreachable!("a namedtuple validator holds its class")
+        };
+        let HeapData::NamedTupleClass(class) = vm.heap.get(class_id) else {
+            unreachable!("a namedtuple validator holds a namedtuple class")
+        };
+        let name = class.name(vm.interns).to_owned();
+        let field_names = class.field_names().to_vec();
+        vm.heap.inc_ref(class_id);
+        let tuple = NamedTuple::with_class(name, field_names, items, Some(class_id));
+        Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(tuple)))))
     } else {
-        {
-            let seq = match input.validate_sequence(SeqKind::Tuple, false, vm) {
-                Ok(seq) => seq.value,
-                Err(ValError::Lines(lines)) => {
-                    lines.drop_with(vm);
-                    return input.error(ErrorType::ArgumentsType {}, vm);
-                }
-                Err(err) => return Err(err),
-            };
-            defer_drop_mut!(seq, vm);
-            let mut index = 0usize;
-            loop {
-                let Some(mut element) = seq.next(vm)? else { break };
-                let item = match element.to_value(vm) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        seq.finish_item(element, vm);
-                        release_named(slots, errors, vm);
-                        return Err(err);
-                    }
-                };
-                seq.finish_item(element, vm);
-                if index < field_count {
-                    slots[index] = Some(item);
-                } else {
-                    errors.push(
-                        LineError::owned(ErrorType::UnexpectedPositionalArgument {}, item)
-                            .with_outer_loc(index_loc(index)),
-                    );
-                }
-                index += 1;
-            }
+        slots.drop_with(vm);
+        Err(ValError::Lines(errors))
+    }
+}
+
+/// Fills `slots` from a dict's entries, a key that names no field (or one
+/// already filled) becoming an `unexpected_keyword_argument` error.
+fn read_keyword_arguments<I: Input>(
+    named_tuple: &NamedTupleValidator,
+    input: &mut I,
+    strict: bool,
+    slots: &mut [Option<Value>],
+    errors: &mut Vec<LineError>,
+    vm: &mut VM<'_>,
+) -> ValResult<()> {
+    let map = input.validate_dict(strict, vm)?.value;
+    defer_drop_mut!(map, vm);
+    while let Some((mut key, mut value)) = map.next(vm)? {
+        let entry = key.to_value(vm).and_then(|key_value| {
+            let key_text = key_value.as_str(vm).map(str::to_owned);
+            key_value.drop_with(vm);
+            value.to_value(vm).map(|item| (key_text, item))
+        });
+        map.finish_entry(key, value, vm);
+        let (key_text, item) = entry?;
+        let position = key_text
+            .as_deref()
+            .and_then(|name| named_tuple.field_names.iter().position(|field| field == name));
+        match position {
+            Some(position) if slots[position].is_none() => slots[position] = Some(item),
+            _ => errors.push(
+                LineError::owned(ErrorType::UnexpectedKeywordArgument {}, item)
+                    .with_outer_loc(LocItem::Key(key_text.unwrap_or_default())),
+            ),
         }
     }
+    Ok(())
+}
+
+/// Fills `slots` in order from a list or tuple, an item past the last field
+/// becoming an `unexpected_positional_argument` error.
+fn read_positional_arguments<I: Input>(
+    input: &mut I,
+    slots: &mut [Option<Value>],
+    errors: &mut Vec<LineError>,
+    vm: &mut VM<'_>,
+) -> ValResult<()> {
+    let seq = input.validate_sequence(SeqKind::Tuple, false, vm)?.value;
+    defer_drop_mut!(seq, vm);
+    let mut index = 0usize;
+    while let Some(mut element) = seq.next(vm)? {
+        let item = element.to_value(vm);
+        seq.finish_item(element, vm);
+        let item = item?;
+        match slots.get_mut(index) {
+            Some(slot) => *slot = Some(item),
+            None => errors.push(
+                LineError::owned(ErrorType::UnexpectedPositionalArgument {}, item).with_outer_loc(index_loc(index)),
+            ),
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+/// Gives each empty slot its default, or a `missing_argument` error; the
+/// missing errors go before the unexpected ones, as pydantic orders them.
+fn fill_missing_arguments<I: Input>(
+    named_tuple: &NamedTupleValidator,
+    input: &mut I,
+    slots: &mut [Option<Value>],
+    errors: &mut Vec<LineError>,
+    vm: &mut VM<'_>,
+) -> ValResult<()> {
     let Value::Ref(class_id) = named_tuple.class else {
         unreachable!("a namedtuple validator holds its class")
     };
-    let defaults_start = field_count - named_tuple.defaults;
-    // Missing arguments are reported before unexpected ones, as pydantic orders them.
-    let mut missing: Vec<LineError> = Vec::new();
+    let unexpected = errors.len();
+    let defaults_start = slots.len() - named_tuple.defaults;
     for (position, slot) in slots.iter_mut().enumerate() {
         if slot.is_some() {
             continue;
@@ -1000,44 +1027,13 @@ fn validate_named_tuple<I: Input>(
             };
             *slot = Some(class.defaults()[position - defaults_start].clone_with_heap(vm.heap));
         } else {
-            let whole = match input.to_value(vm) {
-                Ok(whole) => whole,
-                Err(err) => {
-                    missing.drop_with(vm);
-                    release_named(slots, errors, vm);
-                    return Err(err);
-                }
-            };
-            missing.push(
+            let whole = input.to_value(vm)?;
+            errors.push(
                 LineError::owned(ErrorType::MissingArgument {}, whole)
                     .with_outer_loc(LocItem::Key(named_tuple.field_names[position].clone())),
             );
         }
     }
-    if !missing.is_empty() || !errors.is_empty() {
-        release_named(slots, Vec::new(), vm);
-        missing.append(&mut errors);
-        return Err(ValError::Lines(missing));
-    }
-    state.floor_exactness(Exactness::Strict);
-    let items: Vec<Value> = slots
-        .into_iter()
-        .map(|slot| slot.expect("every field is set"))
-        .collect();
-    let HeapData::NamedTupleClass(class) = vm.heap.get(class_id) else {
-        unreachable!("a namedtuple validator holds a namedtuple class")
-    };
-    let name = class.name(vm.interns).to_owned();
-    let field_names = class.field_names().to_vec();
-    vm.heap.inc_ref(class_id);
-    let tuple = NamedTuple::with_class(name, field_names, items, Some(class_id));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(tuple)))))
-}
-
-/// Releases a failed namedtuple validation's partial results.
-fn release_named(slots: Vec<Option<Value>>, errors: Vec<LineError>, vm: &mut VM<'_>) {
-    for slot in slots.into_iter().flatten() {
-        slot.drop_with(vm);
-    }
-    errors.drop_with(vm);
+    errors.rotate_left(unexpected);
+    Ok(())
 }

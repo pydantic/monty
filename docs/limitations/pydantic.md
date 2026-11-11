@@ -120,7 +120,8 @@ Divergences:
 - **Inputs in `errors()` are snapshots.** The exception stores a copy of each failing input: scalars,
     containers, temporal values and decimals come back as equal new objects, not the same ones, and an
     instance, function or other object with no snapshot form comes back as its `repr()` string.
-    A snapshot is also capped at a few thousand nodes; the rest of a larger input degrades to its repr.
+    One exception's snapshots share a budget of about 32,000 nodes and 4 MiB of text; past it, the rest of each
+    container and every later input is cut off as the string `'...'`.
 - **`exc.args` is `(str(exc),)`**, where pydantic's is `(title, line_errors, input_type, hide_input)`.
 - **`ValidationError('msg')` builds a plain exception** with no line errors; its `errors()` raises
     `AttributeError`, where pydantic refuses the call with `TypeError`.
