@@ -197,26 +197,34 @@ impl<E: TableEntry> PyHashTable<E> {
         }
     }
 
-    /// Specialize polling away for unrestricted copies and snapshots.
+    /// Visits live entries in insertion order without Python callbacks or source mutation.
+    /// `DENSE` requires every slot to be live, as checked by `for_each_copy_entry`.
+    /// Const flags remove unused checks from copies without deadlines and from dense tables.
+    // Keep specializations separate so the compiler cannot merge them into a loop with runtime flag checks.
     #[inline(never)]
     fn visit_copy_slots<const POLL_DEADLINE: bool, const DENSE: bool>(
         &self,
         tracker: &ResourceTracker,
         mut visit: impl FnMut(&E),
     ) -> RunResult<()> {
+        // Live count differs from slot count after deletion; dense specializations eliminate this counter.
         let mut remaining = self.len();
         for (slot, entry) in self.copy_slots().iter().enumerate() {
-            // Tombstones consume scan time too; never key polling on live entries alone.
+            // check_time_every polls once per interval of physical slots. Counting only live entries
+            // would leave long tombstone gaps uninterruptible; the disabled specialization has no clock checks.
             if POLL_DEADLINE {
                 tracker.check_time_every(slot)?;
             }
+            // Equal slot/live counts prove there are no tombstones, so DENSE removes the liveness test.
             if DENSE || entry.is_live() {
                 visit(entry);
+                // For dense sources the slice ends at the last live entry; no separate stop count is needed.
                 if DENSE {
                     continue;
                 }
                 remaining -= 1;
-                // Once every live entry is copied, trailing tombstones need no scan.
+                // Sparse sources may have a long deleted suffix. Once all live entries are copied,
+                // stop without scanning it, while leaving the source and its cursor positions untouched.
                 if remaining == 0 {
                     break;
                 }

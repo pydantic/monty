@@ -780,6 +780,7 @@ impl Dict {
                 let mut source_guard = DropGuard::new(other_value, kwargs_guard.ctx());
                 let (source, vm) = source_guard.as_parts();
                 if let Some(HeapReadOutput::Dict(source)) = source.read_heap(vm) {
+                    // Reuse cached hashes without key callbacks; dict() discards Counter/defaultdict metadata.
                     let copy = source.plain_copy(vm)?;
                     mem::replace(dict, copy).drop_with(vm);
                 } else {

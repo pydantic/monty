@@ -18,9 +18,9 @@ use std::{
 
 // Use codspeed-criterion-compat under the `codspeed` feature (CI), real criterion otherwise (for flamegraphs)
 #[cfg(feature = "codspeed")]
-use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
+use codspeed_criterion_compat::{BatchSize, Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(feature = "codspeed"))]
-use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, Bencher, Criterion, black_box, criterion_group, criterion_main};
 use monty::{Dump, MontyRepl, MontyRun, RunProgress, SessionRef};
 use monty_fixture::{Bench, Header};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
@@ -186,15 +186,22 @@ fn dictionary_fastpaths_and_snapshots(c: &mut Criterion) {
     );
 }
 
-/// Times repeated snippets while excluding source construction and process startup.
+/// Prepares each sample separately so REPL source history cannot grow between measurements.
 fn bench_repl_snippet(c: &mut Criterion, name: &str, setup: &str, batch: &str) {
     c.bench_function(name, |bench| {
-        let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
-        repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();
-        bench.iter(|| {
-            let result = repl.feed_run(black_box(batch), vec![], PrintWriter::Stdout).unwrap();
-            black_box(result);
-        });
+        // Borrowing the input keeps both source construction and REPL teardown outside timing.
+        bench.iter_batched_ref(
+            || {
+                let mut repl = MontyRepl::new("bench.py", ResourceTracker::default(), CompileOptions::default());
+                repl.feed_run(setup, vec![], PrintWriter::Stdout).unwrap();
+                repl
+            },
+            |repl| {
+                let result = repl.feed_run(black_box(batch), vec![], PrintWriter::Stdout).unwrap();
+                black_box(result);
+            },
+            BatchSize::PerIteration,
+        );
     });
 }
 
