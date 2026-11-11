@@ -2,9 +2,9 @@
 # [bench]
 # data = '../data/string_corpus.json'
 # ///
-"""Read 256 seeded random positions in multilingual prose at three sizes.
+"""Run 4,096 random character reads per size in multilingual prose.
 
-Exercises slicing, character indexing and ord() on 512/2,048/4,653-character inputs.
+Repeat 256 seeded offsets 16 times on 512/2,048/4,653-character inputs; includes slicing, indexing and ord().
 The harness times setup (JSON, text and offsets), the workload and assertions.
 """
 
@@ -37,15 +37,16 @@ for _ in range(256):
     state = (state * 1664525 + 1013904223) & 0xFFFFFFFF
     offsets.append(state >> 8)
 
-# Benchmark: read random character positions in three text prefixes.
+# Benchmark: repeat the 256-offset pass 16 times for 4,096 reads per prefix.
 checksum = 0
 
 for size in (512, 2048, len(text)):
     sample = text[:size]
     length = len(sample)
 
-    for offset in offsets:
-        checksum += ord(sample[offset % length])
+    for repeat in range(16):
+        for offset in offsets:
+            checksum += ord(sample[offset % length])
 
 # Validation: included in the timed execution.
-assert checksum == 715622
+assert checksum == 11449952
