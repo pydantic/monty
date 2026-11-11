@@ -2439,6 +2439,7 @@ version = "1.6.0"
 dependencies = [
  "ahash",
  "chrono",
+ "ciborium",
  "cpu-time",
  "fancy-regex 0.20.0",
  "getrandom 0.4.3",
