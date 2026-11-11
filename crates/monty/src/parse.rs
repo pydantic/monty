@@ -3116,7 +3116,7 @@ impl ParseError {
         let (exc_type, msg, frame) = self.into_parts(path, source);
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new_msg(exc_type, msg),
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: Some(Box::new(frame)),
             hide_caret: true,
         })

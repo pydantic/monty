@@ -188,6 +188,52 @@ check(7)
     "#);
 }
 
+/// Successful cleanup retains the assertion's frame and its caller.
+#[test]
+fn traceback_through_finally() {
+    let err = get_err(
+        r"def check_reply():
+    assert ['hello'] == ['goodbye']
+
+try:
+    check_reply()
+finally:
+    cleanup = True
+",
+    );
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 5, in <module>
+        check_reply()
+        ~~~~~~~~~~~~~
+      File "test.py", line 2, in check_reply
+        assert ['hello'] == ['goodbye']
+    AssertionError: assert ['hello'] == ['goodbye']
+    "#);
+}
+
+/// A new cleanup failure reports its own location instead of the pending assertion.
+#[test]
+fn traceback_when_finally_raises() {
+    let err = get_err(
+        r"def check_reply():
+    assert ['hello'] == ['goodbye']
+
+try:
+    check_reply()
+finally:
+    cleanup = 1 / 0
+",
+    );
+    assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 7, in <module>
+        cleanup = 1 / 0
+                  ~~~~~
+    ZeroDivisionError: division by zero
+    "#);
+}
+
 #[test]
 fn failing_repr_falls_back_to_bare_error() {
     // A user `__repr__` that raises must not replace the AssertionError.

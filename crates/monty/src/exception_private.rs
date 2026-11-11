@@ -25,6 +25,8 @@ use crate::{
     value::{EitherStr, Value},
 };
 
+mod traceback;
+
 /// Result type alias for operations that can produce a runtime error.
 pub type RunResult<T> = Result<T, RunError>;
 
@@ -52,7 +54,7 @@ pub(crate) trait ExcTypeExt: Sized {
         );
         RunError::Exc(ExceptionRaise {
             exc,
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
@@ -84,7 +86,7 @@ pub(crate) trait ExcTypeExt: Sized {
         );
         RunError::Exc(ExceptionRaise {
             exc,
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
@@ -120,7 +122,7 @@ pub(crate) trait ExcTypeExt: Sized {
         );
         RunError::Exc(ExceptionRaise {
             exc,
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for attribute GET errors
         })
@@ -1736,7 +1738,7 @@ pub(crate) trait ExcTypeExt: Sized {
         let exc = SimpleException::new_msg(ExcType::ModuleNotFoundError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: None,
             hide_caret: true, // CPython doesn't show carets for module not found errors
         })
@@ -2912,12 +2914,13 @@ fn chained_value(id: Option<HeapId>, vm: &VM<'_>) -> Value {
     }
 }
 
-/// A raised exception with optional stack frame for traceback.
+/// A raised exception with its traceback, ordered from innermost frame to outermost.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionRaise {
     pub exc: SimpleException,
-    /// Innermost executed frame, with callers linked as parents.
-    pub frame: Option<RawStackFrame>,
+    /// Re-raises can accumulate many more frames than the live call stack.
+    #[serde(default, rename = "frame", deserialize_with = "traceback::deserialize")]
+    pub frames: Vec<RawStackFrame>,
     /// Resolved innermost location of a rejected snippet, independent of its discarded intern IDs.
     pub snippet_frame: Option<Box<StackFrame>>,
     /// Whether to hide the caret marker when creating the stack frame.
@@ -2932,7 +2935,7 @@ impl From<SimpleException> for ExceptionRaise {
     fn from(exc: SimpleException) -> Self {
         Self {
             exc,
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: None,
             hide_caret: false,
         }
@@ -2943,7 +2946,7 @@ impl From<MontyException> for ExceptionRaise {
     fn from(exc: MontyException) -> Self {
         Self {
             exc: exc.into(),
-            frame: None,
+            frames: Vec::new(),
             snippet_frame: None,
             hide_caret: false,
         }
@@ -2951,30 +2954,13 @@ impl From<MontyException> for ExceptionRaise {
 }
 
 impl ExceptionRaise {
-    /// Adds a caller's frame as the outermost frame in the traceback chain.
-    ///
-    /// This is used when an exception propagates up through call frames.
-    /// The new frame becomes the ultimate parent (displayed first in traceback,
-    /// since tracebacks show "most recent call last").
-    ///
+    /// Appends the caller as the outermost frame, displayed first in the traceback.
     /// `hide_caret` omits the added frame's carets, as CPython does under an
     /// `import` whose module body raised.
     pub(crate) fn add_caller_frame(&mut self, position: CodeRange, name: StringId, hide_caret: bool) {
-        if let Some(ref mut frame) = self.frame {
-            // Find the outermost frame (the one with no parent) and add the new frame as its parent
-            let mut current = frame;
-            while current.parent.is_some() {
-                current = current.parent.as_mut().unwrap();
-            }
-            let mut new_frame = RawStackFrame::new(position, name, None);
-            new_frame.hide_caret = hide_caret;
-            current.parent = Some(Box::new(new_frame));
-        } else {
-            // No frame yet - create one
-            let mut new_frame = RawStackFrame::new(position, name, None);
-            new_frame.hide_caret = hide_caret;
-            self.frame = Some(new_frame);
-        }
+        let mut frame = RawStackFrame::new(position, name);
+        frame.hide_caret = hide_caret;
+        self.frames.push(frame);
     }
 
     /// Converts this exception to a `MontyException` for the public API.
@@ -3004,10 +2990,11 @@ impl ExceptionRaise {
         // filenames so a tiny `Vec` beats a HashMap on both allocations and
         // lookup cost.
         let mut cache: Vec<(StringId, SourceMap<'s>)> = Vec::new();
-        let mut traceback = self.frame.map_or_default(|frame| {
-            let mut frames = Vec::new();
-            let mut current = Some(&frame);
-            while let Some(f) = current {
+        let mut traceback = self
+            .frames
+            .iter()
+            .rev()
+            .map(|f| {
                 let fname_id = f.position.filename;
                 // An `eval()` / `exec()` snippet resolves against its own
                 // recorded source, never the host's, and prints no source
@@ -3027,13 +3014,9 @@ impl ExceptionRaise {
                 if eval_source.is_some() {
                     stack_frame.preview_line = None;
                 }
-                frames.push(stack_frame);
-                current = f.parent.as_deref();
-            }
-            // Reverse so outermost frame is first (Python's "most recent call last" ordering)
-            frames.reverse();
-            frames
-        });
+                stack_frame
+            })
+            .collect::<Vec<_>>();
         if let Some(frame) = self.snippet_frame {
             traceback.push(*frame);
         }
@@ -3051,7 +3034,6 @@ pub struct RawStackFrame {
     pub position: CodeRange,
     /// The frame's function name, or `<module>` for module-level code; always set.
     pub frame_name: Option<StringId>,
-    pub parent: Option<Box<Self>>,
     /// Whether to hide the caret marker in the traceback for this frame.
     ///
     /// Set to `true` for:
@@ -3061,11 +3043,10 @@ pub struct RawStackFrame {
 }
 
 impl RawStackFrame {
-    pub(crate) fn new(position: CodeRange, frame_name: StringId, parent: Option<&Self>) -> Self {
+    pub(crate) fn new(position: CodeRange, frame_name: StringId) -> Self {
         Self {
             position,
             frame_name: Some(frame_name),
-            parent: parent.map(|p| Box::new(p.clone())),
             hide_caret: false,
         }
     }
@@ -3075,7 +3056,6 @@ impl RawStackFrame {
         Self {
             position,
             frame_name: Some(frame_name),
-            parent: None,
             hide_caret: true,
         }
     }
@@ -3090,8 +3070,7 @@ impl RawStackFrame {
 ///
 /// `Clone` is implemented so an error can be cached for later re-raising
 /// (e.g. a failed `GatherFuture` replaying the same exception on every
-/// re-await). Inner data is shallow-clonable: `Cow<'static, str>` is cheap,
-/// and `ExceptionRaise` already derives `Clone`.
+/// re-await). Traceback frames are copied without recursive calls.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RunError {
     /// Internal interpreter error - indicates a bug in Monty, not user code.
@@ -3197,7 +3176,7 @@ fn no_module_named(module_name: &str) -> String {
 fn import_error_without_caret(msg: String) -> RunError {
     RunError::Exc(ExceptionRaise {
         exc: SimpleException::new_msg(ExcType::ImportError, msg),
-        frame: None,
+        frames: Vec::new(),
         snippet_frame: None,
         hide_caret: true,
     })

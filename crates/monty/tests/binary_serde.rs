@@ -6,12 +6,13 @@
 //! it is `Serialize`/`Deserialize`, so it is round-tripped through the dump
 //! codec directly to cover the serde impls a dump ultimately rests on.
 
-use std::fmt::Write;
+use std::{env, fmt::Write, process::Command, thread};
 
+use ciborium::{de::from_reader, ser::into_writer, value::Value as CborValue};
 use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
-    CompileOptions, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, MontyType, NameLookupResult, PrintWriter, ResourceTracker,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::to_value;
@@ -687,6 +688,148 @@ ns['result']
         let result = call.resume(MontyObject::int(41), PrintWriter::Stdout).unwrap();
         assert_eq!(result.into_complete().unwrap(), MontyObject::int(1041));
     }
+}
+
+/// A pending exception keeps its traceback when cleanup suspends and is restored.
+#[test]
+fn run_progress_round_trip_in_finally_preserves_traceback() {
+    let runner = MontyRun::new(
+        r"def fail():
+    raise ValueError('original')
+
+try:
+    fail()
+finally:
+    ext()
+"
+        .to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let loaded = round_trip_progress(&progress);
+    let encoded = minicbor_serde::to_vec(&progress).unwrap();
+    let mut legacy: CborValue = from_reader(encoded.as_slice()).unwrap();
+    let stack = cbor_fields_mut(
+        &mut legacy,
+        &["FunctionCall", "snapshot", "vm_state", "exception_stack"],
+    );
+    let frames = cbor_fields_mut(&mut stack.as_array_mut().unwrap()[0], &["error", "frame"]);
+    let mut inner = frames.as_array_mut().unwrap().remove(0);
+    let mut outer = frames.as_array_mut().unwrap().remove(0);
+    outer.as_map_mut().unwrap().push(("parent".into(), CborValue::Null));
+    inner.as_map_mut().unwrap().push(("parent".into(), outer));
+    *frames = inner;
+    let mut legacy_bytes = Vec::new();
+    into_writer(&legacy, &mut legacy_bytes).unwrap();
+    let legacy: RunProgress = minicbor_serde::from_slice(&legacy_bytes).unwrap();
+    let [original, loaded, legacy] = [progress, loaded, legacy].map(|progress| {
+        let call = progress.into_function_call().expect("cleanup should suspend");
+        assert_eq!(call.function_name, "ext");
+        call.resume(MontyObject::none(), PrintWriter::Stdout).unwrap_err()
+    });
+    assert_eq!(original, loaded);
+    assert_eq!(original, legacy);
+    assert_snapshot!(original.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 5, in <module>
+        fail()
+        ~~~~~~
+      File "test.py", line 2, in fail
+        raise ValueError('original')
+    ValueError: original
+    "#);
+}
+
+/// Selects a serialized field without converting byte strings to JSON arrays.
+fn cbor_fields_mut<'a>(mut value: &'a mut CborValue, fields: &[&str]) -> &'a mut CborValue {
+    for field in fields {
+        value = &mut value
+            .as_map_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|(key, _)| key.as_text() == Some(*field))
+            .unwrap()
+            .1;
+    }
+    value
+}
+
+/// Repeated re-raises must not turn a shallow Python stack into recursive snapshot decoding.
+#[test]
+fn deep_traceback_round_trip() {
+    const CHILD: &str = "MONTY_DEEP_TRACEBACK_CHILD";
+    if env::var_os(CHILD).is_none() {
+        let output = Command::new(env::current_exe().unwrap())
+            .args(["--exact", "deep_traceback_round_trip", "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "deep traceback child failed: {}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
+
+    thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let runner = MontyRun::new(
+                r"def amplify(depth):
+    if depth:
+        try:
+            amplify(depth - 1)
+        except ValueError:
+            amplify(depth - 1)
+    else:
+        raise
+
+try:
+    raise ValueError('original')
+except ValueError:
+    try:
+        amplify(11)
+    except ValueError:
+        ext()
+        raise
+"
+                .to_owned(),
+                "test.py",
+                vec![],
+                CompileOptions::default(),
+            )
+            .unwrap();
+            let progress = runner
+                .start(vec![], ResourceTracker::default(), PrintWriter::Disabled)
+                .unwrap();
+            let progress = resolve_name_lookups(progress).unwrap();
+            let loaded = round_trip_progress(&progress);
+            let abandoned = round_trip_progress(&loaded).into_function_call().unwrap();
+            let error = abandoned
+                .abort(MontyException::new(ExcType::RuntimeError, None), PrintWriter::Disabled)
+                .unwrap_err();
+            assert_eq!(error.exc_type(), ExcType::RuntimeError);
+            let [original, loaded] = [progress, loaded].map(|progress| {
+                let call = progress.into_function_call().expect("expected ext call");
+                call.resume(MontyObject::none(), PrintWriter::Disabled).unwrap_err()
+            });
+            assert_eq!(original, loaded);
+            assert_eq!(original.traceback().len(), 4096);
+            assert_eq!(original.traceback().first().unwrap().start.line, 14);
+            assert_eq!(original.traceback().last().unwrap().start.line, 11);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 /// Rejected snippet locations survive suspension and reuse of their discarded source IDs.

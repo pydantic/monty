@@ -16,22 +16,27 @@ use crate::{
     value::Value,
 };
 
-/// An active exception, preserving its traceback across invisible implementation handlers.
-/// Ordinary entries keep the existing serialized `Value` shape for upstream dump compatibility.
+/// An active exception and the traceback to resume when it is re-raised.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub(super) enum CaughtException {
-    /// An exception handled by user code, retaining its existing dump representation.
+    /// An exception from an older dump that did not retain user tracebacks.
     Value(Value),
-    /// An internal handler must not replace the original traceback when its match fails.
-    Frozen { value: Value, error: Box<ExceptionRaise> },
+    /// A handler or cleanup preserves the exception's original traceback.
+    Traced {
+        value: Value,
+        error: Box<ExceptionRaise>,
+        /// Older dumps stored tracebacks only for frozen handlers.
+        #[serde(default)]
+        user_handler: bool,
+    },
 }
 
 impl CaughtException {
     /// Borrows the exception object without exposing its internal traceback metadata.
     fn value(&self) -> &Value {
         match self {
-            Self::Value(value) | Self::Frozen { value, .. } => value,
+            Self::Value(value) | Self::Traced { value, .. } => value,
         }
     }
 }
@@ -39,7 +44,7 @@ impl CaughtException {
 impl<C: ContainsHeap> DropWithContext<C> for CaughtException {
     fn drop_with(self, ctx: &mut C) {
         match self {
-            Self::Value(value) | Self::Frozen { value, .. } => value.drop_with(ctx),
+            Self::Value(value) | Self::Traced { value, .. } => value.drop_with(ctx),
         }
     }
 }
@@ -67,7 +72,7 @@ impl VM<'_> {
     ///
     /// Used when raising exceptions to capture traceback information.
     fn make_stack_frame(&self) -> RawStackFrame {
-        RawStackFrame::new(self.current_position(), self.current_frame_name(), None)
+        RawStackFrame::new(self.current_position(), self.current_frame_name())
     }
 
     /// Returns whether the active frame implements a builtin in frozen Python.
@@ -88,19 +93,19 @@ impl VM<'_> {
     fn attach_frame_to_error(&self, error: RunError) -> RunError {
         match error {
             RunError::Exc(mut exc) => {
-                if exc.frame.is_none() && !self.current_frame_is_frozen() {
+                if exc.frames.is_empty() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     // Use the hide_caret flag from the error (set by error creators)
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(frame);
+                    exc.frames.push(frame);
                 }
                 RunError::Exc(exc)
             }
             RunError::UncatchableExc(mut exc) => {
-                if exc.frame.is_none() && !self.current_frame_is_frozen() {
+                if exc.frames.is_empty() && !self.current_frame_is_frozen() {
                     let mut frame = self.make_stack_frame();
                     frame.hide_caret = exc.hide_caret;
-                    exc.frame = Some(frame);
+                    exc.frames.push(frame);
                 }
                 RunError::UncatchableExc(exc)
             }
@@ -141,7 +146,7 @@ impl VM<'_> {
 
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
-            frame,
+            frames: frame.into_iter().collect(),
             snippet_frame: None,
             hide_caret: false,
         })
@@ -219,7 +224,12 @@ impl VM<'_> {
     /// equivalent CPython code is C and leaves the user's handled exception in place.
     fn attach_context(&mut self, raised: &Value) -> Result<(), ResourceError> {
         let handled = self.exception_stack.iter().rev().find_map(|caught| match caught {
-            CaughtException::Value(Value::Ref(id)) => Some(*id),
+            CaughtException::Value(Value::Ref(id))
+            | CaughtException::Traced {
+                value: Value::Ref(id),
+                user_handler: true,
+                ..
+            } => Some(*id),
             _ => None,
         });
         let Some(handled_id) = handled else {
@@ -268,16 +278,15 @@ impl VM<'_> {
         previous.map(Value::Ref).drop_with(self);
     }
 
-    /// Re-raises the active exception without replacing a user traceback with an internal handler.
+    /// Re-raises the active exception with its saved traceback.
     pub(super) fn reraise_exception(&mut self) -> (RunError, Option<Value>) {
         if let Some(caught) = self.exception_stack.last() {
             let raised = caught.value().clone_with_heap(self.heap);
-            let error = if self.current_frame_is_frozen()
-                && let CaughtException::Frozen { error, .. } = caught
-            {
-                RunError::Exc((**error).clone())
-            } else {
-                self.make_exception(&raised, true)
+            let error = match caught {
+                CaughtException::Traced {
+                    error, user_handler, ..
+                } if *user_handler || self.current_frame_is_frozen() => RunError::Exc((**error).clone()),
+                _ => self.make_exception(&raised, true),
             };
             (error, Some(raised))
         } else {
@@ -402,7 +411,7 @@ impl VM<'_> {
             .then(|| RawStackFrame::from_raise(self.current_position(), self.current_frame_name()));
         RunError::Exc(ExceptionRaise {
             exc: SimpleException::new(ExcType::AssertionError, msg),
-            frame,
+            frames: frame.into_iter().collect(),
             snippet_frame: None,
             hide_caret: false,
         })
@@ -515,16 +524,13 @@ impl VM<'_> {
                 // Push exception onto the exception_stack for bare raise.
                 // This allows nested except handlers to restore outer
                 // exception context.
-                let caught = if this.current_frame_is_frozen() {
-                    let RunError::Exc(error) = error else {
-                        unreachable!("only catchable exceptions enter handlers")
-                    };
-                    CaughtException::Frozen {
-                        value: exc_value,
-                        error: Box::new(error),
-                    }
-                } else {
-                    CaughtException::Value(exc_value)
+                let RunError::Exc(error) = error else {
+                    unreachable!("only catchable exceptions enter handlers")
+                };
+                let caught = CaughtException::Traced {
+                    value: exc_value,
+                    error: Box::new(error),
+                    user_handler: !this.current_frame_is_frozen(),
                 };
                 this.exception_stack.push(caught);
 
