@@ -30,7 +30,7 @@ The interpreter and the worker process around it run the untrusted code. Ask:
     length or index.
 - **Resource limits bypassed?** Allocations dodging the `ResourceTracker` (`String`
     without `StringBuilder`), loops with no fuel check, small input → huge allocation.
-- **Untrusted input still untrusted?** Wire frames from a child are hostile: decoding
+- **Untrusted input still untrusted?** Wire frames from a worker are hostile: decoding
     and proto→Rust conversion must validate everything and never panic. Snapshot provenance
     and integrity are the host's responsibility. Invalid snapshots may panic, abort, hang or
     produce wrong results, but must not cause UB; do not require semantic validation solely
@@ -38,15 +38,15 @@ The interpreter and the worker process around it run the untrusted code. Ask:
 - **Panics or aborts?** `unwrap`/`expect` reachable from sandboxed input, unbounded
     recursion hitting a stack-overflow abort.
 
-Weight both classes by where they land. In a pool worker the process dies, the parent
-replaces the child and raises an exception — contained. Nothing else is: in host/parent
+Weight both classes by where they land. In a pool worker the process dies, the client
+replaces the worker and raises an exception — contained. Nothing else is: in host/client
 code (`monty-pool`, `monty-proto` decoding, `monty-fs`, the bindings), or in a Rust
 embedder calling the `monty` crate in-process, the same bug takes down the application.
-**Scrutinise those hardest**, especially anything handling a frame from a child.
+**Scrutinise those hardest**, especially anything handling a frame from a worker.
 
-## The client and parent
+## The client
 
-The subprocess parent and the gRPC client (`monty-pool` and the bindings) run inside the
+The client (`monty-pool` and the bindings), over stdio or gRPC, runs inside the
 user's application. A vulnerability here is even more critical than one in the worker,
 since the client always runs in a trusted environment with no sandbox around it. A
 sandbox, a hostile frame or a hostile server must not be able to:

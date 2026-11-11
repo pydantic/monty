@@ -78,6 +78,8 @@ These raise `NameError`:
     stored hashes and run no key callbacks while copying entries.
     An empty Counter receiving a dict's counts also uses this path; keyword
     arguments are applied afterward. See [copy.md](copy.md) for `copy.copy`.
+    `set.copy()` clones the storage directly, and `frozenset(f)` returns `f`
+    unchanged when `f` is already a frozenset; neither re-hashes its elements.
 - **Equality callbacks while copying dicts** — Monty's cached-hash copies
     preserve live entries without calling key `__eq__` methods.
     CPython may compare keys when rebuilding a sparse table after deletions;

@@ -1471,12 +1471,18 @@ impl FrozenSet {
     /// - `frozenset(iterable)` creates a frozenset from any iterable (list, tuple, set, dict, range, str, bytes)
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let value = args.get_zero_one_arg("frozenset", vm.heap)?;
-        let frozenset = match value {
-            None => Self::new(),
-            Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
-        };
-        let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
-        Ok(Value::Ref(heap_id))
+        match value {
+            // An exact frozenset already has the required immutable storage.
+            Some(v @ Value::Ref(id)) if matches!(vm.heap.get(id), HeapData::FrozenSet(_)) => Ok(v),
+            value => {
+                let frozenset = match value {
+                    None => Self::new(),
+                    Some(v) => Self::from_set(Set::from_iterable(v, vm)?),
+                };
+                let heap_id = vm.heap.allocate(HeapData::FrozenSet(frozenset));
+                Ok(Value::Ref(heap_id))
+            }
+        }
     }
 }
 

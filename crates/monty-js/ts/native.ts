@@ -145,7 +145,7 @@ export interface DisconnectedTurn {
   message: string
   statusCode?: string
   statusMessage?: string
-  cause?: string
+  remoteCause?: string
   transportError?: string
 }
 
@@ -157,8 +157,22 @@ export interface RefusedTurn {
   message: string
   statusCode?: string
   statusMessage?: string
-  cause?: string
+  remoteCause?: string
   transportError?: string
+  retryable?: boolean
+  retryAfter?: number
+}
+
+/** A connection failure before the session opens. */
+export interface ConnectTurn extends Omit<DisconnectedTurn, 'kind'> {
+  kind: 'connect'
+}
+
+/** The client configuration is incompatible with the remote server; reported
+ *  by the session's first request, which carries its `Configure`. */
+export interface ConfigurationTurn {
+  kind: 'configuration'
+  message: string
 }
 
 /** A draining server declined the request, which did not run; the session is
@@ -177,7 +191,7 @@ export interface LoadedTurn {
 }
 
 /** A non-feed request succeeded with no value or suspension. Only produced by
- *  `NativeSession.installDependencies` and `NativeSession.enter`. */
+ *  `NativePool.start`, `NativeSession.installDependencies` and `NativeSession.enter`. */
 export interface OkTurn {
   kind: 'ok'
 }
@@ -189,6 +203,9 @@ export interface ExhaustedTurn {
   message: string
 }
 
+/** What `NativePool.start` resolves to: started, or why not. */
+export type StartTurn = OkTurn | ProtocolTurn | ConnectTurn | ConfigurationTurn
+
 /** What `NativeSession.enter` resolves to: entered, or why not. */
 export type EnterTurn =
   | OkTurn
@@ -199,6 +216,8 @@ export type EnterTurn =
   | ProtocolTurn
   | DisconnectedTurn
   | RefusedTurn
+  | ConnectTurn
+  | ConfigurationTurn
   | ShutdownTurn
 
 /** The session's dump, or a storing server's record ID. Only produced by
@@ -233,8 +252,22 @@ export type NativeTurn =
   | TypingErrorTurn
   | CrashedTurn
   | ProtocolTurn
+  | ConfigurationTurn
   | DisconnectedTurn
   | ShutdownTurn
+
+/**
+ * A call to an async host function the sandbox started without suspending.
+ * The sandbox already holds a pending future for `callId`, settled through
+ * `resolveFutures` once a `resolveFutures` turn names it.
+ */
+export interface NativeStreamedCall {
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  position: NativeSourceRange
+}
 
 /** One settled promise outcome delivered to `resolveFutures`. */
 export interface NativeFutureResult {

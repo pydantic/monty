@@ -1,6 +1,9 @@
 """Tests for the async external-function surface of the Python bindings."""
 
 import asyncio
+import inspect
+import sys
+import time
 from typing import Any
 
 import pytest
@@ -32,9 +35,9 @@ async def test_coroutine_calls_keep_gather_concurrent(wrapped: bool):
     assert result == [1, 2]
 
 
-async def run_async(code: str, **kwargs: Any) -> Any:
+async def run_async(code: str, *, stream_async_calls: bool = False, **kwargs: Any) -> Any:
     """Runs one snippet in a fresh async pool/session and returns its result."""
-    async with pydantic_monty.AsyncMonty() as pool:
+    async with pydantic_monty.AsyncMonty(stream_async_calls=stream_async_calls) as pool:
         async with pool.checkout() as session:
             return await session.feed_run(code, **kwargs)
 
@@ -119,3 +122,160 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
             with pytest.raises(RuntimeError) as exc_info2:
                 await session.feed_run('1 + 1')
             assert str(exc_info2.value) == snapshot('this checkout has already been finished')
+
+
+# How long `fetch` blocks the host. A suspended call cannot return sooner, so only a
+# streamed call (which never waits for the host) can pass the sandbox's check below.
+HOST_BLOCK_SECONDS = 1.0
+
+# times the call from inside the sandbox, then prints: calls and prints reach the host in sandbox order
+TIMED_CALL = f"""
+import time
+t0 = time.monotonic()
+a = fetch(1)
+elapsed = time.monotonic() - t0
+print('after the call')
+[await a, elapsed < {HOST_BLOCK_SECONDS}]
+"""
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason='inspect.markcoroutinefunction needs Python 3.12')
+@pytest.mark.parametrize(
+    'stream_async_calls,returned_at_once',
+    [
+        # the call streams, so the sandbox runs on while the host blocks in it
+        (True, True),
+        # the default: the call suspends until the host has answered
+        (False, False),
+    ],
+)
+async def test_coroutine_function_calls_stream_only_when_enabled(stream_async_calls: bool, returned_at_once: bool):
+    """A call not awaited at once streams to the host, which starts it while the sandbox runs."""
+    log: list[str] = []
+
+    def fetch(x: int) -> Any:
+        log.append(f'fetch({x})')
+        time.sleep(HOST_BLOCK_SECONDS)
+        return asyncio.sleep(0, x)
+
+    def on_print(_stream: str, text: str) -> None:
+        log.append(text)
+
+    # a sync function returning a coroutine, marked so `iscoroutinefunction` sees it
+    fetch = inspect.markcoroutinefunction(fetch)
+    result = await run_async(
+        TIMED_CALL, stream_async_calls=stream_async_calls, external_lookup={'fetch': fetch}, print_callback=on_print
+    )
+    assert result == [1, returned_at_once]
+    # either way the host started the call before it saw the print that followed it
+    assert log == ['fetch(1)', 'after the call\n']
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason='inspect.markcoroutinefunction needs Python 3.12')
+async def test_failed_print_stops_later_streamed_calls():
+    """A call made after a print that failed never starts on the host."""
+    log: list[str] = []
+
+    def effect() -> Any:
+        # logs when called, not when its coroutine is awaited
+        log.append('effect')
+        return asyncio.sleep(0)
+
+    effect = inspect.markcoroutinefunction(effect)
+
+    def on_print(_stream: str, _text: str) -> None:
+        raise ValueError('print refused')
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        await run_async(
+            "print('x')\na = effect()\nawait a",
+            stream_async_calls=True,
+            external_lookup={'effect': effect},
+            print_callback=on_print,
+        )
+    assert str(exc_info.value) == snapshot('ValueError: print refused')
+    assert log == []
+
+
+async def test_feed_refused_while_another_is_suspended_leaves_that_feed_its_calls():
+    """A second `feed_run` refused mid-suspension cannot take the running feed's streamed calls."""
+    gate = asyncio.Event()
+    started = asyncio.Event()
+
+    async def fetch(x: int) -> int:
+        started.set()
+        await gate.wait()
+        return x
+
+    code = 'a = fetch(1)\nx = await a\nb = fetch(2)\nx + await b'
+    async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
+        async with pool.checkout() as session:
+            first = asyncio.ensure_future(session.feed_run(code, external_lookup={'fetch': fetch}))
+            await started.wait()
+            with pytest.raises(RuntimeError) as exc_info:
+                await session.feed_run('1', external_lookup={'fetch': fetch})
+            assert str(exc_info.value) == snapshot(
+                'monty worker protocol error: feed called while a suspension is awaiting an answer'
+            )
+            gate.set()
+            assert await first == snapshot(3)
+
+
+async def test_coroutine_function_error_raises_at_the_await():
+    """The call returns at once; the host's exception is raised where it is awaited."""
+
+    async def fail() -> None:
+        raise ValueError('intentional error')
+
+    code = """
+a = fail()
+r = 'called'
+try:
+    await a
+except ValueError as e:
+    r += ': ' + str(e)
+r
+"""
+    result = await run_async(code, stream_async_calls=True, external_lookup={'fail': fail})
+    assert result == snapshot('called: intentional error')
+
+
+async def test_coroutine_function_in_an_external_module():
+    """Coroutine functions on an `ExternalModule` start without suspending too."""
+
+    async def fetch(x: int) -> int:
+        return x + 1
+
+    async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
+        async with pool.checkout(
+            external_modules={'tools': pydantic_monty.ExternalModule({'fetch': fetch})}
+        ) as session:
+            code = 'import asyncio\nimport tools\nawait asyncio.gather(tools.fetch(1), tools.fetch(2))'
+            assert await session.feed_run(code) == snapshot([2, 3])
+
+
+async def test_streamed_calls_count_against_max_suspensions():
+    """Each started call spends one suspension, as the call it replaces did."""
+
+    async def fetch(x: int) -> int:
+        return x
+
+    async with pydantic_monty.AsyncMonty(stream_async_calls=True) as pool:
+        async with pool.checkout(limits={'max_suspensions': 2}) as session:
+            code = 'import asyncio\nawait asyncio.gather(*[fetch(i) for i in range(3)])'
+            with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+                await session.feed_run(code, external_lookup={'fetch': fetch})
+            assert str(exc_info.value) == snapshot('RuntimeError: suspension limit 2 exceeded')
+
+
+def test_feed_start_suspends_at_coroutine_function_calls():
+    """`feed_start` hands every call to the caller, so a coroutine function's call suspends as before."""
+
+    async def fetch(x: int) -> int:
+        return x
+
+    with pydantic_monty.Monty() as pool:
+        with pool.checkout() as session:
+            progress = session.feed_start('a = fetch(1)\nawait a', external_lookup={'fetch': fetch})
+            assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+            assert progress.function_name == snapshot('fetch')

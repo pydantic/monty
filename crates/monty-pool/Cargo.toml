@@ -54,6 +54,8 @@ monty-proto = { workspace = true, features = ["grpc"] }
 bytes = { workspace = true }
 tokio-stream = { workspace = true }
 http = { workspace = true }
+httpdate = "1"
+tower = { version = "0.5", default-features = false, features = ["util"] }
 # `join_all` for concurrent worker teardown.
 futures-util = { workspace = true }
 # Pulled in only so the pool can install a process-level rustls `CryptoProvider`
@@ -87,16 +89,17 @@ path = "tests/support/cpu_worker.rs"
 [dev-dependencies]
 serde_json = { workspace = true }
 cpu-time = { workspace = true }
+# Huge integers for the telemetry encoder's byte-cap tests.
+num-bigint = { workspace = true }
 # Snapshots of the error messages the pool reports to a host.
 insta = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
-# In-process scripted gRPC servers standing in for a remote child.
+# In-process scripted gRPC servers standing in for a remote worker.
 tonic = { workspace = true, features = ["server", "router"] }
 # A self-signed certificate for the server the trust-store test dials.
 rcgen = { workspace = true }
 tokio-stream = { workspace = true, features = ["net"] }
-tower = { version = "0.5", default-features = false }
 # In-memory exporters for the telemetry recorder's structural tests.
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 
