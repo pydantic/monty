@@ -85,6 +85,19 @@ The flush interval batches `print()` output; `Duration::ZERO` sends one event pe
 Its `os_policy` sets the clock, timezone, initial random state and sleep policy for the session.
 `CallHost` delegates calls to the caller's OS handler through `TurnEvent::OsCall`.
 Every suspension variant of `TurnEvent` carries `position`, a `SourceRange` locating the suspending expression.
+
+With `PoolConfig::stream_async_calls` (on for `PoolConfig::remote`, off for `PoolConfig::subprocess`) and a handler
+passed to `Checkout::set_streamed_call_handler`, calls to async host functions (a `MontyObject::async_function` value,
+or a name given to `Checkout::set_async_functions`) that the sandbox does not await at once do not suspend: the worker
+sends them mid-turn and keeps running.
+Without a handler, or after `set_async_functions(None)`, they suspend like any call for the feeds that follow.
+A worker that predates `Configure.accepts_streamed_calls` ignores all of this and suspends at each call as before.
+The turn awaits the handler for each call as it awaits `on_print`, so calls and prints reach the host in the order the
+sandbox made them; start the call there, and settle it with `resume_futures` once a `TurnEvent::ResolveFutures` names it.
+Each started call counts against `max_suspensions`.
+Within a feed, calls whose results the host has not sent may hold at most a quarter of `PoolConfig::max_decode_bytes`
+(256 MiB by default) of arguments; past that the pool discards the worker and the session ends with a `MemoryError`.
+The count restarts with each feed, so a `StreamedCall` a handler keeps past its feed is the handler's to free.
 The default `SleepMode::System` sets `system_sleep` to the capped delay for the caller to await directly.
 `SleepMode::Zero` returns immediately.
 

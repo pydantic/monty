@@ -34,6 +34,7 @@ use crate::telemetry::{TelemetryContext, metrics::outcome};
 use crate::{
     CrashCause, PoolConfig, PoolError, RemoteCause, cpu,
     pool::{CapacityGuard, PoolInner},
+    streamed_args::{StreamedArgs, streamed_args_limit},
     worker::Worker,
 };
 
@@ -81,6 +82,10 @@ pub struct ReplConfig {
     /// The serving relay's profile to run the session under; `None` takes the
     /// relay's default. Subprocess workers ignore it.
     pub profile: Option<String>,
+    /// Lets this session stream calls to async host functions; it streams only
+    /// when [`PoolConfig::stream_async_calls`] is on too. On by default; a
+    /// forwarding worker sets it from its own client's `Configure.accepts_streamed_calls`.
+    pub stream_async_calls: bool,
 }
 
 /// How a serving relay (`monty-server`) treats a session's state.
@@ -123,6 +128,7 @@ impl Default for ReplConfig {
             os_policy: OsPolicy::default(),
             persistence: Persistence::default(),
             profile: None,
+            stream_async_calls: true,
         }
     }
 }
@@ -332,6 +338,27 @@ pub enum TurnEvent {
     Complete(MontyObject),
 }
 
+/// A call to an async host function the sandbox started without waiting
+/// for the host, handed to the [`OnStreamedCall`] handler as it arrives
+/// (see [`Checkout::set_streamed_call_handler`]).
+///
+/// The sandbox already holds a pending future for `call_id`: start the call,
+/// then settle it with [`Checkout::resume_futures`] once a
+/// [`TurnEvent::ResolveFutures`] names it. Each counts against `max_suspensions`.
+#[derive(Debug)]
+pub struct StreamedCall {
+    pub function_name: String,
+    /// One arena holding every positional and keyword argument.
+    pub args: CallArgs,
+    pub call_id: u32,
+    /// Where the call expression is in the source.
+    pub position: SourceRange,
+    /// The telemetry context for the host callback running this call: the
+    /// call's own span, open until the `ResumeFutures` carrying its result.
+    #[cfg(feature = "telemetry")]
+    pub callback_context: opentelemetry::Context,
+}
+
 /// The caller's answer to a [`TurnEvent::FunctionCall`] or
 /// [`TurnEvent::OsCall`].
 #[derive(Debug)]
@@ -372,6 +399,15 @@ pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Se
 /// turn-ender — `Print`s today. Returns a future for the same reason
 /// [`OnPrint`] does: a slow sink backpressures the worker.
 pub type OnRawEvent<'a> = &'a mut (dyn FnMut(&pb::WorkerEvent) -> PrintFuture + Send);
+
+/// Handler starting each [`StreamedCall`] as its frame arrives; see
+/// [`Checkout::set_streamed_call_handler`].
+///
+/// The turn awaits the returned future before reading the next frame, so calls
+/// and prints reach the host in the order the sandbox made them, and a slow
+/// handler backpressures the worker. Start the call and return: awaiting the
+/// call's own result here would stall the turn until it settles.
+pub type OnStreamedCall = Box<dyn FnMut(StreamedCall) -> PrintFuture + Send>;
 
 /// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
 ///
@@ -442,6 +478,22 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// The session ID a storing relay minted, from its reply to `Configure` or `Load`.
     session_id: Option<Vec<u8>>,
+    /// Names sent as `Feed.async_functions` with every later feed, or `None`
+    /// to make calls to async host functions suspend; see [`Checkout::set_async_functions`].
+    async_functions: Option<Vec<String>>,
+    /// The session's `Configure.accepts_streamed_calls`: without it no feed asks the worker to stream.
+    accepts_streamed_calls: bool,
+    /// The handler the next feed adopts once accepted (see [`Checkout::set_streamed_call_handler`]).
+    next_streamed_call_handler: Option<OnStreamedCall>,
+    /// The in-flight feed's handler, set only when it asked the worker to stream
+    /// calls: a `StreamedCalls` event in any other feed is a protocol violation.
+    feed_handler: Option<OnStreamedCall>,
+    /// Argument bytes the host holds for streamed calls; cleared once a `Feed`,
+    /// `Load` or `Reset` is sent, except an auto-resume reload's `Load`.
+    streamed_args: StreamedArgs,
+    /// Set while an auto-resume reload sends its `Load`: the reload carries on
+    /// the same session, so its feed's handler and held arguments stay.
+    reloading: bool,
     /// How to redial the relay after a `Shutdown`; `None` unless auto-resume applies.
     redial: Option<Box<Redial>>,
     /// Client-side mount table for the in-flight feed, built from the
@@ -555,6 +607,9 @@ impl SessionBudget {
         if is_suspension(event) {
             self.suspensions_seen += 1;
             self.cpu_feed_suspended = true;
+        } else if let Some(pb::worker_event::Kind::StreamedCalls(started)) = &event.kind {
+            // a started call replaces the suspension it would have been
+            self.suspensions_seen = self.suspensions_seen.saturating_add(started.calls.len() as u64);
         } else if matches!(
             event.kind,
             Some(
@@ -572,6 +627,14 @@ impl SessionBudget {
     fn begin_feed(&mut self) {
         self.reported_feed_execution = Duration::ZERO;
         self.observed_feed_execution = Duration::ZERO;
+    }
+
+    /// How many of the `streamed` calls just counted by `update_from` fit the
+    /// suspension limit. The suspension after an overrun is aborted, so the rest
+    /// are dropped rather than started or forwarded.
+    fn streamed_call_room(&self, streamed: usize) -> usize {
+        let seen_before = self.suspensions_seen.saturating_sub(streamed as u64);
+        usize::try_from(self.suspension_limit.saturating_sub(seen_before)).unwrap_or(usize::MAX)
     }
 
     /// Reports when this event exceeds the suspension limit.
@@ -674,6 +737,15 @@ fn is_execution_turn(request: &pb::ClientRequest) -> bool {
     )
 }
 
+/// Recognizes the events a worker streams before a turn-ender: `Print`, and
+/// `StreamedCalls` (which `Configure.accepts_streamed_calls` asks for).
+fn is_mid_turn(event: &pb::WorkerEvent) -> bool {
+    matches!(
+        event.kind,
+        Some(pb::worker_event::Kind::Print(_) | pb::worker_event::Kind::StreamedCalls(_))
+    )
+}
+
 /// Recognizes the requests the `Configure` opening a session can carry.
 fn opens_session(request: &pb::ClientRequest) -> bool {
     matches!(
@@ -682,12 +754,9 @@ fn opens_session(request: &pb::ClientRequest) -> bool {
     )
 }
 
-/// Whether `event` ends its turn: anything but a streamed `Print` or a liveness `Ping`.
+/// Whether `event` ends its turn: anything but a mid-turn event or a liveness `Ping`.
 fn ends_turn(event: &pb::WorkerEvent) -> bool {
-    !matches!(
-        event.kind,
-        Some(pb::worker_event::Kind::Print(_) | pb::worker_event::Kind::Ping(_))
-    )
+    !is_mid_turn(event) && !matches!(event.kind, Some(pb::worker_event::Kind::Ping(_)))
 }
 
 /// Whether a turn-ending reply to a `Configure` carries its acknowledgement:
@@ -818,6 +887,8 @@ impl Checkout {
     /// `redial` is kept for [`PoolConfig::auto_resume`]; `None` disables it.
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig, redial: Option<Redial>) -> Self {
         let configure = configure_request(repl, &pool.config);
+        let accepts_streamed_calls = configure.accepts_streamed_calls;
+        let streamed_args = StreamedArgs::new(streamed_args_limit(pool.config.max_decode_bytes));
         let mut budget = SessionBudget::from_config(repl);
         budget.execution_clock = pool.config.execution_clock;
         Self {
@@ -831,6 +902,12 @@ impl Checkout {
             pending_load_budget: None,
             armed_deadline: None,
             restored_script_name: None,
+            async_functions: Some(Vec::new()),
+            accepts_streamed_calls,
+            next_streamed_call_handler: None,
+            feed_handler: None,
+            streamed_args,
+            reloading: false,
             session_id: None,
             redial: redial.map(Box::new),
             feed_mounts: None,
@@ -981,12 +1058,20 @@ impl Checkout {
         // The worker resets its feed clock on this request, so the last feed's
         // reported total must not shorten this feed's backstop.
         self.budget.begin_feed();
+        // Calls stream only to a handler that starts them as they arrive. It is
+        // adopted only here, past the checks above: a feed refused while another
+        // is suspended must leave that feed's handler in place.
+        let handler = self.next_streamed_call_handler.take();
+        // a session that does not accept streamed calls never asks the worker for them
+        self.feed_handler = handler.filter(|_| self.accepts_streamed_calls && self.async_functions.is_some());
         let request = request(pb::client_request::Kind::Feed(pb::Feed {
             code: code.into(),
             inputs,
             values: Some(values),
             skip_type_check,
             cwd,
+            async_functions: self.async_functions.clone().unwrap_or_default().into(),
+            stream_async_calls: self.feed_handler.is_some(),
         }));
         let outcome = self.expect_turn(&request, on_print).await;
         // The worker adopts the directory as the request arrives, before the
@@ -1404,6 +1489,34 @@ impl Checkout {
         self.session_id.as_deref()
     }
 
+    /// Sets how the feeds that follow treat calls to async host functions,
+    /// replacing any earlier choice. With `Some(names)` (the default, with no
+    /// names) and a [streamed-call handler](Self::set_streamed_call_handler),
+    /// calls to a [`MontyObject::async_function`] value or to one of `names`
+    /// start without waiting and reach that handler; `None`, or no handler,
+    /// makes them suspend like any call, for a host answering each call itself.
+    ///
+    /// `names` covers names the sandbox calls without ever reading as a value,
+    /// which reach the host only as a call by name. A worker that predates
+    /// `StreamedCalls` ignores all of this and suspends on each call as before.
+    pub fn set_async_functions(&mut self, names: Option<Vec<String>>) {
+        self.async_functions = names;
+    }
+
+    /// Sets the handler that starts each streamed call of the next feed; without
+    /// one, that feed suspends at every call. The feed adopts it only once it is
+    /// accepted, so a feed refused mid-suspension leaves the running feed's handler.
+    ///
+    /// The handler runs inside the turn, in order with prints: start the call,
+    /// then settle it with [`Self::resume_futures`] once a
+    /// [`TurnEvent::ResolveFutures`] names it. Calls past `max_suspensions` never
+    /// reach it, and the feed is aborted at its next suspension. Calls whose
+    /// unsettled arguments pass a quarter of `PoolConfig::max_decode_bytes` end
+    /// the session with a `MemoryError`, as the worker's memory limit does.
+    pub fn set_streamed_call_handler(&mut self, handler: Option<OnStreamedCall>) {
+        self.next_streamed_call_handler = handler;
+    }
+
     /// Opens the session now, sending its `Configure` alone and waiting for the
     /// reply, which is where a storing relay names the session. A no-op once the
     /// session is open, even if its worker has since gone. Otherwise the
@@ -1546,7 +1659,7 @@ impl Checkout {
     ) -> Result<bool, PoolError> {
         let was_suspended = self.pending_load_budget.unwrap_or(self.budget).cpu_feed_suspended;
         let was_aborting = self.abort_in_flight;
-        let is_print = matches!(event.kind, Some(pb::worker_event::Kind::Print(_)));
+        let is_print = is_mid_turn(event);
         if !is_print && mem::take(&mut self.abort_in_flight) && !is_abort_reply(event) {
             return Err(self.protocol_violation("worker answered AbortFeed with something other than an Error"));
         }
@@ -1741,7 +1854,8 @@ impl Checkout {
     /// The reply must match the state at the shutdown: `Ok` when idle, or the
     /// same pending suspension re-announced when mid-feed. The session's budget
     /// is kept, not re-adopted as `restore` does: it is the same session, so the
-    /// reply can only tighten its limits, and a shutdown grants nothing.
+    /// reply can only tighten its limits, and a shutdown grants nothing. For the
+    /// same reason the feed's streamed-call handler and held arguments survive the `Load`.
     async fn reload_session(&mut self, redial: &Redial, state: &[u8]) -> Result<(), PoolError> {
         let configure = configure_request(&redial.repl, &self.pool.config);
         let worker = self.pool.acquire_worker(&redial.metadata).await?;
@@ -1762,7 +1876,9 @@ impl Checkout {
         let load = request(pb::client_request::Kind::Load(pb::Load {
             state: state.to_vec().into(),
         }));
+        self.reloading = true;
         let reply = self.request_turn(&load, timeout, &mut no_print).await;
+        self.reloading = false;
         // the session's script name is the one it already had
         self.restored_script_name = None;
         let matches = match reply? {
@@ -1940,9 +2056,18 @@ impl Checkout {
                 // A raw advance invalidates the earlier typed resume token.
                 self.pending = None;
             }
-            // strict alternation: zero or more `Print`s, then exactly one
-            // turn-ender — so anything that is not a print ends the turn
-            if matches!(event.kind, Some(pb::worker_event::Kind::Print(_))) {
+            // as the typed path: calls past the suspension limit are not forwarded
+            if let Some(pb::worker_event::Kind::StreamedCalls(started)) = &mut event.kind {
+                started
+                    .calls
+                    .truncate(self.budget.streamed_call_room(started.calls.len()));
+                if started.calls.is_empty() {
+                    continue;
+                }
+            }
+            // strict alternation: zero or more mid-turn events, then exactly
+            // one turn-ender — so anything else ends the turn
+            if is_mid_turn(&event) {
                 on_event(&event).await;
             } else if matches!(event.kind, Some(pb::worker_event::Kind::FatalError(_))) {
                 // the far end is gone (see `fatal_error`): discard the worker
@@ -2077,6 +2202,60 @@ impl Checkout {
                         #[cfg(feature = "telemetry")]
                         if context.has_active_span() {
                             future.with_context(context.clone()).await;
+                        } else {
+                            future.await;
+                        }
+                        #[cfg(not(feature = "telemetry"))]
+                        future.await;
+                    }
+                }
+                Some(pb::worker_event::Kind::StreamedCalls(started)) => {
+                    // a reload's `Load` only restores, and runs on a zeroed suspension count
+                    if self.reloading || self.feed_handler.is_none() {
+                        return Err(self.protocol_violation("worker streamed calls the feed did not ask for"));
+                    }
+                    // `update_from` already counted these. Keep only the calls the
+                    // budget had room for: the suspension after an overrun is
+                    // aborted, so more would only let a worker grow host memory.
+                    let mut calls = started.calls.into_inner();
+                    calls.truncate(self.budget.streamed_call_room(calls.len()));
+                    let call_ids: Vec<u32> = calls.iter().map(|call| call.call_id).collect();
+                    let frame_len = self.worker.as_ref().map_or(0, Worker::last_frame_len);
+                    if !call_ids.is_empty() && !self.streamed_args.charge(frame_len, &call_ids) {
+                        return Err(self.streamed_args_exceeded());
+                    }
+                    for mut call in calls {
+                        let position = suspension_position(call.position.take());
+                        let function_name = mem::take(&mut call.function_name);
+                        let call_id = call.call_id;
+                        let args = match call.into_call_args() {
+                            Ok(args) => args,
+                            Err(err) => {
+                                return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
+                            }
+                        };
+                        #[cfg(feature = "telemetry")]
+                        let context = self.worker.as_ref().map_or_else(opentelemetry::Context::new, |worker| {
+                            worker.streamed_call_context(call_id)
+                        });
+                        let call = StreamedCall {
+                            function_name,
+                            args,
+                            call_id,
+                            position,
+                            #[cfg(feature = "telemetry")]
+                            callback_context: context.clone(),
+                        };
+                        let handler = self.feed_handler.as_mut().expect("checked above");
+                        // awaited like a print, so the next frame waits until the call has started
+                        let future = {
+                            #[cfg(feature = "telemetry")]
+                            let _context = context.has_active_span().then(|| context.clone().attach());
+                            handler(call)
+                        };
+                        #[cfg(feature = "telemetry")]
+                        if context.has_active_span() {
+                            future.with_context(context).await;
                         } else {
                             future.await;
                         }
@@ -2325,6 +2504,30 @@ impl Checkout {
         match worker.send(request, opening).await {
             Ok(()) => {
                 self.request_sent = true;
+                // a new turn starts only once its request is out, so a refused
+                // request leaves the previous feed's state as it was
+                // the host is done with these calls' arguments once their results are out
+                if let Some(pb::client_request::Kind::ResumeFutures(resume)) = &request.kind {
+                    for result in &resume.results {
+                        self.streamed_args.release(result.call_id);
+                    }
+                }
+                if !self.reloading
+                    && matches!(
+                        request.kind,
+                        Some(
+                            pb::client_request::Kind::Feed(_)
+                                | pb::client_request::Kind::Load(_)
+                                | pb::client_request::Kind::Reset(_)
+                        )
+                    )
+                {
+                    self.streamed_args.clear();
+                    // a restored or reset session runs no streaming feed until the next `Feed`
+                    if !matches!(request.kind, Some(pb::client_request::Kind::Feed(_))) {
+                        self.feed_handler = None;
+                    }
+                }
                 Ok(())
             }
             Err(FrameError::FrameTooLarge { len, max }) => Err(PoolError::Runtime(MontyException::new(
@@ -2393,8 +2596,7 @@ impl Checkout {
     /// worker's own account lands in [`CrashCause::Announced`].
     async fn fatal_error(&mut self, message: &str) -> PoolError {
         let status = self.reap_announced_exit().await;
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         PoolError::Crashed {
             status,
             cause: CrashCause::Announced {
@@ -2437,8 +2639,7 @@ impl Checkout {
         };
         #[cfg(feature = "telemetry")]
         self.record_finish("error");
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         let remote = self.pool.config.transport.is_remote();
         // guard, not a trailing release: a caller dropping this future
         // mid-reap must still release the slot and count the death. Its reason
@@ -2522,9 +2723,21 @@ impl Checkout {
             worker.kill_and_reap().await;
             drop(worker);
         }
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         error
+    }
+
+    /// Ends the session once streamed calls' unsettled arguments pass their
+    /// budget: like the worker's memory limit, a terminal `MemoryError`.
+    fn streamed_args_exceeded(&mut self) -> PoolError {
+        self.discard_worker();
+        PoolError::Runtime(MontyException::new(
+            ExcType::MemoryError,
+            Some(format!(
+                "streamed calls held more than {} bytes of arguments; the session was ended",
+                self.streamed_args.limit()
+            )),
+        ))
     }
 
     /// Discards the worker without crash classification, for turn-enders
@@ -2537,10 +2750,20 @@ impl Checkout {
             self.record_finish("error");
         }
         self.release_worker();
-        self.pending = None;
-        self.feed_mounts = None;
+        self.end_feed_state();
         self.turn_in_flight = false;
         self.abort_in_flight = false;
+    }
+
+    /// Forgets the in-flight feed once the session can no longer run: its
+    /// suspension, mounts, and the streamed-call handlers and held arguments,
+    /// so a broken session that is never finished does not keep the host's callbacks.
+    fn end_feed_state(&mut self) {
+        self.pending = None;
+        self.feed_mounts = None;
+        self.next_streamed_call_handler = None;
+        self.feed_handler = None;
+        self.streamed_args.clear();
     }
 
     /// Drops the worker and frees its pool slot, leaving the session state to
@@ -2590,6 +2813,8 @@ fn configure_request(repl: &ReplConfig, pool: &PoolConfig) -> pb::Configure {
         os_policy: Some((&repl.os_policy).into()),
         persistence: pb::Persistence::from(repl.persistence).into(),
         profile: repl.profile.clone(),
+        // each feed still opts in, and only with a handler (`set_streamed_call_handler`)
+        accepts_streamed_calls: pool.stream_async_calls && repl.stream_async_calls,
         // attached when the first request goes out (see `OpeningRequest`)
         first: None,
     }

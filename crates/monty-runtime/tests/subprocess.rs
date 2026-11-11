@@ -172,6 +172,8 @@ impl ChildProc {
             values: Some(values),
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         }));
         self.recv_turn()
     }
@@ -217,6 +219,8 @@ impl ChildProc {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         }));
         self.expect_death();
     }
@@ -425,6 +429,8 @@ fn first_feed(code: &str) -> pb::configure::First {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
+        stream_async_calls: false,
     })
 }
 
@@ -3307,6 +3313,8 @@ fn killed_worker_is_detected_as_eof() {
         values: None,
         skip_type_check: false,
         cwd: "/".to_owned(),
+        async_functions: Vec::new().into(),
+        stream_async_calls: false,
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");

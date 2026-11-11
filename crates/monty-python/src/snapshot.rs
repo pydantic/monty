@@ -182,6 +182,8 @@ pub(crate) fn feed_start_sync(
         ctx,
         turn_fn(move |c, p| {
             Box::pin(async move {
+                // every call suspends, so each one reaches a snapshot
+                c.set_async_functions(None);
                 c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                     .await
             })
@@ -224,6 +226,8 @@ pub(crate) fn feed_start_async(
             ctx,
             turn_fn(move |c, p| {
                 Box::pin(async move {
+                    // every call suspends, so each one reaches a snapshot
+                    c.set_async_functions(None);
                     c.feed_with_cwd(code, inputs, mounts, cwd.as_deref(), skip_type_check, p)
                         .await
                 })

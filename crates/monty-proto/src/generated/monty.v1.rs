@@ -330,6 +330,13 @@ pub struct Function {
     pub name: crate::budgeted_prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<crate::budgeted_prost::alloc::string::String>,
+    /// Calls to this function return an awaitable without waiting for the
+    /// client. Under `Configure.accepts_streamed_calls` the worker registers the future
+    /// itself and streams the call in `StreamedCalls`; otherwise, or on a worker
+    /// that predates the field, it suspends with `FunctionCall` as for any other
+    /// function, which the client may still answer with a future.
+    #[prost(bool, tag = "3")]
+    pub is_async: bool,
 }
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
@@ -857,6 +864,14 @@ pub struct Configure {
     /// Remote clients leave this absent. The server selects the worker's clock.
     #[prost(enumeration = "ExecutionClock", optional, tag = "14")]
     pub execution_clock: ::core::option::Option<i32>,
+    /// The client accepts `StreamedCalls`, so calls to async host functions
+    /// (`Function.is_async`, `Feed.async_functions`) may start without
+    /// suspending in a feed that sets `Feed.stream_async_calls`. Absent or false, the
+    /// worker suspends with `FunctionCall` for them as for any call. A worker that predates the field ignores it, so no
+    /// protocol version change is needed. A forwarder that cannot pass
+    /// `StreamedCalls` on must clear it before forwarding.
+    #[prost(bool, tag = "17")]
+    pub accepts_streamed_calls: bool,
     /// The session's first request, so that one round trip opens the session and
     /// runs it. If the `Configure` is refused, the request does not run and the
     /// reply is `SessionRefused`; otherwise the reply is the request's own,
@@ -902,6 +917,19 @@ pub struct Feed {
     /// the session's first feed). Empty keeps the session's current directory.
     #[prost(string, tag = "5")]
     pub cwd: crate::budgeted_prost::alloc::string::String,
+    /// Names of host functions whose calls in this feed start without waiting,
+    /// as for `Function.is_async`. Covers a call of a bare name the client never
+    /// supplied a value for, which reaches the client only as a `FunctionCall`
+    /// by name. Ignored unless `stream_async_calls` is set.
+    #[prost(string, repeated, tag = "6")]
+    pub async_functions: crate::budgeted_prost::alloc::vec::Vec<
+        crate::budgeted_prost::alloc::string::String,
+    >,
+    /// Calls to async host functions in this feed start without suspending
+    /// (see `Configure.accepts_streamed_calls`, which must also be set). False makes them
+    /// suspend like any call, for a client that answers every call itself.
+    #[prost(bool, tag = "7")]
+    pub stream_async_calls: bool,
 }
 /// Ends a pending suspension by raising `exception` uncatchably at its site.
 /// The session returns ready in an `Error` event. Hosts use this to stop a feed,
@@ -1021,9 +1049,10 @@ pub struct InstallDependencies {
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
 /// arms past 15 cost a two-byte key instead of one, which forwarding servers
 /// (which walk only field keys, on every frame) pay per event. Such a server
-/// mirrors this numbering to classify frames without decoding them; it treats
-/// a tag it does not know as opaque, so adding an arm degrades rather than
-/// misroutes, but renumbering an existing one would break it.
+/// mirrors this numbering to classify frames without decoding them, so
+/// renumbering an existing arm would misroute frames. A forwarder may also
+/// treat a tag it does not know as fatal to the session, so a worker sends a new
+/// arm only to a client that asked for it in `Configure`.
 #[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
 #[prost(prost_path = "crate::budgeted_prost")]
 pub struct WorkerEvent {
@@ -1083,7 +1112,7 @@ pub struct WorkerEvent {
     pub execution_clock: ::core::option::Option<i32>,
     #[prost(
         oneof = "worker_event::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub kind: ::core::option::Option<worker_event::Kind>,
 }
@@ -1120,6 +1149,8 @@ pub mod worker_event {
         Ping(super::Ping),
         #[prost(message, tag = "14")]
         SessionRefused(super::SessionRefused),
+        #[prost(message, tag = "15")]
+        StreamedCalls(super::StreamedCalls),
     }
 }
 /// One run of print() output on a single stream, as one `Print` event may
@@ -1141,6 +1172,22 @@ pub struct PrintSegment {
 pub struct Print {
     #[prost(message, repeated, tag = "1")]
     pub segments: crate::budgeted_prost::alloc::vec::Vec<PrintSegment>,
+}
+/// Mid-turn, like `Print`: calls to async host functions (`Function.is_async`)
+/// the sandbox has started without waiting. Each call already has an external
+/// future registered under its `call_id`; the client starts it and settles it
+/// through `ResumeFutures` when a later `ResolveFutures` names it. Sent only
+/// to a client that set `Configure.accepts_streamed_calls`. The worker sends every started
+/// call before the turn-ending event that follows it, so a `ResolveFutures`
+/// never names a call the client has not received. An event may carry any
+/// number of calls; `allow_eager_await` is always false on them. A session
+/// starts at most `max_suspensions` calls this way; later calls suspend with
+/// `FunctionCall`, so the client's suspension budget still ends a runaway loop.
+#[derive(Clone, PartialEq, crate::budgeted_prost::Message)]
+#[prost(prost_path = "crate::budgeted_prost")]
+pub struct StreamedCalls {
+    #[prost(message, repeated, tag = "1")]
+    pub calls: crate::budgeted_prost::alloc::vec::Vec<crate::WireFunctionCall>,
 }
 /// Suspension: the sandbox performed an OS operation, surfaced for the client
 /// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm

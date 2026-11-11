@@ -52,6 +52,8 @@ pub(crate) struct Worker {
     kind: WorkerKind,
     /// Host-selected allocation budget for decoding each protocol frame.
     max_decode_bytes: usize,
+    /// Wire length of the last event `recv` returned, which the streamed-call budget charges.
+    last_frame_len: usize,
     /// Pool-assigned generation, independent of PID reuse.
     pub(crate) id: u64,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
@@ -176,6 +178,7 @@ impl Worker {
         Self {
             kind,
             max_decode_bytes: DEFAULT_MAX_DECODE_BYTES,
+            last_frame_len: 0,
             id: 0,
             checkouts_served: 0,
             #[cfg(feature = "telemetry")]
@@ -190,6 +193,16 @@ impl Worker {
         self.recorder
             .as_ref()
             .map_or_else(opentelemetry::Context::new, |recorder| recorder.callback_context())
+    }
+
+    /// The span a streamed call's host callback runs under; see `Recorder::streamed_call_context`.
+    #[cfg(feature = "telemetry")]
+    pub(crate) fn streamed_call_context(&self, call_id: u32) -> opentelemetry::Context {
+        self.recorder
+            .as_ref()
+            .map_or_else(opentelemetry::Context::new, |recorder| {
+                recorder.streamed_call_context(call_id)
+            })
     }
 
     /// Sends one request, flushed to the wire — a reply is only ever read
@@ -310,9 +323,13 @@ impl Worker {
             metrics.frame("received", len);
             metrics.event(&event);
         }
-        #[cfg(not(feature = "telemetry"))]
-        let _ = len;
+        self.last_frame_len = len;
         Ok(event)
+    }
+
+    /// Wire length of the event the last `recv` returned.
+    pub(crate) const fn last_frame_len(&self) -> usize {
+        self.last_frame_len
     }
 
     /// The OS process id, when the worker is a local subprocess (`None` for a

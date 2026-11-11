@@ -973,6 +973,8 @@ async fn duration_backstop_arms_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1045,6 +1047,8 @@ async fn a_raw_load_adopts_the_dumps_duration_budget() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1106,6 +1110,8 @@ async fn lifecycle_requests_are_refused_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1162,6 +1168,8 @@ async fn an_oversize_raw_load_keeps_the_duration_budget() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1206,6 +1214,8 @@ async fn a_shutdown_dump_on_the_raw_path_discards_the_worker() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1533,6 +1543,8 @@ async fn suspension_limit_is_enforced_on_the_raw_path() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1634,6 +1646,8 @@ async fn rejected_raw_load_keeps_the_suspension_count() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -1844,6 +1858,8 @@ async fn aborted_restored_suspension_keeps_the_dump_limit() {
             values: None,
             skip_type_check: false,
             cwd: "/".to_owned(),
+            async_functions: Vec::new().into(),
+            stream_async_calls: false,
         })),
         ..pb::ClientRequest::default()
     };
@@ -2490,6 +2506,116 @@ async fn shutdown_resumes_transparently() {
     assert_eq!(checkout.session_id(), Some(&b"sess-2"[..]));
     checkout.finish().await.expect("finish");
     join_server(server).await;
+}
+
+/// The reload is the same session, so a re-sent streaming `Feed` keeps its
+/// streamed-call handler: the reloaded worker's started calls reach it.
+#[tokio::test]
+async fn shutdown_resumes_a_streaming_feed_with_its_handler() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_streaming_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"parked-1");
+        send_with_session_id(&mut socket, ok_event(), b"sess-2");
+        expect_streaming_feed(&mut socket, "fetch()");
+        let call = WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), 1, None, false, position());
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+                calls: vec![call].into(),
+            }),
+        );
+        send_complete(&mut socket);
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let (started_tx, started_rx) = mpsc::channel();
+    checkout.set_streamed_call_handler(Some(Box::new(move |call| {
+        started_tx.send(call.call_id).expect("started");
+        Box::pin(ready(()))
+    })));
+    let event = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect("the drain is invisible to the caller");
+    assert!(
+        matches!(event, TurnEvent::Complete(ref v) if *v == MontyObject::int(42)),
+        "got {event:?}"
+    );
+    assert_eq!(started_rx.try_iter().collect::<Vec<_>>(), [1]);
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
+}
+
+/// The reload's `Load` only restores and re-announces, so a `StreamedCalls`
+/// before its reply is a violation: it must not reach the handler while the
+/// reload has zeroed the suspension count, and the ended session drops the handler.
+#[tokio::test]
+async fn streamed_calls_during_a_reload_end_the_session() {
+    let mock = MockServer::start().await;
+    let url = mock.url();
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        configure_with_session_id(&mut socket, b"sess-1");
+        expect_streaming_feed(&mut socket, "fetch()");
+        send_kind(&mut socket, shutdown(Some(b"parked-1")));
+        let mut socket = mock.accept();
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"parked-1");
+        let call = WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), 1, None, false, position());
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+                calls: vec![call].into(),
+            }),
+        );
+        // the checkout this test expects has already closed the stream on the
+        // streamed calls, so a failed send is the pass case
+        let ack = pb::WorkerEvent {
+            kind: Some(ok_event()),
+            session_id: Some(b"sess-2".to_vec().into()),
+            ..Default::default()
+        };
+        let _ = socket.send(encode_to_capped_vec(&ack).expect("encode event").into());
+        // a checkout that took the calls re-sends the feed; answer it so the test fails rather than hangs
+        if try_read_request(&mut socket).is_some() {
+            send_complete(&mut socket);
+        }
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let (_pool, mut checkout) = remote_checkout(&url).await;
+    let (started_tx, started_rx) = mpsc::channel();
+    checkout.set_streamed_call_handler(Some(Box::new(move |call| {
+        started_tx.send(call.call_id).expect("started");
+        Box::pin(ready(()))
+    })));
+    let result = checkout.feed("fetch()", vec![], vec![], false, &mut no_print).await;
+    assert!(matches!(result, Err(PoolError::Shutdown { .. })), "got {result:?}");
+    // no call ran, and the ended session released the handler (and its sender) before being dropped
+    let received = started_rx.recv_timeout(Duration::from_secs(1));
+    assert_eq!(received, Err(mpsc::RecvTimeoutError::Disconnected));
+    drop(checkout);
+    join_server(server).await;
+}
+
+/// Asserts the next request is a `Feed` of `code` that asks the worker to stream calls.
+fn expect_streaming_feed(socket: &mut MockStream, code: &str) {
+    let request = try_read_request(socket).expect("feed");
+    match request.kind {
+        Some(pb::client_request::Kind::Feed(feed)) => {
+            assert_eq!(feed.code, code);
+            assert!(feed.stream_async_calls, "the feed must ask the worker to stream");
+        }
+        other => panic!("expected Feed, got {other:?}"),
+    }
 }
 
 /// The redial re-sends the session's `Configure`, so the resumed session keeps
@@ -4050,6 +4176,55 @@ async fn invalid_server_clock_configuration_ends_the_session() {
         pool.close().await;
         join_server(server).await;
     }
+}
+
+/// A streamed call is sent before its turn ends, so the first request's
+/// `StreamedCalls` must not stand in for the `Configure` reply: the server's
+/// CPU clock arrives on the turn-ender after it.
+#[tokio::test]
+async fn a_streamed_call_does_not_answer_the_opening_configure() {
+    let (mock, mut config) = mock_pool_config().await;
+    let server = thread::spawn(move || {
+        let mut socket = mock.accept();
+        socket.set_read_timeout(Duration::from_secs(5));
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::client_request::Kind::Configure(_)
+        ));
+        send_event(
+            &mut socket,
+            &pb::WorkerEvent {
+                kind: Some(pb::worker_event::Kind::Ok(pb::Ok {})),
+                execution_clock: Some(pb::ExecutionClock::Cpu as i32),
+                ..Default::default()
+            },
+        );
+        expect_feed(&mut socket, "fetch()");
+        let call = WireFunctionCall::new("fetch".to_owned(), CallArgs::new(), 1, None, false, position());
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::StreamedCalls(pb::StreamedCalls {
+                calls: vec![call].into(),
+            }),
+        );
+        send_kind(
+            &mut socket,
+            pb::worker_event::Kind::Complete(pb::Complete::from(MontyObject::none())),
+        );
+        assert!(socket.read().is_none(), "the CPU clock must end the session");
+    });
+    config.request_timeout = None;
+    let pool = Pool::new(config).await.unwrap();
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    checkout.set_streamed_call_handler(Some(Box::new(|_| Box::pin(ready(())))));
+    let err = checkout
+        .feed("fetch()", vec![], vec![], false, &mut no_print)
+        .await
+        .expect_err("the CPU clock needs a finite request_timeout");
+    assert!(matches!(err, PoolError::Configuration(_)), "{err:?}");
+    drop(checkout);
+    pool.close().await;
+    join_server(server).await;
 }
 
 /// Checks that a remote dial failure is typed and returns its full message.
