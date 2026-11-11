@@ -2,9 +2,15 @@
 # [bench]
 # data = '../data/string_corpus.json'
 # ///
+"""Scan mostly-ASCII prose by character index and count word boundaries.
+
+Exercises forward indexing, ord() and isspace() on 512/2,048/6,472-character inputs.
+The harness times setup (JSON and text generation), the workload and assertions.
+"""
+
 import json
 
-# Corpus sampling and text construction are part of the timed execution.
+# Setup: decode the corpus and generate reproducible text.
 corpus = json.loads(DATA)
 state = 42
 parts = []
@@ -23,6 +29,7 @@ while characters < 6472:
 
 text = ''.join(parts)[:6472]
 
+# Benchmark: scan each text prefix and count word boundaries.
 checksum = 0
 word_count = 0
 
@@ -40,4 +47,5 @@ for size in (512, 2048, len(text)):
             word_count += 1
             in_word = True
 
+# Validation: included in the timed execution.
 assert (word_count, checksum) == (1465, 842630)

@@ -2,9 +2,15 @@
 # [bench]
 # data = '../data/string_corpus.json'
 # ///
+"""Build paragraph start/end offsets in a 131,072-character, mostly-ASCII document.
+
+Exercises successive find() calls with advancing starts and list/tuple construction.
+The harness times setup (JSON, text generation and expansion), the workload and assertions.
+"""
+
 import json
 
-# Corpus sampling and text construction are part of the timed execution.
+# Setup: decode the corpus and generate reproducible text.
 corpus = json.loads(DATA)
 state = 42
 parts = []
@@ -23,10 +29,11 @@ while characters < 6472:
 
 text = ''.join(parts)[:6472]
 
-# Expand the short generated prose into a 128K-character document.
+# Setup: expand the generated prose into a 128K-character document.
 copies = 131072 // len(text) + 1
 text = '\n\n'.join(f'Notebook entry {number}\n\n{text}' for number in range(copies))[:131072]
 
+# Benchmark: locate each paragraph and retain its start/end offsets.
 length = len(text)
 start = 0
 boundaries = []
@@ -38,6 +45,7 @@ while start < length:
     boundaries.append((start, end))
     start = end + 2
 
+# Validation: included in the timed execution.
 assert length == 131072
 assert len(boundaries) == 708
 assert sum(end - start for start, end in boundaries) == 129658
