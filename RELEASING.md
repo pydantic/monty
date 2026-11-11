@@ -20,7 +20,7 @@ and sync the `pydantic-monty` metapackage's version and its exact pins on
 ```bash
 git checkout -b prepare-release-vX.Y.Z
 git commit -am "Bump version to vX.Y.Z"
-git push --set-upstream origin $(git branch-name)
+git push --set-upstream origin HEAD
 ```
 
 ## 3. Create Release via GitHub UI
