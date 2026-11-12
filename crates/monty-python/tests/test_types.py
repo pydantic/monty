@@ -758,11 +758,23 @@ UNDECODABLE_RESULTS = [
         id='colliding_tuple_keys',
     ),
     pytest.param(
-        # `a` and `b` are 41 nodes each but 2**40 leaves to hash or compare
+        # `a` and `b` are 41 tuple nodes each but 2**40 leaves to hash or compare
         'a = (0,)\nb = (0,)\nfor _ in range(40):\n    a = (a, a)\n    b = (b, b)\n'
         '{(a, 2**61 - 1): None, (b, 2 * (2**61 - 1)): None}',
         SHARED_KEYS_ERROR,
         id='shared_nested_tuple_keys',
+    ),
+    pytest.param(
+        # 2**22 leaves, each a million-bit int that CPython before 3.14 rehashes
+        'a = (1 << 1_000_000,)\nfor _ in range(22):\n    a = (a, a)\n{a: None}',
+        SHARED_KEYS_ERROR,
+        id='shared_big_int_key',
+    ),
+    pytest.param(
+        # colliding big ints differ only in their low digits, so each comparison scans them all
+        '{(1 << 80_000) + k * (2**61 - 1): None for k in range(1, 300)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_big_int_keys',
     ),
 ]
 
@@ -791,6 +803,13 @@ def test_colliding_keys_under_budget(monty_run: RunMonty):
     result = monty_run('{k * (2**61 - 1): k for k in range(1, 1000)}')
     assert len(result) == snapshot(999)
     assert result[5 * (2**61 - 1)] == snapshot(5)
+
+
+def test_big_int_keys_decode(monty_run: RunMonty):
+    """Big `int` keys that do not collide stay within the hash budget."""
+    result = monty_run('{(1 << 80_000) + k: k for k in range(300)}')
+    assert len(result) == snapshot(300)
+    assert result[(1 << 80_000) + 7] == snapshot(7)
 
 
 def test_keys_sharing_a_tuple_decode(monty_run: RunMonty):

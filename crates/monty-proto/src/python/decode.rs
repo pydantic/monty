@@ -38,13 +38,14 @@ const MAX_KEY_COLLISIONS: u64 = 1 << 20;
 
 /// The expanded key size every arena may hash, whatever its size (about 100 ms).
 ///
-/// The arena keeps sharing, so `a = (a, a)` nested 40 deep is 40 nodes, but
+/// The arena keeps sharing, so `a = (a, a)` nested 40 deep is 41 tuple nodes, but
 /// CPython before 3.14 does not cache tuple hashes and walks all 2⁴⁰ leaves.
 const MIN_KEY_HASH_BUDGET: u64 = 1 << 24;
 
-/// Expanded key size each arena node adds to [`MIN_KEY_HASH_BUDGET`], so that
-/// unshared keys, which expand to no more than the arena itself, always fit.
-const KEY_HASH_BUDGET_PER_NODE: u64 = 4;
+/// Expanded key size each unit of the arena's own size (see [`own_size`]) adds to
+/// [`MIN_KEY_HASH_BUDGET`], so unshared keys, which expand to no more than the
+/// arena itself, always fit.
+const KEY_HASH_BUDGET_PER_UNIT: u64 = 4;
 
 /// Converts one value to a native Python object. A class instance found in
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
@@ -78,7 +79,7 @@ impl DecodedArena {
             expanded: Vec::with_capacity(graph.len()),
             key_collisions: 0,
             key_hash_work: 0,
-            key_hash_budget: MIN_KEY_HASH_BUDGET.max(KEY_HASH_BUDGET_PER_NODE.saturating_mul(graph.len() as u64)),
+            key_hash_budget: MIN_KEY_HASH_BUDGET.max(KEY_HASH_BUDGET_PER_UNIT.saturating_mul(arena_size(graph))),
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
@@ -342,9 +343,17 @@ impl Decoder<'_, '_> {
     }
 }
 
-/// How many values `node` holds with sharing undone, which bounds what CPython
-/// walks to hash it or compare it with another key; `expanded` holds the sizes of
-/// the nodes before it. Only tuples and frozensets nest inside hashable keys.
+/// The [`own_size`] of every node in `graph`: an unshared key expands to no more.
+fn arena_size(graph: &MontyGraph) -> u64 {
+    graph
+        .nodes()
+        .iter()
+        .fold(0, |size, node| size.saturating_add(own_size(node)))
+}
+
+/// The size of `node` with sharing undone, which bounds what CPython walks to
+/// hash it or compare it with another key; `expanded` holds the sizes of the
+/// nodes before it. Only tuples and frozensets nest inside hashable keys.
 fn expanded_size(node: &MontyNode, expanded: &[u64]) -> u64 {
     let children: &[NodeId] = match node {
         MontyNode::Tuple(items) | MontyNode::FrozenSet(items) => items,
@@ -353,7 +362,19 @@ fn expanded_size(node: &MontyNode, expanded: &[u64]) -> u64 {
     };
     children
         .iter()
-        .fold(1, |size, id| size.saturating_add(expanded[id.index()]))
+        .fold(own_size(node), |size, id| size.saturating_add(expanded[id.index()]))
+}
+
+/// One for the node plus one per 8 bytes of payload, since CPython hashes and
+/// compares a big `int` digit by digit and compares text byte by byte.
+fn own_size(node: &MontyNode) -> u64 {
+    let payload_bytes = match node {
+        MontyNode::BigInt(bi) => bi.bits().div_ceil(8),
+        MontyNode::String(s) | MontyNode::Decimal(s) | MontyNode::Path(s) => s.len() as u64,
+        MontyNode::Bytes(b) => b.len() as u64,
+        _ => 0,
+    };
+    1 + payload_bytes / 8
 }
 
 /// A [`PyMontyStdTypeProxy`] standing for `inner`, as a Python object.
