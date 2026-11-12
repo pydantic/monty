@@ -69,17 +69,6 @@ These raise `NameError`:
     inline share identity by content. Separate runtime results such as `bin(4)` can therefore
     compare identical and return the same `id()`, where CPython gives those
     results distinct identities.
-- **naming an unhashable tuple's culprit re-hashes its items** — `{([1],)}` and
-    `hash(([1],))` name the innermost unhashable type, as CPython does, but Monty
-    finds it by hashing the tuple's items again after the tuple fails to hash.
-    A user `__hash__` on an item before the culprit therefore runs twice.
-- **dict view operators wrap hashing errors as set elements** —
-    `d.keys() & iterable`, `d.items() & iterable` and `isdisjoint(iterable)` on a
-    view collect the iterable into a set first, so an item that will not hash
-    raises `cannot use 'T' as a set element (...)` where CPython probes the dict
-    and raises `cannot use 'T' as a dict key (...)`.
-    `d.items() & [[1]]` raises that error too, where CPython finds no match and
-    returns an empty set.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.
@@ -118,22 +107,17 @@ These raise `NameError`:
     In-place `|=`, `-=`, `^=`, and `&=` also snapshot their right operand before mutation.
     Changes to that operand made by user `__eq__` are not observed.
 - **Dict-view set operators re-hash the view's own keys** — `d.keys() - s`,
-    `|`, `^`, `isdisjoint` and the reflected forms collect those keys through a
+    `|`, `^` and their reflected forms collect those keys through a
     live, resize-checked walk that calls `__hash__` on each one. CPython probes
     with each key's stored hash and mostly does not call it at all. So a
     `__hash__` — or a colliding `__eq__` — that resizes the dict raises
     `RuntimeError: dictionary changed size during iteration` in Monty where
     CPython completes, as in `d.keys() - s`; CPython raises too wherever its own
     walk observes the change, as in `s - d.keys()` and `d.items() - s`.
-    `d.keys() & s` diverges the other way: Monty always walks the other operand
-    and probes the live dict, so the view's keys are never hashed and the
-    intersection completes, while CPython walks the view whenever the dict is no
-    larger than the other operand — hashing each of its keys into that operand —
-    and so raises where Monty returns a result.
-    The operand that is *not* the view is snapshotted before the operation
-    begins, so mutating that one is never observed. Absent mutation every result
-    agrees. Set-to-set operators do not re-hash at all, and dict-view equality
-    (`d.keys() == s`) raises exactly where CPython does.
+    The operand that is *not* the view is snapshotted before these operators
+    begin, so mutating that one is never observed. Absent mutation every result
+    agrees. `&` and `isdisjoint` walk and probe the same operands as CPython, set-to-set operators do not
+    re-hash at all, and dict-view equality (`d.keys() == s`) raises exactly where CPython does.
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
     each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
     is `'list'` rather than `'enumerate'`. Observable several ways: a

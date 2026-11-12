@@ -532,8 +532,15 @@ impl<'h> HeapRead<'h, Dict> {
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
     /// Returns Err if key is unhashable.
     pub(crate) fn dict_get<'a>(&'a self, key: &Value, vm: &'a mut VM<'h>) -> RunResult<Option<Value>> {
-        let (found, _hash) = self.find_index_hash(key, vm)?;
-        if let Some(slot) = found {
+        let hash = dict_key_hash(key, vm)?;
+        self.get_known_hash(key, hash, vm)
+    }
+
+    /// [`dict_get`](Self::dict_get) with `key`'s hash already computed, as
+    /// CPython's `_PyDict_GetItem_KnownHash`, so a caller hashing once for a
+    /// lookup and a store does not run a user `__hash__` twice.
+    pub(crate) fn get_known_hash(&self, key: &Value, hash: u64, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        if let Some(slot) = self.find_index(key, hash, vm)? {
             let entry = self.get(vm.heap).table.entry(&slot);
             Ok(Some(entry.value.clone_with_heap(vm.heap)))
         } else {
@@ -634,17 +641,47 @@ impl<'h> HeapReadMut<'h, Dict> {
         }
     }
 
+    /// [`set`](Self::set) with `key`'s hash already computed, as CPython's
+    /// `_PyDict_SetItem_KnownHash`; `hash` must be the dict key hash of `key`.
+    pub(crate) fn set_known_hash(
+        &self,
+        key: Value,
+        value: Value,
+        hash: u64,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<Value>> {
+        self.set_hashed(key, value, hash, vm, GrowthCheck::Preflight)
+    }
+
     fn set_with(&self, key: Value, value: Value, vm: &mut VM<'h>, growth: GrowthCheck) -> RunResult<Option<Value>> {
+        match dict_key_hash(&key, vm) {
+            Ok(hash) => self.set_hashed(key, value, hash, vm, growth),
+            Err(e) => {
+                key.drop_with(vm);
+                value.drop_with(vm);
+                Err(e)
+            }
+        }
+    }
+
+    /// Stores `key` under its precomputed `hash`, releasing both values on error.
+    fn set_hashed(
+        &self,
+        key: Value,
+        value: Value,
+        hash: u64,
+        vm: &mut VM<'h>,
+        growth: GrowthCheck,
+    ) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.get_mut(vm.heap).contains_refs = true;
         }
 
-        // Handle hash computation errors explicitly so we can drop key/value properly
-        let (found, hash) = match self.find_index_hash(&key, vm) {
-            Ok(result) => result,
+        // The probe can run a user `__eq__`, which may raise
+        let found = match self.find_index(&key, hash, vm) {
+            Ok(found) => found,
             Err(e) => {
-                // Drop the key and value before returning the error
                 key.drop_with(vm);
                 value.drop_with(vm);
                 return Err(e);

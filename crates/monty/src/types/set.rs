@@ -988,6 +988,12 @@ impl<'h> HeapRead<'h, Set> {
         self.storage().contains(value, vm)
     }
 
+    /// `self.intersection(other)` for an owned iterable `other`, hashing its
+    /// items bare as CPython's `set.intersection` does. Used by dict views.
+    pub(crate) fn intersection_with(&self, other: Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        self.set_algebra(other, SetAlgebra::Intersection, vm)
+    }
+
     /// Set algebra operations (union, intersection, difference, symmetric_difference)
     /// via HeapRead. Snapshots the other operand once so only `self` is read
     /// live, then calls the matching `SetStorage` method.

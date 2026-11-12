@@ -67,8 +67,6 @@ These names are absent from the module namespace rather than stubbed, so they ar
 - Eviction removes an entry by position without running user hashing or equality methods.
     CPython can compare colliding keys during eviction, so comparison side effects can differ.
     The number of hash and equality calls during lookup and insertion can also differ.
-- An unhashable argument is named by hashing the key's items again (see [builtins.md](builtins.md)), so a user
-    `__hash__` on an earlier argument can run twice on a failing call.
 - Applying a caching decorator to a method with `@` syntax is rejected along with other
     [method decorators](classes.md).
     Assigning `method = functools.cache(function)` in the class body is supported.

@@ -46,6 +46,7 @@ use crate::{
         slice::{normalize_sequence_index, slice_collect_iterator, value_to_i64_bound},
         str::allocate_string,
         tuple::TupleVec,
+        unhashable::hash_or_culprit,
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -266,6 +267,27 @@ impl<'h> HeapRead<'h, NamedTuple> {
     #[expect(clippy::iter_not_returning_iterator)]
     pub(crate) fn iter(&self, vm: &mut VM<'h>) -> RunResult<NamedTupleIter<'_, 'h>> {
         NamedTupleIter::new(self, vm)
+    }
+
+    /// Hashes by element only (not by class name), matching the tuple hash so a
+    /// `NamedTuple` and a `Tuple` with equal elements hash equally; on failure
+    /// returns the innermost unhashable item's type name, as the tuple one does.
+    pub(crate) fn hash_or_culprit(&self, vm: &mut VM<'h>) -> RunResult<Result<HashValue, String>> {
+        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
+            return Ok(Ok(cached));
+        }
+        let mut hasher = DefaultHasher::new();
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
+            match hash_or_culprit(item, vm)? {
+                Ok(hash) => hash.hash(&mut hasher),
+                Err(culprit) => return Ok(Err(culprit)),
+            }
+        }
+        let hash = HashValue::new(hasher.finish());
+        self.get(vm.heap).cached_hash.set(Some(hash));
+        Ok(Ok(hash))
     }
 
     /// Cross-type equality between NamedTuple and Tuple via HeapRead.
@@ -507,26 +529,9 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
         }
     }
 
-    /// Hashes by element only (not by class name), matching `Tuple::py_hash`
-    /// so a `NamedTuple` and a `Tuple` with equal elements share the same hash.
-    /// Caches the computed hash on first call (see `Tuple::py_hash` for the
-    /// caching rationale).
+    /// See [`HeapRead::hash_or_culprit`], which also names an unhashable item.
     fn py_hash(&self, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        if let Some(cached) = self.get(vm.heap).cached_hash.get() {
-            return Ok(Some(cached));
-        }
-        let mut hasher = DefaultHasher::new();
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some(item) = iter.next(vm)? {
-            match item.py_hash(vm)? {
-                Some(h) => h.hash(&mut hasher),
-                None => return Ok(None),
-            }
-        }
-        let hash = HashValue::new(hasher.finish());
-        self.get(vm.heap).cached_hash.set(Some(hash));
-        Ok(Some(hash))
+        Ok(self.hash_or_culprit(vm)?.ok())
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {

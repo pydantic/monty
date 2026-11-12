@@ -21,6 +21,15 @@ class RaisesValue:
         raise ValueError('v')
 
 
+class CountsHashes:
+    def __init__(self):
+        self.calls = 0
+
+    def __hash__(self):
+        self.calls += 1
+        return 1
+
+
 NT = namedtuple('NT', 'a b')
 
 
@@ -126,6 +135,65 @@ assert err(lambda: Counter([[1]])) == "TypeError: unhashable type: 'list'"
 assert err(lambda: Counter().update([RaisesType()])) == 'TypeError: boom'
 assert err(lambda: Counter()[RaisesType()]) == "TypeError: cannot use 'RaisesType' as a dict key (boom)"
 assert err(lambda: Counter().subtract([[1]])) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+
+# === Dict view & and isdisjoint probe the dict, wrapping as a dict key ===
+d = {1: 2, 3: [4]}
+k = d.keys()
+i = d.items()
+assert err(lambda: k & [[1]]) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: [[1]] & k) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: k & [RaisesType()]) == "TypeError: cannot use 'RaisesType' as a dict key (boom)"
+assert err(lambda: k & (x for x in [[1], 1 / 0])) == 'ZeroDivisionError: division by zero'
+assert err(lambda: k.isdisjoint([[1]])) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: k.isdisjoint(d.values())) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: i & [([1], 1)]) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: i.isdisjoint([([1], 1)])) == "TypeError: cannot use 'list' as a dict key (unhashable type: 'list')"
+assert err(lambda: k & i) == "TypeError: cannot use 'tuple' as a dict key (unhashable type: 'list')"
+
+# === A matched item is added to the result set, which hashes it as a set element ===
+assert err(lambda: i & [(3, [4])]) == "TypeError: cannot use 'tuple' as a set element (unhashable type: 'list')"
+assert err(lambda: [(3, [4])] & i) == "TypeError: cannot use 'tuple' as a set element (unhashable type: 'list')"
+assert err(lambda: i & {3: [4]}.items()) == "TypeError: cannot use 'tuple' as a set element (unhashable type: 'list')"
+
+# === An exact set at least as large as the view runs set.intersection(view) ===
+assert err(lambda: i & {(1, 2), (5, 6), (7, 8)}) == "TypeError: unhashable type: 'list'"
+assert i & frozenset({(1, 2), (5, 6), (7, 8)}) == {(1, 2)}
+assert i & {(1, 2)} == {(1, 2)}
+
+# === Probing stops at the first match and never hashes the view's values ===
+assert k.isdisjoint([1, [1]]) is False
+assert i.isdisjoint([(3, [4])]) is False
+assert i.isdisjoint({(1, 2), (5, 6), (7, 8)}) is False
+assert i.isdisjoint({(9, 9)}) is True
+assert i & [[1]] == set()
+assert i & [(1, 2)] == {(1, 2)}
+assert i & k == set()
+assert k.isdisjoint(k) is False
+assert {}.keys().isdisjoint({}.keys()) is True
+assert err(lambda: k & 5) == "TypeError: 'int' object is not iterable"
+assert err(lambda: k.isdisjoint(5)) == "TypeError: 'int' object is not iterable"
+
+# === A failing hash runs each __hash__ once ===
+counted = CountsHashes()
+assert err(lambda: {(counted, [1])}) == "TypeError: cannot use 'tuple' as a set element (unhashable type: 'list')"
+assert counted.calls == 1
+counted = CountsHashes()
+assert err(lambda: hash((counted, [1]))) == "TypeError: unhashable type: 'list'"
+assert counted.calls == 1
+counted = CountsHashes()
+assert err(lambda: {NT(counted, [1]): 1}) == "TypeError: cannot use 'NT' as a dict key (unhashable type: 'list')"
+assert counted.calls == 1
+counted = CountsHashes()
+assert err(lambda: cached((counted, [1]))) == "TypeError: unhashable type: 'list'"
+assert counted.calls == 1
+
+# === Counter hashes each counted element once ===
+counted = CountsHashes()
+assert Counter([counted, counted])[counted] == 2
+assert counted.calls == 3
+counted = CountsHashes()
+assert err(lambda: Counter([(counted, [1])])) == "TypeError: unhashable type: 'list'"
+assert counted.calls == 1
 
 # === The wrapped error chains to the exception being handled, not the hash error ===
 try:

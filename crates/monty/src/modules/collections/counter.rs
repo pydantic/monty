@@ -16,7 +16,7 @@ use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     py_value::PyValue,
@@ -205,11 +205,11 @@ pub(crate) fn counter_update<'h>(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                let probe = item.clone_with_heap(vm);
-                defer_drop!(probe, vm);
-                if let Err(err) = counter_bump(counter, item, &Value::Int(1), subtract, false, vm) {
-                    // `subtract` is pure Python (`self.get(elem, 0) - 1`), keeping the dict key error.
-                    return Err(if subtract { err } else { bare_hash_error(probe, err, vm) });
+                // `subtract` is pure Python (`self.get(elem, 0) - 1`), keeping the dict key error.
+                if subtract {
+                    counter_bump(counter, item, &Value::Int(1), true, false, vm)?;
+                } else {
+                    counter_count_element(counter, item, vm)?;
                 }
             }
         }
@@ -223,17 +223,22 @@ pub(crate) fn counter_update<'h>(
     Ok(())
 }
 
-/// `_count_elements` hashes with a bare `PyObject_Hash`, so a key that will not
-/// hash raises `hash()`'s error rather than the dict key one `counter_bump` raised.
-///
-/// Rehashes only on the error path, keeping the common path to one hash per item.
-#[cold]
-fn bare_hash_error(key: &Value, err: RunError, vm: &mut VM<'_>) -> RunError {
-    if err.is_catchable(ExcType::TypeError) {
-        plain_hash(key, vm).err().unwrap_or(err)
-    } else {
-        err
+/// Counts one occurrence of `item` as `_count_elements` does: one bare
+/// `PyObject_Hash`, reused for the lookup and the store, so an unhashable item
+/// raises `hash()`'s error rather than the dict key one.
+fn counter_count_element<'h>(counter: &mut HeapObjectRead<'h, Dict>, item: Value, vm: &mut VM<'h>) -> RunResult<()> {
+    let mut item_guard = DropGuard::new(item, vm);
+    let (item, vm) = item_guard.as_parts_mut();
+    let hash = plain_hash(item, vm)?.raw();
+    let base = counter.get_known_hash(item, hash, vm)?.unwrap_or(Value::Int(0));
+    let total = count_arith(&base, &Value::Int(1), false, vm);
+    base.drop_with(vm);
+    let total = total?;
+    let (item, vm) = item_guard.into_parts();
+    if let Some(old) = counter.set_known_hash(item, total, hash, vm)? {
+        old.drop_with(vm);
     }
+    Ok(())
 }
 
 /// Folds mapping `(key, count)` pairs into `counter`.
