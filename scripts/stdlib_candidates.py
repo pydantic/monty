@@ -116,13 +116,15 @@ def main() -> None:
     for outcome, blocked in sorted(by_outcome.items(), key=lambda item: (-len(item[1]), item[0])):
         print(f'\n{outcome} ({len(blocked)}):\n    {", ".join(blocked)}')
 
-    print_syntax_blockers({module: syntax_blockers(module, lib) for module in modules})
+    # a module missing from this CPython is already reported above, so it has no syntax entry
+    scans = {module: syntax_blockers(module, lib) for module in modules}
+    print_syntax_blockers({module: blockers for module, blockers in scans.items() if blockers is not None})
 
 
 def print_syntax_blockers(blockers: dict[str, Counter[str]]) -> None:
-    """Print every syntax blocker with the modules containing it, then the modules a single feature would unblock.
+    """Print every syntax blocker with the modules containing it, then the modules with only one syntax blocker.
 
-    "Unblocks" only means the parser would accept the module's own file: its imports and runtime gaps may still fail.
+    Fixing that one would only make the parser accept the module's own file: its imports and runtime gaps may still fail.
     """
     by_feature: dict[str, list[str]] = defaultdict(list)
     for module, features in blockers.items():
@@ -185,12 +187,16 @@ def run_module(module: str, lib: Path, monty: Path, timeout: float) -> str:
     return lines[-1].strip() if lines else f'exit code {result.returncode} with no output'
 
 
-def syntax_blockers(module: str, lib: Path) -> Counter[str]:
-    """Every construct in `module`'s own source that Monty's parser rejects, with how often each occurs."""
+def syntax_blockers(module: str, lib: Path) -> Counter[str] | None:
+    """Every construct in `module`'s own source that Monty's parser rejects, with how often each occurs.
+
+    `None` when this CPython has no source for `module`.
+    """
     source = module_source(module, lib)
+    if source is None:
+        return None
     scan = SyntaxScan()
-    if source is not None:
-        scan.visit(ast.parse(source))
+    scan.visit(ast.parse(source))
     return scan.blockers
 
 

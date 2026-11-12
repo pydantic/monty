@@ -65,14 +65,15 @@ behaviour also needs a `limitations/` entry.
 Patches stack: each applies, with no fuzz and in file-name order, on top of the ones before it, so several may edit one
 file. `--make-patch` saves only the edits the earlier patches do not make, so it adds a new last patch or replaces the
 last one; changing an earlier patch means editing it by hand and checking the later ones still apply.
-`make check-stdlib-patches` (CI) fails once a patched module's `<module>__module.py` case passes without its patches,
-so the PR that fixes the Monty gap drops the patch; that test case must exercise the patched code. A `Permanent: <why>`
+`make check-stdlib-patches` (CI) fails once a patch is no longer needed, i.e. its module's `<module>__module.py` case
+passes without it, so the PR that fixes the Monty gap drops the patch; that test case must exercise the patched code. A `Permanent: <why>`
 line in a patch's reason exempts it.
 An import finds them after the native `StandardLib` modules and before the host (`module_finder.rs`), running them like
 a module from a file with no OS call. A newly vendored module also goes in `SANDBOX_MODULE_NAMES`, the typeshed
 `COPY_FILES`/`VERSIONS`, `limitations/modules.md` and a `test_cases` file.
 Only list modules that load: `make stdlib-candidates` reports each candidate's first blocker, then every syntax
-blocker in its source and the modules one language feature would unblock.
+blocker in its source and the modules with only one syntax blocker (which may still have import or runtime
+blockers).
 
 ## Cross-Platform Requirements
 

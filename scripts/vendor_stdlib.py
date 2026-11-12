@@ -23,6 +23,7 @@ import sys
 import tempfile
 import tomllib
 import urllib.request
+from collections import Counter
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
@@ -89,6 +90,10 @@ def read(path: Path) -> str | None:
     return path.read_bytes().decode('utf-8') if path.is_file() else None
 
 
+class PatchError(Exception):
+    """A patch that is malformed or does not apply; `main` reports it and exits."""
+
+
 def apply_patches(sources: dict[str, str], patches: list[Path]) -> dict[str, str]:
     """`sources` (keyed by `Lib/`-relative path) with `patches` applied in order by `git apply`, which never fuzzes.
 
@@ -110,10 +115,10 @@ def check_patch(patch: Path, sources: dict[str, str]) -> None:
     """Fails unless `patch` explains itself and only edits vendored files."""
     text = patch.read_text(encoding='utf-8')
     if text.startswith(('--- ', 'diff ')) or not text.strip():
-        sys.exit(f'{patch.relative_to(REPO)} must start with the reason it is needed')
+        raise PatchError(f'{patch.relative_to(REPO)} must start with the reason it is needed')
     for line in text.splitlines():
         if line.startswith(('--- a/', '+++ b/')) and line[6:] not in sources:
-            sys.exit(f'{patch.relative_to(REPO)} edits {line[6:]}, which vendor.toml does not list')
+            raise PatchError(f'{patch.relative_to(REPO)} edits {line[6:]}, which vendor.toml does not list')
 
 
 def git_apply(patch: Path, root: Path) -> None:
@@ -129,7 +134,7 @@ def git_apply(patch: Path, root: Path) -> None:
         check=False,
     )
     if result.returncode:
-        sys.exit(f'{patch.relative_to(REPO)} does not apply:\n{result.stderr}')
+        raise PatchError(f'{patch.relative_to(REPO)} does not apply:\n{result.stderr}')
 
 
 def make_patch(name: str, reason: str, upstream: dict[str, str]) -> None:
@@ -158,10 +163,11 @@ def make_patch(name: str, reason: str, upstream: dict[str, str]) -> None:
 
 
 def check_patches(upstream: dict[str, str], patches: list[Path]) -> None:
-    """Fails if a patched module's test case passes with its upstream source, so its patches are no longer needed.
+    """Fails if a patch is no longer needed: its modules' test cases pass without it.
 
-    Each patched file is written to `Lib/` with only its `Permanent:` patches applied, the datatest binary is rebuilt
-    around it, and `<module>__module.py` runs on Monty and CPython; `Lib/` is restored afterwards.
+    One build drops every patch not marked `Permanent:`. A patch sharing a file with another checked patch then gets
+    its own build, dropping only it, so a stale patch is found even when the other is still needed. Each build writes
+    `Lib/`, rebuilds the datatest binary and runs `<module>__module.py` on Monty and CPython; `Lib/` is restored after.
     A pass shows only what the test case covers, so it should exercise the code each patch changes.
     """
     checked = [patch for patch in patches if not is_permanent(patch)]
@@ -173,27 +179,49 @@ def check_patches(upstream: dict[str, str], patches: list[Path]) -> None:
     if missing := [test for test in tests.values() if not test.is_file()]:
         sys.exit('patched modules need a test case:\n' + '\n'.join(f'    {test.relative_to(REPO)}' for test in missing))
 
-    unpatched = apply_patches(upstream, [patch for patch in patches if is_permanent(patch)])
     originals = {file: (LIB / file).read_bytes() for file in files}
     try:
-        for file in files:
-            (LIB / file).write_text(unpatched[file], encoding='utf-8', newline='\n')
-        # built first, so a build failure stops the check rather than reading as a failing test
-        subprocess.run(['cargo', 'build', '-q', '-p', 'monty-datatest'], cwd=REPO, check=True)
-        passing = [file for file in files if datatest_passes(tests[file].name)]
+        passing = run_without(upstream, patches, set(checked), files, tests)
+        stale = [patch for patch in checked if patched_files(patch) <= passing]
+        patches_per_file = Counter(file for patch in checked for file in patched_files(patch))
+        for patch in checked:
+            if patch in stale or all(patches_per_file[file] == 1 for file in patched_files(patch)):
+                continue
+            try:
+                passing = run_without(upstream, patches, {patch}, files, tests, sorted(patched_files(patch)))
+            except PatchError:
+                continue  # a later patch only applies on top of this one, so it stays
+            if patched_files(patch) <= passing:
+                stale.append(patch)
     finally:
         for file, data in originals.items():
             (LIB / file).write_bytes(data)
 
-    if passing:
-        listed = '\n'.join(
-            f'    Lib/{file}: {", ".join(p.name for p in checked if file in patched_files(p))}' for file in passing
-        )
+    if stale:
+        listed = '\n'.join(f'    {patch.name} ({", ".join(sorted(patched_files(patch)))})' for patch in stale)
         sys.exit(
-            f'these modules pass their test case unpatched; drop their patches (and any limitations/ entry), '
-            f'or mark a patch kept for another reason with a `Permanent: <why>` line:\n{listed}'
+            f'these patches are no longer needed: their modules pass their test cases without them. Drop them (and '
+            f'any limitations/ entry), or mark one kept for another reason with a `Permanent: <why>` line:\n{listed}'
         )
     print(f'every patch is still needed: {", ".join(patch.name for patch in checked)}')
+
+
+def run_without(
+    upstream: dict[str, str],
+    patches: list[Path],
+    dropped: set[Path],
+    files: list[str],
+    tests: dict[str, Path],
+    run: list[str] | None = None,
+) -> set[str]:
+    """Writes `files` to `Lib/` with every patch but `dropped` applied, rebuilds, and returns the ones of `run`
+    (default: all of `files`) whose test case passes. Raises `PatchError` if the kept patches do not apply."""
+    lib = apply_patches(upstream, [patch for patch in patches if patch not in dropped])
+    for file in files:
+        (LIB / file).write_text(lib[file], encoding='utf-8', newline='\n')
+    # built first, so a build failure stops the check rather than reading as a failing test
+    subprocess.run(['cargo', 'build', '-q', '-p', 'monty-datatest'], cwd=REPO, check=True)
+    return {file for file in (files if run is None else run) if datatest_passes(tests[file].name)}
 
 
 def is_permanent(patch: Path) -> bool:
@@ -267,4 +295,7 @@ def module_name(file: str) -> str:
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except PatchError as error:
+        sys.exit(str(error))
