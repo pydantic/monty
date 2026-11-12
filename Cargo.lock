@@ -3739,6 +3739,7 @@ name = "pydantic-monty-client"
 version = "1.6.0"
 dependencies = [
  "ahash",
+ "allocation-counter",
  "chrono",
  "futures-util",
  "monty-fs",

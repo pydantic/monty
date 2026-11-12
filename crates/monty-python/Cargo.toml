@@ -45,3 +45,6 @@ extension-module = ["pyo3/generate-import-lib"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+allocation-counter = "0.8"

@@ -401,7 +401,7 @@ impl<'a, 'py> GraphEncoder<'a, 'py> {
                 values: ids,
             },
             Pending::Dict => MontyNode::Dict(id_pairs(&ids)),
-            Pending::ClassType(class_type) => ClassTypeSource::node_from(class_type, id_pairs(&ids)),
+            Pending::ClassType(class_type) => ClassTypeSource::node_from(&class_type, id_pairs(&ids)),
             Pending::ClassInstance { instance_id } => MontyNode::ClassInstance {
                 class_type: ids[0],
                 instance_id,
@@ -507,7 +507,7 @@ impl<'py> ClassTypeSource<'py> {
             .cast_into::<PyDict>()?;
         Ok(Self {
             class_type: ClassHeader {
-                name: class.getattr(intern!(py, "__name__"))?.extract()?,
+                name: class.getattr(intern!(py, "__name__"))?.extract::<String>()?.into(),
                 id: wrapper_uuid(wrapper, "ClassType")?,
                 host_defined: true,
                 is_dataclass: wrapper.call_method0(intern!(py, "is_dataclass"))?.extract()?,
@@ -520,13 +520,13 @@ impl<'py> ClassTypeSource<'py> {
 
     /// The class node with the given attr pairs.
     fn node(&self, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
-        Self::node_from(self.class_type.clone(), attrs)
+        Self::node_from(&self.class_type, attrs)
     }
 
     /// The class node for a header and its attr pairs.
-    fn node_from(class_type: ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
+    fn node_from(class_type: &ClassHeader, attrs: Vec<(NodeId, NodeId)>) -> MontyNode {
         MontyNode::ClassType(Box::new(ClassTypeNode {
-            name: class_type.name,
+            name: class_type.name.to_string(),
             id: class_type.id,
             host_defined: class_type.host_defined,
             is_dataclass: class_type.is_dataclass,

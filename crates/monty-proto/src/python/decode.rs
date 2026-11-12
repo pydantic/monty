@@ -1,7 +1,7 @@
 //! Sandbox values flowing OUT to the host: [`DecodedArena`] turns one
 //! message's node arena into Python objects.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
@@ -37,7 +37,9 @@ pub fn monty_to_py(py: Python<'_>, value: &MontyObject, store: &InstanceStore) -
 /// nesting depth costs no native stack), so a node referenced twice (a shared
 /// sub-object, an argument passed twice) is one Python object. A class node
 /// resolves to the registered class or one `MontyClassTypeProxy` shared by
-/// every instance of it.
+/// every instance of it. The instance proxies of one class node also share
+/// its name: the frame budget counts the name once, so a copy per instance
+/// would let host memory grow with the instance count times the name length.
 pub struct DecodedArena {
     built: Vec<Py<PyAny>>,
 }
@@ -51,6 +53,7 @@ impl DecodedArena {
             store,
             built: Vec::with_capacity(graph.len()),
             namedtuple_types: HashMap::new(),
+            instance_class_headers: HashMap::new(),
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
@@ -75,6 +78,8 @@ struct Decoder<'a, 'py> {
     built: Vec<Py<PyAny>>,
     /// Namedtuple types built for this arena, by `(type_name, field_names)`.
     namedtuple_types: HashMap<(String, Vec<String>), Py<PyAny>>,
+    /// The header that instance proxies share, by the id of their class node.
+    instance_class_headers: HashMap<NodeId, ClassHeader>,
 }
 
 impl Decoder<'_, '_> {
@@ -168,8 +173,13 @@ impl Decoder<'_, '_> {
                     let MontyNode::ClassType(class) = self.graph.node(*class_type) else {
                         unreachable!("the arena's validation makes class_type a ClassType node")
                     };
+                    let header = self
+                        .instance_class_headers
+                        .entry(*class_type)
+                        .or_insert_with(|| class_header(class))
+                        .clone();
                     let proxy = PyMontyClassProxy {
-                        class_type: class_header(class),
+                        class_type: header,
                         instance_id: *instance_id,
                         attributes: self.attrs_dict(attrs)?,
                         class_attributes: self.attrs_dict(&class.attrs)?,
@@ -259,7 +269,7 @@ fn std_type_proxy(py: Python<'_>, inner: StdTypeRef) -> PyResult<Py<PyAny>> {
 /// which the proxy keeps as a Python dict.
 fn class_header(class: &ClassTypeNode) -> ClassHeader {
     ClassHeader {
-        name: class.name.clone(),
+        name: Arc::from(class.name.as_str()),
         id: class.id,
         host_defined: class.host_defined,
         is_dataclass: class.is_dataclass,

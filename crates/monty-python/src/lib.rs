@@ -31,6 +31,11 @@ mod version;
 #[path = "../tests/rust/disconnect.rs"]
 mod disconnect_tests;
 
+// Decoding to Python needs an interpreter. The cdylib's lib tests are the Rust tests that have one.
+#[cfg(test)]
+#[path = "../tests/rust/class_proxy_decode.rs"]
+mod class_proxy_decode_tests;
+
 use std::sync::OnceLock;
 
 pub use exceptions::{
