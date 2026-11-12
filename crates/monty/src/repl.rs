@@ -26,10 +26,10 @@ use crate::{
     defer_drop,
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapData, HeapReader},
-    intern::Interns,
+    intern::{Interns, StringId},
     name_map::NameMap,
     object_bridge::{MontyGraphExt, MontyObjectExt},
-    parse::source_nesting_exception,
+    parse::{check_source_length, source_nesting_exception},
     run::{CompileOptions, DEFAULT_CWD, Executor, Program, ReplSession, SessionTables},
     run_progress::{
         ConvertedExit, ExtFunctionResult, LookupAnswer, LookupScope, NameLookupResult, convert_frame_exit,
@@ -1334,8 +1334,10 @@ pub enum ReplContinuationMode {
 ///   syntax error that should be shown immediately).
 #[must_use]
 pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
-    // Complete because feeding it raises the SyntaxError; parsing it here would grow the stack unguarded.
-    if !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD) {
+    // Feeding invalid source reports SyntaxError; do not pass it to Ruff here.
+    if check_source_length(source.len(), StringId::default()).is_err()
+        || !source_within_nesting_bound(source, SOURCE_SCAN_THRESHOLD)
+    {
         return ReplContinuationMode::Complete;
     }
     // Complete for the same reason when its AST is too deep to drop.
