@@ -2,6 +2,7 @@
 
 use std::{cell::Cell, ops};
 
+use super::AccessCache;
 use crate::{
     hash::{HashValue, hash_python_str},
     heap::{HeapId, HeapItem},
@@ -16,6 +17,8 @@ pub(crate) struct HeapStr {
     pub(super) cached_hash: Cell<Option<HashValue>>,
     #[serde(skip)]
     char_len: usize,
+    #[serde(skip)]
+    pub(super) access_cache: AccessCache,
 }
 
 // Loading rebuilds metadata through the normal constructor.
@@ -71,6 +74,7 @@ impl HeapStr {
             text,
             cached_hash: Cell::new(None),
             char_len,
+            access_cache: AccessCache::default(),
         }
     }
 
@@ -109,7 +113,7 @@ impl HeapItem for HeapStr {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::access_cache::test_budget::Unlimited, *};
 
     #[test]
     fn equality_and_text_access_ignore_cached_hashes() {
@@ -124,5 +128,28 @@ mod tests {
         assert_eq!(borrowed, text);
         assert_eq!(hashed.char_len(), 4);
         assert!(!hashed.is_ascii());
+    }
+
+    #[test]
+    fn cursor_state_is_omitted_from_dumps_and_reset_on_clone() {
+        let text = HeapStr::new("aé中🐍".repeat(4096).into_boxed_str());
+        let cold = minicbor_serde::to_vec(&text).unwrap();
+        for i in 0..1000 {
+            let position = i * 7919 % 16384;
+            assert_eq!(
+                text.access_cache
+                    .character(text.as_str(), position, text.char_len(), &Unlimited)
+                    .unwrap(),
+                "aé中🐍".chars().nth(usize::try_from(position % 4).unwrap())
+            );
+        }
+        assert!(text.access_cache.has_cursor());
+        assert_eq!(minicbor_serde::to_vec(&text).unwrap(), cold);
+        let restored: HeapStr = minicbor_serde::from_slice(&cold).unwrap();
+        for reset in [text.clone(), restored] {
+            assert!(!reset.access_cache.has_cursor());
+            assert_eq!(reset.char_len(), text.char_len());
+            assert_eq!(minicbor_serde::to_vec(&reset).unwrap(), cold);
+        }
     }
 }

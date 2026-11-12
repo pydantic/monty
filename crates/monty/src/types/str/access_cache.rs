@@ -1,0 +1,700 @@
+//! Two recent UTF-8 boundaries with implicit start and end anchors.
+//! Small owners retain u16 cursors inline; larger owners allocate wider cursors on first use.
+//! Clones and snapshots start without access history. This cache builds no index.
+
+use std::{cell::Cell, fmt};
+
+use monty_types::{ResourceError, ResourceTracker};
+use wide::u8x16;
+
+pub(crate) trait Budget {
+    type Error;
+    fn allow_allocation(&self, bytes: usize) -> bool;
+    fn check_time(&self) -> Result<(), Self::Error>;
+}
+
+impl Budget for ResourceTracker {
+    type Error = ResourceError;
+
+    #[inline]
+    fn allow_allocation(&self, bytes: usize) -> bool {
+        self.check_allocation(bytes).is_ok()
+    }
+
+    #[inline]
+    fn check_time(&self) -> Result<(), Self::Error> {
+        Self::check_time(self)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Source<'a> {
+    text: &'a str,
+    characters: usize,
+}
+
+trait Coordinate: Copy + Default {
+    fn pack(value: usize) -> Self;
+    fn unpack(self) -> usize;
+}
+
+macro_rules! coordinates {
+    ($($ty:ty),*) => {$(
+        impl Coordinate for $ty {
+            #[inline]
+            fn pack(value: usize) -> Self {
+                Self::try_from(value).expect("cursor width selected by owner byte length")
+            }
+
+            #[inline]
+            fn unpack(self) -> usize { self as usize }
+        }
+    )*};
+}
+coordinates!(u16, u32, usize);
+
+#[derive(Clone, Copy, Default)]
+struct Cursor<P> {
+    character: P,
+    byte: P,
+}
+
+#[derive(Clone, Copy)]
+struct Anchor {
+    character: usize,
+    byte: usize,
+}
+
+enum State {
+    Inline([Cursor<u16>; 2]),
+    Wide(Box<[Cursor<u32>; 2]>),
+    Huge(Box<[Cursor<usize>; 2]>),
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::Inline([Cursor::default(); 2])
+    }
+}
+
+/// The same immutable owner and character count must be supplied on every access.
+#[derive(Default)]
+pub(crate) struct AccessCache {
+    state: Cell<State>,
+}
+
+impl Clone for AccessCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl fmt::Debug for AccessCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("AccessCache")
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Target {
+    Character(usize),
+    Byte(usize),
+}
+
+impl AccessCache {
+    pub(crate) fn uncached_byte_offset<B: Budget>(
+        text: &str,
+        target: usize,
+        characters: usize,
+        budget: &B,
+    ) -> Result<usize, B::Error> {
+        if target == 0 {
+            return Ok(0);
+        }
+        if target >= characters {
+            return Ok(text.len());
+        }
+        if text.len() == characters {
+            return Ok(target);
+        }
+        convert(
+            Source { text, characters },
+            Target::Character(target),
+            &mut [Cursor::<usize>::default(); 2],
+            budget,
+        )
+    }
+
+    pub(crate) fn uncached_char_offset<B: Budget>(
+        text: &str,
+        target: usize,
+        characters: usize,
+        budget: &B,
+    ) -> Result<usize, B::Error> {
+        if target == 0 {
+            return Ok(0);
+        }
+        if target == text.len() {
+            return Ok(characters);
+        }
+        if text.len() == characters {
+            return Ok(target);
+        }
+        convert(
+            Source { text, characters },
+            Target::Byte(target),
+            &mut [Cursor::<usize>::default(); 2],
+            budget,
+        )
+    }
+
+    pub(crate) fn uncached_character<B: Budget>(
+        text: &str,
+        index: i64,
+        characters: usize,
+        budget: &B,
+    ) -> Result<Option<char>, B::Error> {
+        let Some(target) = character_index(index, characters) else {
+            return Ok(None);
+        };
+        let byte = Self::uncached_byte_offset(text, target, characters, budget)?;
+        Ok(text[byte..].chars().next())
+    }
+
+    /// Endpoints and out-of-range character reads do not allocate cursor state.
+    pub(crate) fn character<B: Budget>(
+        &self,
+        text: &str,
+        index: i64,
+        characters: usize,
+        budget: &B,
+    ) -> Result<Option<char>, B::Error> {
+        if index == 0 {
+            return Ok(text.chars().next());
+        }
+        if index == -1 {
+            return Ok(text.chars().next_back());
+        }
+        let target = character_index(index, characters);
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        let byte = self.byte_offset(text, target, characters, budget)?;
+        Ok(text[byte..].chars().next())
+    }
+
+    /// Character offsets beyond the end clamp to the byte length.
+    pub(crate) fn byte_offset<B: Budget>(
+        &self,
+        text: &str,
+        target: usize,
+        characters: usize,
+        budget: &B,
+    ) -> Result<usize, B::Error> {
+        if target == 0 {
+            return Ok(0);
+        }
+        if target >= characters {
+            return Ok(text.len());
+        }
+        if text.len() == characters {
+            return Ok(target);
+        }
+        self.convert(Source { text, characters }, Target::Character(target), budget)
+    }
+
+    /// Converts an in-bounds UTF-8 boundary returned by substring search.
+    pub(crate) fn char_offset<B: Budget>(
+        &self,
+        text: &str,
+        target: usize,
+        characters: usize,
+        budget: &B,
+    ) -> Result<usize, B::Error> {
+        debug_assert!(text.is_char_boundary(target));
+        if target == 0 {
+            return Ok(0);
+        }
+        if target == text.len() {
+            return Ok(characters);
+        }
+        if text.len() == characters {
+            return Ok(target);
+        }
+        self.convert(Source { text, characters }, Target::Byte(target), budget)
+    }
+
+    fn convert<B: Budget>(&self, source: Source<'_>, target: Target, budget: &B) -> Result<usize, B::Error> {
+        let mut state = self.state.take();
+        if source.text.len() >= 65_536 && matches!(state, State::Inline(_)) {
+            if u32::try_from(source.text.len()).is_ok() {
+                if budget.allow_allocation(size_of::<[Cursor<u32>; 2]>()) {
+                    state = State::Wide(Box::default());
+                }
+            } else if budget.allow_allocation(size_of::<[Cursor<usize>; 2]>()) {
+                state = State::Huge(Box::default());
+            }
+        }
+        let result = match &mut state {
+            State::Inline(cursors) if source.text.len() < 65_536 => convert(source, target, cursors, budget),
+            State::Wide(cursors) => convert(source, target, cursors.as_mut(), budget),
+            State::Huge(cursors) => convert(source, target, cursors.as_mut(), budget),
+            // Optional state must not make an otherwise valid read fail its memory limit.
+            State::Inline(_) => convert(source, target, &mut [Cursor::<usize>::default(); 2], budget),
+        };
+        // No Python code runs while the cell is empty; deadline errors restore its state too.
+        self.state.set(state);
+        result
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_cursor(&self) -> bool {
+        let state = self.state.take();
+        let populated = match &state {
+            State::Inline(cursors) => cursors.iter().any(|c| c.byte != 0),
+            State::Wide(_) | State::Huge(_) => true,
+        };
+        self.state.set(state);
+        populated
+    }
+}
+
+fn character_index(index: i64, characters: usize) -> Option<usize> {
+    if index < 0 {
+        usize::try_from(index.unsigned_abs())
+            .ok()
+            .and_then(|n| characters.checked_sub(n))
+    } else {
+        usize::try_from(index).ok().filter(|&n| n < characters)
+    }
+}
+
+#[inline]
+fn remember<P: Coordinate>(cursors: &mut [Cursor<P>; 2], character: usize, byte: usize) {
+    cursors[1] = cursors[0];
+    cursors[0] = Cursor {
+        character: P::pack(character),
+        byte: P::pack(byte),
+    };
+}
+
+#[inline]
+fn convert<P: Coordinate, B: Budget>(
+    source: Source<'_>,
+    target: Target,
+    cursors: &mut [Cursor<P>; 2],
+    budget: &B,
+) -> Result<usize, B::Error> {
+    let (position, end) = match target {
+        Target::Character(n) => (n, source.characters),
+        Target::Byte(n) => (n, source.text.len()),
+    };
+    let mut anchor = if position <= end - position {
+        Anchor { character: 0, byte: 0 }
+    } else {
+        Anchor {
+            character: source.characters,
+            byte: source.text.len(),
+        }
+    };
+    for i in 0..2 {
+        let saved = Anchor {
+            character: cursors[i].character.unpack(),
+            byte: cursors[i].byte.unpack(),
+        };
+        let (saved_position, anchor_position) = match target {
+            Target::Character(_) => (saved.character, anchor.character),
+            Target::Byte(_) => (saved.byte, anchor.byte),
+        };
+        if saved_position == position {
+            if i == 1 {
+                cursors.swap(0, 1);
+            }
+            return Ok(match target {
+                Target::Character(_) => saved.byte,
+                Target::Byte(_) => saved.character,
+            });
+        }
+        if saved_position.abs_diff(position) < anchor_position.abs_diff(position) {
+            anchor = saved;
+        }
+    }
+    let (character, byte) = match target {
+        Target::Character(n) => (n, walk(source, anchor, n, budget)?),
+        Target::Byte(n) if n >= anchor.byte => {
+            (anchor.character + count_range(&source.text[anchor.byte..n], budget)?, n)
+        }
+        Target::Byte(n) => (anchor.character - count_range(&source.text[n..anchor.byte], budget)?, n),
+    };
+    remember(cursors, character, byte);
+    Ok(match target {
+        Target::Character(_) => byte,
+        Target::Byte(_) => character,
+    })
+}
+
+fn count_range<B: Budget>(text: &str, budget: &B) -> Result<usize, B::Error> {
+    let mut count = 0;
+    for bytes in text.as_bytes().chunks(65_536) {
+        if text.len() >= 65_536 {
+            budget.check_time()?;
+        }
+        count += count_bytes(bytes);
+    }
+    Ok(count)
+}
+
+#[inline]
+fn count_bytes(bytes: &[u8]) -> usize {
+    // bytecount enables wasm SIMD internally, even when the caller did not select simd128.
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "simd128")))]
+    {
+        bytes.iter().filter(|&&byte| byte & 0xc0 != 0x80).count()
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", not(target_feature = "simd128"))))]
+    {
+        bytecount::num_chars(bytes)
+    }
+}
+
+#[inline]
+fn walk<B: Budget>(source: Source<'_>, anchor: Anchor, target: usize, budget: &B) -> Result<usize, B::Error> {
+    let n = anchor.character.abs_diff(target);
+    if n == 0 {
+        return Ok(anchor.byte);
+    }
+    if n == 1 {
+        if target > anchor.character {
+            let lead = source.text.as_bytes()[anchor.byte];
+            return Ok(anchor.byte
+                + if lead < 0x80 {
+                    1
+                } else if lead < 0xe0 {
+                    2
+                } else if lead < 0xf0 {
+                    3
+                } else {
+                    4
+                });
+        }
+        let bytes = source.text.as_bytes();
+        let mut byte = anchor.byte - 1;
+        while bytes[byte] & 0xc0 == 0x80 {
+            byte -= 1;
+        }
+        return Ok(byte);
+    }
+    let heavy = source.text.len() - source.characters >= source.characters.div_ceil(2);
+    if target > anchor.character {
+        Ok(anchor.byte + forward(&source.text[anchor.byte..], n, heavy, budget)?)
+    } else {
+        Ok(anchor.byte - backward(&source.text[..anchor.byte], n, heavy, budget)?)
+    }
+}
+
+fn forward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<usize, B::Error> {
+    if n < 8 {
+        return Ok(chars_nth(text, n));
+    }
+    if n < 128 || (heavy && n < 512) {
+        return Ok(wide16(text, n));
+    }
+    let (mut remaining, mut byte, mut checked) = (n, 0, 0);
+    if n >= 65_536 {
+        budget.check_time()?;
+    }
+    while remaining >= 16 && byte < text.len() {
+        let mut end = byte + remaining.min(text.len() - byte).min(65_536);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == byte {
+            break;
+        }
+        remaining -= count_bytes(&text.as_bytes()[byte..end]);
+        byte = end;
+        if byte - checked >= 65_532 {
+            budget.check_time()?;
+            checked = byte;
+        }
+    }
+    Ok(byte + wide16(&text[byte..], remaining))
+}
+
+fn backward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<usize, B::Error> {
+    if n < 8 {
+        return Ok(chars_nth_back(text, n));
+    }
+    if n < 128 || (heavy && n < 512) {
+        return Ok(wide16_back(text, n));
+    }
+    let (mut remaining, mut end, mut checked) = (n, text.len(), text.len());
+    if n >= 65_536 {
+        budget.check_time()?;
+    }
+    while remaining >= 16 && end > 0 {
+        let mut start = end - remaining.min(end).min(65_536);
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        if start == end {
+            break;
+        }
+        remaining -= count_bytes(&text.as_bytes()[start..end]);
+        end = start;
+        if checked - end >= 65_532 {
+            budget.check_time()?;
+            checked = end;
+        }
+    }
+    Ok(text.len() - end + wide16_back(&text[..end], remaining))
+}
+
+fn chars_nth(text: &str, target: usize) -> usize {
+    if target == 0 {
+        return 0;
+    }
+    let mut chars = text.chars();
+    chars.nth(target - 1);
+    text.len() - chars.as_str().len()
+}
+
+fn wide16(text: &str, mut remaining: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut offset = 0;
+    while bytes.len() - offset >= 16 {
+        let lanes = u8x16::from(<[u8; 16]>::try_from(&bytes[offset..offset + 16]).unwrap());
+        let leaders = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80));
+        let mut mask = leaders.to_bitmask();
+        let count = mask.count_ones() as usize;
+        if remaining < count {
+            if count == 16 {
+                return offset + remaining;
+            }
+            for _ in 0..remaining {
+                mask &= mask - 1;
+            }
+            return offset + mask.trailing_zeros() as usize;
+        }
+        remaining -= count;
+        offset += 16;
+    }
+    for (relative, &value) in bytes[offset..].iter().enumerate() {
+        if value & 0xc0 != 0x80 {
+            if remaining == 0 {
+                return offset + relative;
+            }
+            remaining -= 1;
+        }
+    }
+    bytes.len()
+}
+
+fn chars_nth_back(text: &str, target: usize) -> usize {
+    if target == 0 {
+        return 0;
+    }
+    let mut chars = text.chars();
+    chars.nth_back(target - 1);
+    text.len() - chars.as_str().len()
+}
+
+fn wide16_back(text: &str, mut remaining: usize) -> usize {
+    if remaining == 0 {
+        return 0;
+    }
+    let bytes = text.as_bytes();
+    let mut end = bytes.len();
+    while end >= 16 {
+        let start = end - 16;
+        let lanes = u8x16::from(<[u8; 16]>::try_from(&bytes[start..end]).unwrap());
+        let mut mask = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80)).to_bitmask();
+        let count = mask.count_ones() as usize;
+        if remaining <= count {
+            if count == 16 {
+                return bytes.len() - end + remaining;
+            }
+            for _ in 1..remaining {
+                mask ^= 1 << mask.ilog2();
+            }
+            let byte = start + mask.ilog2() as usize;
+            return bytes.len() - byte;
+        }
+        remaining -= count;
+        end = start;
+    }
+    // A SIMD block may split a character; scan bytes until its leading byte is reached.
+    for byte in (0..end).rev() {
+        if bytes[byte] & 0xc0 != 0x80 {
+            remaining -= 1;
+            if remaining == 0 {
+                return bytes.len() - byte;
+            }
+        }
+    }
+    bytes.len()
+}
+
+#[cfg(test)]
+pub(crate) mod test_budget {
+    use std::convert::Infallible;
+
+    use super::Budget;
+
+    pub(crate) struct Unlimited;
+    impl Budget for Unlimited {
+        type Error = Infallible;
+        fn allow_allocation(&self, _: usize) -> bool {
+            true
+        }
+        fn check_time(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{test_budget::Unlimited, *};
+    use crate::{
+        heap::{HeapData, HeapEntry},
+        types::str::HeapStr,
+    };
+
+    fn verify(text: &str) {
+        let cache = AccessCache::default();
+        let boundaries: Vec<_> = text.char_indices().map(|(b, _)| b).chain([text.len()]).collect();
+        let characters = boundaries.len() - 1;
+        if characters == 0 {
+            return;
+        }
+        let mut rng = 42u64;
+        for _ in 0..4096 {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let n = (rng >> 32) as usize % (characters + 1);
+            assert_eq!(cache.byte_offset(text, n, characters, &Unlimited), Ok(boundaries[n]));
+            assert_eq!(cache.char_offset(text, boundaries[n], characters, &Unlimited), Ok(n));
+            assert_eq!(
+                cache.character(text, i64::try_from(n).unwrap(), characters, &Unlimited),
+                Ok(text.chars().nth(n))
+            );
+        }
+        for (n, &byte) in boundaries.iter().enumerate().rev() {
+            assert_eq!(cache.byte_offset(text, n, characters, &Unlimited), Ok(byte));
+        }
+    }
+
+    #[test]
+    fn random_backward_and_inverse_offsets() {
+        for text in [
+            String::new(),
+            "ascii".repeat(100),
+            "aé中🐍\0\u{301}\u{10ffff}".repeat(100),
+            "a".repeat(1000) + "🐍" + &"z".repeat(1000),
+        ] {
+            verify(&text);
+        }
+        for bytes in [255, 256, 65_535, 65_536, 65_537, 131_072] {
+            let mut text = "aé中🐍".repeat(bytes / 10);
+            text.push_str(&"z".repeat(bytes - text.len()));
+            verify(&text);
+        }
+    }
+
+    #[test]
+    fn endpoints_and_out_of_range_reads_keep_empty_state() {
+        let cache = AccessCache::default();
+        for text in ["", "aé中🐍"] {
+            let chars = text.chars().count();
+            assert_eq!(cache.character(text, 0, chars, &Unlimited), Ok(text.chars().next()));
+            assert_eq!(
+                cache.character(text, -1, chars, &Unlimited),
+                Ok(text.chars().next_back())
+            );
+            assert_eq!(cache.character(text, i64::MIN, chars, &Unlimited), Ok(None));
+            assert_eq!(cache.character(text, i64::MAX, chars, &Unlimited), Ok(None));
+            assert_eq!(cache.byte_offset(text, usize::MAX, chars, &Unlimited), Ok(text.len()));
+        }
+        assert!(!cache.has_cursor());
+    }
+
+    #[test]
+    fn exact_hits_refresh_both_cursors_and_clone_resets() {
+        let text = "aé中🐍".repeat(100);
+        let cache = AccessCache::default();
+        for n in [100, 300, 100] {
+            cache.byte_offset(&text, n, 400, &Unlimited).unwrap();
+        }
+        let state = cache.state.take();
+        let State::Inline(cursors) = &state else {
+            panic!("small cursors must remain inline");
+        };
+        assert_eq!(cursors[0].character, 100);
+        assert_eq!(cursors[1].character, 300);
+        cache.state.set(state);
+        assert!(cache.has_cursor());
+        let cloned = cache.clone();
+        assert!(!cloned.has_cursor());
+        assert_eq!(cloned.byte_offset(&text, 200, 400, &Unlimited), Ok(500));
+        assert_eq!(cache.character(&text, -2, 400, &Unlimited), Ok(Some('中')));
+    }
+
+    struct NoMemory;
+    impl Budget for NoMemory {
+        type Error = ();
+        fn allow_allocation(&self, _: usize) -> bool {
+            false
+        }
+        fn check_time(&self) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn denied_wide_state_falls_back_to_scanning() {
+        let text = "aé中🐍".repeat(20_000);
+        let cache = AccessCache::default();
+        for n in [1, 17, 30_000, 70_000, 4, 79_999] {
+            let byte = text.char_indices().nth(n).unwrap().0;
+            assert_eq!(cache.byte_offset(&text, n, 80_000, &NoMemory), Ok(byte));
+            assert_eq!(cache.char_offset(&text, byte, 80_000, &NoMemory), Ok(n));
+        }
+        assert!(!cache.has_cursor());
+    }
+
+    struct Expired;
+    impl Budget for Expired {
+        type Error = ();
+        fn allow_allocation(&self, _: usize) -> bool {
+            true
+        }
+        fn check_time(&self) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    #[test]
+    fn interrupted_walk_restores_retained_cursors() {
+        let text = "aé中🐍".repeat(100_000);
+        let cache = AccessCache::default();
+        let saved = cache.byte_offset(&text, 100, 400_000, &Unlimited).unwrap();
+        assert_eq!(cache.byte_offset(&text, 200_000, 400_000, &Expired), Err(()));
+        assert_eq!(cache.byte_offset(&text, 100, 400_000, &Expired), Ok(saved));
+        assert_eq!(cache.char_offset(&text, 500_000, 400_000, &Expired), Err(()));
+        assert_eq!(cache.byte_offset(&text, 200_000, 400_000, &Unlimited), Ok(500_000));
+    }
+
+    #[test]
+    fn compact_cursors_keep_arena_slots_unchanged() {
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(size_of::<AccessCache>(), 16);
+            assert_eq!(size_of::<HeapStr>(), 48);
+            assert_eq!(size_of::<HeapData>(), 72);
+            assert_eq!(size_of::<HeapEntry>(), 96);
+            assert_eq!(size_of::<Option<HeapEntry>>(), 104);
+        }
+    }
+}
