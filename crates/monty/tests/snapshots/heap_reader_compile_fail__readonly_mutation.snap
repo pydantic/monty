@@ -8,9 +8,9 @@ error[E0599]: no method named `get_mut` found for struct `BorrowedHeapRead<'_, '
 180 |         *protected.get_mut(heap) = 456;
     |                    ^^^^^^^ method not found in `BorrowedHeapRead<'_, '_, u64>`
     |
-   ::: crates/monty/src/heap/mod.rs:556:1
+   ::: crates/monty/src/heap/mod.rs:538:1
     |
-556 | pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
+538 | pub struct BorrowedHeapRead<'original, 'a, U: ?Sized> {
     | ----------------------------------------------------- method `get_mut` not found for this struct
     |
     = help: items from traits can only be used if the trait is implemented and in scope

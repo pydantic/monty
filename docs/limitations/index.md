@@ -55,6 +55,9 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - Wildcard imports (`from m import *`)
 - t-strings
 
+Source code is limited to `u32::MAX` UTF-8 bytes; exceeding this limit raises `SyntaxError`
+([resource limits](resource_limits.md#memory--size-limits)).
+
 **Missing in other ways:**
 
 - User-defined exception classes.
