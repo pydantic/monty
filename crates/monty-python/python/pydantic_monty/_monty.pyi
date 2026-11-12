@@ -467,7 +467,7 @@ class MontyClassProxy:
 
     @property
     def attributes(self) -> dict[str, Any]:
-        """The instance's attributes as a plain dict."""
+        """A copy of the instance's attributes as a plain dict; editing it changes nothing."""
 
     def __repr__(self) -> str: ...
     def __eq__(self, value: object, /) -> bool: ...

@@ -891,6 +891,41 @@ def test_dataclass_fields_compare_nested_proxies(session: MontySession):
     assert a != c
 
 
+def test_editing_attributes_does_not_change_the_proxy(session: MontySession):
+    """`attributes` is a copy, so a host edit cannot change `==` or the hash of
+    a proxy already stored in a set."""
+    session.feed_run(DATACLASS_IMPORT + '@dataclass(frozen=True)\nclass F:\n    x: int')
+    proxy = session.feed_run('F(1)')
+    members = {proxy}
+    proxy.attributes['x'] = 2
+    assert proxy.attributes == snapshot({'x': 1})
+    assert proxy in members
+    assert proxy == session.feed_run('F(1)')
+
+
+def test_cyclic_dataclass_compares_placeholders(monty_run: RunMonty):
+    """A back-reference crosses as the `'...'` placeholder, so two distinct
+    self-referencing instances compare equal on the host where the sandbox
+    raises `RecursionError`."""
+    code = '@dataclass\nclass P:\n    other: object\na = P(None)\na.other = a\nb = P(None)\nb.other = b\n[a, b]'
+    a, b = monty_run(DATACLASS_IMPORT + code)
+    assert a.attributes == snapshot({'other': '...'})
+    assert a == b
+
+
+def test_nested_dataclass_proxies_compare_and_hash_fields(session: MontySession):
+    session.feed_run(
+        DATACLASS_IMPORT
+        + '@dataclass(frozen=True)\nclass Inner:\n    v: int\n@dataclass(frozen=True)\nclass Outer:\n    inner: Inner'
+    )
+    a, b, c = session.feed_run('[Outer(Inner(1)), Outer(Inner(1)), Outer(Inner(2))]')
+    assert a.attributes['inner'] is not b.attributes['inner']
+    assert a == b
+    assert hash(a) == hash(b)
+    assert a != c
+    assert len({a, b, c}) == 2
+
+
 def test_dataclass_field_missing_from_attributes_raises(monty_run: RunMonty):
     """A body `__init__` that never sets a field leaves it unset; the generated
     `__eq__` then raises, on the host as in the sandbox."""

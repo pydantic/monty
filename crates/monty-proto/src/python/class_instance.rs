@@ -251,10 +251,12 @@ impl PyMontyClassProxy {
         uuid_to_py(py, &self.instance_id)
     }
 
-    /// The instance's attributes as a plain dict.
+    /// A copy of the instance's attributes as a plain dict. A copy so host
+    /// edits cannot change the proxy's `==`, or its hash while it is a set
+    /// member or dict key.
     #[getter]
-    fn attributes(&self, py: Python<'_>) -> Py<PyDict> {
-        self.attributes.clone_ref(py)
+    fn attributes(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        Ok(self.attributes.bind(py).copy()?.unbind())
     }
 
     /// `MontyClassProxy(name='Point', attributes={'x': 1})`

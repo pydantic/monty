@@ -210,6 +210,11 @@ the host can replay it without running sandbox code:
     both objects are still referenced in the sandbox.
 - A proxy of a host-sent instance (after a restore) compares by identity: the
     host class's own `__eq__` is not recorded.
+- A self-reference crosses as the placeholder string `'...'`, so two distinct
+    self-referencing dataclass instances compare equal on the host, where the
+    sandbox raises `RecursionError`.
+- `attributes` returns a copy: editing it changes neither the proxy's `==` and
+    hash nor the copy a restored session rebuilds from the proxy.
 
 A sandbox-defined class **object** (`A` itself) still has no structural host
 representation and converts to its type text (e.g. `"<class 'A'>"`). A user
