@@ -268,7 +268,7 @@ check-stdlib: ## Verify the vendored CPython stdlib modules match the pinned CPy
 	uv run scripts/vendor_stdlib.py --check
 
 .PHONY: stdlib-candidates
-stdlib-candidates: ## Report which CPython stdlib modules Monty can load, and the first blocker of each
+stdlib-candidates: ## Report which CPython stdlib modules Monty can load, the first blocker of each, and every syntax blocker
 	cargo build --release -p monty-runtime --bin monty
 	uv run scripts/stdlib_candidates.py
 
