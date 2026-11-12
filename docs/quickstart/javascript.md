@@ -73,6 +73,11 @@ const data = await session.feedRun('await fetch_data()', {
 console.log(data) // data
 ```
 
+With `streamAsyncCalls: true` (off by default for `Monty`, on by default for `MontyRemote`), native and remote
+workers start calls to an `async` host function without waiting for the host when the sandbox does not await them at once (the WebAssembly worker suspends at
+each), so a `gather` over many calls costs one round trip; see [starting calls without
+waiting](../host-functions.md#starting-calls-without-waiting).
+
 Keyword arguments from the sandbox arrive as a trailing object on the call.
 An error thrown by a host function crosses into the sandbox as a Python exception, using the error's `name` when it
 matches a Python exception type and `RuntimeError` otherwise.
@@ -256,8 +261,12 @@ which ignores any argument:
 `statusCode`, `statusMessage`, `remoteCause`, `retryable` and `retryAfter`.
 `retryAfter` is the server's suggested delay in seconds, capped at one hour, or `null` if absent or invalid.
 `retryable` is true for `RESOURCE_EXHAUSTED` and `UNAVAILABLE`, not for credential errors.
-`checkout()` rejects with the same classes when the session cannot be created, e.g. `MontyRuntimeError` for a server
-rejecting the session's configuration.
+`checkout()` rejects with the same classes when the session cannot be created.
+Options the binding can check, such as `osPolicy`, are rejected by `checkout()` itself.
+A worker or server rejecting the rest of the session's configuration (deeply nested `typeCheckStubs`, an unknown
+profile) raises `MontyConfigurationError` from the session's first request, which did not run, or from `getSessionId()`
+when it opens the session alone.
+On the WASM worker it is raised from `checkout()`, which configures the session there.
 When no worker becomes free within `checkoutTimeout` it rejects with a `DOMException` named `TimeoutError`; a worker
 that fails to spawn rejects with a plain `Error`.
 A remote connection failure raises `MontyConnectError`, with `statusCode`, `statusMessage` and `remoteCause` when the server sent a status, or `transportError` otherwise.
@@ -398,7 +407,7 @@ See [snapshots](../snapshots.md) for manual handlers, restoration and OpenTeleme
 
 ## Remote workers
 
-`MontyRemote` is a pool of remote workers, usually [Full Monty](../server.md): the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
+`MontyRemote` is a pool of remote workers, usually the [Commercial Support](../server.md) server: the pool holds one HTTP/2 connection to the URL, each checkout opens a gRPC stream on it, and no
 connection is pre-warmed or reused.
 Sessions are the same `MontySession` a local pool returns:
 
@@ -421,9 +430,13 @@ No automatic retry is performed for these errors.
 A dropped connection raises `MontyDisconnectError`, and a draining server raises `MontyShutdown`; both lose the session.
 Disconnect text includes the server's code, `remoteCause` and message, or the transport error.
 It does not establish whether the request ran, so do not replay a disconnected request automatically.
-Either can also reject `checkout()` itself, while the session is being created.
-Against a server that stores sessions, `session.sessionId` names the session, `session.dump()` returns the ID of a
-stored record, and both load into a fresh session with `loadSession` / `loadSnapshot`.
+A connection that cannot be opened rejects `checkout()` itself; the session's configuration travels with its first
+request, so a server refusing it fails that first `feedRun`, `feedStart` or `load*` call with
+`MontyConfigurationError`.
+Against a server that stores sessions, `await session.getSessionId()` names the session, sending the configuration
+alone if no request has yet (one round trip); the `sessionId` getter is deprecated, since it is unset until then.
+`session.dump()` returns the ID of a stored record, and either ID loads into a fresh session with the loader matching
+the stored state: `loadSession` for an idle session, `loadSnapshot` for one suspended mid-feed.
 When such a server drains, the pool resumes the session on a new connection instead of raising `MontyShutdown`,
 unless `autoResume: false` is passed to `MontyRemote.create()`.
 These behave as in the Python client; see [stored sessions](../api/python/remote.md#stored-sessions).

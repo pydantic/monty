@@ -1,6 +1,6 @@
 // In-process gRPC servers for the `MontyRemote` specs, the Node counterparts
 // of the fixtures in crates/monty-python/tests/test_remote.py. Each session
-// stream is bridged to a real `monty subprocess` child: the child
+// stream is bridged to a real `monty subprocess` worker: the worker
 // length-prefixes each protocol frame on stdio, gRPC carries one frame per
 // message, so the bridge only adds and strips the prefix. The service is
 // declared by hand over raw bytes — no schema, nothing generated.
@@ -145,26 +145,27 @@ export function droppingRelay(dropAt: number): (stream: Stream) => Promise<void>
 }
 
 // Field numbers from `crates/monty-proto/proto/monty/v1/monty.proto`.
-// `ParentRequest.kind` arms:
+// `ClientRequest.kind` arms:
+const REQUEST_CONFIGURE = 1
 const REQUEST_DUMP = 7
 const REQUEST_LOAD = 8
-// `ChildEvent.kind` arms, which own the field numbers below `FIRST_EVENT_FIELD`:
+// `Configure.first`'s `Load` arm:
+const CONFIGURE_LOAD = 16
+// `WorkerEvent.kind` arms, which own the field numbers below `FIRST_EVENT_FIELD`:
 const EVENT_PRINT = 1
-const EVENT_ERROR = 7
 const EVENT_DUMP_RESULT = 9
 const EVENT_OK = 10
 const EVENT_SHUTDOWN = 12
 const EVENT_PING = 13
-// `ChildEvent`'s message-level fields:
+const EVENT_SESSION_REFUSED = 14
+// `WorkerEvent`'s message-level fields:
 const FIRST_EVENT_FIELD = 20
 const EVENT_SESSION_ID = 28
 // Fields of the messages those arms carry:
 const LOAD_STATE = 1
 const DUMP_RESULT_STATE = 1
 const SHUTDOWN_DUMP_DUMP = 1
-const ERROR_EXCEPTION = 1
-const RAISED_EXCEPTION_EXC_TYPE = 1
-const RAISED_EXCEPTION_MESSAGE = 2
+const SESSION_REFUSED_MESSAGE = 1
 
 // Protobuf's encoding (https://protobuf.dev/programming-guides/encoding/):
 // a field's tag is a varint holding `field_number << 3 | wire_type`.
@@ -188,25 +189,14 @@ export const CPU_CLOCK_OK_EVENT = Buffer.concat([OK_EVENT, Buffer.from([0xf0, 0x
 export const PING_EVENT = bytesField(EVENT_PING, Buffer.alloc(0))
 
 /**
- * A server that answers the session's `Configure` with a `RuntimeError`
- * naming `message`, as a server refusing a profile does, then ends the stream.
+ * A server that refuses the session's `Configure` with `message`, as a server
+ * refusing a profile does, then ends the stream.
  */
 export function refusingServer(message: string): (stream: Stream) => Promise<void> {
-  return answerConfigure(
-    bytesField(
-      EVENT_ERROR,
-      bytesField(
-        ERROR_EXCEPTION,
-        Buffer.concat([
-          bytesField(RAISED_EXCEPTION_EXC_TYPE, Buffer.from('RuntimeError')),
-          bytesField(RAISED_EXCEPTION_MESSAGE, Buffer.from(message)),
-        ]),
-      ),
-    ),
-  )
+  return answerConfigure(bytesField(EVENT_SESSION_REFUSED, bytesField(SESSION_REFUSED_MESSAGE, Buffer.from(message))))
 }
 
-/** A draining server: answers `Configure` with a shutdown naming no stored session. */
+/** A draining server: answers the first request with a shutdown naming no stored session. */
 export function drainingServer(stream: Stream): Promise<void> {
   return answerConfigure(bytesField(EVENT_SHUTDOWN, Buffer.alloc(0)))(stream)
 }
@@ -225,8 +215,8 @@ function answerConfigure(reply: Buffer): (stream: Stream) => Promise<void> {
 
 /**
  * A fake of a server that stores sessions, as `_StoringServer` in the Python
- * tests. It names the session on the reply to `Configure` and to `Load`, and
- * does not run the third request of the first stream: the child is dumped,
+ * tests. It names the session on the reply to its first request and to `Load`,
+ * and does not run the second request of the first stream: the worker is dumped,
  * its state kept under the session's ID, and the request answered with
  * `ShutdownDump` naming that ID. A later `Load` of the ID gets the stored state.
  */
@@ -238,8 +228,8 @@ export class StoringServer {
   readonly handle = async (stream: Stream): Promise<void> => {
     admit(stream)
     this.streams += 1
-    // request 1 is `Configure`, 2 the first feed; the first stream parks the next
-    const drainAt = this.streams === 1 ? 3 : null
+    // request 1 is the `Configure`, carrying the first feed; the first stream parks the next
+    const drainAt = this.streams === 1 ? 2 : null
     const child = new ChildFrames()
     let sessionId: Buffer | null = null
     let requests = 0
@@ -248,7 +238,7 @@ export class StoringServer {
         requests += 1
         const fields = protoFields(message)
         if (requests === drainAt) {
-          // park: dump the idle child, keep its state under the ID, and tell
+          // park: dump the idle worker, keep its state under the ID, and tell
           // the client the request did not run
           child.send(bytesField(REQUEST_DUMP, Buffer.alloc(0)))
           const reply = protoFields((await child.next())!)
@@ -260,11 +250,20 @@ export class StoringServer {
           stream.end()
           return
         }
-        const names = requests === 1 || fields.has(REQUEST_LOAD)
-        if (fields.has(REQUEST_LOAD)) {
-          // the child loads the stored bytes the ID stands for
-          const id = protoFields(fields.get(REQUEST_LOAD)!).get(LOAD_STATE)!
-          message = bytesField(REQUEST_LOAD, bytesField(LOAD_STATE, this.records.get(id.toString('latin1'))!))
+        // a `Load` comes alone or as the first request a `Configure` carries
+        const configure = fields.get(REQUEST_CONFIGURE)
+        const load =
+          fields.get(REQUEST_LOAD) ?? (configure === undefined ? undefined : protoFields(configure).get(CONFIGURE_LOAD))
+        const names = requests === 1 || load !== undefined
+        if (load !== undefined) {
+          // the worker loads the stored bytes the ID stands for
+          const id = protoFields(load).get(LOAD_STATE)!
+          const stored = bytesField(LOAD_STATE, this.records.get(id.toString('latin1'))!)
+          message =
+            configure === undefined
+              ? bytesField(REQUEST_LOAD, stored)
+              : // a repeated message field merges into the first, so this `Load` replaces its state
+                bytesField(REQUEST_CONFIGURE, Buffer.concat([configure, bytesField(CONFIGURE_LOAD, stored)]))
         }
         child.send(message)
         for (;;) {
@@ -286,7 +285,7 @@ export class StoringServer {
   }
 }
 
-/** Sends the child's replies to `stream` up to and including the turn-ending one. */
+/** Sends the worker's replies to `stream` up to and including the turn-ending one. */
 async function forwardReplies(child: ChildFrames, stream: Stream): Promise<void> {
   for (;;) {
     const reply = await child.next()
@@ -297,7 +296,7 @@ async function forwardReplies(child: ChildFrames, stream: Stream): Promise<void>
   }
 }
 
-/** One `monty subprocess` child, framed: whole frames in, whole frames out. */
+/** One `monty subprocess` worker, framed: whole frames in, whole frames out. */
 class ChildFrames {
   private readonly child: ChildProcessWithoutNullStreams
   private buffered = Buffer.alloc(0)
@@ -329,12 +328,12 @@ class ChildFrames {
     this.child.stdin.write(Buffer.concat([prefix, frame]))
   }
 
-  /** Closes the child's stdin: it reads EOF as a clean end and exits. */
+  /** Closes the worker's stdin: it reads EOF as a clean end and exits. */
   endInput(): void {
     this.child.stdin.end()
   }
 
-  /** The next frame from the child, or `null` once its output ends. */
+  /** The next frame from the worker, or `null` once its output ends. */
   async next(): Promise<Buffer | null> {
     while (this.frames.length === 0 && !this.ended) {
       await new Promise<void>((resolve) => (this.wake = resolve))
