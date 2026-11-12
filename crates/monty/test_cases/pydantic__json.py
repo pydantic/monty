@@ -583,6 +583,12 @@ assert errors(PointAdapter, '{"x": 1, "z": 2}') == [
     {'type': 'missing_argument', 'loc': ('y',), 'msg': 'Missing required argument', 'input': {'x': 1, 'z': 2}},
     {'type': 'unexpected_keyword_argument', 'loc': ('z',), 'msg': 'Unexpected keyword argument', 'input': 2},
 ]
+# every missing argument reports the whole input
+assert errors(PointAdapter, '{"q": [1, 2]}') == [
+    {'type': 'missing_argument', 'loc': ('x',), 'msg': 'Missing required argument', 'input': {'q': [1, 2]}},
+    {'type': 'missing_argument', 'loc': ('y',), 'msg': 'Missing required argument', 'input': {'q': [1, 2]}},
+    {'type': 'unexpected_keyword_argument', 'loc': ('q',), 'msg': 'Unexpected keyword argument', 'input': [1, 2]},
+]
 
 # === Arguments ===
 try:

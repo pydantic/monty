@@ -51,5 +51,26 @@ for document in ['{"x": "%s", "y": ' % ('a' * 40), '["%s", ' % ('a' * 40)]:
     except ValidationError:
         pass
 
+
+# Every missing field's error holds the same input, released with the errors.
+@dataclass
+class Pair:
+    a: int
+    b: int
+
+
+for hint in [Pair, Point]:
+    try:
+        TypeAdapter(hint).validate_json('{"c": [1]}')
+        assert False, 'expected a ValidationError'
+    except ValidationError:
+        pass
+    try:
+        TypeAdapter(hint).validate_python({'c': [1]})
+        assert False, 'expected a ValidationError'
+    except ValidationError:
+        pass
+hint = None
+
 len(choice)
-# ref-counts={'default': 6, 'Foo': 3, 'adapter': 1, 'built': 1, 'chooser': 1, 'Point': 1, 'document': 1}
+# ref-counts={'default': 6, 'Foo': 3, 'adapter': 1, 'built': 1, 'chooser': 1, 'Point': 1, 'document': 1, 'Pair': 1}

@@ -25,7 +25,7 @@ use crate::{
         catalogue::ErrorType,
         coerce::datetime_is_midnight,
         errors::{LineError, ValError, ValResult},
-        input::{ArgumentsShape, Exactness, Input, InputKind, Mapping, SeqKind, Sequence, State},
+        input::{ArgumentsShape, Exactness, Input, InputKind, Mapping, SeqKind, Sequence, SharedInput, State},
         snapshot::repr_string,
     },
     types::{
@@ -802,7 +802,30 @@ fn validate_fields<I: Input>(
     }
     let ((slots, errors), vm) = collected.as_parts_mut();
     let fields_set = slots.iter().flatten().count();
-    // Defaults for the unset fields, in field order; a factory may run Python.
+    let line_errors = fill_missing_fields(fields, slots, errors, input, vm)?;
+    state.add_fields_set(fields_set);
+    if line_errors.is_empty() {
+        let ((slots, _), _) = collected.into_parts();
+        Ok(slots
+            .into_iter()
+            .map(|slot| slot.expect("every field is set or errored"))
+            .collect())
+    } else {
+        Err(ValError::Lines(line_errors))
+    }
+}
+
+/// Collects each field's errors under its name and gives each unset field its
+/// default, or a `missing` error; a factory may run Python.
+fn fill_missing_fields<I: Input>(
+    fields: &[FieldValidator],
+    slots: &mut [Option<Value>],
+    errors: &mut [Option<Vec<LineError>>],
+    input: &mut I,
+    vm: &mut VM<'_>,
+) -> ValResult<Vec<LineError>> {
+    let whole = SharedInput::default();
+    defer_drop_mut!(whole, vm);
     let mut line_errors = DropGuard::new(Vec::<LineError>::new(), vm);
     for (field_index, field) in fields.iter().enumerate() {
         let (line_errors, vm) = line_errors.as_parts_mut();
@@ -824,23 +847,14 @@ fn validate_fields<I: Input>(
                 slots[field_index] = Some(vm.evaluate_function(factory, ArgValues::Empty).map_err(ValError::Run)?);
             }
             FieldDefault::Required => {
-                let whole = input.to_value(vm)?;
+                let shared = whole.get(input, vm)?;
                 let name = vm.interns.get_str(field.name).to_owned();
-                line_errors.push(LineError::owned(ErrorType::Missing {}, whole).with_outer_loc(LocItem::Key(name)));
+                line_errors.push(LineError::owned(ErrorType::Missing {}, shared).with_outer_loc(LocItem::Key(name)));
             }
         }
     }
-    state.add_fields_set(fields_set);
     let (line_errors, _) = line_errors.into_parts();
-    if line_errors.is_empty() {
-        let ((slots, _), _) = collected.into_parts();
-        Ok(slots
-            .into_iter()
-            .map(|slot| slot.expect("every field is set or errored"))
-            .collect())
-    } else {
-        Err(ValError::Lines(line_errors))
-    }
+    Ok(line_errors)
 }
 
 /// The field `key` names, if any: an interned key by id, since field names are
@@ -1020,6 +1034,8 @@ fn fill_missing_arguments<I: Input>(
     };
     let unexpected = errors.len();
     let defaults_start = slots.len() - named_tuple.defaults;
+    let whole = SharedInput::default();
+    defer_drop_mut!(whole, vm);
     for (position, slot) in slots.iter_mut().enumerate() {
         vm.heap.tracker.check_memory_time_every(position)?;
         if slot.is_some() {
@@ -1031,9 +1047,9 @@ fn fill_missing_arguments<I: Input>(
             };
             *slot = Some(class.defaults()[position - defaults_start].clone_with_heap(vm.heap));
         } else {
-            let whole = input.to_value(vm)?;
+            let shared = whole.get(input, vm)?;
             errors.push(
-                LineError::owned(ErrorType::MissingArgument {}, whole)
+                LineError::owned(ErrorType::MissingArgument {}, shared)
                     .with_outer_loc(LocItem::Key(named_tuple.field_names[position].clone())),
             );
         }

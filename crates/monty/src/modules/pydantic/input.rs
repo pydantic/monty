@@ -11,7 +11,7 @@ use monty_types::ValidationInputType;
 
 use crate::{
     bytecode::VM,
-    heap::{DropWithContext, HeapId},
+    heap::{ContainsHeap, DropWithContext, HeapId},
     modules::pydantic::{
         arena::ValidatorId,
         catalogue::ErrorType,
@@ -210,6 +210,28 @@ pub(crate) trait Input: Sized {
     fn error<T>(&mut self, error_type: ErrorType, vm: &mut VM<'_>) -> ValResult<T> {
         let value = self.to_value(vm)?;
         Err(ValError::owned(error_type, value))
+    }
+}
+
+/// The input that several line errors on one value report, materialised on
+/// first use and shared after, as pydantic-core's line errors share their input.
+/// Without it a JSON input is parsed again for every missing field.
+#[derive(Default)]
+pub(crate) struct SharedInput(Option<Value>);
+
+impl SharedInput {
+    /// A reference to `input` as a value, owned by the caller.
+    pub(crate) fn get(&mut self, input: &mut impl Input, vm: &mut VM<'_>) -> ValResult<Value> {
+        if self.0.is_none() {
+            self.0 = Some(input.to_value(vm)?);
+        }
+        Ok(self.0.as_ref().expect("set above").clone_with_heap(vm.heap))
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for SharedInput {
+    fn drop_with(self, ctx: &mut C) {
+        self.0.drop_with(ctx);
     }
 }
 
