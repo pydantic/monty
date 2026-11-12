@@ -28,8 +28,9 @@ is **not** implemented: the sandbox has no home directory.
 ## Pure (no I/O) methods and attributes
 
 Implemented: `name`, `parent`, `stem`, `suffix`, `suffixes`, `parts`,
-`is_absolute()`, `joinpath(*other)`, `with_name(name)`, `with_stem(stem)`,
-`with_suffix(suffix)`, `as_posix()`, `__fspath__()`.
+`anchor`, `drive`, `root`, `is_absolute()`, `is_reserved()`, `joinpath(*other)`,
+`with_name(name)`, `with_stem(stem)`, `with_suffix(suffix)`,
+`match(path_pattern, *, case_sensitive=None)`, `as_posix()`, `__fspath__()`.
 
 `with_name`, `with_stem` and `with_suffix` take only a `str`.
 Any other argument raises `TypeError: expected string, not <type>`, where CPython's error depends on the method:
@@ -39,8 +40,7 @@ Any other argument raises `TypeError: expected string, not <type>`, where CPytho
 The `/` operator works in both directions (`Path("a") / "b"`,
 `Path("a") / Path("b")`, `"a" / Path("b")`).
 
-Not implemented: `anchor`, `drive`, `root`, `relative_to`, `is_reserved`,
-`match`, `full_match`, `with_segments`.
+Not implemented: `relative_to`, `full_match`, `with_segments`.
 
 ## I/O methods (yield to host)
 
@@ -64,7 +64,7 @@ A relative target remains relative in the returned value; the host receives an a
 Both methods use the same host rename operation, so overwrite behavior depends on the backend
 (see [os.md](os.md)).
 
-`Path.glob()`, `Path.rglob()` and `Path.walk()` count only the visible parameters in arity errors, excluding bound `self`.
+`Path.glob()`, `Path.rglob()`, `Path.walk()` and `Path.match()` count only the visible parameters in arity errors, excluding bound `self`.
 
 Not implemented: `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,

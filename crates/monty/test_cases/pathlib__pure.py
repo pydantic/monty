@@ -207,3 +207,111 @@ assert str(Path('/a///b')) == '/a/b'
 r = repr(Path('/usr/bin'))
 assert r == "PosixPath('/usr/bin')", f'repr should be PosixPath, got {r}'
 assert repr(Path("it's")) == 'PosixPath("it\'s")'
+
+# === drive property ===
+assert Path('/usr/bin').drive == ''
+assert Path('usr/bin').drive == ''
+assert Path('/').drive == ''
+assert Path('').drive == ''
+assert Path('.').drive == ''
+
+# === root property ===
+assert Path('/usr/bin').root == '/'
+assert Path('usr/bin').root == ''
+assert Path('/').root == '/'
+assert Path('').root == ''
+assert Path('.').root == ''
+
+# === anchor property ===
+assert Path('/usr/bin').anchor == '/'
+assert Path('usr/bin').anchor == ''
+assert Path('/').anchor == '/'
+assert Path('').anchor == ''
+assert Path('.').anchor == ''
+
+# === is_reserved method ===
+assert Path('/usr/bin').is_reserved() is False
+assert Path('usr/bin').is_reserved() is False
+assert Path('').is_reserved() is False
+assert Path('NUL').is_reserved() is False
+assert Path('CON').is_reserved() is False
+try:
+    Path('a').is_reserved(1)
+    assert False, 'expected TypeError'
+except TypeError:
+    pass
+
+# === match method ===
+assert Path('/a/b/c.py').match('*.py') is True
+assert Path('/a/b/c.py').match('b/*.py') is True
+assert Path('/a/b/c.py').match('a/b/*.py') is True
+assert Path('/a/b/c.py').match('/a/b/*.py') is True
+assert Path('/a/b/c.py').match('/b/*.py') is False
+assert Path('a/b/c.py').match('/a/b/*.py') is False
+assert Path('/a/b/c.py').match('c.py') is True
+assert Path('/a/b/c.py').match('b/c.py') is True
+assert Path('/a/b/c.py').match('*.txt') is False
+assert Path('file2.txt').match('file[1-3].txt') is True
+assert Path('file5.txt').match('file[1-3].txt') is False
+assert Path('a.py').match('?.py') is True
+assert Path('ab.py').match('?.py') is False
+assert Path('/').match('/') is True
+assert Path('/a').match('/') is False
+assert Path('/a').match('/*') is True
+assert Path('/a/b').match('/*') is False
+
+# match with Path pattern
+assert Path('a/b/c.py').match(Path('*.py')) is True
+assert Path('a/b/c.py').match(Path('b/*.py')) is True
+
+# match keyword arguments
+assert Path('a/b.py').match(path_pattern='*.py') is True
+assert Path('a/b.py').match('*.py', case_sensitive=True) is True
+assert Path('a/b.PY').match('*.py') is False
+assert Path('a/b.PY').match('*.py', case_sensitive=True) is False
+assert Path('a/b.PY').match('*.py', case_sensitive=False) is True
+assert Path('a/b.PY').match('*.py', case_sensitive=0) is True
+assert Path('a/b.PY').match('*.py', case_sensitive=1) is False
+
+# match error cases
+try:
+    Path('a').match('')
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'empty pattern'
+
+try:
+    Path('a').match('.')
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'empty pattern'
+
+try:
+    Path('a').match(123)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'int'"
+
+try:
+    Path('a').match(b'*.py')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument should be a str or an os.PathLike object where __fspath__ returns a str, not 'bytes'"
+
+try:
+    Path('a').match()
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert "missing 1 required positional argument: 'path_pattern'" in str(e)
+
+try:
+    Path('a').match('*.py', 'extra')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert 'positional argument' in str(e) and 'were given' in str(e)
+
+try:
+    Path('a').match('*.py', extra=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert "got an unexpected keyword argument 'extra'" in str(e)

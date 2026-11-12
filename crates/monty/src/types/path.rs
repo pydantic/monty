@@ -11,7 +11,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty_types::MontyPath;
+use monty_types::{MontyPath, scan::SegmentPattern};
 use smallvec::SmallVec;
 
 use crate::{
@@ -163,6 +163,67 @@ impl Path {
     #[must_use]
     pub fn is_absolute(&self) -> bool {
         self.path.starts_with('/')
+    }
+
+    /// Returns the drive component of the path.
+    ///
+    /// For POSIX paths, this is always an empty string.
+    #[must_use]
+    #[expect(clippy::unused_self, reason = "mirrors Path method signature")]
+    pub fn drive(&self) -> &'static str {
+        ""
+    }
+
+    /// Returns the root component of the path.
+    ///
+    /// Returns "/" for absolute paths, and "" for relative paths.
+    #[must_use]
+    pub fn root(&self) -> &str {
+        if self.is_absolute() { "/" } else { "" }
+    }
+
+    /// Returns the anchor component (drive + root).
+    ///
+    /// For POSIX paths, this is equal to the root ("/" or "").
+    #[must_use]
+    pub fn anchor(&self) -> &str {
+        self.root()
+    }
+
+    /// Checks if the path is reserved (Windows DOS device names).
+    ///
+    /// For POSIX paths, this always returns `false`.
+    #[must_use]
+    #[expect(clippy::unused_self, reason = "mirrors Path method signature")]
+    pub fn is_reserved(&self) -> bool {
+        false
+    }
+
+    /// Returns `true` if this path matches the given glob pattern.
+    ///
+    /// # Errors
+    /// Returns `ValueError` if the pattern has no parts (e.g. `""` or `"."`).
+    pub fn match_pattern(&self, pattern: &str, case_sensitive: bool) -> RunResult<bool> {
+        let pattern_path = Self::new(pattern.to_owned());
+        let pattern_parts = pattern_path.parts();
+        if pattern_parts.is_empty() {
+            return Err(SimpleException::new_msg(ExcType::ValueError, "empty pattern").into());
+        }
+
+        let path_parts = self.parts();
+        if path_parts.len() < pattern_parts.len() {
+            return Ok(false);
+        }
+        if path_parts.len() > pattern_parts.len() && !pattern_path.anchor().is_empty() {
+            return Ok(false);
+        }
+
+        for (path_part, pattern_part) in path_parts.iter().rev().zip(pattern_parts.iter().rev()) {
+            if !SegmentPattern::new(pattern_part, case_sensitive).matches(path_part) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Joins this path with another path component.
@@ -352,6 +413,16 @@ struct PathWalkArgs {
     follow_symlinks: LaxBool,
 }
 
+/// `Path.match(path_pattern, *, case_sensitive=None)`.
+#[derive(FromArgs)]
+#[from_args(name = "Path.match", style = def)]
+struct PathMatchArgs {
+    #[from_args(static_string = "PathPattern")]
+    path_pattern: Value,
+    #[from_args(kw_only, default = Value::None)]
+    case_sensitive: Value,
+}
+
 /// `Path.glob()` / `Path.rglob()` on the receiver `base`: validates the
 /// pattern as `pathlib` does, then hands it to [`glob_call`].
 ///
@@ -507,6 +578,9 @@ impl Path {
                 }
                 allocate_tuple(items, heap)
             }
+            StaticStrings::Anchor => allocate_string(self.anchor(), heap),
+            StaticStrings::Drive => allocate_string(self.drive(), heap),
+            StaticStrings::Root => allocate_string(self.root(), heap),
             _ => return None,
         };
         Some(v)
@@ -614,6 +688,30 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
                 args.check_zero_args("is_absolute", vm.heap)?;
                 Ok(Value::Bool(self.get(vm.heap).is_absolute()))
             }
+            StaticStrings::IsReserved => {
+                args.check_zero_args("is_reserved", vm.heap)?;
+                Ok(Value::Bool(self.get(vm.heap).is_reserved()))
+            }
+            StaticStrings::Match => {
+                let PathMatchArgs {
+                    path_pattern,
+                    case_sensitive,
+                } = PathMatchArgs::from_args(args, vm)?;
+                defer_drop!(path_pattern, vm);
+                defer_drop!(case_sensitive, vm);
+                let case_sensitive = match case_sensitive {
+                    Value::None => true,
+                    value => value.py_bool(vm)?,
+                };
+                let Some(pattern_text) = value_as_path_str(path_pattern, vm.heap, vm.interns) else {
+                    return Err(ExcType::type_error(format!(
+                        "argument should be a str or an os.PathLike object where __fspath__ returns a str, not '{}'",
+                        path_pattern.py_type_name(vm)
+                    )));
+                };
+                let matched = self.get(vm.heap).match_pattern(pattern_text, case_sensitive)?;
+                Ok(Value::Bool(matched))
+            }
             StaticStrings::Joinpath => {
                 let pos_args = args.into_pos_only("joinpath", vm.heap)?;
                 defer_drop!(pos_args, vm);
@@ -686,12 +784,15 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Path> {
         // Slow path: heap-allocated strings need string comparison
         let attr_str = attr.as_str(vm.interns);
         let ss = match attr_str {
+            "anchor" => StaticStrings::Anchor,
+            "drive" => StaticStrings::Drive,
             "name" => StaticStrings::Name,
             "parent" => StaticStrings::Parent,
+            "parts" => StaticStrings::Parts,
+            "root" => StaticStrings::Root,
             "stem" => StaticStrings::Stem,
             "suffix" => StaticStrings::Suffix,
             "suffixes" => StaticStrings::Suffixes,
-            "parts" => StaticStrings::Parts,
             _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
         };
         let v = self
