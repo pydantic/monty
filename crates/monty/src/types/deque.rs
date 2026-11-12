@@ -1134,11 +1134,14 @@ fn deque_push<'h>(deque: &HeapReadMut<'h, Deque>, item: Value, end: ExtendEnd, v
 /// surviving suffix rather than the full product — `deque([1,2], maxlen=2) *
 /// 10**9` must not materialize two billion `Value`s before truncating. The
 /// pattern is periodic with period `len`, so the kept window of `L = min(len*
-/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
-/// shortcut and materializes the full product (may hit resource limits, like
-/// CPython's `MemoryError`).
+/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque
+/// materializes the full product (may hit resource limits, like CPython's
+/// `MemoryError`), except that an empty source builds nothing.
 fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Deque> {
     let len = source.len();
+    // An empty source yields an empty deque however large `count` is; clamping
+    // keeps the unbounded branch from spinning `count` times over nothing.
+    let count = if len == 0 { 0 } else { count };
     // `source` is an owned copy of the deque's items; release it on every exit.
     defer_drop!(source, vm);
     let result = if let Some(max) = maxlen {

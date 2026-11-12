@@ -19,7 +19,7 @@ The chart is the time to get a new sandbox and then run ten REPL commands in it;
 | Tech               | Language completeness      | Security          | Execution env | New sandbox           | FOSS       | Setup        | File mounting  | Snapshotting                |
 | ------------------ | -------------------------- | ----------------- | ------------- | --------------------- | ---------- | ------------ | -------------- | --------------------------- |
 | OSS Monty          | partial                    | strict            | local         | 0.8 ms, 5 ms new pool | free / OSS | easy         | easy           | interpreter, kilobytes      |
-| Full Monty         | partial, or full via proxy | strict + OS-level | remote        | 2 ms, 5 ms new pool   | not free   | easy         | easy           | interpreter, kilobytes      |
+| Commercial Support | partial, or full via proxy | strict + OS-level | remote        | 2 ms, 5 ms new pool   | not free   | easy         | easy           | interpreter, kilobytes      |
 | Docker             | full                       | good              | local         | 195 ms                | free / OSS | intermediate | easy           | CRIU image, experimental    |
 | Pyodide            | full                       | poor              | local         | 2700 ms               | free / OSS | intermediate | easy           | no                          |
 | starlark-rust      | very limited               | good              | local         | 1.3 ms                | free / OSS | easy         | not available? | no                          |
@@ -51,7 +51,7 @@ An application that runs model-written code asks two questions of its sandbox:
 1. **Agent run**: how long does it take to run a series of commands in that sandbox?
     Measured as ten REPL commands against a sandbox that already exists.
 
-For OSS Monty and Full Monty a new sandbox is a checkout from a pool the application created when it started: a fresh
+For OSS Monty and Commercial Support a new sandbox is a checkout from a pool the application created when it started: a fresh
 REPL session on a pooled worker process.
 Creating the pool happens once per application, not once per user, so it is shown separately.
 The others have no pool, so each new sandbox starts from nothing.
@@ -60,19 +60,19 @@ The others have no pool, so each new sandbox starts from nothing.
 | -------------------------------------------- | ----------- | ---------------- | -------- |
 | OSS Monty, pool already open                 | 0.8 ms      | 0.4 ms           | 1.2 ms   |
 | OSS Monty, new pool                          | 5 ms        | 0.4 ms           | 5 ms     |
-| Full Monty, client pool already open         | 2 ms        | 5 ms             | 7 ms     |
-| Full Monty, new client pool                  | 5 ms        | 5 ms             | 10 ms    |
+| Commercial Support, client pool already open | 2 ms        | 5 ms             | 7 ms     |
+| Commercial Support, new client pool          | 5 ms        | 5 ms             | 10 ms    |
 | WASI / wasmtime, precompiled CPython         | 16 ms       | 180 ms           | 200 ms   |
 | Docker, running container, `docker exec`     | 195 ms      | 700 ms           | 900 ms   |
 | Sandboxing service, existing Daytona sandbox | 1500 ms     | 400 ms           | 1900 ms  |
 | Pyodide, running Deno sandbox                | 2700 ms     | 35 ms            | 2700 ms  |
 
-The chart uses the first row for each of OSS Monty and Full Monty.
-Full Monty gives every session a fresh worker, so its two rows differ only on the client side: whether the pool
+The chart uses the first row for each of OSS Monty and Commercial Support.
+Commercial Support gives every session a fresh worker, so its two rows differ only on the client side: whether the pool
 object and event loop already exist.
 
 † 10 commands run in a REPL, as you might expect from a simple agent with code mode.
-OSS Monty and Full Monty keep the session, so each command is one `feed_run`.
+OSS Monty and Commercial Support keep the session, so each command is one `feed_run`.
 None of the others has a persistent interpreter to feed: `python.wasm` is a WASI command module whose `_start` runs
 once, a container or a service runs one program per request, and the Pyodide sandbox evaluates each call in fresh
 globals.
@@ -122,9 +122,9 @@ of 7 runs with `pydantic-monty` 0.0.21 is 4.5 ms.
 
 The agent run is ten `feed_run` calls on one checkout, so state persists and nothing is replayed.
 
-## Full Monty
+## Commercial Support
 
-[Full Monty](server.md) is the commercial server: the same `monty` workers behind gRPC, as a container image.
+[Commercial Support](server.md) is the commercial server: the same `monty` workers behind gRPC, as a container image.
 
 - **Language completeness**: the same subset as OSS Monty, or full CPython when the server proxies a session to a CPython
     sandbox.
@@ -135,7 +135,7 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
     ceilings.
     The sandboxes scale by adding server replicas behind a load balancer, independent of the application hosts; a
     draining replica hands each session a signed dump so the client can resume on another.
-    See [Full Monty](server.md).
+    See [Commercial Support](server.md).
 - **New sandbox**: a gRPC stream on the client's connection, relayed to a worker process for the session; 1.7 ms
     measured between containers on one machine. A deployment adds its network round trip.
 - **FOSS**: closed-source and commercial; the client, [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote], ships in the MIT `pydantic-monty`
@@ -146,7 +146,7 @@ The agent run is ten `feed_run` calls on one checkout, so state persists and not
 
 ### How it was measured
 
-Measured on 2026-11-03: the production pair of containers, the Full Monty server relaying to a separate worker
+Measured on 2026-11-03: the production pair of containers, the Commercial Support server relaying to a separate worker
 container that runs one process per session, both native `linux/arm64` builds on monty 1.4.0 in Docker
 Desktop on the same machine.
 The client is `pydantic-monty` 1.4.0's [`AsyncMontyRemote`][pydantic_monty.AsyncMontyRemote] in a third
@@ -162,7 +162,7 @@ New client pool creates the client pool and dials the connection as well, in a c
 The agent run is ten `feed_run` calls on one checkout, 4.9 ms; each is a round trip relayed from the server
 to the same worker.
 The worker runs inside a Linux container, where creating an OSS Monty pool measures 2.4 ms against 4.5 ms on macOS,
-so the Full Monty numbers are not directly comparable with the macOS ones.
+so the Commercial Support numbers are not directly comparable with the macOS ones.
 
 ## Docker
 

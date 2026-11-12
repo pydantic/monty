@@ -425,21 +425,24 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, NamedTuple> {
     /// CPython (the field names describe one instance only, so they cannot
     /// survive concatenation). A non-tuple-like right operand returns `None`.
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(mut other_items) = cloned_tuple_like_items(other, vm)? else {
+        let Some(other_items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
-        let mut items = self.cloned_items(vm)?;
-        items.append(&mut other_items);
+        let mut other_items = DropGuard::new(other_items, vm);
+        let mut items = self.cloned_items(other_items.ctx())?;
+        items.extend(other_items.into_inner());
         Ok(Some(allocate_tuple(SmallVec::from_vec(items), vm.heap)))
     }
 
     /// Reflected concatenation (`tuple + namedtuple`), reached when the left
     /// tuple's `py_add_impl` declined the namedtuple right operand.
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Some(mut items) = cloned_tuple_like_items(other, vm)? else {
+        let Some(items) = cloned_tuple_like_items(other, vm)? else {
             return Ok(None);
         };
-        let mut self_items = self.cloned_items(vm)?;
+        let mut items = DropGuard::new(items, vm);
+        let mut self_items = self.cloned_items(items.ctx())?;
+        let mut items = items.into_inner();
         items.append(&mut self_items);
         Ok(Some(allocate_tuple(SmallVec::from_vec(items), vm.heap)))
     }

@@ -14,6 +14,8 @@ export interface WasmPoolOptions extends MontyOptions {
   maxProcesses?: number
   /** Overrides the browser worker entry URL. */
   workerUrl?: string | URL
+  /** Ignored by WASM, whose workers suspend at every host call. */
+  streamAsyncCalls?: boolean
 }
 
 /** Applies the same public pool options to both worker backends. */
