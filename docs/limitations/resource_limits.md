@@ -32,11 +32,13 @@ Snippets rejected before execution retain none of their compilation products (se
 
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
+
 - Workers count bytes requested from their global allocator. Direct Rust users
     must install `monty-alloc` as the global allocator and arm its hard ceiling
     with `set_hard_limit(memory_limit_with_headroom(...))` before using
     `max_memory`; without it usage always reads as zero and the limit is silently
     not enforced.
+
 - Operations whose result is bounded by simple arithmetic on input sizes
     are **pre-checked** before allocating: integer multiplication, left
     shift, integer power, sequence repeat (`'x' * n`), replacement
@@ -55,6 +57,7 @@ Snippets rejected before execution retain none of their compilation products (se
     The pre-check threshold is 100 KB:
     estimates above that are checked against the remaining budget and rejected
     with `MemoryError` before allocation when they would exceed it.
+
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
     a 4× safety multiplier to cover repeated-squaring intermediate values.
 
