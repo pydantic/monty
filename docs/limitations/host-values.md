@@ -101,17 +101,20 @@ see [Python error handling](../quickstart/python.md#errors).
 
 Some sandbox results have no CPython equivalent, such as a namedtuple field starting with `_` (which `rename=True`
 produces).
-A value whose dict and set keys share too many CPython hashes is also rejected, with `ValueError`.
-The sandbox hashes `int`s differently, so keys like `k * (2**61 - 1)` are cheap to build there,
+A Python host also rejects a value whose dict and set keys share too many CPython hashes, with `ValueError`.
+The sandbox hashes `int`s differently, so on 64-bit hosts keys like `k * (2**61 - 1)` are cheap to build there,
 but all hash to 0 in CPython, where inserting n of them costs O(n²).
-The limit is about a million key comparisons summed over every dict and set in the value (around 1,400 such keys).
+The limit is about a million key comparisons summed over every dict and set in the value (around 1,400 such `int` keys),
+each weighted by the number of values the key holds, so fewer colliding tuple keys reach it.
+It also rejects a value whose keys nest one tuple many times, like `a = (a, a)` repeated: counting repeats, all its
+dict and set keys together may hold 16 million values, or four per value crossing, whichever is larger.
+A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
+exception type and the message prefixed `cannot convert the result to a Python value: `.
 
 JavaScript hosts cannot see engine hashes, so they bound time instead: inserting a value's `Map` and `Set` keys may take
 250 ms plus 1 µs per key, after which decoding fails with an `Error`.
 Keys that share a bucket in the host engine, such as BigInts with equal low 64 bits in V8, reach this limit.
 Because the limit is a time limit, a heavily loaded host could, rarely, reject a large value whose keys do not collide.
-A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
-exception type and the message prefixed `cannot convert the result to a Python value: `.
 
 ## Message size
 

@@ -723,6 +723,10 @@ KEY_COLLISIONS_ERROR = (
     'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
     'too many hash collisions among dict or set keys)'
 )
+SHARED_KEYS_ERROR = (
+    'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
+    'dict or set keys nest too many shared values to hash)'
+)
 
 UNDECODABLE_RESULTS = [
     pytest.param(UNDERSCORE_FIELD_CODE, UNDERSCORE_FIELD_ERROR, id='namedtuple_underscore_field'),
@@ -746,6 +750,19 @@ UNDECODABLE_RESULTS = [
         '[{k * (2**61 - 1): None for k in range(1, 1000)} for _ in range(3)]',
         KEY_COLLISIONS_ERROR,
         id='colliding_keys_across_dicts',
+    ),
+    pytest.param(
+        # 300 colliding int keys fit the budget; wrapped with a 100-item tuple, each comparison costs more
+        '{(tuple(range(100)), k * (2**61 - 1)): None for k in range(1, 300)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_tuple_keys',
+    ),
+    pytest.param(
+        # `a` and `b` are 41 nodes each but 2**40 leaves to hash or compare
+        'a = (0,)\nb = (0,)\nfor _ in range(40):\n    a = (a, a)\n    b = (b, b)\n'
+        '{(a, 2**61 - 1): None, (b, 2 * (2**61 - 1)): None}',
+        SHARED_KEYS_ERROR,
+        id='shared_nested_tuple_keys',
     ),
 ]
 
@@ -774,6 +791,13 @@ def test_colliding_keys_under_budget(monty_run: RunMonty):
     result = monty_run('{k * (2**61 - 1): k for k in range(1, 1000)}')
     assert len(result) == snapshot(999)
     assert result[5 * (2**61 - 1)] == snapshot(5)
+
+
+def test_keys_sharing_a_tuple_decode(monty_run: RunMonty):
+    """Keys sharing one large tuple stay within the hash budget."""
+    result = monty_run('t = tuple(range(1000))\n{(t, i): i for i in range(2000)}')
+    assert len(result) == snapshot(2000)
+    assert result[(tuple(range(1000)), 7)] == snapshot(7)
 
 
 def test_undecodable_result_feed_start(session: MontySession):
