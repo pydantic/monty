@@ -16,7 +16,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapReadOutput},
-    types::{Dict, PyTrait, Type, instance::class_name, set::set_element_hash, tuple::allocate_tuple},
+    types::{Dict, PyTrait, Type, instance::class_name, tuple::allocate_tuple, unhashable::set_element_hash},
     value::{EitherStr, Value},
 };
 

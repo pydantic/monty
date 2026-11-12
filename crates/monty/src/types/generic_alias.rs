@@ -25,7 +25,7 @@ use crate::{
     builtins::{Builtins, BuiltinsFunctions},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException, unhashable_type_message},
     hash::HashValue,
     heap::{
         ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput,
@@ -35,8 +35,8 @@ use crate::{
         BuiltinType, LazyHeapSet, PyTrait, Type, Union,
         instance::class_name,
         list::repr_should_truncate,
-        set::unhashable_type_name,
         tuple::{TupleVec, allocate_tuple},
+        unhashable::unhashable_type_name,
     },
     value::{EitherStr, Marker, VALUE_SIZE, Value},
 };
@@ -696,7 +696,10 @@ fn literal_eq(args: &Value, other_args: &Value, vm: &mut VM<'_>) -> RunResult<bo
         vm.heap.tracker.check_time_every(index)?;
         let Some(hash) = item.py_hash(vm)? else {
             let unhashable_type = unhashable_type_name(item, vm)?;
-            return Err(ExcType::type_error_unhashable_set_element("tuple", &unhashable_type));
+            return Err(ExcType::type_error_unhashable_set_element(
+                "tuple",
+                &unhashable_type_message(&unhashable_type),
+            ));
         };
         if index >= items.len() {
             buckets

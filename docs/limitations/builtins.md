@@ -69,6 +69,17 @@ These raise `NameError`:
     inline share identity by content. Separate runtime results such as `bin(4)` can therefore
     compare identical and return the same `id()`, where CPython gives those
     results distinct identities.
+- **naming an unhashable tuple's culprit re-hashes its items** — `{([1],)}` and
+    `hash(([1],))` name the innermost unhashable type, as CPython does, but Monty
+    finds it by hashing the tuple's items again after the tuple fails to hash.
+    A user `__hash__` on an item before the culprit therefore runs twice.
+- **dict view operators wrap hashing errors as set elements** —
+    `d.keys() & iterable`, `d.items() & iterable` and `isdisjoint(iterable)` on a
+    view collect the iterable into a set first, so an item that will not hash
+    raises `cannot use 'T' as a set element (...)` where CPython probes the dict
+    and raises `cannot use 'T' as a dict key (...)`.
+    `d.items() & [[1]]` raises that error too, where CPython finds no match and
+    returns an empty set.
 - **copying a dict or rebuilding a set re-hashes the keys** — CPython copies the
     hash table, so `d.copy()`, `dict(d)`, `{**d}`, `defaultdict.copy()`,
     `Counter.copy()`, `set(s)` and `frozenset(s)` never call a key's `__hash__`.

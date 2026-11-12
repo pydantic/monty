@@ -16,13 +16,15 @@ use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
     heap::{DropGuard, DropWithContext, HeapData, HeapObjectRead, HeapReadOutput},
     py_value::PyValue,
     resource_checks::check_repeat_size,
     sorting::{py_eq_item, py_lt, sort_indices, sort_indices_by},
-    types::{Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder},
+    types::{
+        Dict, List, PyTrait, allocate_tuple, iter::collect_owned_iterable, py_trait::CmpOrder, unhashable::plain_hash,
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -203,7 +205,12 @@ pub(crate) fn counter_update<'h>(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                counter_bump(counter, item, &Value::Int(1), subtract, false, vm)?;
+                let probe = item.clone_with_heap(vm);
+                defer_drop!(probe, vm);
+                if let Err(err) = counter_bump(counter, item, &Value::Int(1), subtract, false, vm) {
+                    // `subtract` is pure Python (`self.get(elem, 0) - 1`), keeping the dict key error.
+                    return Err(if subtract { err } else { bare_hash_error(probe, err, vm) });
+                }
             }
         }
     }
@@ -214,6 +221,19 @@ pub(crate) fn counter_update<'h>(
     let kwarg_pairs = counter_kwarg_deltas(kwargs);
     counter_merge_mapping(counter, kwarg_pairs, subtract, vm)?;
     Ok(())
+}
+
+/// `_count_elements` hashes with a bare `PyObject_Hash`, so a key that will not
+/// hash raises `hash()`'s error rather than the dict key one `counter_bump` raised.
+///
+/// Rehashes only on the error path, keeping the common path to one hash per item.
+#[cold]
+fn bare_hash_error(key: &Value, err: RunError, vm: &mut VM<'_>) -> RunError {
+    if err.is_catchable(ExcType::TypeError) {
+        plain_hash(key, vm).err().unwrap_or(err)
+    } else {
+        err
+    }
 }
 
 /// Folds mapping `(key, count)` pairs into `counter`.

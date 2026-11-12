@@ -22,6 +22,7 @@ use crate::{
         LazyHeapSet, Type,
         hash_table::{Live, PyHashTable, TableCursor, TableEntry, TableProbe, TableSource, TableWalk},
         list::repr_items_fmt,
+        unhashable::{HashRole, hash_as, set_element_hash},
     },
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -136,9 +137,14 @@ impl SetStorage {
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
     fn add(&mut self, value: Value, vm: &mut VM<'_>) -> RunResult<bool> {
+        self.add_as(value, HashRole::SetElement, vm)
+    }
+
+    /// [`Self::add`], reporting a hashing error as `role` does.
+    fn add_as(&mut self, value: Value, role: HashRole, vm: &mut VM<'_>) -> RunResult<bool> {
         let mut value_guard = DropGuard::new(value, vm);
         let (value, vm) = value_guard.as_parts();
-        let hash = set_element_hash(value, vm)?;
+        let hash = hash_as(value, role, vm)?;
         let (value, vm) = value_guard.into_parts();
         self.add_with_hash(value, hash, vm)
     }
@@ -792,6 +798,11 @@ impl Set {
     /// checkpoints, so it is preflighted: otherwise only the allocator's hard
     /// ceiling would stop `set(huge)`, killing the worker.
     fn from_iterable(iterable: Value, vm: &mut VM<'_>) -> RunResult<Self> {
+        Self::from_iterable_as(iterable, HashRole::SetElement, vm)
+    }
+
+    /// [`Self::from_iterable`], reporting a hashing error as `role` does.
+    fn from_iterable_as(iterable: Value, role: HashRole, vm: &mut VM<'_>) -> RunResult<Self> {
         // The preflight can refuse the copy, so the argument rides in a guard;
         // only the iterator path below takes it back.
         let mut guard = DropGuard::new(iterable, vm);
@@ -824,7 +835,7 @@ impl Set {
             let Some(item) = iterator.py_next(vm)? else {
                 break;
             };
-            set.add(item, vm)?;
+            set.0.add_as(item, role, vm)?;
         }
         Ok(set_guard.into_inner())
     }
@@ -981,7 +992,7 @@ impl<'h> HeapRead<'h, Set> {
     /// via HeapRead. Snapshots the other operand once so only `self` is read
     /// live, then calls the matching `SetStorage` method.
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
-        let other_storage = Set::get_storage_from_value(other, vm)?;
+        let other_storage = Set::get_storage_from_value(other, op.hash_role(), vm)?;
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
 
@@ -1012,7 +1023,7 @@ impl<'h> HeapRead<'h, Set> {
         let other_storage = if let Some(entries) = entries_opt {
             SetStorage::from_entry_vec(entries)
         } else {
-            let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
+            let temp = Set::from_iterable_as(other.clone_with_heap(vm), op.hash_role(), vm)?;
             temp.0
         };
         defer_drop!(other_storage, vm);
@@ -1046,6 +1057,27 @@ enum SetComparison {
     Subset,
     Superset,
     Disjoint,
+}
+
+impl SetAlgebra {
+    /// CPython's `set.intersection` hashes a non-set argument's items with a bare
+    /// `PyObject_Hash`, so its errors are not wrapped as a set element's.
+    fn hash_role(self) -> HashRole {
+        match self {
+            Self::Intersection => HashRole::Plain,
+            Self::Union | Self::Difference | Self::SymmetricDifference => HashRole::SetElement,
+        }
+    }
+}
+
+impl SetComparison {
+    /// CPython's `issubset` runs `set.intersection` on a non-set argument; see [`SetAlgebra::hash_role`].
+    fn hash_role(self) -> HashRole {
+        match self {
+            Self::Subset => HashRole::Plain,
+            Self::Superset | Self::Disjoint => HashRole::SetElement,
+        }
+    }
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for Set {
@@ -1121,7 +1153,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
 
     /// Set algebra operations for frozenset via HeapRead.
     fn set_algebra(&self, other: Value, op: SetAlgebra, vm: &mut VM<'h>) -> RunResult<Value> {
-        let other_storage = Set::get_storage_from_value(other, vm)?;
+        let other_storage = Set::get_storage_from_value(other, op.hash_role(), vm)?;
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
 
@@ -1150,7 +1182,7 @@ impl<'h> HeapRead<'h, FrozenSet> {
         let other_storage = if let Some(entries) = entries_opt {
             SetStorage::from_entry_vec(entries)
         } else {
-            let temp = Set::from_iterable(other.clone_with_heap(vm), vm)?;
+            let temp = Set::from_iterable_as(other.clone_with_heap(vm), op.hash_role(), vm)?;
             temp.0
         };
         defer_drop!(other_storage, vm);
@@ -1406,7 +1438,9 @@ impl<'h> HeapRead<'h, Set> {
 
 impl Set {
     /// Helper to get SetStorage from a Value (either directly or by conversion).
-    fn get_storage_from_value(value: Value, vm: &mut VM<'_>) -> RunResult<SetStorage> {
+    ///
+    /// `role` reports an iterable item that will not hash.
+    fn get_storage_from_value(value: Value, role: HashRole, vm: &mut VM<'_>) -> RunResult<SetStorage> {
         // Try to get entries from a Set/FrozenSet directly
         let entries_opt = match &value {
             Value::Ref(id) => match vm.heap.get(*id) {
@@ -1423,7 +1457,7 @@ impl Set {
         }
 
         // Convert iterable to set
-        let temp_set = Self::from_iterable(value, vm)?;
+        let temp_set = Self::from_iterable_as(value, role, vm)?;
         Ok(temp_set.0)
     }
 }
@@ -1851,47 +1885,6 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, SetIterator> {
         self.get_mut(vm.heap).cursor = cursor;
         value
     }
-}
-
-/// Hashes a value about to become a set element, raising CPython's
-/// `cannot use 'T' as a set element (unhashable type: 'U')` when it cannot be.
-pub(crate) fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
-    if let Some(hash) = value.py_hash(vm)? {
-        Ok(hash.raw())
-    } else {
-        let element_type = value.py_type_name(vm).into_owned();
-        let unhashable_type = unhashable_type_name(value, vm)?;
-        Err(ExcType::type_error_unhashable_set_element(
-            &element_type,
-            &unhashable_type,
-        ))
-    }
-}
-
-/// Finds the nested value responsible for a tuple-like element being unhashable.
-pub(crate) fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
-    let Value::Ref(id) = value else {
-        return Ok(value.py_type_name(vm).into_owned());
-    };
-    let len = match vm.heap.get(*id) {
-        HeapData::Tuple(tuple) => tuple.as_slice().len(),
-        HeapData::NamedTuple(namedtuple) => namedtuple.as_vec().len(),
-        _ => return Ok(value.py_type_name(vm).into_owned()),
-    };
-
-    for index in 0..len {
-        let item = match vm.heap.get(*id) {
-            HeapData::Tuple(tuple) => tuple.as_slice()[index].clone_with_heap(vm.heap),
-            HeapData::NamedTuple(namedtuple) => namedtuple.as_vec()[index].clone_with_heap(vm.heap),
-            _ => unreachable!("tuple-like heap value changed type"),
-        };
-        defer_drop!(item, vm);
-        if item.py_hash(vm)?.is_none() {
-            return unhashable_type_name(item, vm);
-        }
-    }
-
-    Ok(value.py_type_name(vm).into_owned())
 }
 
 impl<'h> PyDeepCopy<'h> for HeapRead<'h, Set> {

@@ -68,6 +68,9 @@ divergences. `repr(Point)` is `<class 'Point'>` where CPython gives
 - **`elements()` returns a list**, not CPython's lazy iterator. The values and
     order match, but the whole sequence is built up front, so a very large count
     can hit the memory limit where CPython would stream.
+- **Counting an element that fails to hash hashes it twice.** `Counter(iterable)`
+    and `update(iterable)` raise the bare hashing error, as CPython does, by hashing
+    the element again once the count fails, so a raising `__hash__` runs twice.
 - **Crosses the host boundary as a plain `dict`.**
 
 ## Qualified vs bare type names

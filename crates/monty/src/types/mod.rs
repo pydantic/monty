@@ -52,6 +52,7 @@ pub mod timedelta;
 pub mod timezone;
 pub mod tuple;
 pub mod r#type;
+pub(crate) mod unhashable;
 mod unicode_type;
 mod unicode_type_data;
 pub mod union;

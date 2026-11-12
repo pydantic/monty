@@ -35,6 +35,7 @@ use crate::{
     types::{
         Type,
         hash_table::{Live, PyHashTable, Slot, TableCursor, TableEntry, TableProbe, TableScan, TableSource, TableWalk},
+        unhashable::dict_key_hash,
     },
     value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
@@ -848,10 +849,7 @@ impl<'h> HeapRead<'h, Dict> {
     /// is a `TypeError` naming the dict — the only two things that distinguish
     /// this from [`TableProbe::find_index`], which does the probing.
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<(Option<Slot>, u64)> {
-        let hash = key
-            .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(&key.py_type_name(vm)))?
-            .raw();
+        let hash = dict_key_hash(key, vm)?;
         Ok((self.find_index(key, hash, vm)?, hash))
     }
 
@@ -1533,7 +1531,13 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, Dict> {
                 defer_drop!(key, vm);
                 let mut default_guard = DropGuard::new(default, vm);
                 let vm = default_guard.ctx();
-                if let Some((old_key, value)) = self.pop(key, vm)? {
+                // CPython's `PyDict_Pop` returns before hashing when the dict is empty.
+                let popped = if self.get(vm.heap).is_empty() {
+                    None
+                } else {
+                    self.pop(key, vm)?
+                };
+                if let Some((old_key, value)) = popped {
                     // Drop the old key - we don't need it
                     old_key.drop_with(vm);
                     Ok(value)
