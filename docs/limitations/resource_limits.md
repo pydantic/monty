@@ -27,6 +27,9 @@ Snippets rejected before execution retain none of their compilation products (se
 
 ## Memory / size limits
 
+- Source code is limited to `u32::MAX` (4,294,967,295) UTF-8 bytes because parser offsets are 32 bits.
+    Oversized source raises `SyntaxError`.
+
 - Memory usage is measured by the worker's process-global allocator, while the
     configured budget belongs to one session.
 - Workers count bytes requested from their global allocator. Direct Rust users

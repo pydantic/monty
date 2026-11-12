@@ -24,6 +24,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
     mem,
+    num::NonZeroU32,
     slice::from_ref,
     str::FromStr,
     sync::{Arc, LazyLock},
@@ -2694,8 +2695,8 @@ pub enum StaticStrings {
 struct InternedString {
     /// Runtime classification, independent of the string's executor-local ID.
     static_tag: Option<StaticStrings>,
-    /// Unicode code-point count; equality with byte length also identifies ASCII text.
-    char_len: usize,
+    /// Cached code-point count; empty strings and counts above `u32::MAX` are recounted.
+    char_len: Option<NonZeroU32>,
     /// Text and its eagerly computed Python hash.
     text: WithHash<InternedText>,
 }
@@ -2719,12 +2720,14 @@ impl AsRef<str> for InternedText {
 }
 
 impl InternedString {
-    fn count_chars(text: &str) -> usize {
-        if text.is_ascii() {
+    /// Fits the count beside the static tag without enlarging each storage slot.
+    fn count_chars(text: &str) -> Option<NonZeroU32> {
+        let char_len = if text.is_ascii() {
             text.len()
         } else {
             bytecount::num_chars(text.as_bytes())
-        }
+        };
+        u32::try_from(char_len).ok().and_then(NonZeroU32::new)
     }
 
     /// Creates an entry for compile-time-known text.
@@ -2748,6 +2751,15 @@ impl InternedString {
     /// Returns the interned text.
     fn as_str(&self) -> &str {
         self.text.value().as_ref()
+    }
+
+    /// Recounts when the code-point count does not fit the cache.
+    #[inline]
+    fn char_len(&self) -> usize {
+        self.char_len.map_or_else(
+            || bytecount::num_chars(self.as_str().as_bytes()),
+            |len| len.get() as usize,
+        )
     }
 
     /// Returns the cached Python hash.
@@ -3137,19 +3149,19 @@ impl Interns {
             .map(|file| &*file.source)
     }
 
-    /// Returns ASCII status without rescanning immutable literal text.
+    /// Compares character and byte lengths, using the cached count when available.
     #[inline]
     pub fn str_is_ascii(&self, id: StringId) -> bool {
         self.str_char_len(id) == self.get_str(id).len()
     }
 
-    /// Returns the Unicode code-point count without rescanning interned text.
+    /// Returns the Unicode code-point count, recounting when it does not fit the cache.
     #[inline]
     pub fn str_char_len(&self, id: StringId) -> usize {
         if id.index() < RESERVED_STRS.len() {
             RESERVED_STRS[id.index()].len()
         } else {
-            self.strings[id.index() - INTERN_STRING_ID_OFFSET].char_len
+            self.strings[id.index() - INTERN_STRING_ID_OFFSET].char_len()
         }
     }
 
@@ -3207,37 +3219,5 @@ impl Interns {
 }
 
 #[cfg(test)]
-mod string_metadata_tests {
-    use super::*;
-
-    #[test]
-    fn character_lengths_survive_text_only_serialization() {
-        for text in ["", "a", "ascii literal", "é", "aé🦀", "e\u{301}"] {
-            let entry = InternedString::owned(text.to_owned());
-            assert_eq!(entry.char_len, text.chars().count());
-            assert_eq!(entry.char_len == text.len(), text.is_ascii());
-            assert_eq!(entry.clone().char_len, entry.char_len);
-
-            let serialized = serde_json::to_string(&entry).unwrap();
-            assert_eq!(serialized, serde_json::to_string(text).unwrap());
-            let restored: InternedString = serde_json::from_str(&serialized).unwrap();
-            assert_eq!(restored.as_str(), text);
-            assert_eq!(restored.char_len, entry.char_len);
-        }
-
-        let interns = Interns::new("");
-        for (index, text) in RESERVED_STRS.iter().enumerate() {
-            let id = StringId(index.try_into().unwrap());
-            assert_eq!(interns.str_char_len(id), text.chars().count());
-            assert!(interns.str_is_ascii(id));
-        }
-
-        for &value in CORE_STATIC_STRINGS {
-            let entry = InternedString::static_string(value);
-            assert_eq!(entry.char_len, entry.as_str().chars().count());
-            let id = interns.intern_static(value);
-            assert_eq!(interns.str_char_len(id), entry.char_len);
-            assert_eq!(interns.str_is_ascii(id), entry.as_str().is_ascii());
-        }
-    }
-}
+#[path = "../tests/unit/string_metadata.rs"]
+mod string_metadata_tests;
