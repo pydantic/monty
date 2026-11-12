@@ -131,8 +131,9 @@ enum Target {
 }
 
 impl AccessCache {
-    /// Converts from an implicit endpoint when optional interned-cache storage was refused.
-    /// Uses the same deadline-aware scanners without retaining the temporary cursors.
+    /// Converts a code-point index from an implicit endpoint without allocating cache storage.
+    /// Used for inline Unicode strings and when optional cache allocation is refused.
+    /// Long scans still poll execution deadlines.
     pub(crate) fn uncached_byte_offset<B: Budget>(
         text: &str,
         target: usize,
