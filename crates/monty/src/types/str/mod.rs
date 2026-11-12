@@ -111,6 +111,8 @@ impl<'h> PyStr<'h> {
         }
     }
 
+    /// Returns the embedded heap cache or a lazily allocated interned cache.
+    /// Inline strings and refused interned-cache allocations return `None`.
     fn access_cache<'s>(&'s self, vm: &'s VM<'h>) -> Option<&'s AccessCache> {
         match self {
             PyStr::Heap(string) => Some(&string.get(vm.heap).access_cache),
@@ -137,17 +139,23 @@ impl<'h> PyStr<'h> {
         }
     }
 
-    /// Resolves Python's positive or negative character index.
+    /// Reads a signed Python code-point index after the caller has completed `__index__` coercion.
+    /// ASCII, stack-inline strings (at most 15 UTF-8 bytes), and 0/-1 reads use direct access.
+    /// Other Unicode reads use an optional cursor cache, falling back to a deadline-aware scan.
+    /// Out-of-range indices return `None`; execution-limit errors propagate to the caller.
     fn character_at(&self, index: i64, vm: &VM<'h>) -> RunResult<Option<char>> {
         let text = self.as_str(vm);
         let ascii = self.is_ascii(vm);
+        // These paths avoid cursor lookup: byte indexing, a tiny inline scan, or the first/last code point.
         if ascii || matches!(index, 0 | -1) || matches!(self, Self::Inline(_)) {
             return Ok(get_char_at_index(text, ascii, index));
         }
+        // Remaining reads need the owner's count to normalize negative indices and choose an endpoint.
         let characters = self.char_len(vm);
         if let Some(cache) = self.access_cache(vm) {
             Ok(cache.character(text, index, characters, &vm.heap.tracker)?)
         } else {
+            // A refused interned cache must leave the read usable, with deadline checks on long scans.
             Ok(AccessCache::uncached_character(
                 text,
                 index,
