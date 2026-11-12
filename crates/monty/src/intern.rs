@@ -32,6 +32,7 @@ use std::{
 
 use ahash::{AHashMap, AHashSet};
 pub(crate) use compile::CompileInterns;
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use storage::Entries;
 use strum::{EnumString, FromRepr, IntoStaticStr};
@@ -41,6 +42,7 @@ use crate::{
     function::Function,
     hash::{HashValue, RESERVED_STRING_HASHES, WithHash, hash_python_str},
     prepare::SnippetNames,
+    types::str::{AccessCache, AccessCacheStore},
 };
 
 /// Index into the string interner's storage.
@@ -2983,6 +2985,8 @@ fn get_static_string(strings: &Entries<InternedString>, id: StringId) -> Option<
 #[serde(try_from = "InternsWire")]
 pub(crate) struct Interns {
     strings: Entries<InternedString>,
+    #[serde(skip)]
+    string_access_caches: AccessCacheStore,
     bytes: Entries<WithHash<Vec<u8>>>,
     long_ints: Entries<WithHash<BigInt>>,
     /// Boxes keep a mostly empty storage page from reserving hundreds of function bodies.
@@ -3046,6 +3050,7 @@ impl TryFrom<InternsWire> for Interns {
         }
         Ok(Self {
             strings: wire.strings,
+            string_access_caches: AccessCacheStore::default(),
             bytes: wire.bytes,
             long_ints: wire.long_ints,
             functions: wire.functions,
@@ -3084,6 +3089,7 @@ impl Interns {
     fn placeholder() -> Self {
         Self {
             strings: Entries::default(),
+            string_access_caches: AccessCacheStore::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -3102,6 +3108,7 @@ impl Interns {
         let capacity = code.bytes().filter(|&b| b == b'"' || b == b'\'').count() >> 1;
         let interns = Self {
             strings: Entries::with_capacity(capacity + CORE_STATIC_STRINGS.len()),
+            string_access_caches: AccessCacheStore::default(),
             bytes: Entries::default(),
             long_ints: Entries::default(),
             functions: Entries::default(),
@@ -3239,6 +3246,15 @@ impl Interns {
         }
     }
 
+    /// Returns a Unicode cursor cache when its optional allocation fits the resource budget.
+    pub(crate) fn str_access_cache(&self, id: StringId, tracker: &ResourceTracker) -> Option<&AccessCache> {
+        let index = id.index().checked_sub(INTERN_STRING_ID_OFFSET)?;
+        if self.str_is_ascii(id) {
+            return None;
+        }
+        self.string_access_caches.get(index, tracker)
+    }
+
     /// Returns the same hash as an equal heap string.
     #[inline]
     pub fn str_hash(&self, id: StringId) -> HashValue {
@@ -3295,3 +3311,7 @@ impl Interns {
 #[cfg(test)]
 #[path = "../tests/unit/string_metadata.rs"]
 mod string_metadata_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/intern_access_cache.rs"]
+mod cache_layout_tests;

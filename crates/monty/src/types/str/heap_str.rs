@@ -2,6 +2,7 @@
 
 use std::{cell::Cell, ops};
 
+use super::AccessCache;
 use crate::{
     hash::{HashValue, hash_python_str},
     heap::{HeapId, HeapItem},
@@ -17,6 +18,8 @@ pub(crate) struct HeapStr {
     #[serde(skip)]
     // 0: unknown; 1: non-ASCII with unknown count; >= 2: character count.
     char_len: Cell<usize>,
+    #[serde(skip)]
+    pub(super) access_cache: AccessCache,
 }
 
 // Loading leaves metadata lazy, just like constructing a string from owned text.
@@ -55,6 +58,7 @@ impl HeapStr {
             text,
             cached_hash: Cell::new(None),
             char_len: Cell::new(0),
+            access_cache: AccessCache::default(),
         }
     }
 
@@ -196,6 +200,27 @@ mod tests {
         assert_eq!(borrowed, text);
         assert_eq!(hashed.char_len(), 4);
         assert!(!hashed.is_ascii());
+    }
+
+    #[test]
+    fn cursor_state_is_omitted_from_dumps_and_reset_on_clone() {
+        let text = HeapStr::new("aé中🐍".repeat(4096).into_boxed_str());
+        let cold = minicbor_serde::to_vec(&text).unwrap();
+        let tracker = monty_types::ResourceTracker::default();
+        assert_eq!(
+            text.access_cache
+                .byte_offset(text.as_str(), 2048, text.char_len(), None, &tracker)
+                .unwrap(),
+            5120
+        );
+        assert!(text.access_cache.has_cursor());
+        assert_eq!(minicbor_serde::to_vec(&text).unwrap(), cold);
+        let restored: HeapStr = minicbor_serde::from_slice(&cold).unwrap();
+        for reset in [text.clone(), restored] {
+            assert!(!reset.access_cache.has_cursor());
+            assert_eq!(reset.char_len(), text.char_len());
+            assert_eq!(minicbor_serde::to_vec(&reset).unwrap(), cold);
+        }
     }
 }
 

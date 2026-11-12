@@ -105,7 +105,7 @@ fn clones_preserve_metadata_and_snapshots_restart_lazily() {
     assert_eq!(restored.char_len(), 4096);
     assert_eq!(
         size_of::<HeapStr>(),
-        size_of::<(Box<str>, Cell<Option<HashValue>>, usize)>()
+        size_of::<(Box<str>, Cell<Option<HashValue>>, usize, AccessCache)>()
     );
 }
 
