@@ -1,135 +1,107 @@
-"""Builds the host classes for namedtuples decoded from the sandbox.
+"""The one host class every namedtuple decoded from the sandbox is an instance of.
 
-Mirrors `collections.namedtuple` (CPython 3.14) without `sys.intern` or
-`eval`: it compiles the field names into `__new__`, and on 3.12+ compiled
-identifiers are immortal, so every new sandbox-chosen field name leaked host memory.
-`__new__` takes `*args, **kwargs` instead and binds them with CPython's messages.
+Building a class per sandbox type, as `collections.namedtuple` does, would let the sandbox spend host memory
+outside its limits (~5.5 KB per type, and field names compiled into code are immortal on 3.12+).
+`MontyNamedTuple` instead carries its type name and field names on each instance.
 """
 
-import collections
 import sys
-from collections.abc import Callable, Iterable
-from inspect import Parameter, Signature
-from keyword import iskeyword
-from operator import itemgetter
+from collections.abc import Iterable
 from typing import Any
-
-
-def _property_getter(index: int, doc: str) -> Any:
-    """The pure-Python field accessor, for implementations without `_tuplegetter`."""
-    return property(itemgetter(index), doc=doc)
-
-
-# the C field accessor `collections.namedtuple` uses
-_tuplegetter: Callable[[int, str], Any] = getattr(collections, '_tuplegetter', _property_getter)
-
 
 # `_replace` with an unknown field raised `ValueError` until 3.13
 _REPLACE_ERROR = TypeError if sys.version_info >= (3, 13) else ValueError
 
+_set_attribute = object.__setattr__
 
-def make_namedtuple(typename: str, field_names: tuple[str, ...], module: str | None) -> type[tuple[Any, ...]]:
-    """A tuple subclass with named fields, like `collections.namedtuple(typename, field_names, module=module)`."""
-    for name in (typename, *field_names):
-        if not name.isidentifier():
-            raise ValueError(f'Type names and field names must be valid identifiers: {name!r}')
-        if iskeyword(name):
-            raise ValueError(f'Type names and field names cannot be a keyword: {name!r}')
-    seen: set[str] = set()
-    for name in field_names:
-        if name.startswith('_'):
-            raise ValueError(f'Field names cannot start with an underscore: {name!r}')
-        if name in seen:
-            raise ValueError(f'Encountered duplicate field name: {name!r}')
-        seen.add(name)
 
-    num_fields = len(field_names)
-    arg_list = ', '.join(field_names) + (',' if num_fields == 1 else '')
-    repr_fmt = '(' + ', '.join(f'{name}=%r' for name in field_names) + ')'
-    tuple_new: Callable[[type[Any], Iterable[Any]], tuple[Any, ...]] = getattr(tuple, '__new__')
+class MontyNamedTuple(tuple[Any, ...]):
+    """A namedtuple returned by the sandbox: a tuple whose fields are also attributes.
 
-    def __new__(cls: type[tuple[Any, ...]], *args: Any, **kwargs: Any) -> tuple[Any, ...]:
-        return tuple_new(cls, _bind(f'{typename}.__new__()', field_names, args, kwargs))
+    It supports the instance API of `collections.namedtuple` (`p.x`, `_fields`, `_asdict()`, `_replace()`,
+    `_make()`), but every sandbox namedtuple type shares this one class, so `type(p)` is `MontyNamedTuple`
+    and the sandbox's type name is `p._type_name`, such as `'Point'` or `'os.stat_result'`.
+    """
 
-    def _make(cls: type[tuple[Any, ...]], iterable: Any) -> tuple[Any, ...]:
-        result = tuple_new(cls, iterable)
-        if len(result) != num_fields:
-            raise TypeError(f'Expected {num_fields} arguments, got {len(result)}')
-        return result
+    _type_name: str
+    """The sandbox type name, qualified by its module unless it is a built-in or `__main__` type."""
+    _fields: tuple[str, ...]
+    """The field names, in order."""
 
-    def _replace(self: tuple[Any, ...], /, **kwds: Any) -> tuple[Any, ...]:
-        result = _make(type(self), map(kwds.pop, field_names, self))
+    def __new__(cls, type_name: str, fields: tuple[str, ...], values: Iterable[Any]) -> 'MontyNamedTuple':
+        self = super().__new__(cls, values)
+        if len(self) != len(fields):
+            raise TypeError(f'Expected {len(fields)} arguments, got {len(self)}')
+        _set_attribute(self, '_type_name', type_name)
+        _set_attribute(self, '_fields', fields)
+        return self
+
+    def __getattr__(self, name: str) -> Any:
+        # only reached when normal lookup fails; an instance missing its own
+        # attributes (never built by `__new__`) raises rather than recursing
+        if name in ('_type_name', '_fields'):
+            raise AttributeError(name)
+        if name in self._fields:
+            return self[self._fields.index(name)]
+        raise AttributeError(f'{self._simple_name()!r} object has no attribute {name!r}')
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f'{self._simple_name()!r} object is immutable')
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f'{self._simple_name()!r} object is immutable')
+
+    def __repr__(self) -> str:
+        fields = ', '.join(f'{name}={value!r}' for name, value in zip(self._fields, self))
+        return f'{self._simple_name()}({fields})'
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return MontyNamedTuple, (self._type_name, self._fields, tuple(self))
+
+    def __dir__(self) -> list[str]:
+        return sorted({*super().__dir__(), *self._fields})
+
+    @property
+    def _field_defaults(self) -> dict[str, Any]:
+        """Always empty: sandbox namedtuples cross without their defaults."""
+        return {}
+
+    def _make(self, iterable: Iterable[Any]) -> 'MontyNamedTuple':
+        """A new namedtuple of the same type from a sequence or iterable."""
+        return MontyNamedTuple(self._type_name, self._fields, iterable)
+
+    def _replace(self, /, **kwds: Any) -> 'MontyNamedTuple':
+        """A new namedtuple of the same type with the given fields replaced."""
+        result = self._make(map(kwds.pop, self._fields, self))
         if kwds:
             raise _REPLACE_ERROR(f'Got unexpected field names: {list(kwds)!r}')
         return result
 
-    def __repr__(self: tuple[Any, ...]) -> str:
-        return self.__class__.__name__ + repr_fmt % self
+    def _asdict(self) -> dict[str, Any]:
+        """A new dict mapping field names to values."""
+        return dict(zip(self._fields, self))
 
-    def _asdict(self: tuple[Any, ...]) -> dict[str, Any]:
-        return dict(zip(field_names, self))
+    if sys.version_info >= (3, 13):
+        __replace__ = _replace  # `copy.replace` support, new in 3.13
 
-    def __getnewargs__(self: tuple[Any, ...]) -> tuple[Any, ...]:
-        return tuple(self)
+    def _simple_name(self) -> str:
+        """The type name without its module, as `type(p).__name__` would give for a real namedtuple."""
+        return self._type_name.rpartition('.')[2]
 
-    __new__.__doc__ = f'Create new instance of {typename}({arg_list})'
-    __new__.__dict__['__signature__'] = Signature(
-        [Parameter(name, Parameter.POSITIONAL_OR_KEYWORD) for name in ('_cls', *field_names)]
-    )
-    _make.__doc__ = f'Make a new {typename} object from a sequence or iterable'
-    _replace.__doc__ = f'Return a new {typename} object replacing specified fields with new values'
-    __repr__.__doc__ = 'Return a nicely formatted representation string'
-    _asdict.__doc__ = 'Return a new dict which maps field names to their values.'
-    __getnewargs__.__doc__ = 'Return self as a plain tuple.  Used by copy and pickle.'
-    for method in (__new__, _make, _replace, __repr__, _asdict, __getnewargs__):
-        method.__qualname__ = f'{typename}.{method.__name__}'
+    # tuple methods a field of the same name shadows, as on a real namedtuple
+    @property
+    def count(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return self._field_or_method('count')
 
-    namespace: dict[str, Any] = {
-        '__doc__': f'{typename}({arg_list})',
-        '__module__': module if module is not None else '__main__',
-        '__slots__': (),
-        '_fields': field_names,
-        '_field_defaults': {},
-        '__new__': __new__,
-        '_make': classmethod(_make),
-        '__replace__': _replace,
-        '_replace': _replace,
-        '__repr__': __repr__,
-        '_asdict': _asdict,
-        '__getnewargs__': __getnewargs__,
-        '__match_args__': field_names,
-    }
-    for index, name in enumerate(field_names):
-        namespace[name] = _tuplegetter(index, f'Alias for field number {index}')
-    return type(typename, (tuple,), namespace)
+    @property
+    def index(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
+        return self._field_or_method('index')
+
+    def _field_or_method(self, name: str) -> Any:
+        """The field `name`'s value if there is one, else the bound tuple method."""
+        if name in self._fields:
+            return self[self._fields.index(name)]
+        return getattr(tuple, name).__get__(self)
 
 
-def _bind(func: str, field_names: tuple[str, ...], args: tuple[Any, ...], kwargs: dict[str, Any]) -> list[Any]:
-    """Binds `__new__` arguments to the fields, raising CPython's message for a bad call.
-
-    Checks run in CPython's order: keywords first, then the positional count, then missing fields.
-    """
-    for name in kwargs:
-        if name not in field_names:
-            raise TypeError(f"{func} got an unexpected keyword argument '{name}'")
-        if field_names.index(name) < len(args):
-            raise TypeError(f"{func} got multiple values for argument '{name}'")
-    if len(args) > len(field_names):
-        raise TypeError(f'{func} takes {len(field_names) + 1} positional arguments but {len(args) + 1} were given')
-    missing = [name for name in field_names[len(args) :] if name not in kwargs]
-    if missing:
-        raise TypeError(f'{func} missing {len(missing)} required positional {_plural(missing)}: {_names(missing)}')
-    return [*args, *(kwargs[name] for name in field_names[len(args) :])]
-
-
-def _plural(missing: list[str]) -> str:
-    """`argument` or `arguments`, as CPython words a missing-arguments error."""
-    return 'argument' if len(missing) == 1 else 'arguments'
-
-
-def _names(missing: list[str]) -> str:
-    """Quoted names joined as CPython lists them: `'a'`, `'a' and 'b'`, `'a', 'b', and 'c'`."""
-    quoted = [f"'{name}'" for name in missing]
-    if len(quoted) <= 2:
-        return ' and '.join(quoted)
-    return ', '.join(quoted[:-1]) + ', and ' + quoted[-1]
+MontyNamedTuple.__module__ = 'pydantic_monty'

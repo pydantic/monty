@@ -99,20 +99,25 @@ An uncaught conversion exception ends the feed as a runtime error.
 Values supplied through `inputs` or `external_lookup` instead fail host-side;
 see [Python error handling](../quickstart/python.md#errors).
 
-Some sandbox results have no CPython equivalent: a namedtuple field starting with `_` (which `rename=True` produces),
-or a dict keyed by, or a set containing, a class-instance proxy, which is unhashable.
+Some sandbox results have no CPython equivalent: a dict keyed by, or a set containing, a class-instance proxy, which
+is unhashable.
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
 
-A Python host builds one namedtuple class per distinct type name and field names in a message.
-It builds them without `collections.namedtuple`, which would keep every field name alive for good, so `__new__`
-takes `*args, **kwargs` (reporting the field names through `inspect.signature`) and a type name without a module
-gets `__module__ == '__main__'`.
-A result, or the arguments of one host-function call taken together, with more than 1024 distinct namedtuple types
-fails with `ValueError`: as `MontyRuntimeError` for a result, or raised at the call inside the sandbox for arguments.
-Classes are shared across messages through a bounded cache that is cleared when full, so two results of the same
-namedtuple type are instances of the same host class, unless the cache was cleared in between or the type's name
-and field names total more than 512 bytes, which are never cached.
+A Python host receives every namedtuple as an instance of one class, [`MontyNamedTuple`][pydantic_monty.MontyNamedTuple],
+rather than of a class per sandbox type, so the sandbox cannot make the host build classes.
+Field access, indexing, equality, `repr`, `_fields`, `_asdict()`, `_replace()` and `_make()` behave as on a
+`collections.namedtuple` instance, but:
+
+- `type(p)` is `MontyNamedTuple`; the sandbox type name, qualified by its module, is `p._type_name`.
+- `isinstance` against the sandbox type and class-level API such as `type(p)._make(...)` or `type(p)(...)` do not
+    work, and `__match_args__` is not set, so only keyword class patterns match.
+- Setting any attribute raises `AttributeError: '<name>' object is immutable`, and `vars(p)` returns the instance's
+    `_type_name` and `_fields`.
+- `_field_defaults` is always empty.
+- Fields starting with `_`, which `rename=True` produces, are kept, though a host namedtuple class cannot have them.
+- Each instance carries a `__dict__`, so it costs more memory than a `collections.namedtuple` instance, and field
+    access goes through `__getattr__`.
 
 ## Message size
 

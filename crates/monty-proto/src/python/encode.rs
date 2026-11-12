@@ -24,9 +24,9 @@ use super::{
         is_class_type_wrapper, wrapper_uuid,
     },
     convert::{
-        CoroutineFunctionExt, PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring, get_name,
-        get_pure_posix_path, py_datetime_to_monty, py_time_to_monty, py_timedelta_to_monty, py_timezone_to_monty,
-        py_type_object_to_monty,
+        CoroutineFunctionExt, PyMontyFileHandle, get_datetime_timezone_type, get_decimal_type, get_docstring,
+        get_monty_namedtuple, get_name, get_pure_posix_path, py_datetime_to_monty, py_time_to_monty,
+        py_timedelta_to_monty, py_timezone_to_monty, py_type_object_to_monty,
     },
     exceptions::{exc_py_to_monty, exc_to_monty_node},
     external_module::PyExternalModule,
@@ -557,16 +557,22 @@ fn id_pairs(ids: &[NodeId]) -> Vec<(NodeId, NodeId)> {
 }
 
 /// The full type name of a namedtuple (e.g. `os.stat_result`), dropping the
-/// module prefix for built-ins.
+/// module prefix for built-ins. A `MontyNamedTuple` decoded from the sandbox
+/// carries the name it arrived with, since its class is shared by every type.
 fn namedtuple_type_name(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    let py_type = obj.get_type();
-    let simple_name = py_type.name()?.to_string();
-    let module: String = py_type.getattr("__module__")?.extract()?;
-    Ok(if module.starts_with('_') || module == "builtins" {
-        simple_name
+    let py = obj.py();
+    if obj.is_instance(get_monty_namedtuple(py)?)? {
+        obj.getattr(intern!(py, "_type_name"))?.extract()
     } else {
-        format!("{module}.{simple_name}")
-    })
+        let py_type = obj.get_type();
+        let simple_name = py_type.name()?.to_string();
+        let module: String = py_type.getattr("__module__")?.extract()?;
+        Ok(if module.starts_with('_') || module == "builtins" {
+            simple_name
+        } else {
+            format!("{module}.{simple_name}")
+        })
+    }
 }
 
 /// A host callable with no richer Monty mapping, carrying its `__name__` and

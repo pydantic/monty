@@ -1,27 +1,21 @@
 //! Sandbox values flowing OUT to the host: [`DecodedArena`] turns one
 //! message's node arena into Python objects.
 
-use std::{
-    collections::HashMap,
-    mem,
-    sync::{Mutex, PoisonError},
-};
+use std::collections::{HashMap, hash_map::Entry};
 
 use monty_types::{
     BuiltinsFunctions, MontyException, MontyObject,
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use pyo3::{
-    exceptions::PyValueError,
     prelude::*,
-    sync::{MutexExt, PyOnceLock},
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
 
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_decimal_type, get_make_namedtuple, get_pure_posix_path, host_type_object,
+        PyMontyFileHandle, get_decimal_type, get_monty_namedtuple, get_pure_posix_path, host_type_object,
         import_builtins, monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
@@ -56,7 +50,7 @@ impl DecodedArena {
             graph,
             store,
             built: Vec::with_capacity(graph.len()),
-            namedtuple_types: HashMap::new(),
+            namedtuple_headers: HashMap::new(),
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
@@ -79,23 +73,13 @@ struct Decoder<'a, 'py> {
     store: &'a InstanceStore,
     /// Objects built so far, one per node decoded.
     built: Vec<Py<PyAny>>,
-    /// Namedtuple types used by this arena, by `(type_name, field_names)`
-    /// borrowed from the graph; at most [`MAX_NAMEDTUPLE_TYPES_PER_ARENA`].
-    namedtuple_types: HashMap<(&'a str, &'a [String]), Py<PyAny>>,
+    /// The type name and field names as Python objects, built once per distinct
+    /// pair so every instance of a type in this arena shares them.
+    namedtuple_headers: HashMap<(&'a str, &'a [String]), NamedTupleHeader>,
 }
 
-/// The most distinct namedtuple types one arena may use. Each host class costs
-/// ~5.5 KB and ~30 µs for a few wire bytes, so an uncapped count lets the
-/// sandbox (or a compromised worker) amplify host memory and CPU without bound.
-const MAX_NAMEDTUPLE_TYPES_PER_ARENA: usize = 1024;
-
-/// How many namedtuple classes [`shared_namedtuple_type`] keeps across arenas.
-/// When full it is cleared, so sandbox churn costs speed, never memory.
-const SHARED_NAMEDTUPLE_CACHE_SIZE: usize = 128;
-
-/// The longest type name plus field names [`shared_namedtuple_type`] keeps, so
-/// the cache retains at most ~1 MB however long the sandbox makes its names.
-const MAX_SHARED_NAMEDTUPLE_KEY_BYTES: usize = 512;
+/// A namedtuple's type name and field names, as passed to `MontyNamedTuple`.
+type NamedTupleHeader = (Py<PyString>, Py<PyTuple>);
 
 impl<'a> Decoder<'a, '_> {
     /// Converts one node; every child id is lower, so already built.
@@ -119,10 +103,12 @@ impl<'a> Decoder<'a, '_> {
                 field_names,
                 values,
             } => {
-                let nt_type = self.namedtuple_type(type_name, field_names)?;
-                // `_make` is a public documented method despite the leading underscore
-                let instance = nt_type.bind(py).call_method1("_make", (self.children(values),))?;
-                Ok(instance.into_any().unbind())
+                // one shared `MontyNamedTuple` class rather than a class per
+                // type, so the sandbox cannot make the host build classes
+                let (type_name, field_names) = self.namedtuple_header(type_name, field_names)?;
+                let values = PyTuple::new(py, self.children(values))?;
+                let instance = get_monty_namedtuple(py)?.call1((type_name, field_names, values))?;
+                Ok(instance.unbind())
             }
             MontyNode::Dict(pairs) => {
                 let dict = PyDict::new(py);
@@ -241,77 +227,19 @@ impl<'a> Decoder<'a, '_> {
         Ok(dict.unbind())
     }
 
-    /// The namedtuple type for `(type_name, field_names)`: one per distinct pair
-    /// in the arena, at most [`MAX_NAMEDTUPLE_TYPES_PER_ARENA`] of them, reused
-    /// across arenas through [`shared_namedtuple_type`].
-    fn namedtuple_type(&mut self, type_name: &'a str, field_names: &'a [String]) -> PyResult<Py<PyAny>> {
+    /// The type name and field names of a namedtuple as Python objects, shared
+    /// by every instance with the same pair in this arena.
+    fn namedtuple_header(&mut self, type_name: &'a str, field_names: &'a [String]) -> PyResult<NamedTupleHeader> {
         let py = self.py;
-        let key = (type_name, field_names);
-        if let Some(nt_type) = self.namedtuple_types.get(&key) {
-            Ok(nt_type.clone_ref(py))
-        } else if self.namedtuple_types.len() >= MAX_NAMEDTUPLE_TYPES_PER_ARENA {
-            Err(PyValueError::new_err(format!(
-                "too many distinct namedtuple types in one value (limit {MAX_NAMEDTUPLE_TYPES_PER_ARENA})"
-            )))
-        } else {
-            let nt_type = shared_namedtuple_type(py, type_name, field_names)?;
-            self.namedtuple_types.insert(key, nt_type.clone_ref(py));
-            Ok(nt_type)
-        }
-    }
-}
-
-/// The namedtuple type for `(type_name, field_names)` from a process-wide cache,
-/// so types such as `os.stat_result` are built once and keep their identity
-/// across results until the cache is cleared. Types whose names exceed
-/// [`MAX_SHARED_NAMEDTUPLE_KEY_BYTES`] are built fresh and never retained.
-fn shared_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {
-    /// Classes by `(type_name, field_names)`.
-    type SharedTypes = HashMap<(String, Vec<String>), Py<PyAny>>;
-    static CACHE: PyOnceLock<Mutex<SharedTypes>> = PyOnceLock::new();
-
-    let key_bytes = type_name.len() + field_names.iter().map(String::len).sum::<usize>();
-    if key_bytes > MAX_SHARED_NAMEDTUPLE_KEY_BYTES {
-        return new_namedtuple_type(py, type_name, field_names);
-    }
-    let cache = CACHE.get_or_init(py, Mutex::default);
-    let key = (type_name.to_owned(), field_names.to_vec());
-    let cached = cache
-        .lock_py_attached(py)
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(&key)
-        .map(|nt_type| nt_type.clone_ref(py));
-    if let Some(nt_type) = cached {
-        Ok(nt_type)
-    } else {
-        // built outside the lock: the class factory runs Python code
-        let nt_type = new_namedtuple_type(py, type_name, field_names)?;
-        let mut cache = cache.lock_py_attached(py).unwrap_or_else(PoisonError::into_inner);
-        let evicted = if cache.len() >= SHARED_NAMEDTUPLE_CACHE_SIZE && !cache.contains_key(&key) {
-            mem::take(&mut *cache)
-        } else {
-            HashMap::new()
+        let (name, fields) = match self.namedtuple_headers.entry((type_name, field_names)) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert((
+                PyString::new(py, type_name).unbind(),
+                PyTuple::new(py, field_names)?.unbind(),
+            )),
         };
-        // another decode may have inserted the type while it was built: theirs wins
-        let canonical = cache.entry(key).or_insert_with(|| nt_type.clone_ref(py)).clone_ref(py);
-        // release the lock before `evicted` and a losing `nt_type` drop,
-        // since releasing a class can run arbitrary Python
-        drop(cache);
-        drop(evicted);
-        Ok(canonical)
+        Ok((name.clone_ref(py), fields.clone_ref(py)))
     }
-}
-
-/// A new namedtuple class from `pydantic_monty._namedtuple`, with `__module__` set from the
-/// qualified `type_name` (e.g. `os.stat_result`) so it round-trips back
-/// through the encoder.
-fn new_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {
-    let (module, simple_name) = match type_name.rfind('.') {
-        Some(idx) => (Some(&type_name[..idx]), &type_name[idx + 1..]),
-        None => (None, type_name),
-    };
-    let fields = PyTuple::new(py, field_names)?;
-    Ok(get_make_namedtuple(py)?.call1((simple_name, fields, module))?.unbind())
 }
 
 /// A [`PyMontyStdTypeProxy`] standing for `inner`, as a Python object.

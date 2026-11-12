@@ -112,6 +112,8 @@ See [importing host modules](../host-functions.md#importing-host-modules).
 `Ellipsis`, `NotImplemented`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`,
 `decimal.Decimal` (exactly, as its string form), named tuples, exception instances, and the type objects of the data types Monty models (`int`, `str`, `datetime.date`, ...)
 all convert in both directions.
+Named tuples come out as [`MontyNamedTuple`][pydantic_monty.MontyNamedTuple], one tuple class shared by every
+sandbox named-tuple type, with the type name in `_type_name`.
 Builtin functions and other type objects come out as a read-only [`MontyStdTypeProxy`][pydantic_monty.MontyStdTypeProxy]
 carrying the name; see [host-value limitations](../limitations/host-values.md#lossy-outputs).
 Class instances differ in each direction: a host instance enters only wrapped in [`ClassInstance`][pydantic_monty.ClassInstance], and a sandbox-defined

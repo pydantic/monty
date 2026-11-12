@@ -385,13 +385,12 @@ fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     })
 }
 
-/// Cached import of `pydantic_monty._namedtuple.make_namedtuple`, which builds
-/// namedtuple classes without making their field names immortal, as
-/// `collections.namedtuple` does.
-pub(super) fn get_make_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    static MAKE_NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+/// Cached import of `pydantic_monty.MontyNamedTuple`, the one class every
+/// namedtuple decoded from the sandbox is an instance of.
+pub(super) fn get_monty_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static MONTY_NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
-    MAKE_NAMEDTUPLE.import(py, "pydantic_monty._namedtuple", "make_namedtuple")
+    MONTY_NAMEDTUPLE.import(py, "pydantic_monty._namedtuple", "MontyNamedTuple")
 }
 
 /// Cached import of `pathlib.PurePosixPath` class.

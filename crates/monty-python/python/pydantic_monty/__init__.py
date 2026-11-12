@@ -45,6 +45,7 @@ from ._monty import (
     __version__,
     _install_telemetry,
 )
+from ._namedtuple import MontyNamedTuple
 from .class_instance import ClassInstance, ClassType
 from .os_access import (
     AbstractFile,
@@ -80,6 +81,8 @@ __all__ = (
     # class_instance
     'ClassInstance',
     'ClassType',
+    # _namedtuple
+    'MontyNamedTuple',
     # _monty
     '__version__',
     'AsyncMonty',
