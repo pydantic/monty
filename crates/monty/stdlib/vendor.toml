@@ -1,7 +1,8 @@
 # CPython stdlib modules Monty vendors as CPython's own Python source.
 # Edit this file, then run `make vendor-stdlib`; `make check-stdlib` verifies the vendored copies.
-# `patches/*.patch` are applied in file-name order: to add one, edit `Lib/`, then run
-# `uv run scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'`.
+# `patches/*.patch` stack: each applies, in file-name order, on top of the ones before it. To add one, edit `Lib/`,
+# then run `uv run scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'`, which saves only the edits the
+# earlier patches do not make; it can add a new last patch or replace the last one, not an earlier one.
 # Run `make stdlib-candidates` to see which modules Monty can load, and what blocks the rest.
 
 # The CPython release the files below are copied from.

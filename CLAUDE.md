@@ -60,8 +60,11 @@ them and CPython's `LICENSE`, applies the patches, and generates `crates/monty/s
 Never edit those by hand: `make check-stdlib` (CI) fails when `Lib/`, `LICENSE` or the generated table differ from
 the pinned release with its patches applied.
 Prefer fixing Monty to patching CPython's source. When a patch is unavoidable, edit `Lib/` and save the edit with
-`scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'` into `crates/monty/stdlib/patches/`, applied in
-file-name order with no fuzz; a patch that changes behaviour also needs a `limitations/` entry.
+`scripts/vendor_stdlib.py --make-patch NNNN-name --reason '...'` into `crates/monty/stdlib/patches/`; a patch that changes
+behaviour also needs a `limitations/` entry.
+Patches stack: each applies, with no fuzz and in file-name order, on top of the ones before it, so several may edit one
+file. `--make-patch` saves only the edits the earlier patches do not make, so it adds a new last patch or replaces the
+last one; changing an earlier patch means editing it by hand and checking the later ones still apply.
 An import finds them after the native `StandardLib` modules and before the host (`module_finder.rs`), running them like
 a module from a file with no OS call. A newly vendored module also goes in `SANDBOX_MODULE_NAMES`, the typeshed
 `COPY_FILES`/`VERSIONS`, `limitations/modules.md` and a `test_cases` file.
