@@ -61,8 +61,14 @@ pub(crate) fn exc_type_from_wire<E>(
     if let Ok(exc_type) = name.parse() {
         Ok((exc_type, message))
     } else if let Some(message) = message {
-        charge(name.len().saturating_add(2).saturating_add(message.len()))?;
-        Ok((ExcType::Exception, Some(format!("{name}: {message}"))))
+        let len = name.len().saturating_add(2).saturating_add(message.len());
+        charge(len)?;
+        // Sized once: `format!` would grow by doubling past what was charged.
+        let mut combined = String::with_capacity(len);
+        combined.push_str(&name);
+        combined.push_str(": ");
+        combined.push_str(&message);
+        Ok((ExcType::Exception, Some(combined)))
     } else {
         Ok((ExcType::Exception, Some(name)))
     }

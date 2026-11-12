@@ -6,8 +6,9 @@
 //!   representation, and borrowing avoids cloning large containers twice.
 //! - **proto → Rust is fallible** (`TryFrom<T>` with [`ProtoConvertError`]):
 //!   wire data comes from the other side of a process boundary and must be
-//!   treated as untrusted — unknown names, out-of-range numbers, and missing
-//!   oneof arms are errors, never panics.
+//!   treated as untrusted — unknown type and builtin names, out-of-range
+//!   numbers, and missing oneof arms are errors, never panics. An unknown
+//!   exception name instead falls back to `Exception` (see `exc_type_from_wire`).
 //!
 //! Values cross as one flat arena per message ([`crate::WireArena`]) with the
 //! message naming its roots by index, so nesting depth is unbounded on the
