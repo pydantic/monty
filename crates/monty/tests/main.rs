@@ -4,7 +4,7 @@ use insta::assert_snapshot;
 use monty::{Dump, MontyRun, RunProgress, Session, SessionRef, dump};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyUuid, PrintWriter, ResourceTracker,
-    unstable::{self, MontyNode},
+    unstable::{self, ClassEq, ClassHash, MontyNode},
 };
 
 /// Test we can reuse exec without borrow checker issues.
@@ -742,6 +742,116 @@ d";
         result,
         MontyObject::list([evil_instance(), MontyObject::int(1), MontyObject::int(2)])
     );
+}
+
+/// Each exported class carries the `==` / `hash` rule the sandbox applies to
+/// its instances, so a host proxy can follow it.
+#[test]
+fn output_class_types_carry_eq_and_hash_rules() {
+    let code = "\
+from dataclasses import dataclass
+
+class Plain:
+    pass
+
+class EqOnly:
+    def __eq__(self, other):
+        return True
+
+class EqHash:
+    def __eq__(self, other):
+        return True
+    def __hash__(self):
+        return 1
+
+class NoHash:
+    __hash__ = None
+
+@dataclass
+class Data:
+    a: int
+    b: int
+
+@dataclass(frozen=True)
+class Frozen:
+    a: int
+
+@dataclass(eq=False)
+class NoEq:
+    a: int
+
+@dataclass
+class OwnHash:
+    a: int
+    def __hash__(self):
+        return 1
+
+@dataclass
+class OwnEq:
+    a: int
+    def __eq__(self, other):
+        return True
+
+(Plain(), EqOnly(), EqHash(), NoHash(), Data(1, 2), Frozen(1), NoEq(1), OwnHash(1), OwnEq(1))";
+    let mut ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    let fields = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        class_rules(result),
+        vec![
+            ("Plain".to_owned(), ClassEq::Identity, ClassHash::Identity),
+            ("EqOnly".to_owned(), ClassEq::Custom, ClassHash::Unhashable),
+            ("EqHash".to_owned(), ClassEq::Custom, ClassHash::Custom),
+            ("NoHash".to_owned(), ClassEq::Identity, ClassHash::Unhashable),
+            (
+                "Data".to_owned(),
+                ClassEq::Fields(fields(&["a", "b"])),
+                ClassHash::Unhashable
+            ),
+            (
+                "Frozen".to_owned(),
+                ClassEq::Fields(fields(&["a"])),
+                ClassHash::Fields(fields(&["a"]))
+            ),
+            ("NoEq".to_owned(), ClassEq::Identity, ClassHash::Identity),
+            ("OwnHash".to_owned(), ClassEq::Fields(fields(&["a"])), ClassHash::Custom),
+            ("OwnEq".to_owned(), ClassEq::Custom, ClassHash::Unhashable),
+        ]
+    );
+}
+
+/// A host class sent in and returned compares by identity: the sandbox never
+/// learns how the host's class compares.
+#[test]
+fn output_host_class_type_compares_by_identity() {
+    let instance = MontyObject::class_instance(
+        MontyObject::class_type("Point", MontyUuid::from_u128(1), true, true, []),
+        MontyUuid::from_u128(2),
+        [],
+    );
+    let mut ex = MontyRun::new(
+        "p".to_owned(),
+        "test.py",
+        vec!["p".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let result = ex.run_no_limits(vec![instance]).unwrap();
+    assert_eq!(
+        class_rules(result),
+        vec![("Point".to_owned(), ClassEq::Identity, ClassHash::Identity)]
+    );
+}
+
+/// The name and `==` / `hash` rules of every class node in `obj`, in graph order.
+fn class_rules(obj: MontyObject) -> Vec<(String, ClassEq, ClassHash)> {
+    let (graph, _) = unstable::into_graph_parts(obj);
+    (graph.nodes().iter())
+        .filter_map(|node| match node {
+            MontyNode::ClassType(class) => Some((class.name.clone(), class.eq.clone(), class.hash.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A `groupby` key comparison that steps the same `groupby` and consumes the

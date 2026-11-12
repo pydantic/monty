@@ -6,7 +6,7 @@ use std::mem::size_of;
 use monty_types::{
     BuiltinsFunctions, CallArgs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTime,
     MontyTimeDelta, MontyTimeZone, MontyType, MontyUuid, NamedValues,
-    unstable::{self, GraphError, MontyGraph, MontyNode, NodeId},
+    unstable::{self, ClassEq, ClassHash, ClassTypeNode, GraphError, MontyGraph, MontyNode, NodeId},
 };
 
 fn class_type(attrs: impl IntoIterator<Item = (MontyObject, MontyObject)>) -> MontyObject {
@@ -437,6 +437,32 @@ fn host_size_sums_nodes() {
         unstable::graph_parts(&value).0.decoded_size(),
         size_of::<MontyNode>() + 3 + list.decoded_size()
     );
+}
+
+/// A class node charges its boxed payload, its name and every field name its
+/// `==` / `hash` rules carry.
+#[test]
+fn class_type_size_counts_rule_field_names() {
+    let class = |eq, hash| {
+        MontyNode::ClassType(Box::new(ClassTypeNode {
+            name: "P".to_owned(),
+            id: MontyUuid::from_u128(1),
+            host_defined: false,
+            is_dataclass: true,
+            attrs: vec![(NodeId(0), NodeId(1))],
+            eq,
+            hash,
+        }))
+    };
+    let plain = class(ClassEq::Identity, ClassHash::Identity).decoded_size();
+    assert_eq!(
+        plain,
+        size_of::<MontyNode>() + size_of::<ClassTypeNode>() + 1 + 2 * size_of::<NodeId>()
+    );
+    let names = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+    let with_fields = class(ClassEq::Fields(names(&["x", "yy"])), ClassHash::Fields(names(&["x"])));
+    assert_eq!(with_fields.decoded_size(), plain + 3 * size_of::<String>() + 4);
+    assert_eq!(class(ClassEq::Custom, ClassHash::Unhashable).decoded_size(), plain);
 }
 
 // === serialization ===

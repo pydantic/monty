@@ -286,6 +286,27 @@ fn graphs() -> Vec<MontyGraph> {
     });
     shared_class.push(MontyNode::List(vec![first, second, class]));
     graphs.push(shared_class);
+    // Every other rule kind, including the frozen-dataclass field hash.
+    let rules = [
+        (ClassEq::Custom, ClassHash::Custom),
+        (ClassEq::Identity, ClassHash::Identity),
+        (
+            ClassEq::Fields(vec!["a".to_owned()]),
+            ClassHash::Fields(vec!["a".to_owned()]),
+        ),
+    ];
+    let classes = rules.into_iter().enumerate().map(|(i, (eq, hash))| {
+        MontyNode::ClassType(Box::new(ClassTypeNode {
+            name: format!("C{i}"),
+            id: MontyUuid::from_u128(0xF20 + i as u128),
+            host_defined: false,
+            is_dataclass: false,
+            attrs: vec![],
+            eq,
+            hash,
+        }))
+    });
+    graphs.push(MontyGraph::from_nodes(classes.collect()).unwrap());
     graphs
 }
 
