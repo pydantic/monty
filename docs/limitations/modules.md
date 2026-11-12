@@ -91,6 +91,22 @@ At runtime, the host must provide them or the import raises `ModuleNotFoundError
 The worker never requests host stubs for vendored typeshed modules: a host-provided `abc` is checked against
 typeshed's `abc` declarations.
 
+## Star imports
+
+`from m import *` binds the names in `m.__all__`, or every name of `m` not starting with `_`, for bundled, host and
+file modules alike, with these differences from CPython:
+
+- A bundled module's `__all__` holds only the names of CPython's `__all__` that Monty implements, and is always a
+    `list` (CPython's is a tuple for `asyncio`, `datetime`, `hashlib` and `tomllib`), in the order Monty defines them.
+    Modules whose CPython counterpart has no `__all__` have none.
+    Host modules have no `__all__` (their dunders raise `AttributeError`), so all their attributes are bound.
+- `__all__` is read in full before the first name is bound, where CPython reads entry `i` just before binding it.
+    The difference shows only through a class whose `__getitem__` has side effects, which all happen first, or when
+    binding an earlier name fails, which CPython stops at before asking for the later entries.
+    That `__getitem__` cannot call external or OS functions; see [classes.md](classes.md).
+- At module level, each new name takes a global slot; the 65537th distinct global name raises
+    `SyntaxError: too many distinct names in scope; maximum is 65536 per scope`.
+
 ## Host modules
 
 Unknown imports request the top-level name through the `import` OS call; `__import__` is undefined.

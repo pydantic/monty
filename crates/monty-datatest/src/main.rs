@@ -2256,6 +2256,7 @@ fn wrap_code_for_async(code: &str, need_return_value: bool) -> (String, Option<S
 /// file's globals before execution.
 ///
 /// When `async_mode` is true, code is wrapped in an async context before execution.
+/// A `mount-fs` case gets a fresh temp directory as `root`, as in the non-traceback path.
 fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Result<String, TestFailure> {
     // Serialize CPython work across the whole process; see [`CPYTHON_TEST_LOCK`].
     let _cpython_guard = CPYTHON_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
@@ -2271,13 +2272,24 @@ fn run_traceback_script(path: &Path, test_name: &str, config: &TestConfig) -> Re
             .canonicalize()
             .expect("Failed to get absolute path");
         let path_str = abs_path.to_str().expect("Invalid UTF-8 in path");
+        // A mount-fs case writes its modules under `root`; the directory must outlive the run.
+        let mount_tmpdir = config.mount_fs.then(create_mount_fs_tempdir);
+        let mount_root = mount_tmpdir
+            .as_ref()
+            .map(|tmpdir| tmpdir.path().to_string_lossy().into_owned());
 
         // Call run_file_and_get_traceback with the recursion limit, iter_mode, and async_mode flags.
         // Only `CPythonTestTimeout` escapes the script's own `except BaseException`; its
         // traceback becomes the actual output so the case fails naming the watchdog.
         match run_traceback.call_method1(
             "run_file_and_get_traceback",
-            (path_str, TEST_RECURSION_LIMIT, config.iter_mode, config.async_mode),
+            (
+                path_str,
+                TEST_RECURSION_LIMIT,
+                config.iter_mode,
+                config.async_mode,
+                mount_root,
+            ),
         ) {
             Err(err) => format_traceback(py, &err),
             // None means no exception was raised

@@ -34,9 +34,9 @@ use crate::{
     value::{Marker, Value},
 };
 
-/// Creates the `typing` module and allocates it on the heap.
+/// Creates the `typing` module.
 ///
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Typing, vm.interns);
 
     // typing.TYPE_CHECKING - always False
@@ -67,7 +67,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Typing marker attributes exported by this module.

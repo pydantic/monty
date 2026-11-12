@@ -205,6 +205,19 @@ fn repl_persists_state_and_definitions() {
     assert_eq!(output, MontyObject::int(42));
 }
 
+/// Names a star import binds are global slots later feeds compile against,
+/// including a builtin it shadows (`math.pow`), and they survive a dump.
+#[test]
+fn repl_star_import_binds_names_for_later_feeds() {
+    let (mut repl, _) = init_repl("def early():\n    return comb(4, 2)");
+    feed_run_print(&mut repl, "from math import *").unwrap();
+    assert_eq!(feed_run_print(&mut repl, "early()").unwrap(), MontyObject::int(6));
+    assert_eq!(feed_run_print(&mut repl, "factorial(4)").unwrap(), MontyObject::int(24));
+    assert_eq!(feed_run_print(&mut repl, "pow(2, 3)").unwrap(), MontyObject::float(8.0));
+    let mut repl = round_trip_repl(&repl);
+    assert_eq!(feed_run_print(&mut repl, "gcd(4, 6)").unwrap(), MontyObject::int(2));
+}
+
 /// `from __future__ import annotations` in one feed governs every later feed, as
 /// in CPython's interactive mode, including after a dump round trip.
 #[test]
@@ -3057,7 +3070,7 @@ fn repl_rejected_snippet_locations() {
     let mut errors = Vec::new();
     for source in [
         "\n\nfrom . import missing",
-        "\n\nfrom math import *",
+        "\n\ntype Alias = int",
         "\n\ndel missing",
         "\n\n__name__ = 'changed'",
     ] {

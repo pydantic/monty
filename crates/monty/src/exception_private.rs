@@ -110,14 +110,16 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates an AttributeError for a missing module attribute.
     ///
-    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`
+    /// Matches CPython's format: `AttributeError: module 'name' has no attribute 'attr'`,
+    /// or `module has no attribute 'attr'` when `__name__` is not a `str`.
     /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
     #[must_use]
-    fn attribute_error_module(module_name: &str, attr_name: &str) -> RunError {
-        let exc = SimpleException::new_msg(
-            ExcType::AttributeError,
-            format!("module '{module_name}' has no attribute '{attr_name}'"),
-        );
+    fn attribute_error_module(module_name: Option<&str>, attr_name: &str) -> RunError {
+        let msg = match module_name {
+            Some(module_name) => format!("module '{module_name}' has no attribute '{attr_name}'"),
+            None => format!("module has no attribute '{attr_name}'"),
+        };
+        let exc = SimpleException::new_msg(ExcType::AttributeError, msg);
         RunError::Exc(ExceptionRaise {
             exc,
             frame: None,
@@ -1832,6 +1834,69 @@ pub(crate) trait ExcTypeExt: Sized {
         ))
     }
 
+    /// The `TypeError` for a non-`str` name `from module import *` would bind:
+    /// an item of `__all__`, or a key of the module's namespace without one.
+    /// Like every star-import error, CPython shows it without carets.
+    #[must_use]
+    fn import_star_name_type(module_name: &str, from_all: bool, type_name: &str) -> RunError {
+        let source = if from_all { "Item in" } else { "Key in" };
+        let container = if from_all { "__all__" } else { "__dict__" };
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{source} {module_name}.{container} must be str, not {type_name}"),
+        ))
+    }
+
+    /// The `TypeError` for a module `__all__` that is not a sequence (see
+    /// [`sequence_index_error`](Self::sequence_index_error)), shown without carets.
+    #[must_use]
+    fn import_star_all_not_sequence(error: SimpleException) -> RunError {
+        without_caret(error)
+    }
+
+    /// The `TypeError` for a non-`str` name `from module import *` would bind,
+    /// when the module has set `__name__` to a non-`str`.
+    #[must_use]
+    fn import_star_module_name_type(type_name: &str) -> RunError {
+        without_caret(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("module __name__ must be a string, not {type_name}"),
+        ))
+    }
+
+    /// CPython's `PySequence_GetItem` `TypeError` for a built-in value it
+    /// cannot index, or `None` when its type has `sq_item`. Mappings are "not
+    /// a sequence". `Counter` indexes since, being a Python subclass of
+    /// `dict` in CPython, it gains `sq_item`. Instances are the caller's to check.
+    #[must_use]
+    fn sequence_index_error(value: &Value, vm: &VM<'_>) -> Option<SimpleException> {
+        match value.py_type(vm) {
+            Type::List
+            | Type::Tuple
+            | Type::NamedTuple
+            | Type::Str
+            | Type::Bytes
+            | Type::Range
+            | Type::Deque
+            | Type::Counter => None,
+            Type::Dict | Type::DefaultDict => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("{} is not a sequence", value.py_type_name(vm)),
+            )),
+            _ => Some(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("'{}' object does not support indexing", value.py_type_name(vm)),
+            )),
+        }
+    }
+
+    /// The `ImportError` for `from x import *` when the import produced a value
+    /// that is not a module, so has no namespace to list.
+    #[must_use]
+    fn import_star_without_namespace() -> RunError {
+        import_error_without_caret("from-import-* object has no __dict__ and no __all__".to_owned())
+    }
+
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
     ///
     /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
@@ -3198,8 +3263,13 @@ fn no_module_named(module_name: &str) -> String {
 
 /// An `ImportError` shown without carets, as CPython shows import errors.
 fn import_error_without_caret(msg: String) -> RunError {
+    without_caret(SimpleException::new_msg(ExcType::ImportError, msg))
+}
+
+/// Raises `exc` with its traceback line shown without carets.
+fn without_caret(exc: SimpleException) -> RunError {
     RunError::Exc(ExceptionRaise {
-        exc: SimpleException::new_msg(ExcType::ImportError, msg),
+        exc,
         frame: None,
         snippet_frame: None,
         hide_caret: true,

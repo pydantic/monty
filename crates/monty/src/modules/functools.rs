@@ -12,7 +12,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     frozen::FrozenFunction,
-    heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     types::{BuiltinType, Module, PyTrait, lru_cache},
@@ -51,8 +50,8 @@ pub(crate) enum FunctoolsFunctions {
     LruCache,
 }
 
-/// Creates the `functools` module on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `functools` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Functools, vm.interns);
 
     module.set_attr(
@@ -76,7 +75,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         Value::ModuleFunction(ModuleFunctions::Functools(FunctoolsFunctions::LruCache)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Dispatches a call to a `functools` module function.

@@ -25,7 +25,7 @@ use crate::{
 };
 use crate::{
     bytecode::VM,
-    heap::{HeapData, HeapId},
+    heap::HeapData,
     intern::StaticStrings,
     types::{List, Module, NamedTuple, allocate_string, allocate_tuple, long_int::INT_MAX_STR_DIGITS},
     value::{EitherStr, Marker, Value},
@@ -91,8 +91,8 @@ pub(crate) enum SysFunctions {
     Setrecursionlimit,
 }
 
-/// Creates the `sys` module and allocates it on the heap.
-pub fn create_module(vm: &mut VM<'_>) -> HeapId {
+/// Creates the `sys` module.
+pub fn create_module(vm: &mut VM<'_>) -> Module {
     let mut module = Module::new(StaticStrings::Sys, vm.interns);
 
     // Interpreter identity. `platform` is "monty" rather than the host OS, which
@@ -189,7 +189,7 @@ pub fn create_module(vm: &mut VM<'_>) -> HeapId {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(Box::new(module)))
+    module
 }
 
 /// Builds `sys.version_info`: `(major=3, minor=14, micro=0, releaselevel='final', serial=0)`.

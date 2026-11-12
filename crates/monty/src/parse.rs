@@ -1040,17 +1040,21 @@ impl<'a, 'i> Parser<'a, 'i> {
                         ));
                     }
                 };
+                // The grammar only allows `*` as the sole imported name.
+                if let [alias] = names.as_slice()
+                    && alias.name.as_str() == "*"
+                {
+                    return Ok(Node::ImportStar {
+                        module_name,
+                        submodules,
+                        position,
+                        star_position: self.convert_range(alias.range),
+                    });
+                }
                 // Parse the imported names
                 let names = names
                     .iter()
                     .map(|alias| {
-                        // Check for star import which is not supported
-                        if alias.name.as_str() == "*" {
-                            return Err(ParseError::not_supported(
-                                "Wildcard imports (`from ... import *`) are not supported",
-                                position,
-                            ));
-                        }
                         let name = self.interner.intern(&alias.name);
                         // The binding name is the alias if provided, otherwise the import name
                         let binding_name = alias.asname.as_ref().map_or(name, |n| self.interner.intern(&n.id));
@@ -1443,6 +1447,19 @@ impl<'a, 'i> Parser<'a, 'i> {
                     if i == 0 && matches!(*value, AstExpr::StringLiteral(_)) {
                         doc_value = self.parse_expression(*value)?;
                     }
+                }
+                // CPython's own error comes before Monty's class-body restriction.
+                Stmt::ImportFrom(ast::StmtImportFrom { names, .. })
+                    if names.iter().any(|alias| alias.name.as_str() == "*") =>
+                {
+                    let star = names
+                        .iter()
+                        .find(|alias| alias.name.as_str() == "*")
+                        .expect("checked above");
+                    return Err(ParseError::syntax(
+                        "import * only allowed at module level",
+                        self.convert_range(star.range),
+                    ));
                 }
                 other => {
                     return Err(ParseError::not_implemented(
@@ -3045,11 +3062,6 @@ pub enum ParseError {
         msg: Cow<'static, str>,
         position: CodeRange,
     },
-    /// Missing feature with a custom full message (no prefix added).
-    NotSupported {
-        msg: Cow<'static, str>,
-        position: CodeRange,
-    },
     /// Import error (e.g., relative imports without a package).
     Import {
         msg: Cow<'static, str>,
@@ -3060,13 +3072,6 @@ pub enum ParseError {
 impl ParseError {
     pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
-            msg: msg.into(),
-            position,
-        }
-    }
-
-    fn not_supported(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
-        Self::NotSupported {
             msg: msg.into(),
             position,
         }
@@ -3101,9 +3106,6 @@ impl ParseError {
                     .with_snippet_position(position, source)
                     .into()
             }
-            Self::NotSupported { msg, position } => ExcType::not_implemented(msg)
-                .with_snippet_position(position, source)
-                .into(),
             Self::Import { msg, position } => SimpleException::new_msg(ExcType::ImportError, msg)
                 .with_snippet_position(position, source)
                 .into(),
@@ -3139,11 +3141,6 @@ impl ParseError {
             Self::NotImplemented { msg, position } => (
                 ExcType::NotImplementedError,
                 format!("The monty syntax parser does not yet support {msg}"),
-                StackFrame::from_position(position, filename, &mut source_map),
-            ),
-            Self::NotSupported { msg, position } => (
-                ExcType::NotImplementedError,
-                msg.into_owned(),
                 StackFrame::from_position(position, filename, &mut source_map),
             ),
             Self::Import { msg, position } => (
