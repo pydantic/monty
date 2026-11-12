@@ -323,32 +323,24 @@ fn spread_of(items: &[Value], center: &Value, kind: Spread, vm: &mut VM<'_>) -> 
 /// Mirrors `statistics._ss(data)`: the exact sum of squared deviations from the mean, from one pass
 /// of running `sum(x)` and `sum(x * x)`. Returns `(total, has_float, count)`.
 fn sum_squares(items: &[Value], vm: &mut VM<'_>) -> RunResult<(Total, bool, usize)> {
-    let mut sx = Dyadic::new();
+    let mut sx = ExactSum::new();
     let mut sxx = Dyadic::new();
-    let mut special: Option<f64> = None;
-    let mut has_float = false;
     for (i, item) in items.iter().enumerate() {
         vm.heap.tracker.check_memory_time_every(i)?;
         let (elem, is_float) = element(item, vm)?;
-        has_float |= is_float;
-        match elem {
-            Elem::Finite(num, exp) => {
-                sxx.add(&num * &num, exp * 2);
-                sx.add(num, exp);
-            }
-            Elem::Special(x) => special = Some(special.unwrap_or(0.0) + x),
+        if let Elem::Finite(num, exp) = &elem {
+            sxx.add(num * num, exp * 2);
         }
+        sx.add_elem(elem, is_float);
     }
-    let count = items.len();
-    let total = match special {
-        Some(x) => Total::Special(x),
-        None if count == 0 => Total::Exact(Frac::dyadic(BigInt::zero(), 0)),
-        None => {
-            let sx = sx.into_frac();
-            let sxx = sxx.into_frac();
+    let (total, has_float, count) = sx.finish();
+    let total = match total {
+        // `(n * sum(x*x) - sum(x)**2) / n`; an empty sum stays an exact zero.
+        Total::Exact(sx) if count > 0 => {
             let count_frac = Frac::dyadic(BigInt::from(count), 0);
-            Total::Exact(count_frac.mul(&sxx).sub(&sx.mul(&sx)).div_int(count))
+            Total::Exact(count_frac.mul(&sxx.into_frac()).sub(&sx.mul(&sx)).div_int(count))
         }
+        total => total,
     };
     Ok((total, has_float, count))
 }
@@ -660,13 +652,18 @@ impl ExactSum {
     /// Adds one datum, raising CPython's `TypeError` for a type with no exact ratio.
     fn add(&mut self, value: &Value, vm: &VM<'_>) -> RunResult<()> {
         let (elem, is_float) = element(value, vm)?;
+        self.add_elem(elem, is_float);
+        Ok(())
+    }
+
+    /// Adds one datum already read by [`element`].
+    fn add_elem(&mut self, elem: Elem, is_float: bool) {
         self.has_float |= is_float;
         self.count += 1;
         match elem {
             Elem::Finite(num, exp) => self.finite.add(num, exp),
             Elem::Special(x) => self.special = Some(self.special.unwrap_or(0.0) + x),
         }
-        Ok(())
     }
 
     /// The total, whether any datum was a float, and how many data there were.
