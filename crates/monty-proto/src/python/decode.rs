@@ -302,7 +302,7 @@ fn shared_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String
     }
 }
 
-/// A new namedtuple class from `namedtuple.py`, with `__module__` set from the
+/// A new namedtuple class from `pydantic_monty._namedtuple`, with `__module__` set from the
 /// qualified `type_name` (e.g. `os.stat_result`) so it round-trips back
 /// through the encoder.
 fn new_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {

@@ -2,7 +2,7 @@
 //! type objects, dates and times, file handles and callables. The arena walks
 //! are `encode` (Python → sandbox) and `decode` (sandbox → Python).
 
-use std::{borrow::Cow, ffi::CStr};
+use std::borrow::Cow;
 
 use monty_types::{
     ExcType, FileMode, MontyDateTime, MontyFileHandle, MontyTime, MontyTimeDelta, MontyTimeZone, MontyType, StringRepr,
@@ -385,23 +385,13 @@ fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
     })
 }
 
-/// Cached `make_namedtuple` from `namedtuple.py`, which builds namedtuple classes
-/// without making their field names immortal, as `collections.namedtuple` does.
+/// Cached import of `pydantic_monty._namedtuple.make_namedtuple`, which builds
+/// namedtuple classes without making their field names immortal, as
+/// `collections.namedtuple` does.
 pub(super) fn get_make_namedtuple(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
-    /// The helper's source, NUL-terminated for `PyModule::from_code`.
-    const SOURCE: &CStr = match CStr::from_bytes_with_nul(concat!(include_str!("namedtuple.py"), "\0").as_bytes()) {
-        Ok(source) => source,
-        Err(_) => panic!("namedtuple.py must not contain a NUL byte"),
-    };
     static MAKE_NAMEDTUPLE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
-    MAKE_NAMEDTUPLE
-        .get_or_try_init(py, || {
-            PyModule::from_code(py, SOURCE, c"namedtuple.py", c"monty_proto_namedtuple")?
-                .getattr(intern!(py, "make_namedtuple"))
-                .map(Bound::unbind)
-        })
-        .map(|make| make.bind(py))
+    MAKE_NAMEDTUPLE.import(py, "pydantic_monty._namedtuple", "make_namedtuple")
 }
 
 /// Cached import of `pathlib.PurePosixPath` class.
