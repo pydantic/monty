@@ -16,6 +16,7 @@ use crate::heap::{HeapId, StableHeap};
 const PAGE_SIZE: usize = 256;
 
 /// Lazily populated cache slots for one contiguous range of intern IDs.
+/// Boxing individual caches avoids initializing their cursor state for untouched slots.
 type AccessCachePage = [OnceCell<Box<AccessCache>>; PAGE_SIZE];
 
 /// Lazy caches keyed by intern slot; ASCII-only sessions allocate no cache pages.
@@ -58,12 +59,14 @@ impl AccessCacheStore {
 
     /// Returns the cache for an intern slot, allocating its page and cache shell on first access.
     /// The caller filters ASCII and reserved strings; returned borrows survive later insertions.
+    /// Refused allocations return `None` so the caller can scan directly without retaining state.
     pub(crate) fn get<B: Budget>(&self, index: usize, budget: &B) -> Option<&AccessCache> {
         if self.0.get().is_none() && !budget.allow_allocation(size_of::<Directory>()) {
             return None;
         }
         let table = self.0.get_or_init(Box::default);
         let page = index / PAGE_SIZE;
+        // Most accesses reuse a logical page; avoid borrowing and probing the directory in that case.
         let slot = if let Some((last_page, slot)) = table.last.get()
             && last_page == page
         {
@@ -71,7 +74,8 @@ impl AccessCacheStore {
         } else {
             let mut slots = table.slots.borrow_mut();
             if !slots.contains_key(&page) {
-                // Include the cache page, a stable-arena page and conservative directory growth.
+                // Preflight the cache page, possible stable-arena page, and directory/pointer growth.
+                // Conservative headroom can skip a cache early; lookup correctness never depends on it.
                 let directory = slots
                     .capacity()
                     .saturating_add(1)

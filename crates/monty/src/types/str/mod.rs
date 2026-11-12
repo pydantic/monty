@@ -191,6 +191,7 @@ impl<'h> PyStr<'h> {
     /// Rust's search for `"🐍"` in `"aé🐍b"` returns byte offset 3; Python must return character index 2.
     /// ASCII offsets are already character indices; Unicode conversion counts from the closest retained byte boundary or endpoint.
     /// The offset must be in bounds and on a UTF-8 boundary, as returned by a successful string search.
+    /// Long Unicode scans poll execution deadlines and can return a resource-limit error.
     fn char_index_of(&self, byte_offset: usize, vm: &VM<'h>) -> RunResult<usize> {
         if byte_offset == 0 {
             return Ok(0);

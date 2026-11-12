@@ -1,4 +1,6 @@
-//! Two recent UTF-8 boundaries with implicit start and end anchors.
+//! Convert between Python code-point indices and UTF-8 byte offsets using two recent boundaries.
+//! Start and end are implicit anchors; each lookup chooses the closest anchor in its input coordinates.
+//! Skips use scalar iteration, 16-byte SIMD or bulk bytecount according to distance and owner density.
 //! Small owners retain u16 cursors inline; larger owners allocate wider cursors on first use.
 //! Clones and snapshots start without access history. This cache builds no index.
 
@@ -7,9 +9,13 @@ use std::{cell::Cell, fmt};
 use monty_types::{ResourceError, ResourceTracker};
 use wide::u8x16;
 
+/// Allocation refusal disables caching; deadline errors stop the lookup.
+/// Hooks must not execute Python or reenter the cache while its state is temporarily taken.
 pub(crate) trait Budget {
     type Error;
+    /// Preflights optional cache storage without turning refusal into a memory error.
     fn allow_allocation(&self, bytes: usize) -> bool;
+    /// Polls execution limits during scans too long to wait for the next VM checkpoint.
     fn check_time(&self) -> Result<(), Self::Error>;
 }
 
@@ -27,12 +33,14 @@ impl Budget for ResourceTracker {
     }
 }
 
+/// Immutable owner metadata; density decisions use the whole owner, even when walking a suffix.
 #[derive(Clone, Copy)]
 struct Source<'a> {
     text: &'a str,
     characters: usize,
 }
 
+/// Cursor width follows byte length, which bounds both byte offsets and code-point indices.
 trait Coordinate: Copy + Default {
     fn pack(value: usize) -> Self;
     fn unpack(self) -> usize;
@@ -53,21 +61,28 @@ macro_rules! coordinates {
 }
 coordinates!(u16, u32, usize);
 
+/// One valid UTF-8 boundary expressed in both coordinate systems.
 #[derive(Clone, Copy, Default)]
 struct Cursor<P> {
     character: P,
     byte: P,
 }
 
+/// A retained cursor or implicit endpoint, expanded for traversal arithmetic.
 #[derive(Clone, Copy)]
 struct Anchor {
     character: usize,
     byte: usize,
 }
 
+/// Two u16 cursor pairs and the enum tag fit in 16 bytes on 64-bit targets.
+/// Keeping wider pairs behind a pointer avoids enlarging every heap string.
 enum State {
+    /// Owners below 64 KiB need no cursor allocation. Both initial cursors denote the start.
     Inline([Cursor<u16>; 2]),
+    /// Owners through `u32::MAX` bytes allocate only after a nontrivial lookup.
     Wide(Box<[Cursor<u32>; 2]>),
+    /// Full-width coordinates retain support for owners beyond the u32 byte range.
     Huge(Box<[Cursor<usize>; 2]>),
 }
 
@@ -77,14 +92,18 @@ impl Default for State {
     }
 }
 
-/// The same immutable owner and character count must be supplied on every access.
+/// Retains the two most recently resolved non-endpoint boundaries, newest first.
+/// Sequential reads use the newest cursor; alternating distant reads can reuse both.
+/// The caller must supply the same immutable text and exact code-point count on every access.
 #[derive(Default)]
 pub(crate) struct AccessCache {
+    // Only offsets change: shared text borrows remain valid while cursor history is updated.
     state: Cell<State>,
 }
 
 impl Clone for AccessCache {
     fn clone(&self) -> Self {
+        // Access history and optional allocations belong to the original owner.
         Self::default()
     }
 }
@@ -95,13 +114,18 @@ impl fmt::Debug for AccessCache {
     }
 }
 
+/// The known coordinate determines how anchor distance is measured and what conversion returns.
 #[derive(Clone, Copy)]
 enum Target {
+    /// A normalized code-point index whose byte offset is required.
     Character(usize),
+    /// An in-bounds UTF-8 byte boundary whose code-point index is required.
     Byte(usize),
 }
 
 impl AccessCache {
+    /// Converts from an implicit endpoint when optional interned-cache storage was refused.
+    /// Uses the same deadline-aware scanners without retaining the temporary cursors.
     pub(crate) fn uncached_byte_offset<B: Budget>(
         text: &str,
         target: usize,
@@ -125,6 +149,8 @@ impl AccessCache {
         )
     }
 
+    /// Counts from an implicit endpoint without allocating or retaining cache state.
+    /// `target` must be an in-bounds UTF-8 boundary, as returned by substring search.
     pub(crate) fn uncached_char_offset<B: Budget>(
         text: &str,
         target: usize,
@@ -148,6 +174,7 @@ impl AccessCache {
         )
     }
 
+    /// Reads a signed Python index without allocating cache storage; out-of-range indices return `None`.
     pub(crate) fn uncached_character<B: Budget>(
         text: &str,
         index: i64,
@@ -161,7 +188,8 @@ impl AccessCache {
         Ok(text[byte..].chars().next())
     }
 
-    /// Endpoints and out-of-range character reads do not allocate cursor state.
+    /// Reads a signed Python code-point index, translating negative indices from the end.
+    /// Direct reads at 0/-1 and out-of-range indices do not allocate cursor state.
     pub(crate) fn character<B: Budget>(
         &self,
         text: &str,
@@ -183,7 +211,8 @@ impl AccessCache {
         Ok(text[byte..].chars().next())
     }
 
-    /// Character offsets beyond the end clamp to the byte length.
+    /// Converts a code-point index to a byte offset for slicing or bounded search.
+    /// Indices at or beyond the character count clamp to the byte length; ASCII offsets are direct.
     pub(crate) fn byte_offset<B: Budget>(
         &self,
         text: &str,
@@ -203,7 +232,8 @@ impl AccessCache {
         self.convert(Source { text, characters }, Target::Character(target), budget)
     }
 
-    /// Converts an in-bounds UTF-8 boundary returned by substring search.
+    /// Converts a search result's byte offset to the code-point index Python returns.
+    /// `target` must be in bounds and on a UTF-8 boundary; both endpoints bypass the cache.
     pub(crate) fn char_offset<B: Budget>(
         &self,
         text: &str,
@@ -224,6 +254,7 @@ impl AccessCache {
         self.convert(Source { text, characters }, Target::Byte(target), budget)
     }
 
+    /// Promotes cursor width on first use, then restores the owned state even if a scan times out.
     fn convert<B: Budget>(&self, source: Source<'_>, target: Target, budget: &B) -> Result<usize, B::Error> {
         let mut state = self.state.take();
         if source.text.len() >= 65_536 && matches!(state, State::Inline(_)) {
@@ -259,6 +290,7 @@ impl AccessCache {
     }
 }
 
+/// Normalizes Python indices without overflowing on i64::MIN or a narrower usize target.
 fn character_index(index: i64, characters: usize) -> Option<usize> {
     if index < 0 {
         usize::try_from(index.unsigned_abs())
@@ -269,6 +301,7 @@ fn character_index(index: i64, characters: usize) -> Option<usize> {
     }
 }
 
+/// A newly resolved target becomes most recent; exact hits refresh the order in `convert`.
 #[inline]
 fn remember<P: Coordinate>(cursors: &mut [Cursor<P>; 2], character: usize, byte: usize) {
     cursors[1] = cursors[0];
@@ -278,6 +311,8 @@ fn remember<P: Coordinate>(cursors: &mut [Cursor<P>; 2], character: usize, byte:
     };
 }
 
+/// Selects an anchor in the requested coordinate system, walks in either direction, and remembers the result.
+/// Character targets return bytes; byte targets return code-point indices.
 #[inline]
 fn convert<P: Coordinate, B: Budget>(
     source: Source<'_>,
@@ -289,6 +324,7 @@ fn convert<P: Coordinate, B: Budget>(
         Target::Character(n) => (n, source.characters),
         Target::Byte(n) => (n, source.text.len()),
     };
+    // Endpoints cost no storage and can be closer than either cursor, especially on a cold cache.
     let mut anchor = if position <= end - position {
         Anchor { character: 0, byte: 0 }
     } else {
@@ -306,6 +342,7 @@ fn convert<P: Coordinate, B: Budget>(
             Target::Character(_) => (saved.character, anchor.character),
             Target::Byte(_) => (saved.byte, anchor.byte),
         };
+        // Refresh even a zero-walk hit so alternating positions remain the two retained anchors.
         if saved_position == position {
             if i == 1 {
                 cursors.swap(0, 1);
@@ -315,6 +352,7 @@ fn convert<P: Coordinate, B: Budget>(
                 Target::Byte(_) => saved.character,
             });
         }
+        // Strict comparison keeps the earlier choice on ties: endpoint, then newest cursor.
         if saved_position.abs_diff(position) < anchor_position.abs_diff(position) {
             anchor = saved;
         }
@@ -333,8 +371,10 @@ fn convert<P: Coordinate, B: Budget>(
     })
 }
 
+/// Counts code points between known boundaries, polling deadlines in at most 64 KiB byte chunks.
 fn count_range<B: Budget>(text: &str, budget: &B) -> Result<usize, B::Error> {
     let mut count = 0;
+    // Chunk edges may split UTF-8 characters: counting leading bytes remains additive.
     for bytes in text.as_bytes().chunks(65_536) {
         if text.len() >= 65_536 {
             budget.check_time()?;
@@ -344,6 +384,7 @@ fn count_range<B: Budget>(text: &str, budget: &B) -> Result<usize, B::Error> {
     Ok(count)
 }
 
+/// Counts leading bytes (including ASCII), rather than decoding each Unicode scalar.
 #[inline]
 fn count_bytes(bytes: &[u8]) -> usize {
     // bytecount enables wasm SIMD internally, even when the caller did not select simd128.
@@ -358,12 +399,14 @@ fn count_bytes(bytes: &[u8]) -> usize {
     }
 }
 
+/// Returns an absolute byte boundary after walking from an anchor by a code-point distance.
 #[inline]
 fn walk<B: Budget>(source: Source<'_>, anchor: Anchor, target: usize, budget: &B) -> Result<usize, B::Error> {
     let n = anchor.character.abs_diff(target);
     if n == 0 {
         return Ok(anchor.byte);
     }
+    // Sequential indexing needs only the adjacent UTF-8 boundary, avoiding scanner setup.
     if n == 1 {
         if target > anchor.character {
             let lead = source.text.as_bytes()[anchor.byte];
@@ -385,6 +428,7 @@ fn walk<B: Budget>(source: Source<'_>, anchor: Anchor, target: usize, budget: &B
         }
         return Ok(byte);
     }
+    // Average width >= 1.5 bytes/code point selects the later bulk-scan crossover.
     let heavy = source.text.len() - source.characters >= source.characters.div_ceil(2);
     if target > anchor.character {
         Ok(anchor.byte + forward(&source.text[anchor.byte..], n, heavy, budget)?)
@@ -393,6 +437,8 @@ fn walk<B: Budget>(source: Source<'_>, anchor: Anchor, target: usize, budget: &B
     }
 }
 
+/// Returns bytes consumed from a UTF-8 suffix, choosing scalar, SIMD or bulk counting by skip distance.
+/// SIMD setup is avoided below eight code points; bulk counting starts at 128, or 512 for dense text.
 fn forward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<usize, B::Error> {
     if n < 8 {
         return Ok(chars_nth(text, n));
@@ -404,6 +450,8 @@ fn forward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<u
     if n >= 65_536 {
         budget.check_time()?;
     }
+    // Scanning at most `remaining` bytes cannot consume too many code points: each needs >= one byte.
+    // Align each chunk's end so the next iteration still starts at a valid UTF-8 boundary.
     while remaining >= 16 && byte < text.len() {
         let mut end = byte + remaining.min(text.len() - byte).min(65_536);
         while !text.is_char_boundary(end) {
@@ -414,14 +462,18 @@ fn forward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<u
         }
         remaining -= count_bytes(&text.as_bytes()[byte..end]);
         byte = end;
+        // Boundary rounding can trim three bytes from a full 64 KiB chunk.
         if byte - checked >= 65_532 {
             budget.check_time()?;
             checked = byte;
         }
     }
+    // Finish the small remainder without another bulk-count call.
     Ok(byte + wide16(&text[byte..], remaining))
 }
 
+/// Returns bytes removed from a UTF-8 prefix, using the same skip thresholds as forward traversal.
+/// The caller subtracts this distance from its anchor's absolute byte offset.
 fn backward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<usize, B::Error> {
     if n < 8 {
         return Ok(chars_nth_back(text, n));
@@ -433,6 +485,7 @@ fn backward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<
     if n >= 65_536 {
         budget.check_time()?;
     }
+    // Move the lower edge forward to a boundary; the retained prefix then remains valid UTF-8.
     while remaining >= 16 && end > 0 {
         let mut start = end - remaining.min(end).min(65_536);
         while !text.is_char_boundary(start) {
@@ -451,6 +504,7 @@ fn backward<B: Budget>(text: &str, n: usize, heavy: bool, budget: &B) -> Result<
     Ok(text.len() - end + wide16_back(&text[..end], remaining))
 }
 
+/// Consumes preceding code points while leaving the requested boundary at the remaining suffix.
 fn chars_nth(text: &str, target: usize) -> usize {
     if target == 0 {
         return 0;
@@ -460,18 +514,22 @@ fn chars_nth(text: &str, target: usize) -> usize {
     text.len() - chars.as_str().len()
 }
 
+/// Finds a forward boundary by ranking leading bytes in 16-byte blocks.
 fn wide16(text: &str, mut remaining: usize) -> usize {
     let bytes = text.as_bytes();
     let mut offset = 0;
     while bytes.len() - offset >= 16 {
         let lanes = u8x16::from(<[u8; 16]>::try_from(&bytes[offset..offset + 16]).unwrap());
+        // Continuation bytes have prefix 10xxxxxx; every other byte starts a code point.
         let leaders = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80));
         let mut mask = leaders.to_bitmask();
         let count = mask.count_ones() as usize;
         if remaining < count {
+            // When every byte is a leading byte, character and byte ranks coincide.
             if count == 16 {
                 return offset + remaining;
             }
+            // Clearing the lower ranks leaves the requested leading byte as the lowest set bit.
             for _ in 0..remaining {
                 mask &= mask - 1;
             }
@@ -491,6 +549,7 @@ fn wide16(text: &str, mut remaining: usize) -> usize {
     bytes.len()
 }
 
+/// Consumes code points from the end and returns the removed byte count.
 fn chars_nth_back(text: &str, target: usize) -> usize {
     if target == 0 {
         return 0;
@@ -500,6 +559,7 @@ fn chars_nth_back(text: &str, target: usize) -> usize {
     text.len() - chars.as_str().len()
 }
 
+/// Finds a reverse boundary by selecting leading bytes from the high end of each 16-byte block.
 fn wide16_back(text: &str, mut remaining: usize) -> usize {
     if remaining == 0 {
         return 0;
@@ -511,10 +571,12 @@ fn wide16_back(text: &str, mut remaining: usize) -> usize {
         let lanes = u8x16::from(<[u8; 16]>::try_from(&bytes[start..end]).unwrap());
         let mut mask = (lanes & u8x16::splat(0xc0)).simd_ne(u8x16::splat(0x80)).to_bitmask();
         let count = mask.count_ones() as usize;
+        // Reverse walking consumes the selected character; equality lands within this block.
         if remaining <= count {
             if count == 16 {
                 return bytes.len() - end + remaining;
             }
+            // Discard later leading bytes until the requested reverse rank is the highest bit.
             for _ in 1..remaining {
                 mask ^= 1 << mask.ilog2();
             }
