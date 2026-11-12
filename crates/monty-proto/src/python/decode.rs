@@ -93,6 +93,10 @@ const MAX_NAMEDTUPLE_TYPES_PER_ARENA: usize = 1024;
 /// When full it is cleared, so sandbox churn costs speed, never memory.
 const SHARED_NAMEDTUPLE_CACHE_SIZE: usize = 128;
 
+/// The longest type name plus field names [`shared_namedtuple_type`] keeps, so
+/// the cache retains at most ~1 MB however long the sandbox makes its names.
+const MAX_SHARED_NAMEDTUPLE_KEY_BYTES: usize = 512;
+
 impl<'a> Decoder<'a, '_> {
     /// Converts one node; every child id is lower, so already built.
     fn decode(&mut self, node: &'a MontyNode) -> PyResult<Py<PyAny>> {
@@ -259,12 +263,17 @@ impl<'a> Decoder<'a, '_> {
 
 /// The namedtuple type for `(type_name, field_names)` from a process-wide cache,
 /// so types such as `os.stat_result` are built once and keep their identity
-/// across results while the cache is not cleared.
+/// across results until the cache is cleared. Types whose names exceed
+/// [`MAX_SHARED_NAMEDTUPLE_KEY_BYTES`] are built fresh and never retained.
 fn shared_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {
     /// Classes by `(type_name, field_names)`.
     type SharedTypes = HashMap<(String, Vec<String>), Py<PyAny>>;
     static CACHE: PyOnceLock<Mutex<SharedTypes>> = PyOnceLock::new();
 
+    let key_bytes = type_name.len() + field_names.iter().map(String::len).sum::<usize>();
+    if key_bytes > MAX_SHARED_NAMEDTUPLE_KEY_BYTES {
+        return new_namedtuple_type(py, type_name, field_names);
+    }
     let cache = CACHE.get_or_init(py, Mutex::default);
     let key = (type_name.to_owned(), field_names.to_vec());
     let cached = cache
@@ -277,19 +286,19 @@ fn shared_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String
     } else {
         // built outside the lock: `collections.namedtuple` runs Python code
         let nt_type = new_namedtuple_type(py, type_name, field_names)?;
-        let evicted = {
-            let mut cache = cache.lock_py_attached(py).unwrap_or_else(PoisonError::into_inner);
-            let evicted = if cache.len() >= SHARED_NAMEDTUPLE_CACHE_SIZE {
-                mem::take(&mut *cache)
-            } else {
-                HashMap::new()
-            };
-            cache.insert(key, nt_type.clone_ref(py));
-            evicted
+        let mut cache = cache.lock_py_attached(py).unwrap_or_else(PoisonError::into_inner);
+        let evicted = if cache.len() >= SHARED_NAMEDTUPLE_CACHE_SIZE && !cache.contains_key(&key) {
+            mem::take(&mut *cache)
+        } else {
+            HashMap::new()
         };
-        // dropped after unlocking, since releasing a class can run arbitrary Python
+        // another decode may have inserted the type while it was built: theirs wins
+        let canonical = cache.entry(key).or_insert_with(|| nt_type.clone_ref(py)).clone_ref(py);
+        // release the lock before `evicted` and a losing `nt_type` drop,
+        // since releasing a class can run arbitrary Python
+        drop(cache);
         drop(evicted);
-        Ok(nt_type)
+        Ok(canonical)
     }
 }
 

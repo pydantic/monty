@@ -731,6 +731,39 @@ def test_namedtuple_type_shared_across_results(monty_run: RunMonty):
     assert type(monty_run(code)) is type(monty_run(code))
 
 
+def test_namedtuple_long_names_not_shared(monty_run: RunMonty):
+    """A type with long names decodes but is not kept in the shared class cache."""
+    code = "from collections import namedtuple\nnamedtuple('T' + 'x' * 1000, ['a'])(1)"
+    first = monty_run(code)
+    second = monty_run(code)
+    assert first.a == 1
+    assert type(first).__name__ == 'T' + 'x' * 1000
+    assert type(first) is not type(second)
+
+
+def test_namedtuple_limit_spans_call_arguments(monty_run: RunMonty):
+    """All arguments of one host call count towards the namedtuple type limit together."""
+    calls: list[tuple[object, ...]] = []
+
+    def f(*args: object, **kwargs: object) -> None:
+        calls.append(args)
+
+    code = """
+from collections import namedtuple
+ts = [namedtuple(f'T{i}', ['a'])(i) for i in range(1025)]
+try:
+    f(ts[:600], b=ts[600:])
+    r = 'no error'
+except ValueError as e:
+    r = str(e)
+r
+"""
+    assert monty_run(code, external_lookup={'f': f}) == snapshot(
+        'too many distinct namedtuple types in one value (limit 1024)'
+    )
+    assert calls == []
+
+
 # === Results the host cannot build ===
 
 # the `TypeError` comes from the host's own CPython, which reworded it in 3.14
