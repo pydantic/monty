@@ -101,6 +101,10 @@ see [Python error handling](../quickstart/python.md#errors).
 
 Some sandbox results have no CPython equivalent, such as a namedtuple field starting with `_` (which `rename=True`
 produces).
+A value whose dict and set keys share too many CPython hashes is also rejected, with `ValueError`.
+The sandbox hashes `int`s differently, so keys like `k * (2**61 - 1)` are cheap to build there,
+but all hash to 0 in CPython, where inserting n of them costs O(n²).
+The limit is about a million key comparisons summed over every dict and set in the value (around 1,400 such keys).
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
 

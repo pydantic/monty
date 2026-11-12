@@ -11,6 +11,7 @@ use monty_types::{
     unstable::{self, ClassTypeNode, MontyGraph, MontyNode, NodeId},
 };
 use pyo3::{
+    exceptions::PyValueError,
     prelude::*,
     types::{PyBool, PyBytes, PyComplex, PyDate, PyDelta, PyDict, PyFrozenSet, PyList, PySet, PyString, PyTuple},
 };
@@ -25,6 +26,14 @@ use super::{
     external_module::PyExternalModule,
     std_type_proxy::{PyMontyStdTypeProxy, StdTypeRef},
 };
+
+/// The most key comparisons CPython may make while one arena's dicts and sets
+/// are built, about 10 ms of colliding `int` keys.
+///
+/// The sandbox hashes `int`s by their bits but CPython reduces them modulo
+/// `2**61 - 1`, so keys like `k * (2**61 - 1)` are free to build in the sandbox
+/// yet all collide on the host, where inserting n of them costs O(n²).
+const MAX_KEY_COLLISIONS: u64 = 1 << 20;
 
 /// Converts one value to a native Python object. A class instance found in
 /// `store` resolves to the ORIGINAL wrapped object (identity preserved);
@@ -55,6 +64,7 @@ impl DecodedArena {
             built: Vec::with_capacity(graph.len()),
             namedtuple_types: HashMap::new(),
             classes: HashMap::new(),
+            key_collisions: 0,
         };
         for node in graph.nodes() {
             let obj = decoder.decode(node)?;
@@ -82,6 +92,8 @@ struct Decoder<'a, 'py> {
     /// Each class node's header and eager attrs, built once and shared by
     /// its proxies so their cost does not scale with the instance count.
     classes: HashMap<NodeId, (Arc<ClassHeader>, Py<PyDict>)>,
+    /// Key comparisons charged so far against [`MAX_KEY_COLLISIONS`].
+    key_collisions: u64,
 }
 
 impl Decoder<'_, '_> {
@@ -112,6 +124,7 @@ impl Decoder<'_, '_> {
                 Ok(instance.into_any().unbind())
             }
             MontyNode::Dict(pairs) => {
+                self.charge_key_collisions(pairs.iter().map(|(key, _)| *key))?;
                 let dict = PyDict::new(py);
                 for (key, value) in pairs {
                     dict.set_item(self.child(*key), self.child(*value))?;
@@ -119,13 +132,17 @@ impl Decoder<'_, '_> {
                 Ok(dict.into_any().unbind())
             }
             MontyNode::Set(items) => {
+                self.charge_key_collisions(items.iter().copied())?;
                 let set = PySet::empty(py)?;
                 for item in items {
                     set.add(self.child(*item))?;
                 }
                 Ok(set.into_any().unbind())
             }
-            MontyNode::FrozenSet(items) => Ok(PyFrozenSet::new(py, self.children(items))?.into_any().unbind()),
+            MontyNode::FrozenSet(items) => {
+                self.charge_key_collisions(items.iter().copied())?;
+                Ok(PyFrozenSet::new(py, self.children(items))?.into_any().unbind())
+            }
             // the exception instance as a value (not raised)
             MontyNode::Exception { exc_type, arg } => {
                 let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
@@ -212,6 +229,29 @@ impl Decoder<'_, '_> {
     /// The objects built for a node's children, in order.
     fn children(&self, ids: &[NodeId]) -> Vec<Py<PyAny>> {
         ids.iter().map(|id| self.child(*id)).collect()
+    }
+
+    /// Charges the comparisons CPython makes inserting `keys` into one dict or
+    /// set, failing once the arena exceeds [`MAX_KEY_COLLISIONS`].
+    ///
+    /// Each key is compared with every earlier key of the same hash, so this
+    /// counts equal hashes, hashing every key once more than the insertion does.
+    /// Attr dicts are not charged: their keys are `str`, whose hash is salted.
+    fn charge_key_collisions(&mut self, keys: impl Iterator<Item = NodeId>) -> PyResult<()> {
+        let mut seen: HashMap<isize, u64> = HashMap::new();
+        for key in keys {
+            // an unhashable key is left for the insertion to reject with its own message
+            let Ok(hash) = self.built[key.index()].bind(self.py).hash() else {
+                continue;
+            };
+            let earlier = seen.entry(hash).or_default();
+            self.key_collisions += *earlier;
+            *earlier += 1;
+            if self.key_collisions > MAX_KEY_COLLISIONS {
+                return Err(PyValueError::new_err("too many hash collisions among dict or set keys"));
+            }
+        }
+        Ok(())
     }
 
     /// Attr pairs as a Python dict, skipping non-string keys: hosts and the

@@ -718,8 +718,35 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
 UNDERSCORE_FIELD_CODE = "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)"
 UNDERSCORE_FIELD_ERROR = "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')"
 
+# keys `k * (2**61 - 1)` all hash to 0 in CPython, but not in the sandbox
+KEY_COLLISIONS_ERROR = (
+    'MontyRuntimeError(ValueError: cannot convert the result to a Python value: '
+    'too many hash collisions among dict or set keys)'
+)
+
 UNDECODABLE_RESULTS = [
     pytest.param(UNDERSCORE_FIELD_CODE, UNDERSCORE_FIELD_ERROR, id='namedtuple_underscore_field'),
+    pytest.param(
+        '{k * (2**61 - 1): None for k in range(1, 2000)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_dict_keys',
+    ),
+    pytest.param(
+        '{k * (2**61 - 1) for k in range(1, 2000)}',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_set_items',
+    ),
+    pytest.param(
+        'frozenset(k * (2**61 - 1) for k in range(1, 2000))',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_frozenset_items',
+    ),
+    pytest.param(
+        # each dict is under the budget alone; the result's arena is not
+        '[{k * (2**61 - 1): None for k in range(1, 1000)} for _ in range(3)]',
+        KEY_COLLISIONS_ERROR,
+        id='colliding_keys_across_dicts',
+    ),
 ]
 
 
@@ -740,6 +767,13 @@ async def test_undecodable_result_async(code: str, expected: str):
             with pytest.raises(MontyRuntimeError) as exc_info:
                 await session.feed_run(code)
     assert repr(exc_info.value) == expected
+
+
+def test_colliding_keys_under_budget(monty_run: RunMonty):
+    """Colliding keys decode while the arena stays under the collision budget."""
+    result = monty_run('{k * (2**61 - 1): k for k in range(1, 1000)}')
+    assert len(result) == snapshot(999)
+    assert result[5 * (2**61 - 1)] == snapshot(5)
 
 
 def test_undecodable_result_feed_start(session: MontySession):
