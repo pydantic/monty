@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
-    intern::{Interns, StringId},
+    intern::StringId,
     value::{EitherStr, Value},
 };
 
@@ -97,10 +97,10 @@ impl VM<'_> {
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
                 this.import_file_attr(obj, name_id).unwrap_or_else(|| {
-                    let name_str = this.interns.get_str(name_id);
+                    let module = this.import_target_name(module_id, obj, None);
                     Err(ExcType::cannot_import_name(
-                        name_str,
-                        this.interns.get_str(module_id),
+                        this.interns.get_str(name_id),
+                        &module,
                         None,
                     ))
                 })
@@ -120,7 +120,8 @@ impl VM<'_> {
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        if let Some(result) = this.import_file_submodule(obj, path_id) {
+        let name = this.import_target_name(path_id, obj, Some(name_id));
+        if let Some(result) = this.import_file_submodule(obj, &name) {
             return result;
         }
         let package = module_package(obj, this.heap);
@@ -133,13 +134,29 @@ impl VM<'_> {
             // a property's OS call (`os.environ`) is no more a submodule than a value
             Ok(result) if package.is_some() => {
                 result.drop_with(this);
-                Err(not_a_submodule(this.interns, path_id, is_builtin))
+                Err(not_a_submodule(&name, is_builtin))
             }
             Ok(result) => Ok(result),
             Err(RunError::Exc(exc)) if exc.exc.exc_type() == ExcType::AttributeError => {
-                Err(not_a_submodule(this.interns, path_id, is_builtin))
+                Err(not_a_submodule(&name, is_builtin))
             }
             Err(e) => Err(e),
+        }
+    }
+
+    /// The name an import error gives for `path_id`, which is a relative import's dotted
+    /// path (`..pkg`) when it starts with a dot: then `module` names it, plus `leaf` if given.
+    fn import_target_name(&self, path_id: StringId, module: &Value, leaf: Option<StringId>) -> String {
+        let path = self.interns.get_str(path_id);
+        match module.ref_id().map(|id| self.heap.get(id)) {
+            Some(HeapData::Module(module)) if path.starts_with('.') => {
+                let name = module.name_str(self.interns);
+                match leaf {
+                    Some(leaf) => format!("{name}.{}", self.interns.get_str(leaf)),
+                    None => name.to_owned(),
+                }
+            }
+            _ => path.to_owned(),
         }
     }
 
@@ -199,8 +216,7 @@ fn module_package(value: &Value, heap: &Heap) -> Option<bool> {
 }
 
 /// Builds a missing-submodule error using the import's spelling of a built-in parent (`os.path`).
-fn not_a_submodule(interns: &Interns, path_id: StringId, is_builtin: bool) -> RunError {
-    let path = interns.get_str(path_id);
+fn not_a_submodule(path: &str, is_builtin: bool) -> RunError {
     let parent = is_builtin.then(|| path.rsplit_once('.').map_or(path, |(parent, _)| parent));
     ExcType::module_not_found_error(path, parent)
 }

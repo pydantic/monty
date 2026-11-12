@@ -445,6 +445,7 @@ pub enum Opcode {
     // === Module Operations ===
     /// Load a top-level module. Operand: u16 module-name StringId.
     /// Pushes a built-in module or suspends with an import OS call for the host's value.
+    /// A name of only dots (`..`) loads a relative import's package, found from `__package__`.
     LoadModule = 106,
     /// Pop a module, push its submodule. Operands: u16 attribute ID, u16 dotted-path ID.
     /// Missing submodules raise `ModuleNotFoundError`; built-ins add "is not a package".

@@ -3055,12 +3055,7 @@ fn repl_call_function_return_export_propagates_memory_error() {
 fn repl_rejected_snippet_locations() {
     let (mut repl, _) = init_repl("pass");
     let mut errors = Vec::new();
-    for source in [
-        "\n\nfrom . import missing",
-        "\n\nfrom math import *",
-        "\n\ndel missing",
-        "\n\n__name__ = 'changed'",
-    ] {
+    for source in ["\n\nfrom math import *", "\n\ndel missing", "\n\n__name__ = 'changed'"] {
         let error = feed_run_print(&mut repl, &format!("exec({source:?})")).unwrap_err();
         assert_eq!(error.traceback().last().unwrap().start.line, 3);
         errors.push(error.to_string());

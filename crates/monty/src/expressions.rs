@@ -114,7 +114,7 @@ impl Identifier {
 pub struct Submodule {
     /// The attribute name (`b`).
     pub name: StringId,
-    /// The path through this component (`a.b`).
+    /// The path through this component (`a.b`); a relative import's keeps its dots (`..a`).
     pub path: StringId,
 }
 
