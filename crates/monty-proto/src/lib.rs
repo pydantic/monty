@@ -34,7 +34,7 @@ pub mod worker;
 /// built before the change. Old workers then refuse the new client with a
 /// version error instead of misbehaving. A change old workers can safely
 /// ignore needs no increment.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// The oldest client [`PROTOCOL_VERSION`] a worker built from this code serves.
 ///

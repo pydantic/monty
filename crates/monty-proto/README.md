@@ -70,15 +70,15 @@ Host construction and cloning are unbudgeted; fallible `try_push` charges any gr
 
 ## Positional writes and protocol compatibility
 
-Protocol 8 adds `OsCall.write_bytes_at` for positional binary file-object writes, including ordinary `wb` files.
+Protocol 9 adds `OsCall.write_bytes_at` for positional binary file-object writes, including ordinary `wb` files.
 `Path.write_bytes()` still uses the truncating `OsCall.write_bytes` operation.
-Protocol 7 parents remain supported: sequential `wb` writes use the original write/append calls.
-Binary update mode and writes away from EOF raise `NotImplementedError` before issuing filesystem calls to those parents.
-The configured parent's capabilities also apply after loading a snapshot.
+Protocol 7 and 8 clients remain supported: sequential `wb` writes use the original write/append calls.
+Binary update mode and writes away from EOF raise `NotImplementedError` before issuing filesystem calls to those clients.
+The configured client's capabilities also apply after loading a snapshot.
 A snapshot suspended on an unsupported operation is refused.
-Upgrade relays and filesystem handlers before enabling protocol 8 workers; the client/worker version check does not negotiate
+Upgrade relays and filesystem handlers before enabling protocol 9 workers; the client/worker version check does not negotiate
 capabilities with an intermediary relay.
-Custom handlers serving protocol 8 must implement positional writes rather than substituting append or truncating writes.
+Custom handlers serving protocol 9 must implement positional writes rather than substituting append or truncating writes.
 The built-in mounts and Python `OSAccess` implement it.
 
 ## Values are special-cased for performance

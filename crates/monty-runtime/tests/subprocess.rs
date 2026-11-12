@@ -3255,11 +3255,11 @@ fn undeclared_protocol_version_is_a_fatal_error() {
     );
 }
 
-/// Protocol 7 hosts receive only the original sequential byte-write operations.
+/// Clients below protocol 9 receive only the original sequential byte-write operations.
 #[test]
 fn legacy_binary_writes_remain_sequential() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_protocol_version(7, env!("CARGO_PKG_VERSION")));
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
     let (_, event) = child.feed("f = open('/file', 'wb')\nf.write(b'abc')\nf.write(b'def')\nf.tell()");
     let event = resume_binary_open(&mut child, event);
     let event = resume_legacy_append(&mut child, event, b"abc");
@@ -3272,7 +3272,7 @@ fn legacy_binary_writes_remain_sequential() {
 #[test]
 fn legacy_binary_update_is_rejected_before_open() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_protocol_version(7, env!("CARGO_PKG_VERSION")));
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
     for mode in ["w+b", "wb+"] {
         let (_, event) = child.feed(&format!("open('/file', '{mode}')"));
         let error = expect_error(event);
@@ -3290,7 +3290,7 @@ fn legacy_binary_update_is_rejected_before_open() {
 #[test]
 fn legacy_binary_writes_away_from_eof_are_rejected() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(configure_with_protocol_version(7, env!("CARGO_PKG_VERSION")));
+    child.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
     let (_, event) = child.feed("f = open('/file', 'wb')\nf.write(b'abc')");
     let event = resume_binary_open(&mut child, event);
     let event = resume_legacy_append(&mut child, event, b"abc");
@@ -3315,17 +3315,17 @@ fn legacy_binary_writes_away_from_eof_are_rejected() {
 
 #[test]
 fn legacy_binary_write_capability_overrides_loaded_snapshots() {
-    assert_restored_binary_write(8, 7, false);
-    assert_restored_binary_write(8, 7, true);
+    assert_restored_binary_write(9, 8, false);
+    assert_restored_binary_write(9, 8, true);
 }
 
 #[test]
 fn modern_binary_write_capability_overrides_loaded_snapshots() {
-    assert_restored_binary_write(7, 8, false);
-    assert_restored_binary_write(7, 8, true);
+    assert_restored_binary_write(8, 9, false);
+    assert_restored_binary_write(8, 9, true);
 }
 
-/// A legacy parent must never receive a new operation re-emitted by Load.
+/// A legacy client must never receive a new operation re-emitted by Load.
 #[test]
 fn legacy_hosts_refuse_snapshots_pending_positional_file_io() {
     for code in ["open('/file', 'w+b')", "open('/file', 'wb').write(b'x')"] {
@@ -3342,7 +3342,7 @@ fn legacy_hosts_refuse_snapshots_pending_positional_file_io() {
         };
         child.shutdown();
         let mut fresh = ChildProc::spawn();
-        fresh.create_repl_with(configure_with_protocol_version(7, env!("CARGO_PKG_VERSION")));
+        fresh.create_repl_with(configure_with_protocol_version(8, env!("CARGO_PKG_VERSION")));
         fresh.send(pb::client_request::Kind::Load(pb::Load { state: dump.state }));
         let error = expect_error(fresh.recv());
         assert!(
@@ -3374,7 +3374,11 @@ fn resume_binary_open(child: &mut ChildProc, event: pb::worker_event::Kind) -> p
 }
 
 /// A legacy-only host rejects every operation other than AppendBytes here.
-fn resume_legacy_append(child: &mut ChildProc, event: pb::worker_event::Kind, expected: &[u8]) -> pb::worker_event::Kind {
+fn resume_legacy_append(
+    child: &mut ChildProc,
+    event: pb::worker_event::Kind,
+    expected: &[u8],
+) -> pb::worker_event::Kind {
     let pb::worker_event::Kind::OsCall(call) = event else {
         panic!("expected AppendBytes, got {event:?}");
     };
@@ -3422,7 +3426,7 @@ fn assert_restored_binary_write(producer: u32, consumer: u32, suspended: bool) {
         assert!(matches!(event, pb::worker_event::Kind::Ok(_)));
         fresh.feed("f.write(b'abc')").1
     };
-    let event = if consumer == 7 {
+    let event = if consumer < 9 {
         resume_legacy_append(&mut fresh, event, b"abc")
     } else {
         let pb::worker_event::Kind::OsCall(call) = event else {

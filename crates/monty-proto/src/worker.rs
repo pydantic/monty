@@ -42,6 +42,11 @@ use super::{
 };
 use crate::{convert::limits::micros_field, wire::uuid_to_pb};
 
+/// First client protocol version that can service `OsCall.write_bytes_at`.
+///
+/// Older clients still get sequential `wb` writes through the original write/append calls.
+const POSITIONAL_WRITES_PROTOCOL_VERSION: u32 = 9;
+
 /// A sink for framed [`pb::WorkerEvent`]s, decoupling the worker from its
 /// transport.
 ///
@@ -236,7 +241,7 @@ pub struct Worker {
     print_flush_interval: Duration,
     /// The session's `OsPolicy` from `Configure`, applied when creating the REPL or restoring one by `Load`.
     os_policy: OsPolicy,
-    /// Protocol 7 parents cannot handle positional binary writes.
+    /// Set for clients below [`POSITIONAL_WRITES_PROTOCOL_VERSION`], which cannot handle positional binary writes.
     legacy_binary_writes: bool,
     /// Host module stubs received through `import_stubs` or restored by `Load`.
     module_stubs: Vec<ModuleStub>,
@@ -526,7 +531,7 @@ impl Worker {
                 return session_refused("invalid type_check_stubs: Source is too deeply nested");
             }
             let clock = configure.execution_clock.unwrap_or(pb::ExecutionClock::Wall as i32);
-            self.legacy_binary_writes = configure.protocol_version < 8;
+            self.legacy_binary_writes = configure.protocol_version < POSITIONAL_WRITES_PROTOCOL_VERSION;
             self.state = SessionState::Configured(Some(Box::new(configure)));
             let mut event = ok_event();
             event.execution_clock = Some(clock);
