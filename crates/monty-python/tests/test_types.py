@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import collections
 import datetime
+import gc
 import itertools
 import json
 import pathlib
 import re
 import sys
+import tracemalloc
 import types
 import zoneinfo
 from typing import NamedTuple
@@ -739,6 +741,23 @@ def test_namedtuple_long_names_not_shared(monty_run: RunMonty):
     assert first.a == 1
     assert type(first).__name__ == 'T' + 'x' * 1000
     assert type(first) is not type(second)
+
+
+def test_namedtuple_names_not_retained(monty_run: RunMonty):
+    """Decoded namedtuple field names are freed with their classes: `collections.namedtuple`
+    compiles them into code, which makes them immortal on 3.12+."""
+    code = "from collections import namedtuple\nnamedtuple('T', ['f' + 'y' * 100_000 + str(i)])(i)"
+    monty_run(code, inputs={'i': 1000})  # warm up the pool and the class factory
+    gc.collect()
+    tracemalloc.start()
+    try:
+        for i in range(30):
+            assert monty_run(code, inputs={'i': i}) == (i,)
+        gc.collect()
+        retained, _ = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert retained < 1_000_000
 
 
 def test_namedtuple_limit_spans_call_arguments(monty_run: RunMonty):

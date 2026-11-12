@@ -21,8 +21,8 @@ use pyo3::{
 use super::{
     class_instance::{ClassHeader, InstanceStore, PyMontyClassProxy, PyMontyClassTypeProxy},
     convert::{
-        PyMontyFileHandle, get_decimal_type, get_namedtuple, get_pure_posix_path, host_type_object, import_builtins,
-        monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
+        PyMontyFileHandle, get_decimal_type, get_make_namedtuple, get_pure_posix_path, host_type_object,
+        import_builtins, monty_datetime_to_py, monty_time_to_py, monty_timezone_to_py,
     },
     exceptions::exc_monty_to_py,
     external_module::PyExternalModule,
@@ -284,7 +284,7 @@ fn shared_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String
     if let Some(nt_type) = cached {
         Ok(nt_type)
     } else {
-        // built outside the lock: `collections.namedtuple` runs Python code
+        // built outside the lock: the class factory runs Python code
         let nt_type = new_namedtuple_type(py, type_name, field_names)?;
         let mut cache = cache.lock_py_attached(py).unwrap_or_else(PoisonError::into_inner);
         let evicted = if cache.len() >= SHARED_NAMEDTUPLE_CACHE_SIZE && !cache.contains_key(&key) {
@@ -302,24 +302,16 @@ fn shared_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String
     }
 }
 
-/// A new class from `collections.namedtuple`, with `module=` set from the
+/// A new namedtuple class from `namedtuple.py`, with `__module__` set from the
 /// qualified `type_name` (e.g. `os.stat_result`) so it round-trips back
 /// through the encoder.
 fn new_namedtuple_type(py: Python<'_>, type_name: &str, field_names: &[String]) -> PyResult<Py<PyAny>> {
     let (module, simple_name) = match type_name.rfind('.') {
-        Some(idx) => (&type_name[..idx], &type_name[idx + 1..]),
-        None => ("", type_name),
+        Some(idx) => (Some(&type_name[..idx]), &type_name[idx + 1..]),
+        None => (None, type_name),
     };
-    let namedtuple_fn = get_namedtuple(py)?;
-    let py_field_names = PyList::new(py, field_names)?;
-    let nt_type = if module.is_empty() {
-        namedtuple_fn.call1((simple_name, py_field_names))?
-    } else {
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("module", module)?;
-        namedtuple_fn.call((simple_name, py_field_names), Some(&kwargs))?
-    };
-    Ok(nt_type.unbind())
+    let fields = PyTuple::new(py, field_names)?;
+    Ok(get_make_namedtuple(py)?.call1((simple_name, fields, module))?.unbind())
 }
 
 /// A [`PyMontyStdTypeProxy`] standing for `inner`, as a Python object.
