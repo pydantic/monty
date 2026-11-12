@@ -105,6 +105,11 @@ A value whose dict and set keys share too many CPython hashes is also rejected, 
 The sandbox hashes `int`s differently, so keys like `k * (2**61 - 1)` are cheap to build there,
 but all hash to 0 in CPython, where inserting n of them costs O(n²).
 The limit is about a million key comparisons summed over every dict and set in the value (around 1,400 such keys).
+
+JavaScript hosts cannot see engine hashes, so they bound time instead: inserting a value's `Map` and `Set` keys may take
+250 ms plus 1 µs per key, after which decoding fails with an `Error`.
+Keys that share a bucket in the host engine, such as BigInts with equal low 64 bits in V8, reach this limit.
+Because the limit is a time limit, a heavily loaded host could, rarely, reject a large value whose keys do not collide.
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
 

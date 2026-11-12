@@ -159,6 +159,22 @@ test('dict empty', async () => {
   t.is((result as Map<unknown, unknown>).size, 0)
 })
 
+// V8 hashes a BigInt by its low 64 bits, so these keys share one bucket on the
+// host and each insert walks every earlier key; the sandbox hashes them apart
+test.each([
+  ['dict', '{k << 64: None for k in range(1, 40001)}'],
+  ['set', '{k << 64 for k in range(1, 40001)}'],
+  ['frozenset', 'frozenset(k << 64 for k in range(1, 40001))'],
+])('%s with colliding keys exceeds the insert budget', async (_kind, code) => {
+  const error = await t.throwsAsync(() => run(code))
+  t.is(error?.message, 'dict and set keys took too long to insert on the host, likely from hash collisions')
+})
+
+test('dict with many ordinary keys stays within the insert budget', async () => {
+  const result = await run('{k: k for k in range(200_000)}')
+  t.is((result as Map<number, number>).size, 200_000)
+})
+
 // =============================================================================
 // Set tests
 // =============================================================================
