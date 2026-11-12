@@ -104,6 +104,11 @@ or a dict keyed by, or a set containing, a class-instance proxy, which is unhash
 A Python host raises [`MontyRuntimeError`][pydantic_monty.MontyRuntimeError] for such a result, with the original
 exception type and the message prefixed `cannot convert the result to a Python value: `.
 
+A Python host builds one `collections.namedtuple` class per distinct type name and field names in a value.
+A value with more than 1024 distinct namedtuple types fails the same way, with a `ValueError`.
+Classes are shared across values through a bounded cache that is cleared when full, so two results of the same
+namedtuple type are usually, but not always, instances of the same host class.
+
 ## Message size
 
 A value and its message envelope must fit within 256 MiB.

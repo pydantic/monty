@@ -714,6 +714,23 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
     assert result == snapshot((3, 14, 0))
 
 
+def test_namedtuple_types_at_limit(monty_run: RunMonty):
+    """A value may use up to 1024 distinct namedtuple types; repeats of one type share a class."""
+    result = monty_run(
+        "from collections import namedtuple\nts = [namedtuple(f'T{i}', ['a']) for i in range(1024)]\n[t(i) for t in ts for i in range(2)]"
+    )
+    assert len(result) == 2048
+    assert len({r.__class__ for r in result}) == 1024
+    assert result[3].a == 1
+    assert type(result[3]).__name__ == 'T1'
+
+
+def test_namedtuple_type_shared_across_results(monty_run: RunMonty):
+    """The same namedtuple type decodes to the same host class in separate results."""
+    code = "from collections import namedtuple\nnamedtuple('SharedPoint', ['x', 'y'])(1, 2)"
+    assert type(monty_run(code)) is type(monty_run(code))
+
+
 # === Results the host cannot build ===
 
 # the `TypeError` comes from the host's own CPython, which reworded it in 3.14
@@ -732,6 +749,11 @@ UNDECODABLE_RESULTS = [
         'class K:\n    pass\n{K(): 1}',
         PROXY_DICT_KEY_ERROR,
         id='proxy_dict_key',
+    ),
+    pytest.param(
+        "from collections import namedtuple\n[namedtuple(f'T{i}', ['a'])(i) for i in range(1025)]",
+        'MontyRuntimeError(ValueError: cannot convert the result to a Python value: too many distinct namedtuple types in one value (limit 1024))',
+        id='too_many_namedtuple_types',
     ),
 ]
 
