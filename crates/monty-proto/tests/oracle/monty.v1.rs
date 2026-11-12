@@ -1078,8 +1078,9 @@ pub struct WorkerEvent {
     #[prost(enumeration = "ExecutionClock", optional, tag = "30")]
     pub execution_clock: ::core::option::Option<i32>,
     /// Capped system sleep the session has requested, in microseconds, including
-    /// a sleep it is suspended on. Survives Dump/Load, so a client restoring a
-    /// session adopts it from the `Load` reply as its `max_total_sleep` usage.
+    /// a sleep it is suspended on. Survives Dump/Load. Stamped on every event, but
+    /// clients read it only on the `Load` reply, to seed their `max_total_sleep`
+    /// usage; afterwards they count sleeps themselves and never trust this value.
     /// Zero outside a session and from older workers.
     #[prost(uint64, tag = "31")]
     pub total_sleep_micros: u64,

@@ -532,7 +532,7 @@ interface worker {
         max-feed-duration-micros: option<u64>,
         max-turn-duration-micros: option<u64>,
         /// Capped system sleep the session has requested, which a dump carries.
-        /// A host adopts it after `load` as the session's `max-total-sleep-micros` usage.
+        /// Hosts read it only after `load`, to seed the session's `max-total-sleep-micros` usage.
         total-sleep-micros: u64,
     }
 
