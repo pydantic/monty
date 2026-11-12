@@ -858,6 +858,14 @@ impl<'h> HeapObjectRead<'h, OpenFile> {
                     ExcType::not_implemented("writing away from EOF requires positional filesystem writes").into(),
                 );
             }
+        } else if positional
+            && previous_position > previous_length
+            && matches!(self.get(vm.heap).length_state, FileLengthState::Known)
+            && !matches!(&payload, WritePayload::Bytes(bytes) if bytes.is_empty())
+        {
+            // Hosts refuse gaps so one sandbox byte cannot grow a host file by the whole offset;
+            // fail here with a clearer error than the host's.
+            return Err(ExcType::not_implemented("writing past the end of a file is not supported").into());
         }
 
         let mut text_length = None;

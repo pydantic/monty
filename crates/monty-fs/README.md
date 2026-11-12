@@ -29,11 +29,10 @@ budget; oversized operations return `MemoryError` before an unbounded read.
 
 `WriteBytesAt` overwrites an existing regular file at an absolute byte offset, preserving surrounding bytes.
 It never creates or truncates the file; an empty payload does not extend it.
+A non-empty write starting past the end of the file is rejected, so a file grows by at most the bytes the sandbox sent.
 Native mounts seek and write through one confined handle, which is closed before returning.
 Overlays copy backing content on the first mutation and keep all changes in memory.
-The write budget charges the payload and any zero-filled gap, or the resulting materialized content on first copy.
-Native positional writes default to a cumulative 256 MB budget when no write limit is configured.
-An explicit write limit replaces that fallback; other write operations retain their configured behavior.
+The write budget charges the payload, or the resulting materialized content on first copy.
 Overlay memory limits apply separately.
 Native write failures can leave partially modified content.
 

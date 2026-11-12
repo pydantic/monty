@@ -224,16 +224,19 @@ fn append_bytes_to_file(dir: &Dir, rel: &str, content: &[u8], vpath: &str) -> Re
     file.write_all(content).map_err(|err| map_io(err, vpath))
 }
 
-/// Charges both the supplied bytes and any hole created before them.
-pub(super) fn positional_write_charge(offset: u64, length: u64, count: usize) -> Result<usize, MountError> {
-    let gap = if count == 0 { 0 } else { offset.saturating_sub(length) };
-    gap.checked_add(as_u64(count))
-        .and_then(|charge| usize::try_from(charge).ok())
-        .ok_or_else(|| MountError::InvalidArgument("write range exceeds the supported file-position range".to_owned()))
+/// Rejects a non-empty positional write that starts past the current end of the file.
+///
+/// A gap would let one byte from the sandbox grow a host file, or an overlay buffer, by the whole
+/// offset; refusing it keeps file growth bounded by the bytes the sandbox actually sent.
+pub(super) fn reject_write_past_eof(offset: u64, length: u64, count: usize) -> Result<(), MountError> {
+    if count > 0 && offset > length {
+        Err(MountError::InvalidArgument(
+            "write offset is past the end of the file".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
 }
-
-/// Cumulative native positional-write budget when the host supplied no write limit.
-const DEFAULT_POSITIONAL_WRITE_BYTES_LIMIT: u64 = 256_000_000;
 
 /// Uses one confined handle for the length check, seek, and overwrite.
 pub(super) fn host_write_bytes_at(
@@ -246,10 +249,8 @@ pub(super) fn host_write_bytes_at(
     reject_non_regular(ctx.mount_dir, rel, vpath)?;
     let mut file = open_regular(ctx.mount_dir, rel, vpath, OpenOptions::new().write(true))?;
     let length = file.metadata().map_err(|err| map_io(err, vpath))?.len();
-    let charge = positional_write_charge(offset, length, content.len())?;
-    // This context is per-call; the mount retains the cumulative counter.
-    ctx.write_bytes_limit
-        .get_or_insert(DEFAULT_POSITIONAL_WRITE_BYTES_LIMIT);
+    reject_write_past_eof(offset, length, content.len())?;
+    let charge = content.len();
     check_write_limit(charge, ctx)?;
     if !content.is_empty() {
         file.seek(SeekFrom::Start(offset)).map_err(|err| map_io(err, vpath))?;
@@ -674,7 +675,7 @@ mod tests {
     use cap_std::{ambient_authority, fs::Dir};
     use tempfile::TempDir;
 
-    use super::{MountContext, MountError, check_write_limit, positional_write_charge, write_with_charge};
+    use super::{MountContext, MountError, check_write_limit, write_with_charge};
 
     struct PartialWriter {
         data: Cursor<Vec<u8>>,
@@ -705,22 +706,20 @@ mod tests {
             mount_virtual: "/mnt",
             mount_dir: &dir,
             write_bytes_used: &mut used,
-            write_bytes_limit: Some(11),
+            write_bytes_limit: Some(3),
             memory_usage_limit: 1024,
         };
         let mut file = PartialWriter {
             data: Cursor::new(Vec::new()),
             remaining: 1,
         };
-        file.data.set_position(8);
-        let charge = positional_write_charge(8, 0, 3).unwrap();
-        check_write_limit(charge, &ctx).unwrap();
-        assert!(write_with_charge(&mut file, b"abc", charge, &mut ctx, "/mnt/file").is_err());
-        assert_eq!(file.data.into_inner(), b"\0\0\0\0\0\0\0\0a");
-        assert_eq!(*ctx.write_bytes_used, 11);
+        check_write_limit(3, &ctx).unwrap();
+        assert!(write_with_charge(&mut file, b"abc", 3, &mut ctx, "/mnt/file").is_err());
+        assert_eq!(file.data.into_inner(), b"a");
+        assert_eq!(*ctx.write_bytes_used, 3);
         assert!(matches!(
             check_write_limit(1, &ctx),
-            Err(MountError::WriteLimitExceeded(11))
+            Err(MountError::WriteLimitExceeded(3))
         ));
     }
 }

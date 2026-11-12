@@ -213,14 +213,18 @@ class TestOS(AbstractOS):
 
 
 @pytest.mark.parametrize('as_handle', [False, True])
-def test_default_positional_write_preserves_suffix_and_fills_gaps(as_handle: bool):
+def test_default_positional_write_preserves_suffix_and_rejects_gaps(as_handle: bool):
     fs = TestOS()
     fs.files['/file'] = b'abcdef'
     path = MontyFileHandle('/file', 'wb') if as_handle else PurePosixPath('/file')
     assert fs.path_write_bytes_at(path, 2, b'XY') == snapshot(2)
     assert fs.files['/file'] == snapshot(b'abXYef')
-    assert fs.path_write_bytes_at(path, 8, b'Z') == snapshot(1)
-    assert fs.files['/file'] == snapshot(b'abXYef\0\0Z')
+    assert fs.path_write_bytes_at(path, 6, b'Z') == snapshot(1)
+    assert fs.files['/file'] == snapshot(b'abXYefZ')
+    with pytest.raises(ValueError) as exc_info:
+        fs.path_write_bytes_at(path, 9, b'Z')
+    assert exc_info.value.args[0] == snapshot('write offset is past the end of the file')
+    assert fs.files['/file'] == snapshot(b'abXYefZ')
 
 
 def test_default_empty_positional_write_only_validates_target():
@@ -256,15 +260,16 @@ def test_default_positional_write_rejects_invalid_ranges_before_io(offset: int):
 def test_default_positional_write_bounds_replacement_before_reading(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(os_access, '_MAX_POSITIONAL_WRITE_BYTES', 8)
     fs = TestOS()
-    fs.files['/file'] = b'abc'
+    fs.files['/file'] = b'abcdefg'
     assert fs.path_write_bytes_at(PurePosixPath('/file'), 7, b'X') == snapshot(1)
-    assert fs.files['/file'] == snapshot(b'abc\0\0\0\0X')
+    assert fs.files['/file'] == snapshot(b'abcdefgX')
     fs.path_read_bytes = Mock(side_effect=AssertionError('must not read'))
     fs.path_write_bytes = Mock(side_effect=AssertionError('must not write'))
-    for offset in [8, 2**40]:
-        with pytest.raises(OSError) as error:
-            fs.path_write_bytes_at(PurePosixPath('/file'), offset, b'x')
-        assert error.value.errno == errno.ENOSPC
+    with pytest.raises(OSError) as error:
+        fs.path_write_bytes_at(PurePosixPath('/file'), 8, b'x')
+    assert error.value.errno == errno.ENOSPC
+    with pytest.raises(ValueError):
+        fs.path_write_bytes_at(PurePosixPath('/file'), 2**40, b'x')
     fs.files['/file'] = b'123456789'
     with pytest.raises(OSError) as error:
         fs.path_write_bytes_at(PurePosixPath('/file'), 0, b'x')
@@ -316,18 +321,18 @@ f.write(b'XY')
 if {mode!r} == 'w+b':
     f.seek(0)
     assert f.read() == b'abXYef'
-f.seek(8)
+f.seek(6)
 f.write(b'Z')
 if {mode!r} == 'w+b':
     f.seek(0)
-    assert f.read() == b'abXYef\\0\\0Z'
+    assert f.read() == b'abXYefZ'
 f.close()
 from pathlib import Path
 Path('/file').read_bytes()
 """,
         os=fs,
     )
-    assert result == snapshot(b'abXYef\0\0Z')
+    assert result == snapshot(b'abXYefZ')
 
 
 def test_abstract_filesystem_exists(monty_run: RunMonty):

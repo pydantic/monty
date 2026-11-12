@@ -15,7 +15,7 @@ use super::{
         DIRECTORY_WRITE_BYTES, LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, PathInfo, as_u64, bytes_to_utf8,
         check_write_limit, commit_write_bytes, current_timestamp, format_child_path, host_dir_mtime, host_is_dir,
         host_is_file, host_list_visible_dir_entries, host_read_bytes, host_read_text, host_stat, join_mount_relative,
-        map_io, positional_write_charge, read_file_limited, reject_non_regular, visible_entries,
+        map_io, read_file_limited, reject_non_regular, reject_write_past_eof, visible_entries,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -734,7 +734,7 @@ fn write_bytes_at(
     reject_directory_target(state, &relative, ctx, vpath)?;
     let existing_len = existing_file_len(state, &relative, ctx, vpath)?;
     let retained = matches!(state.get(&relative), Some(OverlayEntry::File(_)));
-    let charge = positional_write_charge(offset, as_u64(existing_len), data.len())?;
+    reject_write_past_eof(offset, as_u64(existing_len), data.len())?;
     if data.is_empty() {
         check_write_limit(0, ctx)?;
         return Ok(MontyObject::int(0));
@@ -744,11 +744,8 @@ fn write_bytes_at(
         .and_then(|offset| offset.checked_add(data.len()))
         .ok_or_else(|| MountError::InvalidArgument("write range is too large".to_owned()))?;
     let final_len = existing_len.max(end);
-    let charge = if !retained && !data.is_empty() {
-        final_len
-    } else {
-        charge
-    };
+    // The first mutation of a backing file materializes its whole content in memory.
+    let charge = if retained { data.len() } else { final_len };
     check_write_limit(charge, ctx)?;
     state.check_file_replacement(&relative, final_len, ctx.memory_usage_limit)?;
     let offset =

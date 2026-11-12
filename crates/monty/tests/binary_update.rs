@@ -91,13 +91,33 @@ with open('/file', 'w+b') as f:
     f.seek(0)
     assert f.read() == b'abXYef'
     assert old == b'abcdef'
-    f.seek(8)
     f.write(b'Z')
     f.seek(100)
     assert f.write(b'') == 0
-    assert f.seek(0, 2) == 9
+    assert f.seek(0, 2) == 7
     f.seek(0)
-    assert f.read() == b'abXYef\x00\x00Z'
+    assert f.read() == b'abXYefZ'
+";
+    run(code, false);
+    run(code, true);
+}
+
+/// CPython zero-fills the gap; Monty refuses it so hosts never grow a file past the bytes sent.
+#[test]
+fn writes_past_eof_raise_before_reaching_the_host() {
+    let code = r"
+with open('/file', 'w+b') as f:
+    f.write(b'abc')
+    f.seek(5)
+    try:
+        f.write(b'x')
+        assert False, 'expected NotImplementedError'
+    except NotImplementedError as exc:
+        assert str(exc) == 'writing past the end of a file is not supported'
+    assert f.tell() == 5
+    assert f.write(b'') == 0
+    f.seek(0)
+    assert f.read() == b'abc'
 ";
     run(code, false);
     run(code, true);
@@ -122,8 +142,7 @@ with open('/file', 'wb') as f:
 fn partial_write_recovery_and_eof_refresh_survive_snapshots() {
     let code = r"
 with open('/file', 'wb') as f:
-    f.write(b'abc')
-    f.seek(8)
+    f.write(b'abcdefgh')
     try:
         f.write(b'XYZ')
     except OSError:

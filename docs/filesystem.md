@@ -236,9 +236,7 @@ Mounts are serviced by the host, including for remote workers; the worker never 
 Closing a mount prevents new feeds from using it, but an in-flight feed keeps its own reference.
 Each directory `mkdir` creates, parents included, counts as [`DIRECTORY_WRITE_BYTES`](api/rust/monty-fs.md#directory_write_bytes)
 (4,096 bytes) against `write_bytes_limit`.
-Positional binary writes also charge zero-filled gaps created by writing past EOF.
-Native positional writes use a cumulative 256 MB fallback when `write_bytes_limit` is `None`;
-an explicit limit replaces this fallback.
+Mounts reject a positional binary write that starts past the end of the file, so writes cannot create zero-filled gaps.
 The first positional mutation of a backing file in a memory overlay charges the resulting materialized content.
 
 The names are keyword-only on purpose: mount tools disagree on whether host or virtual comes first (`docker -v` versus
@@ -450,6 +448,8 @@ you wrote.
 Binary writes in `wb` and `w+b` mode call
 [`AbstractOS.path_write_bytes_at(path, offset, data)`][pydantic_monty.AbstractOS.path_write_bytes_at].
 It overwrites an existing file at the byte offset, preserves surrounding content, and returns the number of bytes written.
+A non-empty write whose offset is past the end of the file raises `ValueError`.
+Overrides must reject these too, or one byte at a huge offset grows the host file by the whole offset.
 The default uses `path_stat`, `path_read_bytes` and `path_write_bytes` and caps the replacement at 50 MB.
 The handler must enforce allocation bounds in `path_read_bytes`; a stat check cannot bound a read if the file grows.
 Handlers that cannot bound reads under concurrent modification must override `path_write_bytes_at`.

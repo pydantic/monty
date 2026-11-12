@@ -5,8 +5,8 @@ use std::{
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
 };
 
-use monty_fs::{Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
-use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, WriteBytesAtArgs};
+use monty_fs::{Mount, MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{ExcType, MontyObject, OpenCallArgs, OsFunctionCall, WriteBytesAtArgs};
 use proptest::{
     prelude::*,
     test_runner::{FileFailurePersistence, TestCaseResult},
@@ -44,17 +44,17 @@ fn table(dir: &TempDir, overlay: bool, limit: Option<u64>) -> MountTable {
 }
 
 #[test]
-fn overwrites_preserve_suffixes_and_gaps_without_writing_through_overlays() {
+fn overwrites_preserve_suffixes_without_writing_through_overlays() {
     for overlay in [false, true] {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("file"), b"abcdef").unwrap();
         let mut table = table(&dir, overlay, None);
         assert_eq!(dispatch(&mut table, write(2, b"XY")).unwrap(), MontyObject::int(2));
-        assert_eq!(dispatch(&mut table, write(8, b"Z")).unwrap(), MontyObject::int(1));
+        assert_eq!(dispatch(&mut table, write(6, b"Z")).unwrap(), MontyObject::int(1));
         dispatch(&mut table, write(100, b"")).unwrap();
         assert_eq!(
             dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
-            MontyObject::bytes(b"abXYef\0\0Z".to_vec())
+            MontyObject::bytes(b"abXYefZ".to_vec())
         );
         if overlay {
             assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abcdef");
@@ -62,78 +62,50 @@ fn overwrites_preserve_suffixes_and_gaps_without_writing_through_overlays() {
     }
 }
 
+/// A gap would let one sandbox byte grow the file by the whole offset.
 #[test]
-fn native_positional_writes_default_to_a_bounded_budget() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("file"), b"abc").unwrap();
-    let mut table = table(&dir, false, None);
-    assert!(matches!(
-        dispatch(&mut table, write(256_000_003, b"x")),
-        Err(MountError::WriteLimitExceeded(256_000_000))
-    ));
-    assert!(dispatch(&mut table, write(1_u64 << 40, b"x")).is_err());
-    assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abc");
-}
-
-#[test]
-fn native_positional_budget_is_cumulative_without_limiting_other_writes() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("file"), b"").unwrap();
-    let mut table = table(&dir, false, None);
-    let chunk = vec![0; 1_000_000];
-    // Repeated overwrites exhaust the quota while keeping the actual file at 1 MB.
-    for _ in 0..256 {
-        dispatch(&mut table, write(0, &chunk)).unwrap();
-    }
-    assert!(matches!(
-        dispatch(&mut table, write(0, b"x")),
-        Err(MountError::WriteLimitExceeded(256_000_000))
-    ));
-    assert_eq!(
-        dispatch(&mut table, write(1_u64 << 40, b"")).unwrap(),
-        MontyObject::int(0)
-    );
-    // The per-call fallback must not change the mount's ordinary append policy.
-    dispatch(
-        &mut table,
-        OsFunctionCall::AppendBytes(PathBytesDataArgs {
-            path: "/mnt/file".into(),
-            data: b"!".to_vec(),
-        }),
-    )
-    .unwrap();
-    let content = fs::read(dir.path().join("file")).unwrap();
-    assert_eq!(content.len(), 1_000_001);
-    assert!(content[..1_000_000].iter().all(|byte| *byte == 0));
-    assert_eq!(content[1_000_000], b'!');
-}
-
-#[test]
-fn native_positional_writes_use_a_larger_explicit_budget() {
-    let dir = TempDir::new().unwrap();
-    fs::write(dir.path().join("file"), b"").unwrap();
-    let mut table = table(&dir, false, Some(256_000_001));
-    assert!(matches!(
-        dispatch(&mut table, write(256_000_001, b"x")),
-        Err(MountError::WriteLimitExceeded(256_000_001))
-    ));
-    assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"");
-}
-
-#[test]
-fn gaps_and_materialization_are_charged_before_mutation() {
+fn writes_past_eof_are_rejected_without_changing_the_file() {
     for overlay in [false, true] {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("file"), b"abc").unwrap();
-        let mut table = table(&dir, overlay, Some(4));
-        assert!(dispatch(&mut table, write(10, b"x")).is_err());
+        let mut table = table(&dir, overlay, None);
+        for offset in [4, 1_u64 << 40] {
+            let error = dispatch(&mut table, write(offset, b"x")).unwrap_err().into_exception();
+            assert_eq!(error.exc_type(), ExcType::ValueError);
+            assert_eq!(error.message(), Some("write offset is past the end of the file"));
+        }
+        assert_eq!(
+            dispatch(&mut table, write(1_u64 << 40, b"")).unwrap(),
+            MontyObject::int(0)
+        );
         assert_eq!(
             dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
             MontyObject::bytes(b"abc".to_vec())
         );
-        dispatch(&mut table, write(6, b"")).unwrap();
-        // Native: one payload byte + three gap bytes. Overlay: seven materialized bytes.
-        assert_eq!(dispatch(&mut table, write(6, b"x")).is_err(), overlay);
+        assert_eq!(fs::read(dir.path().join("file")).unwrap(), b"abc");
+        // Writing exactly at EOF still extends the file.
+        dispatch(&mut table, write(3, b"d")).unwrap();
+        assert_eq!(
+            dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
+            MontyObject::bytes(b"abcd".to_vec())
+        );
+    }
+}
+
+#[test]
+fn materialization_is_charged_before_mutation() {
+    for overlay in [false, true] {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("file"), b"abc").unwrap();
+        let mut table = table(&dir, overlay, Some(4));
+        // Native: two payload bytes. Overlay: five materialized bytes.
+        let result = dispatch(&mut table, write(3, b"xy"));
+        assert_eq!(result.is_err(), overlay);
+        let expected: &[u8] = if overlay { b"abc" } else { b"abcxy" };
+        assert_eq!(
+            dispatch(&mut table, OsFunctionCall::ReadBytes("/mnt/file".into())).unwrap(),
+            MontyObject::bytes(expected.to_vec())
+        );
     }
 }
 
@@ -299,6 +271,17 @@ fn assert_positional_writes_match_reference(
             WriteOffset::End => length,
             WriteOffset::BeyondEnd(gap) => length + u64::from(*gap),
         };
+        if offset > length && !data.is_empty() {
+            let error = dispatch(&mut table, write(offset, data)).unwrap_err().into_exception();
+            prop_assert_eq!(
+                error.exc_type(),
+                ExcType::ValueError,
+                "overlay={} step={}",
+                overlay,
+                index
+            );
+            continue;
+        }
         reference.seek(SeekFrom::Start(offset))?;
         reference.write_all(data)?;
         let count = dispatch(&mut table, write(offset, data))?;

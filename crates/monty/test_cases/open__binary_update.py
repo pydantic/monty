@@ -14,13 +14,12 @@ with path.open('w+b') as f:
     assert f.write(b'XY') == 2
     assert f.tell() == 4
     assert f.read() == b'ef'
-    f.seek(8)
     f.write(b'Z')
     f.seek(100)
     assert f.write(b'') == 0
-    assert f.seek(0, 2) == 9
+    assert f.seek(0, 2) == 7
     f.seek(0)
-    assert f.read() == b'abXYef\0\0Z'
+    assert f.read() == b'abXYefZ'
     assert old == b'abcdef'
 
 with open(path, 'wb') as f:

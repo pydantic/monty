@@ -2,6 +2,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from conftest import RunMonty
+from inline_snapshot import snapshot
 
 from pydantic_monty import CallbackFile, MemoryFile, MontyFileHandle, MontyRuntimeError, MountDir, OSAccess
 
@@ -19,11 +20,10 @@ with Path('/mnt/file').open({mode!r}) as f:
     f.seek(2)
     f.write(b'XY')
     assert f.read() == b'ef'
-    f.seek(8)
     f.write(b'Z')
     f.seek(100)
     assert f.write(b'') == 0
-    assert f.seek(0, 2) == 9
+    assert f.seek(0, 2) == 7
     f.seek(0)
     assert old == b'abcdef'
     result = f.read()
@@ -37,25 +37,32 @@ result
         result = monty_run(code, mount=MountDir(virtual_path='/mnt', host_path=tmp_path, mode=mount_mode))
         if backend == 'overlay':
             assert (tmp_path / 'file').read_bytes() == b'old'
-    assert result == b'abXYef\0\0Z'
+    assert result == b'abXYefZ'
 
 
 def test_memory_positional_write_limit_precedes_allocation():
     fs = OSAccess([MemoryFile('/file', b'abc')], max_total_file_bytes=8)
     with pytest.raises(OSError):
-        fs.path_write_bytes_at(PurePosixPath('/file'), 100_000_000, b'x')
+        fs.path_write_bytes_at(PurePosixPath('/file'), 3, b'x' * 6)
     assert fs.path_read_bytes(PurePosixPath('/file')) == b'abc'
 
 
-def test_callback_positional_write_limit_precedes_gap_allocation():
+@pytest.mark.parametrize('kind', ['memory', 'callback'])
+def test_positional_writes_past_eof_are_rejected(kind: str):
     writes: list[int] = []
-    fs = OSAccess(
-        [CallbackFile('/file', read=lambda _: b'', write=lambda _, data: writes.append(len(data)))],
-        max_total_file_bytes=8,
-    )
-    with pytest.raises(OSError):
-        fs.path_write_bytes_at(PurePosixPath('/file'), 1_000_000, b'x')
+    if kind == 'memory':
+        file = MemoryFile('/file', b'abc')
+    else:
+        file = CallbackFile('/file', read=lambda _: b'abc', write=lambda _, data: writes.append(len(data)))
+    fs = OSAccess([file])
+    for offset in [4, 2**40]:
+        with pytest.raises(ValueError) as exc_info:
+            fs.path_write_bytes_at(PurePosixPath('/file'), offset, b'x')
+        assert exc_info.value.args[0] == snapshot('write offset is past the end of the file')
+    assert fs.path_write_bytes_at(PurePosixPath('/file'), 2**40, b'') == 0
     assert writes == []
+    if kind == 'memory':
+        assert fs.path_read_bytes(PurePosixPath('/file')) == b'abc'
 
 
 def test_binary_update_handle_mode():
@@ -127,8 +134,7 @@ def test_seek_end_refreshes_length_after_partial_write_error(monty_run: RunMonty
         f"""
 from pathlib import Path
 f = open('/file', {mode!r})
-f.write(b'abc')
-f.seek(8)
+f.write(b'abcdefgh')
 try:
     f.write(b'XYZ')
 except OSError:
@@ -142,4 +148,4 @@ Path('/file').read_bytes()
 """,
         os=PartialOS([MemoryFile('/file', b'')]),
     )
-    assert result == b'abc\0\0\0\0\0X!'
+    assert result == b'abcdefghX!'

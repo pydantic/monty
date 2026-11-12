@@ -527,6 +527,8 @@ class AbstractOS(ABC):
     def path_write_bytes_at(self, path: PurePosixPath | MontyFileHandle, offset: int, data: bytes) -> int:
         """Overwrite bytes in an existing file and return the number of input bytes written.
 
+        Writes that start past the end of the file raise `ValueError`; overrides must reject them too,
+        or one byte at a huge offset can grow the host file by the whole offset.
         The default caps the replacement at 50 MB and requires read access.
         The handler must bound allocations in path_read_bytes itself; stat cannot bound a concurrent read.
         It is not atomic with concurrent changes; override for native positional I/O or larger files.
@@ -539,14 +541,16 @@ class AbstractOS(ABC):
             raise IsADirectoryError(errno.EISDIR, 'Is a directory', str(file_path))
         if not data:
             return 0
+        _reject_write_past_eof(offset, metadata.st_size)
         end = offset + len(data)
         if max(metadata.st_size, end) > _MAX_POSITIONAL_WRITE_BYTES:
             raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
         content = self.path_read_bytes(path)
-        # A file can grow between the metadata lookup and the read.
+        # A file can grow or shrink between the metadata lookup and the read.
         if len(content) > _MAX_POSITIONAL_WRITE_BYTES:
             raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
-        replacement = content[:offset] + b'\0' * max(0, offset - len(content)) + data + content[end:]
+        _reject_write_past_eof(offset, len(content))
+        replacement = content[:offset] + data + content[end:]
         if self.path_write_bytes(path, replacement) != len(replacement):
             raise OSError(errno.EIO, 'Incomplete file write', str(file_path))
         return len(data)
@@ -829,6 +833,15 @@ class AbstractOS(ABC):
         """
         cap = self.max_sleep
         return seconds if cap is None or seconds <= cap else cap
+
+
+def _reject_write_past_eof(offset: int, length: int) -> None:
+    """Refuse a positional write that would leave a zero-filled gap before `offset`.
+
+    Without this, one byte at a huge offset grows the file by the whole offset.
+    """
+    if offset > length:
+        raise ValueError('write offset is past the end of the file')
 
 
 def _content_size(content: str | bytes) -> int:
@@ -1309,14 +1322,14 @@ class OSAccess(AbstractOS):
         content = content.encode() if isinstance(content, str) else content
         if not data:
             return 0
+        _reject_write_past_eof(offset, len(content))
         end = offset + len(data)
         new_size = max(len(content), end)
         if isinstance(entry, MemoryFile):
             self._charge(file_path, len(content), new_size)
         elif self.max_total_file_bytes is not None and new_size > self.max_total_file_bytes:
             raise OSError(errno.ENOSPC, 'No space left on device', str(file_path))
-        replacement = content[:offset] + b'\0' * max(0, offset - len(content)) + data + content[end:]
-        entry.write_content(replacement)
+        entry.write_content(content[:offset] + data + content[end:])
         return len(data)
 
     def _append(self, path: PurePosixPath, data: bytes | str) -> None:

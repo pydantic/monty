@@ -131,6 +131,9 @@ Everything else raises `AttributeError`, including: `truncate()`,
     the worker's allocator-backed `max_memory`.
     A write through the same file object invalidates its buffer, including when the host raises an error.
     Modifications through other handles or external tools do not invalidate it.
+- Writing bytes after seeking past the end of a `wb` or `w+b` file raises
+    `NotImplementedError: writing past the end of a file is not supported`; CPython fills the gap with zero bytes.
+    The host also refuses such writes, so it holds if the sandbox's view of the file length is stale.
 - A failed binary write keeps the previous logical cursor because the host did not return a count.
     It can still change the file on storage.
     A subsequent seek from EOF in `wb` refreshes the file length with a host stat call;
