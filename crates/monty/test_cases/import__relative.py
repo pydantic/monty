@@ -25,6 +25,16 @@
 (root / 'rel' / 'fails.py').write_text('from . import broken\n')
 (root / 'rel' / 'broken.py').write_text("raise ValueError('broken')\n")
 (root / 'top.py').write_text('from . import x\n')
+(root / 'again').mkdir()
+(root / 'again' / '__init__.py').write_text('calls = []\nloaders = []\n')
+(root / 'again' / 'inner').mkdir()
+(root / 'again' / 'inner' / '__init__.py').write_text(
+    "from .. import calls\ncalls.append(1)\nfrom . import late\nif len(calls) == 1:\n    raise ValueError('first')\n"
+)
+(root / 'again' / 'inner' / 'late.py').write_text(
+    'from .. import loaders\ndef load():\n    from . import other\n    return other.V\nloaders.append(load)\n'
+)
+(root / 'again' / 'inner' / 'other.py').write_text('V = 7\n')
 (root / 'circ').mkdir()
 (root / 'circ' / '__init__.py').write_text('from . import mod\nlate = 1\n')
 (root / 'circ' / 'mod.py').write_text('try:\n    from . import late\nexcept ImportError as e:\n    msg = str(e)\n')
@@ -53,6 +63,18 @@ assert circ.mod.msg == (
     "cannot import name 'late' from partially initialized module 'circ' "
     f'(most likely due to a circular import) ({root / "circ" / "__init__.py"})'
 )
+
+# === A package whose import failed is imported again ===
+try:
+    import again.inner
+
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'first'
+import again
+
+assert again.loaders[0]() == 7
+assert again.calls == [1, 1]
 
 # === Relative imports above the top-level package ===
 try:
@@ -164,3 +186,18 @@ try:
     assert False, 'expected ModuleNotFoundError'
 except ModuleNotFoundError as e:
     assert str(e) == "No module named 'os.nope'; 'os' is not a package"
+try:
+    exec('from . import nope', {'__package__': 'sys'})
+    assert False, 'expected ImportError'
+except ImportError as e:
+    assert str(e) == "cannot import name 'nope' from 'sys' (unknown location)"
+try:
+    exec('from . import nope', {'__package__': 'os.nope'})
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as e:
+    assert str(e) == "No module named 'os.nope'; 'os' is not a package"
+try:
+    exec('from . import nope', {'__package__': 'os.path.x'})
+    assert False, 'expected ModuleNotFoundError'
+except ModuleNotFoundError as e:
+    assert str(e) == "No module named 'os.path.x'; 'os.path' is not a package"

@@ -121,23 +121,33 @@ impl VM<'_> {
     /// `from .. import name` and the head of `from ..pkg import name`: the package
     /// `level` dots name, counted up from the frame's `__package__` as CPython does.
     pub(super) fn import_relative_package(&mut self, level: usize) -> RunResult<CallResult> {
-        let this = self;
-        let base = this.relative_base(level)?;
+        let base = self.relative_base(level)?;
         // A built-in (`os`, or the dotted `os.path`) or top-level name loads as `import base` would.
         let static_name = StaticStrings::from_str(&base).ok();
-        let parent = match base.rsplit_once('.') {
-            Some((parent, _)) if static_name.and_then(StandardLib::from_static).is_none() => parent,
-            _ => return Ok(this.import_absolute(&base, static_name)),
-        };
-        if let Some(module) = this.modules.get(&base, this.heap) {
-            return Ok(CallResult::Value(module));
+        match base.rsplit_once('.') {
+            Some((parent, _)) if static_name.and_then(StandardLib::from_static).is_none() => {
+                match self.modules.get(&base, self.heap) {
+                    Some(module) => Ok(CallResult::Value(module)),
+                    None => self.reimport_package(&base, parent),
+                }
+            }
+            _ => Ok(self.import_absolute(&base, static_name)),
         }
-        // The importing module's package is normally cached, initialising or done;
-        // a failed package import forgets it, so the import runs again.
-        let parent = this.modules.get(parent, this.heap).unwrap_or(Value::None);
-        defer_drop!(parent, this);
-        this.import_file_submodule(parent, &base)
-            .unwrap_or_else(|| Err(ExcType::module_not_found_error(&base, None)))
+    }
+
+    /// A dotted package missing from the cache, which a failed import of it removed:
+    /// imported again as a submodule of `parent` when that is cached.
+    /// CPython would import a missing `parent` too, but one instruction can run only one
+    /// import, so an uncached file parent raises `ModuleNotFoundError` naming `base`.
+    fn reimport_package(&mut self, base: &str, parent: &str) -> RunResult<CallResult> {
+        let this = self;
+        let Some(parent_module) = this.modules.get(parent, this.heap) else {
+            let builtin = StaticStrings::from_str(parent).ok().and_then(StandardLib::from_static);
+            return Err(ExcType::module_not_found_error(base, builtin.map(|_| parent)));
+        };
+        defer_drop!(parent_module, this);
+        this.import_file_submodule(parent_module, base)
+            .expect("the module cache holds only file modules")
     }
 
     /// The absolute name of the package `level` dots name from the current frame's package.
@@ -162,11 +172,8 @@ impl VM<'_> {
             .namespace
             .as_deref()
             .and_then(FrameNamespace::dict_globals)
-            .map(|globals| match self.heap.get(globals) {
-                HeapData::Dict(dict) => dict,
-                _ => unreachable!("a frame's globals are a dict"),
-            });
-        let Some(globals) = globals else {
+            .map(|globals| self.heap.get(globals));
+        let Some(HeapData::Dict(globals)) = globals else {
             return Err(ExcType::relative_import_no_parent());
         };
         let get = |key| globals.get_by_str(key, self.heap, self.interns);
