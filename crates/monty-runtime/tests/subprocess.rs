@@ -1374,8 +1374,8 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
             16_044_735,
         ),
         // `re.finditer` preflights the matches it builds from its scanned spans as a whole.
-        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_455),
-        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_301),
+        ("import re\nre.finditer('ab', 'ab ' * 10_000)", 3_217_199),
+        ("import re\nre.finditer('(a)(b)', 'ab ' * 10_000)", 4_596_045),
         // A split's piece buffer is grown under the same checks as `re.split`'s.
         ("('ab,' * 100_000).split(',')", 1_392_992),
         ("('ab,' * 100_000).rsplit(',')", 1_392_993),
@@ -1440,7 +1440,7 @@ fn large_allocations_are_rejected_before_the_hard_limit() {
         // message must still respect the budget.
         (
             "import csv\nclass S:\n    def write(self, t):\n        pass\ntext = 'x' * 400_000\nclass Key:\n    def __repr__(self):\n        return text\nrow = {Key(): None, Key(): None}\ncsv.DictWriter(S(), []).writerow(row)",
-            1_253_825,
+            1_254_367,
         ),
         // `decimal` preflights results whose size scales with an exponent or the
         // precision: an integer conversion, `f` formatting, and division, `sqrt`,
