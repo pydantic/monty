@@ -57,6 +57,9 @@ They exist for development and for agents debugging code that runs on Monty; mos
 - `async with`, `async for` and async comprehensions
 - t-strings
 
+Source code is limited to `u32::MAX` UTF-8 bytes; exceeding this limit raises `SyntaxError`
+([resource limits](resource_limits.md#memory--size-limits)).
+
 **Missing in other ways:**
 
 - User-defined exception classes.

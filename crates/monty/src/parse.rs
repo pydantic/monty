@@ -384,6 +384,17 @@ fn check_source_nesting(
     filename_id: StringId,
     source_scan_threshold: usize,
 ) -> Result<(), ParseError> {
+    // Ruff uses u32 source offsets, so reject oversized input before parsing.
+    u32::try_from(code.len()).map_err(|_| {
+        ParseError::syntax(
+            "source exceeds maximum length of 4294967295 bytes",
+            CodeRange {
+                filename: filename_id,
+                ..CodeRange::default()
+            },
+        )
+    })?;
+
     if code.len() > source_scan_threshold
         && let Some(range) = nesting_bound_exceeded(code, mode, MAX_NESTING_DEPTH)
     {
