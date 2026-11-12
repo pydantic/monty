@@ -1,15 +1,13 @@
 //! Python string views, operations and allocation.
 
 mod access_cache;
-mod access_cache_store;
 mod heap_str;
 mod inline_str;
 mod iterator;
 
 use std::{fmt::Write, str};
 
-pub(crate) use access_cache::AccessCache;
-pub(crate) use access_cache_store::AccessCacheStore;
+pub(crate) use access_cache::{AccessCache, AccessCacheStore};
 pub(crate) use heap_str::HeapStr;
 pub(crate) use inline_str::InlineStr;
 pub(crate) use iterator::StringIterator;
