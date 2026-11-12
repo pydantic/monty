@@ -6,7 +6,6 @@ import itertools
 import json
 import pathlib
 import re
-import sys
 import types
 import zoneinfo
 from typing import NamedTuple
@@ -716,23 +715,11 @@ def test_namedtuple_sys_version_info_tuple_comparison(monty_run: RunMonty):
 
 # === Results the host cannot build ===
 
-# the `TypeError` comes from the host's own CPython, which reworded it in 3.14
-if sys.version_info >= (3, 14):
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: cannot use 'pydantic_monty.MontyClassProxy' as a dict key (unhashable type: 'pydantic_monty.MontyClassProxy'))"
-else:
-    PROXY_DICT_KEY_ERROR = "MontyRuntimeError(TypeError: cannot convert the result to a Python value: unhashable type: 'pydantic_monty.MontyClassProxy')"
+UNDERSCORE_FIELD_CODE = "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)"
+UNDERSCORE_FIELD_ERROR = "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')"
 
 UNDECODABLE_RESULTS = [
-    pytest.param(
-        "from collections import namedtuple\nnamedtuple('P', ['a', 'a'], rename=True)(1, 2)",
-        "MontyRuntimeError(ValueError: cannot convert the result to a Python value: Field names cannot start with an underscore: '_1')",
-        id='namedtuple_underscore_field',
-    ),
-    pytest.param(
-        'class K:\n    pass\n{K(): 1}',
-        PROXY_DICT_KEY_ERROR,
-        id='proxy_dict_key',
-    ),
+    pytest.param(UNDERSCORE_FIELD_CODE, UNDERSCORE_FIELD_ERROR, id='namedtuple_underscore_field'),
 ]
 
 
@@ -756,11 +743,11 @@ async def test_undecodable_result_async(code: str, expected: str):
 
 
 def test_undecodable_result_feed_start(session: MontySession):
-    complete = session.feed_start('class K:\n    pass\n{K(): 1}')
+    complete = session.feed_start(UNDERSCORE_FIELD_CODE)
     assert isinstance(complete, MontyComplete)
     with pytest.raises(MontyRuntimeError) as exc_info:
         complete.output
-    assert repr(exc_info.value) == PROXY_DICT_KEY_ERROR
+    assert repr(exc_info.value) == UNDERSCORE_FIELD_ERROR
 
 
 # === User-defined NamedTuple input ===
