@@ -956,6 +956,8 @@ fn read_keyword_arguments<I: Input>(
     let map = input.validate_dict(strict, vm)?.value;
     defer_drop_mut!(map, vm);
     while let Some((mut key, mut value)) = map.next(vm)? {
+        // Each key scans every field name, so poll per entry rather than every few hundred.
+        vm.heap.tracker.check_memory_time()?;
         let entry = key.to_value(vm).and_then(|key_value| {
             let key_text = key_value.as_str(vm).map(str::to_owned);
             key_value.drop_with(vm);
@@ -989,6 +991,7 @@ fn read_positional_arguments<I: Input>(
     defer_drop_mut!(seq, vm);
     let mut index = 0usize;
     while let Some(mut element) = seq.next(vm)? {
+        vm.heap.tracker.check_memory_time_every(index)?;
         let item = element.to_value(vm);
         seq.finish_item(element, vm);
         let item = item?;
@@ -1018,6 +1021,7 @@ fn fill_missing_arguments<I: Input>(
     let unexpected = errors.len();
     let defaults_start = slots.len() - named_tuple.defaults;
     for (position, slot) in slots.iter_mut().enumerate() {
+        vm.heap.tracker.check_memory_time_every(position)?;
         if slot.is_some() {
             continue;
         }

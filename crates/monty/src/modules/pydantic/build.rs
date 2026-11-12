@@ -115,7 +115,7 @@ impl Builder<'_> {
                 defer_drop!(args, vm);
                 match origin {
                     AliasOrigin::Builtin(origin) => self.generic(origin, args, hint, vm),
-                    AliasOrigin::Special(Marker(StaticStrings::Literal)) => Ok(self.literal(args, vm)),
+                    AliasOrigin::Special(Marker(StaticStrings::Literal)) => self.literal(args, vm),
                     // The metadata is read once `Field()` exists; the type is validated as itself.
                     AliasOrigin::Special(Marker(StaticStrings::Annotated)) => self.walk(&args[0], vm),
                     AliasOrigin::Special(_) => Err(schema_error(hint, vm)),
@@ -136,8 +136,12 @@ impl Builder<'_> {
                     field_names: class
                         .field_names()
                         .iter()
-                        .map(|name| name.as_str(vm.interns).to_owned())
-                        .collect(),
+                        .enumerate()
+                        .map(|(index, name)| {
+                            vm.heap.tracker.check_memory_time_every(index)?;
+                            Ok(name.as_str(vm.interns).to_owned())
+                        })
+                        .collect::<RunResult<_>>()?,
                     defaults: class.defaults().len(),
                 };
                 Ok(self.arena.push(Validator::NamedTuple(validator)))
@@ -219,8 +223,12 @@ impl Builder<'_> {
     }
 
     /// `Literal[...]`: the choices as given, named by their reprs.
-    fn literal(&mut self, choices: &[Value], vm: &mut VM<'_>) -> ValidatorId {
-        let reprs: Vec<String> = choices.iter().map(|choice| repr_string(choice, vm)).collect();
+    fn literal(&mut self, choices: &[Value], vm: &mut VM<'_>) -> RunResult<ValidatorId> {
+        let mut reprs = Vec::with_capacity(choices.len());
+        for (index, choice) in choices.iter().enumerate() {
+            vm.heap.tracker.check_memory_time_every(index)?;
+            reprs.push(repr_string(choice, vm));
+        }
         let expected = match reprs.split_last() {
             Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
             Some((last, _)) => last.clone(),
@@ -231,7 +239,7 @@ impl Builder<'_> {
             expected,
             name: format!("literal[{}]", reprs.join(",")),
         };
-        self.arena.push(Validator::Literal(validator))
+        Ok(self.arena.push(Validator::Literal(validator)))
     }
 
     /// A dataclass, memoised by class: the slot is reserved before the fields
