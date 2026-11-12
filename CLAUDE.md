@@ -54,9 +54,9 @@ The unstable `object_from_graph`, `call_args_from_parts` and `named_values_from_
 
 ## Vendored CPython stdlib (`crates/monty/stdlib/`)
 
-Pure-Python stdlib modules are bundled as CPython's own source rather than ported to Rust (#1275).
+Pure-Python stdlib modules are vendored as CPython's own source rather than ported to Rust (#1275).
 `crates/monty/stdlib/vendor.toml` pins a CPython tag and lists the files under `Lib/`; `make vendor-stdlib` downloads
-them and CPython's `LICENSE`, applies the patches, and generates `crates/monty/src/modules/bundled/sources.rs`.
+them and CPython's `LICENSE`, applies the patches, and generates `crates/monty/src/modules/vendored/sources.rs`.
 Never edit those by hand: `make check-stdlib` (CI) fails when `Lib/`, `LICENSE` or the generated table differ from
 the pinned release with its patches applied.
 Prefer fixing Monty to patching CPython's source. When a patch is unavoidable, edit `Lib/` and save the edit with

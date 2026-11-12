@@ -19,7 +19,6 @@ pub(crate) mod asyncio;
 pub(crate) mod base64;
 pub(crate) mod binascii;
 pub(crate) mod bisect;
-pub(crate) mod bundled;
 pub(crate) mod collections;
 pub(crate) mod copy;
 pub(crate) mod csv;
@@ -44,6 +43,7 @@ pub(crate) mod time;
 pub(crate) mod tomllib;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;
+pub(crate) mod vendored;
 
 /// Built-in modules that can be imported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
